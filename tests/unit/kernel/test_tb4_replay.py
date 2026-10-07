@@ -284,7 +284,12 @@ def test_pretrain_shard_corruption_det_would_have_been_continued_at_stop() -> No
     assert gate.items == ("obligations_open", PLANNED_VERIFICATION_NOT_OBSERVED_GAP)
     # The export recorded open_obligation_count 3 at session end.
     assert "Remaining: 3 open obligation(s)" in gate.text
-    assert "yoetz-blocker:" in gate.text
+    # Repair first; the blocker exit is offered only because obligations are open, and an
+    # inherent verification limit or a best-effort choice is disclosed, never blocked (#984, #995).
+    assert gate.text.index("Finish each open obligation") < gate.text.index("yoetz-blocker:")
+    assert "yoetz-assumption:<obligation id>" in gate.text
+    assert "`acknowledged_not_done`" in gate.text
+    assert len(gate.text) <= 2_000
 
 
 def test_atrx_vep_crispr_det_missing_report_blocks_the_receipt_and_continues_the_agent() -> None:
@@ -306,6 +311,30 @@ def test_atrx_vep_crispr_det_missing_report_blocks_the_receipt_and_continues_the
     assert gate.items == ("obligations_open", "receipt_findings_unresolved")
     # The export recorded open_obligation_count 5 at session end.
     assert "Remaining: 5 open obligation(s); 1 receipt-blocking finding(s)" in gate.text
+    # #984: findings are repaired first, then self-verified when only a Yoetz limit remains.
+    assert "repair what you can" in gate.text
+    assert "respond `self_verified`" in gate.text
+    assert gate.text.index("repair what you can") < gate.text.index("`acknowledged_not_done`")
+
+
+def test_atrx_findings_without_open_obligations_offer_no_blocker() -> None:
+    """With only a receipt-blocking finding left, the gate never offers a yoetz-blocker (#984)."""
+
+    view = SimpleNamespace(
+        state="action_required",
+        agent_actionable=("receipt_findings_unresolved",),
+        open_obligation_count="0",
+        receipt_blocking_finding_count="1",
+        blocked_obligations=(),
+    )
+    gate = closure_gate_from_readiness(
+        view, frontier_sequence="40", frontier_digest="d", observation_pending=False
+    )
+    assert gate is not None
+    assert gate.items == ("receipt_findings_unresolved",)
+    assert "respond `self_verified`" in gate.text
+    assert "yoetz-blocker:<" not in gate.text
+    assert "publish decision_recorded" not in gate.text
 
 
 _BLOCKER_BATCHES = [0]
@@ -349,6 +378,11 @@ def test_tb4v1_pretrain_blocker_for_a_missing_snapshot_is_rechecked_once() -> No
     assert "obligation_blocker_unconfirmed" in gate.items
     for obligation in blocked:
         assert f"{obligation} (dependency_unavailable)" in gate.text
+    # Re-pinned against the current re-check text: repair first, recoverable data and a Yoetz
+    # limit are not blockers, and how to confirm is said only in the challenge (#985, #984).
+    assert "Continue that work unless it is genuinely outside your control" in gate.text
+    assert "a Yoetz limit never is" in gate.text
+    assert "same yoetz-blocker line again in a later" in gate.text
 
 
 def test_a_genuine_blocker_lets_pretrain_stop_after_one_recheck() -> None:

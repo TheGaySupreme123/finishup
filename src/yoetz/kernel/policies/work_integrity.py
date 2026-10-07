@@ -296,7 +296,12 @@ def _requested_item_findings(
     for obligation_ref in sorted(_active_requested_obligations(case), key=_ascii):
         record = case.projection.obligations[obligation_ref]
         payload = record.payload
-        if payload is None or obligation_ref in blocked:
+        if (
+            payload is None
+            or obligation_ref in blocked
+            # #997: the agent acknowledged it as not done; the receipt discloses that instead.
+            or payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+        ):
             continue
         attempted = attempted_items_for_obligation(case.projection, obligation_ref)
         unattempted = started and any(

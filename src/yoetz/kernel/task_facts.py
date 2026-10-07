@@ -27,6 +27,12 @@ and the ledger already establish, so the agent can act on them:
   later decision repeats the same line for the same obligation after the publish-time challenge
   and the Stop-time re-ask (#985). A Yoetz limit is never a blocker, and missing data the task
   says is recoverable is not a blocker kind.
+* **Disclosures (#995).** An exact decision statement line ``yoetz-assumption:<obligation id>``
+  or ``yoetz-verification-limit:<obligation id>`` discloses a best-effort assumption or an
+  inherent verification limit. It is never a blocker and never a fact: readiness lists it as a
+  standing code and the receipt names it.
+* **Acknowledged obligations (#997).** An obligation published as ``acknowledged_not_done`` gets no
+  task fact and no requested-item finding; readiness and the receipt disclose it as not done.
 
 Self-generated evidence stays admissible here: no rule asks who produced a verification, only
 whether the hooks observed it run, and when.
@@ -55,7 +61,7 @@ from yoetz.domain.events import (
     is_observation_authored,
 )
 from yoetz.domain.observation import normalize_observed_command, observed_command_commitment
-from yoetz.domain.values import EventId, ObligationId
+from yoetz.domain.values import EventId, ObligationId, obligation_id
 from yoetz.kernel.command_attempts import attempted_items_for_obligation
 from yoetz.kernel.observed_failures import (
     command_identity,
@@ -95,11 +101,17 @@ __all__ = [
     "TaskFactSignals",
     "BlockerDeclaration",
     "acting_started",
+    "acknowledged_obligation_ids",
     "BLOCKER_NOTICE_CLAIMED",
     "BLOCKER_NOTICE_CODES",
     "BLOCKER_NOTICE_CONFIRMED",
     "BLOCKER_NOTICE_WITHOUT_EFFECT",
     "BlockerNotice",
+    "DISCLOSURE_KINDS",
+    "DISCLOSURE_MARKERS",
+    "DisclosureDeclaration",
+    "disclosure_declarations",
+    "disclosure_line_obligations",
     "blocked_obligations",
     "blocker_declarations",
     "blocker_publication_notices",
@@ -454,6 +466,92 @@ def blocker_publication_notices(
     )
 
 
+# ---------------------------------------------------------------------------------------------
+# Disclosures (#995, ADR-033): an assumption or an inherent verification limit, never a blocker
+# ---------------------------------------------------------------------------------------------
+
+# ``yoetz-assumption:<obligation id>`` discloses a best-effort choice the agent made for that
+# obligation; ``yoetz-verification-limit:<obligation id>`` discloses a check the agent inherently
+# cannot run (a hidden verifier, a private trace). The decision's rationale carries the text.
+DISCLOSURE_MARKERS: Final = MappingProxyType(
+    {"yoetz-assumption": "assumption", "yoetz-verification-limit": "verification_limit"}
+)
+DISCLOSURE_KINDS: Final = ("assumption", "verification_limit")
+
+
+@dataclass(frozen=True, slots=True)
+class DisclosureDeclaration:
+    """One obligation's recorded disclosure: the closed kind and the decision that records it."""
+
+    obligation_id: ObligationId
+    kind: str
+    decision_event_id: EventId
+
+    def __post_init__(self) -> None:
+        if self.kind not in DISCLOSURE_KINDS:
+            raise ValueError("disclosure_kind_invalid")
+
+
+def disclosure_line_obligations(statement: str) -> tuple[tuple[str, ObligationId], ...]:
+    """The ``(kind, obligation id)`` pairs a decision statement's disclosure lines name.
+
+    Only an exact line ``yoetz-assumption:<obligation id>`` or
+    ``yoetz-verification-limit:<obligation id>`` (surrounding whitespace ignored) with a
+    well-formed obligation id counts; anything else on the line makes it ordinary prose. Pairs are
+    unique, in first-seen order. The reducer reads the same pairs to report an id that names no
+    recorded obligation as ``missing_ref``.
+    """
+
+    pairs: dict[tuple[str, ObligationId], None] = {}
+    for line in statement.splitlines():
+        marker, separator, value = line.strip().partition(":")
+        kind = DISCLOSURE_MARKERS.get(marker)
+        if kind is None or not separator:
+            continue
+        try:
+            obligation = obligation_id(value)
+        except ValueError:
+            continue
+        pairs.setdefault((kind, obligation), None)
+    return tuple(pairs)
+
+
+def disclosure_declarations(projection: ProjectionState) -> tuple[DisclosureDeclaration, ...]:
+    """Disclosures readable, unsuperseded decisions record for recorded obligations (#995).
+
+    One row per ``(obligation, kind)``: the earliest such decision in ledger order records it. A
+    disclosure never blocks, never resolves and never changes an obligation's status or readiness
+    state; readiness lists it as a standing code and the receipt names it by id. A decision
+    superseded by a later one (``supersedes_event_id``) no longer discloses anything, so the
+    agent withdraws a disclosure exactly as it withdraws a blocker. An id that names no recorded
+    obligation discloses nothing (the reducer reports it as ``missing_ref``). Sorted by
+    obligation, then kind.
+    """
+
+    rows = sorted(
+        (
+            (row.source_frontier, event_id, row.payload)
+            for event_id, row in projection.decisions.items()
+            if type(row.payload) is DecisionRecordedPayload and row.superseded_by_event_id is None
+        ),
+        key=lambda item: (item[0], str(item[1]).encode()),
+    )
+    declared: dict[tuple[ObligationId, str], EventId] = {}
+    for _position, event_id, payload in rows:
+        assert payload is not None
+        for kind, obligation in disclosure_line_obligations(payload.statement):
+            record = projection.obligations.get(obligation)
+            if record is None or record.payload is None:
+                continue
+            declared.setdefault((obligation, kind), event_id)
+    return tuple(
+        DisclosureDeclaration(obligation, kind, event)
+        for (obligation, kind), event in sorted(
+            declared.items(), key=lambda item: (item[0][0].encode(), item[0][1].encode())
+        )
+    )
+
+
 def effective_obligations(projection: ProjectionState) -> tuple[ObligationId, ...]:
     """Effective, readable, unwaived obligations of the current plan chain."""
 
@@ -466,6 +564,18 @@ def effective_obligations(projection: ProjectionState) -> tuple[ObligationId, ..
         if (record := projection.obligations.get(obligation)) is not None
         and record.payload is not None
         and record.plan_change is not ObligationChangeKind.WAIVED
+    )
+
+
+def acknowledged_obligation_ids(projection: ProjectionState) -> frozenset[ObligationId]:
+    """Effective obligations the agent acknowledged as not done (#997): no task fact or
+    requested-item finding is reported for them; readiness and the receipt disclose them."""
+
+    return frozenset(
+        obligation
+        for obligation in effective_obligations(projection)
+        if (payload := projection.obligations[obligation].payload) is not None
+        and payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
     )
 
 
@@ -657,13 +767,14 @@ def task_fact_signals(
     state = _observed_state(projection, observed, cooperative_event_ids_from_records(prefix))
     batches = decision_batches(prefix)
     blocked = blocked_obligations(projection, batches)
+    acknowledged = acknowledged_obligation_ids(projection)
     markers: set[tuple[str, ObligationId | None]] = set()
 
     # Planned verification.
     keyed_runs = [run for run in state.runs if run.identity is not None]
     if command_identity_key_registered():
         for obligation in effective_obligations(projection):
-            if obligation in blocked:
+            if obligation in blocked or obligation in acknowledged:
                 continue
             payload = projection.obligations[obligation].payload
             assert payload is not None
@@ -784,7 +895,7 @@ def requested_output_facts(
     was written: an ``edit`` action whose ``attempted_items`` names that exact value (#977, tb4v1).
     """
 
-    skipped = frozenset(blocked)
+    skipped = frozenset(blocked) | acknowledged_obligation_ids(projection)
     edited: dict[ObligationId, frozenset[str]] = {}
     absent: list[tuple[ObligationId, int]] = []
     markers: set[tuple[str, ObligationId]] = set()

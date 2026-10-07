@@ -23,6 +23,9 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
 * the text pushes repair or self-verification first; ``acknowledged_not_done`` is the last
   resort, a Yoetz limit is never a ``yoetz-blocker``, and the blocker exit is offered only when
   open obligations remain (#984);
+* a finding the agent acknowledged as not done that the review says the task itself requires
+  (readiness ``finding_premise_disputed``, D7a) is asked about once per session and acknowledged
+  count, on a Stop the host has not already continued (closed item ``premise_recheck``);
 * while this task's hook observations are still draining, the facts that depend on observed
   runs are not used to continue the agent, and the text says so only when that changed the
   decision.
@@ -65,6 +68,7 @@ __all__ = [
     "ClosureGateUnavailable",
     "BLOCKER_RECHECK_ITEM",
     "BLOCKER_UNCONFIRMED_TOKEN",
+    "PREMISE_RECHECK_ITEM",
     "MAX_GATE_BLOCKS_PER_TURN",
     "closure_gate_already_delivered",
     "closure_gate_from_readiness",
@@ -87,6 +91,13 @@ _MAX_BLOCKER_KEYS: Final = 64
 _BLOCKER_KINDS: Final = frozenset({"authority", "consent", "credential", "dependency_unavailable"})
 # The closed item a blocker re-check adds to ``ClosureGate.items`` (#977).
 BLOCKER_RECHECK_ITEM: Final = "blocker_recheck"
+# D7a (#984): the closed item a one-time premise-dispute ask adds, and the readiness code it reads.
+PREMISE_RECHECK_ITEM: Final = "premise_recheck"
+_PREMISE_DISPUTED_CODE: Final = "finding_premise_disputed"
+_PREMISE_TEXT: Final = (
+    "You marked finding(s) as not done that the reviewer says the task itself requires. Do that"
+    " work unless it is genuinely impossible; a Yoetz limit or a hard result is not a reason."
+)
 _STATUS_DEADLINE_MS: Final = 4_000
 # Hard caps (#985): a host turn gets at most this many gate continuations (the first Stop's gate
 # plus one active-Stop blocker re-check), and an active Stop at most one.
@@ -108,6 +119,14 @@ _GATE_TOKENS: Final = (
     else (STOP_GATE_TOKENS[0], BLOCKER_UNCONFIRMED_TOKEN, *STOP_GATE_TOKENS[1:])
 )
 _BLOCKER_LINE: Final = "yoetz-blocker:<authority|consent|credential|dependency_unavailable>"
+# Issue #995: what is not a blocker, and the line that discloses it instead.
+_DISCLOSE_TEXT: Final = (
+    "An inherent verification limit (a hidden verifier, a private trace) or a best-effort choice"
+    " is not a blocker: finish the work and disclose it with a decision line"
+    " `yoetz-assumption:<obligation id>` or `yoetz-verification-limit:<obligation id>`."
+    " If you truly will not do an open obligation, after repair, republish it with status"
+    " `acknowledged_not_done` and an `acknowledged_not_done_reason`: the honest last resort, never a blocker."
+)
 _ITEM_TEXT: Final[Mapping[str, str]] = {
     "obligations_open": "{open} open obligation(s)",
     BLOCKER_UNCONFIRMED_TOKEN: "a recorded blocker you have not confirmed",
@@ -126,7 +145,7 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
 _OBLIGATION_TEXT: Final = (
     "Finish each open obligation: write every requested output at its path (status"
     " view=obligations names them); for an inconsistent input write a best-effort artifact and"
-    " disclose the assumption."
+    " disclose the assumption (`yoetz-assumption:<obligation id>`)."
 )
 _VERIFICATION_TEXT: Final = (
     "Run each planned verification after your last edit, or correct the requested command."
@@ -144,7 +163,7 @@ _BLOCKER_OFFER_TEXT: Final = (
     "Leave an open obligation undone only for a blocker outside your control (authority,"
     " consent, credentials, a dependency you cannot obtain): publish decision_recorded with"
     f" affected_obligation_ids and the line {_BLOCKER_LINE}, and Yoetz will ask you about it once."
-    " Data the task says is recoverable is not such a blocker."
+    f" Data the task says is recoverable is not such a blocker. {_DISCLOSE_TEXT}"
 )
 # How to confirm a blocker appears only AFTER the challenge (the re-check, or a later gate whose
 # blocker was already re-asked), so publishing a blocker twice up front never skips it (#985).
@@ -192,6 +211,24 @@ def _limitation_text(readiness: object) -> str:
         " none). Add any failed, partial or unknown result you publish in the same batch as the"
         " claim too."
     )
+
+
+def _premise_key(readiness: object) -> str | None:
+    """``premise:<acknowledged count>`` when readiness discloses a premise dispute (D7a, #984).
+
+    Readiness carries the closed standing code, not the disputed ids; the acknowledged count
+    stands in, so a later acknowledgement asks again while an unchanged one never does.
+    """
+
+    standing = getattr(readiness, "standing_limitations", None)
+    if not isinstance(standing, (tuple, list)) or _PREMISE_DISPUTED_CODE not in tuple(
+        cast(tuple[object, ...], standing)
+    ):
+        return None
+    count = getattr(readiness, "acknowledged_not_done_count", None)
+    if type(count) is not str or not count.isdigit() or len(count) > 8:
+        return "premise:?"
+    return f"premise:{count}"
 
 
 class ClosureGateUnavailable(Exception):
@@ -253,7 +290,8 @@ def _blocker_text(rows: tuple[tuple[str, str], ...], *, short: bool = False) -> 
         " Repair first: missing or inconsistent data the task says is recoverable, a failing"
         " test or a result that looks infeasible is not a blocker, so continue the work on that"
         " obligation. A Yoetz limit is never a blocker either: finish the obligation and disclose"
-        " any limit in your final answer. A blocker is only authority or consent you do not have,"
+        f" any limit in your final answer. {_DISCLOSE_TEXT} A blocker is only authority or consent"
+        " you do not have,"
         f" a credential you lack, or a dependency you cannot obtain. {_CONFIRM_TEXT} Yoetz will"
         " not ask again and the receipt discloses it as a standing limitation."
     )
@@ -287,6 +325,10 @@ def closure_gate_from_readiness(
     )
     identity = f"{frontier_sequence}:{frontier_digest}"
     keys = tuple(f"{obligation}:{kind}" for obligation, kind in rows)
+    # D7a (#984): a premise dispute is asked once per session and acknowledged-item count, and
+    # only on a Stop the host has not already continued this turn.
+    premise_key = _premise_key(readiness)
+    premise = not active_stop and premise_key is not None and premise_key not in reasked_blockers
     items: tuple[str, ...] = ()
     drain_changed_decision = False
     if state == "action_required" and not active_stop:
@@ -302,11 +344,26 @@ def closure_gate_from_readiness(
             if token in present and not (observation_pending and token in _OBSERVATION_DEPENDENT)
         )
         drain_changed_decision = observation_pending and bool(present & _OBSERVATION_DEPENDENT)
+    premise_items = (PREMISE_RECHECK_ITEM,) if premise else ()
+    premise_keys = (cast(str, premise_key),) if premise else ()
     if not items:
-        if not rows:
+        if not rows and not premise:
             return None
-        text = f"Yoetz closure gate (shown once for these blockers): {_blocker_text(rows)}"
-        return ClosureGate(identity, text, (BLOCKER_RECHECK_ITEM,), keys)
+        parts = [
+            "Yoetz closure gate (shown once for these blockers):"
+            if rows
+            else "Yoetz closure gate (shown once):"
+        ]
+        if premise:
+            parts.append(_PREMISE_TEXT)
+        if rows:
+            parts.append(_blocker_text(rows))
+        return ClosureGate(
+            identity,
+            " ".join(parts)[:_MAX_TEXT_CHARS],
+            premise_items + ((BLOCKER_RECHECK_ITEM,) if rows else ()),
+            keys + premise_keys,
+        )
     open_count = str(getattr(readiness, "open_obligation_count", "?"))
     blocking_count = str(getattr(readiness, "receipt_blocking_finding_count", "?"))
     remaining = "; ".join(
@@ -321,9 +378,16 @@ def closure_gate_from_readiness(
     limitations = _limitation_text(readiness)
 
     def compose(
-        *, drain: bool, short_obligation: bool, verification: bool, limits: bool = True
+        *,
+        drain: bool,
+        short_obligation: bool,
+        verification: bool,
+        limits: bool = True,
+        premise_text: bool = True,
     ) -> str:
         parts = [head]
+        if premise and premise_text:
+            parts.append(_PREMISE_TEXT)
         if "obligations_open" in items:
             parts.append(_OBLIGATION_SHORT_TEXT if short_obligation else _OBLIGATION_TEXT)
         if verification and any(token in _OBSERVATION_DEPENDENT for token in items):
@@ -349,24 +413,36 @@ def closure_gate_from_readiness(
     # the drain note first, then the long obligation sentence, then the verification hint, then
     # the required limitation ids (F3).
     text = ""
-    for drain, short_obligation, verification, limits in (
-        (True, False, True, True),
-        (False, False, True, True),
-        (False, True, True, True),
-        (False, True, False, True),
-        (False, True, False, False),
+    for drain, short_obligation, verification, limits, premise_text in (
+        (True, False, True, True, True),
+        (False, False, True, True, True),
+        (False, True, True, True, True),
+        (False, True, False, True, True),
+        (False, True, False, False, True),
+        # D7a: the premise ask goes before the re-check does.
+        (False, True, False, False, False),
     ):
         text = compose(
             drain=drain,
             short_obligation=short_obligation,
             verification=verification,
             limits=limits,
+            premise_text=premise_text,
         )
         if len(text) <= _MAX_TEXT_CHARS:
+            asked_premise = premise and premise_text
             break
     else:
         text = " ".join(part for part in (head, recheck) if part)[:_MAX_TEXT_CHARS]
-    return ClosureGate(identity, text, items + ((BLOCKER_RECHECK_ITEM,) if rows else ()), keys)
+        asked_premise = False
+    return ClosureGate(
+        identity,
+        text,
+        items
+        + ((BLOCKER_RECHECK_ITEM,) if rows else ())
+        + ((PREMISE_RECHECK_ITEM,) if asked_premise else ()),
+        keys + (premise_keys if asked_premise else ()),
+    )
 
 
 def _status_request(session_id: str, writer_id: str, actor_id: str) -> StatusRequest:

@@ -953,9 +953,9 @@ def _validation_location_clause(error: Mapping[str, JsonValue]) -> str:
 _RESULT_OUTCOME_POINTER: Final = re.compile(r"\A/event_drafts/[0-9]{1,3}/payload/outcome\Z")
 _RESULT_OUTCOME_HINT: Final = (
     " Outcomes: success|failure|partial|unknown (no blocked): record failure or partial, then"
-    " repair. A Yoetz limit is never a blocker (verify it yourself, respond self_verified);"
-    " yoetz-blocker:<kind> in a decision_recorded is only for an open obligation genuinely"
-    " blocked outside your control."
+    " repair. A Yoetz limit is never a blocker (respond self_verified), nor a guess or a check"
+    " you cannot run (yoetz-assumption: or yoetz-verification-limit:<obl id>); yoetz-blocker:<kind>"
+    " is only for an open obligation genuinely blocked outside your control."
 )
 
 

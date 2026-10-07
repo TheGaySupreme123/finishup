@@ -92,6 +92,7 @@ from yoetz.kernel.projections import (
     empty_projection_state,
     is_observation_limitation,
 )
+from yoetz.kernel.task_facts import disclosure_line_obligations
 from yoetz.protocol.canonical import canonical_digest
 from yoetz.protocol.coverage import LedgerFreshness
 
@@ -669,6 +670,16 @@ def _locator_id[T](event: AcceptedEvent, constructor: Callable[[object], T]) -> 
         raise _corrupt() from exc
 
 
+_OBLIGATION_TRANSITIONS: Final = frozenset(
+    {
+        (ObligationStatus.OPEN, ObligationStatus.RESOLVED),
+        (ObligationStatus.OPEN, ObligationStatus.ACKNOWLEDGED_NOT_DONE),
+        (ObligationStatus.ACKNOWLEDGED_NOT_DONE, ObligationStatus.OPEN),
+        (ObligationStatus.ACKNOWLEDGED_NOT_DONE, ObligationStatus.RESOLVED),
+    }
+)
+
+
 def _apply_obligation(
     obligations: dict[ObligationId, ObligationProjectionRecord],
     event: AcceptedEvent,
@@ -690,10 +701,10 @@ def _apply_obligation(
         # Resolution is open→resolved only. Meaning fields must repeat; only status and
         # resolution_evidence_refs may change. The comparison deliberately clears evidence
         # refs for meaning equality — that is not free mutation of resolved history.
+        # Issue #997 (ADR-032 slice C): an open obligation may be acknowledged as not done, and
+        # an acknowledged one reopened or resolved by a later publication (the reverse path).
         meaning_diffs = obligation_meaning_field_diffs(previous, payload)
-        valid_transition = (
-            previous.status is ObligationStatus.OPEN and payload.status is ObligationStatus.RESOLVED
-        )
+        valid_transition = (previous.status, payload.status) in _OBLIGATION_TRANSITIONS
         if not valid_transition or meaning_diffs:
             if meaning_diffs:
                 raise ObligationResolutionMismatch(
@@ -1131,6 +1142,9 @@ def _recompute_missing_gaps(
     for record in decisions.values():
         if record.payload is not None:
             for target in record.payload.affected_obligation_ids:
+                require(record.source_event_id, target)
+            # A disclosure line names its obligation in the statement (#995).
+            for _kind, target in disclosure_line_obligations(record.payload.statement):
                 require(record.source_event_id, target)
     for record in assignments.values():
         if record.payload is not None:

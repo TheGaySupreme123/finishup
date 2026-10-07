@@ -46,6 +46,7 @@ from yoetz.domain.receipts import (
     ReceiptChildOutcome,
     ReceiptChildren,
     ReceiptConclusion,
+    ReceiptDisclosure,
     ReceiptDocument,
     ReceiptDuplicateLink,
     ReceiptGap,
@@ -94,6 +95,7 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
+from yoetz.kernel.closure_readiness import premise_disputed_finding_ids
 from yoetz.kernel.command_attempts import command_attempts
 from yoetz.kernel.completion_scope import (
     SCOPE_REPAIR,
@@ -122,6 +124,7 @@ from yoetz.kernel.observed_failures import (
 from yoetz.kernel.plan_scope import CurrentPlanScope, current_plan_scope
 from yoetz.kernel.projections import ObligationProjectionRecord, ProjectionRecord, ProjectionState
 from yoetz.kernel.reducers import is_material_event_family
+from yoetz.kernel.task_facts import acknowledged_obligation_ids, disclosure_declarations
 from yoetz.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, weakest
 from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile, SemanticStatus
 
@@ -924,6 +927,7 @@ def _conclusion(
     unresolved_actionable: tuple[Finding, ...],
     *,
     self_verified: bool = False,
+    obligations_not_done: bool = False,
 ) -> ReceiptConclusion:
     # One clean-compatible list for the receipt and the scoped deterministic verdict (#986).
     advisory_gaps = CLEAN_COMPATIBLE_GAPS
@@ -938,6 +942,10 @@ def _conclusion(
     if self_verified:
         # Issue #984 (ADR-034): only the agent verified these repairs; Yoetz could not prove
         # them, so the receipt is at best ``insufficient_coverage``, never clean.
+        return ReceiptConclusion.INSUFFICIENT_COVERAGE
+    if obligations_not_done:
+        # Issue #997 (ADR-032 slice C): the agent acknowledged an obligation as not done, so the
+        # declared scope is not complete; the receipt never reads clean.
         return ReceiptConclusion.INSUFFICIENT_COVERAGE
     if context.lineage is not None and context.lineage.blocks_clean_completion:
         return ReceiptConclusion.INSUFFICIENT_COVERAGE
@@ -1808,10 +1816,15 @@ def build_receipt(
         and not (settles_rejections and states_by_id[finding.finding_id].self_verified)
         and FINDING_KIND_TRAITS[finding.kind][1]
     )
+    # Issue #997: obligations the agent acknowledged as not done (ADR-032 slice C).
+    acknowledged_obligations = tuple(
+        sorted(acknowledged_obligation_ids(context.projection), key=_ascii_key)
+    )[:100]
     conclusion = _conclusion(
         context,
         unresolved_actionable,
         self_verified=any(states_by_id[finding.finding_id].self_verified for finding in findings),
+        obligations_not_done=bool(acknowledged_obligations),
     )
     obligations = _select_obligations(context, findings)
     responses = _select_responses(context, frozenset(finding.finding_id for finding in findings))
@@ -2010,6 +2023,25 @@ def build_receipt(
         rejection_accepted_finding_ids=rejection_accepted_ids,
         self_verified_finding_ids=self_verified_ids,
         duplicate_finding_links=duplicate_links,
+        # Issue #984 (D7a): the acknowledged findings whose premise the reviewer disputes.
+        premise_disputed_finding_ids=tuple(
+            item
+            for item in premise_disputed_finding_ids(context.projection)
+            if item in acknowledged_not_done_ids
+        ),
+        acknowledged_not_done_obligation_ids=(
+            acknowledged_obligations if terminal_sections else ()
+        ),
+        # Issue #995: the agent's disclosed assumptions and verification limits, ids and kind
+        # only, on an artifact that carries the 1.3.0 sections. They never change the conclusion.
+        disclosed_assumptions=(
+            tuple(
+                ReceiptDisclosure(item.obligation_id, item.kind, item.decision_event_id)
+                for item in disclosure_declarations(context.projection)[:64]
+            )
+            if terminal_sections
+            else ()
+        ),
         semantic_withheld_items=tuple(
             ReceiptSemanticWithheldItem(item_id=item_id)
             for item_id in (

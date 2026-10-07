@@ -472,4 +472,4 @@ def test_runtime_unknown_code_is_named_and_stays_actionable() -> None:
         UNCLASSIFIED_GAP_PREFIX + "gap_from_a_newer_build",
         UNCLASSIFIED_GAP_PREFIX + "unreadable_gap_code",
     )
-    assert GAP_CLASSIFICATION_VERSION == "3"
+    assert GAP_CLASSIFICATION_VERSION == "4"

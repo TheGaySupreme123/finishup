@@ -30,11 +30,11 @@ verdicts are unchanged; this module only decides which readiness group names the
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from yoetz.domain.events import CheckRecordedPayload, LedgerRecord
 from yoetz.domain.receipts import (
@@ -42,6 +42,7 @@ from yoetz.domain.receipts import (
     COMPLETION_PLAN_NOT_CLAIMED_GAP,
 )
 from yoetz.domain.values import EventId, FindingId, ObligationId
+from yoetz.kernel import finding_todo as _finding_todo_module
 from yoetz.kernel.claim_limitations import required_limitation_ids_for_projection
 from yoetz.kernel.claims import completion_claim_present
 from yoetz.kernel.finding_resolution import finding_is_resolved
@@ -61,15 +62,28 @@ from yoetz.kernel.task_facts import (
     OBLIGATION_BLOCKED_GAP,
     OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
     STANDING_TASK_FACT_GAPS,
+    acknowledged_obligation_ids,
     blocker_declarations,
     decision_batches,
+    disclosure_declarations,
     open_effective_obligations,
 )
 from yoetz.protocol.models import SemanticStatus
 
+# L5's D7 predicate (#984, D7a), looked up by name so this module works on a build without it:
+# absent, nothing is reported as disputed. Tests monkeypatch this attribute.
+_standing_premise_disputes: Callable[[ProjectionState], Iterable[object]] | None = cast(
+    "Callable[[ProjectionState], Iterable[object]] | None",
+    getattr(_finding_todo_module, "standing_premise_disputes", None),
+)
+
 __all__ = [
     "ACKNOWLEDGED_NOT_DONE",
     "AGENT_READINESS_CONDITIONS",
+    "ASSUMPTION_DISCLOSED_GAP",
+    "FINDING_PREMISE_DISPUTED_GAP",
+    "premise_disputed_finding_ids",
+    "VERIFICATION_LIMIT_DISCLOSED_GAP",
     "FINDING_SELF_VERIFIED_GAP",
     "GAP_CLASSIFICATION",
     "GAP_CLASSIFICATION_VERSION",
@@ -94,11 +108,24 @@ __all__ = [
 # can tell which table classified a recorded readiness answer. "2": the task-statement gap
 # ``instruction_requirement_unmapped`` became agent-actionable and the previously unclassified
 # ``compound_outcome_unavailable`` became a standing limitation. "3": the standing readiness code
-# ``finding_self_verified`` (issue #984, ADR-034) was added.
-GAP_CLASSIFICATION_VERSION: Final = "3"
+# ``finding_self_verified`` (issue #984, ADR-034) was added. "4": the standing disclosure codes
+# ``assumption_disclosed`` and ``verification_limit_disclosed`` (issue #995, ADR-033) and
+# ``finding_premise_disputed`` (issue #984, D7a) were added.
+GAP_CLASSIFICATION_VERSION: Final = "4"
 # Issue #984 (ADR-034): a current finding the agent answered ``self_verified``. Yoetz could not
 # prove the repair; the agent verified it itself. Disclosed, never agent work.
 FINDING_SELF_VERIFIED_GAP: Final = "finding_self_verified"
+# Issue #995 (ADR-033): a recorded ``yoetz-assumption:`` / ``yoetz-verification-limit:`` decision
+# line on an obligation. A disclosure, never a blocker and never agent work.
+ASSUMPTION_DISCLOSED_GAP: Final = "assumption_disclosed"
+VERIFICATION_LIMIT_DISCLOSED_GAP: Final = "verification_limit_disclosed"
+# Issue #984 (D7a): the agent answered ``acknowledged_not_done`` on an AI-powered finding whose
+# challenge says the task itself requires the work. Terminal, so never agent work: disclosed, and
+# the Stop gate asks once.
+FINDING_PREMISE_DISPUTED_GAP: Final = "finding_premise_disputed"
+_DISCLOSURE_CODES: Final[Mapping[str, str]] = MappingProxyType(
+    {"assumption": ASSUMPTION_DISCLOSED_GAP, "verification_limit": VERIFICATION_LIMIT_DISCLOSED_GAP}
+)
 UNCLASSIFIED_GAP_PREFIX: Final = "unclassified_gap:"
 
 _CODE_RE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
@@ -285,6 +312,13 @@ GAP_CLASSIFICATION: Final[Mapping[str, GapClass]] = MappingProxyType(
         # -- Findings the agent self-verified because a Yoetz limit kept the repair unproven
         # (issue #984). Final and disclosed; no agent action removes it.
         FINDING_SELF_VERIFIED_GAP: _S,
+        # -- The agent's own disclosures (issue #995): a best-effort assumption or a check it
+        # inherently cannot run, recorded on an obligation. Disclosed; no agent action removes it.
+        ASSUMPTION_DISCLOSED_GAP: _S,
+        VERIFICATION_LIMIT_DISCLOSED_GAP: _S,
+        # Acknowledged-not-done findings the reviewer says the task requires (D7a). Final
+        # answers, so standing; the Stop gate asks about them once.
+        FINDING_PREMISE_DISPUTED_GAP: _S,
         # -- Lineage (ADR-027). Child work, child verification and a check that has not covered
         # the latest manifest are actionable; unreadable, restricted or terminal child facts are
         # disclosures. A manifest that trails the catalog is refreshed by the service, so, like
@@ -453,8 +487,10 @@ def split_gaps(
 # ---------------------------------------------------------------------------------------------
 
 # The one "not done" vocabulary shared by findings (#905's ``respond`` disposition) and
-# obligations (ADR-032). An acknowledged item is carried to the receipt as not done; it is never
-# resolved, never counted as clean, and never reopened.
+# obligations (ADR-032; the obligation form is #997's ``obligation_published`` 1.1.0). An
+# acknowledged item is carried to the receipt as not done; it is never resolved and never counted
+# as clean. A finding's acknowledgement is final; an obligation's is undone only by a later
+# publication of that obligation (open or resolved).
 ACKNOWLEDGED_NOT_DONE: Final = "acknowledged_not_done"
 # Readiness conditions the agent removes by its own action, in their wire order.
 # ``receipt_findings_unresolved`` joins them unless every receipt-blocking finding is acknowledged
@@ -523,6 +559,11 @@ class ClosureReadinessFacts:
     # ``limitation_refs`` (``kernel.claim_limitations``, the reducer's rule), sorted. Status
     # lists them before the claim so the first claim is accepted.
     limitation_refs_required: tuple[str, ...] = ()
+    # Issue #995: ``(obligation, kind, decision event id)`` for each recorded disclosure line
+    # (``task_facts.disclosure_declarations``), in obligation then kind order. Standing only.
+    disclosed_obligations: tuple[tuple[ObligationId, str, EventId], ...] = ()
+    # Issue #984 (D7a): acknowledged-not-done findings whose premise the reviewer disputes.
+    premise_disputed_finding_ids: tuple[FindingId, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -546,6 +587,7 @@ class ClosureReadinessFacts:
             self.open_obligation_ids,
             self.blocked_obligation_ids,
             self.limitation_refs_required,
+            self.premise_disputed_finding_ids,
         ):
             if type(values) is not tuple or values != tuple(sorted(set(values), key=str.encode)):
                 raise ValueError("closure_readiness_facts_invalid")
@@ -560,6 +602,11 @@ class ClosureReadinessFacts:
             type(self.blocked_obligation_confirmations) is not tuple
             or confirmed != tuple(sorted(set(confirmed), key=str.encode))
             or not set(confirmed) <= set(self.blocked_obligation_ids)
+        ):
+            raise ValueError("closure_readiness_facts_invalid")
+        if type(self.disclosed_obligations) is not tuple or any(
+            type(item) is not tuple or len(item) != 3 or item[1] not in _DISCLOSURE_CODES
+            for item in self.disclosed_obligations
         ):
             raise ValueError("closure_readiness_facts_invalid")
 
@@ -732,17 +779,35 @@ def _closing_review_facts(
 
 
 def _acknowledged_obligation_ids(state: ProjectionState) -> tuple[ObligationId, ...]:
-    """Always empty: no recorded form acknowledges an obligation as not done yet.
+    """Effective obligations whose latest publication is ``acknowledged_not_done`` (#997).
 
-    The obligation-level acknowledgement is issue #913 slice C (it needs a new
-    ``obligation_published`` version); #905 owns only the finding form, which
-    ``finding_acknowledged_not_done`` already reads. Until slice C ships, an obligation the agent
-    cannot finish stays open, so ``obligations_open`` keeps readiness ``action_required``; the
-    guidance says so. Nothing here may be inferred from other records.
+    ADR-032 slice C: an ``obligation_published`` 1.1.0 with that status and a reason. Such an
+    obligation is not open (it leaves ``obligations_open``) and not resolved; readiness lists it
+    in ``acknowledged_not_done`` and the receipt discloses it as not done. A later publication
+    with ``open`` or ``resolved`` takes it out again. Nothing is inferred from other records.
     """
 
-    del state
-    return ()
+    return tuple(sorted(acknowledged_obligation_ids(state), key=str.encode))
+
+
+def premise_disputed_finding_ids(state: ProjectionState) -> tuple[FindingId, ...]:
+    """Acknowledged-not-done findings the reviewer says the task itself requires (D7a, #984).
+
+    Reads L5's ``finding_todo.standing_premise_disputes`` as an opaque predicate. On a build
+    without it, or if it fails, nothing is reported as disputed (a disclosure is never invented).
+    """
+
+    predicate = _standing_premise_disputes
+    if predicate is None:
+        return ()
+    try:
+        values: tuple[object, ...] = tuple(predicate(state))
+    except Exception:
+        return ()
+    disputed = {
+        FindingId(value) for value in values if type(value) is str and value.startswith("fnd_")
+    }
+    return tuple(sorted(disputed, key=str.encode))
 
 
 def closure_readiness_facts(
@@ -770,6 +835,7 @@ def closure_readiness_facts(
         duplicate_root(state, finding.finding_id)
         for finding in current
         if finding_acknowledged_not_done(state, finding.finding_id)
+        or finding_todo_state(state, finding.finding_id) is FindingTodoState.ACKNOWLEDGED_NOT_DONE
     }
     self_verified = {
         duplicate_root(state, finding.finding_id)
@@ -806,6 +872,11 @@ def closure_readiness_facts(
         limitation_refs_required=tuple(
             required_limitation_ids_for_projection(state, observed_event_ids_from_records(records))
         ),
+        disclosed_obligations=tuple(
+            (item.obligation_id, item.kind, item.decision_event_id)
+            for item in disclosure_declarations(state)
+        ),
+        premise_disputed_finding_ids=premise_disputed_finding_ids(state),
     )
 
 
@@ -917,6 +988,13 @@ def derive_closure_readiness(
     standing.update(split.standing_limitations)
     if facts is not None and facts.self_verified_finding_ids:
         standing.add(FINDING_SELF_VERIFIED_GAP)
+    if facts is not None:
+        # Issue #995: disclosed assumptions and verification limits never add or remove work.
+        standing.update(
+            _DISCLOSURE_CODES[kind] for _obligation, kind, _event in facts.disclosed_obligations
+        )
+        if facts.premise_disputed_finding_ids:
+            standing.add(FINDING_PREMISE_DISPUTED_GAP)
     acknowledged: tuple[str, ...] = ()
     if facts is not None:
         acknowledged = tuple(

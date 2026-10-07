@@ -4312,7 +4312,7 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
             },
             # "3" is the current table (#984 ``finding_self_verified``); "1" and "2" stay admitted
             # for a result an earlier 0.3 build shaped.
-            "gap_classification_version": {"enum": ["1", "2", "3"], "type": "string"},
+            "gap_classification_version": {"enum": ["1", "2", "3", "4"], "type": "string"},
             "standing_limitations": {
                 "items": {"$ref": "#/$defs/code"},
                 "maxItems": 128,
@@ -4740,6 +4740,55 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
             "type": "array",
             "uniqueItems": True,
         }
+    # Issue #995 (ADR-033): disclosed assumptions and verification limits, ids and a closed
+    # kind only (the rationale stays in the decision); present only when non-empty.
+    definitions["event_id"] = {
+        "pattern": "^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "type": "string",
+    }
+    definitions["receipt_disclosure"] = {
+        "additionalProperties": False,
+        "properties": {
+            "decision_event_id": {"$ref": "#/$defs/event_id"},
+            "kind": {"enum": ["assumption", "verification_limit"], "type": "string"},
+            "obligation_id": {"$ref": "#/$defs/obligation_id"},
+        },
+        "required": ["obligation_id", "kind", "decision_event_id"],
+        "type": "object",
+    }
+    # Issue #984 (D7a): acknowledged findings whose premise the review disputes, by id.
+    properties["premise_disputed_finding_ids"] = {
+        "items": {"$ref": "#/$defs/finding_id"},
+        "maxItems": 100,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    # Issue #997 (ADR-032 slice C): obligations acknowledged as not done, disclosed by id.
+    properties["acknowledged_not_done_obligation_ids"] = {
+        "items": {"$ref": "#/$defs/obligation_id"},
+        "maxItems": 100,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    cast(list[JsonValue], document.setdefault("allOf", [])).append(
+        {
+            "if": {"required": ["acknowledged_not_done_obligation_ids"]},
+            "then": {
+                "properties": {
+                    "conclusion": {"not": {"const": "no_unresolved_deterministic_findings"}}
+                }
+            },
+        }
+    )
+    properties["disclosed_assumptions"] = {
+        "items": {"$ref": "#/$defs/receipt_disclosure"},
+        "maxItems": 64,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
     # Issue #996: holding ``duplicate_of`` links, ids only; present only when non-empty.
     definitions["duplicate_finding_link"] = {
         "additionalProperties": False,
@@ -4904,6 +4953,7 @@ def _event_draft_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     add_branch("finding_recorded", "1.2.0")
     add_branch("finding_recorded", "1.3.0")
     add_branch("response_recorded", "1.1.0")
+    add_branch("obligation_published", "1.1.0")
     for family, version in _TASK_STATEMENT_EVENT_PAIRS:
         add_branch(family, version)
     for family in (
@@ -4995,6 +5045,17 @@ def _opaque_unknown_event_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
         {
             "additionalProperties": False,
             "properties": {"name": {"const": "response_recorded"}, "version": {"const": "1.1.0"}},
+            "required": ["name", "version"],
+            "type": "object",
+        }
+    )
+    values.append(
+        {
+            "additionalProperties": False,
+            "properties": {
+                "name": {"const": "obligation_published"},
+                "version": {"const": "1.1.0"},
+            },
             "required": ["name", "version"],
             "type": "object",
         }
@@ -7493,6 +7554,48 @@ def _response_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue
     return document
 
 
+def _obligation_published_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Admit an obligation acknowledged as not done (#997); additive over frozen 1.0.0.
+
+    The status gains ``acknowledged_not_done``, which requires ``acknowledged_not_done_reason`` and admits no
+    resolution evidence; ``acknowledged_not_done_reason`` appears with no other status. L6's #1002 item
+    additions extend the same 1.1.0 document.
+    """
+
+    document = _load_versioned_template(entry, "events/obligation-published-1.0.0.schema.json")
+    try:
+        properties = cast(dict[str, JsonValue], document["properties"])
+        status = cast(dict[str, JsonValue], properties["status"])
+        statuses = cast(list[JsonValue], status["enum"])
+        rules = cast(list[JsonValue], document["allOf"])
+    except (KeyError, TypeError) as exc:
+        raise SchemaGenerationError(
+            "obligation_published_schema_template_invalid", entries=(entry.relative_path,)
+        ) from exc
+    if "acknowledged_not_done" not in statuses:
+        statuses.append("acknowledged_not_done")
+    properties["acknowledged_not_done_reason"] = {
+        "maxLength": 4096,
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string",
+    }
+    rules.append(
+        {
+            "else": {"not": {"required": ["acknowledged_not_done_reason"]}},
+            "if": {
+                "properties": {"status": {"const": "acknowledged_not_done"}},
+                "required": ["status"],
+            },
+            "then": {"required": ["acknowledged_not_done_reason"]},
+        }
+    )
+    document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
+    if "title" in document:
+        document["title"] = f"Yoetz obligation published {entry.schema_version}"
+    return document
+
+
 def _respond_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add the terminal ``acknowledged_not_done`` disposition to ``respond`` (#905)."""
 
@@ -8370,6 +8473,18 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "events/obligation-published-1.0.0.schema.json",
         "obligation-published",
         "1.0.0",
+        "event",
+        "event-payload",
+        lambda: (
+            __import__(
+                "yoetz.domain.events", fromlist=["ObligationPublishedPayload"]
+            ).ObligationPublishedPayload
+        ),
+    ),
+    _RegistryEntry(
+        "events/obligation-published-1.1.0.schema.json",
+        "obligation-published",
+        "1.1.0",
         "event",
         "event-payload",
         lambda: (
@@ -9810,6 +9925,7 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "events/delegation-declared-1.0.0.schema.json",
         "events/event-draft-1.2.0.schema.json",
         "events/finding-recorded-1.3.0.schema.json",
+        "events/obligation-published-1.1.0.schema.json",
         "events/opaque-unknown-event-draft-1.2.0.schema.json",
         "events/response-recorded-1.1.0.schema.json",
         "privacy/outbound-case-1.2.0.schema.json",
@@ -10124,6 +10240,8 @@ def build_schema_documents(
             normalized = _response_recorded_schema(entry)
         elif entry.relative_path == "events/response-recorded-1.1.0.schema.json":
             normalized = _response_recorded_v1_1_schema(entry)
+        elif entry.relative_path == "events/obligation-published-1.1.0.schema.json":
+            normalized = _obligation_published_v1_1_schema(entry)
         elif entry.relative_path in {
             "events/child-accepted-1.0.0.schema.json",
             "events/child-dependencies-recorded-1.0.0.schema.json",

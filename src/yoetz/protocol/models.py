@@ -2686,7 +2686,10 @@ PUBLISH_BLOCKER_NOTICE_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
             "Yoetz challenges this yoetz-blocker before it counts. Repair the obligation first if"
             " any route remains. A Yoetz limit (something Yoetz cannot show or prove) is never a"
             " blocker: verify that work yourself and respond self_verified on the finding. Data"
-            " or an outcome the task says is recoverable or achievable is not a blocker. Keep a"
+            " or an outcome the task says is recoverable or achievable is not a blocker, and"
+            " neither is an inherent verification limit (a hidden verifier, a private trace) or"
+            " a best-effort choice: finish the work and disclose it with a decision line"
+            " yoetz-assumption:<obligation id> or yoetz-verification-limit:<obligation id>. Keep a"
             " blocker only for an open obligation genuinely blocked outside your control"
             " (authority, consent, a credential, a dependency you cannot obtain). Until then the"
             " obligation stays your work (obligation_blocker_unconfirmed). If it is still genuine"
@@ -4321,7 +4324,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     # on the unreleased 1.4.0 wire so a result shaped by an earlier 0.3 build still validates; it
     # is then absent as a whole, never partially present and never null.
     state: Literal["action_required", "ready", "ready_with_limitations", "unknown"] | None = None
-    gap_classification_version: Literal["1", "2", "3"] | None = None
+    gap_classification_version: Literal["1", "2", "3", "4"] | None = None
     agent_actionable: tuple[ReadinessItemWire, ...] | None = None
     standing_limitations: tuple[CodeWire, ...] | None = None
     acknowledged_not_done: tuple[AcknowledgedItemIdWire, ...] | None = None
@@ -6380,8 +6383,13 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
         "/document",
         (
             "acknowledged_not_done_finding_ids/*",
+            "acknowledged_not_done_obligation_ids/*",
             "claim_refs/*",
+            "premise_disputed_finding_ids/*",
             "conclusion",
+            "disclosed_assumptions/*/decision_event_id",
+            "disclosed_assumptions/*/kind",
+            "disclosed_assumptions/*/obligation_id",
             "duplicate_finding_links/*/duplicate_of_finding_id",
             "duplicate_finding_links/*/finding_id",
             "evidence_refs/*",
@@ -6691,7 +6699,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1430:
+    if len(result) != 1435:
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 
