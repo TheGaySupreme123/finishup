@@ -79,6 +79,7 @@ from yoetz.mcp.semantic_destination import (
 )
 from yoetz.mcp.summaries import (
     render_check_reviewer_output,
+    render_publish_blocker_notices,
     render_safe_compact_summary,
     summary_for_check_awaiting,
     summary_for_closure_prepare,
@@ -875,7 +876,11 @@ def _result_text(
     manifest = render_review_input_manifest_compact(wire.get("review_input_manifest"))
     if manifest and manifest in compact:
         manifest = ""
-    return "\n".join(part for part in (compact, totals, manifest, reviewer) if part)
+    # #985: a publish result's fixed yoetz-blocker challenge reaches the model, dry runs included.
+    blocker_notices = render_publish_blocker_notices(wire)
+    return "\n".join(
+        part for part in (compact, totals, manifest, reviewer, blocker_notices) if part
+    )
 
 
 def result_from_public_model(

@@ -4292,15 +4292,39 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
                             ],
                             "type": "string",
                         },
+                        # #985: claimed until a later decision repeats the same blocker line.
+                        # Optional: an earlier 0.3 build omits both.
+                        "confirmation": {"enum": ["claimed", "confirmed"], "type": "string"},
+                        "confirmation_event_id": {"$ref": "#/$defs/event_id"},
                         "decision_event_id": {"$ref": "#/$defs/event_id"},
                         "obligation_id": {"$ref": "#/$defs/obligation_id"},
                     },
                     "required": ["blocker_kind", "decision_event_id", "obligation_id"],
+                    "allOf": [
+                        {
+                            "if": {
+                                "properties": {"confirmation": {"const": "confirmed"}},
+                                "required": ["confirmation"],
+                            },
+                            "then": {"required": ["confirmation_event_id"]},
+                            "else": {"not": {"required": ["confirmation_event_id"]}},
+                        }
+                    ],
                     "type": "object",
                 },
                 "maxItems": 64,
                 "type": "array",
             },
+            # F3: the result ids a whole-task completion claim recorded now must name in
+            # `limitation_refs` (the reducer's own rule), sorted and bounded, plus the full count.
+            # Ids only. Optional on the unreleased 1.4.0 wire; present together.
+            "limitation_refs_required": {
+                "items": {"$ref": "#/$defs/result_id"},
+                "maxItems": 64,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "limitation_refs_required_count": {"$ref": "#/$defs/canonical_uint"},
         }
     )
     # Optional on this unreleased version so a result shaped by an earlier 0.3 build still
@@ -6713,7 +6737,53 @@ def _publish_work_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonVal
 
     document = _load_versioned_template(entry, "operations/publish-work-result-1.0.0.schema.json")
     _admit_recorded_policy_identities(document)
+    _add_publish_blocker_notices(document)
     return document
+
+
+def _add_publish_blocker_notices(document: dict[str, JsonValue]) -> None:
+    """Optional fixed publish-time notices for a ``yoetz-blocker`` line (issue #985)."""
+
+    from yoetz.protocol.models import PUBLISH_BLOCKER_NOTICE_TEXTS
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    definitions["obligation_id"] = {
+        "pattern": ("^obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
+        "type": "string",
+    }
+    definitions["blocker_notice"] = {
+        "additionalProperties": False,
+        "oneOf": [
+            {
+                "properties": {
+                    "notice": {"const": notice},
+                    "text": {"const": text},
+                }
+            }
+            for notice, text in sorted(PUBLISH_BLOCKER_NOTICE_TEXTS.items())
+        ],
+        "properties": {
+            "blocker_kind": {
+                "enum": ["authority", "consent", "credential", "dependency_unavailable"],
+                "type": "string",
+            },
+            "notice": {"enum": sorted(PUBLISH_BLOCKER_NOTICE_TEXTS), "type": "string"},
+            "obligation_id": {"$ref": "#/$defs/obligation_id"},
+            "text": {"type": "string"},
+        },
+        "required": ["blocker_kind", "notice", "obligation_id", "text"],
+        "type": "object",
+    }
+    for branch in ("success", "dry_run"):
+        properties = cast(
+            dict[str, JsonValue], cast(dict[str, JsonValue], definitions[branch])["properties"]
+        )
+        properties["blocker_notices"] = {
+            "items": {"$ref": "#/$defs/blocker_notice"},
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array",
+        }
 
 
 def _status_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:

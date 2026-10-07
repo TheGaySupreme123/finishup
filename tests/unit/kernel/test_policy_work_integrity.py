@@ -333,6 +333,22 @@ def test_blocked_obligation_raises_no_requested_item_finding() -> None:
             decisions={evt(50): _decision_record(blocker)},
         ),
     )
+    # #985: the claimed blocker alone suppresses nothing; it is still the agent's work.
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in {
+        item.candidate.kind
+        for item in work_integrity_findings(case, absent_outputs=frozenset({(obl(1), 0)}))
+    }
+    # A confirmed blocker reaches the case as its task-fact marker, derived with the batches.
+    case = replace(
+        case,
+        gaps=(
+            CaseGap(
+                f"obligation_blocked_outside_agent_control:{obl(1)}",
+                "obligation_blocked_outside_agent_control",
+                (obl(1),),
+            ),
+        ),
+    )
     assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(case)
     absent = work_integrity_findings(case, absent_outputs=frozenset({(obl(1), 0)}))
     assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in {

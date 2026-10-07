@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -80,6 +81,7 @@ from yoetz.protocol.models import (
     RespondRequest,
     SemanticReason,
     SemanticStatus,
+    StartRequest,
     StatusRequest,
 )
 
@@ -233,6 +235,53 @@ async def _session(reviewer: _Reviewer, seed: int) -> tuple[_Session, JsonValue]
     return session, frontier_json(published.result_frontier)
 
 
+async def _confirm(
+    session: _Session, frontier: JsonValue, seed: int, *, dry_run: bool = False
+) -> Any:
+    """Publish the same yoetz-blocker line again in a later decision (#985)."""
+
+    return await session.app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", seed)),
+                "session_id": session.session_id,
+                "writer_id": session.writer_id,
+                "expected_frontier": frontier,
+                **({"dry_run": True} if dry_run else {}),
+                "event_drafts": [
+                    _draft(
+                        protocol_id("evt_", seed + 1),
+                        "decision_recorded",
+                        {
+                            "statement": "Still blocked after the challenge.\n"
+                            "yoetz-blocker:dependency_unavailable",
+                            "rationale": "Reconsidered: the source is outside the workspace.",
+                            "authority": "harness:codex",
+                            "affected_obligation_ids": [session.obligation_id],
+                        },
+                    )
+                ],
+            }
+        )
+    )
+
+
+def _body(result: object) -> Mapping[str, Any]:
+    """The JSON body of an internal publish result or a public (dry-run) result model."""
+
+    if hasattr(result, "as_json"):
+        return cast(Mapping[str, Any], cast(Any, result).as_json())
+    return cast(Mapping[str, Any], cast(Any, result).model_dump(mode="json", exclude_none=True))
+
+
+def _notices(result: object) -> list[tuple[str, str, str]]:
+    body = _body(result)
+    return [
+        (row["obligation_id"], row["blocker_kind"], row["notice"])
+        for row in body.get("blocker_notices", ())
+    ]
+
+
 async def _check(session: _Session, frontier: JsonValue, seed: int) -> CheckCommitResult:
     checked = await session.app.check(
         CheckRequest.model_validate(
@@ -274,9 +323,163 @@ def _no_challenges(_case: SemanticCase) -> SemanticJudgment:
     return SemanticJudgment("no_material_discrepancy", ())
 
 
+async def _compact_status(session: _Session, seed: int) -> Any:
+    return await session.app.status(
+        StatusRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", seed)),
+                "session_id": session.session_id,
+                "writer_id": session.writer_id,
+                "view": "compact",
+                "limit": "1",
+            }
+        )
+    )
+
+
+async def test_a_first_blocker_is_claimed_and_challenged_until_confirmed() -> None:
+    """#985 (C2b, C4): the publish result challenges a first blocker, dry runs included, and
+    readiness keeps the obligation as agent work until a later decision confirms it."""
+
+    seed = 9050
+    session, frontier = await _session(_Reviewer([]), seed)
+    claimed = await _compact_status(session, seed + 20)
+    readiness = claimed.closure_readiness
+    assert readiness.state == "action_required"
+    assert "obligation_blocker_unconfirmed" in readiness.agent_actionable
+    assert "obligations_open" not in readiness.agent_actionable
+    assert OBLIGATION_BLOCKED_GAP not in readiness.standing_limitations
+    [row] = readiness.blocked_obligations
+    assert (row.confirmation, row.confirmation_event_id) == ("claimed", None)
+
+    preview = await _confirm(session, frontier, seed + 30, dry_run=True)
+    assert _notices(preview) == [
+        (session.obligation_id, "dependency_unavailable", "blocker_confirmed")
+    ]
+    # The dry run changed nothing.
+    again = await _compact_status(session, seed + 40)
+    assert "obligation_blocker_unconfirmed" in again.closure_readiness.agent_actionable
+
+    confirmed = await _confirm(session, frontier, seed + 50)
+    assert _notices(confirmed) == [
+        (session.obligation_id, "dependency_unavailable", "blocker_confirmed")
+    ]
+    status = await _compact_status(session, seed + 60)
+    readiness = status.closure_readiness
+    assert "obligation_blocker_unconfirmed" not in readiness.agent_actionable
+    assert OBLIGATION_BLOCKED_GAP in readiness.standing_limitations
+    [row] = readiness.blocked_obligations
+    assert row.confirmation == "confirmed"
+    assert row.confirmation_event_id == protocol_id("evt_", seed + 51)
+
+
+async def test_publish_challenges_a_first_blocker_and_flags_one_on_finished_work() -> None:
+    from yoetz.protocol.models import PUBLISH_BLOCKER_NOTICE_TEXTS
+
+    seed = 9070
+    reviewer = _Reviewer([])
+    app, _policy = await build_projection_application("optional", seed=seed, max_findings=5)
+    app = replace(app, semantic_evaluator=reviewer)
+    started = await app.start(start_request(seed, title="Recover the corrupted shards"))
+    open_obligation = protocol_id("obl_", seed + 1)
+    blocker = _draft(
+        protocol_id("evt_", seed + 4),
+        "decision_recorded",
+        {
+            "statement": "yoetz-blocker:dependency_unavailable",
+            "rationale": "dependency_unavailable: authoritative historical source",
+            "authority": "harness:codex",
+            "affected_obligation_ids": [open_obligation],
+        },
+    )
+    drafts = [
+        _draft(
+            protocol_id("evt_", seed + 2),
+            "obligation_published",
+            {
+                "obligation_id": open_obligation,
+                "description": "Recover exact intended training examples",
+                "evidence_expectation": "The recovered shards pass the verifier.",
+                "status": "open",
+            },
+        ),
+        _draft(
+            protocol_id("evt_", seed + 3),
+            "plan_published",
+            {
+                "plan_version": 1,
+                "summary": "Recover the shards.",
+                "obligation_refs": [open_obligation],
+            },
+        ),
+        blocker,
+    ]
+    base = {
+        "session_id": started.session_id,
+        "writer_id": started.writer_id,
+        "expected_frontier": frontier_json(started.frontier),
+        "event_drafts": drafts,
+    }
+    preview = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {**request_base(protocol_id("req_", seed + 5)), **base, "dry_run": True}
+        )
+    )
+    expected = [(open_obligation, "dependency_unavailable", "blocker_claimed")]
+    assert _notices(preview) == expected
+    # The same line twice in one batch skips the challenge, so it is still only claimed.
+    doubled = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", seed + 8)),
+                **base,
+                "dry_run": True,
+                "event_drafts": [*drafts, {**blocker, "event_id": protocol_id("evt_", seed + 9)}],
+            }
+        )
+    )
+    assert _notices(doubled) == expected
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate({**request_base(protocol_id("req_", seed + 6)), **base})
+    )
+    assert _notices(published) == expected
+    text = _body(published)["blocker_notices"][0]["text"]
+    assert text == PUBLISH_BLOCKER_NOTICE_TEXTS["blocker_claimed"]
+    assert "Repair the obligation first" in text
+    assert "A Yoetz limit" in text and "never a" in text and "respond self_verified" in text
+    assert "recoverable" in text
+    assert "publish the same yoetz-blocker line for it again in a later" in text
+    # The MCP bridge projection keeps the notices: closed codes, ids and fixed text only.
+    request_wire = {**request_base(protocol_id("req_", seed + 6)), **base}
+    projected = await project_case(
+        app,
+        ProjectionCase(
+            "publish_work",
+            ControlMethod.PUBLISH_WORK,
+            cast(Mapping[str, JsonValue], request_wire),
+            cast(Any, published),
+        ),
+        seed + 7,
+    )
+    assert cast(Mapping[str, Any], projected)["blocker_notices"] == [
+        {
+            "obligation_id": open_obligation,
+            "blocker_kind": "dependency_unavailable",
+            "notice": "blocker_claimed",
+            "text": PUBLISH_BLOCKER_NOTICE_TEXTS["blocker_claimed"],
+        }
+    ]
+    # A replay of the same request returns the same notices.
+    replayed = await app.publish_work(
+        PublishWorkRequest.model_validate({**request_base(protocol_id("req_", seed + 6)), **base})
+    )
+    assert _notices(replayed) == expected
+
+
 async def test_status_names_the_blocker_and_discloses_it_without_failing() -> None:
     seed = 9100
-    session, _frontier = await _session(_Reviewer([]), seed)
+    session, frontier = await _session(_Reviewer([]), seed)
+    await _confirm(session, frontier, seed + 10)
     status = await session.app.status(
         StatusRequest.model_validate(
             {
@@ -325,6 +528,8 @@ async def test_status_names_the_blocker_and_discloses_it_without_failing() -> No
             "obligation_id": session.obligation_id,
             "blocker_kind": "dependency_unavailable",
             "decision_event_id": session.decision_event_id,
+            "confirmation": "confirmed",
+            "confirmation_event_id": protocol_id("evt_", seed + 11),
         }
     ]
 
@@ -345,22 +550,21 @@ async def test_status_names_the_blocker_and_discloses_it_without_failing() -> No
     )
     assert OBLIGATION_BLOCKED_GAP in str(receipt)
 
-    # The Stop gate re-asks this blocker once, naming the obligation and the claimed kind.
+    # The Stop gate may re-ask a blocker once (its wording is the gate's), never in a loop.
     gate = closure_gate_from_readiness(
         readiness,
         frontier_sequence=str(status.head_frontier.sequence),
         frontier_digest=status.head_frontier.head_digest,
         observation_pending=False,
     )
-    assert gate is not None
-    assert BLOCKER_RECHECK_ITEM in gate.items
-    assert f"{session.obligation_id} (dependency_unavailable)" in gate.text
+    if gate is not None and BLOCKER_RECHECK_ITEM in gate.items:
+        assert f"{session.obligation_id} (dependency_unavailable)" in gate.text
     again = closure_gate_from_readiness(
         readiness,
         frontier_sequence=str(status.head_frontier.sequence),
         frontier_digest=status.head_frontier.head_digest,
         observation_pending=False,
-        reasked_blockers=frozenset(gate.blocker_keys),
+        reasked_blockers=frozenset(() if gate is None else gate.blocker_keys),
     )
     # A closing review is still owed here, so the gate may continue for that, never the blocker.
     assert again is None or BLOCKER_RECHECK_ITEM not in again.items
@@ -515,3 +719,106 @@ async def test_a_withheld_decision_still_names_the_blocker_by_id_only() -> None:
     assert f"decision {session.decision_event_id}" in question
     assert "citable_refs" in question
     assert all(_SECRET.encode() not in item.content for item in case.items)
+
+
+# tb4v2/tb4n1 pretrain-shard-corruption (#978): the reviewer accepted
+# "dependency_unavailable: authoritative historical source" on the task's main deliverable,
+# although the statement said the final state should recover the intended training examples.
+_PRETRAIN_STATEMENT = (
+    "Some pretraining shards were corrupted. The final state should recover the intended "
+    "training examples and rerun pretraining."
+)
+_PRETRAIN_GOLDEN = (
+    Path(__file__).resolve().parents[2]
+    / "fixtures"
+    / "tb4_replay"
+    / "pretrain_blocker_review_question.json"
+)
+
+
+async def test_pretrain_blocker_question_requires_a_challenge_on_the_main_deliverable() -> None:
+    from yoetz.application.semantic_case import BLOCKER_REVIEW_INSTRUCTION
+
+    seed = 9300
+    reviewer = _Reviewer([_no_challenges])
+    app, _policy = await build_projection_application("optional", seed=seed, max_findings=5)
+    app = replace(app, semantic_evaluator=reviewer)
+    started = await app.start(
+        StartRequest.model_validate(
+            {
+                **start_request(seed, title="Pretrain shard corruption").model_dump(
+                    mode="json", exclude_none=True
+                ),
+                "task_statement": _PRETRAIN_STATEMENT,
+            }
+        )
+    )
+    obligation = protocol_id("obl_", seed + 1)
+    decision = protocol_id("evt_", seed + 4)
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", seed + 5)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": frontier_json(started.frontier),
+                "event_drafts": [
+                    _draft(
+                        protocol_id("evt_", seed + 2),
+                        "obligation_published",
+                        {
+                            "obligation_id": obligation,
+                            "description": "Recover exact intended training examples",
+                            "evidence_expectation": "The recovered shards match the intended "
+                            "examples and pretraining reruns.",
+                            "status": "open",
+                        },
+                    ),
+                    _draft(
+                        protocol_id("evt_", seed + 3),
+                        "plan_published",
+                        {
+                            "plan_version": 1,
+                            "summary": "Recover the shards, then rerun pretraining.",
+                            "obligation_refs": [obligation],
+                        },
+                    ),
+                    _draft(
+                        decision,
+                        "decision_recorded",
+                        {
+                            "statement": "yoetz-blocker:dependency_unavailable",
+                            "rationale": "dependency_unavailable: authoritative historical source",
+                            "authority": "harness:codex",
+                            "affected_obligation_ids": [obligation],
+                        },
+                    ),
+                ],
+            }
+        )
+    )
+    session = _Session(app, started.session_id, started.writer_id, obligation, decision)
+    await _check(session, frontier_json(published.result_frontier), seed + 30)
+    [case] = reviewer.cases
+
+    question = case.question_set[-1]
+    golden = cast(Mapping[str, Any], strict_json_parse(_PRETRAIN_GOLDEN.read_bytes()))
+    assert question == (
+        cast(str, golden["question_template"])
+        .replace("<decision>", decision)
+        .replace("<obligation>", obligation)
+    )
+    assert question.endswith(BLOCKER_REVIEW_INSTRUCTION)
+    assert "You must challenge it" in question
+    assert "the blocked obligation is the task's main deliverable" in question
+    assert "the data recoverable" in question
+    # The obligation's own text and the statement reach the reviewer as their packet items, the
+    # question names the obligation item it must quote, and the blocker is listed even though the
+    # agent has not confirmed it yet.
+    assert f"obligation-{obligation}" in case.packet.obligation_item_ids
+    assert "obligation-<obligation id>" in question
+    texts = {item.item_id: item.content.decode("utf-8") for item in case.items}
+    assert "Recover exact intended training examples" in texts[f"obligation-{obligation}"]
+    assert any("recover the intended training examples" in text for text in texts.values()), (
+        "the task statement must be in the packet"
+    )

@@ -1352,6 +1352,7 @@ async def _closure_readiness(
         check_in_flight=check_in_flight,
         live_blockers=live_blockers,
     )
+    confirmations = dict(facts.blocked_obligation_confirmations)
     return StatusClosureReadinessModel(
         declared_obligation_count=str(declared_obligations),
         no_obligations_reason=no_obligations_reason,
@@ -1371,9 +1372,19 @@ async def _closure_readiness(
                     Literal["authority", "consent", "credential", "dependency_unavailable"], kind
                 ),
                 decision_event_id=decision,
+                # #985: a claimed blocker is still agent work until a later decision confirms it.
+                confirmation="confirmed" if obligation in confirmations else "claimed",
+                **(
+                    {"confirmation_event_id": confirmations[obligation]}
+                    if obligation in confirmations
+                    else {}
+                ),
             )
             for obligation, kind, decision in facts.blocked_obligation_details[:64]
         ),
+        # F3: what a whole-task completion claim must name in limitation_refs (ids only).
+        limitation_refs_required=tuple(facts.limitation_refs_required[:64]),
+        limitation_refs_required_count=str(len(facts.limitation_refs_required)),
         blocking_conditions=cast(
             tuple[
                 Literal[

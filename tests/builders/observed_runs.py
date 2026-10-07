@@ -149,8 +149,10 @@ class ObservedLedger:
         *,
         observed: bool,
         known_gaps: tuple[str, ...] = (),
+        operation: str | None = None,
     ) -> EventId:
         sequence = len(self.records) + 1
+        operation_ref = _OPERATION if operation is None else request_id(operation)
         previous = "genesis" if not self.records else self.records[-1].entry_digest
         encoded = canonical_encode(encode_payload(payload))
         identifier = event_id(f"evt_00000000-0000-4000-8000-{sequence:012d}")
@@ -184,7 +186,7 @@ class ObservedLedger:
                 "previous_entry_digest": previous,
                 "accepted_at": _NOW.wire,
             },
-            "operation_id": _OPERATION,
+            "operation_id": operation_ref,
             "occurred_at": _NOW.wire,
             "causal_parents": (),
             "publication_channel": channel.value,
@@ -209,7 +211,7 @@ class ObservedLedger:
                 author=author,
                 writer=WriterChain(_WRITER, sequence, previous),
                 ledger=LedgerChain(sequence, previous, _NOW),
-                operation_id=_OPERATION,
+                operation_id=operation_ref,
                 occurred_at=_NOW,
                 causal_parents=(),
                 publication_channel=channel,
@@ -231,10 +233,21 @@ class ObservedLedger:
         )
         return identifier
 
-    def append(self, schema: EventSchema, payload: EventPayload, *, observed: bool) -> EventId:
-        """Append one materialized or cooperative draft payload."""
+    def append(
+        self,
+        schema: EventSchema,
+        payload: EventPayload,
+        *,
+        observed: bool,
+        operation: str | None = None,
+    ) -> EventId:
+        """Append one materialized or cooperative draft payload.
 
-        return self._append(schema, payload, observed=observed)
+        ``operation`` is the publish batch's request id; the default puts every append in one
+        batch, as the records were before the field mattered (#985 blocker confirmation).
+        """
+
+        return self._append(schema, payload, observed=observed, operation=operation)
 
     def run(
         self,

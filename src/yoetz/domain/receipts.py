@@ -417,8 +417,12 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
         ),
         "obligation_blocked_outside_agent_control": (
             "An open obligation is named by a blocker the agent recorded as outside its control"
-            " (authority, consent, credentials, or an unobtainable dependency); Yoetz did not"
-            " verify the claim."
+            " (authority, consent, credentials, or an unobtainable dependency) and confirmed in a"
+            " later decision; Yoetz did not verify the claim."
+        ),
+        "obligation_blocker_unconfirmed": (
+            "An open obligation is named by a blocker the agent claimed but did not confirm in a"
+            " later decision; the obligation still counts as open work."
         ),
     }
 )

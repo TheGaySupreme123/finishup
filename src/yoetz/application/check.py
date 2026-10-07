@@ -136,7 +136,11 @@ from yoetz.kernel.policies.work_integrity import work_integrity_findings
 from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
-from yoetz.kernel.task_facts import STANDING_TASK_FACT_GAPS, requested_output_facts
+from yoetz.kernel.task_facts import (
+    STANDING_TASK_FACT_GAPS,
+    confirmed_blocked_obligation_ids,
+    requested_output_facts,
+)
 from yoetz.kernel.test_edit_visibility import PreExistingTestEdits, preexisting_test_edits
 from yoetz.observability.logging import (
     record_bounded_counts_without_raising,
@@ -2169,7 +2173,11 @@ async def _requested_output_inputs(
         port=port,
         request_id=request_id,
     )
-    absent, markers = requested_output_facts(case.projection, states)
+    absent, markers = requested_output_facts(
+        case.projection,
+        states,
+        blocked=confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps),
+    )
     gaps = tuple(sorted({code for code, _obligation in markers}, key=str.encode))
     return partial(work_integrity_findings, absent_outputs=frozenset(absent)), gaps, bool(absent)
 

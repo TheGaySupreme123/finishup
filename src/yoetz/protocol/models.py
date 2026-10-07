@@ -2669,6 +2669,52 @@ class PublishWorkVersionSliceModel(_ClosedModel):
         return self
 
 
+# Issue #985 (C2b/C3): fixed, closed publish-time texts for a ``yoetz-blocker`` line, selected by
+# the notice code. They carry no caller value; the obligation id and kind ride beside them.
+PUBLISH_BLOCKER_NOTICE_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "blocker_claimed": (
+            "Yoetz challenges this yoetz-blocker before it counts. Repair the obligation first if"
+            " any route remains. A Yoetz limit (something Yoetz cannot show or prove) is never a"
+            " blocker: verify that work yourself and respond self_verified on the finding. Data"
+            " or an outcome the task says is recoverable or achievable is not a blocker. Keep a"
+            " blocker only for an open obligation genuinely blocked outside your control"
+            " (authority, consent, a credential, a dependency you cannot obtain). Until you"
+            " confirm it, the obligation stays your work (obligation_blocker_unconfirmed); to"
+            " confirm, publish the same yoetz-blocker line for it again in a later"
+            " decision_recorded."
+        ),
+        "blocker_confirmed": (
+            "This yoetz-blocker is confirmed: the obligation is disclosed as blocked outside your"
+            " control (obligation_blocked_outside_agent_control), not done. Yoetz did not verify"
+            " the claim; say so in your final answer, and supersede the decision if the"
+            " obligation becomes doable."
+        ),
+        "blocker_without_effect": (
+            "This yoetz-blocker has no effect: the obligation it names is not open, and a blocker"
+            " only applies to open obligations. If a finding stays unresolved because Yoetz cannot"
+            " prove your repair (a Yoetz limit), verify it yourself and respond self_verified;"
+            " respond acknowledged_not_done only as a last resort, for work you will not do."
+        ),
+    }
+)
+
+
+class PublishWorkBlockerNoticeModel(_ClosedModel):
+    """One publish-time notice for a ``yoetz-blocker`` line (#985): closed code and fixed text."""
+
+    obligation_id: ObligationIdWire
+    blocker_kind: Literal["authority", "consent", "credential", "dependency_unavailable"]
+    notice: Literal["blocker_claimed", "blocker_confirmed", "blocker_without_effect"]
+    text: str
+
+    @model_validator(mode="after")
+    def _validate_fixed_text(self) -> PublishWorkBlockerNoticeModel:
+        if self.text != PUBLISH_BLOCKER_NOTICE_TEXTS[self.notice]:
+            raise ValueError("publish_blocker_notice_text_mismatch")
+        return self
+
+
 class PublishWorkSuccessModel(_ClosedModel):
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
@@ -2686,6 +2732,10 @@ class PublishWorkSuccessModel(_ClosedModel):
     gaps: tuple[CodeWire, ...]
     versions: PublishWorkVersionSliceModel
     privacy_projection: PrivacyProjectionModel
+    # Issue #985: present only when the batch carried a yoetz-blocker line Yoetz has a notice for.
+    blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
+
+    optional_non_null_fields = frozenset({"blocker_notices"})
 
     @model_validator(mode="after")
     def _validate_publish_success(self) -> PublishWorkSuccessModel:
@@ -2693,6 +2743,7 @@ class PublishWorkSuccessModel(_ClosedModel):
             raise ValueError("accepted_event_count_invalid")
         _require_unique(self.warning_codes, limit=1)
         _require_unique(self.gaps, limit=64)
+        _validate_blocker_notices(self.blocker_notices)
         _validate_model_against_schema(self, "publish-work-result")
         return self
 
@@ -2777,6 +2828,10 @@ class PublishWorkDryRunModel(_ClosedModel):
     would_accept: tuple[PublishWorkDryRunPreviewEventModel, ...]
     coverage: CoverageModel
     gaps: tuple[CodeWire, ...]
+    # Issue #985: the same publish-time blocker notices a real publish would return.
+    blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
+
+    optional_non_null_fields = frozenset({"blocker_notices"})
 
     @model_validator(mode="after")
     def _validate_publish_dry_run(self) -> PublishWorkDryRunModel:
@@ -2785,8 +2840,17 @@ class PublishWorkDryRunModel(_ClosedModel):
         if self.subject_frontier != self.result_frontier:
             raise ValueError("dry_run_frontier_moved")
         _require_unique(self.gaps, limit=64)
+        _validate_blocker_notices(self.blocker_notices)
         _validate_model_against_schema(self, "publish-work-result")
         return self
+
+
+def _validate_blocker_notices(notices: tuple[PublishWorkBlockerNoticeModel, ...] | None) -> None:
+    if notices is None:
+        return
+    if not 1 <= len(notices) <= 64:
+        raise ValueError("publish_blocker_notice_count_invalid")
+    _require_unique(tuple((item.obligation_id, item.blocker_kind) for item in notices), limit=64)
 
 
 def _publish_work_result_kind(value: object) -> str:
@@ -4164,6 +4228,22 @@ class StatusBlockedObligationModel(_ClosedModel):
     obligation_id: ObligationIdWire
     blocker_kind: Literal["authority", "consent", "credential", "dependency_unavailable"]
     decision_event_id: EventIdWire
+    # Issue #985. ``claimed``: only the first decision names it, so it is still agent work
+    # (``obligation_blocker_unconfirmed``); ``confirmed``: a later decision repeated the same
+    # blocker line (``confirmation_event_id``). Optional on the unreleased 1.4.0 wire: an earlier
+    # 0.3 build omits both, and absence never means confirmed.
+    confirmation: Literal["claimed", "confirmed"] | None = None
+    confirmation_event_id: EventIdWire | None = None
+
+    optional_non_null_fields = frozenset({"confirmation", "confirmation_event_id"})
+
+    @model_validator(mode="after")
+    def _validate_blocker_confirmation(self) -> StatusBlockedObligationModel:
+        if (self.confirmation == "confirmed") != (self.confirmation_event_id is not None):
+            raise ValueError("closure_readiness_blocker_confirmation_mismatch")
+        if self.confirmation_event_id == self.decision_event_id:
+            raise ValueError("closure_readiness_blocker_confirmation_mismatch")
+        return self
 
 
 class StatusClosureReadinessModel(_ClosedModel):
@@ -4337,7 +4417,11 @@ class StatusClosureReadinessModel(_ClosedModel):
         blocked_rows = self.blocked_obligations
         open_count = None if self.open_obligation_count is None else int(self.open_obligation_count)
         if "obligations_open" in self.blocking_conditions and "obligations_open" not in actionable:
-            if "obligation_blocked_outside_agent_control" not in standing or (
+            # Replaced by a confirmed blocker (standing) or a claimed one still to confirm (#985).
+            if (
+                "obligation_blocked_outside_agent_control" not in standing
+                and "obligation_blocker_unconfirmed" not in actionable
+            ) or (
                 blocked_rows is not None
                 and open_count is not None
                 and len(blocked_rows) != min(open_count, 64)
@@ -5563,6 +5647,11 @@ _PUBLISH_STRUCTURAL_POINTERS: Final = (
             "schema_version",
         ),
     )
+    # #985: service-minted ids, closed codes and fixed repository text only.
+    + _prefix_leaf_patterns(
+        "/blocker_notices/*",
+        ("blocker_kind", "notice", "obligation_id", "text"),
+    )
 )
 
 _CHECK_STRUCTURAL_POINTERS: Final = (
@@ -5799,6 +5888,11 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "blocked_obligations/*/obligation_id",
             "blocked_obligations/*/blocker_kind",
             "blocked_obligations/*/decision_event_id",
+            "blocked_obligations/*/confirmation",
+            "blocked_obligations/*/confirmation_event_id",
+            # F3: service-minted result ids and their count only.
+            "limitation_refs_required/*",
+            "limitation_refs_required_count",
         ),
     )
 )
@@ -6538,7 +6632,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1417:
+    if len(result) != 1423:
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

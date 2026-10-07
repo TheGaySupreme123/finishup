@@ -907,8 +907,10 @@ def _validation_location_clause(error: Mapping[str, JsonValue]) -> str:
 
 _RESULT_OUTCOME_POINTER: Final = re.compile(r"\A/event_drafts/[0-9]{1,3}/payload/outcome\Z")
 _RESULT_OUTCOME_HINT: Final = (
-    " Outcomes: success|failure|partial|unknown (no blocked): record failure or partial, and a"
-    " blocker outside your control as decision_recorded with the line yoetz-blocker:<kind>."
+    " Outcomes: success|failure|partial|unknown (no blocked): record failure or partial, then"
+    " repair. A Yoetz limit is never a blocker (verify it yourself, respond self_verified);"
+    " yoetz-blocker:<kind> in a decision_recorded is only for an open obligation genuinely"
+    " blocked outside your control."
 )
 
 
@@ -1656,6 +1658,58 @@ def _summary_for_other_success(source: Mapping[str, JsonValue]) -> str:
             f"{identity}{_frontier_clause(source)}."
         )
     return _bounded(f"Operation outcome: {outcome}; {identity}{_frontier_clause(source)}.")
+
+
+_OBLIGATION_ID: Final = re.compile(
+    r"^obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.ASCII
+)
+_MAX_RENDERED_BLOCKER_NOTICES: Final = 8
+_BLOCKER_KINDS: Final = frozenset({"authority", "consent", "credential", "dependency_unavailable"})
+
+
+def render_publish_blocker_notices(envelope: object) -> str:
+    """Render a publish result's yoetz-blocker notices as model-visible text (#985).
+
+    Only rows whose closed code, kind and obligation id validate, and whose text is exactly the
+    fixed repository text for that code, are rendered; anything else renders nothing. One line
+    per notice code, naming the obligations it covers.
+    """
+
+    from yoetz.protocol.models import PUBLISH_BLOCKER_NOTICE_TEXTS
+
+    source = _mapping(envelope)
+    rows = source.get("blocker_notices")
+    if not isinstance(rows, Sequence) or isinstance(rows, str):
+        return ""
+    grouped: dict[str, list[str]] = {}
+    for row in cast(Sequence[JsonValue], rows):
+        if not isinstance(row, Mapping):
+            return ""
+        item = cast(Mapping[str, JsonValue], row)
+        notice, kind, obligation, text = (
+            item.get("notice"),
+            item.get("blocker_kind"),
+            item.get("obligation_id"),
+            item.get("text"),
+        )
+        if (
+            type(notice) is not str
+            or notice not in PUBLISH_BLOCKER_NOTICE_TEXTS
+            or text != PUBLISH_BLOCKER_NOTICE_TEXTS[notice]
+            or kind not in _BLOCKER_KINDS
+            or type(obligation) is not str
+            or _OBLIGATION_ID.fullmatch(obligation) is None
+        ):
+            return ""
+        grouped.setdefault(notice, []).append(f"{obligation} ({kind})")
+    lines: list[str] = []
+    for notice in sorted(grouped):
+        named = grouped[notice]
+        listed = ", ".join(named[:_MAX_RENDERED_BLOCKER_NOTICES])
+        hidden = len(named) - _MAX_RENDERED_BLOCKER_NOTICES
+        more = f" (+{hidden} more)" if hidden > 0 else ""
+        lines.append(f"Blocker notice for {listed}{more}: {PUBLISH_BLOCKER_NOTICE_TEXTS[notice]}")
+    return "\n".join(lines)
 
 
 def render_safe_compact_summary(envelope: object) -> str:

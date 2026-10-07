@@ -37,7 +37,10 @@ from types import MappingProxyType
 from typing import Final, Literal
 
 from yoetz.domain.events import CheckRecordedPayload, LedgerRecord
-from yoetz.domain.receipts import CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS
+from yoetz.domain.receipts import (
+    CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
+    COMPLETION_PLAN_NOT_CLAIMED_GAP,
+)
 from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel.claims import completion_claim_present
 from yoetz.kernel.finding_resolution import finding_is_resolved
@@ -49,8 +52,10 @@ from yoetz.kernel.reducers import invalidates_recorded_check
 from yoetz.kernel.task_facts import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS,
     OBLIGATION_BLOCKED_GAP,
+    OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
     STANDING_TASK_FACT_GAPS,
     blocker_declarations,
+    decision_batches,
     open_effective_obligations,
 )
 from yoetz.protocol.models import SemanticStatus
@@ -494,6 +499,10 @@ class ClosureReadinessFacts:
     # ``(obligation, blocker kind, decision event id)`` for each blocked open obligation, in
     # obligation order: what the Stop gate names when it re-asks a blocker once (#977).
     blocked_obligation_details: tuple[tuple[ObligationId, str, EventId], ...] = ()
+    # ``(obligation, confirming decision event id)`` for each blocked open obligation whose
+    # blocker a later decision confirmed (#985), in obligation order. A blocked obligation absent
+    # here is only claimed: it stays agent work (``obligation_blocker_unconfirmed``).
+    blocked_obligation_confirmations: tuple[tuple[ObligationId, EventId], ...] = ()
     # Issue #976. Whether a closing review (final phase) is current since the last material
     # change, or a review attempt since then could not complete for a reason the agent cannot
     # remove; and whether any AI-powered review completed on this task. The defaults keep a
@@ -534,6 +543,17 @@ class ClosureReadinessFacts:
             != self.blocked_obligation_ids
         ):
             raise ValueError("closure_readiness_facts_invalid")
+        confirmed = tuple(item[0] for item in self.blocked_obligation_confirmations)
+        if (
+            type(self.blocked_obligation_confirmations) is not tuple
+            or confirmed != tuple(sorted(set(confirmed), key=str.encode))
+            or not set(confirmed) <= set(self.blocked_obligation_ids)
+        ):
+            raise ValueError("closure_readiness_facts_invalid")
+
+    @property
+    def confirmed_blocked_obligation_ids(self) -> tuple[ObligationId, ...]:
+        return tuple(item[0] for item in self.blocked_obligation_confirmations)
 
 
 def live_lineage_blockers(tokens: Iterable[str], recorded_gaps: Iterable[str]) -> tuple[str, ...]:
@@ -746,7 +766,7 @@ def closure_readiness_facts(
     # The receipt's applicability rule reads the same observation-limitation set (issue #911).
     limitations = observation_limitation_finding_ids(state, records)
     open_obligations = open_effective_obligations(state)
-    blocked = blocker_declarations(state)
+    blocked = blocker_declarations(state, decision_batches(records))
     blocked_open = tuple(
         sorted({item for item in open_obligations if item in blocked}, key=str.encode)
     )
@@ -761,6 +781,11 @@ def closure_readiness_facts(
         blocked_obligation_ids=blocked_open,
         blocked_obligation_details=tuple(
             (item, blocked[item].kind, blocked[item].decision_event_id) for item in blocked_open
+        ),
+        blocked_obligation_confirmations=tuple(
+            (item, confirmation)
+            for item in blocked_open
+            if (confirmation := blocked[item].confirmation_event_id) is not None
         ),
         closing_review_current=closing_current,
         semantic_review_used=review_used,
@@ -802,7 +827,10 @@ def derive_closure_readiness(
 
     conditions = tuple(blocking_conditions)
     actionable: list[str] = []
-    blocked_only = False
+    standing: set[str] = set()
+    # Every open obligation is named by a recorded blocker (#977), and every one of those blockers
+    # was confirmed by a later decision after the challenge (#985).
+    blocked_confirmed_only = False
     for condition in AGENT_READINESS_CONDITIONS:
         if condition not in conditions:
             continue
@@ -820,14 +848,21 @@ def derive_closure_readiness(
             and set(facts.open_obligation_ids) <= set(facts.blocked_obligation_ids)
         ):
             # Every open obligation is named by a recorded blocker outside the agent's control
-            # (authority, consent, credential, an unobtainable dependency; #977). Nothing the
-            # agent can do removes it, so it is disclosed rather than listed as work.
-            blocked_only = True
+            # (authority, consent, credential, an unobtainable dependency; #977). A blocker the
+            # agent only claimed is still its work: repair the obligation, or confirm the blocker
+            # in a later decision after the challenge (#985). Only when every one is confirmed
+            # is it disclosed rather than listed as work.
+            unconfirmed = set(facts.blocked_obligation_ids) - set(
+                facts.confirmed_blocked_obligation_ids
+            )
+            if unconfirmed:
+                actionable.append(OBLIGATION_BLOCKER_UNCONFIRMED_GAP)
+            else:
+                blocked_confirmed_only = True
+            if facts.confirmed_blocked_obligation_ids:
+                standing.add(OBLIGATION_BLOCKED_GAP)
             continue
         actionable.append(condition)
-    standing: set[str] = set()
-    if blocked_only:
-        standing.add(OBLIGATION_BLOCKED_GAP)
     if check_in_flight:
         actionable.append("check_in_progress")
     if facts is not None:
@@ -840,7 +875,15 @@ def derive_closure_readiness(
         semantic_review_required=semantic_review_required,
         semantic_review_current=facts is not None and facts.semantic_review_current,
     )
-    actionable.extend(code for code in split.agent_actionable if code not in actionable)
+    split_actionable = split.agent_actionable
+    if blocked_confirmed_only and COMPLETION_PLAN_NOT_CLAIMED_GAP in split_actionable:
+        # Issue #985 (C9): every open obligation is confirmed blocked, so no completion claim can
+        # cover the plan; the unclaimed plan is disclosed beside the blocker, not listed as work.
+        split_actionable = tuple(
+            code for code in split_actionable if code != COMPLETION_PLAN_NOT_CLAIMED_GAP
+        )
+        standing.add(COMPLETION_PLAN_NOT_CLAIMED_GAP)
+    actionable.extend(code for code in split_actionable if code not in actionable)
     # Issue #976: the receipt is the last step, so the last review before it judges
     # completeness. Required on a route that requires AI-powered review, and on any task that
     # already used it; not repeated while the missing review is already the actionable item.

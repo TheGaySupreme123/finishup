@@ -20,10 +20,13 @@ and the ledger already establish, so the agent can act on them:
   verification that only ever ran as root.
 * **Blockers.** A readable, unsuperseded ``decision_recorded`` whose statement holds the exact
   line ``yoetz-blocker:<kind>`` for a closed kind (authority, consent, credential,
-  dependency_unavailable) and names ``affected_obligation_ids`` records that those obligations
-  are blocked by something outside the agent's control. Yoetz cannot verify the claim; it
-  honours it for the Stop-time closure gate and discloses it, and nothing else qualifies (missing
-  data the task says is recoverable is not a blocker kind).
+  dependency_unavailable) and names ``affected_obligation_ids`` claims that those obligations
+  are blocked by something outside the agent's control. Yoetz cannot verify the claim. The first
+  such decision is only *claimed* (``obligation_blocker_unconfirmed``, agent work: repair first,
+  or confirm); it becomes a standing ``obligation_blocked_outside_agent_control`` only once a
+  later decision repeats the same line for the same obligation after the publish-time challenge
+  and the Stop-time re-ask (#985). A Yoetz limit is never a blocker, and missing data the task
+  says is recoverable is not a blocker kind.
 
 Self-generated evidence stays admissible here: no rule asks who produced a verification, only
 whether the hooks observed it run, and when.
@@ -38,7 +41,7 @@ import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Final
+from typing import Final, cast
 
 from yoetz.domain.events import (
     AcceptedEvent,
@@ -72,6 +75,7 @@ __all__ = [
     "INSTALL_INTO_PRIVATE_ENV_GAP",
     "INSTALL_INTO_YOETZ_RUNTIME_GAP",
     "OBLIGATION_BLOCKED_GAP",
+    "OBLIGATION_BLOCKER_UNCONFIRMED_GAP",
     "PLANNED_VERIFICATION_FAILED_GAP",
     "PLANNED_VERIFICATION_NOT_OBSERVED_GAP",
     "PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP",
@@ -91,8 +95,16 @@ __all__ = [
     "TaskFactSignals",
     "BlockerDeclaration",
     "acting_started",
+    "BLOCKER_NOTICE_CLAIMED",
+    "BLOCKER_NOTICE_CODES",
+    "BLOCKER_NOTICE_CONFIRMED",
+    "BLOCKER_NOTICE_WITHOUT_EFFECT",
+    "BlockerNotice",
     "blocked_obligations",
     "blocker_declarations",
+    "blocker_publication_notices",
+    "confirmed_blocked_obligation_ids",
+    "decision_batches",
     "cooperative_event_ids_from_coverage",
     "cooperative_event_ids_from_records",
     "command_identity_key_registered",
@@ -115,6 +127,8 @@ INSTALL_INTO_PRIVATE_ENV_GAP: Final = "install_into_private_env"
 WRITE_OUTSIDE_WORKSPACE_GAP: Final = "write_outside_workspace"
 VERIFICATION_ONLY_AS_ROOT_GAP: Final = "verification_only_as_root"
 OBLIGATION_BLOCKED_GAP: Final = "obligation_blocked_outside_agent_control"
+# A recorded blocker the agent has not yet confirmed in a later decision (#985): still agent work.
+OBLIGATION_BLOCKER_UNCONFIRMED_GAP: Final = "obligation_blocker_unconfirmed"
 REQUESTED_OUTPUT_GIT_IGNORED_GAP: Final = "requested_output_git_ignored"
 REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP: Final = "requested_output_ignored_by_repository"
 REQUESTED_OUTPUT_UNCHANGED_GAP: Final = "requested_output_unchanged"
@@ -130,10 +144,12 @@ AGENT_ACTIONABLE_TASK_FACT_GAPS: Final = frozenset(
         PLANNED_VERIFICATION_STALE_GAP,
         EDITED_AFTER_LAST_VERIFICATION_GAP,
         REQUESTED_OUTPUT_GIT_IGNORED_GAP,
+        # A claimed blocker: repair the obligation, or confirm the blocker in a later decision.
+        OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
     }
 )
 # Disclosures: recorded history (an install or write already happened), a heuristic the
-# observer cannot confirm, a read Yoetz could not make, or a declared blocker.
+# observer cannot confirm, a read Yoetz could not make, or a confirmed declared blocker.
 STANDING_TASK_FACT_GAPS: Final = frozenset(
     {
         PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
@@ -161,6 +177,8 @@ STOP_GATE_TOKENS: Final = (
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     PLANNED_VERIFICATION_STALE_GAP,
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
+    # A blocker claimed on an open obligation and not yet confirmed (#985).
+    OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
 )
 
 BLOCKER_MARKER: Final = "yoetz-blocker"
@@ -227,49 +245,209 @@ def requested_command_identity(value: str) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class BlockerDeclaration:
-    """One obligation's recorded blocker: the closed kind and the decision that declared it."""
+    """One obligation's recorded blocker: the closed kind, the decision that claimed it, and the
+    later decision that confirmed it (``None`` while the blocker is only claimed, #985)."""
 
     kind: str
     decision_event_id: EventId
+    confirmation_event_id: EventId | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in BLOCKER_KINDS:
             raise ValueError("blocker_kind_invalid")
+        if self.confirmation_event_id == self.decision_event_id:
+            raise ValueError("blocker_confirmation_invalid")
+
+    @property
+    def confirmed(self) -> bool:
+        return self.confirmation_event_id is not None
 
 
-def blocker_declarations(projection: ProjectionState) -> Mapping[ObligationId, BlockerDeclaration]:
-    """Obligations a readable, unsuperseded blocker decision names, with its kind and event id.
+def _blocker_kinds(payload: DecisionRecordedPayload) -> frozenset[str]:
+    return frozenset(
+        _BLOCKER_LINES[line.strip()]
+        for line in payload.statement.splitlines()
+        if line.strip() in _BLOCKER_LINES
+    )
+
+
+def decision_batches(records: Iterable[LedgerRecord]) -> Mapping[EventId, str]:
+    """The publish batch (operation id) each recorded ``decision_recorded`` event arrived in."""
+
+    return MappingProxyType(
+        {
+            record.event_id: str(record.operation_id)
+            for record in records
+            if record.schema.name == "decision_recorded"
+        }
+    )
+
+
+def blocker_declarations(
+    projection: ProjectionState, batches: Mapping[EventId, str]
+) -> Mapping[ObligationId, BlockerDeclaration]:
+    """Obligations a readable, unsuperseded blocker decision names, with its kind and event ids.
 
     Only the exact statement line ``yoetz-blocker:<kind>`` for a closed kind counts, and only for
     the ids in ``affected_obligation_ids``. The first kind in ``BLOCKER_KINDS`` order wins when a
-    decision names more than one; the earliest such decision in ledger order wins when several
-    name the same obligation. Yoetz cannot verify the claim: the Stop gate re-asks it once and the
-    closing review checks it against the task (#977, #976).
+    decision names more than one; the earliest such decision in ledger order claims the
+    obligation. The claim is confirmed by the earliest later decision that repeats the same
+    ``yoetz-blocker:<kind>`` line for the same obligation *in a later publish batch* (issue #985):
+    the publish-time challenge is delivered in the claiming batch's result, so only a later batch
+    is necessarily the agent's answer to it. A repeat in the same batch (or a second line in the
+    same decision) never confirms, and a dry run records nothing. ``batches`` maps decision event
+    ids to their batch (``decision_batches`` of the accepted prefix); a decision whose batch is
+    unknown confirms nothing. Yoetz still cannot verify the claim; the closing review checks it
+    against the task (#978). Ledger order and batch are recorded facts, so the answer is
+    replay-stable.
     """
 
+    rows = sorted(
+        (
+            (row.source_frontier, event_id, row.payload)
+            for event_id, row in projection.decisions.items()
+            if type(row.payload) is DecisionRecordedPayload and row.superseded_by_event_id is None
+        ),
+        key=lambda item: (item[0], str(item[1]).encode()),
+    )
     blocked: dict[ObligationId, BlockerDeclaration] = {}
-    for event_id, row in projection.decisions.items():
-        payload = row.payload
-        if type(payload) is not DecisionRecordedPayload or row.superseded_by_event_id is not None:
-            continue
-        kinds = {
-            _BLOCKER_LINES[line.strip()]
-            for line in payload.statement.splitlines()
-            if line.strip() in _BLOCKER_LINES
-        }
+    for _position, event_id, payload in rows:
+        assert payload is not None
+        kinds = _blocker_kinds(payload)
         if not kinds:
             continue
         kind = next(item for item in BLOCKER_KINDS if item in kinds)
         for obligation in payload.affected_obligation_ids:
-            blocked.setdefault(obligation, BlockerDeclaration(kind, event_id))
+            current = blocked.get(obligation)
+            if current is None:
+                blocked[obligation] = BlockerDeclaration(kind, event_id)
+                continue
+            claimed_batch = batches.get(current.decision_event_id)
+            this_batch = batches.get(event_id)
+            if (
+                not current.confirmed
+                and current.kind in kinds
+                and claimed_batch is not None
+                and this_batch is not None
+                and this_batch != claimed_batch
+            ):
+                blocked[obligation] = BlockerDeclaration(
+                    current.kind, current.decision_event_id, event_id
+                )
     return MappingProxyType(blocked)
 
 
-def blocked_obligations(projection: ProjectionState) -> Mapping[ObligationId, str]:
-    """Obligations a readable, unsuperseded blocker decision names, with the blocker kind."""
+def blocked_obligations(
+    projection: ProjectionState, batches: Mapping[EventId, str]
+) -> Mapping[ObligationId, str]:
+    """Obligations a *confirmed* blocker names, with the blocker kind (#977, #985).
+
+    Only a confirmed blocker suppresses the per-obligation facts and findings (planned
+    verification, requested outputs, ``requested_item_never_attempted``). A claimed one leaves
+    the obligation's ordinary facts in place: until the agent confirms it, it is still work.
+    """
 
     return MappingProxyType(
-        {obligation: item.kind for obligation, item in blocker_declarations(projection).items()}
+        {
+            obligation: item.kind
+            for obligation, item in blocker_declarations(projection, batches).items()
+            if item.confirmed
+        }
+    )
+
+
+def confirmed_blocked_obligation_ids(
+    markers: Iterable[tuple[str, Iterable[str]]],
+) -> frozenset[ObligationId]:
+    """Open obligations a frozen case's task-fact markers record as confirmed blocked.
+
+    ``markers`` are ``(code, subject refs)`` pairs (a deterministic case's gaps). The markers were
+    derived from the accepted prefix with its publish batches, so a case-only reader (a local
+    pack, the check-time output read) applies the same confirmation rule without the records.
+    """
+
+    return frozenset(
+        cast(ObligationId, ref)
+        for code, refs in markers
+        if code == OBLIGATION_BLOCKED_GAP
+        for ref in refs
+        if ref.startswith("obl_")
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class BlockerNotice:
+    """One publish-time notice for a ``yoetz-blocker`` line (#985): a closed notice code."""
+
+    obligation_id: ObligationId
+    kind: str
+    notice: str
+
+    def __post_init__(self) -> None:
+        if self.kind not in BLOCKER_KINDS or self.notice not in BLOCKER_NOTICE_CODES:
+            raise ValueError("blocker_notice_invalid")
+
+
+BLOCKER_NOTICE_CLAIMED: Final = "blocker_claimed"
+BLOCKER_NOTICE_CONFIRMED: Final = "blocker_confirmed"
+BLOCKER_NOTICE_WITHOUT_EFFECT: Final = "blocker_without_effect"
+BLOCKER_NOTICE_CODES: Final = (
+    BLOCKER_NOTICE_CLAIMED,
+    BLOCKER_NOTICE_CONFIRMED,
+    BLOCKER_NOTICE_WITHOUT_EFFECT,
+)
+
+
+def blocker_publication_notices(
+    projection: ProjectionState,
+    decisions: Iterable[tuple[EventId, DecisionRecordedPayload]],
+) -> tuple[BlockerNotice, ...]:
+    """Closed notices for the ``yoetz-blocker`` lines one publish batch carries (#985).
+
+    ``projection`` already includes the batch: the accepted result frontier of a publish, or the
+    provisional fold of a dry run. ``decisions`` are the batch's ``(event id, payload)`` pairs.
+    Each ``(obligation, kind)`` gets one notice: ``blocker_without_effect`` when the obligation is
+    not open (a blocker on finished work changes nothing; a Yoetz limit is ``respond
+    self_verified``, a refusal ``acknowledged_not_done``), ``blocker_confirmed`` when the
+    obligation's blocker of that kind was claimed in an earlier batch (this batch confirms it, or
+    it already was), and ``blocker_claimed`` otherwise (the challenge: repair first; confirm only
+    by repeating the line in a later publish). An obligation id the projection does not know gets
+    no notice (admission reports it).
+    """
+
+    batch = tuple(decisions)
+    batch_ids = frozenset(event for event, _payload in batch)
+    open_now = set(open_effective_obligations(projection))
+    # Within this batch every decision shares one batch key, and every earlier decision is in a
+    # different batch than this one; that is all the confirmation rule needs here.
+    batches = {
+        event_id: ("this" if event_id in batch_ids else str(event_id))
+        for event_id in projection.decisions
+    }
+    declared = blocker_declarations(projection, batches)
+    notices: dict[tuple[ObligationId, str], str] = {}
+    for _event_id, payload in batch:
+        if type(payload) is not DecisionRecordedPayload:
+            continue
+        kinds = _blocker_kinds(payload)
+        if not kinds:
+            continue
+        kind = next(item for item in BLOCKER_KINDS if item in kinds)
+        for obligation in payload.affected_obligation_ids:
+            key = (obligation, kind)
+            if key in notices or obligation not in projection.obligations:
+                continue
+            if obligation not in open_now:
+                notices[key] = BLOCKER_NOTICE_WITHOUT_EFFECT
+                continue
+            current = declared.get(obligation)
+            confirmed = current is not None and current.confirmed and current.kind in kinds
+            notices[key] = BLOCKER_NOTICE_CONFIRMED if confirmed else BLOCKER_NOTICE_CLAIMED
+    return tuple(
+        BlockerNotice(obligation, kind, notice)
+        for (obligation, kind), notice in sorted(
+            notices.items(), key=lambda item: (item[0][0].encode(), item[0][1].encode())
+        )
     )
 
 
@@ -474,7 +652,8 @@ def task_fact_signals(
     prefix = tuple(records)
     observed = observed_event_ids_from_records(prefix)
     state = _observed_state(projection, observed, cooperative_event_ids_from_records(prefix))
-    blocked = blocked_obligations(projection)
+    batches = decision_batches(prefix)
+    blocked = blocked_obligations(projection, batches)
     markers: set[tuple[str, ObligationId | None]] = set()
 
     # Planned verification.
@@ -523,10 +702,21 @@ def task_fact_signals(
     if verification_runs and all("user root" in run.tokens for run in verification_runs):
         markers.add((VERIFICATION_ONLY_AS_ROOT_GAP, None))
 
-    # Declared blockers on obligations that are still open.
+    # Declared blockers on obligations that are still open: confirmed ones are disclosed, a
+    # claimed one is still agent work until a later decision confirms it (#985).
+    declarations = blocker_declarations(projection, batches)
     for obligation in open_effective_obligations(projection):
-        if obligation in blocked:
-            markers.add((OBLIGATION_BLOCKED_GAP, obligation))
+        declaration = declarations.get(obligation)
+        if declaration is None:
+            continue
+        markers.add(
+            (
+                OBLIGATION_BLOCKED_GAP
+                if declaration.confirmed
+                else OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
+                obligation,
+            )
+        )
 
     ordered = tuple(sorted(markers, key=lambda item: (item[0].encode(), (item[1] or "").encode())))
     return TaskFactSignals(
@@ -570,6 +760,8 @@ class RequestedOutputState:
 def requested_output_facts(
     projection: ProjectionState,
     states: Mapping[tuple[ObligationId, int], RequestedOutputState],
+    *,
+    blocked: Iterable[ObligationId],
 ) -> tuple[
     tuple[tuple[ObligationId, int], ...],
     tuple[tuple[str, ObligationId], ...],
@@ -578,8 +770,8 @@ def requested_output_facts(
 
     Returns ``(absent, markers)``: ``absent`` lists (obligation, item index) pairs whose file does
     not exist and was not deleted from the task base (a receipt-blocking requested item), and
-    ``markers`` the ``(code, obligation)`` gap pairs. Obligations a blocker decision names are
-    skipped. A deleted tracked file is the change the request may have asked for, so it is never
+    ``markers`` the ``(code, obligation)`` gap pairs. ``blocked`` obligations (a confirmed blocker
+    names them: ``confirmed_blocked_obligation_ids`` of the case) are skipped. A deleted tracked file is the change the request may have asked for, so it is never
     reported as missing.
 
     A requested ``file`` item names any file the request names, inputs included (the task's data,
@@ -589,14 +781,14 @@ def requested_output_facts(
     was written: an ``edit`` action whose ``attempted_items`` names that exact value (#977, tb4v1).
     """
 
-    blocked = blocked_obligations(projection)
+    skipped = frozenset(blocked)
     edited: dict[ObligationId, frozenset[str]] = {}
     absent: list[tuple[ObligationId, int]] = []
     markers: set[tuple[str, ObligationId]] = set()
     for (obligation, index), state in sorted(
         states.items(), key=lambda item: (item[0][0].encode(), item[0][1])
     ):
-        if obligation in blocked:
+        if obligation in skipped:
             continue
         if obligation not in edited:
             edited[obligation] = attempted_items_for_obligation(
