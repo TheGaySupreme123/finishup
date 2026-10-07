@@ -567,3 +567,58 @@ def test_closing_review_request_builds_the_final_phase_and_records_it() -> None:
     assert closing.packet.input_manifest is not None
     assert closing.packet.input_manifest.review_phase == "final"
     assert closing.case_digest != routine.case_digest
+
+
+def test_closing_review_with_one_withheld_item_keeps_a_valid_final_manifest() -> None:
+    """Issue #979 (tb4n1 fin-saccr S, tb4v2 pretrain S).
+
+    A packet item withheld by the never-send heuristic is an omission row with reason
+    ``never_send_heuristic``. Copying that reason verbatim into the provider-bound manifest's
+    closed section vocabulary made the manifest undecodable, which dropped ``review_phase`` so the
+    closing review was never recorded as final. The section now records ``redacted_never_send``.
+    """
+
+    from yoetz.application.semantic_case import (
+        REVIEW_PACKET_ITEM_ID,
+        assemble_filtered_review_packet,
+        bounded_case_envelope,
+        review_packet_disclosure_result,
+    )
+
+    closing = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000001",
+        frozen_case=_numba_case(),
+        dependency_digest="sha256:" + "b" * 64,
+        findings=(),
+        review_context_profile=ReviewContextProfile.GOAL_AWARE,
+        review_selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.GOAL_AWARE),
+        policy_id="pvy_10000000-0000-4000-8000-000000000001",
+        policy_version="1",
+        final_review=True,
+    )
+    content = {item.item_id: item.content for item in closing.items}
+    withheld = next(item_id for item_id in content if item_id.startswith("prior-finding-fnd_"))
+    included = {*content, REVIEW_PACKET_ITEM_ID} - {withheld}
+    envelope = strict_json_parse(bounded_case_envelope(closing))
+    assert isinstance(envelope, dict)
+    prepared = assemble_filtered_review_packet(
+        cast(dict[str, object], envelope),
+        content_by_id={key: value for key, value in content.items() if key in included},
+        included_item_ids=included,
+        withheld_item_ids={withheld},
+    )
+    packet = strict_json_parse(prepared)
+    assert isinstance(packet, dict)
+    review_packet = cast(dict[str, JsonValue], packet["review_packet"])
+    assert any(
+        isinstance(row, dict) and row.get("reason") == "never_send_heuristic"
+        for row in cast(list[JsonValue], review_packet["omissions"])
+    )
+    result = review_packet_disclosure_result(prepared)
+    assert result.failure is None
+    manifest = cast(dict[str, JsonValue], review_packet["provider_input_manifest"])
+    assert manifest["review_phase"] == "final"
+    section = cast(dict[str, JsonValue], manifest["prior_finding_context"])
+    reasons = cast(list[JsonValue], section["omission_reasons"])
+    assert "redacted_never_send" in reasons
+    assert "never_send_heuristic" not in reasons
