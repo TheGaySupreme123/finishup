@@ -224,9 +224,10 @@ SEMANTIC_MISSING_ITEMS_REJECTED_GAP: Final = "semantic_missing_items_rejected"
 # is a bounded non-convergence disclosure, not proof that a new target was supplied or that the
 # reviewer was wrong; the next step is to publish the named relationship or stop rechecking.
 SEMANTIC_MISSING_NON_CONVERGENT_GAP: Final = "semantic_missing_non_convergent"
-# tb4n1 D3: the reviewer twice could not assess the same named content (the request and its one
-# retry), so later checks of the task run without the AI-powered review instead of looping on a
-# packet that cannot show the work. A Yoetz limit, never agent work; the receipt discloses it.
+# tb4n1 D3: the reviewer twice in a row (the request and its one retry, no edit since), or four
+# times since the last assessed review, could not assess the packet, so the check runs without the
+# AI-powered review instead of looping on a packet that cannot show the work
+# (``kernel/review_round.py``). A Yoetz limit, never agent work; the receipt discloses it.
 SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
     "semantic_review_skipped_insufficient_packet"
 )
@@ -420,10 +421,10 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " deliverables."
         ),
         "declared_output_content_moved": (
-            "A declared delivered file lost most of its lines while the same change added about"
-            " as many lines to files outside the declared delivered set: content may have moved"
-            " out of a delivered file into an undelivered one. Check that the deliverable still"
-            " works where the task delivers it."
+            "A declared delivered file lost most of its lines while files outside the declared"
+            " delivered set changed or hold about as many lines (untracked files may predate the"
+            " task): content may have moved out of a delivered file into an undelivered one."
+            " Check that the deliverable still works where the task delivers it."
         ),
         "install_into_yoetz_runtime": (
             "A package install resolved to Yoetz's own runtime interpreter, not the task's."

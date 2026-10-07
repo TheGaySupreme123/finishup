@@ -606,9 +606,11 @@ class GitChangeCaptureAdapter:
             )
         except ValueError:
             raise ChangeCaptureUnavailable("unsupported_repository") from None
+        # A path Git allows but a line count cannot carry (CR or LF) is skipped, not fatal.
         changed = [
             ChangeLineCount(os.fsdecode(path), added, removed)
             for path, added, removed in _numstat_rows(numbers)
+            if b"\r" not in path and b"\n" not in path
         ]
         excludes = self._repository_excludes_file(pinned, deadline)
         if excludes is None:
@@ -621,7 +623,10 @@ class GitChangeCaptureAdapter:
             if index >= _MAX_UNTRACKED_FILES or _expired(deadline):
                 truncated = True
                 break
-            if path.endswith(b"/") or _credential_name(path):
+            if budget <= 0:
+                truncated = True
+                break
+            if path.endswith(b"/") or _credential_name(path) or b"\r" in path or b"\n" in path:
                 continue
             if not _safe_relative(path):
                 raise ChangeCaptureUnavailable("unsafe_root")

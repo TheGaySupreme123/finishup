@@ -40,8 +40,8 @@ def review_round_stopped(records: Iterable[LedgerRecord]) -> bool:
 
     True when the newest completed review concluded ``insufficient_packet`` and either the last
     ``INSUFFICIENT_PACKET_ROUND_LIMIT`` completed reviews all did with no edit action recorded
-    after the older of them, or the task has recorded ``INSUFFICIENT_PACKET_TASK_LIMIT`` such
-    reviews in all. Checks that did not run a review (local-only, skipped, blocked or failed)
+    after the older of them, or ``INSUFFICIENT_PACKET_TASK_LIMIT`` such reviews were recorded
+    since the task's last assessed review. Checks that did not run a review (local-only, skipped, blocked or failed)
     neither count nor reset; a completed review with any other conclusion resets both counts.
     """
 

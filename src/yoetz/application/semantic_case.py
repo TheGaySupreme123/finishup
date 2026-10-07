@@ -6552,7 +6552,8 @@ def _sync_prior_finding_refs(packet_obj: dict[str, JsonValue]) -> None:
 
 
 def _drop_prior_finding_rows(envelope: dict[str, JsonValue]) -> int:
-    """Remove prior-finding rows, oldest finding first, until the envelope fits (issue #905).
+    """Remove prior-finding rows until the envelope fits (issue #905): settled findings first,
+    then open findings oldest first.
 
     The dialogue section yields before any work content: every other row keeps exactly the
     bounding it had without the section. A finding's rows leave together, its ids leave the
@@ -6570,7 +6571,10 @@ def _drop_prior_finding_rows(envelope: dict[str, JsonValue]) -> int:
                 order.append((settled, source))
     # Settled findings are context only: every one leaves before any open finding does, and only
     # an open finding's loss weakens a silent review (``semantic_prior_findings_over_limit``).
-    order.sort(key=lambda entry: not entry[0])
+    # Composition lists settled findings newest first; drop the oldest settled one first, since
+    # the most recently settled is the one a reviewer is most likely to raise again.
+    settled_order = [entry for entry in order if entry[0]][::-1]
+    order = settled_order + [entry for entry in order if not entry[0]]
     dropped = 0
     packet_obj = envelope.get("review_packet")
     for settled, source in order:

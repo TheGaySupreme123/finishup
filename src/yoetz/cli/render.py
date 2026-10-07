@@ -359,7 +359,8 @@ def render_human_check(result: CheckSuccessModel) -> str:
             lines.append(f"- {item.item_id}: {_token(item.reason)}")
     if "semantic_review_skipped_insufficient_packet" in tuple(result.coverage.known_gaps):
         lines.append(
-            "AI-powered review skipped: the reviewer twice in a row (or four times in the task) "
+            "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
+            "assessed review) "
             "could not assess the packet. This is a Yoetz limit, not a blocker: verify the work "
             "yourself; a real repair re-arms the review until the task cap."
         )

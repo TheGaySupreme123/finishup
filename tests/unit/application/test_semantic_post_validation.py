@@ -1484,7 +1484,7 @@ def test_cargo_re_raises_named_by_restates_stay_one_open_finding() -> None:
 def test_restates_of_another_concern_mints_a_linked_finding_and_never_rules_on_the_target() -> None:
     """Adversarial review of #980: a ``code_defect`` naming a ``task_requirement_unmet`` finding
     is a different concern. Folding it would turn a new defect into 0 findings and a suppression;
-    it is minted, linked to the named finding, and the named finding is ruled still present."""
+    it is minted, linked to the named finding, and no ruling is recorded on the named finding."""
 
     case = _cargo_case()
     challenge = replace(

@@ -1009,7 +1009,8 @@ def summary_for_check(envelope: object) -> str:
     ):
         # tb4n1 D3: not a local-only request; the round stopped after one insufficient retry.
         prefix = (
-            "AI-powered review skipped: the reviewer twice in a row (or four times in the task) "
+            "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
+            "assessed review) "
             "could not assess the packet (verify it yourself; a repair re-arms it until the cap); "
             f"local check verdict: {verdict}; "
             f"findings returned: {findings}; suppressed: {suppressed}; "

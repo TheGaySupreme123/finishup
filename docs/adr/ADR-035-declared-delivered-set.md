@@ -86,3 +86,9 @@ needs a deterministic fact that tells the agent when its change removed a delive
 - `declared_output_content_moved` is a heuristic. A legitimate split into an undeclared helper
   module raises it (the agent can declare the helper as an output); a table moved into a binary
   file, or growth spread beyond the read's bounds, does not.
+- Untracked files are counted whether or not they predate the task (no base untracked set is
+  recorded), so a large pre-existing untracked file can supply `G` for a declared file that only
+  shrank. The receipt sentence says so ("untracked files may predate the task"); the fact stays a
+  disclosure for that reason. The declared set used to exclude growth is built from the first 64
+  probed `file` items (the requested-output probe bound); growth into a declared output beyond
+  that bound counts as undeclared. A path containing CR or LF is skipped by the line-count read.
