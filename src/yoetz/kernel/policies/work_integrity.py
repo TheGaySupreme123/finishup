@@ -25,6 +25,7 @@ from yoetz.domain.values import (
 )
 from yoetz.kernel.claims import (
     claim_discloses_result,
+    completion_claim_present,
     effective_claim_ids,
     effective_claim_items,
     result_is_relevant_to_claim,
@@ -72,6 +73,7 @@ __all__ = [
     "WORK_INTEGRITY_POLICY_ID",
     "WORK_INTEGRITY_POLICY_PACK",
     "WORK_INTEGRITY_POLICY_VERSION",
+    "reportable_absent_outputs",
     "work_integrity_findings",
 ]
 
@@ -280,7 +282,10 @@ def _requested_item_findings(
     so it raises nothing (#977, TB4: 86% of all findings were this plan-stage notice).
     ``absent_outputs`` comes from the check-time workspace read: a requested file that does not
     exist is reported whatever was published about it, because naming a file in
-    ``attempted_items`` does not create it. Obligations a recorded blocker decision names are
+    ``attempted_items`` does not create it, but only once acting on that obligation has started
+    (an edit, command or other non-research action linked to it) or a completion claim stands
+    (tb4n1 E4). Each check re-reads the workspace, so the fact clears as soon as the file exists,
+    whatever the observation coverage. Obligations a recorded blocker decision names are
     disclosed through their blocker gap instead.
     """
 
@@ -291,16 +296,22 @@ def _requested_item_findings(
         cooperative_event_ids_from_coverage(case.coverage_by_ref),
     )
     blocked = blocked_obligations(case.projection)
+    claimed = completion_claim_present(case.projection)
     for obligation_ref in sorted(_active_requested_obligations(case), key=_ascii):
         record = case.projection.obligations[obligation_ref]
         payload = record.payload
         if payload is None or obligation_ref in blocked:
             continue
         attempted = attempted_items_for_obligation(case.projection, obligation_ref)
+        # tb4n1 E4: the pre-work check the guidance asks for found every requested output absent
+        # (48 of 68 first findings), because the file obviously does not exist yet. An absent
+        # output is reported once acting on that obligation has started, or once a completion
+        # claim stands; before then it is the plan, exactly like an unattempted item.
+        reportable = started and (claimed or _obligation_acted_on(case, obligation_ref))
         unattempted = started and any(
             item.value not in attempted for item in payload.requested_items
         )
-        absent = any(
+        absent = reportable and any(
             (obligation_ref, index) in absent_outputs
             for index in range(len(payload.requested_items))
         )
@@ -320,6 +331,48 @@ def _requested_item_findings(
             )
         )
     return output
+
+
+_NON_PRODUCING_ACTIONS: Final = frozenset({ActionKind.RESEARCH, ActionKind.REVIEW})
+
+
+def reportable_absent_outputs(
+    case: DeterministicCase,
+    absent_outputs: frozenset[tuple[ObligationId, int]],
+) -> frozenset[tuple[ObligationId, int]]:
+    """The absent requested outputs this case reports: those whose obligation work has begun.
+
+    The same rule ``requested_item_never_attempted`` applies (tb4n1 E4), shared so the AI-powered
+    review packet's ``requested_output_absent`` task fact never runs ahead of the finding.
+    """
+
+    if not absent_outputs or not acting_started(
+        case.projection,
+        observed_event_ids_from_coverage(case.coverage_by_ref),
+        cooperative_event_ids_from_coverage(case.coverage_by_ref),
+    ):
+        return frozenset()
+    if completion_claim_present(case.projection):
+        return absent_outputs
+    return frozenset(pair for pair in absent_outputs if _obligation_acted_on(case, pair[0]))
+
+
+def _obligation_acted_on(case: DeterministicCase, obligation_ref: ObligationId) -> bool:
+    """Whether a recorded action works on this obligation, not merely investigates it.
+
+    Attribution follows ``attempted_items_for_obligation``: an action with no ``obligation_refs``
+    is global and covers every obligation; one that names obligations covers only those. Only an
+    ``edit``, ``command`` or ``other`` action counts. Research and review actions read; they never
+    create a requested file.
+    """
+
+    for record in case.projection.actions.values():
+        action = record.payload
+        if action is None or action.action_kind in _NON_PRODUCING_ACTIONS:
+            continue
+        if not action.obligation_refs or obligation_ref in action.obligation_refs:
+            return True
+    return False
 
 
 def _failed_work_findings(case: DeterministicCase) -> list[DeterministicAssessment]:

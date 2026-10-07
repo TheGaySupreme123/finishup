@@ -67,6 +67,7 @@ from yoetz.kernel.deterministic_checks import (
 )
 from yoetz.kernel.policies.work_integrity import (
     WORK_INTEGRITY_POLICY_PACK,
+    reportable_absent_outputs,
     work_integrity_findings,
 )
 from yoetz.kernel.projections import (
@@ -310,6 +311,82 @@ def test_absent_requested_output_is_reported_even_when_an_action_names_it() -> N
     detail = found[0].candidate.detail
     assert "best-effort artifact" in detail
     assert "revise" not in found[0].candidate.detail.lower()
+
+
+def test_pre_work_check_reports_no_absent_requested_output() -> None:
+    """tb4n1 E4: the guided pre-work check found every requested output absent.
+
+    48 of 68 first findings were this variant, 42 of them before any edit: after the plan, before
+    work, the file obviously does not exist yet. A research action is still investigation, and an
+    action on another obligation is not work on this one.
+    """
+
+    report = ObligationPublishedPayload(
+        obligation_id=obl(1),
+        description="Write the report",
+        evidence_expectation="The file",
+        status=ObligationStatus.OPEN,
+        requested_items=(RequestedItem(RequestedItemKind.FILE, "out/report.json"),),
+    )
+    other = ObligationPublishedPayload(
+        obligation_id=obl(2),
+        description="Fix the parser",
+        evidence_expectation="Tests",
+        status=ObligationStatus.OPEN,
+    )
+    plan = PlanPublishedPayload(1, "Plan", (obl(1), obl(2)))
+    research = ActionRecordedPayload(
+        action_id=act(1),
+        action_kind=ActionKind.RESEARCH,
+        description="Read the task inputs",
+        obligation_refs=(obl(1),),
+        attempted_items=("out/report.json",),
+    )
+    parser_edit = ActionRecordedPayload(
+        action_id=act(2),
+        action_kind=ActionKind.EDIT,
+        description="Edited the parser",
+        obligation_refs=(obl(2),),
+    )
+    absent = frozenset({(obl(1), 0)})
+    obligations = {obl(1): obligation_record(report, 2), obl(2): obligation_record(other, 3)}
+
+    plan_only = make_case(plans={1: plan_record(plan, 1)}, obligations=obligations)
+    assert reportable_absent_outputs(plan_only, absent) == frozenset()
+    assert not work_integrity_findings(plan_only, absent_outputs=absent)
+
+    investigating = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations=obligations,
+        actions={act(1): record(research, 4), act(2): record(parser_edit, 5)},
+    )
+    assert reportable_absent_outputs(investigating, absent) == frozenset()
+    assert not any(
+        REQUESTED_OUTPUT_ABSENT_FACT in {fact.fact_code for fact in item.basis.observed_facts}
+        for item in work_integrity_findings(investigating, absent_outputs=absent)
+    )
+
+    # Work on the report obligation begins: the absent file is now a finding.
+    report_edit = ActionRecordedPayload(
+        action_id=act(3),
+        action_kind=ActionKind.EDIT,
+        description="Started the report",
+        obligation_refs=(obl(1),),
+    )
+    working = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations=obligations,
+        actions={
+            act(1): record(research, 4),
+            act(2): record(parser_edit, 5),
+            act(3): record(report_edit, 6),
+        },
+    )
+    assert reportable_absent_outputs(working, absent) == absent
+    assert any(
+        REQUESTED_OUTPUT_ABSENT_FACT in {fact.fact_code for fact in item.basis.observed_facts}
+        for item in work_integrity_findings(working, absent_outputs=absent)
+    )
 
 
 def test_blocked_obligation_raises_no_requested_item_finding() -> None:

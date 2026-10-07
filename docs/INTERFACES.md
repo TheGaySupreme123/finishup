@@ -8407,7 +8407,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `attempted_items` names exactly (`attempted_items_for_obligation(state, obligation,
   action_kind=ActionKind.EDIT)`), since a `file` item may name a read-only input. `work_integrity_findings(case, *, absent_outputs=)`
   raises `requested_item_never_attempted` with the fact `requested_output_absent`
-  (`REQUESTED_OUTPUT_ABSENT_FACT`) for each absent pair.
+  (`REQUESTED_OUTPUT_ABSENT_FACT`) for each absent pair that
+  `reportable_absent_outputs(case, absent)` keeps: work on its obligation has begun (an `edit`,
+  `command` or `other` action attributed to it) or a completion claim stands. A requested
+  directory is `changed` when any changed path lies beneath it; the root probes as `relative`
+  `.`, inside, and is changed by any change.
 - **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the
   absent-output fact, and skips blocked obligations. `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit

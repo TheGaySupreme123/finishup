@@ -132,7 +132,10 @@ from yoetz.kernel.policies.response_support import (
     RESEARCH_REJECTION_PRESENT_FACT,
     WORK_RESPONSE_PRESENT_FACT,
 )
-from yoetz.kernel.policies.work_integrity import work_integrity_findings
+from yoetz.kernel.policies.work_integrity import (
+    reportable_absent_outputs,
+    work_integrity_findings,
+)
 from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
@@ -2168,9 +2171,10 @@ async def _requested_output_inputs(
         port=port,
         request_id=request_id,
     )
-    absent, markers = requested_output_facts(case.projection, states)
+    found, markers = requested_output_facts(case.projection, states)
+    absent = reportable_absent_outputs(case, frozenset(found))
     gaps = tuple(sorted({code for code, _obligation in markers}, key=str.encode))
-    return partial(work_integrity_findings, absent_outputs=frozenset(absent)), gaps, bool(absent)
+    return partial(work_integrity_findings, absent_outputs=absent), gaps, bool(absent)
 
 
 def run_deterministic_policies(

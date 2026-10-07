@@ -70,9 +70,17 @@ agent must not be able to stop silently with known work left.
    following a link and only `stat`-ed, and `git check-ignore -q` answers whether Git would add
    it (honouring `.gitignore`, `.git/info/exclude`, a repository excludes file and the owner's
    global ignore file); for an ignored path a second `git check-ignore -v` names the rule's source.
+   A requested directory is changed when the change touches any path beneath it (the capture
+   lists files, never directories), and the repository root itself is inside and changed by any
+   change (tb4n1: `/app/src` with four new files was reported unchanged and `/app` outside; #987).
    A file that does not exist, and is not a tracked file the change deletes, raises
    `requested_item_never_attempted` with the fact `requested_output_absent`, whatever was
-   published: naming a file in `attempted_items` does not create it. An output excluded by
+   published: naming a file in `attempted_items` does not create it. It is raised only once work
+   on that obligation has begun — an `edit`, `command` or `other` action attributed to it (an
+   action with no `obligation_refs` is global) — or a completion claim stands; before then it is
+   the plan, and the guided pre-work check found every output absent (tb4n1: 48 of 68 first
+   findings; #989). The review packet's `requested_output_absent` task fact follows the same
+   rule (`reportable_absent_outputs`). An output excluded by
    `.git/info/exclude` (a local exclude) or by a `.gitignore` the task's own change created is
    `requested_output_git_ignored` (agent-actionable: diff-based delivery omits it; in shadow-relay
    the agent added the exclude); one ignored by a pre-existing `.gitignore`, even one the task
