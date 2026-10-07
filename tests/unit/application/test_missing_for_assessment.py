@@ -1153,3 +1153,28 @@ def test_a_repeated_unshowable_request_stops_the_review_round() -> None:
     # An item the agent can still supply never stops the round.
     suppliable = MissingForAssessmentItem("verification_output", (str(evd(5)),), "agent_suppliable")
     assert not semantic_round_exhausted(_pending(base, *repeat.items, suppliable).projection)
+
+
+def test_a_hook_observed_image_is_an_unsupported_data_type() -> None:
+    """tb4n1 D6 + L3 P3-2: an observed image tool result is kept as a digest only, never sent."""
+
+    image = EvidenceRecordedPayload(
+        evd(7),
+        EvidenceKind.ARTIFACT,
+        EvidenceImmutability.CONTENT_DIGEST,
+        timestamp_from_string("2026-09-27T00:00:00.000Z"),
+        content_digest="sha256:" + "d" * 64,
+        description="Observed image tool result image/png 800x600 (5120 bytes); "
+        "pixels were not captured or sent",
+        digest_binding=EvidenceDigestBinding(
+            subject=EvidenceDigestSubject.ARTIFACT_BYTES,
+            content_availability=EvidenceContentAvailability.DIGEST_ONLY,
+            byte_count=5120,
+            provenance=EvidenceDigestProvenance.OBSERVATION_CAPTURED,
+        ),
+    )
+    case = make_case(evidence={evd(7): evidence_record(image, 7)}, extra_refs=(evd(7),))
+    review = review_missing_for_assessment(
+        case, (), _first_request("other", str(evd(7))), unsuppliable_kinds=frozenset()
+    )
+    assert [item.availability for item in review.items] == ["yoetz_limit_unsupported_data_type"]

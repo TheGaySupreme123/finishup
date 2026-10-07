@@ -30,7 +30,9 @@ from yoetz.domain.events import (
     ActionRecordedPayload,
     ClaimRecordedPayload,
     ClaimRecordedPayloadV1_1,
+    EvidenceContentAvailability,
     EvidenceDigestProvenance,
+    EvidenceDigestSubject,
     EvidenceRecordedPayload,
     MissingForAssessmentItem,
     PlanPublishedPayload,
@@ -1037,6 +1039,39 @@ class _TargetFiles:
                 names.update(self.captured.get(str(ref), frozenset()))
         return frozenset(name for name in names if name)
 
+    def observed_image(self, target: str) -> bool:
+        """Whether the target is, or cites, a hook-observed image kept as a digest only.
+
+        A host image tool result is recorded as service-stamped ``artifact_bytes`` evidence with
+        ``digest_only`` availability (L3 P3-2): its pixels never reach the packet, so a reviewer
+        request for it is an unsupported data type, never agent work.
+        """
+
+        projection = self.links.projection
+        refs = {target}
+        for row in projection.results.values():
+            payload = row.payload
+            if payload is not None and str(payload.action_id) == target:
+                refs.update(str(ref) for ref in payload.evidence_refs)
+        for ref, row in projection.evidence.items():
+            payload = row.payload
+            if (
+                str(ref) not in refs
+                or payload is None
+                or type(payload) is not EvidenceRecordedPayload
+            ):
+                continue
+            binding = payload.digest_binding
+            if (
+                binding is not None
+                and binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED
+                and binding.subject is EvidenceDigestSubject.ARTIFACT_BYTES
+                and binding.content_availability is not EvidenceContentAvailability.CAPTURED
+                and (payload.description or "").startswith("Observed image")
+            ):
+                return True
+        return False
+
 
 def _unsupported_data_type(name: str) -> bool:
     base = name.rstrip("/").rsplit("/", 1)[-1].lower()
@@ -1054,7 +1089,9 @@ def _yoetz_limit(
 ) -> str:
     """Whether Yoetz's own packet, not the agent, is why the reviewer could not see the item."""
 
-    if any(_unsupported_data_type(name) for ref in refs for name in paths_of(ref)):
+    if any(_unsupported_data_type(name) for ref in refs for name in paths_of(ref)) or any(
+        paths_of.observed_image(ref) for ref in refs
+    ):
         return YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE
     if set(refs) & packet_limited_refs:
         return YOETZ_LIMIT_PACKET_ROOM
