@@ -17,6 +17,7 @@ from yoetz.protocol.ids import IdKind, validate_id
 __all__ = [
     "PRIVACY_REQUEST_BODY_DOMAIN",
     "SESSION_HASH_DOMAIN",
+    "EGRESS_CREDENTIAL_PLACEHOLDER",
     "DiagnosticRedactionProfile",
     "PersistenceScanResult",
     "PrivacyFenceError",
@@ -30,6 +31,7 @@ __all__ = [
     "redact_diagnostic_record",
     "redact_diagnostic_value",
     "redact_heuristic_spans",
+    "redact_high_confidence_content",
     "redact_sensitive_content",
     "scan_for_sensitive_content",
     "scan_finding_is_heuristic",
@@ -40,6 +42,16 @@ SESSION_HASH_DOMAIN: Final = b"yoetz/session-log-id/v1\x00"
 PRIVACY_REQUEST_BODY_DOMAIN: Final = b"yoetz/privacy-egress-request/v1\x00"
 
 _MAX_SCAN_FINDINGS: Final = 128
+_PERSISTED_REDACTION_MARKER: Final = b"[REDACTED]"
+# Egress-only replacement for a credential-like value (issue #982, owner decision B2): the value,
+# and only the value, is replaced in place so the reviewer still sees the rest of the line, item
+# and file, and is told why the value is missing. The text is fixed; it carries no source bytes.
+# It has no whitespace, so an unquoted value (``TOKEN=...``) is replaced by one scanner-exempt
+# unquoted value rather than by text whose first word would re-match as a fresh assignment.
+EGRESS_CREDENTIAL_PLACEHOLDER: Final = b"[withheld-by-yoetz:possible-credential]"
+_EXEMPT_REPLACEMENT_MARKERS: Final = frozenset(
+    {_PERSISTED_REDACTION_MARKER, EGRESS_CREDENTIAL_PLACEHOLDER}
+)
 _MAX_CANARIES: Final = 64
 _MAX_CANARY_BYTES: Final = 4_096
 _SCAN_CHUNK_BYTES: Final = 65_536
@@ -138,6 +150,57 @@ _CODE_LIKE_CALL_VALUE = re.compile(
 )
 _CODE_LIKE_ENUM_VALUE = re.compile(rb"^(?:[A-Z][A-Za-z0-9_]*\.)+[A-Z][A-Za-z0-9_]*$")
 _TOKEN_LIKE_ASSIGNMENT_NAME = re.compile(rb"(?i)^(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])?token$")
+# Issue #982: values that cannot be credential material. Real tb4n1 captures showed the assignment
+# heuristics firing on ordinary source (``self.bot_token = "<|tool_call_start|>"``, ``bot_token:
+# str``, ``token = data[i]``, ``token == ...``), which redacted local evidence for nothing. Each
+# rule below inspects only the bounded match and never retains or logs the value.
+# A ``*token`` value is opaque material: base64/base64url/JWT/hex/URL-safe bytes, never
+# whitespace, brackets, braces, parentheses, pipes, quotes or backticks.
+_TOKEN_VALUE_CHARS: Final = re.compile(rb"^[A-Za-z0-9._~+/=:@%!#$&*?^-]+$")
+_MIN_TOKEN_VALUE_BYTES: Final = 8
+# Characters that make an unquoted value a source expression or markup, not a credential.
+_UNQUOTED_CODE_CHARS: Final = re.compile(rb"[()\[\]<>|`]")
+_NUMERIC_VALUE: Final = re.compile(rb"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")
+# Language literals and type annotations (``password: str``, ``per_token=True``).
+_NON_CREDENTIAL_WORDS: Final = frozenset(
+    {
+        b"None",
+        b"True",
+        b"False",
+        b"null",
+        b"nil",
+        b"true",
+        b"false",
+        b"undefined",
+        b"str",
+        b"int",
+        b"bool",
+        b"bytes",
+        b"float",
+        b"object",
+        b"Any",
+        b"string",
+        b"number",
+        b"boolean",
+        b"Optional",
+        b"SecretStr",
+    }
+)
+# ``self.bos_id``, ``this.token`` and ``cls.prefix`` name an attribute; they are never a value.
+_RECEIVER_ATTRIBUTE_VALUE: Final = re.compile(rb"^(?:self|this|cls)(?:\.[A-Za-z_][A-Za-z0-9_]*)+$")
+# A digit-free snake/constant identifier (``TOOL_CALL_START``, ``normal_text``) is a source name;
+# random credential material of eight or more bytes practically always carries a digit. Dotted
+# values such as ``opaque.value`` stay ambiguous and keep matching.
+_DIGITLESS_IDENTIFIER_VALUE: Final = re.compile(rb"^[A-Za-z]+(?:_[A-Za-z]+)+$")
+# Documentation placeholders: ``"<your-api-key>"``, ``"${API_KEY}"``, ``"{{ token }}"``, ``gw_...``.
+_PLACEHOLDER_VALUE: Final = re.compile(
+    rb"^(?:<[^<>]{1,256}>|\$\{[^{}]{1,256}\}|\{\{[^{}]{1,256}\}\}|.{0,256}(?:\.\.\.|\xe2\x80\xa6))$",
+    re.DOTALL,
+)
+_LINE_BREAK_SEPARATOR: Final = re.compile(rb"[\r\n]|\\[nr]")
+# After a line break, ``NEXT_KEY=`` or ``nested:`` is the next key, not this key's value.
+_NEXT_KEY_VALUE: Final = re.compile(rb"^[A-Za-z_][A-Za-z0-9_.-]*[:=]$")
+_ENCODED_ESCAPE: Final = re.compile(rb"\\")
 
 _LOG_FIELDS: Final = frozenset(
     {
@@ -509,16 +572,16 @@ def _assignment_value_is_code(
     if separator is None:
         return False
     value = raw[separator.end() :]
-    # This is Yoetz's own bounded replacement marker. It carries no secret bytes, so allowing the
-    # scanner to classify the marker as a fresh assignment would make every structured redaction
-    # fail its final scan. Only the exact marker is exempt; any suffix remains heuristic.
+    # These are Yoetz's own bounded replacement markers. They carry no secret bytes, so allowing
+    # the scanner to classify a marker as a fresh assignment would make every structured redaction
+    # fail its final scan. Only the exact markers are exempt; any suffix remains heuristic.
     if value.startswith(b'\\"'):
         marker_value = value[2:-2] if value.endswith(b'\\"') else value[2:]
     elif value.startswith((b"'", b'"')):
         marker_value = value[1:-1] if value.endswith(value[:1]) else value[1:]
     else:
         marker_value = value
-    if _TRAILING_ENCODED_SPACE.sub(b"", marker_value) == b"[REDACTED]":
+    if _TRAILING_ENCODED_SPACE.sub(b"", marker_value) in _EXEMPT_REPLACEMENT_MARKERS:
         return True
     # Quoted values are literals even when their text resembles source code. Keep them in the
     # heuristic class so a value such as ``TOKEN='nextToken(parser)'`` is still withheld.
@@ -558,6 +621,61 @@ def _assignment_value_is_code(
             or (separator.group(0).startswith(b":") and lhs_name == b"token")
         )
     return False
+
+
+def _assignment_value_cannot_be_credential(match: re.Match[bytes], *, token_family: bool) -> bool:
+    """Reject assignment matches whose value cannot be credential material (issue #982).
+
+    The rules are deliberately narrow and value-shaped. Comparisons and walrus operators are not
+    assignments; an unquoted value on the next line belongs to a nested key, not this one; source
+    expressions, language literals, type names and documentation placeholders carry no secret.
+    ``*token`` values additionally have to look like opaque token material of at least eight
+    bytes. Password/secret/API-key values keep every other shape, including short ones and ones
+    with punctuation, because human-chosen passwords legitimately take those forms.
+    """
+
+    raw = match.group(0)
+    separator = _assignment_separator(raw)
+    if separator is None:
+        return False
+    value = raw[separator.end() :]
+    if not value or value.startswith(b"="):
+        # ``token == other``, ``token := next(it)``: a comparison or walrus, not an assignment.
+        return True
+    if value.startswith(b'\\"'):
+        quoted = True
+        inner = value[2:-2] if value.endswith(b'\\"') and len(value) >= 4 else value[2:]
+    elif value.startswith((b"'", b'"')):
+        quoted = True
+        inner = value[1:-1] if value.endswith(value[:1]) and len(value) >= 2 else value[1:]
+    else:
+        quoted = False
+        # An unquoted value read from encoded text runs through escapes such as ``\n``; classify
+        # only the part before the first escape. The match span itself is unchanged.
+        escape = _ENCODED_ESCAPE.search(value)
+        inner = value if escape is None else value[: escape.start()]
+        if not inner:
+            return True
+        if (
+            _LINE_BREAK_SEPARATOR.search(separator.group(0)) is not None
+            and _NEXT_KEY_VALUE.fullmatch(inner) is not None
+        ):
+            # An empty ``OPENAI_API_KEY=`` followed by ``OPENAI_BASE_URL=`` on the next line, or
+            # a YAML ``mask_secret:`` whose next line opens a nested ``anonymizer:`` mapping.
+            return True
+        if _UNQUOTED_CODE_CHARS.search(inner) is not None:
+            return True
+        if inner in _NON_CREDENTIAL_WORDS or _RECEIVER_ATTRIBUTE_VALUE.fullmatch(inner):
+            return True
+    if _PLACEHOLDER_VALUE.fullmatch(inner) is not None:
+        return True
+    if not token_family:
+        return False
+    if len(inner) < _MIN_TOKEN_VALUE_BYTES or _TOKEN_VALUE_CHARS.fullmatch(inner) is None:
+        return True
+    if _NUMERIC_VALUE.fullmatch(inner) is not None:
+        return True
+    return not quoted and _DIGITLESS_IDENTIFIER_VALUE.fullmatch(inner) is not None
 
 
 def _scan_chunks(data: bytes) -> Iterator[tuple[int, bytes]]:
@@ -657,6 +775,8 @@ def scan_for_sensitive_content(
                     preceding=data[max(0, absolute_start - 1024) : absolute_start],
                     absolute_start=absolute_start,
                     python_attribute_spans=python_attribute_spans,
+                ) or _assignment_value_cannot_be_credential(
+                    match, token_family=pattern is _TOKEN_ASSIGNMENT
                 ):
                     continue
                 _append_finding(
@@ -695,7 +815,12 @@ def assert_plaintext_safe(
     raise PrivacyFenceError(reason, surface)
 
 
-def _replace_sensitive_spans(data: bytes, findings: tuple[ScanFinding, ...]) -> bytes:
+def _replace_sensitive_spans(
+    data: bytes,
+    findings: tuple[ScanFinding, ...],
+    *,
+    marker: bytes = _PERSISTED_REDACTION_MARKER,
+) -> bytes:
     pieces: list[bytes] = []
     cursor = 0
     for finding in findings:
@@ -720,9 +845,9 @@ def _replace_sensitive_spans(data: bytes, findings: tuple[ScanFinding, ...]) -> 
             closing_quote = (
                 opening_quote if opening_quote and value.endswith(opening_quote) else b""
             )
-            pieces.append(raw[: separator.end()] + opening_quote + b"[REDACTED]" + closing_quote)
+            pieces.append(raw[: separator.end()] + opening_quote + marker + closing_quote)
         else:
-            pieces.append(b"[REDACTED]")
+            pieces.append(marker)
         cursor = finding.end_offset
     pieces.append(data[cursor:])
     return b"".join(pieces)
@@ -759,6 +884,10 @@ class PersistenceScanResult:
             raise ValueError("persistence_scan_withheld_must_be_empty")
 
 
+def _high_confidence_findings(findings: tuple[ScanFinding, ...]) -> tuple[ScanFinding, ...]:
+    return tuple(finding for finding in findings if finding.confidence is ScanConfidence.HIGH)
+
+
 def prepare_persisted_plaintext(
     data: bytes,
     *,
@@ -766,8 +895,12 @@ def prepare_persisted_plaintext(
 ) -> PersistenceScanResult:
     """Classify bytes before encoding or encrypted persistence.
 
-    Known secret spans are redacted in memory. A canary match or scanner
-    failure withholds the payload so original bytes never reach an object.
+    High-confidence secret spans (known credential shapes, private-key markers, URI passwords)
+    are redacted in memory. A canary match or scanner failure withholds the payload so original
+    bytes never reach an object. Heuristic-only assignment matches are kept as captured (issue
+    #982): they live only in the encrypted local store, local and deterministic checks may read
+    them, and every egress path re-scans and replaces them before anything leaves the machine.
+    ``redacted`` is true only when bytes were actually replaced.
     """
 
     if type(data) is not bytes:
@@ -776,26 +909,51 @@ def prepare_persisted_plaintext(
         findings = scan_for_sensitive_content(data, canaries=canaries)
     except PrivacyFenceError, TypeError, ValueError:
         return PersistenceScanResult(False, b"", True, ())
-    kinds = tuple(dict.fromkeys(finding.kind for finding in findings))
-    if any(finding.kind == "canary" for finding in findings):
+    high = _high_confidence_findings(findings)
+    kinds = tuple(dict.fromkeys(finding.kind for finding in high))
+    if any(finding.kind == "canary" for finding in high):
         return PersistenceScanResult(False, b"", True, kinds)
-    # The public scanner deliberately caps structural findings. Reaching that
-    # cap does not prove there is no later match, so encrypted persistence must
-    # withhold instead of redacting only the visible prefix of the finding set.
-    if len(findings) >= _MAX_SCAN_FINDINGS:
+    # The public scanner deliberately caps structural findings. High-confidence detectors run
+    # before the heuristics, so a cap reached by heuristic findings still leaves the complete
+    # high-confidence set. A cap reached by high-confidence findings alone does not prove there
+    # is no later match, so encrypted persistence withholds instead of redacting a prefix.
+    if len(high) >= _MAX_SCAN_FINDINGS:
         return PersistenceScanResult(False, b"", True, kinds)
-    if not findings:
+    if not high:
         return PersistenceScanResult(True, data, False, ())
-    return PersistenceScanResult(True, _replace_sensitive_spans(data, findings), True, kinds)
+    redacted = _replace_sensitive_spans(data, high)
+    return PersistenceScanResult(True, redacted, redacted != data, kinds)
 
 
 def redact_sensitive_content(data: bytes) -> tuple[bytes, bool]:
-    """Replace every detected credential/key span without retaining the match."""
+    """Replace every detected credential/key span without retaining the match.
+
+    This includes heuristic-only assignment matches. It is for content that is about to be
+    disclosed; capture and at-rest paths use ``redact_high_confidence_content``.
+    """
 
     findings = scan_for_sensitive_content(data)
     if not findings:
         return data, False
     return _replace_sensitive_spans(data, findings), True
+
+
+def redact_high_confidence_content(data: bytes) -> tuple[bytes, bool]:
+    """Capture-time redaction: replace only high-confidence credential/key spans.
+
+    Heuristic-only assignment matches stay as captured (issue #982); they are redacted at egress
+    by ``redact_heuristic_spans`` and the final-body scan. The flag is true only when bytes were
+    actually replaced. Callers that persist the result still pass it through
+    ``prepare_persisted_plaintext``, which re-scans and withholds on canary or saturation.
+    """
+
+    if type(data) is not bytes:
+        raise TypeError("redaction_data_not_bytes")
+    high = _high_confidence_findings(scan_for_sensitive_content(data))
+    if not high:
+        return data, False
+    redacted = _replace_sensitive_spans(data, high)
+    return redacted, redacted != data
 
 
 def redact_heuristic_spans(data: bytes) -> tuple[bytes, int]:
@@ -804,7 +962,9 @@ def redact_heuristic_spans(data: bytes) -> tuple[bytes, int]:
     Heuristic findings are never evidence that a byte is safe to disclose.  This helper is for
     sinks that have already established that the candidate contains no high-confidence finding:
     it preserves the surrounding item while ensuring the suspicious span cannot reach a local or
-    external disclosure sink.  Callers still run the ordinary final-body scan afterwards.
+    external disclosure sink.  Only the value is replaced, by ``EGRESS_CREDENTIAL_PLACEHOLDER``,
+    which tells the reader the value may be a credential and was withheld.  Callers still run the
+    ordinary final-body scan afterwards.
     """
 
     if type(data) is not bytes:
@@ -815,7 +975,10 @@ def redact_heuristic_spans(data: bytes) -> tuple[bytes, int]:
     )
     if not heuristic:
         return data, 0
-    return _replace_sensitive_spans(data, heuristic), len(heuristic)
+    return (
+        _replace_sensitive_spans(data, heuristic, marker=EGRESS_CREDENTIAL_PLACEHOLDER),
+        len(heuristic),
+    )
 
 
 def _safe_mac(handle: MacKeyHandle, domain: bytes, message: bytes) -> str:

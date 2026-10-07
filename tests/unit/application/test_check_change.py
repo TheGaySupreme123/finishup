@@ -30,10 +30,14 @@ def _capture(text: bytes) -> CheckChangeCapture:
 
 
 def test_parser_source_with_more_matches_than_one_scan_reports_is_fully_redacted() -> None:
-    """Parser code (the meriyah shape) repeats ``token = ...`` far past one scan's finding cap."""
+    """A change can repeat credential-shaped ``token = ...`` lines far past one scan's cap.
+
+    The meriyah parser shape (``token = parser.getToken()``) is source code and no longer
+    matches (issue #982), so the repeated line is a quoted credential-shaped literal.
+    """
 
     lines = b"".join(
-        f"+  const token = parser.getToken{index}();\n".encode() for index in range(600)
+        f'+  const token = "a8F3kL9q{index:04d}Zx";\n'.encode() for index in range(600)
     )
     text = b"diff --git a/src/parser.ts b/src/parser.ts\n" + lines
 

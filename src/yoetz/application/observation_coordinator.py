@@ -394,10 +394,11 @@ def build_inspection_excerpt_manifest(
 ) -> tuple[bytes | None, bool, bool, bool]:
     """Scan changed-file excerpts before base64 encoding.
 
-    Returns ``(canonical_bytes, capture_unavailable, redacted, truncated)``. Secret matches
-    persist only path/digest/finding-kind metadata. A scanner failure or canary match stores no
-    excerpt object. Redaction and truncation remain explicit coverage limitations without
-    requiring a later consumer to reopen captured bytes.
+    Returns ``(canonical_bytes, capture_unavailable, redacted, truncated)``. High-confidence
+    secret matches persist only path/digest/finding-kind metadata; heuristic-only matches are
+    kept in the encrypted excerpt and redacted at egress (issue #982). A scanner failure or
+    canary match stores no excerpt object. Redaction and truncation remain explicit coverage
+    limitations without requiring a later consumer to reopen captured bytes.
     """
 
     parts: list[JsonObject] = []
