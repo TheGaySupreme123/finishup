@@ -9182,6 +9182,17 @@ class LocalObservationStore:
             return False
 
     @_read_mostly
+    def buffered_admission_host_sessions(self, workspace: str) -> tuple[str, ...]:
+        """Return the host sessions with inputs still held in the admission buffer (#1012)."""
+
+        with self._reading():
+            state = self._load(workspace)
+            return tuple(
+                sorted(
+                    {item.host_session for item in state.admission_buffer.inputs}, key=str.encode
+                )
+            )
+
     def pending_workspaces(self) -> tuple[str, ...]:
         """Return opaque commitments with delivery, lifecycle, or capture recovery work."""
 

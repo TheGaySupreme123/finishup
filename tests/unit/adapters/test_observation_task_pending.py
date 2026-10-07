@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
 from yoetz.adapters.integrations.observation_local import LocalObservationStore
 from yoetz.adapters.integrations.observation_task_pending import (
@@ -130,3 +132,32 @@ def test_stop_wrapper_keeps_its_counting_rule(tmp_path: Path) -> None:
         )
         == 1
     )
+
+
+def test_buffered_inputs_of_this_task_are_flushed_into_the_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of #1012: routine reads held in the admission buffer must not read as delivered."""
+
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = _workspace(store, tmp_path / "w")
+    mine = new_id(IdKind.SESSION)
+    _map(tmp_path, "mine", mine)
+    _map(tmp_path, "theirs", new_id(IdKind.SESSION))
+    _enqueue(store, workspace, "theirs", 1)  # keeps the workspace in pending_workspaces
+    flushed: list[str | None] = []
+
+    def buffered(_workspace: str) -> tuple[str, ...]:
+        return ("mine", "theirs")
+
+    def flush(_workspace: str, **kwargs: object) -> bool:
+        flushed.append(kwargs.get("host_session"))  # type: ignore[arg-type]
+        assert kwargs.get("force") is True
+        _enqueue(store, workspace, "mine", 7)
+        return True
+
+    monkeypatch.setattr(store, "buffered_admission_host_sessions", buffered)
+    monkeypatch.setattr(store, "flush_selected_admission", flush)
+    identities = session_pending_row_identities(store, yoetz_session_id=mine, _state=tmp_path)
+    assert flushed == ["mine"]
+    assert len(identities) == 1

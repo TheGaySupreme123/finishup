@@ -90,8 +90,23 @@ def session_pending_row_identities(
     of the structural row, never its content, and are compared only inside the service.
     """
 
+    from yoetz.adapters.integrations.observation_admission import build_routine_read_summary
+
     identities: set[str] = set()
     for workspace in store.pending_workspaces():
+        # Inputs still held in the admission buffer (routine reads and pending attempts, held
+        # up to a few seconds for summarization) are not outbox rows yet. Flush this task's
+        # host sessions now so the wait covers them instead of reporting `complete` early.
+        for host_session in store.buffered_admission_host_sessions(workspace):
+            mapping = load_mapping(host_session, _state=_state)
+            if mapping is None or mapping.yoetz_session_id != yoetz_session_id:
+                continue
+            store.flush_selected_admission(
+                workspace,
+                summary_builder=build_routine_read_summary,
+                force=True,
+                host_session=host_session,
+            )
         for row in task_pending_outbox_rows(
             store,
             workspace_commitment=workspace,
