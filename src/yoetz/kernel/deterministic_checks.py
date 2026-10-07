@@ -2071,9 +2071,18 @@ def build_deterministic_case(
 
     # A hook result whose unknown outcome the host's stream later supplied for the same action
     # no longer leaves `host_outcome_unavailable` in the case: the outcome is recorded (#1001).
+    # Only service-derived hook observations take part on either side (ADR-022 decision 2 keeps
+    # `hook_observed` unselectable by cooperative requests), so an agent-published result can
+    # neither be superseded nor supersede.
+    def _hook_observed(source_event: EventId) -> bool:
+        record = records_by_event.get(source_event)
+        return record is not None and PublicationChannel.HOOK_OBSERVED in set(
+            record.coverage.publication_channels
+        )
+
     superseded_sources = {
         projection.results[result].source_event_id
-        for result in superseded_unknown_results(projection.results)
+        for result in superseded_unknown_results(projection.results, include=_hook_observed)
     }
     for record in accepted_prefix:
         for known_gap in record.coverage.known_gaps:

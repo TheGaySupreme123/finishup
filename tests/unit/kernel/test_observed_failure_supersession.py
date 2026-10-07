@@ -483,3 +483,21 @@ def test_an_edit_never_retires_a_failure(outcome: ResultOutcome) -> None:
     ledger.claim()
     expected = (failed, edit) if outcome is ResultOutcome.PARTIAL else (failed,)
     assert omitted_results(ledger) == expected
+
+
+def test_a_stream_corrected_unknown_hook_result_is_not_a_claim_limitation() -> None:
+    """#1001: the unknown hook copy of a corrected Codex call never mints its own limitation."""
+
+    for outcome, exit_status, expected_limiting in (
+        (ResultOutcome.SUCCESS, 0, 0),
+        (ResultOutcome.FAILURE, 2, 1),
+    ):
+        ledger = ObservedLedger()
+        unknown = ledger.run("pytest -q tests/test_soc.py", ResultOutcome.UNKNOWN)
+        corrected = ledger.correct_outcome(unknown, outcome, exit_status=exit_status)
+        ledger.claim()
+        limiting = omitted_results(ledger)
+        assert unknown not in limiting
+        assert len(limiting) == expected_limiting
+        if expected_limiting:
+            assert limiting == (corrected,)
