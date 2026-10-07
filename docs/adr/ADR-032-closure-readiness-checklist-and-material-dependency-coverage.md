@@ -289,6 +289,10 @@ is untagged, and the new code `preexisting_test_skip_unknown` is classified stan
 table. A Codex unified-exec follow-up (`write_stdin`) is still materialized as `other`, so a long
 run's final exit status reaches the ledger only through a session-stream outcome correction; the
 outcome-less run still corroborates.
+Since #1001 a call whose unknown hook result has such a correction counts once, with the corrected
+outcome, in check totals and the deterministic scope, and its `host_outcome_unavailable` gap leaves
+the frozen case; tb4n1 recorded every Codex shell call twice (one unknown, one known), which made
+a clean deterministic verdict unreachable on Codex.
 
 ## Amendment — blockers outside the agent's control and task facts (2026-10-06, #977)
 

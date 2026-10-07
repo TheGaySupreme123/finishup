@@ -4845,7 +4845,11 @@ Outcome semantics and back-pressure vocabulary (ADR-022 decisions 12–13):
   `material_limitation_omitted` candidate per such record. Observed work facts (durable per-call
   action/result records), the acquisition limitation (`host_outcome_unavailable` coverage gap),
   actionable findings (explicit `FAILURE`/`PARTIAL`, cooperative `UNKNOWN`), and receipt gaps stay
-  distinct surfaces.
+  distinct surfaces. When the session stream later appends the corrected outcome for the same
+  action (`materialize_observation_outcome_correction`), the unknown hook result is superseded for
+  readers (`kernel/outcome_corrections.superseded_unknown_results`): check totals count that call
+  once with the recorded outcome, and the frozen case drops that record's
+  `host_outcome_unavailable` gap. Both ledger rows stay immutable (#1001).
 - `operation_pending` is the retryable ingest-rejection reason for designed observation
   back-pressure (check-acquisition/frozen-case barriers and adjacent transient bundle/frontier
   contention). It keeps the outbox row pending and annotated, but is never a current observation

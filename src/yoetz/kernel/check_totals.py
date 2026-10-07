@@ -27,6 +27,7 @@ from yoetz.kernel.observed_failures import (
     observed_event_ids_from_coverage,
     observed_failure_states,
 )
+from yoetz.kernel.outcome_corrections import superseded_unknown_results
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.test_edit_visibility import PreExistingTestEdits
 
@@ -93,9 +94,12 @@ def build_check_totals(
     observed = observed_event_ids_from_coverage(case.coverage_by_ref)
     failures = observed_failure_states(state, observed, through=case.frontier.sequence)
     commands = dict.fromkeys(CHECK_TOTAL_KEYS["commands"], 0)
+    # One host call is one command: a Codex hook result recorded as unknown and later enriched
+    # by the stream's corrected outcome for the same action counts once, with that outcome (#1001).
+    superseded = superseded_unknown_results(state.results, include=observed.__contains__)
     for result_id, result in state.results.items():
         payload = result.payload
-        if payload is None or result.source_event_id not in observed:
+        if payload is None or result.source_event_id not in observed or result_id in superseded:
             continue
         action = state.actions.get(payload.action_id)
         if (
