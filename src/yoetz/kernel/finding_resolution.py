@@ -109,6 +109,8 @@ from yoetz.protocol.policy_packs import (
 
 __all__ = [
     "CAPTURE_FAILURE_GAPS",
+    "DETERMINISTIC_PROOF_TOLERATED_GAPS",
+    "SEMANTIC_ONLY_GAPS",
     "REVIEW_SELECTION_GAPS",
     "SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS",
     "SEMANTIC_REFERENCE_SCOPE_REDUCED_GAP",
@@ -268,6 +270,9 @@ _DETERMINISTIC_PROOF_TOLERATED_GAPS: Final = (
     _BASE_DETERMINISTIC_PROOF_TOLERATED_GAPS | _HOST_OBSERVATION_GAPS | REVIEW_SELECTION_GAPS
 )
 _SEMANTIC_PROOF_TOLERATED_GAPS: Final = _EVIDENCE_STRENGTH_GAPS | _REVIEW_DIALOGUE_DISCLOSURE_GAPS
+# Read-only public names for ``kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`` (#986).
+DETERMINISTIC_PROOF_TOLERATED_GAPS: Final = _DETERMINISTIC_PROOF_TOLERATED_GAPS
+SEMANTIC_ONLY_GAPS: Final = _SEMANTIC_ONLY_GAPS
 # Structural test-edit accounting (ADR-032) is read by exactly one local rule: the unjustified
 # pre-existing test edit, which raises ``task_requirement_unmet`` with the fact
 # ``preexisting_test_edit_unjustified``. It is local accounting, never a basis of any other rule.

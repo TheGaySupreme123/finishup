@@ -103,6 +103,7 @@ from yoetz.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     CaseGap,
 )
+from yoetz.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
 from yoetz.kernel.finding_resolution import (
     finding_resolution_explanation,
     issue_key,
@@ -114,11 +115,9 @@ from yoetz.kernel.observed_failures import (
     observed_event_ids_from_records,
     observed_failure_states,
 )
-from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS
 from yoetz.kernel.plan_scope import CurrentPlanScope, current_plan_scope
 from yoetz.kernel.projections import ObligationProjectionRecord, ProjectionRecord, ProjectionState
 from yoetz.kernel.reducers import is_material_event_family
-from yoetz.kernel.task_facts import STANDING_TASK_FACT_GAPS
 from yoetz.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, weakest
 from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile, SemanticStatus
 
@@ -908,9 +907,8 @@ def _conclusion(
     *,
     self_verified: bool = False,
 ) -> ReceiptConclusion:
-    advisory_gaps = (
-        PLAN_DRIFT_ADVISORY_GAPS | PREEXISTING_TEST_INFORMATIONAL_GAPS | STANDING_TASK_FACT_GAPS
-    )
+    # One clean-compatible list for the receipt and the scoped deterministic verdict (#986).
+    advisory_gaps = CLEAN_COMPATIBLE_GAPS
     if _COMPLETION_SCOPE_GAPS & set(context.coverage.known_gaps):
         # These two closed gaps bound completion itself. Findings remain visible and actionable,
         # but they cannot make an empty completion scope read as sufficiently covered.
@@ -937,8 +935,14 @@ def _conclusion(
         return ReceiptConclusion.INSUFFICIENT_COVERAGE
     if check.verdict is CheckVerdict.ACTION_REQUIRED:
         raise ValueError(_CONTEXT_INVALID)
+    # A pack that ran to completion, or that had nothing to judge on the whole case
+    # (``skipped/not_applicable``: no root of its kind exists, e.g. the coordination pack on a
+    # single-agent run), leaves nothing unexamined (#986). ``scope_excluded`` (a scoped check
+    # left roots of the pack unexamined) and ``material_unavailable`` (its roots were
+    # unreadable) are real coverage loss and stay incomplete, as does ``failed``.
     executions_complete = all(
-        execution.outcome == "run" and execution.reason == "completed"
+        (execution.outcome == "run" and execution.reason == "completed")
+        or (execution.outcome == "skipped" and execution.reason == "not_applicable")
         for execution in check.policy_executions
     )
     if (

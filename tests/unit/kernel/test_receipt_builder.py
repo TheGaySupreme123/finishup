@@ -1867,3 +1867,90 @@ def test_check_time_change_unavailable_reason_is_a_plain_sentence_in_every_forma
     ):
         assert "The check-time change was unavailable: " in rendered
         assert phrase in rendered
+
+
+def _single_agent_check(
+    coverage: Coverage, *, research_reason: str = "completed"
+) -> CheckRecordedPayload:
+    """A deterministic-only check of a single-agent run: no coordination records exist."""
+
+    research_outcome = "run" if research_reason == "completed" else "skipped"
+    return replace(
+        _check(CheckVerdict.NO_ISSUE_DETECTED, coverage),
+        policies=(
+            PolicyVersion("coordination", "0.1.0"),
+            PolicyVersion("research-evidence", "0.1.0"),
+            PolicyVersion("work-integrity", "0.1.0"),
+        ),
+        policy_executions=(
+            CheckPolicyExecutionModel(
+                policy_id="coordination",
+                policy_version="0.1.0",
+                outcome="skipped",
+                reason="not_applicable",
+            ),
+            CheckPolicyExecutionModel(
+                policy_id="research-evidence",
+                policy_version="0.1.0",
+                outcome=research_outcome,  # pyright: ignore[reportArgumentType]
+                reason=research_reason,  # pyright: ignore[reportArgumentType]
+            ),
+            CheckPolicyExecutionModel(
+                policy_id="work-integrity",
+                policy_version="0.1.0",
+                outcome="run",
+                reason="completed",
+            ),
+        ),
+    )
+
+
+def test_single_agent_deterministic_run_with_standing_host_gaps_reaches_a_clean_receipt() -> None:
+    """#986 (E2): no tb4n1 deterministic receipt could read clean. The coordination pack is
+    always ``skipped/not_applicable`` on a single-agent run, and standing host-observation gaps
+    a local absence proof tolerates were missing from the receipt's advisory list."""
+
+    from yoetz.kernel.deterministic_scope import (
+        CLEAN_COMPATIBLE_GAPS,
+        DETERMINISTIC_SCOPED_STANDING_GAPS,
+    )
+
+    gaps = ("host_outcome_unavailable", "unpaired_event")
+    coverage = _coverage(gaps=gaps)
+    case_gaps = tuple(CaseGap(code, code, ()) for code in gaps)
+    receipt = _build(
+        _context(coverage=coverage, gaps=case_gaps, check=_single_agent_check(coverage))
+    )
+    assert receipt.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    # The gaps stay disclosed; they only no longer bound the conclusion.
+    assert {item.code for item in receipt.gaps} == set(gaps)
+
+    # One list: the receipt and the scoped local verdict read the same clean-compatible gaps.
+    assert set(gaps) <= CLEAN_COMPATIBLE_GAPS
+    assert DETERMINISTIC_SCOPED_STANDING_GAPS == CLEAN_COMPATIBLE_GAPS | {
+        "semantic_review_not_requested"
+    }
+
+
+@pytest.mark.parametrize("reason", ("scope_excluded", "material_unavailable"))
+def test_a_pack_that_left_roots_unexamined_keeps_the_receipt_bounded(reason: str) -> None:
+    """``not_applicable`` means nothing to judge; a scoped or unreadable pack is real loss."""
+
+    coverage = _coverage()
+    receipt = _build(
+        _context(coverage=coverage, check=_single_agent_check(coverage, research_reason=reason))
+    )
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+
+
+def test_a_standing_gap_a_local_proof_does_not_tolerate_still_bounds_the_receipt() -> None:
+    code = "observation_input_loss"
+    coverage = _coverage(gaps=(code,))
+    receipt = _build(
+        _context(
+            coverage=coverage,
+            gaps=(CaseGap(code, code, ()),),
+            check=_single_agent_check(coverage),
+        )
+    )
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
