@@ -163,15 +163,15 @@ def test_apply_patch_absolute_vs_relative(tmp_path: Path) -> None:
 
 def test_shell_redirect_scope(tmp_path: Path) -> None:
     assert (
-        _facts("Bash", {"command": "echo x > /opt/elsewhere/y"}, tmp_path)["write_scope"]
+        _facts("Bash", {"command": "echo x > /tmp/elsewhere/y"}, tmp_path)["write_scope"]
         == "outside_workspace"
     )
     assert (
-        _facts("Bash", {"command": "echo x >> /opt/elsewhere/y"}, tmp_path)["write_scope"]
+        _facts("Bash", {"command": "echo x >> /tmp/elsewhere/y"}, tmp_path)["write_scope"]
         == "outside_workspace"
     )
     assert (
-        _facts("Bash", {"command": "echo x | tee /opt/elsewhere/y"}, tmp_path)["write_scope"]
+        _facts("Bash", {"command": "echo x | tee /tmp/elsewhere/y"}, tmp_path)["write_scope"]
         == "outside_workspace"
     )
     for harmless in (
@@ -231,85 +231,3 @@ def test_a_system_interpreter_prefix_is_never_yoetz_runtime(
     monkeypatch.setattr(sys, "prefix", "/usr")
     monkeypatch.setattr(sys, "base_prefix", "/usr")
     assert runtime_facts.install_target_class("/usr/bin/pip install x", None) == "system"
-
-
-# --- temporary directories are scratch, not misplaced deliverables (E6, tb4n1) ------------------
-
-
-@pytest.mark.parametrize(
-    "target",
-    [
-        "/tmp/build.log",
-        "/tmp/nested/dir/run.log",
-        "/private/tmp/x.log",
-        "/var/tmp/x.log",
-        "/private/var/tmp/x.log",
-        "/dev/shm/x",
-        "/var/folders/ab/cd1234/T/tmp.x/log.txt",
-        "/private/var/folders/ab/cd1234/T/log.txt",
-        "/tmp//double/slash.log",
-        "/tmp/./dot.log",
-    ],
-)
-def test_temporary_directory_writes_claim_no_scope(target: str, tmp_path: Path) -> None:
-    workspace = tmp_path / "work"
-    for command in (
-        f"python run.py > {target} 2>&1",
-        f"pytest -q 2>&1 | tee {target}",
-        f"cat > {target} <<'EOF'\nlog\nEOF",
-    ):
-        assert "write_scope" not in _facts("Bash", {"command": command}, workspace), command
-    for tool in ("Write", "Edit"):
-        assert _facts(tool, {"file_path": target}, workspace) == {}, tool
-    patch = f"*** Begin Patch\n*** Add File: {target}\n+hi\n*** End Patch\n"
-    assert _facts("apply_patch", {"command": patch}, workspace) == {}
-
-
-@pytest.mark.parametrize(
-    "target",
-    [
-        "/tmp/../etc/passwd",
-        "/tmp/x/../../etc/hosts",
-        "/dev/shm/../../etc/x",
-        "/var/tmp/../lib/x",
-        "/var/folders/ab/cd/C/cache.db",
-        "/private/var/folders/ab/cd/T/../../../../etc/x",
-        "/tmpfoo/x.log",
-        "/opt/tmp/x.log",
-    ],
-)
-def test_climbing_out_of_a_temporary_root_still_counts(target: str, tmp_path: Path) -> None:
-    workspace = tmp_path / "work"
-    assert _facts("Bash", {"command": f"echo x > {target}"}, workspace) == {
-        "write_scope": "outside_workspace",
-        "effective_user": "root" if getattr(os, "geteuid")() == 0 else "non_root",
-    }
-    assert _facts("Write", {"file_path": target}, workspace) == {"write_scope": "outside_workspace"}
-
-
-def test_process_temp_dir_is_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A host TMPDIR outside every fixed temporary root (a cluster scratch volume, say).
-    scratch = "/srv/scratch-tmp"
-    monkeypatch.setenv("TMPDIR", scratch + "/")
-    monkeypatch.setattr(runtime_facts.tempfile, "gettempdir", lambda: str(scratch))
-    monkeypatch.setenv("HOME", "/home/someone")
-    workspace = Path("/srv/work")
-    assert "write_scope" not in _facts(
-        "Bash", {"command": f"make > {scratch}/build.log"}, workspace
-    )
-    assert _facts("Write", {"file_path": f"{scratch}/../escape.txt"}, workspace) == {
-        "write_scope": "outside_workspace"
-    }
-
-
-@pytest.mark.parametrize("tmpdir", ["/", "/home", "/home/someone"])
-def test_a_temp_dir_that_contains_home_is_never_trusted(
-    tmpdir: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("TMPDIR", tmpdir)
-    monkeypatch.setattr(runtime_facts.tempfile, "gettempdir", lambda: tmpdir)
-    monkeypatch.setenv("HOME", "/home/someone")
-    workspace = Path("/srv/work")
-    assert _facts("Write", {"file_path": "/home/someone/notes.txt"}, workspace) == {
-        "write_scope": "outside_workspace"
-    }
