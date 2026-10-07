@@ -404,6 +404,46 @@ def test_envelope_pressure_removes_the_oldest_prior_findings_before_any_work_con
     assert len(canonical_encode(cast(JsonValue, envelope))) <= MAX_EGRESS_ENVELOPE_BYTES
 
 
+def test_settled_rows_leave_before_any_open_finding_and_never_set_the_gap() -> None:
+    """Round-3 review: settled rows carry newer times, so oldest-first dropped open ones first."""
+
+    from yoetz.application.semantic_case import (
+        _drop_prior_finding_rows,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
+    from yoetz.protocol.canonical import canonical_encode
+
+    def row(item_id: str, source: str) -> dict[str, JsonValue]:
+        return {"item_id": item_id, "section": "prior_finding", "source_ref": source}
+
+    open_ref, settled_ref = str(fnd(1)), str(fnd(2))
+    envelope: dict[str, JsonValue] = {
+        "item_catalog": [
+            row(f"prior-finding-{open_ref}", open_ref),
+            row(f"settled-finding-{settled_ref}", settled_ref),
+            row(f"settled-finding-summary-{settled_ref}", settled_ref),
+        ],
+        "review_packet": {
+            "coverage": {"known_gaps": []},
+            "prior_finding_item_ids": [f"prior-finding-{open_ref}"],
+            "prior_finding_refs": [open_ref],
+        },
+        "filler": "",
+    }
+    base = len(canonical_encode(cast(JsonValue, envelope)))
+    envelope["filler"] = "x" * (MAX_EGRESS_ENVELOPE_BYTES - base + 40)
+
+    assert _drop_prior_finding_rows(envelope) == 2
+    kept = [
+        cast(Mapping[str, JsonValue], item)["item_id"]
+        for item in cast(list[JsonValue], envelope["item_catalog"])
+    ]
+    assert kept == [f"prior-finding-{open_ref}"]
+    packet = cast(Mapping[str, JsonValue], envelope["review_packet"])
+    assert packet["prior_finding_refs"] == [open_ref]
+    assert cast(Mapping[str, JsonValue], packet["coverage"])["known_gaps"] == []
+
+
 _REDUCTION_KEYS = (
     "assessment_links_stripped_count",
     "catalog_dropped_count",

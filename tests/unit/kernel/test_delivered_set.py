@@ -254,6 +254,26 @@ def test_a_new_deliverable_written_in_the_session_and_now_gone_is_removed() -> N
     projection = replay(ledger.prefix)
     never_tracked = RequestedOutputState("inside", exists=False)
     assert declared_output_removed(projection, {(_OBLIGATION, 0): never_tracked}) == (_OBLIGATION,)
+
+    # The check reports it once, as removed, not also as an absent output (round-3 review).
+    from yoetz.application import check, check_change
+
+    async def states(**_kwargs: object) -> dict[tuple[ObligationId, int], RequestedOutputState]:
+        return {(_OBLIGATION, 0): never_tracked}
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(check_change, "requested_output_states", states)
+        _evaluator, gaps, absent = asyncio.run(
+            check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
+                SimpleNamespace(projection=projection),  # type: ignore[arg-type]
+                None,
+                None,
+                None,
+                "req_00000000-0000-4000-8000-000000000001",
+            )
+        )
+    assert DECLARED_OUTPUT_REMOVED_GAP in gaps
+    assert absent is False
     # Never written in the session: an absent output, not a removed deliverable.
     assert (
         declared_output_removed(

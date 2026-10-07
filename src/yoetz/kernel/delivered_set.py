@@ -45,6 +45,7 @@ __all__ = [
     "DECLARED_OUTPUT_REMOVED_GAP",
     "declared_delivered_items",
     "declared_output_removed",
+    "removed_declared_items",
 ]
 
 _DECLARED_KINDS: Final = frozenset({"file", "directory"})
@@ -88,20 +89,36 @@ def declared_output_removed(
     projection: ProjectionState,
     states: Mapping[tuple[ObligationId, int], RequestedOutputState],
 ) -> tuple[ObligationId, ...]:
-    """Obligations whose declared delivered item the check-time change deleted or renamed away.
+    """Obligations with a declared delivered item ``removed_declared_items`` names."""
+
+    return tuple(
+        sorted(
+            {obligation for obligation, _index in removed_declared_items(projection, states)},
+            key=str.encode,
+        )
+    )
+
+
+def removed_declared_items(
+    projection: ProjectionState,
+    states: Mapping[tuple[ObligationId, int], RequestedOutputState],
+) -> tuple[tuple[ObligationId, int], ...]:
+    """Declared delivered items the check-time change deleted or renamed away, or that an edit
+    action of the session wrote and that are now gone.
 
     A state Yoetz could not read (``unverified``, ``outside``, or an unknown existence) never
-    raises the fact; neither does a declared item that still exists or was never in the task base.
+    raises the fact; neither does a declared item that still exists. The caller reports such an
+    item only as ``declared_output_removed``, never also as an absent output.
     """
 
-    removed: set[ObligationId] = set()
+    removed: list[tuple[ObligationId, int]] = []
     edited: dict[ObligationId, frozenset[str]] = {}
     for obligation, index, _kind, value in declared_delivered_items(projection):
         state = states.get((obligation, index))
         if state is None or state.location != "inside" or state.exists is not False:
             continue
         if state.deleted:
-            removed.add(obligation)
+            removed.append((obligation, index))
             continue
         if obligation not in edited:
             edited[obligation] = attempted_items_for_obligation(
@@ -109,5 +126,5 @@ def declared_output_removed(
             )
         # Written in this session, now gone. Exact value match, as for the other output facts.
         if value in edited[obligation]:
-            removed.add(obligation)
-    return tuple(sorted(removed, key=str.encode))
+            removed.append((obligation, index))
+    return tuple(removed)

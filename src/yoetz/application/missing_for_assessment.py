@@ -51,8 +51,10 @@ from yoetz.domain.receipts import (
     SEMANTIC_MISSING_YOETZ_LIMIT_GAP,
 )
 from yoetz.domain.values import EventId
+from yoetz.kernel.delivered_set import item_role
 from yoetz.kernel.deterministic_checks import DeterministicCase
 from yoetz.kernel.projections import PendingMissingForAssessment, ProjectionState
+from yoetz.kernel.task_facts import effective_obligations
 from yoetz.ports.semantic import SemanticJudgment
 from yoetz.protocol.models import MISSING_FOR_ASSESSMENT_KINDS, DataCategory
 
@@ -1062,14 +1064,14 @@ class _TargetFiles:
         if not obligations:
             if not any(str(row.source_event_id) == target for row in projection.plans.values()):
                 return None
-            obligations = list(projection.obligations.values())
+            obligations = [projection.obligations[key] for key in effective_obligations(projection)]
         return frozenset(
             item.value
             for row in obligations
             if row.payload is not None and not row.redacted
             for item in row.payload.requested_items
             if getattr(item.item_kind, "value", item.item_kind) == "file"
-            and getattr(item, "role", None) != "input"
+            and item_role(item) != "input"
         )
 
     def _evidence_names(self, target: str) -> set[str]:

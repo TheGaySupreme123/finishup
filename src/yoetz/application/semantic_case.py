@@ -6560,20 +6560,28 @@ def _drop_prior_finding_rows(envelope: dict[str, JsonValue]) -> int:
     """
 
     rows = _catalog_rows(envelope)
-    order: list[str] = []
+    order: list[tuple[bool, str]] = []
     for row in rows:
         source = row.get("source_ref")
-        if row.get("section") == "prior_finding" and type(source) is str and source not in order:
-            order.append(source)
+        item_id = row.get("item_id")
+        if row.get("section") == "prior_finding" and type(source) is str:
+            settled = type(item_id) is str and item_id.startswith(SETTLED_FINDING_ITEM_PREFIX)
+            if (settled, source) not in order:
+                order.append((settled, source))
+    # Settled findings are context only: every one leaves before any open finding does, and only
+    # an open finding's loss weakens a silent review (``semantic_prior_findings_over_limit``).
+    order.sort(key=lambda entry: not entry[0])
     dropped = 0
     packet_obj = envelope.get("review_packet")
-    for source in order:
+    for settled, source in order:
         if len(canonical_encode(cast(JsonValue, envelope))) <= MAX_EGRESS_ENVELOPE_BYTES:
             break
         removed = {
             cast(str, row.get("item_id"))
             for row in rows
-            if row.get("section") == "prior_finding" and row.get("source_ref") == source
+            if row.get("section") == "prior_finding"
+            and row.get("source_ref") == source
+            and str(row.get("item_id", "")).startswith(SETTLED_FINDING_ITEM_PREFIX) == settled
         }
         rows = [row for row in rows if row.get("item_id") not in removed]
         envelope["item_catalog"] = cast(JsonValue, rows)
@@ -6587,7 +6595,7 @@ def _drop_prior_finding_rows(envelope: dict[str, JsonValue]) -> int:
                 )
             _sync_prior_finding_refs(packet_obj)
             coverage = packet_obj.get("coverage")
-            if isinstance(coverage, dict):
+            if not settled and isinstance(coverage, dict):
                 gaps = coverage.get("known_gaps")
                 if type(gaps) is list and SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP not in gaps:
                     coverage["known_gaps"] = cast(

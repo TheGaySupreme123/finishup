@@ -604,9 +604,9 @@ you repaired that Yoetz cannot prove, respond `self_verified` with how you verif
 evidence ids. For an image or other binary deliverable you may record a text rendering of it (for
 example `pdftotext` output or a CAD property dump) as evidence whose `reference` is the file's path;
 the reviewer sees it labelled as your rendering, and the file itself is never sent. After two
-`insufficient_packet` reviews in a row with no edit since, or four in the task, checks skip the
-AI-powered review (`semantic_review_skipped_insufficient_packet`); a real repair re-arms it until
-that cap. Never edit only to get another review.
+`insufficient_packet` reviews in a row with no edit since, or four since the task's last assessed
+review, checks skip the AI-powered review (`semantic_review_skipped_insufficient_packet`); a real
+repair re-arms it until that cap. Never edit only to get another review.
 
 **Never reshape your deliverable for the reviewer.** Never split, move, shrink, rename, stash,
 delete, `git add` (including `git add -N`), git-ignore or exclude deliverables or workspace files to

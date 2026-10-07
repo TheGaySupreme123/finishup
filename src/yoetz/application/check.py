@@ -96,7 +96,7 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
-from yoetz.kernel.delivered_set import DECLARED_OUTPUT_REMOVED_GAP, declared_output_removed
+from yoetz.kernel.delivered_set import DECLARED_OUTPUT_REMOVED_GAP, removed_declared_items
 from yoetz.kernel.deterministic_checks import (
     DETERMINISTIC_TEXT_CONTRACT_DIGEST,
     REQUESTED_OUTPUT_ABSENT_FACT,
@@ -1287,11 +1287,12 @@ def _packet_limits(
 ) -> _PacketLimits:
     """What the sent packet could not show, for classifying named missing items (tb4n1 D1).
 
-    ``packet_limited_refs`` are refs an omission row of the exact sent packet withheld for room,
-    selection or policy; a ``not_recorded`` omission (nothing more was ever recorded) never
-    counts, and this check's own local findings are never packet content. Unknown when the sent
-    packet was not read. ``change_clipped`` says the check-time change was clipped for room or
-    redacted.
+    ``packet_limited_refs`` are refs an omission row of the exact sent packet withheld for room
+    or selection; a ``not_recorded`` omission (nothing more was ever recorded) never counts, and
+    this check's own local findings are never packet content. Unknown when the sent packet was
+    not read. ``privacy_withheld_refs`` are the refs an owner privacy rule withheld (a privacy
+    limit, classified structurally unavailable). ``change_clipped`` says the check-time change
+    was clipped for room or redacted.
     """
 
     withheld = semantic_result.case_withheld_refs
@@ -2257,8 +2258,11 @@ async def _requested_output_inputs(
     )
     absent, markers = requested_output_facts(case.projection, states)
     codes = {code for code, _obligation in markers}
-    if declared_output_removed(case.projection, states):
+    removed = set(removed_declared_items(case.projection, states))
+    if removed:
+        # One fact per item: a removed deliverable is not also reported as an absent output.
         codes.add(DECLARED_OUTPUT_REMOVED_GAP)
+        absent = [item for item in absent if item not in removed]
     gaps = tuple(sorted(codes, key=str.encode))
     return partial(work_integrity_findings, absent_outputs=frozenset(absent)), gaps, bool(absent)
 
@@ -3264,14 +3268,9 @@ def validate_semantic_judgment(
                 linked = target_id
             else:
                 # A different concern about the named item, or an item that is done or was not
-                # carried: a new finding that relates to it, never folded into it. A different
-                # concern about an open item still says that item's problem stands.
+                # carried: a new finding that relates to it, never folded into it, and never a
+                # ruling on the named item (the reviewer's own ruling on it stands).
                 linked = target_id
-                if treatment == _RESTATES_OPEN:
-                    _suppressed, reduced = _record_restatement(
-                        case, admitted, target_id, refs, verdict="still_present"
-                    )
-                    verdicts_set_aside += reduced
         restated = (
             named
             if named is not None

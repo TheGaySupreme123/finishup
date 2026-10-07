@@ -1598,8 +1598,8 @@ claiming completion was never judged for completeness. Decisions:
     open findings, inside the same 16-finding / 96 KiB section bounds; one that does not fit is not
     a truncation of the rulable section, and its re-raise is minted linked as below.
   - Otherwise (another kind, a resolved or final item, or a finding the packet did not carry): the
-    challenge is a new finding whose `relates_to` names the target; a different concern about a
-    carried open item also records `still_present` on that item. The naming is never counted in
+    challenge is a new finding whose `relates_to` names the target, and no ruling is recorded on
+    the target (the reviewer's own ruling on it in the same response stands). The naming is never counted in
     `semantic_review_refs_reduced` (it is not a ref the challenge rests on); an id outside the
     frozen fence is ignored and the challenge stands on its own.
   Without `restates` the earlier exact-subject restatement and answered-reply rules are unchanged,

@@ -1481,7 +1481,7 @@ def test_cargo_re_raises_named_by_restates_stay_one_open_finding() -> None:
         assert "Reviewer re-raised earlier findings" in review.review_summary
 
 
-def test_restates_of_another_concern_mints_a_linked_finding_and_keeps_the_target_open() -> None:
+def test_restates_of_another_concern_mints_a_linked_finding_and_never_rules_on_the_target() -> None:
     """Adversarial review of #980: a ``code_defect`` naming a ``task_requirement_unmet`` finding
     is a different concern. Folding it would turn a new defect into 0 findings and a suppression;
     it is minted, linked to the named finding, and the named finding is ruled still present."""
@@ -1504,9 +1504,9 @@ def test_restates_of_another_concern_mints_a_linked_finding_and_keeps_the_target
     assert review.candidates[0].kind is FindingKind.CODE_DEFECT
     assert review.candidates[0].related_finding_ids == (fnd(1),)
     assert review.restatements_suppressed == 0
-    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
-        (str(fnd(1)), "still_present")
-    ]
+    # Round-3 review: a different concern only links; it never rules on the named item, so the
+    # reviewer's own ruling on that item in the same response stands.
+    assert _rulings(review) == []
     assert review.refs_reduced == 0
 
 

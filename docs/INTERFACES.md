@@ -7850,8 +7850,8 @@ and message to `review_summary` under a fixed header naming the id. A carried se
 `validate_semantic_judgment(settled_finding_refs=)`): the challenge mints nothing and a
 `still_present` ruling is recorded on the final item, which the reducer counts in
 `settled_reraise_count` (no round, never reopened). Any other target (another kind, a resolved or
-final item, an uncarried finding) yields a new finding whose `relates_to` names it; a different
-concern about a carried open item also records `still_present` on it. A `restates` is never
+final item, an uncarried finding) yields a new finding whose `relates_to` names it and records no
+ruling on it. A `restates` is never
 counted in `semantic_review_refs_reduced`; an id outside the fence is ignored.
 
 Dialogue projection facts (TB4 tb4n1 D7): a finding row counts the agent's `rejected` and

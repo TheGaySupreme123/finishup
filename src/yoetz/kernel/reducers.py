@@ -113,16 +113,16 @@ __all__ = [
 ]
 
 _MAX_SQLITE_SIGNED_INTEGER: Final = 2**63 - 1
-# A v1.1 completion claim must disclose every relevant typed non-success result. An `unknown`
-# outcome is not upgraded into a typed partial or failure (ADR-025 decision 3), so it is never
-# required -- but it is limiting to the local limitation policy, so `limitation_refs` also
-# accepts it as the disclosure channel a v1.1 claim would otherwise have none of.
 # Responses that dispute a finding and count as rebuttals (TB4 tb4n1 D7). ``self_verified`` is
 # compared by its wire value so this fold reads ledgers written before and after that
 # disposition exists.
 _REBUTTAL_DISPOSITION_VALUES: Final = frozenset(
     {ResponseDisposition.REJECTED.value, "self_verified"}
 )
+# A v1.1 completion claim must disclose every relevant typed non-success result. An `unknown`
+# outcome is not upgraded into a typed partial or failure (ADR-025 decision 3), so it is never
+# required -- but it is limiting to the local limitation policy, so `limitation_refs` also
+# accepts it as the disclosure channel a v1.1 claim would otherwise have none of.
 _TYPED_LIMITING_OUTCOMES: Final = frozenset({ResultOutcome.FAILURE, ResultOutcome.PARTIAL})
 _DISCLOSABLE_LIMITING_OUTCOMES: Final = _TYPED_LIMITING_OUTCOMES | {ResultOutcome.UNKNOWN}
 _MATERIAL_FAMILIES: Final = frozenset(
