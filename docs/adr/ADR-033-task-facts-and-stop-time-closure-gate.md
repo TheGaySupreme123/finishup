@@ -334,8 +334,15 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    `obligation_blocked_outside_agent_control` only when the same `yoetz-blocker:<kind>` line for
    that obligation arrives in a later publish batch, which is necessarily after the publish-time
    challenge below (and, if the agent stopped, the Stop re-ask). A repeat in the same batch, two
-   lines in one decision, or a dry run never confirms. The rule reads only recorded facts (ledger
-   position and the record's operation id), so it is replay-stable and needs no migration.
+   lines in one decision, or a dry run never confirms. A later decision of a different kind for
+   the obligation starts a new claim of that kind (even over a confirmed one), and a superseded
+   decision counts in neither role. The rule reads only recorded facts (ledger position and the
+   record's operation id), so it is replay-stable and needs no migration. Two back-to-back
+   publishes still confirm: the first result's `blocker_claimed` notice is the challenge, and no
+   text the agent can read before claiming (finding repair text, guidance, skills, the gate's
+   blocker offer) says how to confirm, so a reflexive double publish has nothing to follow. A
+   rule requiring an intervening record of some other kind was rejected: "not the same agent
+   burst" has no replay-stable definition, and any such record is cheap to manufacture.
    Status rows carry `confirmation` (`claimed|confirmed`) and `confirmation_event_id` (additive on
    the unreleased status-result 1.4.0). When every open obligation is confirmed blocked,
    `completion_plan_not_claimed` is disclosed as standing too (C9).
@@ -347,18 +354,19 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    protocol break) and changes no readiness, gap, finding or receipt section; it points to
    `self_verified`, or `acknowledged_not_done` as a last resort. Rejecting such a blocker at
    admission stays a later option.
-3. **The closing review must challenge the main deliverable (#978).** The blocker question tells
-   the reviewer to quote the blocked obligation's own description and evidence expectation from
-   its privacy-gated packet item and requires a challenge when the obligation is the task's main
-   deliverable, the statement says the outcome is achievable or the data recoverable, the material
-   contradicts the blocker, the obvious prerequisite was not attempted, or it names a Yoetz or
-   review limit. The question itself carries ids and fixed text only, never the obligation text,
+3. **The closing review challenges what the task contradicts (#978).** The blocker question
+   tells the reviewer to quote the blocked obligation's own description and evidence expectation
+   from its privacy-gated packet item and requires a challenge when the statement says the
+   outcome is achievable or the data recoverable, the obvious prerequisite was not attempted, the
+   material contradicts the blocker, or it names a Yoetz or review limit. Being the task's main
+   deliverable calls for close scrutiny, not an automatic challenge: a genuine credential or
+   authority blocker on it may stand. The question itself carries ids and fixed text only, never the obligation text,
    because questions are not privacy-scanned. A golden question pins the tb4n1 pretrain case.
 4. **Blocker texts agree (#984 F1).** The `requested_item_never_attempted` repair text, the MCP
    outcome hint, the approved-checks continuation, the guidance and the skills all say: repair
    first; for a Yoetz limit, verify yourself and respond `self_verified`; `acknowledged_not_done`
    is the last resort; `yoetz-blocker` only for an open obligation genuinely blocked outside your
-   control, confirmed in a later publish.
+   control. Only the `blocker_claimed` notice and the Stop re-check say how to confirm one.
 5. **One clean-compatible gap list (#986 E2).** `kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`
    (standing in `GAP_CLASSIFICATION` and tolerated by the deterministic local absence proof,
    excluding AI-review `semantic_*` and evidence-strength `evidence_*` codes, plus the existing
@@ -366,7 +374,12 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    pack that is `skipped/not_applicable` on the whole case (coordination on a single-agent run)
    counts as complete; `scope_excluded` and `material_unavailable` do not. Host-observation gaps
    such as `host_outcome_unavailable` and `unpaired_event` therefore no longer bar
-   `no_unresolved_deterministic_findings`. `semantic_review_not_requested` still bounds the
+   `no_unresolved_deterministic_findings`, but only where they are guarded: a full check reads
+   them as clean-compatible only when its command counters show no unknown or live failed outcome
+   (`commands_complete`), the scoped verdict keeps its own counter checks, and the receipt treats
+   `HOST_OBSERVATION_GUARDED_GAPS` as advisory only when the applicable check's own coverage
+   carried them. Full-check completeness (`application.check.full_check_gaps_clean`) reads the
+   same list. `semantic_review_not_requested` still bounds the
    receipt: a check records only `deterministic_mode` or `no_material_semantic_case` with it, never
    whether the serving route required AI-powered review (a strict route records
    `blocked_by_policy`/`route_semantic_ceiling` and its own gap instead), so the receipt cannot

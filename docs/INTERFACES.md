@@ -1167,7 +1167,10 @@ completion scope cannot support an action-required completion verdict.
 A clean conclusion also needs every policy execution complete: `run/completed`, or
 `skipped/not_applicable` on the whole case (no root of that pack's kind exists; #986), never
 `scope_excluded`, `material_unavailable` or `failed`; and only gaps in
-`kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS` (ADR-033 amendment of 2026-10-07).
+`kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS` (ADR-033 amendment of 2026-10-07), where a
+member of `HOST_OBSERVATION_GUARDED_GAPS` counts only if the applicable check's own coverage
+carried it. A full check's `complete` completeness uses the same list
+(`full_check_gaps_clean`), with those host members only when `commands_complete(totals)`.
 
 `domain/receipts.py` owns the exact schema-shaped `ReceiptDocument`, `ReceiptVersionSlice`,
 policy/schema version entries, obligation/response/gap/redaction records, and canonical sections. It
@@ -8409,7 +8412,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   earliest decision in ledger order *claims* the obligation; the earliest later decision repeating
   the same kind for it in a different publish batch (`decision_batches(records)`: decision event id
   to its `operation_id`) *confirms* it. A repeat in the same batch, two lines in one decision, or a
-  dry run never confirms; without batches nothing confirms. `blocked_obligations(projection,
+  dry run never confirms; without batches nothing confirms. A later decision of another kind
+  starts a new claim of that kind; superseded decisions count in neither role.
+  `blocked_obligations(projection,
   batches)` returns confirmed blockers only; case-only readers (work-integrity,
   the check-time output read) use `confirmed_blocked_obligation_ids(case gaps)`, which reads the
   frozen `obligation_blocked_outside_agent_control:<obligation>` markers. Only a confirmed blocker
@@ -8441,9 +8446,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   the fixed `PUBLISH_BLOCKER_NOTICE_TEXTS[notice]`), one per `(obligation, kind)` of the batch's
   blocker lines, from `task_facts.blocker_publication_notices(projection_with_batch,
   ((event_id, payload), ...))`. `blocker_claimed` is the challenge (repair first; a Yoetz limit is
-  never a blocker, respond `self_verified`; recoverable data is not a blocker; confirm by
-  repeating the line in a later publish). `blocker_without_effect` marks a blocker naming no open
-  obligation: it changes no readiness, gap or finding (use `self_verified`, or
+  never a blocker, respond `self_verified`; recoverable data is not a blocker; only if still
+  genuine, confirm by repeating the line in a later publish) and, with the Stop re-check, the
+  only text that says how to confirm. `blocker_without_effect` marks a blocker naming no open
+  obligation, including an id the task does not know: it changes no readiness, gap or finding (use `self_verified`, or
   `acknowledged_not_done` as a last resort). `mcp.summaries.render_publish_blocker_notices`
   renders the rows on the MCP text channel; structural pointers admit the four leaves.
 - **Closing review of blockers (#976, #978).** `semantic_case.recorded_blockers(projection)`
@@ -8451,9 +8457,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   obligations, claimed or confirmed, and `review_question_set(phase, blockers)` adds one
   final-phase question that lists them (at most 16, ids and closed kinds) followed by
   `BLOCKER_REVIEW_INSTRUCTION`: quote the blocked obligation's description and evidence expectation
-  from its packet item `obligation-<id>`, then challenge (required) when it is the task's main
-  deliverable, the statement says the outcome is achievable or the data recoverable, the material
-  contradicts it, the obvious prerequisite was not attempted, or it names a Yoetz/review limit.
+  from its packet item `obligation-<id>`, then challenge (required) when the statement says the
+  outcome is achievable or the data recoverable, the obvious prerequisite was not attempted, the
+  material contradicts it, or it names a Yoetz/review limit; the main deliverable calls for
+  scrutiny only, and a genuine credential or authority blocker on it may stand.
   That challenge becomes an ordinary AI-powered finding. Blocker decisions lead the decision
   section, and their statement and rationale, like the obligation text, travel only as
   privacy-gated packet items. Golden question:
