@@ -1678,7 +1678,7 @@ def test_silence_never_closes_an_ai_finding_over_excerpts_the_budget_cut() -> No
 @pytest.mark.parametrize(
     "gap", ["write_outside_workspace", "obligation_blocked_outside_agent_control"]
 )
-def test_task_facts_about_the_work_never_bound_an_ai_powered_absence_proof(gap: str) -> None:
+def test_task_facts_about_the_work_never_bound_a_fixed_ruling(gap: str) -> None:
     """Issue #1000 (tb4n1 interleaved-vigenere): the reviewer ruled its finding fixed, but the
     later check carried ``write_outside_workspace``, a fact about where the agent wrote, not about
     what the reviewer was shown, and the finding stayed open."""
@@ -1687,17 +1687,30 @@ def test_task_facts_about_the_work_never_bound_an_ai_powered_absence_proof(gap: 
 
     finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     coverage = _coverage(gaps=(gap,), semantic=True, freshness=LedgerFreshness.PARTIAL)
-    for rulings in (((1, "fixed"),), ()):
+    check = _ruled(
+        _check(semantic=_SEMANTIC_OK, coverage=coverage),
+        (1, "fixed"),
+        conclusion="no_material_discrepancy",
+    )
+    assert (
+        resolution_blockers(finding, 4, check, frozenset(), proof_state=_changed_state(check)) == ()
+    )
+    assert _resolves(finding, check) is True
+    # Only an explicit ``fixed`` ruling tolerates them: a review silent on the finding, or one
+    # ruling it otherwise, keeps the task fact blocking its absence proof.
+    for rulings, extra in (
+        ((), ()),
+        (((1, "still_present"),), ("reviewer_verdict_still_present",)),
+    ):
         check = _ruled(
             _check(semantic=_SEMANTIC_OK, coverage=coverage),
             *rulings,
             conclusion="no_material_discrepancy",
         )
-        assert (
-            resolution_blockers(finding, 4, check, frozenset(), proof_state=_changed_state(check))
-            == ()
-        )
-        assert _resolves(finding, check) is True
+        assert resolution_blockers(
+            finding, 4, check, frozenset(), proof_state=_changed_state(check)
+        ) == (*extra, f"coverage:{gap}")
+        assert _resolves(finding, check) is False
 
 
 def test_a_fixed_ruling_resolves_despite_citations_the_fence_reduced() -> None:

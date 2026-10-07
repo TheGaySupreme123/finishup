@@ -44,6 +44,7 @@ from yoetz.kernel.finding_todo import (
     todo_counts,
 )
 from yoetz.kernel.projections import (
+    DecisionProjectionRecord,
     FindingProjectionRecord,
     ProjectionRecord,
     ProjectionState,
@@ -497,34 +498,118 @@ def _premise(number: int, next_step: str = "act") -> Finding:
     )
 
 
-def test_an_acknowledged_premise_challenge_stays_a_standing_dispute() -> None:
-    """TB4 tb4n1 D7a (cargo): ``acknowledged_not_done`` must not silently end a premise challenge.
+def _blocker_decision(obligation: object) -> DecisionProjectionRecord:
+    from yoetz.domain.events import DecisionRecordedPayload
+    from yoetz.domain.values import actor_id
 
-    The acknowledgement keeps its meaning and stays final; the item is flagged as a dispute the
-    reviewer still holds, for a readiness or Stop surface to show. A disclosure-only request, a
-    local finding, an open item and another kind are not premise disputes.
+    payload = DecisionRecordedPayload(
+        statement="The fixture service is unreachable.\nyoetz-blocker:dependency_unavailable",
+        rationale="No network in the sandbox.",
+        authority=actor_id("agent"),
+        affected_obligation_ids=(obligation,),  # type: ignore[arg-type]
+    )
+    from yoetz.domain.events import encode_payload
+    from yoetz.protocol.canonical import canonical_digest
+
+    return DecisionProjectionRecord(
+        payload=payload,
+        payload_digest=canonical_digest(encode_payload(payload)),
+        redacted=False,
+        source_event_id=evt(3),
+        source_frontier=3,
+    )
+
+
+def test_an_acknowledged_premise_challenge_is_a_dispute_only_with_a_recorded_anchor() -> None:
+    """TB4 tb4n1 D7a (cargo): ``acknowledged_not_done`` must not silently end a premise challenge,
+    but not every acknowledged requirement finding is one the reviewer still disputes.
+
+    The rule is structural (no prose is read): the item is an acknowledged premise challenge and
+    either cites a ``yoetz-blocker`` decision or the obligation it blocks (``blocker_cited``), or
+    a review re-raised it after the acknowledgement (``give_up_reraised``). A disclosure-only
+    request, a local finding, an open item, another kind and an unanchored acknowledgement are
+    not premise disputes.
     """
 
-    from yoetz.kernel.finding_todo import is_premise_challenge, standing_premise_disputes
+    from yoetz.kernel.finding_todo import (
+        PREMISE_DISPUTE_BLOCKER_CITED,
+        PREMISE_DISPUTE_GIVE_UP_RERAISED,
+        is_premise_challenge,
+        premise_dispute_basis,
+        standing_premise_disputes,
+    )
 
     findings = {
         fnd(1): finding_record(_premise(1), 4),
         fnd(2): finding_record(_premise(2, "state_unresolved_limitation"), 4),
         fnd(3): finding_record(_premise(3), 4),
         fnd(4): finding_record(_semantic(4), 4),
+        fnd(5): finding_record(_premise(5), 4),
+        fnd(6): replace(finding_record(_premise(6), 4), settled_reraise_count=1),
     }
     responses = {
-        fnd(1): _response(1, ResponseDisposition.ACKNOWLEDGED_NOT_DONE),
-        fnd(2): _response(2, ResponseDisposition.ACKNOWLEDGED_NOT_DONE),
-        fnd(4): _response(4, ResponseDisposition.ACKNOWLEDGED_NOT_DONE),
+        fnd(number): _response(number, ResponseDisposition.ACKNOWLEDGED_NOT_DONE)
+        for number in (1, 2, 4, 5, 6)
     }
-    state = _state(findings, responses)
+    state = replace(
+        _state(findings, responses),
+        decisions={evt(3): _blocker_decision(obl(1))},
+    )
     assert is_premise_challenge(_premise(1)) and not is_premise_challenge(_semantic(4))
-    assert standing_premise_disputes(state) == (fnd(1),)
+    assert premise_dispute_basis(state, fnd(1)) == PREMISE_DISPUTE_BLOCKER_CITED
+    assert premise_dispute_basis(state, fnd(6)) == PREMISE_DISPUTE_GIVE_UP_RERAISED
+    # Acknowledged with no blocker cited and never re-raised: the reviewer never disputed it.
+    assert premise_dispute_basis(state, fnd(5)) is None
+    assert standing_premise_disputes(state) == (fnd(1), fnd(6))
     todo = finding_todo(state, fnd(1))
     assert todo.state is FindingTodoState.ACKNOWLEDGED_NOT_DONE and todo.premise_disputed
     assert finding_todo(state, fnd(3)).premise_disputed is False  # still open: no dispute yet
+    assert finding_todo(state, fnd(5)).premise_disputed is False
     assert finding_blocks_receipt(state, fnd(1)) is True
+    # A superseded blocker decision is no anchor.
+    superseded = replace(
+        state,
+        decisions={evt(3): replace(_blocker_decision(obl(1)), superseded_by_event_id=evt(7))},
+    )
+    assert standing_premise_disputes(superseded) == (fnd(6),)
+
+
+def test_a_reraise_after_the_agent_settles_an_item_is_recorded_never_a_round() -> None:
+    """Issue #980 / D7: the reviewer re-raising an acknowledged item records the dispute on it."""
+
+    findings = {fnd(1): finding_record(_premise(1), 4), fnd(2): finding_record(_finding(2), 4)}
+    responses = {
+        fnd(1): _response(1, ResponseDisposition.ACKNOWLEDGED_NOT_DONE),
+        fnd(2): _response(2, ResponseDisposition.ACKNOWLEDGED_NOT_DONE),
+    }
+    for event, verdict in ((9, "still_present"), (10, "answered_not_fixed"), (11, "unassessable")):
+        apply_check_rulings(
+            findings, responses, _check(rulings=((1, verdict), (2, verdict))), evt(event)
+        )
+    assert findings[fnd(1)].settled_reraise_count == 2
+    assert findings[fnd(1)].review_rounds == 0
+    assert findings[fnd(2)].settled_reraise_count == 0  # a local finding is never re-raised
+    # A re-raise while the item is open is an ordinary round, not a settled re-raise.
+    open_findings = {fnd(1): finding_record(_premise(1), 4)}
+    apply_check_rulings(open_findings, {}, _check(rulings=((1, "still_present"),)), evt(9))
+    assert (open_findings[fnd(1)].review_rounds, open_findings[fnd(1)].settled_reraise_count) == (
+        1,
+        0,
+    )
+    snapshot = projection_snapshot(_state(findings, responses))
+    assert projection_from_snapshot(snapshot) == _state(findings, responses)
+
+
+def test_a_self_verified_answer_counts_as_a_rebuttal() -> None:
+    """D7b: the agent's ``self_verified`` answer (C1, issue #984) disputes the reviewer's standing
+    claim like ``rejected`` does; matched by wire value so the fold reads either ledger."""
+
+    from yoetz.kernel.reducers import (
+        _REBUTTAL_DISPOSITION_VALUES,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert _REBUTTAL_DISPOSITION_VALUES == {"rejected", "self_verified"}
+    assert ResponseDisposition.ACKNOWLEDGED_NOT_DONE.value not in _REBUTTAL_DISPOSITION_VALUES
 
 
 def test_rebuttals_and_the_last_reviewer_verdict_are_recorded_and_round_trip() -> None:

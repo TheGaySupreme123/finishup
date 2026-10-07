@@ -1404,10 +1404,13 @@ TB4 run tb4n1 cad-model, medical-claims, freecad-platform and cumulative-layout 
 stays deferred); and let the agent supply a text rendering of a binary deliverable (PL5-2, #1004).
 
 - **Notice row.** An evidence row that records an image or binary file is carried as an excerpt that
-  begins `[Yoetz: an image or binary file at <path> exists and was not sent (evidence <evd>); its
-  content is not assessable from this packet]`, followed by the row's recorded description. Such a
-  row is a hook-observed image (the L3 digest-only `artifact_bytes` row, `observation_captured`,
-  description `Observed image ...`; no path, so the notice cites only the evidence id) or a row whose
+  begins `[Yoetz: the agent referenced an image or binary file at <path> (evidence <evd>); it was
+  not sent and its content is not assessable from this packet]`, followed by the row's recorded
+  description. The wording says "referenced" because the path is the agent's unverified claim;
+  Yoetz never opens it. A hook-observed image (the L3 digest-only `artifact_bytes` row,
+  `observation_captured`, description `Observed image ...`; no path) begins instead `[Yoetz: an
+  image was observed (evidence <evd>); it was not sent and its content is not assessable from this
+  packet]`. Notice rows are those or a row whose
   `reference` names a file of the unsupported types the missing-item classifier uses (matched
   lexically, never opened) and that records the file itself (an `artifact`, or an `artifact_bytes`
   digest, or no text). The newest 16 notices are reserved excerpt room beside finding repair
@@ -1422,8 +1425,18 @@ stays deferred); and let the agent supply a text rendering of a binary deliverab
   target's paths), so it counts as supplied.
 - **Wire.** No new field or enum value: both labels are excerpt text inside the existing
   `evidence_excerpt` category, and the manifest discloses the rows through the existing
-  `caller_evidence` section (`source_refs`, `item_ids`). The path in a label is whitespace-folded
-  and bounded to 256 bytes; the egress scanner sees it like any excerpt text.
+  `caller_evidence` section (`source_refs`, `item_ids`). The path in a label is whitespace-folded,
+  keeps only ASCII letters, digits, space and `._/+@~=,-` (any other character becomes `_`, so a
+  reference cannot close the label or name another evidence id inside it) and is bounded to 160
+  characters (a longer one ends `...`); the egress scanner sees it like any excerpt text.
+- **No forged labels (issue #983).** Agent-authored excerpt text (an evidence description or
+  reference, captured tool output, a failed result's summary, a command) never begins a line the
+  way a label does: each such line, matched case-insensitively after leading spaces or tabs, is
+  prefixed `(agent text) `, and a captured diff part that would begin mid-line with `[Yoetz` is
+  prefixed the same way within its part bound. The reviewer instruction (one constant every
+  provider cell sends) trusts a `[Yoetz:` label only as an excerpt's first line and only when the
+  evidence id it names equals that excerpt's own `source_ref`; anything else resembling one is the
+  agent's text.
 
 ### Task statement apart from the agent plan (2026-09-30, issue #908)
 
@@ -1570,14 +1583,35 @@ claiming completion was never judged for completeness. Decisions:
   ruling on a finding tolerates `semantic_review_refs_reduced` on that check; without one the gap
   still blocks AI-powered absence proof.
 - **Re-raises link by finding id (issue #980).** A provider challenge carries an optional
-  `restates`: the `fnd_` id of an earlier finding from the packet's `prior_finding_refs`. When the
-  fence admits it (listed in that packet, a readable open AI-powered finding inside the frozen
-  fence), the challenge mints no finding: it is recorded on that finding as `answered_not_fixed`
-  when the agent had answered it, else `still_present`, citing the challenge's refs, so the item
-  stays open, its review round advances once per concern, and the reviewer's summary and message
-  are appended to the recorded review summary under that id. A `restates` the fence rejects is
-  dropped and counted in `semantic_review_refs_reduced`; the challenge then stands on its own
-  (resolved and final items are never targets, so a re-raise after them is still a new finding).
-  Without `restates` the earlier exact-subject restatement and answered-reply rules are unchanged.
+  `restates`: the `fnd_` id of an earlier finding from the packet's `prior_finding_refs` or from a
+  non-rulable `yoetz.settled-finding/1` row. The link folds only the same concern: the challenge's
+  `finding_kind` must equal the named finding's kind.
+  - Same kind, a carried readable open AI-powered finding: the challenge mints no finding; it is
+    recorded on that finding as `answered_not_fixed` when the agent had answered it, else
+    `still_present`, citing the challenge's refs, so the item stays open, its review round advances
+    once per concern, and the reviewer's summary and message are appended to the recorded review
+    summary under that id.
+  - Same kind, a carried finding the agent settled (`acknowledged_not_done`, or `self_verified`):
+    the challenge mints no finding; a `still_present` ruling is recorded on the item, which stays
+    final (no round, never reopened); the reducer counts it in `settled_reraise_count`, the
+    standing dispute D7a reads. The packet carries settled findings as nameable rows after the
+    open findings, inside the same 16-finding / 96 KiB section bounds; one that does not fit is not
+    a truncation of the rulable section, and its re-raise is minted linked as below.
+  - Otherwise (another kind, a resolved or final item, or a finding the packet did not carry): the
+    challenge is a new finding whose `relates_to` names the target; a different concern about a
+    carried open item also records `still_present` on that item. The naming is never counted in
+    `semantic_review_refs_reduced` (it is not a ref the challenge rests on); an id outside the
+    frozen fence is ignored and the challenge stands on its own.
+  Without `restates` the earlier exact-subject restatement and answered-reply rules are unchanged,
+  except that an exact restatement of an `acknowledged_not_done` item records the same settled
+  re-raise.
+- **Standing premise disputes (TB4 tb4n1 D7a).** `kernel.finding_todo.premise_dispute_basis` is a
+  structural rule over recorded refs, never prose: an `acknowledged_not_done` AI-powered
+  `task_requirement_unmet` or `requested_item_never_attempted` finding that asked the agent to
+  `act` is a standing dispute when its subject refs cite a readable, unsuperseded
+  `yoetz-blocker:<kind>` decision or an obligation that decision blocks (`blocker_cited`), or when
+  a review re-raised it after the acknowledgement (`give_up_reraised`). An unanchored
+  acknowledgement is not flagged. Rebuttals (D7b) count every `rejected` and `self_verified`
+  response.
 - Out of scope, recorded for later: reviewer visibility (diff and test-output truncation, vendored
   trees) and reviewer-run commands.

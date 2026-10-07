@@ -108,6 +108,7 @@ from yoetz.protocol.policy_packs import (
 )
 
 __all__ = [
+    "AGENT_SETTLED_DISPOSITION_VALUES",
     "CAPTURE_FAILURE_GAPS",
     "REVIEW_SELECTION_GAPS",
     "SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS",
@@ -811,6 +812,12 @@ _FIXED_RULING_TOLERATED_GAPS: Final = _INSUFFICIENT_PACKET_GAPS | frozenset(
 )
 
 
+# Task-fact gaps an explicit ``fixed`` ruling tolerates on its own finding (issue #1000).
+_TASK_FACT_GAPS_TOLERATED_WHEN_FIXED: Final = frozenset(
+    {WRITE_OUTSIDE_WORKSPACE_GAP, OBLIGATION_BLOCKED_GAP}
+)
+
+
 def _prior_verdict_effect(
     finding: Finding, check: CheckRecordedPayload
 ) -> tuple[bool, tuple[str, ...], frozenset[str]]:
@@ -1098,11 +1105,6 @@ def resolution_blockers(
         # The agent's explicit empty-scope declaration is a recorded decision the review packet
         # shows as the plan itself, never a limit on what the reviewer could see.
         tolerated = tolerated | {COMPLETION_SCOPE_DECLARED_NONE_GAP}
-        # Task facts about where the agent wrote and which obligations it declared blocked
-        # describe the work, never what the reviewer was shown, so they cannot bound an AI-powered
-        # absence proof either; they stay on the receipt (issue #1000; tb4n1 interleaved-vigenere
-        # kept a finding the reviewer ruled fixed open on write_outside_workspace).
-        tolerated = tolerated | {WRITE_OUTSIDE_WORKSPACE_GAP, OBLIGATION_BLOCKED_GAP}
         if gaps & _COMMAND_GAPS and _semantic_command_independent(finding, proof_state):
             tolerated = tolerated | _COMMAND_GAPS
         if OBLIGATION_EVIDENCE_STALE_AFTER_SCOPE_EDIT_GAP in gaps and _stale_obligations_unrelated(
@@ -1112,6 +1114,14 @@ def resolution_blockers(
         ruled_fixed, verdict_reasons, verdict_tolerated = _prior_verdict_effect(finding, check)
         reasons.extend(verdict_reasons)
         tolerated |= verdict_tolerated
+        if ruled_fixed:
+            # Task facts about where the agent wrote and which obligations it declared blocked
+            # describe the work, never what the reviewer was shown, so they cannot bound an
+            # explicit, cited ``fixed`` ruling; they stay on the receipt (issue #1000; tb4n1
+            # interleaved-vigenere kept a finding the reviewer ruled fixed open on
+            # write_outside_workspace). A silent review keeps them blocking: a review that did
+            # not rule on the finding never said the work they describe repaired it.
+            tolerated = tolerated | _TASK_FACT_GAPS_TOLERATED_WHEN_FIXED
         if prior_finding_verdict(check, finding) is None and gaps & _ASSESSMENT_INCOMPLETE_GAPS:
             # The review may never have seen this finding (the prior-findings section left it out)
             # or a ruling on it may have been dropped. Either way it was not assessed, so silence
@@ -1796,6 +1806,13 @@ def apply_check_resolution(
 OPEN_REVIEW_VERDICTS: Final = frozenset({"answered_not_fixed", "still_present", "unassessable"})
 
 
+# The agent's terminal answers to a finding (issue #980). ``self_verified`` is compared by wire
+# value so this fold reads ledgers written before and after that disposition exists.
+AGENT_SETTLED_DISPOSITION_VALUES: Final = frozenset({"acknowledged_not_done", "self_verified"})
+# Rulings that say the concern is still there; on a settled item they record a re-raise.
+_RERAISE_VERDICTS: Final = frozenset({"still_present", "answered_not_fixed"})
+
+
 def apply_check_rulings(
     findings: dict[FindingId, FindingProjectionRecord],
     responses: Mapping[FindingId, ProjectionRecord[ResponseRecordedPayload]],
@@ -1857,18 +1874,32 @@ def apply_check_rulings(
                 rejection_accepted_by_check_event_id=check_event_id,
             )
             continue
+        settled = (
+            latest is not None
+            and latest.payload is not None
+            and latest.payload.disposition.value in AGENT_SETTLED_DISPOSITION_VALUES
+        )
+        if (
+            settled
+            and record is not None
+            and record.payload is not None
+            and record.payload.origin is not FindingOrigin.DETERMINISTIC
+            and rulings.get(current_id) in _RERAISE_VERDICTS
+        ):
+            # The reviewer re-raised the same concern after the agent's terminal answer (issue
+            # #980): recorded on the item, never a new round and never a reopening.
+            findings[current_id] = replace(
+                record, settled_reraise_count=record.settled_reraise_count + 1
+            )
+            continue
         if (
             record is None
             or record.payload is None
             or record.resolved_by_check_event_id is not None
             or record.rejection_accepted_by_check_event_id is not None
-            # ``acknowledged_not_done`` is final too: a later return of the same local issue, or a
-            # stray ruling, is not a new round on it.
-            or (
-                latest is not None
-                and latest.payload is not None
-                and latest.payload.disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE
-            )
+            # ``acknowledged_not_done`` (and ``self_verified``) is final too: a later return of
+            # the same local issue, or a stray ruling, is not a new round on it.
+            or settled
         ):
             continue
         finding = record.payload

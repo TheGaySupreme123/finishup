@@ -180,6 +180,12 @@ type MissingForAssessmentKind = Literal[
 ]
 # Item-id prefix of the non-rulable rows that carry the agent's answer to a local finding.
 LOCAL_FINDING_ANSWER_ITEM_PREFIX: Final = "local-finding-answer-"
+# Item-id prefix of the non-rulable rows that carry a finding the agent settled
+# (``acknowledged_not_done`` or ``self_verified``): the reviewer may name it in ``restates``
+# (issue #980). Structural row ``settled-finding-<ref>``; prose rows
+# ``settled-finding-summary-<ref>`` and ``settled-finding-response-<ref>``.
+SETTLED_FINDING_ITEM_PREFIX: Final = "settled-finding-"
+SETTLED_FINDING_ITEM_SUFFIXES: Final = ("", "summary-", "response-")
 type ReviewerNextStep = Literal[
     "act",
     "provide_evidence",
@@ -1482,13 +1488,18 @@ class SemanticCase:
             for item_id in packet.prior_finding_item_ids
             if (item := item_by_id[item_id]).item_id == f"prior-finding-{item.source_ref}"
         )
-        # Rows answering a local finding (issue #976) are non-rulable context of their own.
+        # Rows answering a local finding (issue #976) and rows carrying a finding the agent settled
+        # (issue #980) are non-rulable context of their own.
         if packet.prior_finding_refs != structural or any(
             item_by_id[item_id].source_ref not in structural
             and item_id
             not in {
                 LOCAL_FINDING_ANSWER_ITEM_PREFIX + item_by_id[item_id].source_ref,
                 LOCAL_FINDING_ANSWER_ITEM_PREFIX + "text-" + item_by_id[item_id].source_ref,
+                *(
+                    SETTLED_FINDING_ITEM_PREFIX + infix + item_by_id[item_id].source_ref
+                    for infix in SETTLED_FINDING_ITEM_SUFFIXES
+                ),
             }
             for item_id in packet.prior_finding_item_ids
         ):

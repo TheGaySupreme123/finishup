@@ -112,6 +112,7 @@ from yoetz.kernel.deterministic_checks import (
 )
 from yoetz.kernel.deterministic_scope import deterministic_scope_is_clean
 from yoetz.kernel.finding_resolution import (
+    AGENT_SETTLED_DISPOSITION_VALUES,
     SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
     SEMANTIC_REFERENCE_SCOPE_REDUCED_GAP,
 )
@@ -1590,6 +1591,8 @@ class FinalSemanticEvaluation:
     # section carried and its citable refs. ``None`` when the evaluator did not report them.
     case_prior_finding_refs: frozenset[str] | None = None
     case_citable_refs: frozenset[str] | None = None
+    # Findings the agent settled that the packet carried as nameable, non-rulable rows (#980).
+    case_settled_finding_refs: frozenset[str] | None = None
     # Issue #907: workspace-relative paths each hook-captured edit in the case records, keyed by
     # evidence ref. In process only, to bind a fresh diff to a repeated missing-item request;
     # never recorded, logged or sent. ``None`` when the evaluator did not resolve captures.
@@ -2827,36 +2830,64 @@ def _summary_with_re_raised(
     return _bounded_review_text("\n".join(lines))
 
 
-def _admitted_restates(
+# How a challenge's ``restates`` target is treated (issue #980, TB4 tb4n1 D5).
+_RESTATES_OPEN: Final = "open"  # a carried, open AI-powered finding: rulable
+_RESTATES_SETTLED: Final = "settled"  # a carried finding the agent settled: nameable only
+_RESTATES_LINKED: Final = "linked"  # any other readable recorded finding: linked, never folded
+
+
+def _restates_target(
     case: DeterministicCase,
     challenge: ReviewerChallenge,
     prior_finding_refs: frozenset[str] | None,
-) -> FindingId | None:
-    """The earlier finding a challenge's ``restates`` names, when the fence admits it (#980).
+    settled_finding_refs: frozenset[str] | None,
+) -> tuple[str, FindingId] | None:
+    """Classify the earlier finding a challenge's ``restates`` names (issue #980).
 
-    It must be one of the packet's prior findings (``prior_finding_refs``, when the composing
-    evaluator reported the packet) and a readable, open AI-powered finding inside the frozen fence.
-    A resolved or final item is never a target: done stays done (a re-raise after verified
-    resolution is a #458 successor) and a final answer is never re-reviewed.
+    ``open``: one of the packet's rulable prior findings (``prior_finding_refs``, when the
+    composing evaluator reported the packet), readable, unresolved and open. ``settled``: a
+    readable AI-powered finding the agent answered ``acknowledged_not_done`` (or
+    ``self_verified``) that the packet carried as a nameable, non-rulable row
+    (``settled_finding_refs``). ``linked``: any other readable finding inside the frozen fence (a
+    resolved or final item, or one the packet did not carry): done stays done, so the challenge
+    is minted as a new item that relates to it. ``None``: no target, or one outside the fence;
+    the challenge stands on its own and nothing is counted, because a citation of an earlier
+    finding is not a ref the challenge rests on.
     """
 
     target = challenge.restates
     if target is None or target not in case.allowed_ids:
         return None
-    if prior_finding_refs is not None and target not in prior_finding_refs:
-        return None
     key = finding_id(target)
     record = case.projection.findings.get(key)
-    if (
-        record is None
-        or record.payload is None
-        or record.redacted
-        or record.resolved_by_check_event_id is not None
-        or record.payload.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
-        or finding_todo_state(case.projection, key) is not FindingTodoState.OPEN
-    ):
+    if record is None or record.payload is None or record.redacted:
         return None
-    return key
+    semantic = record.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+    unresolved = record.resolved_by_check_event_id is None
+    state = finding_todo_state(case.projection, key)
+    if (
+        semantic
+        and unresolved
+        and state is FindingTodoState.OPEN
+        and (prior_finding_refs is None or target in prior_finding_refs)
+        and _latest_response_value(case, key) not in AGENT_SETTLED_DISPOSITION_VALUES
+    ):
+        return _RESTATES_OPEN, key
+    if (
+        semantic
+        and unresolved
+        and _latest_response_value(case, key) in AGENT_SETTLED_DISPOSITION_VALUES
+        and (settled_finding_refs is None or target in settled_finding_refs)
+    ):
+        return _RESTATES_SETTLED, key
+    return _RESTATES_LINKED, key
+
+
+def _latest_response_value(case: DeterministicCase, key: FindingId) -> str | None:
+    response = case.projection.responses.get(key)
+    if response is None or response.payload is None or response.redacted:
+        return None
+    return response.payload.disposition.value
 
 
 def _summary_with_unanchored_concerns(summary: str, concerns: tuple[ReviewerChallenge, ...]) -> str:
@@ -3094,12 +3125,14 @@ def validate_semantic_judgment(
     prior_finding_refs: frozenset[str] | None = None,
     citable_refs: frozenset[str] | None = None,
     provider_input_text_by_ref: Mapping[str, tuple[str, ...]] | None = None,
+    settled_finding_refs: frozenset[str] | None = None,
 ) -> SemanticJudgmentReview:
     """Fence AI-powered challenges to the exact frozen refs, coverage, and final provenance.
 
     ``prior_finding_refs`` and ``citable_refs`` describe the packet the reviewer was actually
     shown (its prior-findings rows and its ``citable_refs``); per-finding rulings are fenced to
-    them (issue #905). ``None`` means the composing evaluator did not report the packet, and the
+    them (issue #905). ``settled_finding_refs`` are the findings the agent settled that the packet
+    carried as nameable, non-rulable rows: a challenge's ``restates`` may name them (issue #980). ``None`` means the composing evaluator did not report the packet, and the
     frozen fence bounds them instead.
 
     ``capture_baseline_gaps`` are the closed native capture limits under which this review ran
@@ -3141,6 +3174,8 @@ def validate_semantic_judgment(
             citable_refs &= provider_refs
         if prior_finding_refs is not None:
             prior_finding_refs &= provider_refs
+        if settled_finding_refs is not None:
+            settled_finding_refs &= provider_refs
     returned_challenges = len(judgment.challenges)
     fence = _validate_reviewer_snippets(
         judgment,
@@ -3191,7 +3226,6 @@ def validate_semantic_judgment(
         )
     candidates: list[CandidateFinding] = []
     restatements = 0
-    restates_dropped = 0
     re_raised: list[tuple[FindingId, ReviewerChallenge]] = []
     for challenge in judgment.challenges:
         resolution = _resolve_challenge_refs(case, deterministic, challenge)
@@ -3211,15 +3245,38 @@ def validate_semantic_judgment(
                 rejections.get(SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM, 0) + 1
             )
             continue
-        named = _admitted_restates(case, challenge, prior_finding_refs)
-        if challenge.restates is not None and named is None:
-            # A ``restates`` outside the packet's prior findings is a citation of something the
-            # reviewer was not shown as a live item: dropped and disclosed like any reduced ref,
-            # and the challenge stands on its own (issue #980).
-            restates_dropped += 1
+        target = _restates_target(case, challenge, prior_finding_refs, settled_finding_refs)
+        named: FindingId | None = None
+        linked: FindingId | None = None
+        if target is not None:
+            treatment, target_id = target
+            same_kind = _finding_kind_of(case, target_id) is challenge.finding_kind
+            if treatment == _RESTATES_OPEN and same_kind:
+                named = target_id
+            elif treatment == _RESTATES_SETTLED and same_kind:
+                # The reviewer raised again a concern the agent settled (issue #980, D7): the
+                # re-raise is recorded on that item as a standing dispute, never a new finding,
+                # so the give-up cannot loop into fresh ids.
+                if _record_settled_reraise(admitted, target_id, refs):
+                    restatements += 1
+                    re_raised.append((target_id, challenge))
+                    continue
+                linked = target_id
+            else:
+                # A different concern about the named item, or an item that is done or was not
+                # carried: a new finding that relates to it, never folded into it. A different
+                # concern about an open item still says that item's problem stands.
+                linked = target_id
+                if treatment == _RESTATES_OPEN:
+                    _suppressed, reduced = _record_restatement(
+                        case, admitted, target_id, refs, verdict="still_present"
+                    )
+                    verdicts_set_aside += reduced
         restated = (
             named
             if named is not None
+            else None
+            if target is not None and target[0] != _RESTATES_LINKED
             else _restated_finding(
                 case, challenge.finding_kind, refs, replies_to=resolution.related_finding_ids
             )
@@ -3281,8 +3338,16 @@ def validate_semantic_judgment(
                     snippet=challenge.snippet,
                 ),
                 (
-                    tuple(sorted({*resolution.related_finding_ids, named}, key=str.encode))
-                    if named is not None
+                    tuple(
+                        sorted(
+                            {
+                                *resolution.related_finding_ids,
+                                *(ref for ref in (named, linked) if ref is not None),
+                            },
+                            key=str.encode,
+                        )
+                    )
+                    if named is not None or linked is not None
                     else resolution.related_finding_ids
                 ),
             )
@@ -3305,7 +3370,7 @@ def validate_semantic_judgment(
         _summary_with_re_raised(review_summary, tuple(re_raised)),
         judgment.verified,
         snippets_rejected,
-        fence.refs_reduced + restates_dropped,
+        fence.refs_reduced,
     )
 
 
@@ -3398,18 +3463,20 @@ def _record_restatement(
     Suppression must never read as absence: a restatement of an open item records that the
     reviewer still finds it (``still_present``, citing what the challenge cited; a challenge that
     names an answered item in ``restates`` records ``answered_not_fixed``, issue #980), so the
-    check cannot resolve it by silence and the item's review round advances once per concern. A restatement contradicts an explicit ``fixed`` or
-    ``withdrawn`` ruling on the same item, which becomes ``unassessable``. An
-    ``acknowledged_not_done`` or ``rejection_accepted`` item is final, stays disclosed on the
-    receipt, and needs nothing recorded. (A ``verified_resolved`` item is never a restatement
+    check cannot resolve it by silence and the item's review round advances once per concern. A
+    restatement contradicts an explicit ``fixed`` or ``withdrawn`` ruling on the same item, which
+    becomes ``unassessable``. An ``acknowledged_not_done`` (or ``self_verified``) item is final:
+    the re-raise is recorded on it as a standing dispute (``_record_settled_reraise``, #980) and
+    it is never reopened. A ``rejection_accepted`` item is final, stays disclosed on the receipt,
+    and needs nothing recorded. (A ``verified_resolved`` item is never a restatement
     target: see ``_restated_finding``.) When no ruling can be recorded (the check's ruling bound
     is full) the restatement is not suppressed and is minted as before.
     """
 
-    if finding_todo_state(case.projection, restated) in {
-        FindingTodoState.ACKNOWLEDGED_NOT_DONE,
-        FindingTodoState.REJECTION_ACCEPTED,
-    }:
+    if _latest_response_value(case, restated) in AGENT_SETTLED_DISPOSITION_VALUES:
+        # The agent settled it; the re-raise is recorded on it as a standing dispute (#980).
+        return _record_settled_reraise(admitted, restated, refs), False
+    if finding_todo_state(case.projection, restated) is FindingTodoState.REJECTION_ACCEPTED:
         return True, False
     key = str(restated)
     earlier = admitted.get(key)
@@ -3423,6 +3490,35 @@ def _record_restatement(
         admitted[key] = PriorFindingVerdictRecord(restated, "unassessable", ())
         return True, True
     return True, False
+
+
+def _record_settled_reraise(
+    admitted: dict[str, PriorFindingVerdictRecord],
+    settled: FindingId,
+    refs: tuple[str, ...],
+) -> bool:
+    """Record a re-raise of a finding the agent settled as the reviewer's ruling on it (#980).
+
+    The item stays final: the ``still_present`` ruling never reopens it or counts a review round.
+    The reducer records it as a re-raise after the agent's terminal answer
+    (``settled_reraise_count``), which is what a standing premise dispute reads (TB4 tb4n1 D7a).
+    Returns ``False`` only when the check's ruling bound is full, so the challenge is minted as a
+    linked item instead of being lost.
+    """
+
+    key = str(settled)
+    if key in admitted:
+        return True
+    if len(admitted) >= MAX_RECORDED_VERDICTS:
+        return False
+    cited = tuple(sorted(refs, key=str.encode))[:_MAX_RULING_CITED_REFS]
+    admitted[key] = PriorFindingVerdictRecord(settled, "still_present", cited)
+    return True
+
+
+def _finding_kind_of(case: DeterministicCase, key: FindingId) -> FindingKind | None:
+    record = case.projection.findings.get(key)
+    return None if record is None or record.payload is None else record.payload.kind
 
 
 def _restated_finding(
@@ -4197,6 +4293,7 @@ async def execute_check_commit(
                     prior_finding_refs=semantic_result.case_prior_finding_refs,
                     citable_refs=semantic_result.case_citable_refs,
                     provider_input_text_by_ref=semantic_result.provider_input_text_by_ref,
+                    settled_finding_refs=semantic_result.case_settled_finding_refs,
                 )
             except SemanticJudgmentRejected as exc:
                 # The reviewer's answer is unusable, so the check has no AI-powered review result — but the

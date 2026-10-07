@@ -162,7 +162,7 @@ from yoetz.application.semantic_case import (
     SemanticPacketView,
     build_semantic_case,
     captured_edit_paths,
-    check_time_change_parts_carried,
+    check_time_change_bytes_carried,
     semantic_case_packet_view,
     semantic_case_to_candidate_context,
     sent_ledger_refs,
@@ -5000,6 +5000,7 @@ def _privacy_gated_semantic_evaluator(
             # prior-finding rows envelope bounding removed are disclosed like any other cut.
             packet_view = semantic_case_packet_view(semantic_case)
             packet_prior_refs = packet_view.prior_finding_refs
+            packet_settled_refs = packet_view.settled_finding_refs
             packet_citable_refs = packet_view.citable_refs
             # Issue #907: which paths each captured edit records, compared in process only so a
             # repeated request for a captured edit can converge on a fresh diff of that path.
@@ -5032,8 +5033,9 @@ def _privacy_gated_semantic_evaluator(
                     check_change_files = await check_change_shown_files(
                         runtime,
                         check_change.change,
-                        review_selection,
-                        check_time_change_parts_carried(
+                        # Bytes, not parts: the planned selection may split the change into
+                        # smaller parts, or cut its first part to the room left (issue #983).
+                        check_time_change_bytes_carried(
                             semantic_case, withheld_categories=withheld
                         ),
                     )
@@ -5104,6 +5106,7 @@ def _privacy_gated_semantic_evaluator(
                     ),
                     unsuppliable_missing_kinds=unsuppliable,
                     case_prior_finding_refs=packet_prior_refs,
+                    case_settled_finding_refs=packet_settled_refs,
                     case_citable_refs=packet_citable_refs,
                     case_captured_edit_paths=packet_edit_paths,
                     case_workspace_root=workspace_root,
@@ -5472,6 +5475,7 @@ def _privacy_gated_semantic_evaluator(
                     case_content_gaps=combined_content_gaps,
                     unsuppliable_missing_kinds=unsuppliable,
                     case_prior_finding_refs=packet_prior_refs,
+                    case_settled_finding_refs=packet_settled_refs,
                     case_citable_refs=packet_citable_refs,
                     case_captured_edit_paths=packet_edit_paths,
                     case_workspace_root=workspace_root,

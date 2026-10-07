@@ -7707,9 +7707,13 @@ issue is still proven absent, and a `fixed` ruling (#905) still resolves its own
 Image and binary files in the packet (ADR-006, issues #983, #1004; no new wire field). No bytes or
 pixels of such a file ever leave the machine. An evidence row that records one (a hook-observed
 image, or a row whose `reference` names an unsupported file type and records the file itself) is
-carried as an `evidence_excerpt` that begins `[Yoetz: an image or binary file at <path> exists and
-was not sent (evidence <evd>); its content is not assessable from this packet]` (an observed image
-has no path and cites only its evidence id). The newest 16 (`MAX_BINARY_NOTICES` in
+carried as an `evidence_excerpt` that begins `[Yoetz: the agent referenced an image or binary file
+at <path> (evidence <evd>); it was not sent and its content is not assessable from this packet]`
+(an observed image has no path: `[Yoetz: an image was observed (evidence <evd>); it was not sent
+and its content is not assessable from this packet]`). The path keeps only ASCII letters, digits,
+space and `._/+@~=,-` (others become `_`) and at most 160 characters. Agent-authored excerpt text
+never begins a line like a label: such a line is prefixed `(agent text) `, and the reviewer
+trusts a label only as an excerpt's first line naming that excerpt's own `source_ref`. The newest 16 (`MAX_BINARY_NOTICES` in
 `application.semantic_case`) are reserved excerpt room. A row whose `reference` names such a file
 and which carries text (`command_output`, `test_result`, `other` or captured output) is labelled
 `[Yoetz: agent-rendered text of <path> (evidence <evd>); the binary file itself is not sent]`. Both
@@ -7837,20 +7841,39 @@ the same check or a readable recorded finding inside the frozen fence; only alre
 findings are kept as `relates_to`, so a link never names a finding that was ranked away.
 
 A provider challenge may name the finding it restates (`restates`, provider-judgment `1.2.0`,
-optional; issue #980). When it is one of the packet's `prior_finding_refs` and a readable open
-AI-powered finding, the challenge mints nothing: the check records `answered_not_fixed` (the agent
-had answered) or `still_present` on that finding, citing the challenge's refs, and appends the
-challenge's summary and message to `review_summary` under a fixed header naming the id. A rejected
-`restates` is counted in `semantic_review_refs_reduced`.
+optional; issue #980). It folds only when the challenge's `finding_kind` equals the named
+finding's kind. A carried readable open AI-powered finding (one of `prior_finding_refs`): the
+challenge mints nothing; the check records `answered_not_fixed` (the agent had answered) or
+`still_present` on that finding, citing the challenge's refs, and appends the challenge's summary
+and message to `review_summary` under a fixed header naming the id. A carried settled finding (a
+`yoetz.settled-finding/1` row; `SemanticPacketView.settled_finding_refs`, passed to
+`validate_semantic_judgment(settled_finding_refs=)`): the challenge mints nothing and a
+`still_present` ruling is recorded on the final item, which the reducer counts in
+`settled_reraise_count` (no round, never reopened). Any other target (another kind, a resolved or
+final item, an uncarried finding) yields a new finding whose `relates_to` names it; a different
+concern about a carried open item also records `still_present` on it. A `restates` is never
+counted in `semantic_review_refs_reduced`; an id outside the fence is ignored.
 
-Dialogue projection facts (TB4 tb4n1 D7): a finding row counts the agent's `rejected` responses
-(`rebuttal_count`) and keeps the newest admitted ruling (`last_reviewer_verdict`); both are
-replay-derived, emitted in projection snapshots only when set, and carried with `review_rounds` on
-the `yoetz.prior-finding/1` row when set. `kernel.finding_todo.standing_premise_disputes(state)`
-lists `acknowledged_not_done` AI-powered findings of kind `task_requirement_unmet` or
-`requested_item_never_attempted` whose challenge asked the agent to `act` (`FindingTodo
-.premise_disputed`): the acknowledgement stays final, but the reviewer's premise challenge is a
-standing dispute for readiness or Stop surfaces.
+Dialogue projection facts (TB4 tb4n1 D7): a finding row counts the agent's `rejected` and
+`self_verified` responses (`rebuttal_count`), keeps the newest admitted ruling
+(`last_reviewer_verdict`), and counts re-raises recorded after the agent settled it
+(`settled_reraise_count`, rulings `still_present`/`answered_not_fixed` on an item whose latest
+response is `acknowledged_not_done` or `self_verified`); all are replay-derived, emitted in
+projection snapshots only when set, and carried on the `yoetz.prior-finding/1` /
+`yoetz.settled-finding/1` rows when set. `kernel.finding_todo.premise_dispute_basis(state,
+finding_id) -> "blocker_cited" | "give_up_reraised" | None` and
+`standing_premise_disputes(state, finding_ids=None)` (`FindingTodo.premise_disputed`) flag an
+`acknowledged_not_done` AI-powered `task_requirement_unmet`/`requested_item_never_attempted`
+finding that asked the agent to `act` only with a recorded anchor: its subject refs cite a
+readable, unsuperseded `yoetz-blocker` decision or an obligation it blocks, or
+`settled_reraise_count > 0`. The acknowledgement stays final; the dispute is for readiness or
+Stop surfaces.
+
+The prior-findings section also carries, after the open findings and inside the same bounds,
+non-rulable `yoetz.settled-finding/1` rows (item ids `settled-finding-<ref>`, prose
+`settled-finding-summary-<ref>` and `settled-finding-response-<ref>`) for readable, unresolved
+AI-powered findings the agent settled; they never enter `prior_finding_refs`, a ruling on one is
+set aside, and one that does not fit adds no `semantic_prior_findings_over_limit`.
 
 The review packet (`outbound-case` `1.2.0`) adds the `prior_finding` section,
 `review_packet.prior_finding_item_ids` (every row of the section, at most 112) and
@@ -8347,6 +8370,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   the total bytes rounded up to the first part). Leftover parts take the room the reserved excerpt
   ranks (current diff, latest verification, prior-finding context) leave, ahead of older edit
   hunks and unreserved or superseded excerpts; any still left backfill after every other excerpt.
+  When a narrowed case leaves less room than one whole part, the first part is cut to that room
+  (at least 256 change bytes, on a line end where one lies in its second half) and prefixed
+  `[Yoetz check-time change, part 1 of n, cut to the packet's room]`; nothing follows it and
+  `check_time_change_truncated` is disclosed (issue #983).
   Untracked files are read up to `MAX_CHECK_CHANGE_TEXT_BYTES` less the header budget (232 KiB). The case digest binds the object
   identity, content digest, base, flags, admitted part count and any unavailability reason; a case
   without a selected change keeps its historical digest input.
@@ -8363,21 +8390,24 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   puts in the gap's `detail` and the limitations section body (so JSON, markdown and text receipts
   carry it), `render_human_check` and `render_human_status` print after the gap list, and the MCP
   check summary appends when it fits the 512-byte bound.
-- **Shown files.** `check_time_change_shown_files(capture, selection, admitted_parts)` returns each
-  `diff --git` section of the stored change that reached the admitted parts, whether it arrived
+- **Shown files.** `check_time_change_shown_files(capture, shown_bytes)` returns each
+  `diff --git` section of the stored change that reached its leading `shown_bytes`, whether it arrived
   whole and without a `[REDACTED]` marker, the section bytes that arrived, the markers among them,
   whether the whole section arrived, and where the first shown marker starts. The identity is the
   section's first line plus `\0binary` for a `Binary files ` line and `\0deleted` for a `deleted
-  file mode ` line. `admitted_parts` is `check_time_change_parts_carried(case,
-  withheld_categories=)`: the unbroken run of parts from the first whose catalog rows
-  `bounded_case_envelope(case)` kept, or 0 when the policy withholds `repository_excerpt`.
-  `check_change_shown_files(runtime, change, selection, admitted_parts)` commits each through
+  file mode ` line. `shown_bytes` is `check_time_change_bytes_carried(case,
+  withheld_categories=)`: the change bytes (marker lines excluded) of
+  `check_time_change_parts_carried(case, withheld_categories=)`, the unbroken run of parts from the
+  first whose catalog rows `bounded_case_envelope(case)` kept, or 0 when the policy withholds
+  `repository_excerpt`. Counting bytes keeps the record exact whatever part size a planned
+  selection chose and when the first part was cut (issue #983).
+  `check_change_shown_files(runtime, change, shown_bytes)` commits each through
   `runtime.objects.commitment_for(..., CHANGE_CAPTURE)` over the domain
   `yoetz/check-change-shown-file/v1`, the base commit and that identity. Each partially shown file
   also gets `view_commitment`, the same key over `yoetz/check-change-shown-view/v1`, the base
   commit, the identity and `CheckTimeChangeShownFile.view`: the length-prefixed shown length, the
   whole-section flag, every marker offset, and every hunk's offset and header line within the shown
-  bytes. The view is never stored; it is derived from the same `admitted_parts`, so envelope
+  bytes. The view is never stored; it is derived from the same `shown_bytes`, so envelope
   minimization cannot desynchronize it from the accounting. `CheckChangeCapture` and
   `yoetz.check-change/1` carry `base_commit`. The composition passes it to
   `FinalSemanticEvaluation.check_change_files`, and `commit_check_if_current(...,
@@ -8405,7 +8435,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   once in `GAP_CLASSIFICATION`; standing ones are advisory for the check verdict, the receipt
   conclusion and `DETERMINISTIC_SCOPED_STANDING_GAPS`, and every task-fact code is tolerated by a
   local absence proof; `write_outside_workspace` and `obligation_blocked_outside_agent_control`
-  are also tolerated by an AI-powered absence proof (issue #1000). `build_deterministic_case` and the compact status gaps add them beside the
+  are also tolerated by an AI-powered absence proof under an explicit, admitted `fixed` ruling on
+  that finding, never when the review is silent on it (issue #1000). `build_deterministic_case` and the compact status gaps add them beside the
   plan-drift signals.
 - **Planned-verification identity.** `register_command_identity_key(key)` (the service calls it at
   composition with the local observation store key) lets `requested_command_identity(value)`

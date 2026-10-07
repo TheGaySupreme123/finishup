@@ -538,6 +538,46 @@ def test_answered_local_finding_reaches_the_reviewer_as_non_rulable_context() ->
     assert str(fnd(7)) not in case.packet.prior_finding_refs
 
 
+def test_a_settled_finding_is_carried_nameable_but_never_rulable() -> None:
+    """Issue #980 (cargo 5, pretrain 11): a finding the agent answered ``acknowledged_not_done``
+    was dropped from the packet, so the reviewer could not name it in ``restates`` and every
+    re-raise minted a new id. It is carried as a non-rulable ``yoetz.settled-finding/1`` row the
+    packet view reports as nameable, after the open findings and inside the section bounds."""
+
+    from yoetz.application.semantic_case import semantic_case_packet_view
+
+    settled = finding_record(_semantic(7), 11)
+    answer = ResponseRecordedPayload(
+        finding_id=fnd(7),
+        finding_frontier=FRONTIER,
+        disposition=ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
+        reason="No single tour satisfies the MTOW limit.",
+    )
+    case = _build(
+        _numba_case(
+            extra_findings={fnd(7): settled},
+            extra_responses={fnd(7): record(answer, 17)},
+        )
+    )
+    structural = _row(case, f"settled-finding-{fnd(7)}")
+    assert structural["rulable"] is False
+    assert structural["schema"] == "yoetz.settled-finding/1"
+    assert structural["disposition"] == "acknowledged_not_done"
+    texts = {item.item_id: item.content.decode("utf-8") for item in case.items}
+    assert "MTOW" in texts[f"settled-finding-response-{fnd(7)}"]
+    assert f"prior-finding-{fnd(7)}" not in case.packet.prior_finding_item_ids
+    assert str(fnd(7)) not in case.packet.prior_finding_refs
+    view = semantic_case_packet_view(case)
+    assert view.settled_finding_refs == frozenset({str(fnd(7))})
+    assert str(fnd(7)) not in view.prior_finding_refs
+    # The open findings keep their place ahead of it.
+    ids = list(case.packet.prior_finding_item_ids)
+    assert all(
+        ids.index(f"settled-finding-{fnd(7)}") > ids.index(f"prior-finding-{ref}")
+        for ref in case.packet.prior_finding_refs
+    )
+
+
 def test_unanswered_local_finding_is_not_carried() -> None:
     local = finding_record(_semantic(7, origin=FindingOrigin.DETERMINISTIC), 11)
     case = _build(_numba_case(extra_findings={fnd(7): local}))

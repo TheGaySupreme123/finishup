@@ -387,6 +387,10 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     ``last_reviewer_verdict`` is the newest admitted reviewer ruling on it (``fixed``,
     ``still_present``, ``answered_not_fixed``, ``withdrawn`` or ``unassessable``). Both are carried
     to the next review packet's prior-finding row; neither closes or reopens anything.
+    ``settled_reraise_count`` counts the reviewer's re-raises of this same concern recorded after
+    the agent's terminal answer (``acknowledged_not_done``, or ``self_verified``; issue #980): the
+    agent stopped, the reviewer did not. It never reopens the item; it is what
+    ``kernel.finding_todo`` reads as a standing premise dispute.
     """
 
     resolved_by_check_event_id: EventId | None = None
@@ -399,6 +403,7 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     resolution_raising_check_event_id: EventId | None = None
     rebuttal_count: int = 0
     last_reviewer_verdict: str | None = None
+    settled_reraise_count: int = 0
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -407,6 +412,8 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
         if (
             type(self.rebuttal_count) is not int
             or not 0 <= self.rebuttal_count <= _MAX_SQLITE_SIGNED_INTEGER
+            or type(self.settled_reraise_count) is not int
+            or not 0 <= self.settled_reraise_count <= _MAX_SQLITE_SIGNED_INTEGER
         ):
             raise _invalid()
         if self.last_reviewer_verdict is not None and (
@@ -1173,6 +1180,8 @@ def _record_snapshot(record: _ProjectionRecordLike) -> dict[str, JsonValue]:
             result["rebuttal_count"] = record.rebuttal_count
         if record.last_reviewer_verdict is not None:
             result["last_reviewer_verdict"] = record.last_reviewer_verdict
+        if record.settled_reraise_count:
+            result["settled_reraise_count"] = record.settled_reraise_count
     return result
 
 
@@ -1467,6 +1476,7 @@ def _record_from_snapshot(
                 "resolution_depends_on_check_event_ids",
                 "rebuttal_count",
                 "last_reviewer_verdict",
+                "settled_reraise_count",
             }
         )
     else:
@@ -1572,6 +1582,9 @@ def _record_from_snapshot(
         rebuttals = source.get("rebuttal_count", 0)
         if "rebuttal_count" in source and (type(rebuttals) is not int or rebuttals < 1):
             raise _invalid()
+        reraises = source.get("settled_reraise_count", 0)
+        if "settled_reraise_count" in source and (type(reraises) is not int or reraises < 1):
+            raise _invalid()
         last_verdict = source.get("last_reviewer_verdict")
         if "last_reviewer_verdict" in source and type(last_verdict) is not str:
             raise _invalid()
@@ -1615,6 +1628,7 @@ def _record_from_snapshot(
             ),
             rebuttal_count=cast(int, rebuttals),
             last_reviewer_verdict=cast(str | None, last_verdict),
+            settled_reraise_count=cast(int, reraises),
         )
     return ProjectionRecord(
         payload=payload,

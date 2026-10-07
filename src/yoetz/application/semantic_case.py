@@ -105,6 +105,7 @@ from yoetz.kernel.deterministic_checks import (
     DeterministicCase,
     FrozenHistoryEvent,
 )
+from yoetz.kernel.finding_resolution import AGENT_SETTLED_DISPOSITION_VALUES
 from yoetz.kernel.finding_todo import FindingTodoState, finding_todo_state
 from yoetz.kernel.lineage import LineageEvaluation
 from yoetz.kernel.projections import (
@@ -120,6 +121,7 @@ from yoetz.ports.semantic import (
     MAX_REVIEW_INPUT_SECTION_ITEMS,
     MAX_SEMANTIC_CASE_ITEMS,
     MAX_SEMANTIC_ITEM_SUBJECT_REFS,
+    SETTLED_FINDING_ITEM_PREFIX,
     ChangeObservation,
     ExcerptDigestProvenance,
     MissingForAssessmentKind,
@@ -167,6 +169,7 @@ __all__ = [
     "TASK_STATEMENT_ITEM_ID",
     "CHECK_TIME_CHANGE_ITEM_PREFIX",
     "CheckTimeChangeShownFile",
+    "check_time_change_bytes_carried",
     "check_time_change_parts_carried",
     "check_time_change_shown_files",
     "CapturedContentScope",
@@ -605,6 +608,11 @@ class CheckTimeChange:
 CHECK_TIME_CHANGE_ITEM_PREFIX: Final = "change-check-time-"
 _CHECK_TIME_CHANGE_SOURCE_REF: Final = "check-time-change"
 _CHECK_TIME_CHANGE_MARKER: Final = "[Yoetz check-time change, part {index} of {count}]\n"
+# The first part cut to the room a narrowed case leaves (issue #983): the reviewer still reads the
+# change's leading bytes, and the cut is disclosed as a truncated change.
+_CHECK_TIME_CHANGE_CUT_MARKER: Final = (
+    "[Yoetz check-time change, part {index} of {count}, cut to the packet's room]\n"
+)
 _CHECK_TIME_CHANGE_MIN_CHUNK: Final = 256
 
 
@@ -670,14 +678,48 @@ def _check_time_change_chunks(text: bytes, part_limit: int) -> tuple[bytes, ...]
         if len(rest) <= chunk_limit:
             chunks.append(rest)
             break
-        window = rest[:chunk_limit]
-        cut = window.rfind(b"\n") + 1
-        if cut < chunk_limit // 2:
-            # One very long line: cut on a UTF-8 boundary instead of a line boundary.
-            cut = len(window.decode("utf-8", errors="ignore").encode("utf-8"))
+        cut = _check_time_change_cut(rest, chunk_limit)
         chunks.append(rest[:cut])
         rest = rest[cut:]
     return tuple(chunks)
+
+
+def _check_time_change_cut(rest: bytes, chunk_limit: int) -> int:
+    """Where a slice of at most ``chunk_limit`` bytes of ``rest`` ends, preferring a line end."""
+
+    window = rest[:chunk_limit]
+    cut = window.rfind(b"\n") + 1
+    if cut < chunk_limit // 2:
+        # One very long line: cut on a UTF-8 boundary instead of a line boundary.
+        cut = len(window.decode("utf-8", errors="ignore").encode("utf-8"))
+    return cut
+
+
+def _check_time_change_cut_part(
+    part: str, index: int, count: int, room: int
+) -> tuple[str, bool] | None:
+    """Part ``index`` (one-based) cut to ``room`` bytes with the cut marker, or ``None`` (#983).
+
+    The marker line is replaced and the change bytes are cut on a line end where one lies in the
+    second half of the room, so the part still starts exactly where the uncut part starts and the
+    shown-file record counts exactly the bytes it carries. The flag says the part was cut.
+    """
+
+    _, _, chunk = part.partition("\n")
+    raw = chunk.encode("utf-8")
+    cut_marker = _CHECK_TIME_CHANGE_CUT_MARKER.format(index=index, count=count)
+    chunk_limit = room - len(cut_marker.encode("ascii"))
+    if chunk_limit < _CHECK_TIME_CHANGE_MIN_CHUNK:
+        return None
+    if len(raw) <= chunk_limit:
+        return part, False
+    return cut_marker + raw[: _check_time_change_cut(raw, chunk_limit)].decode("utf-8"), True
+
+
+def _check_time_change_part_chunk_bytes(content: bytes) -> int:
+    """The change bytes one part item carries: everything after its marker line."""
+
+    return len(content) - (content.index(b"\n") + 1)
 
 
 _CHECK_TIME_CHANGE_FILE_START: Final = re.compile(rb"^diff --git ", re.MULTILINE)
@@ -734,28 +776,32 @@ class CheckTimeChangeShownFile(NamedTuple):
 
 def check_time_change_shown_files(
     capture: CheckChangeCapture,
-    selection: ReviewSelectionPolicy,
-    admitted_parts: int,
+    shown_bytes: int,
 ) -> tuple[CheckTimeChangeShownFile, ...]:
     """Each changed file whose diff reached the packet, and how much of it (ADR-031).
 
     A file is its ``diff --git`` section of the stored change. Its identity is that section's
     first line plus its change kind (a binary or a deleted file), so a file whose kind changed
     between two checks never matches itself. It was shown when any of its bytes lie in the
-    ``admitted_parts`` parts the packet carried, and fully shown when the whole section did and it
+    leading ``shown_bytes`` the packet carried, and fully shown when the whole section did and it
     holds no redaction marker. Each also carries the section bytes that reached the packet
     (markers included), the ``[REDACTED]`` markers among them, whether the whole section reached
     it, and where the first shown marker starts (the shown length without one). Files the change lists
-    only in its header (not shown) are not returned. The answer is a pure function of the stored
-    object, the selection and the admitted part count, so a recovered job derives the same files.
+    only in its header (not shown) are not returned.
+
+    ``shown_bytes`` is the length of the change's leading bytes the packet carried
+    (``check_time_change_bytes_carried``). Counting bytes rather than parts keeps the record exact
+    when a narrowed case splits its parts smaller or cuts its first part to the room left (issue
+    #983). The answer is a pure function of the stored object and that count, so a recovered job
+    derives the same files.
     """
 
-    if type(capture) is not CheckChangeCapture or type(admitted_parts) is not int:
+    if (
+        type(capture) is not CheckChangeCapture
+        or type(shown_bytes) is not int
+        or not 0 <= shown_bytes <= len(capture.text)
+    ):
         raise ValueError("semantic_case_check_change_invalid")
-    chunks = _check_time_change_chunks(capture.text, _check_time_change_part_limit(selection))
-    if not 0 <= admitted_parts <= len(chunks):
-        raise ValueError("semantic_case_check_change_invalid")
-    shown_bytes = sum(len(chunk) for chunk in chunks[:admitted_parts])
     text = capture.text
     starts = [match.start() for match in _CHECK_TIME_CHANGE_FILE_START.finditer(text)]
     files: list[CheckTimeChangeShownFile] = []
@@ -1965,20 +2011,47 @@ def _verification_identities(
 
 
 # Image and binary files (TB4 tb4n1 D6, issues #983 and #1004). The packet is text: their bytes
-# and pixels never travel. A row that records one is carried as a notice that the file exists and
-# was not sent, and an agent's text rendering of one (``pdftotext``, a CAD property dump, ``file``
-# or ``identify`` output recorded with the file's path as its ``reference``) is labelled as the
-# agent's rendering, never as the file. Both labels are plain text inside the excerpt, so no new
+# and pixels never travel. A row that records one is carried as a notice that the agent referenced
+# the file and it was not sent (the reference is the agent's, unverified; only a hook-observed
+# image is "observed"), and an agent's text rendering of one (``pdftotext``, a CAD property dump,
+# ``file`` or ``identify`` output recorded with the file's path as its ``reference``) is labelled as
+# the agent's rendering, never as the file. Both labels are plain text inside the excerpt, so no new
 # wire field is needed; the newest notices are reserved room, bounded.
 _BINARY_NOTICE_MARKER: Final = (
-    "[Yoetz: an image or binary file{at} exists and was not sent (evidence {ref}); "
-    "its content is not assessable from this packet]\n"
+    "[Yoetz: the agent referenced an image or binary file at {path} (evidence {ref}); "
+    "it was not sent and its content is not assessable from this packet]\n"
+)
+_OBSERVED_IMAGE_NOTICE_MARKER: Final = (
+    "[Yoetz: an image was observed (evidence {ref}); "
+    "it was not sent and its content is not assessable from this packet]\n"
 )
 _BINARY_RENDERING_MARKER: Final = (
     "[Yoetz: agent-rendered text of {path} (evidence {ref}); the binary file itself is not sent]\n"
 )
 MAX_BINARY_NOTICES: Final = 16
-_MAX_MARKER_PATH_BYTES: Final = 256
+_MAX_MARKER_PATH_CHARS: Final = 160
+# A path in a Yoetz label keeps only these characters; any other becomes ``_``, so an agent's
+# ``reference`` can never close the label or forge an evidence id inside it.
+_MARKER_PATH_UNSAFE: Final = re.compile(r"[^A-Za-z0-9._/+@~=, -]")
+# Agent-authored excerpt text never starts a line the way a Yoetz label does (issue #983): such a
+# line is prefixed, so only Yoetz writes a line that begins ``[Yoetz``.
+_AGENT_TEXT_PREFIX: Final = "(agent text) "
+_FORGED_LABEL_LINE: Final = re.compile(r"^([ \t]*)(?=\[[Yy][Oo][Ee][Tt][Zz])", re.MULTILINE)
+
+
+def _neutralised_agent_text(text: str) -> str:
+    """``text`` with every line that begins like a Yoetz label marked as the agent's own."""
+
+    return _FORGED_LABEL_LINE.sub(lambda match: match.group(1) + _AGENT_TEXT_PREFIX, text)
+
+
+def _marker_path(reference: str) -> str:
+    """The agent's ``reference`` as it may appear in a Yoetz label: safe characters, bounded."""
+
+    folded = _MARKER_PATH_UNSAFE.sub("_", " ".join(reference.split()))
+    if len(folded) > _MAX_MARKER_PATH_CHARS:
+        folded = folded[: _MAX_MARKER_PATH_CHARS - 3] + "..."
+    return folded
 
 
 def _binary_file_label(
@@ -1987,25 +2060,25 @@ def _binary_file_label(
     """The label for a row that records an image or binary file, and whether it is a notice.
 
     A hook-observed image (L3 P3-2) and a row whose ``reference`` names such a file and records
-    the file itself (an artifact, or its bytes' digest) are notices: the file exists and was not
-    sent. A row that names such a file but carries text (captured output, or the agent's own
-    command output, test or other description) is the agent's rendering of it. The path is
-    compared lexically, never opened.
+    the file itself (an artifact, or its bytes' digest) are notices: the file was not sent. A row
+    that names such a file but carries text (captured output, or the agent's own command output,
+    test or other description) is the agent's rendering of it. The path is compared lexically,
+    never opened, and enters the label only through ``_marker_path``.
     """
 
     if observed_image_evidence(payload):
-        return _BINARY_NOTICE_MARKER.format(at="", ref=ref), True
+        return _OBSERVED_IMAGE_NOTICE_MARKER.format(ref=ref), True
     reference = (payload.reference or "").strip()
     if not reference or "://" in reference or not unsupported_data_type(reference):
         return None
-    path = _encoded_prefix(" ".join(reference.split()), _MAX_MARKER_PATH_BYTES)
+    path = _marker_path(reference)
     binding = payload.digest_binding
     file_itself = payload.evidence_kind is EvidenceKind.ARTIFACT or (
         binding is not None and binding.subject is EvidenceDigestSubject.ARTIFACT_BYTES
     )
     if captured or (not file_itself and payload.description):
         return _BINARY_RENDERING_MARKER.format(path=path, ref=ref), False
-    return _BINARY_NOTICE_MARKER.format(at=f" at {path}", ref=ref), True
+    return _BINARY_NOTICE_MARKER.format(path=path, ref=ref), True
 
 
 def _evidence_candidates(
@@ -2155,6 +2228,10 @@ def _evidence_candidates(
                 ).decode("utf-8")
         else:
             text = payload.description or payload.reference
+        if text:
+            # The agent's text (its description, reference or captured tool output) never begins
+            # a line the way a Yoetz label does.
+            text = _neutralised_agent_text(text)
         split_diff = captured_group is not None and excerpt_kind == "diff"
         binary = (
             None
@@ -2178,10 +2255,16 @@ def _evidence_candidates(
             parts: list[str] = []
             remaining = encoded
             while remaining and len(parts) <= selection.max_excerpts:
-                part = remaining[:part_limit].decode("utf-8", errors="ignore")
+                # A part that would begin mid-line like a Yoetz label is marked as well.
+                prefix = (
+                    _AGENT_TEXT_PREFIX
+                    if _FORGED_LABEL_LINE.match(remaining[:16].decode("utf-8", errors="ignore"))
+                    else ""
+                )
+                part = remaining[: part_limit - len(prefix)].decode("utf-8", errors="ignore")
                 if not part:
                     break
-                parts.append(part)
+                parts.append(prefix + part)
                 remaining = remaining[len(part.encode("utf-8")) :]
             clipped = bool(remaining)
         else:
@@ -2348,6 +2431,7 @@ def _select_targeted_excerpts(
             linked = tuple(item for item in linked if item in allowed)
             if not linked:
                 continue
+            command = _neutralised_agent_text(command)
             encoded = command.encode("utf-8")
             clipped = len(encoded) > excerpt_limit
             candidates.append(
@@ -2396,6 +2480,7 @@ def _select_targeted_excerpts(
             )[:16]
             if not linked:
                 continue
+            summary = _neutralised_agent_text(summary)
             encoded = summary.encode("utf-8")
             clipped = len(encoded) > excerpt_limit
             verification = verification_by_result.get(ref)
@@ -2858,7 +2943,123 @@ def _prior_findings_section(
         answers += 1
         byte_budget -= size
         items.extend(rows)
+    # Findings the agent settled (issue #980): nameable in ``restates``, never rulable, so a
+    # re-raise of a concern the agent gave up on is recorded on that item instead of minted again.
+    # They take only what the open findings left of the same 16-finding / 96 KiB bounds, newest
+    # first. One that does not fit is not a truncation of the rulable section: the reviewer can
+    # still rule on every open finding, and an unnamed re-raise becomes a new finding as before.
+    for ref, record in _settled_finding_candidates(projection, allowed):
+        rows = _settled_finding_items(ref, record, projection, allowed, include_prose=include_prose)
+        size = sum(item.content_bytes for item in rows)
+        if (
+            carried >= MAX_PRIOR_FINDINGS
+            or len(rows) > item_budget - len(items)
+            or size > byte_budget
+        ):
+            continue
+        carried += 1
+        byte_budget -= size
+        items.extend(rows)
     return items, omissions, truncated
+
+
+def _settled_finding_candidates(
+    projection: ProjectionState, allowed: frozenset[str]
+) -> list[tuple[str, FindingProjectionRecord]]:
+    """Readable, unresolved AI-powered findings the agent settled, newest answer first (#980).
+
+    Settled means the agent's latest readable answer is ``acknowledged_not_done`` or
+    ``self_verified`` (matched by wire value). They are final and never re-reviewed, but the
+    reviewer must be able to name one when it raises the same concern again.
+    """
+
+    rows: list[tuple[int, str, FindingProjectionRecord]] = []
+    for key, record in projection.findings.items():
+        payload = record.payload
+        ref = str(key)
+        if (
+            payload is None
+            or record.redacted
+            or record.resolved_by_check_event_id is not None
+            or payload.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
+            or ref not in allowed
+        ):
+            continue
+        response = projection.responses.get(key)
+        if (
+            response is None
+            or response.redacted
+            or response.payload is None
+            or response.payload.disposition.value not in AGENT_SETTLED_DISPOSITION_VALUES
+        ):
+            continue
+        rows.append((response.source_frontier, ref, record))
+    rows.sort(key=lambda row: (-row[0], row[1].encode("ascii")))
+    return [(ref, record) for _order, ref, record in rows]
+
+
+def _settled_finding_items(
+    ref: str,
+    record: FindingProjectionRecord,
+    projection: ProjectionState,
+    allowed: frozenset[str],
+    *,
+    include_prose: bool,
+) -> list[SemanticCaseItem]:
+    """One settled finding as a non-rulable row, plus its headline and the agent's reason."""
+
+    payload = record.payload
+    response = projection.responses.get(finding_id_value(ref))
+    assert payload is not None and response is not None and response.payload is not None
+    subjects: list[JsonValue] = [str(item) for item in payload.subject_refs if str(item) in allowed]
+    body: dict[str, JsonValue] = {
+        "disposition": response.payload.disposition.value,
+        "finding_kind": payload.kind.value,
+        "finding_ref": ref,
+        "recorded_sequence": record.source_frontier,
+        "response_sequence": response.source_frontier,
+        "rulable": False,
+        "schema": "yoetz.settled-finding/1",
+        "subject_ref_count": len(payload.subject_refs),
+        "subject_refs": subjects[:_MAX_PRIOR_FINDING_LISTED_REFS],
+    }
+    if record.settled_reraise_count:
+        body["settled_reraise_count"] = record.settled_reraise_count
+    prose: list[tuple[str, str]] = []
+    if include_prose:
+        prose.append(("summary", payload.summary))
+        if response.payload.reason is not None:
+            prose.append(("response", response.payload.reason))
+        body["text_item_ids"] = {
+            field: f"{SETTLED_FINDING_ITEM_PREFIX}{field}-{ref}" for field, _text in prose
+        }
+    text, _omitted = _bounded_json(body)
+    items = [
+        _content_item(
+            item_id=f"{SETTLED_FINDING_ITEM_PREFIX}{ref}",
+            section="prior_finding",
+            category=DataCategory.BOUNDED_STRUCTURAL_METADATA,
+            source_kind="finding",
+            source_ref=ref,
+            linked_subject_refs=(ref,),
+            occurred_order=response.source_frontier,
+            text=text,
+        )
+    ]
+    for field, value in prose:
+        items.append(
+            _content_item(
+                item_id=f"{SETTLED_FINDING_ITEM_PREFIX}{field}-{ref}",
+                section="prior_finding",
+                category=DataCategory.FINDING_SUMMARY,
+                source_kind="finding",
+                source_ref=ref,
+                linked_subject_refs=(ref,),
+                occurred_order=response.source_frontier,
+                text=value,
+            )
+        )
+    return items
 
 
 def _local_answer_candidates(
@@ -3798,6 +3999,7 @@ def _build_semantic_case_once(
     check_change_parts: tuple[str, ...] = ()
     check_change_links: tuple[str, ...] = ()
     check_change_admitted = 0
+    check_change_cut = False
     if check_time_change_unavailable:
         capture_gap_set.add(CHECK_TIME_CHANGE_UNAVAILABLE_GAP)
         if check_time_change_unavailable_reason is not None:
@@ -3824,16 +4026,31 @@ def _build_semantic_case_once(
     ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
         """The next check-time change parts within one share of the room (ADR-031, #983)."""
 
-        nonlocal check_change_admitted
+        nonlocal check_change_admitted, check_change_cut
         admitted_items: list[SemanticCaseItem] = []
         admitted_refs: list[TargetedExcerptRef] = []
         bytes_used = 0
         part_limit = _check_time_change_part_limit(selection)
-        while check_change_admitted < len(check_change_parts) and len(admitted_refs) < slot_limit:
+        while (
+            not check_change_cut
+            and check_change_admitted < len(check_change_parts)
+            and len(admitted_refs) < slot_limit
+        ):
             part = check_change_parts[check_change_admitted]
             size = len(part.encode("utf-8"))
             if bytes_used + size > byte_limit:
-                break
+                if check_change_admitted:
+                    break
+                # A narrowed case (its excerpt budget planned below the channel ceiling) can leave
+                # less room than one whole part. The change under review still outranks every
+                # recorded excerpt, so its first part is cut to the room instead of yielding it
+                # to them (issue #983); nothing follows a cut part.
+                cut = _check_time_change_cut_part(
+                    part, 1, len(check_change_parts), byte_limit - bytes_used
+                )
+                if cut is None:
+                    break
+                part, check_change_cut = cut
             item = _content_item(
                 item_id=f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{check_change_admitted + 1:03d}",
                 section="excerpt",
@@ -3922,7 +4139,7 @@ def _build_semantic_case_once(
                     "no_linked_subject" if not check_change_links else "no_packet_room"
                 )
             )
-        elif check_change_admitted < len(check_change_parts):
+        elif check_change_admitted < len(check_change_parts) or check_change_cut:
             capture_gap_set.add(CHECK_TIME_CHANGE_TRUNCATED_GAP)
             truncated_item_ids.update(
                 ref.excerpt_item_id
@@ -6534,6 +6751,9 @@ class SemanticPacketView:
     citable_refs: frozenset[str]
     # Envelope bounding removed prior-finding rows the case had admitted.
     prior_findings_trimmed: bool
+    # Findings the agent settled whose non-rulable row survived bounding: nameable in
+    # ``restates``, never ruled on (issue #980).
+    settled_finding_refs: frozenset[str] = frozenset()
 
 
 def semantic_case_packet_view(case: SemanticCase) -> SemanticPacketView:
@@ -6557,8 +6777,18 @@ def semantic_case_packet_view(case: SemanticCase) -> SemanticPacketView:
         if item.section == "prior_finding" and item.item_id == f"prior-finding-{item.source_ref}"
     )
     prior = frozenset(ref for ref in carried if f"prior-finding-{ref}" in catalogued)
+    settled = frozenset(
+        item.source_ref
+        for item in case.items
+        if item.section == "prior_finding"
+        and item.item_id == f"{SETTLED_FINDING_ITEM_PREFIX}{item.source_ref}"
+        and item.item_id in catalogued
+    )
     return SemanticPacketView(
-        prior, frozenset(case.frontier_refs | case.local_check_refs), prior != carried
+        prior,
+        frozenset(case.frontier_refs | case.local_check_refs),
+        prior != carried,
+        settled,
     )
 
 
@@ -6592,6 +6822,28 @@ def check_time_change_parts_carried(
     while carried < admitted and f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{carried + 1:03d}" in catalogued:
         carried += 1
     return carried
+
+
+def check_time_change_bytes_carried(
+    case: SemanticCase, *, withheld_categories: Sequence[str] = ()
+) -> int:
+    """How many leading bytes of the stored change the provider-facing envelope carries (ADR-031).
+
+    The change bytes of the unbroken run of parts ``check_time_change_parts_carried`` counts, each
+    part's marker line excluded. This is what ``check_time_change_shown_files`` takes: it stays
+    exact whatever part size a narrowed selection chose and when the first part was cut to the
+    room left (issue #983), and it is a pure function of the frozen case and the withheld
+    categories, so a recovered job derives the same count.
+    """
+
+    carried = check_time_change_parts_carried(case, withheld_categories=withheld_categories)
+    by_id = {item.item_id: item for item in case.items}
+    return sum(
+        _check_time_change_part_chunk_bytes(
+            by_id[f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}"].content
+        )
+        for index in range(1, carried + 1)
+    )
 
 
 def semantic_case_to_candidate_context(
