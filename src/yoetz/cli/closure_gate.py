@@ -38,6 +38,7 @@ from typing import Final, cast
 from yoetz import __version__
 from yoetz.config.paths import ensure_owner_only_dir, state_dir
 from yoetz.kernel.task_facts import (
+    DECLARED_OUTPUT_REMOVED_GAP,
     PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     PLANNED_VERIFICATION_STALE_GAP,
@@ -97,6 +98,10 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
     ),
     REQUESTED_OUTPUT_GIT_IGNORED_GAP: (
         "a requested output file is git-ignored or excluded, so a diff-based delivery omits it"
+    ),
+    DECLARED_OUTPUT_REMOVED_GAP: (
+        "a declared delivered file was deleted or renamed away; restore the delivered file:"
+        " Yoetz review limits never justify moving, splitting or deleting deliverables"
     ),
 }
 

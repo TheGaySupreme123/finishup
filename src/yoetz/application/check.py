@@ -97,6 +97,7 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
+from yoetz.kernel.delivered_set import DECLARED_OUTPUT_REMOVED_GAP, declared_output_removed
 from yoetz.kernel.deterministic_checks import (
     DETERMINISTIC_TEXT_CONTRACT_DIGEST,
     REQUESTED_OUTPUT_ABSENT_FACT,
@@ -2215,7 +2216,10 @@ async def _requested_output_inputs(
         request_id=request_id,
     )
     absent, markers = requested_output_facts(case.projection, states)
-    gaps = tuple(sorted({code for code, _obligation in markers}, key=str.encode))
+    codes = {code for code, _obligation in markers}
+    if declared_output_removed(case.projection, states):
+        codes.add(DECLARED_OUTPUT_REMOVED_GAP)
+    gaps = tuple(sorted(codes, key=str.encode))
     return partial(work_integrity_findings, absent_outputs=frozenset(absent)), gaps, bool(absent)
 
 

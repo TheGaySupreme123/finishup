@@ -8379,8 +8379,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   the effective plan. `markers` pair a code with its obligation (`<code>:<obligation id>` in the
   frozen case) or `None`. Agent-actionable (`AGENT_ACTIONABLE_TASK_FACT_GAPS`):
   `planned_verification_not_observed`, `planned_verification_failed`,
-  `planned_verification_stale`, `edited_after_last_verification`, `requested_output_git_ignored`.
-  Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
+  `planned_verification_stale`, `edited_after_last_verification`, `requested_output_git_ignored`,
+  `declared_output_removed` (ADR-035). Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
   `planned_verification_unobservable`, `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`, `verification_only_as_root`,
   `obligation_blocked_outside_agent_control`, `requested_output_ignored_by_repository`,
@@ -8437,6 +8437,17 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   action_kind=ActionKind.EDIT)`), since a `file` item may name a read-only input. `work_integrity_findings(case, *, absent_outputs=)`
   raises `requested_item_never_attempted` with the fact `requested_output_absent`
   (`REQUESTED_OUTPUT_ABSENT_FACT`) for each absent pair.
+- **Declared delivered set (ADR-035, issue #1005).** `kernel/delivered_set.py`:
+  `declared_delivered_items(projection) -> tuple[(obligation, item index, item kind, value), ...]`
+  is every effective, unblocked obligation's requested item of kind `file` or `directory` whose
+  `role` is not `input` (an item without a role counts). `declared_output_removed(projection,
+  states) -> tuple[ObligationId, ...]` names the obligations whose declared item has an `inside`
+  `RequestedOutputState` with `exists=False` and `deleted=True` (deleted, or renamed away, by the
+  check-time change). `_requested_output_inputs` in `application/check.py` adds the closed gap
+  `declared_output_removed` (`DECLARED_OUTPUT_REMOVED_GAP`, defined in `kernel/task_facts.py`) to
+  the check's task-fact gaps. It is agent-actionable, a `STOP_GATE_TOKENS` entry, and has a fixed
+  `TASK_FACT_GAP_SENTENCES` sentence. Content moved out of a declared file that still exists is
+  not detected.
 - **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the
   absent-output fact, and skips blocked obligations. `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
@@ -8455,7 +8466,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `obligations_open`, `receipt_findings_unresolved`, `closing_review_required`,
   `planned_verification_failed`,
   `planned_verification_not_observed`, `planned_verification_stale`,
-  `requested_output_git_ignored`. `closure_gate_from_readiness(readiness, frontier_sequence=,
+  `requested_output_git_ignored`, `declared_output_removed`. `closure_gate_from_readiness(readiness, frontier_sequence=,
   frontier_digest=, observation_pending=, reasked_blockers=) -> ClosureGate(identity, text, items,
   blocker_keys) | None` also fires, in `action_required` or `ready_with_limitations`, for a
   `blocked_obligations` pair whose `<obligation id>:<kind>` key is not in `reasked_blockers`. It adds

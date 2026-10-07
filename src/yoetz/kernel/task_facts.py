@@ -68,6 +68,7 @@ __all__ = [
     "AGENT_ACTIONABLE_TASK_FACT_GAPS",
     "BLOCKER_KINDS",
     "BLOCKER_MARKER",
+    "DECLARED_OUTPUT_REMOVED_GAP",
     "EDITED_AFTER_LAST_VERIFICATION_GAP",
     "INSTALL_INTO_PRIVATE_ENV_GAP",
     "INSTALL_INTO_YOETZ_RUNTIME_GAP",
@@ -120,6 +121,8 @@ REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP: Final = "requested_output_ignored_by
 REQUESTED_OUTPUT_UNCHANGED_GAP: Final = "requested_output_unchanged"
 REQUESTED_OUTPUT_OUTSIDE_WORKSPACE_GAP: Final = "requested_output_outside_workspace"
 REQUESTED_OUTPUT_UNVERIFIED_GAP: Final = "requested_output_unverified"
+# A declared deliverable deleted or renamed away (ADR-035; computed in ``kernel.delivered_set``).
+DECLARED_OUTPUT_REMOVED_GAP: Final = "declared_output_removed"
 
 # Facts the agent removes by its own action: run the planned verification after the last edit
 # (or correct the requested item to the command it runs), or stop excluding a requested output.
@@ -130,6 +133,7 @@ AGENT_ACTIONABLE_TASK_FACT_GAPS: Final = frozenset(
         PLANNED_VERIFICATION_STALE_GAP,
         EDITED_AFTER_LAST_VERIFICATION_GAP,
         REQUESTED_OUTPUT_GIT_IGNORED_GAP,
+        DECLARED_OUTPUT_REMOVED_GAP,
     }
 )
 # Disclosures: recorded history (an install or write already happened), a heuristic the
@@ -161,6 +165,7 @@ STOP_GATE_TOKENS: Final = (
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     PLANNED_VERIFICATION_STALE_GAP,
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
+    DECLARED_OUTPUT_REMOVED_GAP,
 )
 
 BLOCKER_MARKER: Final = "yoetz-blocker"

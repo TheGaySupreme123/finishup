@@ -409,6 +409,11 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " Yoetz did not read it."
         ),
         "requested_output_unverified": ("Requested output files could not be read at check time."),
+        "declared_output_removed": (
+            "A declared delivered file was deleted or renamed away in the checked change. Restore"
+            " the delivered file: Yoetz review limits never justify moving, splitting or deleting"
+            " deliverables."
+        ),
         "install_into_yoetz_runtime": (
             "A package install resolved to Yoetz's own runtime interpreter, not the task's."
         ),
