@@ -978,6 +978,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/events/obligation-published-1.1.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/privacy/privacy-policy-1.2.0.schema.json",
         "json_schema",
         "application/schema+json",

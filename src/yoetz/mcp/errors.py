@@ -45,6 +45,8 @@ __all__ = [
 # present and valid, or that a whole payload is wrong when one key inside it is.
 _SAFE_LOCATION_SEGMENTS: Final = frozenset(
     {
+        # obligation_published 1.1.0 (#1002).
+        "acknowledged_not_done_reason",
         "context_digest",
         "detection_id",
         "membership_generation",
@@ -163,6 +165,8 @@ _SAFE_LOCATION_SEGMENTS: Final = frozenset(
         "requested_view",
         "resolution_evidence_refs",
         "result_id",
+        # obligation_published 1.1.0 requested-item role (#1002).
+        "role",
         "schema",
         "schema_name",
         "schema_version",
@@ -1620,6 +1624,15 @@ def _select_union_branch(
     }
     if len(families) == 1 and len(admitted) == 1 and "" not in admitted:
         return with_family[0]
+    if len(families) == 1 and "" not in admitted:
+        # One family whose versions admit different values here (obligation_published 1.0.0 and
+        # 1.1.0 ``status``, #1002): name the newest version's contract, which a new draft uses.
+        def version_key(item: tuple[JsonValue, str | None]) -> tuple[int, ...]:
+            version = _schema_version_const(document, item[0]) or ""
+            parts = version.split(".")
+            return tuple(int(part) for part in parts) if all(p.isdigit() for p in parts) else ()
+
+        return max(with_family, key=version_key)
     # Ambiguous: stay on the union node so callers can name admitted schema names.
     return None
 

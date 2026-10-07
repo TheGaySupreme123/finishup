@@ -805,7 +805,27 @@ Key payload fields (minimum; full shapes in `src/yoetz/domain/events.py`):
   restatement only when its version is exactly the current version plus one; it replaces the
   effective refs and empty-scope reason. A duplicate root or version gap makes scope unreadable.
 - `obligation_published`: `obligation_id`, `description`, `evidence_expectation`, optional
-  `acceptance_criteria`, `requested_items`, `source_refs`.
+  `acceptance_criteria`, `requested_items`, `source_refs`. Each requested item is
+  `{item_kind, value}` with `item_kind` `url|file|command|change|source`.
+- `obligation_published/1.1.0` (issue #1002, ADR-033 decision 2): the same fields; a requested
+  item is `{item_kind, value, role?}`, `item_kind` adds `directory`, and the optional closed
+  `role` is `input|output` (`RequestedItemRole`), admitted only on `file` and `directory` items.
+  Absent `role` keeps the 1.0.0 meaning (a `file` item may be an input or an output). `status`
+  adds `acknowledged_not_done` (`ObligationStatus.ACKNOWLEDGED_NOT_DONE`) with
+  `acknowledged_not_done_reason` (1..4096 UTF-8 bytes, non-blank), required for that status and
+  forbidden otherwise; `resolution_evidence_refs` stays reserved to `resolved`. The version is a
+  pure function of the payload: 1.1.0 iff it carries a role, a `directory` item or
+  `acknowledged_not_done`, else 1.0.0; each version refuses the other's payloads, so released
+  `1.0.0` stays admitted and byte-identical. The reducer keeps the last effective status among
+  `open`, `acknowledged_not_done` and `resolved` (meaning fields must repeat; `resolved` is
+  terminal); consumers treat `acknowledged_not_done` as not resolved, like `open`, and status
+  `view=obligations` (status-result 1.4.0) shows the status and `acknowledged_not_done_reason`
+  under the `obligation_text` category, like the description. The unreleased event-draft 1.2.0 (and so `publish-work-request/1.2.0`) admits
+  the pair in place and excludes it from its opaque branch. `role: input` items never yield
+  requested-output facts; `role: output` items count as written; a `directory` holding no file is
+  absent. `yoetz.kernel.task_facts.declared_output_items(projection)` returns
+  `(obligation_id, item_index, item_kind, value)` for every effective obligation's `file` or
+  `directory` item with `role: output`, sorted by obligation id (ASCII) then index.
 - `action_recorded`: `action_id`, `action_kind` (`command`|`edit`|`research`|`review`|`other`),
   `description`, optional `command`, `subject_state` (see SubjectStateRef below).
 - `result_recorded`: `result_id`, `action_id`, `outcome` (`success`|`failure`|`partial`|
@@ -8369,7 +8389,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `planned_verification_not_observed`, `planned_verification_failed`,
   `planned_verification_stale`, `edited_after_last_verification`, `requested_output_git_ignored`.
   Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
-  `planned_verification_unobservable`, `install_into_yoetz_runtime`, `install_into_private_env`,
+  `planned_verification_unobservable`, `planned_verification_agent_linked`, `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`, `verification_only_as_root`,
   `obligation_blocked_outside_agent_control`, `requested_output_ignored_by_repository`,
   `requested_output_unchanged`,
@@ -8383,7 +8403,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   compute `hmac-sha256:` over `normalize_observed_command(value)`, the identity a hook records as
   `omitted:<commitment>`. Without a registered key no planned-verification code is produced.
   `requested_command_identities(value) -> (whole, segment identities) | None` adds the planned
-  value's own segment commitments.
+  value's own segment commitments. An agent link (ADR-033 decision 1, #1003) also matches: a
+  cooperative `command` action whose `attempted_items` holds the exact value and whose
+  `causal_parents` names a hook-observed command action, attributed per obligation; the observed
+  run's outcome decides, and an item matched only that way adds the standing
+  `planned_verification_agent_linked` (`PLANNED_VERIFICATION_AGENT_LINKED_GAP`).
 - **Command segments (`domain/command_segments.py`, ADR-033 decision 1).**
   `command_segments(normalized) -> CommandSegments(segments, composition) | None` splits a
   normalized command into its simple commands (quote-aware; `None` when unsplittable or already

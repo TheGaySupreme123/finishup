@@ -1336,7 +1336,8 @@ def _recorded_work_refs(
         for obligation_ref in scope.effective_obligation_refs:
             record = projection.obligations.get(obligation_ref)
             if record is not None and record.payload is not None:
-                if record.payload.status is ObligationStatus.OPEN:
+                # acknowledged_not_done (#1002) is not resolved: treated like open here.
+                if record.payload.status is not ObligationStatus.RESOLVED:
                     refs.add(str(obligation_ref))
 
     if _overall_total_count(result, "commands", "live_failed") <= 0:

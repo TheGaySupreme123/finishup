@@ -157,6 +157,7 @@ class ObservedLedger:
         *,
         observed: bool,
         known_gaps: tuple[str, ...] = (),
+        causal_parents: tuple[EventId, ...] = (),
     ) -> EventId:
         sequence = len(self.records) + 1
         previous = "genesis" if not self.records else self.records[-1].entry_digest
@@ -194,7 +195,7 @@ class ObservedLedger:
             },
             "operation_id": _OPERATION,
             "occurred_at": _NOW.wire,
-            "causal_parents": (),
+            "causal_parents": causal_parents,
             "publication_channel": channel.value,
             "coverage": coverage_to_json(coverage),
             "payload_ref": {
@@ -219,7 +220,7 @@ class ObservedLedger:
                 ledger=LedgerChain(sequence, previous, _NOW),
                 operation_id=_OPERATION,
                 occurred_at=_NOW,
-                causal_parents=(),
+                causal_parents=causal_parents,
                 publication_channel=channel,
                 coverage=coverage,
                 payload_ref=PayloadRef(reference, media, len(encoded), commitment),
@@ -239,10 +240,17 @@ class ObservedLedger:
         )
         return identifier
 
-    def append(self, schema: EventSchema, payload: EventPayload, *, observed: bool) -> EventId:
+    def append(
+        self,
+        schema: EventSchema,
+        payload: EventPayload,
+        *,
+        observed: bool,
+        causal_parents: tuple[EventId, ...] = (),
+    ) -> EventId:
         """Append one materialized or cooperative draft payload."""
 
-        return self._append(schema, payload, observed=observed)
+        return self._append(schema, payload, observed=observed, causal_parents=causal_parents)
 
     def run(
         self,

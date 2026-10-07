@@ -54,7 +54,9 @@ from yoetz.domain.events import (
     LedgerRecord,
     ObligationChangeKind,
     ObligationStatus,
+    RequestedItem,
     RequestedItemKind,
+    RequestedItemRole,
     ResultOutcome,
     is_observation_authored,
 )
@@ -80,6 +82,7 @@ __all__ = [
     "INSTALL_INTO_PRIVATE_ENV_GAP",
     "INSTALL_INTO_YOETZ_RUNTIME_GAP",
     "OBLIGATION_BLOCKED_GAP",
+    "PLANNED_VERIFICATION_AGENT_LINKED_GAP",
     "PLANNED_VERIFICATION_FAILED_GAP",
     "PLANNED_VERIFICATION_NOT_OBSERVED_GAP",
     "PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP",
@@ -104,6 +107,7 @@ __all__ = [
     "cooperative_event_ids_from_coverage",
     "cooperative_event_ids_from_records",
     "command_identity_key_registered",
+    "declared_output_items",
     "effective_obligations",
     "open_effective_obligations",
     "register_command_identity_key",
@@ -118,6 +122,7 @@ PLANNED_VERIFICATION_FAILED_GAP: Final = "planned_verification_failed"
 PLANNED_VERIFICATION_STALE_GAP: Final = "planned_verification_stale"
 PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP: Final = "planned_verification_outcome_unknown"
 PLANNED_VERIFICATION_UNOBSERVABLE_GAP: Final = "planned_verification_unobservable"
+PLANNED_VERIFICATION_AGENT_LINKED_GAP: Final = "planned_verification_agent_linked"
 EDITED_AFTER_LAST_VERIFICATION_GAP: Final = "edited_after_last_verification"
 INSTALL_INTO_YOETZ_RUNTIME_GAP: Final = "install_into_yoetz_runtime"
 INSTALL_INTO_PRIVATE_ENV_GAP: Final = "install_into_private_env"
@@ -147,6 +152,9 @@ STANDING_TASK_FACT_GAPS: Final = frozenset(
     {
         PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
         PLANNED_VERIFICATION_UNOBSERVABLE_GAP,
+        # A planned command matched only through the agent's own link to an observed run: an
+        # agent-asserted equivalence Yoetz cannot verify; the observed outcome still decides.
+        PLANNED_VERIFICATION_AGENT_LINKED_GAP,
         INSTALL_INTO_YOETZ_RUNTIME_GAP,
         INSTALL_INTO_PRIVATE_ENV_GAP,
         WRITE_OUTSIDE_WORKSPACE_GAP,
@@ -319,13 +327,17 @@ def effective_obligations(projection: ProjectionState) -> tuple[ObligationId, ..
 
 
 def open_effective_obligations(projection: ProjectionState) -> tuple[ObligationId, ...]:
-    """Effective, unwaived obligations whose latest readable status is ``open``."""
+    """Effective, unwaived obligations whose latest readable status is not ``resolved``.
+
+    ``acknowledged_not_done`` (obligation_published 1.1.0, #1002) is not resolved, so it is
+    counted with ``open`` here.
+    """
 
     return tuple(
         obligation
         for obligation in effective_obligations(projection)
         if (payload := projection.obligations[obligation].payload) is not None
-        and payload.status is ObligationStatus.OPEN
+        and payload.status is not ObligationStatus.RESOLVED
     )
 
 
@@ -338,6 +350,7 @@ class _ObservedRun:
     tokens: frozenset[str]
     segments: frozenset[str] = frozenset()
     composition: str | None = None
+    action_event: EventId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -406,6 +419,60 @@ def _planned_outcome(
     return ResultOutcome.UNKNOWN
 
 
+def _agent_linked_runs(
+    projection: ProjectionState,
+    prefix: tuple[LedgerRecord, ...],
+    state: _ObservedState,
+    observed: frozenset[EventId],
+) -> Mapping[tuple[ObligationId, str], tuple[_ObservedRun, ...]]:
+    """Observed runs the agent linked to a requested command value, per obligation.
+
+    A cooperative ``action_recorded`` of kind ``command`` whose ``attempted_items`` holds the
+    exact requested value and whose ``causal_parents`` names a hook-observed command action links
+    that observed run to the value (the ``command_attempts`` relevance rule). Attribution follows
+    ``attempted_items_for_obligation``: an action naming obligations links only for those ids, an
+    action naming none for every obligation. Only an observed command action parent counts, so a
+    cooperative result or an unrelated cooperative action never links anything; the linked run's
+    own observed outcome and position decide. Keys are ``(obligation, exact value)``.
+    """
+
+    runs_by_action = {run.action_event: run for run in state.runs if run.action_event is not None}
+    if not runs_by_action:
+        return {}
+    cooperative = cooperative_event_ids_from_records(prefix)
+    parents_of = {
+        record.event_id: record.causal_parents
+        for record in prefix
+        if type(record) is AcceptedEvent and record.event_id in cooperative
+    }
+    linked: dict[tuple[ObligationId, str], list[_ObservedRun]] = {}
+    obligations = tuple(effective_obligations(projection))
+    for action in projection.actions.values():
+        payload = action.payload
+        if (
+            payload is None
+            or payload.action_kind is not ActionKind.COMMAND
+            or not payload.attempted_items
+            or action.source_event_id not in cooperative
+        ):
+            continue
+        parents = [
+            runs_by_action[parent]
+            for parent in parents_of.get(action.source_event_id, ())
+            if parent in observed and parent in runs_by_action
+        ]
+        if not parents:
+            continue
+        targets = payload.obligation_refs or obligations
+        for obligation in targets:
+            for value in payload.attempted_items:
+                bucket = linked.setdefault((obligation, value), [])
+                bucket.extend(run for run in parents if all(run is not seen for seen in bucket))
+    return {
+        key: tuple(sorted(value, key=lambda run: run.position)) for key, value in linked.items()
+    }
+
+
 def _observed_state(
     projection: ProjectionState,
     observed: frozenset[EventId],
@@ -448,6 +515,7 @@ def _observed_state(
                     runner,
                     tokens,
                     *_segment_fields(action.payload.command),
+                    action.source_event_id,
                 )
             )
     for action_ref, action in projection.actions.items():
@@ -483,6 +551,7 @@ def _observed_state(
                     observed_action_runner_class(payload.description),
                     tokens,
                     *_segment_fields(payload.command),
+                    action.source_event_id,
                 )
             )
     runs.sort(key=lambda run: run.position)
@@ -544,6 +613,7 @@ def task_fact_signals(
 
     # Planned verification.
     keyed_runs = [run for run in state.runs if run.identity is not None]
+    linked_runs = _agent_linked_runs(projection, prefix, state, observed)
     if command_identity_key_registered():
         for obligation in effective_obligations(projection):
             if obligation in blocked:
@@ -553,9 +623,9 @@ def task_fact_signals(
             for item in payload.requested_items:
                 if item.item_kind is not RequestedItemKind.COMMAND:
                     continue
-                if not keyed_runs or requested_command_shape(item.value) != "command":
-                    # No keyed run to match against, or a requested value no hook could observe
-                    # (a ``<placeholder>`` admitted before publication rejected it, or prose).
+                if requested_command_shape(item.value) != "command":
+                    # A requested value no hook could observe (a ``<placeholder>`` admitted
+                    # before publication rejected it, or prose); no agent link changes that.
                     markers.add((PLANNED_VERIFICATION_UNOBSERVABLE_GAP, obligation))
                     continue
                 identities = requested_command_identities(item.value)
@@ -568,10 +638,24 @@ def task_fact_signals(
                         if (outcome := _planned_outcome(run, *identities)) is not None
                     ]
                 )
-                if not matching:
-                    markers.add((PLANNED_VERIFICATION_NOT_OBSERVED_GAP, obligation))
+                linked = [
+                    (run, run.outcome)
+                    for run in linked_runs.get((obligation, item.value), ())
+                    if all(run is not other for other, _ in matching)
+                ]
+                if not matching and not linked:
+                    markers.add(
+                        (
+                            PLANNED_VERIFICATION_NOT_OBSERVED_GAP
+                            if keyed_runs
+                            else PLANNED_VERIFICATION_UNOBSERVABLE_GAP,
+                            obligation,
+                        )
+                    )
                     continue
-                latest, outcome = matching[-1]
+                if not matching:
+                    markers.add((PLANNED_VERIFICATION_AGENT_LINKED_GAP, obligation))
+                latest, outcome = max(matching + linked, key=lambda pair: pair[0].position)
                 if outcome in {ResultOutcome.FAILURE, ResultOutcome.PARTIAL}:
                     markers.add((PLANNED_VERIFICATION_FAILED_GAP, obligation))
                 elif outcome is ResultOutcome.UNKNOWN:
@@ -662,6 +746,13 @@ def requested_output_facts(
     checked repository, is exactly what such an input looks like, so ``requested_output_unchanged``
     and ``requested_output_outside_workspace`` are reported only for an item the record asserts
     was written: an ``edit`` action whose ``attempted_items`` names that exact value (#977, tb4v1).
+
+    ``obligation_published`` 1.1.0 lets the record say which it is (#1002). An item with role
+    ``input`` is the task's data, never an output, so none of these facts is reported for it, not
+    even ``absent`` (a missing input is the task's problem to state, not a missing delivery). An
+    item with role ``output`` is a declared delivery: it counts as written without an exact
+    ``edit`` match, so an untouched or out-of-workspace output is reported. A ``directory`` item is
+    read like a ``file`` item; the workspace read decides when it is changed or absent.
     """
 
     blocked = blocked_obligations(projection)
@@ -673,12 +764,18 @@ def requested_output_facts(
     ):
         if obligation in blocked:
             continue
+        item = _requested_item(projection, obligation, index)
+        role = None if item is None else item.role
+        if role is RequestedItemRole.INPUT:
+            continue
         if obligation not in edited:
             edited[obligation] = attempted_items_for_obligation(
                 projection, obligation, action_kind=ActionKind.EDIT
             )
         # Exact value match, as for requested_item_never_attempted: no path normalization.
-        written = _requested_value(projection, obligation, index) in edited[obligation]
+        written = role is RequestedItemRole.OUTPUT or (
+            item is not None and item.value in edited[obligation]
+        )
         if state.location == "outside":
             if written:
                 markers.add((REQUESTED_OUTPUT_OUTSIDE_WORKSPACE_GAP, obligation))
@@ -703,11 +800,38 @@ def requested_output_facts(
     )
 
 
-def _requested_value(
+def _requested_item(
     projection: ProjectionState, obligation: ObligationId, index: int
-) -> str | None:
+) -> RequestedItem | None:
     row = projection.obligations.get(obligation)
     payload = None if row is None else row.payload
     if payload is None or not 0 <= index < len(payload.requested_items):
         return None
-    return payload.requested_items[index].value
+    return payload.requested_items[index]
+
+
+_DECLARED_OUTPUT_KINDS: Final = frozenset({RequestedItemKind.FILE, RequestedItemKind.DIRECTORY})
+
+
+def declared_output_items(
+    projection: ProjectionState,
+) -> tuple[tuple[ObligationId, int, RequestedItemKind, str], ...]:
+    """The task's declared deliveries: requested ``file``/``directory`` items with role ``output``.
+
+    One ``(obligation, item index, kind, value)`` row per item of every effective (readable,
+    unwaived, current-plan) obligation, sorted by obligation id (ASCII) then item index. Only an
+    explicit ``role: output`` (``obligation_published`` 1.1.0, #1002) declares a delivery; an item
+    without a role is not guessed at. Obligations a blocker decision names are included; a caller
+    that must skip them filters with ``blocked_obligations``. Values are returned for in-process
+    comparison only and are never a structural table key, log field or error text.
+    """
+
+    rows: list[tuple[ObligationId, int, RequestedItemKind, str]] = []
+    for obligation in sorted(effective_obligations(projection), key=str.encode):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for index, item in enumerate(payload.requested_items):
+            if item.role is RequestedItemRole.OUTPUT and item.item_kind in _DECLARED_OUTPUT_KINDS:
+                rows.append((obligation, index, item.item_kind, item.value))
+    return tuple(rows)

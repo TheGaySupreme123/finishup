@@ -226,6 +226,7 @@ __all__ = [
     "RedactionState",
     "RequestedItem",
     "RequestedItemKind",
+    "RequestedItemRole",
     "ResponseRecordedPayload",
     "ResultOutcome",
     "ResultRecordedPayload",
@@ -234,6 +235,7 @@ __all__ = [
     "SESSION_EVENT_SCHEMA_VERSION",
     "TASK_STATEMENT_EVENT_SCHEMAS",
     "TASK_STATEMENT_PLAN_SCHEMA_VERSION",
+    "OBLIGATION_SCHEMA_VERSION",
     "TASK_STATEMENT_SESSION_OPENED_SCHEMA_VERSION",
     "TASK_STATEMENT_SESSION_RESUMED_SCHEMA_VERSION",
     "SessionOpenedPayload",
@@ -267,6 +269,12 @@ EVIDENCE_SCHEMA_VERSIONS: Final = (
     EVIDENCE_SCHEMA_VERSION,
 )
 CLAIM_SCHEMA_VERSION: Final = "1.1.0"
+# ``obligation_published`` 1.0.0 is released and frozen. 1.1.0 (issue #1002) admits the
+# ``directory`` requested-item kind, the optional per-item ``role`` (``input``/``output``, on ``file``
+# and ``directory`` items only) and the ``acknowledged_not_done`` status with its required reason.
+# The version is a pure function of the payload: 1.1.0 iff one of those is present, so an
+# obligation without them keeps its exact 1.0.0 bytes and old ledgers replay unchanged.
+OBLIGATION_SCHEMA_VERSION: Final = "1.1.0"
 # 1.3.0 (unreleased on the 0.3 line) also carries the optional per-finding reviewer rulings of
 # issue #905; a check without rulings keeps its earlier 1.3.0 bytes.
 CHECK_EVENT_SCHEMA_VERSION: Final = "1.3.0"
@@ -390,11 +398,24 @@ class RequestedItemKind(str, Enum):  # noqa: UP042 - exact wire enum base
     COMMAND = "command"
     CHANGE = "change"
     SOURCE = "source"
+    # obligation_published 1.1.0 only (issue #1002): a directory the request names.
+    DIRECTORY = "directory"
+
+
+class RequestedItemRole(str, Enum):  # noqa: UP042 - exact wire enum base
+    """Whether a requested file or directory is read by the task or delivered by it (#1002)."""
+
+    INPUT = "input"
+    OUTPUT = "output"
 
 
 class ObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
     OPEN = "open"
     RESOLVED = "resolved"
+    # obligation_published 1.1.0 only (issue #1002/#996): the agent states it did not do this
+    # obligation and why. It is not resolved; consumers treat it like ``open`` unless they decide
+    # otherwise.
+    ACKNOWLEDGED_NOT_DONE = "acknowledged_not_done"
 
 
 class NoObligationsReason(str, Enum):  # noqa: UP042 - exact wire enum base
@@ -748,10 +769,28 @@ def _lineage_enum_tuple[T: Enum](
 class RequestedItem:
     item_kind: RequestedItemKind
     value: str
+    # obligation_published 1.1.0 only. ``None`` keeps the 1.0.0 meaning: a ``file`` item may be an
+    # input or an output.
+    role: RequestedItemRole | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "item_kind", _exact_enum(self.item_kind, RequestedItemKind))
         object.__setattr__(self, "value", _bounded_text(self.value, 1_024))
+        if self.role is not None:
+            object.__setattr__(self, "role", _exact_enum(self.role, RequestedItemRole))
+
+        if self.role is not None and self.item_kind not in {
+            RequestedItemKind.FILE,
+            RequestedItemKind.DIRECTORY,
+        }:
+            # A role says whether a path is read or delivered; no other kind names a path.
+            raise ProtocolValueError("invalid_event_value_type")
+
+    @property
+    def requires_obligation_v1_1(self) -> bool:
+        """Whether only ``obligation_published`` 1.1.0 can carry this item."""
+
+        return self.role is not None or self.item_kind is RequestedItemKind.DIRECTORY
 
 
 @dataclass(frozen=True, slots=True)
@@ -882,6 +921,8 @@ def _locator_key_kind(schema: EventSchema) -> str:
         return "none"
     additive = (
         schema == EventSchema("claim_recorded", CLAIM_SCHEMA_VERSION)
+        # Role- and directory-bearing obligations project as the same obligation (issue #1002).
+        or schema == EventSchema("obligation_published", OBLIGATION_SCHEMA_VERSION)
         # A plan carrying a revised task statement projects as the same plan (issue #908).
         or schema
         in {
@@ -1917,6 +1958,21 @@ class ObligationPublishedPayload:
     requested_items: tuple[RequestedItem, ...] = ()
     source_refs: tuple[EventId, ...] = ()
     resolution_evidence_refs: tuple[EvidenceId | ResultId, ...] = ()
+    # obligation_published 1.1.0 only: present iff ``status`` is ``acknowledged_not_done``.
+    acknowledged_not_done_reason: str | None = None
+
+    @property
+    def requires_obligation_v1_1(self) -> bool:
+        """Whether only ``obligation_published`` 1.1.0 can carry this payload (issue #1002).
+
+        The version is a pure function of the payload: 1.1.0 iff a ``directory`` item, an item
+        ``role`` or ``acknowledged_not_done`` is present, so every other obligation keeps its
+        released 1.0.0 bytes.
+        """
+
+        return self.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE or any(
+            item.requires_obligation_v1_1 for item in self.requested_items
+        )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "obligation_id", obligation_id(self.obligation_id))
@@ -1950,8 +2006,17 @@ class ObligationPublishedPayload:
             field="resolution_evidence_refs",
         )
         object.__setattr__(self, "resolution_evidence_refs", resolution_refs)
-        if status is ObligationStatus.OPEN and resolution_refs:
+        if status is not ObligationStatus.RESOLVED and resolution_refs:
             raise ProtocolValueError("obligation_resolution_invalid")
+        reason = self.acknowledged_not_done_reason
+        if (status is ObligationStatus.ACKNOWLEDGED_NOT_DONE) != (reason is not None):
+            raise ProtocolValueError("obligation_resolution_invalid")
+        if reason is not None:
+            reason = _bounded_text(reason, MAX_REASON_BYTES, minimum=1)
+            # 1..4096 UTF-8 bytes, not characters, and never blank.
+            if len(reason.encode("utf-8")) > MAX_REASON_BYTES or not reason.strip():
+                raise ProtocolValueError("obligation_resolution_invalid")
+            object.__setattr__(self, "acknowledged_not_done_reason", reason)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3008,6 +3073,7 @@ PAYLOAD_TYPES: Final[Mapping[EventSchema, type[EventPayload]]] = MappingProxyTyp
         EventSchema("plan_published", SCHEMA_VERSION): PlanPublishedPayload,
         EventSchema("plan_published", TASK_STATEMENT_PLAN_SCHEMA_VERSION): PlanPublishedPayload,
         EventSchema("obligation_published", SCHEMA_VERSION): ObligationPublishedPayload,
+        EventSchema("obligation_published", OBLIGATION_SCHEMA_VERSION): ObligationPublishedPayload,
         EventSchema("assignment_recorded", SCHEMA_VERSION): AssignmentRecordedPayload,
         EventSchema("decision_recorded", SCHEMA_VERSION): DecisionRecordedPayload,
         EventSchema("action_recorded", SCHEMA_VERSION): ActionRecordedPayload,
@@ -3352,10 +3418,13 @@ def _decode_requested_item(value: object) -> RequestedItem:
     source = _closed_object(
         value,
         required=frozenset({"item_kind", "value"}),
+        optional=frozenset({"role"}),
     )
+    role = _optional(source, "role")
     return RequestedItem(
         item_kind=_enum_from_json(_field(source, "item_kind"), RequestedItemKind),
         value=cast(str, _field(source, "value")),
+        role=None if role is None else _enum_from_json(role, RequestedItemRole),
     )
 
 
@@ -3746,6 +3815,7 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
                     "requested_items",
                     "source_refs",
                     "resolution_evidence_refs",
+                    "acknowledged_not_done_reason",
                 }
             ),
         ),
@@ -4072,11 +4142,11 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
     if schema.name == "obligation_published":
         status = _enum_from_json(_field(source, "status"), ObligationStatus)
         resolution_refs = _optional(source, "resolution_evidence_refs")
-        if status is ObligationStatus.OPEN and "resolution_evidence_refs" in source:
+        if status is not ObligationStatus.RESOLVED and "resolution_evidence_refs" in source:
             raise ProtocolValueError("obligation_resolution_invalid")
         requested = _optional(source, "requested_items")
         source_refs = _optional(source, "source_refs")
-        return ObligationPublishedPayload(
+        published_obligation = ObligationPublishedPayload(
             obligation_id=obligation_id(_field(source, "obligation_id")),
             description=cast(str, _field(source, "description")),
             evidence_expectation=cast(str, _field(source, "evidence_expectation")),
@@ -4098,7 +4168,12 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                     tuple(_array(resolution_refs)),
                 )
             ),
+            acknowledged_not_done_reason=cast(
+                str | None, _optional(source, "acknowledged_not_done_reason")
+            ),
         )
+        _validate_event_schema_payload(schema, published_obligation)
+        return published_obligation
     if schema.name == "assignment_recorded":
         obligations = tuple(_array(_field(source, "obligation_ids")))
         write_policy_value = _optional(source, "write_policy")
@@ -4647,11 +4722,18 @@ def encode_payload(payload: EventPayload) -> JsonValue:
         if value.requested_items:
             result["requested_items"] = tuple(
                 {"item_kind": item.item_kind.value, "value": item.value}
+                if item.role is None
+                else {
+                    "item_kind": item.item_kind.value,
+                    "value": item.value,
+                    "role": item.role.value,
+                }
                 for item in value.requested_items
             )
         _optional_tuple(result, "source_refs", cast(tuple[object, ...], value.source_refs))
         if value.status is ObligationStatus.RESOLVED:
             result["resolution_evidence_refs"] = value.resolution_evidence_refs
+        _optional_value(result, "acknowledged_not_done_reason", value.acknowledged_not_done_reason)
         return _json_object(result)
     if payload_type is AssignmentRecordedPayload:
         value = cast(AssignmentRecordedPayload, payload)
@@ -4995,6 +5077,12 @@ def _validate_event_schema_payload(
             # semantic 1.1/1.2 additions, or the current dialogue-capable 1.3.0 shape. Keep all
             # of those readable; 1.4.0 is reserved for snippets and the new semantic kinds.
             raise ProtocolValueError("invalid_event_schema")
+    if type(payload) is ObligationPublishedPayload and payload.requires_obligation_v1_1 != (
+        schema.version == OBLIGATION_SCHEMA_VERSION
+    ):
+        # 1.1.0 iff the payload uses a 1.1.0-only feature (issue #1002): the released 1.0.0
+        # never carries one, and 1.1.0 is never chosen without one.
+        raise ProtocolValueError("invalid_event_schema")
     if type(payload) is ResponseRecordedPayload:
         if (payload.disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE) != (
             schema.version == RESPONSE_EVENT_SCHEMA_VERSION

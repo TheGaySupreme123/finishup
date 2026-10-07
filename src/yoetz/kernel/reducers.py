@@ -695,8 +695,12 @@ def _apply_obligation(
         # resolution_evidence_refs may change. The comparison deliberately clears evidence
         # refs for meaning equality — that is not free mutation of resolved history.
         meaning_diffs = obligation_meaning_field_diffs(previous, payload)
+        # ``acknowledged_not_done`` (obligation_published 1.1.0, #1002) is not resolved: the last
+        # effective status wins among open, acknowledged_not_done and resolved, and resolved stays
+        # terminal. Readiness and receipt meaning belong to their owners.
         valid_transition = (
-            previous.status is ObligationStatus.OPEN and payload.status is ObligationStatus.RESOLVED
+            previous.status is not ObligationStatus.RESOLVED
+            and payload.status is not previous.status
         )
         if not valid_transition or meaning_diffs:
             if meaning_diffs:

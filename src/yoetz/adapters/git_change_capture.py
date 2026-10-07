@@ -274,6 +274,11 @@ def _nul_fields(payload: bytes) -> list[bytes]:
 
 
 _MAX_REQUESTED_PATH_PROBES: Final = 64
+# A requested directory "holds a file" when any non-directory entry lies beneath it (#1002). The
+# walk is metadata only and bounded so a huge tree never stalls a check; past the bound the answer
+# is unknown, which never reports the directory absent.
+_MAX_DIRECTORY_WALK_ENTRIES: Final = 4_096
+_MAX_DIRECTORY_WALK_OPEN: Final = 64
 _ROOT_RELATIVE: Final = b"."
 
 
@@ -535,6 +540,7 @@ class GitChangeCaptureAdapter:
                     verbose = b""
                 sources[path] = verbose.split(b":", 1)[0] if b":" in verbose else b""
         info_exclude = os.fsencode(pinned.root / ".git" / "info" / "exclude")
+        holds_file: dict[bytes, bool | None] = {}
         probes: list[RequestedPathProbe] = []
         for location, path in located:
             if path is None:
@@ -542,12 +548,19 @@ class GitChangeCaptureAdapter:
                 continue
             identity = identities[path]
             source = sources.get(path)
+            if path not in holds_file:
+                holds_file[path] = (
+                    _directory_holds_file(pinned.descriptor, path)
+                    if identity is not None and identity != _BLOCKED and stat.S_ISDIR(identity[0])
+                    else None
+                )
             probes.append(
                 RequestedPathProbe(
                     location,
                     os.fsdecode(path),
                     None if identity == _BLOCKED else identity is not None,
                     None if path in unknown else path in ignored,
+                    holds_file=holds_file[path],
                     ignore_source=(
                         None
                         if source is None
@@ -1724,6 +1737,55 @@ def _path_identity(root_descriptor: int, path: bytes) -> _Identity | None:
         return _BLOCKED
     finally:
         for descriptor in reversed(opened):
+            os.close(descriptor)
+
+
+def _directory_holds_file(root_descriptor: int, path: bytes) -> bool | None:
+    """Whether any non-directory entry lies beneath the directory ``path`` under the root (#1002).
+
+    Metadata only: every directory is opened ``O_NOFOLLOW`` from its parent's descriptor and only
+    listed; no entry is ``stat``-ed through a link and no file is opened or read. A link, socket or
+    other non-directory entry counts as content, so only a directory that is empty or holds nothing
+    but empty directories answers ``False``. ``None`` when a component cannot be opened or the walk
+    exceeds its entry or open-descriptor bound.
+    """
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    pending: list[int] = []
+    current = root_descriptor
+    try:
+        for part in path.split(b"/"):
+            opened = os.open(part, directory_flags, dir_fd=current)
+            if current != root_descriptor:
+                os.close(current)
+            current = opened
+        pending.append(current)
+        current = root_descriptor
+        visited = 0
+        while pending:
+            directory = pending.pop()
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        visited += 1
+                        if visited > _MAX_DIRECTORY_WALK_ENTRIES:
+                            return None
+                        if not entry.is_dir(follow_symlinks=False):
+                            return True
+                        if len(pending) >= _MAX_DIRECTORY_WALK_OPEN:
+                            return None
+                        pending.append(
+                            os.open(os.fsencode(entry.name), directory_flags, dir_fd=directory)
+                        )
+            finally:
+                os.close(directory)
+        return False
+    except OSError:
+        return None
+    finally:
+        if current != root_descriptor:
+            os.close(current)
+        for descriptor in pending:
             os.close(descriptor)
 
 

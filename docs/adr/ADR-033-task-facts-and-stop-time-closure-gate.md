@@ -73,7 +73,15 @@ agent must not be able to stop silently with known work left.
      outcome for `single`, a success for a successful `and_chain`, and is otherwise
      `planned_verification_outcome_unknown`: a pipe, `;`, `||` or script outcome names no part.
      An unsplittable command (unterminated quote, substitution or here-document) has only its
-     whole identity. The service registers the key at composition; a process without it computes
+     whole identity. Agent link (PL6-3, #1003; owner: "disclose it as an agent-asserted
+     equivalence; the observed outcome still decides"): a cooperative `action_recorded` of kind
+     `command` whose `attempted_items` holds the exact requested value and whose `causal_parents`
+     names a hook-observed command action links that observed run to the item, attributed per
+     obligation as `attempted_items_for_obligation` does. Only an observed command action parent
+     counts (never a cooperative action or result); the linked run's observed outcome and position
+     decide not_observed, failed, stale and outcome_unknown exactly like a direct match, and a
+     placeholder or prose item stays unobservable. When an item matches only through such a link
+     the standing code `planned_verification_agent_linked` discloses it. No wire change. The service registers the key at composition; a process without it computes
      no planned fact rather than claiming a command never ran.
    - `planned_verification_outcome_unknown` and `planned_verification_unobservable` (standing): a
      matching run stated no outcome; or no keyed observed command exists to match against, or the
@@ -137,6 +145,54 @@ agent must not be able to stop silently with known work left.
    or sent. The same check's AI-powered review packet (including the closing review, ADR-006)
    carries these requested-output codes, and `requested_output_absent` when a requested file is
    missing, in its coverage `known_gaps`, so the reviewer judges the work beside them.
+
+   **Declared roles and directories (issue #1002).** `obligation_published` 1.1.0 lets the record
+   say what each requested item is; 1.0.0 is released and stays admitted and byte-identical. A
+   `file` or `directory` item may carry `role: "input" | "output"` (absent keeps the 1.0.0 reading
+   above; any other kind refuses a role), and `item_kind` gains `directory`. The same version adds
+   the status `acknowledged_not_done` with a required non-blank `acknowledged_not_done_reason`
+   (#996; readiness and receipt meaning are owned there). The version is a pure function of the
+   payload: 1.1.0 iff it carries a role, a `directory` item or `acknowledged_not_done`, so every
+   other obligation keeps its 1.0.0 bytes; each version refuses the other's payloads. The rules:
+   - **`role: input`** is the task's data. It is not probed, and none of the requested-output codes
+     (`absent`, `unchanged`, `git_ignored`, `ignored_by_repository`, `outside_workspace`,
+     `unverified`) is ever reported for it (tb4n1 layout-config: the read-only
+     `/app/layout_spec.json` was reported unchanged). It never justifies editing a pre-existing
+     test file (`test_edit_visibility`): an input is read, not asked to change.
+   - **`role: output`** is a declared delivery. It counts as written for
+     `requested_output_unchanged` and `requested_output_outside_workspace` without an exact `edit`
+     match, which closes the accepted gap above for outputs a command writes.
+     `kernel.task_facts.declared_output_items` returns every effective obligation's `file` or
+     `directory` item with `role: output` (blocked obligations included) — the declared delivered
+     set ADR-035 reads.
+   - **`directory`** is probed like a `file` (changed when any path beneath it changed; ignore and
+     location as above). An existing directory that holds no file — empty, or only empty
+     directories — is absent: the adapter lists it from the root descriptor, opening each
+     directory `O_NOFOLLOW`, never following a link, never opening a file, and bounded (4,096
+     entries, 64 pending directories); any non-directory entry counts as content, and an exceeded
+     bound or a refused open is unknown, which never reports absence. A `file` item naming a
+     directory keeps its 1.0.0 reading (existence only). `requested_output_absent` still waits for
+     work on its obligation (`reportable_absent_outputs`, unchanged). A directory whose files the
+     change deleted is `deleted`, not absent, exactly like a deleted file. A `directory` item is never a
+     planned verification command, a URL, or a test-edit justification.
+   - **`acknowledged_not_done` is not resolved.** The reducer keeps the last effective status among
+     `open`, `acknowledged_not_done` and `resolved` (meaning fields must repeat; `resolved` stays
+     terminal). Every other consumer treats it like `open`: open-obligation lists and counts
+     (`open_effective_obligations`, compact status, check totals, receipts, the startup gate),
+     `completion_with_open_obligations`, research-evidence support, live-failure obligation refs,
+     coordination ownership and overlap input, and closure preparation, which may still resolve
+     it. Status `view=obligations` (status-result 1.4.0) shows the status (the `open` filter
+     matches it) and `acknowledged_not_done_reason`, the agent's own text, under the same
+     `obligation_text` category and omission as the obligation's description.
+   - **Unchanged by role or `directory`:** `requested_item_never_attempted` for an unattempted item
+     still compares exact values against `attempted_items`, whatever the role (an input is cited by
+     a `research` action); check totals count requested items the same way; project coordination
+     still declares only `file` and `source` items as overlap resources (a directory is not an
+     exact resource identity, and a read of the same file can still be a relevant overlap); the
+     AI-powered review packet carries the obligation record verbatim, so role and kind reach the
+     reviewer in its text. Status `view=obligations` (status-result 1.4.0, unreleased, edited in
+     place) shows `directory` items and the optional `role`; earlier status-result versions are
+     frozen and do not describe them.
 3. **The plan is not an omission.** `requested_item_never_attempted` for an unattempted item waits
    until the agent has started acting: an observed edit, an observed run the hook classified as
    `test`, `lint`, `typecheck` or `build`, or any published action. Investigation commands

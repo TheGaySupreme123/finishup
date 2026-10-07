@@ -292,6 +292,10 @@ class RequestedPathProbe:
     # or ``outside_repository`` (a configured or global excludes file).
     ignore_source: str | None = None
     ignore_file: str | None = field(default=None, repr=False)
+    # For an existing directory only (#1002): whether a bounded, link-free metadata walk found any
+    # entry that is not a directory beneath it. ``False`` means empty or only empty directories;
+    # ``None`` means not a directory, or the walk was blocked or exceeded its bound.
+    holds_file: bool | None = None
 
     def __post_init__(self) -> None:
         if self.location not in {"inside", "outside"}:
@@ -304,6 +308,8 @@ class RequestedPathProbe:
         }:
             raise _invalid()
         if (self.location == "inside") is (self.relative is None):
+            raise _invalid()
+        if self.holds_file is not None and self.exists is not True:
             raise _invalid()
 
 

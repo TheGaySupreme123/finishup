@@ -241,7 +241,7 @@ hook-observed run (hooks keep only a keyed commitment), so it stays a disclosed
     },
     {
       "event_id": "evt_00000000-0000-4000-8000-000000000002",
-      "schema": {"name": "obligation_published", "version": "1.0.0"},
+      "schema": {"name": "obligation_published", "version": "1.1.0"},
       "occurred_at": "2026-01-01T00:00:00.000Z",
       "causal_parents": [],
       "payload": {
@@ -253,7 +253,7 @@ hook-observed run (hooks keep only a keyed commitment), so it stays a disclosed
         "requested_items": [
           {"item_kind": "command", "value": "pytest -q"},
           {"item_kind": "change", "value": "Replace with the named change this obligation owes"},
-          {"item_kind": "file", "value": "tests/test_requested_regression.py"}
+          {"item_kind": "file", "value": "tests/test_requested_regression.py", "role": "output"}
         ],
         "source_refs": ["evt_00000000-0000-4000-8000-000000000000"]
       },
@@ -276,7 +276,17 @@ each standalone example schema-valid.
 
 `requested_items` declares the material items the obligation asks for; each entry is an object
 whose `item_kind` admits `change`, `command`, `file`, `source`, `url` and whose `value` is the
-exact item string. The requested outcome lives in `description` and `acceptance_criteria`;
+exact item string. `obligation_published` `1.1.0`, as above, also admits `item_kind`
+`directory`, an optional `role` on `file` and `directory` items — `input` (the task reads it) or
+`output` (the task must deliver it) — and the status `acknowledged_not_done` with a required,
+non-blank `acknowledged_not_done_reason`. Use `1.1.0` exactly when the payload carries one of
+those, and `1.0.0` otherwise: each version refuses the other's payloads, and a resolution or
+acknowledgement republish picks its version the same way. Mark every file or directory the task
+must deliver `role: output` and every one it only reads `role: input`. Yoetz checks a declared
+output at each `check` — absent, unchanged, outside the workspace, or ignored by Git — and never
+reports those facts for an input; an output directory that holds no file counts as absent.
+Without a `role`, a `file` item is reported unchanged or outside only after an `edit` action
+names it. The requested outcome lives in `description` and `acceptance_criteria`;
 `outcome` is not an admitted `item_kind`. When you later attempt an item, copy that exact `value`
 string into `attempted_items` on the `action_recorded` event that attempted it — see the action
 template below. Matching is exact: do not normalize, reorder words, or paraphrase. A `command`

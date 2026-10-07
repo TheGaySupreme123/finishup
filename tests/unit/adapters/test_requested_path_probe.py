@@ -330,3 +330,125 @@ def test_the_workspace_root_probe_is_inside_and_existing(tmp_path: Path) -> None
         True,
         False,
     )
+
+
+def test_probe_reports_whether_a_directory_holds_a_file(tmp_path: Path) -> None:
+    """#1002: an existing directory with no file beneath it delivers nothing."""
+
+    repository = _repository(tmp_path)
+    (repository / "empty").mkdir()
+    (repository / "hollow" / "a" / "b").mkdir(parents=True)
+    (repository / "deep" / "a" / "b").mkdir(parents=True)
+    (repository / "deep" / "a" / "b" / "out.sv").write_text("module m; endmodule\n")
+    (repository / "linked_only").mkdir()
+    (repository / "linked_only" / "link").symlink_to(tmp_path)
+
+    probes = GitChangeCaptureAdapter().probe_requested_paths(
+        os.fspath(repository),
+        ("empty", "hollow", "deep", "linked_only", "kept.txt", "missing", "."),
+    )
+
+    assert [probe.holds_file for probe in probes] == [False, False, True, True, None, None, True]
+    assert all(probe.exists is True for probe in probes[:5])
+
+
+def _items_projection(*items: RequestedItem, edited: tuple[str, ...] = ()) -> ProjectionState:
+    from builders.observed_runs import ObservedLedger
+    from yoetz.domain.events import ActionKind, ActionRecordedPayload, EventSchema
+    from yoetz.domain.values import action_id
+
+    ledger = ObservedLedger()
+    ledger.append(
+        EventSchema("obligation_published", "1.1.0"),
+        ObligationPublishedPayload(
+            obligation_id=_OBLIGATION,
+            description="Deliver the outputs",
+            evidence_expectation="The files",
+            status=ObligationStatus.OPEN,
+            requested_items=items,
+        ),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", (_OBLIGATION,)),
+        observed=False,
+    )
+    if edited:
+        ledger.append(
+            EventSchema("action_recorded", "1.0.0"),
+            ActionRecordedPayload(
+                action_id("act_00000000-0000-4000-8000-000000000902"),
+                ActionKind.EDIT,
+                "Wrote the requested outputs.",
+                attempted_items=tuple(sorted(edited)),
+            ),
+            observed=False,
+        )
+    return replay(ledger.prefix)
+
+
+def test_roles_and_directories_at_check_time(tmp_path: Path) -> None:
+    """tb4n1 layout-config and retro-console-soc, with the roles declared (#1002).
+
+    The read-only /app/layout_spec.json input is never a requested-output fact, even when an edit
+    action names it; /app/src as an output directory is absent while missing or holding only
+    empty directories, and changed once files land under it. A declared output file the change
+    leaves untouched is reported without any edit action naming it.
+    """
+
+    from yoetz.domain.events import RequestedItemRole
+
+    repository = _repository(tmp_path)
+    (repository / "layout_spec.json").write_text("{}\n", encoding="utf-8")
+    _git(repository, "add", "--", "layout_spec.json")
+    _git(
+        repository,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "spec",
+    )
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    root = os.fspath(repository)
+    items = (
+        RequestedItem(RequestedItemKind.FILE, root + "/layout_spec.json", RequestedItemRole.INPUT),
+        RequestedItem(RequestedItemKind.DIRECTORY, root + "/src", RequestedItemRole.OUTPUT),
+        RequestedItem(RequestedItemKind.FILE, "kept.txt", RequestedItemRole.OUTPUT),
+        RequestedItem(RequestedItemKind.FILE, root + "/missing_input.csv", RequestedItemRole.INPUT),
+        # No role: a directory named as a plain file item keeps the 1.0.0 reading.
+        RequestedItem(RequestedItemKind.FILE, root + "/hollow"),
+    )
+    projection = _items_projection(*items, edited=(items[0].value,))
+    source = CheckWorkspaceSource(root, "hmac-sha256:" + "0" * 64)
+
+    def facts() -> tuple[object, ...]:
+        states = asyncio.run(
+            requested_output_states(
+                projection=projection,
+                capture=adapter.capture_metadata(root, base),
+                source=source,
+                port=adapter,
+                request_id="req_00000000-0000-4000-8000-000000000005",
+            )
+        )
+        # Inputs are not read at all.
+        assert (_OBLIGATION, 0) not in states and (_OBLIGATION, 3) not in states
+        return requested_output_facts(projection, states)
+
+    (repository / "hollow" / "sub").mkdir(parents=True)
+    unchanged = ((REQUESTED_OUTPUT_UNCHANGED_GAP, _OBLIGATION),)
+    assert facts() == (((_OBLIGATION, 1),), unchanged)  # src missing; kept.txt untouched
+
+    (repository / "src" / "rtl").mkdir(parents=True)
+    assert facts() == (((_OBLIGATION, 1),), unchanged)  # only empty directories
+
+    for name in ("apu2a03.sv", "cpu6502.sv"):
+        (repository / "src" / "rtl" / name).write_text("module m; endmodule\n", encoding="utf-8")
+    (repository / "kept.txt").write_text("rewritten\n", encoding="utf-8")
+    assert facts() == ((), ())

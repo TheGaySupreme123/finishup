@@ -349,6 +349,9 @@ _TASK_STATEMENT_EVENT_PAIRS: Final[tuple[tuple[str, str], ...]] = (
     ("plan_published", "1.1.0"),
     ("plan_revised", "1.1.0"),
 )
+# Role- and directory-bearing obligations (issue #1002): a new version of a released family that
+# the unreleased event-draft 1.2.0 admits in place.
+_OBLIGATION_EVENT_PAIRS: Final[tuple[tuple[str, str], ...]] = (("obligation_published", "1.1.0"),)
 
 
 def _privacy_policy_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
@@ -4220,10 +4223,37 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_status_closure_checklist(definitions)
     _add_status_finding_frontier(definitions)
     _add_review_input_continuation(definitions)
+    _add_status_requested_item_role(definitions)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz status result {entry.schema_version}"
     return document
+
+
+def _add_status_requested_item_role(definitions: dict[str, JsonValue]) -> None:
+    """Show obligation_published 1.1.0 ``directory`` items and their optional ``role`` (#1002).
+
+    Unreleased in-place addition to status-result 1.4.0. Earlier status results are frozen and
+    never carry either.
+    """
+
+    item = cast(dict[str, JsonValue], definitions["status_requested_item"])
+    properties = cast(dict[str, JsonValue], item["properties"])
+    kinds = cast(list[JsonValue], cast(dict[str, JsonValue], properties["item_kind"])["enum"])
+    if "directory" not in kinds:
+        kinds.append("directory")
+    properties["role"] = {"enum": ["input", "output"], "type": "string"}
+    # The row shows an acknowledged_not_done obligation's status and the agent's own reason,
+    # under the same obligation-text omission as the description it explains.
+    obligation = cast(dict[str, JsonValue], definitions["obligation_item"])
+    obligation_properties = cast(dict[str, JsonValue], obligation["properties"])
+    status = cast(dict[str, JsonValue], obligation_properties["status"])
+    statuses = cast(list[JsonValue], status["enum"])
+    if "acknowledged_not_done" not in statuses:
+        statuses.append("acknowledged_not_done")
+    obligation_properties["acknowledged_not_done_reason"] = {
+        "oneOf": [{"$ref": "#/$defs/content_text"}, {"$ref": "#/$defs/obligation_omission"}]
+    }
 
 
 def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
@@ -4684,6 +4714,56 @@ def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
     )
 
 
+def _obligation_published_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Add the ``directory`` item kind and the optional item ``role`` (issue #1002).
+
+    Derived from the released, frozen 1.0.0 bytes; every other field is unchanged, so a 1.0.0
+    payload is also a valid 1.1.0 payload.
+    """
+
+    document = _load_versioned_template(entry, "events/obligation-published-1.0.0.schema.json")
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    item = cast(dict[str, JsonValue], definitions["requested_item"])
+    properties = cast(dict[str, JsonValue], item["properties"])
+    kinds = cast(list[JsonValue], cast(dict[str, JsonValue], properties["item_kind"])["enum"])
+    if "directory" not in kinds:
+        kinds.append("directory")
+    properties["role"] = {"enum": ["input", "output"], "type": "string"}
+    # A role names whether a path is read or delivered, so only path kinds admit it.
+    item["allOf"] = [
+        {
+            "if": {"required": ["role"]},
+            "then": {"properties": {"item_kind": {"enum": ["file", "directory"]}}},
+        }
+    ]
+    # ``acknowledged_not_done`` (#1002/#996): the agent states it did not do the obligation and
+    # why. The reason is required exactly for that status, as resolution refs are for resolved.
+    payload_properties = cast(dict[str, JsonValue], document["properties"])
+    status = cast(dict[str, JsonValue], payload_properties["status"])
+    statuses = cast(list[JsonValue], status["enum"])
+    if "acknowledged_not_done" not in statuses:
+        statuses.append("acknowledged_not_done")
+    payload_properties["acknowledged_not_done_reason"] = {
+        "maxLength": 4096,
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string",
+    }
+    rules = cast(list[JsonValue], document["allOf"])
+    rules.append(
+        {
+            "else": {"not": {"required": ["acknowledged_not_done_reason"]}},
+            "if": {
+                "properties": {"status": {"const": "acknowledged_not_done"}},
+                "required": ["status"],
+            },
+            "then": {"required": ["acknowledged_not_done_reason"]},
+        }
+    )
+    document["title"] = f"Yoetz obligation published {entry.schema_version}"
+    return document
+
+
 def _event_draft_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     document = _event_draft_schema(entry)
     definitions = cast(dict[str, JsonValue], document["$defs"])
@@ -4774,6 +4854,8 @@ def _event_draft_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     add_branch("finding_recorded", "1.3.0")
     add_branch("response_recorded", "1.1.0")
     for family, version in _TASK_STATEMENT_EVENT_PAIRS:
+        add_branch(family, version)
+    for family, version in _OBLIGATION_EVENT_PAIRS:
         add_branch(family, version)
     for family in (
         "child_accepted",
@@ -4868,7 +4950,7 @@ def _opaque_unknown_event_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
             "type": "object",
         }
     )
-    for family, version in _TASK_STATEMENT_EVENT_PAIRS:
+    for family, version in (*_TASK_STATEMENT_EVENT_PAIRS, *_OBLIGATION_EVENT_PAIRS):
         values.append(
             {
                 "additionalProperties": False,
@@ -8100,6 +8182,18 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         ),
     ),
     _RegistryEntry(
+        "events/obligation-published-1.1.0.schema.json",
+        "obligation-published",
+        "1.1.0",
+        "event",
+        "event-payload",
+        lambda: (
+            __import__(
+                "yoetz.domain.events", fromlist=["ObligationPublishedPayload"]
+            ).ObligationPublishedPayload
+        ),
+    ),
+    _RegistryEntry(
         "events/opaque-unknown-event-draft-1.0.0.schema.json",
         "opaque-unknown-event-draft",
         "1.0.0",
@@ -9500,6 +9594,8 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
 # regenerating them would silently rewrite frozen history.
 _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
     {
+        # Role- and directory-bearing obligations (issue #1002).
+        "events/obligation-published-1.1.0.schema.json",
         # The task-statement contracts (issue #908).
         "events/plan-published-1.1.0.schema.json",
         "events/plan-revised-1.1.0.schema.json",
@@ -10012,6 +10108,11 @@ def build_schema_documents(
             normalized = _with_required_task_statement(
                 entry, "events/session-resumed-1.1.0.schema.json"
             )
+        elif entry.relative_path == "events/obligation-published-1.0.0.schema.json":
+            # Released: the domain model now also admits 1.1.0 items, so never re-derive it.
+            normalized = _frozen_schema(entry)
+        elif entry.relative_path == "events/obligation-published-1.1.0.schema.json":
+            normalized = _obligation_published_v1_1_schema(entry)
         elif entry.relative_path == "events/plan-published-1.1.0.schema.json":
             normalized = _with_required_task_statement(
                 entry, "events/plan-published-1.0.0.schema.json", title="Yoetz plan published"

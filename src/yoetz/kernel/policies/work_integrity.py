@@ -253,7 +253,8 @@ def _completion_findings(case: DeterministicCase) -> list[DeterministicAssessmen
             if obligation_record is None or obligation_record.payload is None:
                 continue
             if (
-                obligation_record.payload.status is not ObligationStatus.OPEN
+                # acknowledged_not_done (#1002) is not resolved: treated like open here.
+                obligation_record.payload.status is ObligationStatus.RESOLVED
                 or obligation_record.plan_change is ObligationChangeKind.WAIVED
             ):
                 continue

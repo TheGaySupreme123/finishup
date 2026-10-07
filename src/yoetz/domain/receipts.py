@@ -384,6 +384,11 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " identity, or the requested command is a placeholder or a description rather than a"
             " command."
         ),
+        "planned_verification_agent_linked": (
+            "A planned verification was matched only through the agent's own link of an observed"
+            " run to the requested command, an equivalence Yoetz did not verify; that run's"
+            " observed outcome still decides."
+        ),
         "edited_after_last_verification": (
             "An observed edit followed the last observed test, lint, typecheck or build run."
         ),

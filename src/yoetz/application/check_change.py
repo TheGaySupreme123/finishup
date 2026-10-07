@@ -24,6 +24,7 @@ from yoetz.domain.events import (
     CheckChangePartialFile,
     CheckChangeShownFiles,
     RequestedItemKind,
+    RequestedItemRole,
 )
 from yoetz.domain.privacy import ReviewSelectionPolicy
 from yoetz.domain.receipts import CHECK_TIME_CHANGE_UNAVAILABLE_REASONS
@@ -506,6 +507,7 @@ async def record_task_change_base(
 
 
 _MAX_REQUESTED_OUTPUT_PROBES: Final = 64
+_PROBED_KINDS: Final = frozenset({RequestedItemKind.FILE, RequestedItemKind.DIRECTORY})
 _NOT_A_PLAIN_PATH: Final = re.compile(r"[\s*?\[\]{}~$`]|://")
 
 
@@ -538,13 +540,22 @@ async def requested_output_states(
     """
 
     items: list[tuple[ObligationId, int, str]] = []
+    directories: set[tuple[ObligationId, int]] = set()
     for obligation in effective_obligations(projection):
         payload = projection.obligations[obligation].payload
         if payload is None:
             continue
         for index, item in enumerate(payload.requested_items):
-            if item.item_kind is RequestedItemKind.FILE and _plain_path(item.value):
+            # A declared input is never an output fact, so it is not read at all (#1002). A
+            # directory is located like a file; an existing one that holds no file is absent.
+            if (
+                item.item_kind in _PROBED_KINDS
+                and item.role is not RequestedItemRole.INPUT
+                and _plain_path(item.value)
+            ):
                 items.append((obligation, index, item.value))
+                if item.item_kind is RequestedItemKind.DIRECTORY:
+                    directories.add((obligation, index))
     if not items:
         return {}
     unverified = {
@@ -593,9 +604,14 @@ async def requested_output_states(
             states[(obligation, index)] = RequestedOutputState("outside")
             continue
         listed = _changed_at_or_under(result.relative, changed)
+        exists = result.exists
+        if (obligation, index) in directories and exists and result.holds_file is False:
+            # An empty directory (or one holding only empty directories) delivers nothing; Git
+            # cannot even record it. Unknown (``None``) never makes it absent.
+            exists = False
         states[(obligation, index)] = RequestedOutputState(
             "inside",
-            exists=result.exists,
+            exists=exists,
             ignored=result.ignored,
             # Local excludes are not delivered with the repository; a .gitignore the task's own
             # change created is the work's. A pre-existing .gitignore the task merely edited is
