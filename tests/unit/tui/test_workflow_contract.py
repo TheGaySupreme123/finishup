@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -16,6 +17,7 @@ from yoetz.protocol.models import (
     CheckRequestModel,
     ReceiptRequestModel,
     StartRequestModel,
+    StatusClosureReadinessModel,
     StatusRequestModel,
     StatusResultModel,
     StatusSuccessModel,
@@ -285,8 +287,21 @@ def _finding_row(number: int, todo_state: str) -> dict[str, object]:
     }
 
 
-def _findings_status_result() -> StatusResultModel:
+def _lineage_status_wire() -> dict[str, Any]:
+    """The lineage status as wire JSON: optional non-null fields absent, never ``null`` (F3)."""
+
     wire = _lineage_status_result().model_dump(mode="json")
+    readiness = wire.get("closure_readiness")
+    if isinstance(readiness, dict):
+        typed = cast(dict[str, object], readiness)
+        for key in [key for key, value in typed.items() if value is None]:
+            if key in StatusClosureReadinessModel.optional_non_null_fields:
+                del typed[key]
+    return wire
+
+
+def _findings_status_result() -> StatusResultModel:
+    wire = _lineage_status_wire()
     wire["view"] = "findings"
     wire["page"] = {
         "items": [_finding_row(index, state) for index, state in enumerate(_FINDING_STATES)],
@@ -308,7 +323,7 @@ async def test_findings_view_shows_a_linked_duplicate_through_the_cli_renderer(
         "response_event_id": "evt_52000000-0000-4000-8000-000000000041",
         "duplicate_of_finding_id": earlier["finding_id"],
     }
-    wire = _lineage_status_result().model_dump(mode="json")
+    wire = _lineage_status_wire()
     wire["view"] = "findings"
     wire["page"] = {"items": [earlier, duplicate], "next_cursor": None, "attempt_budget": "5"}
     status = StatusResultModel.model_validate(wire)
