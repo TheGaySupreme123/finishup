@@ -7699,7 +7699,7 @@ or channel can never carry, or a redacted target) or a Yoetz limit (`yoetz_limit
 `yoetz_limit_packet_room`; ADR-006, issue #983), adding `semantic_missing_agent_suppliable`,
 `semantic_missing_structurally_unavailable` or `semantic_missing_yoetz_limit`. Only
 `agent_suppliable` is ever agent work. After two `insufficient_packet` reviews in a row with no edit
-since, or four in the task, checks other than `semantic_required` skip the AI-powered review and disclose the standing gap
+since, or four since the task's last assessed review, checks other than `semantic_required` skip the AI-powered review and disclose the standing gap
 `semantic_review_skipped_insufficient_packet` (`kernel/review_round.py`). These are check limitations, never findings, and weigh
 on finding resolution exactly like the `semantic_packet_insufficient` they ride beside: a local
 issue is still proven absent, and a `fixed` ruling (#905) still resolves its own finding.

@@ -29,9 +29,9 @@ __all__ = [
 
 # The first ``insufficient_packet`` review and its one retry.
 INSUFFICIENT_PACKET_ROUND_LIMIT: Final = 2
-# Across the whole task, edits re-arm the round at most this many insufficient reviews: a host
-# whose writes are shell commands never records an edit action, and a trivial edit must not buy
-# endless reviews of a packet that cannot show the work.
+# Since the task's last assessed review, edits re-arm the round at most this many insufficient
+# reviews: a host whose writes are shell commands never records an edit action, and a trivial
+# edit must not buy endless reviews of a packet that cannot show the work.
 INSUFFICIENT_PACKET_TASK_LIMIT: Final = 4
 
 
@@ -41,8 +41,9 @@ def review_round_stopped(records: Iterable[LedgerRecord]) -> bool:
     True when the newest completed review concluded ``insufficient_packet`` and either the last
     ``INSUFFICIENT_PACKET_ROUND_LIMIT`` completed reviews all did with no edit action recorded
     after the older of them, or ``INSUFFICIENT_PACKET_TASK_LIMIT`` such reviews were recorded
-    since the task's last assessed review. Checks that did not run a review (local-only, skipped, blocked or failed)
-    neither count nor reset; a completed review with any other conclusion resets both counts.
+    since the task's last assessed review. Checks that did not run a review (local-only,
+    skipped, blocked or failed) neither count nor reset; a completed review with any other
+    conclusion resets both counts.
     """
 
     consecutive = 0

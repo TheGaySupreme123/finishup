@@ -1011,7 +1011,7 @@ def summary_for_check(envelope: object) -> str:
         prefix = (
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
             "assessed review) "
-            "could not assess the packet (verify it yourself; a repair re-arms it until the cap); "
+            "could not assess the packet (verify it yourself; a repair re-arms it until that cap); "
             f"local check verdict: {verdict}; "
             f"findings returned: {findings}; suppressed: {suppressed}; "
         )

@@ -665,8 +665,12 @@ async def _with_declared_line_counts(
         for obligation, index, _kind, _value in declared
         if (obligation, index) in relatives
     }
+    # Only a literal directory path below the root is declared; a malformed value or the root
+    # itself would mark every file as declared or fail the probe.
     directory_values = tuple(
-        value for _obligation, _index, kind, value in declared if kind == "directory"
+        value
+        for _obligation, _index, kind, value in declared
+        if kind == "directory" and _plain_path(value) and value.strip("/.") != ""
     )[:_MAX_REQUESTED_OUTPUT_PROBES]
     base_paths = tuple(sorted({relatives[item] for item in candidates}))
     try:

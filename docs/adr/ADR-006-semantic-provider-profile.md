@@ -1377,7 +1377,7 @@ Yoetz's own limit, marked as such for the agent, never a blocker; the agent veri
   `semantic_missing_non_convergent`: a run never recorded is still owed.
 - One retry (`kernel/review_round.py`): when the newest completed review concluded
   `insufficient_packet` and either the last two completed reviews both did (named items or not)
-  with no edit action recorded after the older one, or the task has four such reviews in all (a
+  with no edit action recorded after the older one, or four such reviews were recorded since the task's last assessed review (a
   host whose writes are shell commands records no edit action, and a trivial edit must not buy
   endless reviews), the check skips the AI-powered review (`not_requested`/`deterministic_mode`) and discloses the
   standing gap `semantic_review_skipped_insufficient_packet`; CLI, MCP summary and receipt say the

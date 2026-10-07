@@ -6,6 +6,7 @@ import asyncio
 import os
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -268,3 +269,27 @@ def test_role_less_items_never_disclose_content_moved(
     assert content_moved_declared_items(projection, states) == ()  # type: ignore[arg-type]
     # The line-count read is not even made for a role-less item.
     assert all(getattr(state, "lines_lost", None) is None for state in states.values())
+
+
+def test_line_count_read_skips_cr_lf_paths_and_stops_at_its_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Final review: a CR/LF path is skipped, not fatal; a spent budget stops further reads."""
+
+    import yoetz.adapters.git_change_capture as capture_module
+
+    repository, base = _cracker(tmp_path)
+    (repository / "odd\nname.txt").write_text("a\nb\n", encoding="utf-8")
+    (repository / "first.txt").write_text("x\n" * 10, encoding="utf-8")
+    (repository / "second.txt").write_text("y\n" * 10, encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    commit = cast(str, getattr(base, "commit"))
+    counts = adapter.count_change_lines(os.fspath(repository), commit, ())
+    paths = {item.path for item in counts.changed}
+    assert "first.txt" in paths and "second.txt" in paths
+    assert not any("\n" in path for path in paths)
+
+    monkeypatch.setattr(capture_module, "_MAX_LINE_COUNT_TOTAL_BYTES", 20)
+    bounded = adapter.count_change_lines(os.fspath(repository), commit, ())
+    assert bounded.truncated
+    assert len([item for item in bounded.changed if item.untracked]) < 2

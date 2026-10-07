@@ -230,7 +230,7 @@ git-ignored requested output, or a declared deliverable you deleted or renamed a
 (`declared_output_removed`: a requested `file` item marked as an output), the Stop hook continues
 you once with that list; restore that delivered file where the task needs it, or correct the
 requested item if the task asked for the deletion. A delivered file that lost most of its lines
-while the same change added them to an undelivered file is disclosed on the receipt
+while files outside the delivered set changed or hold about as many lines is disclosed on the receipt
 (`declared_output_content_moved`; it never stops you): check the deliverable still works where
 the task delivers it. Finish the work, or
 record a blocker outside your control as above; then stop. The first Stop after you record a

@@ -6571,10 +6571,9 @@ def _drop_prior_finding_rows(envelope: dict[str, JsonValue]) -> int:
                 order.append((settled, source))
     # Settled findings are context only: every one leaves before any open finding does, and only
     # an open finding's loss weakens a silent review (``semantic_prior_findings_over_limit``).
-    # Composition lists settled findings newest first; drop the oldest settled one first, since
-    # the most recently settled is the one a reviewer is most likely to raise again.
-    settled_order = [entry for entry in order if entry[0]][::-1]
-    order = settled_order + [entry for entry in order if not entry[0]]
+    # The catalog lists rows oldest first (section, then occurrence), so the oldest settled one
+    # leaves first; the most recently settled is the one a reviewer is most likely to raise again.
+    order.sort(key=lambda entry: not entry[0])
     dropped = 0
     packet_obj = envelope.get("review_packet")
     for settled, source in order:
