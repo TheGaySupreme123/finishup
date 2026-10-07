@@ -26,6 +26,7 @@ from yoetz.observability.privacy import (
     redact_heuristic_spans,
     redact_high_confidence_content,
     redact_sensitive_content,
+    scan_finding_is_heuristic,
     scan_for_sensitive_content,
     session_id_hash,
 )
@@ -619,3 +620,51 @@ def test_high_confidence_detectors_are_unchanged_by_narrowing(source: bytes) -> 
     findings = scan_for_sensitive_content(source)
     assert any(finding.confidence is ScanConfidence.HIGH for finding in findings)
     assert prepare_persisted_plaintext(source).redacted is True
+
+
+@pytest.mark.parametrize(
+    "data",
+    (
+        b"DB_PASSWORD=p<ss>w0rd|x",
+        b"DB_PASSWORD=(secret)1",
+        b"DB_PASSWORD=[s3cret]",
+        b"api_key=`s3cr3t`",
+        b'client_secret="hunter2..."',
+        b'password = "Summer2024..."',
+        b'password = "<s3cr3tP4ss>"',
+        b'password = "${MY_PASSWORD}1"',
+        b'api_token = "0123456789"',
+        b"TOKEN=[withheld-by-yoetz:possible-credential]realsecret",
+        b'password: str = "hunter2"',
+        b'api_token: Final = "a8F3kL9qZ2xV7mN4"',
+        b'{\\"password\\": \\"hunter2\\"}',
+    ),
+)
+def test_narrowing_never_skips_human_chosen_secret_values(data: bytes) -> None:
+    """Issue #982 adversarial review: the code/placeholder shapes apply to ``*token`` only.
+
+    Capture keeps heuristic matches raw, so egress is their only fence; every one of these was
+    redacted before the narrowing and must stay redacted.
+    """
+
+    findings = scan_for_sensitive_content(data)
+    assert findings, data
+    assert all(scan_finding_is_heuristic(finding) for finding in findings)
+    redacted, count = redact_heuristic_spans(data)
+    assert count >= 1
+    assert b"hunter2" not in redacted and b"s3cr" not in redacted and b"realsecret" not in redacted
+    assert scan_for_sensitive_content(redacted) == ()
+
+
+@pytest.mark.parametrize(
+    "data",
+    (
+        b"password = get_secret(name)",
+        b"secret = secrets[i]",
+        b"password: str = get_pw()",
+        b"max_tokens: int = 4096",
+        b'bot_token: str = "<tool_call>"',
+    ),
+)
+def test_secret_family_still_skips_real_code_shapes(data: bytes) -> None:
+    assert scan_for_sensitive_content(data) == ()

@@ -24,6 +24,7 @@ from yoetz.protocol.canonical import (
 from yoetz.protocol.coverage import PublicationChannel
 from yoetz.protocol.ids import IdKind, validate_id
 from yoetz.protocol.models import MAX_REVIEW_EXCERPTS, DataCategory
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 
 __all__ = [
     "MAX_EGRESS_CASE_BYTES",
@@ -2050,8 +2051,16 @@ class DisclosureProposal:
     # Proposal admission is route-bound.  Missing identity is an unreadable legacy proposal, not
     # permission to resume it against whichever route happens to be active now.
     route_identity_digest: str | None = None
+    # PL2-1 (issue #982): bounded item refs and line numbers of replaced or withheld
+    # credential-like values, persisted with the proposal so an approved resume or a replay
+    # reports them without reopening plaintext. Never values.
+    redacted_values: tuple[SemanticRedactedValue, ...] = ()
 
     def __post_init__(self) -> None:
+        try:
+            validate_semantic_redacted_values(self.redacted_values)
+        except ValueError as exc:
+            raise _invalid() from exc
         validate_id(IdKind.PRIVACY_PROPOSAL, self.privacy_proposal_id)
         validate_id(IdKind.REQUEST, self.request_id)
         validate_id(IdKind.TASK, self.task_id)

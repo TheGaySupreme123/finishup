@@ -233,6 +233,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP,
+    SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
     PolicyVersionEntry,
     ReceiptVersionSlice,
@@ -365,6 +366,7 @@ from yoetz.protocol.policy_packs import (
     WORK_INTEGRITY_POLICY_ID,
     current_policy_pack,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue, semantic_redacted_values_from_wire
 from yoetz.service.bundle_upgrade import (
     BUNDLE_UPGRADE_SOURCE_VERSION,
     BUNDLE_UPGRADE_SOURCE_VERSIONS,
@@ -3081,14 +3083,31 @@ def _egress_withheld_item_ids(result: object) -> tuple[str, ...]:
     return cast(tuple[str, ...], value) if type(value) is tuple else ()
 
 
+def _egress_redacted_values(result: object) -> tuple[SemanticRedactedValue, ...]:
+    """Read the bounded PL2-1 item refs and line numbers from an egress result.
+
+    Optional for old in-process fakes; ``FinalSemanticEvaluation`` re-validates the shape.
+    """
+
+    value = getattr(result, "redacted_values", ())
+    return cast(tuple[SemanticRedactedValue, ...], value) if type(value) is tuple else ()
+
+
 def _egress_case_content_gaps(result: object) -> tuple[str, ...]:
     """Project bounded egress transformations into the existing check coverage vocabulary."""
 
     # Egress redaction replaced credential-like values in the packet sent to the external model.
     # It bounds that review only, never local proof (issue #982), so it has its own review-scoped
     # code instead of the capture-time ``content_redacted``.
+    # An item withheld outright is also a case-content gap, so the check stamps it on every
+    # AI-powered finding the review raises and it can serve as that finding's capture baseline.
+    gaps: list[str] = []
     value = getattr(result, "redacted_span_count", 0)
-    return (SEMANTIC_REVIEW_VALUE_REDACTED_GAP,) if type(value) is int and value > 0 else ()
+    if type(value) is int and value > 0:
+        gaps.append(SEMANTIC_REVIEW_VALUE_REDACTED_GAP)
+    if _egress_withheld_item_ids(result):
+        gaps.append(SEMANTIC_REVIEW_ITEM_WITHHELD_GAP)
+    return tuple(sorted(gaps, key=str.encode))
 
 
 def _provider_manifest_has_redaction(manifest: object) -> bool:
@@ -3182,6 +3201,7 @@ def _map_provider_outcome(
             SemanticStatus.FAILED,
             SemanticReason.COORDINATOR_FAILURE,
             semantic_withheld_item_ids=withheld_item_ids,
+            semantic_redacted_values=_egress_redacted_values(result),
             case_content_gaps=_egress_case_content_gaps(result),
         )
     if status is SemanticStatus.BLOCKED_FORBIDDEN_DATA:
@@ -3192,6 +3212,7 @@ def _map_provider_outcome(
             status,
             reason,
             semantic_withheld_item_ids=withheld_item_ids,
+            semantic_redacted_values=_egress_redacted_values(result),
             case_content_gaps=_egress_case_content_gaps(result),
         )
     provenance = _provider_provenance(result, status=status, reason=reason, attempt_id=attempt_id)
@@ -3200,6 +3221,7 @@ def _map_provider_outcome(
             SemanticStatus.UNAVAILABLE,
             SemanticReason.RECEIPT_PERSISTENCE_UNKNOWN,
             semantic_withheld_item_ids=withheld_item_ids,
+            semantic_redacted_values=_egress_redacted_values(result),
             case_content_gaps=_egress_case_content_gaps(result),
         )
     return FinalSemanticEvaluation(
@@ -3207,6 +3229,7 @@ def _map_provider_outcome(
         reason,
         provenance=provenance,
         semantic_withheld_item_ids=withheld_item_ids,
+        semantic_redacted_values=_egress_redacted_values(result),
         case_content_gaps=_egress_case_content_gaps(result),
     )
 
@@ -3246,6 +3269,7 @@ def _map_egress_to_final(
                 SemanticStatus.UNAVAILABLE,
                 SemanticReason.RECEIPT_PERSISTENCE_UNKNOWN,
                 semantic_withheld_item_ids=withheld_item_ids,
+                semantic_redacted_values=_egress_redacted_values(result),
                 case_content_gaps=_egress_case_content_gaps(result),
             )
         return FinalSemanticEvaluation(
@@ -3261,6 +3285,7 @@ def _map_egress_to_final(
                 else sent_ledger_refs(result.disclosure, projection)
             ),
             semantic_withheld_item_ids=withheld_item_ids,
+            semantic_redacted_values=_egress_redacted_values(result),
             provider_input_manifest=(
                 None if result.disclosure is None else result.disclosure.provider_input_manifest
             ),
@@ -3281,6 +3306,7 @@ def _map_egress_to_final(
             SemanticStatus.AWAITING_HUMAN,
             SemanticReason.HUMAN_APPROVAL_REQUIRED,
             semantic_withheld_item_ids=_egress_withheld_item_ids(result),
+            semantic_redacted_values=_egress_redacted_values(result),
             case_content_gaps=_egress_case_content_gaps(result),
             continuation=disclosure_continuation(
                 pending_id=result.privacy_proposal_id,
@@ -3295,12 +3321,14 @@ def _map_egress_to_final(
             SemanticStatus.UNAVAILABLE,
             SemanticReason.OUTCOME_UNKNOWN,
             semantic_withheld_item_ids=_egress_withheld_item_ids(result),
+            semantic_redacted_values=_egress_redacted_values(result),
             case_content_gaps=_egress_case_content_gaps(result),
         )
     if type(result) is SemanticEgressBlocked:
         return replace(
             _map_blocked(result.outcome, result.reason),
             semantic_withheld_item_ids=_egress_withheld_item_ids(result),
+            semantic_redacted_values=_egress_redacted_values(result),
             case_content_gaps=_egress_case_content_gaps(result),
         )
     if type(result) is SemanticEgressProviderOutcome:
@@ -3897,6 +3925,12 @@ async def _publish_semantic_response_object(
             CanonicalJsonValue,
             list(sorted(evaluation.semantic_withheld_item_ids, key=str.encode)),
         )
+    if evaluation.semantic_redacted_values:
+        # PL2-1: item refs and line numbers only, so recovery reports the same fact.
+        body["semantic_redacted_values"] = cast(
+            CanonicalJsonValue,
+            [item.as_wire() for item in evaluation.semantic_redacted_values],
+        )
     if evaluation.provider_input_manifest is not None:
         body["provider_input_manifest"] = cast(
             CanonicalJsonValue, dict(evaluation.provider_input_manifest.items())
@@ -3936,6 +3970,20 @@ def _semantic_response_withheld_item_ids(
     ):
         return None
     return values
+
+
+def _semantic_response_redacted_values(
+    body: Mapping[str, object],
+) -> tuple[SemanticRedactedValue, ...] | None:
+    """Decode the optional PL2-1 entries; ``None`` marks a corrupt response object."""
+
+    raw = body.get("semantic_redacted_values")
+    if raw is None:
+        return ()
+    try:
+        return semantic_redacted_values_from_wire(raw)
+    except ValueError:
+        return None
 
 
 def _valid_opaque_item_id(value: object) -> bool:
@@ -3983,6 +4031,9 @@ async def _recover_response_evaluation(
     body = cast(dict[str, object], parsed)
     withheld_item_ids = _semantic_response_withheld_item_ids(body)
     if withheld_item_ids is None:
+        return None
+    redacted_values = _semantic_response_redacted_values(body)
+    if redacted_values is None:
         return None
     try:
         status = SemanticStatus(cast(str, body["status"]))
@@ -4052,10 +4103,18 @@ async def _recover_response_evaluation(
                 provider_manifest_failure = SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP
     else:
         provider_manifest_failure = SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP
-    case_content_gaps = (
-        (SEMANTIC_REVIEW_VALUE_REDACTED_GAP,)
-        if _provider_manifest_has_redaction(provider_manifest)
-        else ()
+    case_content_gaps = tuple(
+        sorted(
+            (
+                *(
+                    (SEMANTIC_REVIEW_VALUE_REDACTED_GAP,)
+                    if _provider_manifest_has_redaction(provider_manifest)
+                    else ()
+                ),
+                *((SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,) if withheld_item_ids else ()),
+            ),
+            key=str.encode,
+        )
     )
     return FinalSemanticEvaluation(
         status,
@@ -4064,6 +4123,7 @@ async def _recover_response_evaluation(
         provenance=provenance,
         case_included_refs=disclosed,
         semantic_withheld_item_ids=withheld_item_ids,
+        semantic_redacted_values=redacted_values,
         provider_input_manifest=provider_manifest,
         provider_input_manifest_failure=provider_manifest_failure,
         provider_input_text_by_ref=None,
@@ -5374,12 +5434,14 @@ def _privacy_gated_semantic_evaluator(
                 continuation = None
                 disclosed: frozenset[str] | None = None
                 semantic_withheld_item_ids: tuple[str, ...] = ()
+                semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
                 provider_manifest = None
                 provider_manifest_failure = None
                 provider_input_text_by_ref = None
                 evaluation_content_gaps: tuple[str, ...] = ()
                 if type(evaluation) is FinalSemanticEvaluation:
                     semantic_withheld_item_ids = evaluation.semantic_withheld_item_ids
+                    semantic_redacted_values = evaluation.semantic_redacted_values
                     evaluation_content_gaps = evaluation.case_content_gaps
                     if status is SemanticStatus.SUCCEEDED:
                         judgment = evaluation.judgment
@@ -5417,6 +5479,7 @@ def _privacy_gated_semantic_evaluator(
                         case_content_gaps=combined_content_gaps,
                         unsuppliable_missing_kinds=unsuppliable,
                         semantic_withheld_item_ids=semantic_withheld_item_ids,
+                        semantic_redacted_values=semantic_redacted_values,
                         review_input_manifest=input_manifest,
                         provider_input_manifest=provider_manifest,
                         provider_input_manifest_failure=provider_manifest_failure,
@@ -5435,6 +5498,7 @@ def _privacy_gated_semantic_evaluator(
                     case_reference_scope_reduced=reference_scope_reduced,
                     case_included_refs=disclosed,
                     semantic_withheld_item_ids=semantic_withheld_item_ids,
+                    semantic_redacted_values=semantic_redacted_values,
                     case_content_gaps=combined_content_gaps,
                     unsuppliable_missing_kinds=unsuppliable,
                     case_prior_finding_refs=packet_prior_refs,

@@ -61,6 +61,11 @@ from yoetz.protocol.guidance_uris import (
     REGISTERED_GUIDANCE_URIS as _REGISTERED_GUIDANCE_URIS,
 )
 from yoetz.protocol.ids import IdKind, validate_actor_id, validate_id
+from yoetz.protocol.redacted_values import (
+    MAX_SEMANTIC_REDACTED_VALUE_ITEMS,
+    MAX_SEMANTIC_REDACTED_VALUE_LINE,
+    MAX_SEMANTIC_REDACTED_VALUE_LINES,
+)
 
 __all__ = [
     "GENESIS_PREDECESSOR_DIGEST",
@@ -3074,6 +3079,41 @@ class SemanticWithheldItemModel(_ClosedModel):
     reason: Literal["never_send_heuristic"]
 
 
+class SemanticRedactedValueModel(_ClosedModel):
+    """PL2-1 (issue #982): one case item whose external-review copy lost credential-like values.
+
+    Structural only: the opaque item id, its catalogued ledger ref when that ref is itself an
+    opaque token, the disposition, and 1-based line numbers in the item's own text. Never values.
+    """
+
+    optional_non_null_fields = frozenset({"source_ref"})
+
+    item_id: OpaqueItemId
+    disposition: Literal["item_withheld", "value_replaced"]
+    lines: tuple[Annotated[int, Field(strict=True, ge=1, le=MAX_SEMANTIC_REDACTED_VALUE_LINE)], ...]
+    source_ref: OpaqueItemId | None = None
+
+    @model_validator(mode="after")
+    def _validate_lines(self) -> SemanticRedactedValueModel:
+        if len(self.lines) > MAX_SEMANTIC_REDACTED_VALUE_LINES or self.lines != tuple(
+            sorted(set(self.lines))
+        ):
+            raise ValueError("semantic_redacted_value_lines_invalid")
+        return self
+
+
+def _validate_semantic_redacted_value_models(
+    values: tuple[SemanticRedactedValueModel, ...] | None,
+) -> None:
+    if values is None:
+        return
+    item_ids = tuple(item.item_id for item in values)
+    if len(values) > MAX_SEMANTIC_REDACTED_VALUE_ITEMS or item_ids != tuple(
+        sorted(set(item_ids), key=str.encode)
+    ):
+        raise ValueError("semantic_redacted_values_invalid")
+
+
 class CheckVersionSliceModel(_ClosedModel):
     protocol_version: Literal["0.1"]
     engine_version: VersionWire
@@ -3422,6 +3462,7 @@ class CheckSuccessModel(_ClosedModel):
             "finding_checklist",
             "overall_next",
             "semantic_withheld_items",
+            "semantic_redacted_values",
             "review_input_manifest",
             "semantic_conclusion",
             "review_summary",
@@ -3463,6 +3504,8 @@ class CheckSuccessModel(_ClosedModel):
     finding_checklist: CheckFindingChecklistModel | None = None
     overall_next: CheckOverallNextModel | None = None
     semantic_withheld_items: tuple[SemanticWithheldItemModel, ...] = ()
+    # PL2-1: item refs and line numbers of values the external reviewer did not see.
+    semantic_redacted_values: tuple[SemanticRedactedValueModel, ...] = ()
     review_input_manifest: ReviewInputManifestModel | None = None
     totals: CheckTotalsModel | None = None
     coverage: CoverageModel
@@ -3496,6 +3539,7 @@ class CheckSuccessModel(_ClosedModel):
             tuple(item.item_id for item in self.semantic_withheld_items),
             limit=64,
         )
+        _validate_semantic_redacted_value_models(self.semantic_redacted_values)
         if not 1 <= len(self.policy_executions) <= 3 or len(set(self.policy_executions)) != len(
             self.policy_executions
         ):
@@ -4824,7 +4868,7 @@ class StatusOperationPageModel(_ClosedModel):
     """One request-id-keyed operation recovery page within the authenticated task."""
 
     optional_non_null_fields = frozenset(
-        {"semantic_progress", "admission", "semantic_withheld_items"}
+        {"semantic_progress", "admission", "semantic_withheld_items", "semantic_redacted_values"}
     )
 
     operation_request_id: RequestIdWire
@@ -4845,6 +4889,9 @@ class StatusOperationPageModel(_ClosedModel):
     # A completed check may disclose the bounded opaque identities omitted by the never-send
     # heuristic. Old operation rows omit this field entirely.
     semantic_withheld_items: tuple[SemanticWithheldItemModel, ...] | None = None
+    # PL2-1: a completed check's item refs and line numbers of values the external reviewer did
+    # not see. Omitted when the check recorded none.
+    semantic_redacted_values: tuple[SemanticRedactedValueModel, ...] | None = None
     # Issue #838: pre-admission stage of a check request that has no operation record yet.
     # Omitted whenever the service knows of no reservation or refusal for the exact key.
     admission: StatusCheckAdmissionModel | None = None
@@ -4865,6 +4912,10 @@ class StatusOperationPageModel(_ClosedModel):
                 tuple(item.item_id for item in self.semantic_withheld_items),
                 limit=64,
             )
+        if self.semantic_redacted_values is not None:
+            if not (self.operation_kind == "check" and self.state == "complete"):
+                raise ValueError("status_operation_page_invalid")
+            _validate_semantic_redacted_value_models(self.semantic_redacted_values)
         if (
             self.continuation is not None
             and self.continuation.replay_request_id != self.operation_request_id
@@ -5569,6 +5620,10 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         "/semantic_withheld_items/*",
         ("item_id", "reason"),
     )
+    + _prefix_leaf_patterns(
+        "/semantic_redacted_values/*",
+        ("disposition", "item_id", "lines/*", "source_ref"),
+    )
     + _prefix_leaf_patterns("/review_input_manifest", _REVIEW_INPUT_MANIFEST_LEAVES)
     + _prefix_leaf_patterns(
         "/specification_preflight",
@@ -6068,6 +6123,10 @@ _STATUS_OPERATION_STRUCTURAL_POINTERS: Final = (
         "/page/semantic_progress/terminal_reason",
         "/page/semantic_withheld_items/*/item_id",
         "/page/semantic_withheld_items/*/reason",
+        "/page/semantic_redacted_values/*/disposition",
+        "/page/semantic_redacted_values/*/item_id",
+        "/page/semantic_redacted_values/*/lines/*",
+        "/page/semantic_redacted_values/*/source_ref",
         "/page/state",
         "/page/subject_frontier",
     )
@@ -6239,6 +6298,10 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
     + _prefix_leaf_patterns(
         "/document/semantic_withheld_items/*",
         ("item_id", "reason"),
+    )
+    + _prefix_leaf_patterns(
+        "/document/semantic_redacted_values/*",
+        ("disposition", "item_id", "lines/*", "source_ref"),
     )
     + _prefix_leaf_patterns(
         "/document/obligations/*",
@@ -6509,7 +6572,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1415:
+    if len(result) != 1427:
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

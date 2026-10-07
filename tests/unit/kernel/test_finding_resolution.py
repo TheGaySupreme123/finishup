@@ -2905,6 +2905,8 @@ def test_selection_and_capture_failure_classes_are_disjoint_and_closed() -> None
         # read the bytes it replaced, so it never vetoes local proof; for AI-powered proof it is a
         # recorded capture baseline like any other native capture limit.
         "content_redacted": (False, True),
+        # Egress withholding of one item (issue #982): semantic-only, an AI-powered baseline.
+        "semantic_review_item_withheld": (False, True),
         "truncated_payload": (True, False),
         "semantic_case_finding_refs_over_limit": (False, False),
         SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP: (False, True),

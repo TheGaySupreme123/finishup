@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import bisect
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ __all__ = [
     "Sensitivity",
     "assert_plaintext_safe",
     "build_diagnostic_manifest",
+    "heuristic_value_lines",
     "prepare_persisted_plaintext",
     "privacy_request_commitment",
     "redact_diagnostic_record",
@@ -117,7 +119,7 @@ _SECRET_ASSIGNMENT = re.compile(
     rb"(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*"
     rb"(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret)"
     rb"(?:[_-][A-Za-z][A-Za-z0-9]{0,63})*"
-    rb"['\"]?\s*[:=]" + _ENCODED_SPACE + rb"*" + _ASSIGNMENT_VALUE
+    rb"(?:\\?['\"])?\s*[:=]" + _ENCODED_SPACE + rb"*" + _ASSIGNMENT_VALUE
 )
 # `*_TOKEN` only as the final identifier component. The value must contain a
 # non-digit and be at least eight bytes so MAX_TOKEN=4096 and TOKEN_COUNT=12
@@ -125,7 +127,7 @@ _SECRET_ASSIGNMENT = re.compile(
 _TOKEN_ASSIGNMENT = re.compile(
     rb"(?i)(?:^|[^A-Za-z0-9_])['\"]?"
     rb"(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*token"
-    rb"['\"]?\s*[:=]" + _ENCODED_SPACE + rb"*(?="
+    rb"(?:\\?['\"])?\s*[:=]" + _ENCODED_SPACE + rb"*(?="
     rb"(?:\"(?:\\.|[^\"\\\r\n]){1,512}\""
     rb"|'(?:\\.|[^'\\\r\n]){1,512}'"
     rb"|"
@@ -134,6 +136,18 @@ _TOKEN_ASSIGNMENT = re.compile(
     + _UNQUOTED_VALUE_CHAR
     + rb"{0,511}[A-Za-z_/=+-]))"
     + _ASSIGNMENT_VALUE
+)
+# A typed declaration (``password: str = "hunter2"``, ``api_token: Final = "..."``) puts a type
+# between the name and ``=``; the plain heuristics stop at the ``:`` and read the type as the value.
+# Only a quoted value is considered, and the finding span is the quoted value alone, so redaction
+# keeps the name, the annotation and the ``=``.
+_ANNOTATED_ASSIGNMENT = re.compile(
+    rb"(?i)(?:^|[^A-Za-z0-9_.])"
+    rb"(?P<name>(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*"
+    rb"(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret|token)"
+    rb"(?:[_-][A-Za-z][A-Za-z0-9]{0,63})*)"
+    rb"[ \t]*:[ \t]*[A-Za-z_][A-Za-z0-9_.\[\], |]{0,64}?[ \t]*"
+    rb"(?P<assign>=[ \t]*(?P<value>\"(?:\\.|[^\"\\\r\n]){1,512}\"|'(?:\\.|[^'\\\r\n]){1,512}'))"
 )
 # Assignment heuristics remain conservative: ordinary parser/member/call expressions should not
 # turn a whole review into a credential refusal, but a bare dotted value is ambiguous without
@@ -158,8 +172,12 @@ _TOKEN_LIKE_ASSIGNMENT_NAME = re.compile(rb"(?i)^(?:[A-Za-z][A-Za-z0-9]{0,63}[_-
 # whitespace, brackets, braces, parentheses, pipes, quotes or backticks.
 _TOKEN_VALUE_CHARS: Final = re.compile(rb"^[A-Za-z0-9._~+/=:@%!#$&*?^-]+$")
 _MIN_TOKEN_VALUE_BYTES: Final = 8
-# Characters that make an unquoted value a source expression or markup, not a credential.
+# Characters that make an unquoted ``*token`` value a source expression or markup, not a credential.
 _UNQUOTED_CODE_CHARS: Final = re.compile(rb"[()\[\]<>|`]")
+# Password/secret/API-key values are human-chosen and may hold any punctuation, so for them only a
+# real source shape is skipped: a call or subscript on a name (``get_secret(``, ``secrets[i]``) or
+# a pipe operator (``|>``).
+_SECRET_CODE_SHAPE: Final = re.compile(rb"^[A-Za-z_][A-Za-z0-9_.]*[(\[]|\|>")
 _NUMERIC_VALUE: Final = re.compile(rb"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")
 # Language literals and type annotations (``password: str``, ``per_token=True``).
 _NON_CREDENTIAL_WORDS: Final = frozenset(
@@ -196,6 +214,10 @@ _DIGITLESS_IDENTIFIER_VALUE: Final = re.compile(rb"^[A-Za-z]+(?:_[A-Za-z]+)+$")
 _PLACEHOLDER_VALUE: Final = re.compile(
     rb"^(?:<[^<>]{1,256}>|\$\{[^{}]{1,256}\}|\{\{[^{}]{1,256}\}\}|.{0,256}(?:\.\.\.|\xe2\x80\xa6))$",
     re.DOTALL,
+)
+_SECRET_PLACEHOLDER_VALUE: Final = re.compile(
+    rb"^(?:<[A-Za-z_ -]{1,64}>|\$\{[A-Za-z_]{1,64}\}|\{\{[ A-Za-z_.]{1,64}\}\}"
+    rb"|[A-Za-z_-]{0,6}(?:\.\.\.|\xe2\x80\xa6))$"
 )
 _LINE_BREAK_SEPARATOR: Final = re.compile(rb"[\r\n]|\\[nr]")
 # After a line break, ``NEXT_KEY=`` or ``nested:`` is the next key, not this key's value.
@@ -663,17 +685,30 @@ def _assignment_value_cannot_be_credential(match: re.Match[bytes], *, token_fami
             # An empty ``OPENAI_API_KEY=`` followed by ``OPENAI_BASE_URL=`` on the next line, or
             # a YAML ``mask_secret:`` whose next line opens a nested ``anonymizer:`` mapping.
             return True
-        if _UNQUOTED_CODE_CHARS.search(inner) is not None:
+        if any(
+            inner.startswith(marker) and inner != marker for marker in _EXEMPT_REPLACEMENT_MARKERS
+        ):
+            # ``TOKEN=[withheld-by-yoetz:possible-credential]realsecret``: a marker with a suffix
+            # is not Yoetz's own replacement; the suffix may be secret material.
+            return False
+        code_shape = (
+            _UNQUOTED_CODE_CHARS.search(inner) if token_family else _SECRET_CODE_SHAPE.search(inner)
+        )
+        if code_shape is not None:
             return True
         if inner in _NON_CREDENTIAL_WORDS or _RECEIVER_ATTRIBUTE_VALUE.fullmatch(inner):
             return True
+        if token_family and _NUMERIC_VALUE.fullmatch(inner) is not None:
+            return True
+    if not token_family:
+        # Opaque-material shapes are judged for ``*token`` values only. A password/secret/API-key
+        # value is skipped only when it is an obvious documentation placeholder that carries no
+        # digit: ``"<your-api-key>"``, ``"${MY_PASSWORD}"``, ``gw_...``. ``"<s3cr3tP4ss>"`` and
+        # ``"Summer2024..."`` keep matching.
+        return _SECRET_PLACEHOLDER_VALUE.fullmatch(inner) is not None
     if _PLACEHOLDER_VALUE.fullmatch(inner) is not None:
         return True
-    if not token_family:
-        return False
     if len(inner) < _MIN_TOKEN_VALUE_BYTES or _TOKEN_VALUE_CHARS.fullmatch(inner) is None:
-        return True
-    if _NUMERIC_VALUE.fullmatch(inner) is not None:
         return True
     return not quoted and _DIGITLESS_IDENTIFIER_VALUE.fullmatch(inner) is not None
 
@@ -790,6 +825,32 @@ def scan_for_sensitive_content(
                 )
                 if len(findings) >= _MAX_SCAN_FINDINGS:
                     break
+
+    for chunk_start, chunk in _scan_chunks(data):
+        for match in _ANNOTATED_ASSIGNMENT.finditer(chunk):
+            if len(findings) >= _MAX_SCAN_FINDINGS:
+                break
+            name = match.group("name")
+            assign = match.group("assign")
+            # Judge the value exactly as the plain heuristic would judge ``name = value``.
+            synthetic = b" " + name + b" " + assign
+            token_family = _TOKEN_LIKE_ASSIGNMENT_NAME.fullmatch(name) is not None or (
+                _SECRET_ASSIGNMENT.match(synthetic) is None
+            )
+            plain = (_TOKEN_ASSIGNMENT if token_family else _SECRET_ASSIGNMENT).match(synthetic)
+            if plain is None or _assignment_value_cannot_be_credential(
+                plain, token_family=token_family
+            ):
+                continue
+            _append_finding(
+                findings,
+                seen,
+                "credential_pattern",
+                chunk_start + match.start("value"),
+                chunk_start + match.end("value"),
+                Sensitivity.SECRET,
+                ScanConfidence.HEURISTIC,
+            )
 
     findings.sort(key=lambda finding: (finding.start_offset, finding.end_offset, finding.kind))
     return tuple(findings)
@@ -979,6 +1040,59 @@ def redact_heuristic_spans(data: bytes) -> tuple[bytes, int]:
         _replace_sensitive_spans(data, heuristic, marker=EGRESS_CREDENTIAL_PLACEHOLDER),
         len(heuristic),
     )
+
+
+def _json_string_newline_offsets(data: bytes) -> list[int]:
+    """Offsets of the ``\\n`` escapes in one canonical JSON string encoding, in order."""
+
+    offsets: list[int] = []
+    index = 0
+    length = len(data)
+    while index < length:
+        if data[index] == 0x5C and index + 1 < length:
+            escape = data[index + 1]
+            if escape == 0x6E:
+                offsets.append(index)
+            index += 6 if escape == 0x75 else 2
+            continue
+        index += 1
+    return offsets
+
+
+def heuristic_value_lines(
+    data: bytes, *, json_string: bool = False, limit: int = 32
+) -> tuple[int, ...]:
+    """1-based lines of the values ``redact_heuristic_spans`` replaces in ``data`` (PL2-1).
+
+    ``json_string=True`` reads ``data`` as the canonical JSON string encoding of a text and
+    reports lines of that decoded text. Replacement never removes a line break (values never
+    span one), so the lines also hold for the original item text. Only sorted unique line
+    numbers are returned, at most ``limit``; no matched bytes or offsets are retained.
+    """
+
+    if type(data) is not bytes:
+        raise TypeError("redaction_data_not_bytes")
+    heuristic = tuple(
+        finding
+        for finding in scan_for_sensitive_content(data)
+        if finding.confidence is ScanConfidence.HEURISTIC
+    )
+    if not heuristic:
+        return ()
+    newline_offsets = _json_string_newline_offsets(data) if json_string else None
+    lines: set[int] = set()
+    cursor = 0
+    for finding in heuristic:
+        if finding.start_offset < cursor:
+            continue
+        separator = _assignment_separator(data[finding.start_offset : finding.end_offset])
+        value_start = finding.start_offset + (0 if separator is None else separator.end())
+        if newline_offsets is None:
+            lines.add(data.count(b"\n", 0, value_start) + 1)
+        else:
+            lines.add(bisect.bisect_left(newline_offsets, value_start) + 1)
+        cursor = finding.end_offset
+    return tuple(sorted(lines))[: max(0, limit)]
 
 
 def _safe_mac(handle: MacKeyHandle, domain: bytes, message: bytes) -> str:

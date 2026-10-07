@@ -240,6 +240,7 @@ from yoetz.protocol.models import (
     StatusStructuralSubjectStateModel,
     StatusVersionSliceModel,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 from yoetz.version import build_status_version_slice_facts
 
 __all__ = ["MemoryLedgerAdapter", "MemoryLedgerState", "compact_status_coverage"]
@@ -3866,6 +3867,7 @@ class MemoryLedgerAdapter:
         semantic_withheld_item_ids: tuple[str, ...] = (),
         review_input_manifest: JsonObject | None = None,
         totals: JsonObject | None = None,
+        semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
     ) -> CheckCommitResult:
         key = (frozen.lease.writer_id, frozen.lease.operation_id)
         async with self._lock:
@@ -3981,6 +3983,7 @@ class MemoryLedgerAdapter:
             check_change_files=check_change_files,
             semantic_included_refs=semantic_included_refs,
             semantic_withheld_item_ids=semantic_withheld_item_ids,
+            semantic_redacted_values=semantic_redacted_values,
             review_input_manifest=review_input_manifest,
             totals=(
                 build_check_totals(frozen.case, findings.findings, findings.suppressed_count)
@@ -4118,6 +4121,7 @@ class MemoryLedgerAdapter:
             semantic_withheld_item_ids=check_payload.semantic_withheld_item_ids,
             review_input_manifest=check_payload.review_input_manifest,
             totals=check_payload.totals,
+            semantic_redacted_values=check_payload.semantic_redacted_values,
         )
         canonical = canonical_encode(
             {

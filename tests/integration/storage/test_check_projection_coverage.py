@@ -125,6 +125,7 @@ async def _commit_check(
     semantic_status: SemanticStatus = SemanticStatus.NOT_REQUESTED,
     semantic_reason: SemanticReason = SemanticReason.DETERMINISTIC_MODE,
     findings: tuple[Finding, ...] = (),
+    semantic_withheld_item_ids: tuple[str, ...] = (),
 ) -> CheckCommitResult:
     check_request = uuid_id("req", request_number)
     digest = "sha256:" + f"{request_number:064d}"[-64:]
@@ -156,6 +157,7 @@ async def _commit_check(
         semantic_reason,
         None,
         check_request,
+        semantic_withheld_item_ids=semantic_withheld_item_ids,
     )
     assert result.outcome == "committed"
     return result
@@ -196,6 +198,50 @@ async def test_check_totals_survive_reopen_and_idempotent_recovery(tmp_path: Pat
     assert isinstance(replayed, CheckCommitResult)
     assert replayed.outcome == "replayed"
     assert replayed.totals == committed.totals
+    reopened_db.close()
+
+
+@pytest.mark.anyio
+async def test_withheld_review_items_survive_reopen_and_idempotent_recovery(
+    tmp_path: Path,
+) -> None:
+    """The SQLite replay rebuilt the check result without its withheld item ids (#982)."""
+
+    records = replay_records("projection-rebuild")[:1]
+    command, objects = command_from_records(records)
+    path = tmp_path / "check-withheld.sqlite3"
+    ledger, db = file_sqlite_for(command, objects, path)
+    accepted = await ledger.append_batch(command)
+    base = _checked_coverage(command.entries[0].coverage)
+    committed = await _commit_check(
+        ledger,
+        command,
+        objects,
+        accepted.result_frontier,
+        request_number=91_982,
+        coverage=replace(
+            base,
+            known_gaps=tuple(
+                sorted({*base.known_gaps, "semantic_review_item_withheld"}, key=str.encode)
+            ),
+        ),
+        verdict=CheckVerdict.INSUFFICIENT_COVERAGE,
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+    )
+    assert committed.semantic_withheld_item_ids == ("excerpt-heuristic",)
+    db.close()
+
+    reopened, reopened_db = file_sqlite_for(command, objects, path)
+    replayed = await reopened.freeze_case(
+        command.session_id,
+        command.writer_id,
+        accepted.result_frontier.sequence,
+        uuid_id("req", 91_982),
+        "sha256:" + f"{91_982:064d}",
+    )
+    assert isinstance(replayed, CheckCommitResult)
+    assert replayed.outcome == "replayed"
+    assert replayed.semantic_withheld_item_ids == ("excerpt-heuristic",)
     reopened_db.close()
 
 

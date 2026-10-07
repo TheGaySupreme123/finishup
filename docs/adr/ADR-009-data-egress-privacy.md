@@ -766,8 +766,13 @@ heuristic-only matches are kept in the encrypted local store and every egress pa
 replaces them. The assignment heuristics no longer match values that cannot be credential
 material (comparisons, next-line keys, unquoted source expressions, literals and type names,
 receiver attributes, documentation placeholders, and for `*token` names short, numeric,
-digit-free identifier or non-token-character values). The exact rules are in
-`docs/INTERFACES.md`. Check-time change capture (ADR-031) is egress-shaped and keeps redacting
+digit-free identifier or non-token-character values). Markup, bracket and placeholder shapes are
+judged for `*token` names only: a password, secret or API-key value skips the heuristic only for a
+real source shape (a call or subscript on a name, `|>`) or a digit-free documentation placeholder
+(`<your-api-key>`, `${MY_PASSWORD}`, `gw_...`), because human-chosen secrets take any punctuation
+(adversarial review, 2026-10-07). Typed declarations (`password: str = "..."`) and JSON-escaped
+keys (`\"password\": \"...\"`) are detected. Unquoted values stay greedy across encoded escapes so
+a secret containing a backslash is never shortened. The exact rules are in `docs/INTERFACES.md`. Check-time change capture (ADR-031) is egress-shaped and keeps redacting
 heuristic spans before storage.
 
 ## Partial withholding and encoding-stable redaction amendment (2026-10-06, issue #976)
@@ -797,6 +802,19 @@ blocked the whole packet with `never_send_detected`. Decisions:
   Egress redaction and withholding bound only the AI-powered review: they never add
   `content_redacted` and never veto local (deterministic) proof. A high-confidence credential, scanner saturation, a heuristic in the structural
   review-packet envelope, or one no single item explains still fails the whole case closed.
+- Owner-approved PL2-1 (issue #982, 2026-10-07): "show the agent the withheld item refs and line
+  numbers, never the values, plus the fixed agent line." Minimization records, per affected item,
+  `semantic_redacted_values` entries `{item_id, source_ref?, disposition, lines}`: the opaque case
+  item id, the item's catalogued ledger ref when that ref is itself an opaque token (never a path),
+  `value_replaced` or `item_withheld`, and up to 32 sorted 1-based line numbers in the item's own
+  text (at most 64 items). No value or byte offset is kept. The entries travel on the disclosure
+  proposal (resume and replay), the egress result, the check event (optional, 1.4.0), the check
+  result, `status view=operation`, and the receipt document. Every human and agent rendering adds,
+  once, the fixed line "Values marked [withheld-by-yoetz:possible-credential] were withheld from the
+  external reviewer only; local checks saw them. Do not change consent, rename, hide or reshape your
+  work to clear this. If a finding stays open only because of it, verify the repair yourself and
+  respond self_verified."; the 512-byte MCP summaries, which must keep the frontier head digest,
+  fall back to a shorter fixed form when the full line cannot fit.
 
 ## Credential-heuristic opt-out amendment (2026-10-07, issue #982)
 

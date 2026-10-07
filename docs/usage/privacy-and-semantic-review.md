@@ -87,7 +87,9 @@ redacted in place when it would leave your machine: only the value is replaced, 
 `[withheld-by-yoetz:possible-credential]`, and the rest of the line and file is still reviewed. The
 check reports `semantic_review_value_redacted`. If a value cannot be replaced safely, Yoetz withholds
 only the item that carries it and reviews the rest; the check lists the withheld items and reports
-`semantic_review_item_withheld`. Both limit only the AI-powered review; local checks still see your
+`semantic_review_item_withheld`. Checks, receipts and `status view=operation` name each affected
+item and the line numbers involved (`semantic_redacted_values`), never the value. Both limit only
+the AI-powered review; local checks still see your
 work in full, and you never need to change consent or your code to clear them. Only a concrete credential, a private key, or a scanner that cannot finish
 blocks the whole review. You never need to hide or git-ignore a requested output to keep it out of
 review.

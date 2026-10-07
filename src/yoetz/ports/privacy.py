@@ -41,6 +41,7 @@ from yoetz.ports.semantic import Deadline, SemanticResult
 from yoetz.protocol.canonical import canonical_encode, strict_json_parse
 from yoetz.protocol.ids import IdKind, validate_id, validate_opaque_item_id
 from yoetz.protocol.models import DataCategory
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 
 # The largest prepared disclosure the privacy port carries, whatever a channel ceiling allows.
 MAX_MINIMIZED_DISCLOSURE_BYTES: Final = 262_144
@@ -493,8 +494,15 @@ class MinimizedDisclosure:
     # Number of low-confidence spans replaced in the prepared bytes.  The count is structural;
     # matched bytes and source prose never cross this boundary.
     redacted_span_count: int = 0
+    # PL2-1 (issue #982): per item, the catalogued ref and the 1-based lines whose credential-like
+    # values were replaced or whose item was withheld. Line numbers only, never values.
+    redacted_values: tuple[SemanticRedactedValue, ...] = ()
 
     def __post_init__(self) -> None:
+        try:
+            validate_semantic_redacted_values(self.redacted_values)
+        except ValueError as exc:
+            raise _invalid() from exc
         if (
             type(self.prepared_bytes) is not bytes
             or len(self.prepared_bytes) > MAX_MINIMIZED_DISCLOSURE_BYTES

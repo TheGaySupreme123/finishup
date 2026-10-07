@@ -2225,6 +2225,7 @@ def _check_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "type": "array",
         "uniqueItems": True,
     }
+    _add_semantic_redacted_values(definitions, properties)
     _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz check recorded {entry.schema_version}"
@@ -3283,6 +3284,47 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _add_semantic_redacted_values(
+    definitions: dict[str, JsonValue],
+    properties: dict[str, JsonValue],
+    *,
+    min_items: int = 0,
+) -> None:
+    """PL2-1 (issue #982): item refs and 1-based line numbers, never values. Additive/optional."""
+
+    opaque: dict[str, JsonValue] = {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string",
+    }
+    definitions["semantic_redacted_value"] = {
+        "additionalProperties": False,
+        "properties": {
+            "disposition": {"enum": ["item_withheld", "value_replaced"], "type": "string"},
+            "item_id": opaque,
+            "lines": {
+                "items": {"maximum": 2147483647, "minimum": 1, "type": "integer"},
+                "maxItems": 32,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "source_ref": dict(opaque),
+        },
+        "required": ["disposition", "item_id", "lines"],
+        "type": "object",
+    }
+    array: dict[str, JsonValue] = {
+        "items": {"$ref": "#/$defs/semantic_redacted_value"},
+        "maxItems": 64,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    if min_items:
+        array["minItems"] = min_items
+    properties["semantic_redacted_values"] = array
+
+
 def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add the public Part 2 review fields to the new check-result version.
 
@@ -3454,6 +3496,7 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         if value not in values:
             values.append(value)
     values.sort(key=lambda item: str(item).encode("ascii"))
+    _add_semantic_redacted_values(definitions, properties)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz check result {entry.schema_version}"
@@ -4444,6 +4487,19 @@ def _add_status_semantic_progress(definitions: dict[str, JsonValue]) -> None:
             },
         }
     )
+    _add_semantic_redacted_values(definitions, operation_properties)
+    operation_rules.append(
+        {
+            "if": {"required": ["semantic_redacted_values"]},
+            "then": {
+                "properties": {
+                    "operation_kind": {"const": "check"},
+                    "state": {"const": "complete"},
+                },
+                "required": ["operation_kind", "state"],
+            },
+        }
+    )
     operation_rules.append(
         {
             "if": {"required": ["semantic_withheld_items"]},
@@ -4667,6 +4723,7 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
         "type": "array",
         "uniqueItems": True,
     }
+    _add_semantic_redacted_values(definitions, properties, min_items=1)
     required = cast(list[JsonValue], document["required"])
     if "children" not in required:
         required.append("children")

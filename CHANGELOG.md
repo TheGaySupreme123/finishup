@@ -8,6 +8,12 @@ reverse-chronological released versions.
 
 ### Added
 
+- When the external reviewer's copy of your work had a possible credential replaced or an item
+  withheld, checks, receipts and `status view=operation` now name the item and its line numbers
+  (`semantic_redacted_values`; never the value) and tell the agent, once, that local checks saw the
+  values and it should verify the repair itself and respond `self_verified` rather than reshape its
+  work (#982).
+
 - You can turn off the possible-credential filter for AI-powered review with
   `yoetz privacy credential-heuristic disable`, and back on with `enable` (#982). Off, values that
   only look like passwords or tokens are sent as written instead of as

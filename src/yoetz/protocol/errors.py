@@ -335,6 +335,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "schema_version_mismatch",
     "selector_conflict",
     "semantic_provenance_json_shape_invalid",
+    "semantic_redacted_values_invalid",
     "service_draining",
     "service_generation_changed",
     "service_incompatible",
@@ -361,7 +362,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
 )
 
 _REASON_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 304
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 305
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)
@@ -658,6 +659,7 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         "receipt_semantic_withheld_items_not_canonical": "lineage_integrity_review",
         "runtime_opening_authority": "coordination_authority_review",
         "selector_conflict": "lineage_state_refresh",
+        "semantic_redacted_values_invalid": "lineage_integrity_review",
         "service_stamp_required": "lineage_service_review",
         "session_lineage_fields_incomplete": "lineage_integrity_review",
         "stored_result_shape_invalid": "lineage_integrity_review",

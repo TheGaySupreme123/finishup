@@ -1946,4 +1946,9 @@ def build_receipt(
                 else context.applicable_check.semantic_withheld_item_ids
             )
         ),
+        semantic_redacted_values=(
+            ()
+            if context.applicable_check is None
+            else context.applicable_check.semantic_redacted_values
+        ),
     )

@@ -1004,6 +1004,30 @@ def test_catalog_resume_rejects_replaced_active_route() -> None:
     asyncio.run(run())
 
 
+def test_catalog_proposal_persists_redacted_value_lines_for_resume() -> None:
+    """PL2-1 (issue #982): refs and lines survive the proposal round trip; absent stays absent."""
+
+    from yoetz.protocol.redacted_values import SemanticRedactedValue
+
+    db = _database()
+    _insert_task_route(db)
+    objects = _StoredObjects()
+    audit = CatalogPrivacyAudit(db, objects, _Key(), _Clock())  # type: ignore[arg-type]
+    values = (SemanticRedactedValue("item-1", "value_replaced", (2, 5), "evd_ref-1"),)
+
+    async def run() -> None:
+        request = _external_disclosure_request()
+        prepared = await audit.prepare_disclosure_proposal(
+            replace(request, minimized=replace(request.minimized, redacted_values=values))
+        )
+        assert prepared.proposal.redacted_values == values
+        loaded = await audit.load_disclosure_proposal(prepared.proposal.privacy_proposal_id)
+        assert loaded is not None
+        assert loaded.redacted_values == values
+
+    asyncio.run(run())
+
+
 def test_catalog_disclosure_attempt_rejects_tampered_lookup_identity() -> None:
     db = _database()
     _insert_task_route(db)

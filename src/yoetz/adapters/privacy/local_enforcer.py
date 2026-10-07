@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Final, Protocol, cast
 
@@ -25,13 +26,20 @@ from yoetz.domain.privacy import (
     ProjectionProvenanceContext,
 )
 from yoetz.observability.privacy import (
+    heuristic_value_lines,
     redact_heuristic_spans,
     scan_finding_is_heuristic,
     scan_for_sensitive_content,
 )
 from yoetz.ports.privacy import EffectivePrivacyPolicy, MinimizedDisclosure
 from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from yoetz.protocol.ids import OPAQUE_ITEM_ID_PATTERN
 from yoetz.protocol.models import DataCategory
+from yoetz.protocol.redacted_values import (
+    MAX_SEMANTIC_REDACTED_VALUE_ITEMS,
+    MAX_SEMANTIC_REDACTED_VALUE_LINES,
+    SemanticRedactedValue,
+)
 
 __all__ = [
     "EGRESS_BYTES_PER_TOKEN_ESTIMATE",
@@ -355,6 +363,95 @@ def _redact_encoded_heuristic_spans(content: bytes) -> tuple[bytes, int] | None:
     return sanitized, span_count
 
 
+_OPAQUE_SOURCE_REF: Final = re.compile(OPAQUE_ITEM_ID_PATTERN, re.ASCII)
+
+
+def _catalog_source_refs(classified: ClassifiedContext) -> dict[str, str]:
+    """Map case item ids to their catalogued ledger refs from the structural envelope.
+
+    Only refs that are themselves opaque tokens (``evd_...``, ``evt_...``, ``lineage``) are kept;
+    anything else, such as a path, is left out. Nothing here reads item content.
+    """
+
+    envelope = next(
+        (
+            item.candidate.plaintext
+            for item in classified.items
+            if item.candidate.item_id == REVIEW_PACKET_ITEM_ID
+        ),
+        None,
+    )
+    if envelope is None:
+        return {}
+    try:
+        parsed = strict_json_parse(envelope)
+    except TypeError, ValueError, UnicodeDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    catalog = parsed.get("item_catalog")
+    refs: dict[str, str] = {}
+    if type(catalog) is not list:
+        return refs
+    for row in catalog:
+        if not isinstance(row, dict):
+            continue
+        item_id = row.get("item_id")
+        source_ref = row.get("source_ref")
+        if (
+            type(item_id) is str
+            and type(source_ref) is str
+            and _OPAQUE_SOURCE_REF.fullmatch(source_ref) is not None
+        ):
+            refs[item_id] = source_ref
+    return refs
+
+
+def _heuristic_lines_of(content: bytes) -> set[int]:
+    """Lines where the heuristic matches ``content`` raw or in its JSON-string encoding."""
+
+    lines = set(heuristic_value_lines(content))
+    try:
+        encoded = canonical_encode(content.decode("utf-8"))
+    except UnicodeDecodeError:
+        return lines
+    lines.update(heuristic_value_lines(encoded, json_string=True))
+    return lines
+
+
+def _semantic_redacted_values(
+    replaced_lines: dict[str, set[int]],
+    included_ids: set[str],
+    withheld_item_ids: tuple[str, ...],
+    withheld_lines: dict[str, set[int]],
+    source_refs: dict[str, str],
+) -> tuple[SemanticRedactedValue, ...]:
+    """Bounded PL2-1 projection: item ids, catalogued refs and line numbers, never values."""
+
+    entries: list[SemanticRedactedValue] = []
+    withheld = set(withheld_item_ids)
+    for item_id in sorted({*replaced_lines, *withheld}, key=str.encode):
+        if item_id in withheld:
+            disposition = "item_withheld"
+            lines = withheld_lines.get(item_id, set())
+        elif item_id in included_ids:
+            disposition = "value_replaced"
+            lines = replaced_lines[item_id]
+        else:
+            continue
+        entries.append(
+            SemanticRedactedValue(
+                item_id,
+                disposition,
+                tuple(sorted(lines))[:MAX_SEMANTIC_REDACTED_VALUE_LINES],
+                source_refs.get(item_id),
+            )
+        )
+        if len(entries) >= MAX_SEMANTIC_REDACTED_VALUE_ITEMS:
+            break
+    return tuple(entries)
+
+
 class LocalPrivacyEnforcer:
     """Provider-free implementation of the local privacy classifier port."""
 
@@ -471,12 +568,19 @@ class LocalPrivacyEnforcer:
         )
         transformed_content: dict[str, bytes] = {}
         redacted_span_count = 0
+        # PL2-1: the 1-based lines of each item where a value was replaced. Lines only; the
+        # values and their offsets are never kept.
+        replaced_lines: dict[str, set[int]] = {}
         for item in included:
             if not item.heuristic_findings:
                 continue
             sanitized, span_count = redact_heuristic_spans(item.candidate.plaintext)
             transformed_content[item.candidate.item_id] = sanitized
             redacted_span_count += span_count
+            if span_count:
+                replaced_lines.setdefault(item.candidate.item_id, set()).update(
+                    heuristic_value_lines(item.candidate.plaintext)
+                )
         if classified.candidate.purpose == "semantic-review":
             prepared = _assemble_semantic_review_payload(
                 classified,
@@ -509,17 +613,23 @@ class LocalPrivacyEnforcer:
                     item_id = item.candidate.item_id
                     if item_id not in offending:
                         continue
+                    current = transformed_content.get(item_id, item.candidate.plaintext)
                     replaced = (
                         None
                         if item_id in encoded_redacted_ids
-                        else _redact_encoded_heuristic_spans(
-                            transformed_content.get(item_id, item.candidate.plaintext)
-                        )
+                        else _redact_encoded_heuristic_spans(current)
                     )
                     if replaced is None:
                         to_withhold.add(item_id)
                         continue
                     sanitized, span_count = replaced
+                    try:
+                        encoded_current = canonical_encode(current.decode("utf-8"))
+                    except UnicodeDecodeError:
+                        encoded_current = b""
+                    replaced_lines.setdefault(item_id, set()).update(
+                        heuristic_value_lines(encoded_current, json_string=True)
+                    )
                     transformed_content[item_id] = sanitized
                     redacted_span_count += span_count
                     encoded_redacted_ids.add(item_id)
@@ -583,6 +693,20 @@ class LocalPrivacyEnforcer:
             sorted({item.candidate.category for item in included}, key=lambda value: value.value)
         )
         removed = len(classified.items) - len(included)
+        items_by_id = {item.candidate.item_id: item for item in classified.items}
+        redacted_values = _semantic_redacted_values(
+            replaced_lines,
+            set(included_ids),
+            withheld_item_ids,
+            {
+                item_id: _heuristic_lines_of(items_by_id[item_id].candidate.plaintext)
+                for item_id in withheld_item_ids
+                if item_id in items_by_id
+            },
+            _catalog_source_refs(classified)
+            if classified.candidate.purpose == "semantic-review"
+            else {},
+        )
         return MinimizedDisclosure(
             prepared_bytes=prepared,
             included_item_ids=included_ids,
@@ -607,6 +731,7 @@ class LocalPrivacyEnforcer:
             withheld_item_ids=withheld_item_ids,
             heuristic_findings=prepared_scan.heuristic if heuristic_enforced else (),
             redacted_span_count=redacted_span_count,
+            redacted_values=redacted_values,
         )
 
     def scan_exact_bytes(

@@ -94,6 +94,7 @@ from yoetz.protocol.canonical import (
     strict_json_parse,
 )
 from yoetz.protocol.ids import IdKind, new_id, validate_id
+from yoetz.protocol.redacted_values import semantic_redacted_values_from_wire
 
 __all__ = [
     "CatalogPrivacyAudit",
@@ -2010,6 +2011,17 @@ class CatalogPrivacyAudit:
             "scanner_registry_version": request.minimized.scanner_registry_version,
             "scanner_profile_digest": request.minimized.scanner_profile_digest,
             "route_identity_digest": route_identity,
+            # PL2-1: written only when present, so older proposals keep their exact bytes.
+            **(
+                {
+                    "redacted_values": [
+                        cast(JsonValue, entry.as_wire())
+                        for entry in request.minimized.redacted_values
+                    ]
+                }
+                if request.minimized.redacted_values
+                else {}
+            ),
         }
         proposal_bytes = canonical_encode(cast(JsonValue, proposal_value))
         proposal_commitment = _mac(self._key, _PROPOSAL_DOMAIN, proposal_bytes)
@@ -2046,6 +2058,7 @@ class CatalogPrivacyAudit:
             request.minimized.scanner_profile_digest,
             request.minimized.included_item_ids,
             route_identity,
+            request.minimized.redacted_values,
         )
         structural = canonical_encode(
             {
@@ -2486,6 +2499,7 @@ class CatalogPrivacyAudit:
                 ),
                 tuple(sorted(_strings(parsed.get("included_item_ids") or []), key=str.encode)),
                 stored_route,
+                semantic_redacted_values_from_wire(parsed.get("redacted_values") or []),
             )
         except Exception:
             return None

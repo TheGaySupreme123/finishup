@@ -18,6 +18,7 @@ from yoetz.domain.findings import (
     TokenUsage,
 )
 from yoetz.domain.receipts import (
+    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     ReceiptConclusion,
     ReceiptDocument,
     ReceiptRedactionCategory,
@@ -152,6 +153,7 @@ def test_receipt_document_is_frozen_and_exactly_shaped() -> None:
         "acknowledged_not_done_finding_ids",
         "rejection_accepted_finding_ids",
         "semantic_withheld_items",
+        "semantic_redacted_values",
     )
     assert is_dataclass(document)
     assert ReceiptDocument.__slots__ == expected_fields
@@ -176,11 +178,59 @@ def test_receipt_withheld_items_round_trip_and_human_projection() -> None:
     assert "item text was not sent or echoed" in rendered
 
 
+def test_receipt_redacted_values_round_trip_and_render_refs_lines_and_agent_line() -> None:
+    """PL2-1 (issue #982): refs and line numbers only, plus the fixed agent line once."""
+
+    wire = _variant("deterministic-current.case.json", "current_complete")
+    wire["semantic_withheld_items"] = [
+        {"item_id": "excerpt-withheld", "reason": "never_send_heuristic"}
+    ]
+    wire["semantic_redacted_values"] = [
+        {
+            "disposition": "value_replaced",
+            "item_id": "excerpt-replaced",
+            "lines": [2, 9],
+            "source_ref": "evd_10000000-0000-4000-8000-000000000021",
+        },
+        {"disposition": "item_withheld", "item_id": "excerpt-withheld", "lines": [4]},
+    ]
+    document = receipt_document_from_json(wire)
+    encoded = receipt_document_to_json(document)
+    assert encoded["semantic_redacted_values"] == wire["semantic_redacted_values"]
+    assert receipt_document_from_json(encoded) == document
+    for markdown in (True, False):
+        rendered = render_receipt_human(document, markdown=markdown)
+        assert (
+            "evd_10000000-0000-4000-8000-000000000021 (item excerpt-replaced): value replaced, "
+            "lines 2, 9"
+        ) in rendered
+        assert "excerpt-withheld: item withheld, line 4" in rendered
+        assert rendered.count(SEMANTIC_REDACTED_VALUES_AGENT_LINE) == 1
+        assert rendered.isascii()
+
+
+def test_receipt_rejects_redacted_values_that_carry_more_than_structure() -> None:
+    wire = _variant("deterministic-current.case.json", "current_complete")
+    wire["semantic_redacted_values"] = [
+        {"disposition": "value_replaced", "item_id": "x", "lines": [1], "value": "secret"}
+    ]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(wire)
+    wire["semantic_redacted_values"] = [
+        {"disposition": "value_replaced", "item_id": "x", "lines": [1], "source_ref": "a/b.py"}
+    ]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(wire)
+
+
 def test_historical_receipt_omits_withheld_items() -> None:
     wire = _variant("deterministic-current.case.json", "current_complete")
     document = receipt_document_from_json(wire)
     assert document.semantic_withheld_items == ()
     assert "semantic_withheld_items" not in receipt_document_to_json(document)
+    assert document.semantic_redacted_values == ()
+    assert "semantic_redacted_values" not in receipt_document_to_json(document)
+    assert SEMANTIC_REDACTED_VALUES_AGENT_LINE not in render_receipt_human(document, markdown=True)
 
 
 def test_children_use_receipt_document_1_3_artifact_and_keep_inner_version() -> None:

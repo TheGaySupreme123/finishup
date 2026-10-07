@@ -70,6 +70,7 @@ from yoetz.protocol.models import (
     validate_semantic_provenance_binding,
 )
 from yoetz.protocol.policy_packs import RECORDED_POLICY_PACKS
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 
 __all__ = [
     "CheckChecklistItem",
@@ -899,6 +900,9 @@ class CheckCommitResult:
     semantic_withheld_item_ids: tuple[str, ...] = ()
     review_input_manifest: JsonObject | None = None
     totals: JsonObject | None = None
+    # PL2-1 (issue #982): item refs and 1-based line numbers of values the external reviewer's
+    # copy did not carry. Structural only; never values.
+    semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.outcome) is not str or self.outcome not in {"committed", "replayed"}:
@@ -977,6 +981,10 @@ class CheckCommitResult:
             != tuple(sorted(set(self.semantic_withheld_item_ids), key=str.encode))
         ):
             raise _invalid()
+        try:
+            validate_semantic_redacted_values(self.semantic_redacted_values)
+        except ValueError as exc:
+            raise _invalid() from exc
         if (
             self.review_input_manifest is not None
             and type(self.review_input_manifest) is not JsonObject
@@ -2205,6 +2213,7 @@ class LedgerPort(Protocol):
         semantic_withheld_item_ids: tuple[str, ...] = (),
         review_input_manifest: JsonObject | None = None,
         totals: JsonObject | None = None,
+        semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
     ) -> CheckCommitResult: ...
 
     async def fail_check_if_current(

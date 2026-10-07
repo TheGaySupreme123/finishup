@@ -7,7 +7,11 @@ from enum import Enum
 from typing import Final, cast
 
 from yoetz.domain.check_totals import render_check_totals
-from yoetz.domain.receipts import check_time_change_gap_sentence
+from yoetz.domain.receipts import (
+    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+    check_time_change_gap_sentence,
+    semantic_redacted_value_text,
+)
 from yoetz.domain.review_input_render import (
     has_agent_suppliable_missing,
     render_missing_for_assessment_lines,
@@ -26,6 +30,7 @@ from yoetz.protocol.models import (
     OmittedContentModel,
     PublicErrorModel,
     ReceiptSuccessModel,
+    SemanticRedactedValueModel,
     StatusAdvicePageModel,
     StatusCheckAdmissionModel,
     StatusClosureReadinessModel,
@@ -50,6 +55,7 @@ from yoetz.protocol.recovery import (
     correction_for_invariant,
     directive_for,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 __all__ = [
     "bounded_failure_line",
@@ -354,6 +360,7 @@ def render_human_check(result: CheckSuccessModel) -> str:
         lines.append("Withheld review items (the reviewer continued without them):")
         for item in result.semantic_withheld_items:
             lines.append(f"- {item.item_id}: {_token(item.reason)}")
+    lines.extend(_semantic_redacted_value_lines(result.semantic_redacted_values))
     if result.coverage.known_gaps:
         lines.append("Coverage gaps: " + ", ".join(result.coverage.known_gaps))
         lines.extend(_check_time_change_sentences(result.coverage.known_gaps))
@@ -515,6 +522,7 @@ def render_human_status(result: StatusSuccessModel) -> str:
                 f"- {item.item_id}: {_token(item.reason)}"
                 for item in result.page.semantic_withheld_items
             )
+        lines.extend(_semantic_redacted_value_lines(result.page.semantic_redacted_values or ()))
         if result.page.admission is not None:
             lines.extend(render_check_admission_lines(result.page.admission))
     elif isinstance(result.page, StatusLineagePageModel):
@@ -700,6 +708,9 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
         withheld = _semantic_withheld_item_lines(document)
         if withheld:
             lines.extend(withheld)
+        raw_redacted = document.get("semantic_redacted_values")
+        if isinstance(raw_redacted, (list, tuple)):
+            lines.extend(_semantic_redacted_value_lines(cast(Sequence[object], raw_redacted)))
         provenance = document.get("semantic_provenance")
         if isinstance(provenance, Mapping):
             lines.extend(
@@ -712,6 +723,31 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     if result.suppressed_finding_count:
         lines.append(f"Suppressed findings: {result.suppressed_finding_count}")
     return "\n".join(lines)
+
+
+def _semantic_redacted_value_lines(items: Sequence[object]) -> list[str]:
+    """PL2-1: item refs and line numbers, then the fixed agent line once; never a value."""
+
+    values: list[SemanticRedactedValue] = []
+    for item in items:
+        try:
+            if isinstance(item, SemanticRedactedValueModel):
+                values.append(
+                    SemanticRedactedValue(
+                        item.item_id, item.disposition, tuple(item.lines), item.source_ref
+                    )
+                )
+            else:
+                values.append(SemanticRedactedValue.from_wire(item))
+        except TypeError, ValueError:
+            continue
+    if not values:
+        return []
+    return [
+        "Withheld from external review (refs and lines only; no value is shown):",
+        *(f"- {semantic_redacted_value_text(value)}" for value in values),
+        SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+    ]
 
 
 def _semantic_withheld_item_lines(document: Mapping[str, JsonValue]) -> list[str]:

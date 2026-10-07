@@ -1043,3 +1043,86 @@ def test_heuristic_in_structural_envelope_still_fails_closed(
     )
     minimized = _minimize_all(replace(candidate, items=(poisoned, *candidate.items[1:])))
     assert minimized.heuristic_findings
+
+
+_SUSPECT_REF = "evd_10000000-0000-4000-8000-000000000021"
+
+
+def test_raw_pass_reports_replaced_value_lines_and_ref_never_the_value() -> None:
+    """PL2-1 (issue #982): item ref plus 1-based lines in the item's own text, never the value."""
+
+    from yoetz.protocol.redacted_values import SemanticRedactedValue
+
+    minimized = _minimize_all(
+        _two_excerpt_semantic_candidate(
+            b"clean evidence",
+            b"def connect():\n    pass\n    API_TOKEN=abcdefgh12345678\n"
+            b'    password = "hunter2-long-value"\n',
+        )
+    )
+    assert minimized.withheld_item_ids == ()
+    assert minimized.redacted_values == (
+        SemanticRedactedValue("suspect", "value_replaced", (3, 4), _SUSPECT_REF),
+    )
+    rendered = repr(minimized.redacted_values).encode()
+    assert b"abcdefgh12345678" not in rendered
+    assert b"hunter2" not in rendered
+
+
+def test_encoded_pass_reports_replaced_value_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    import yoetz.adapters.privacy.local_enforcer as enforcer_module
+    from yoetz.protocol.redacted_values import SemanticRedactedValue
+
+    real = enforcer_module.redact_heuristic_spans
+    calls = {"count": 0}
+
+    def first_pass_misses(data: bytes) -> tuple[bytes, int]:
+        calls["count"] += 1
+        return (data, 0) if calls["count"] == 1 else real(data)
+
+    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", first_pass_misses)
+    minimized = _minimize_all(
+        _two_excerpt_semantic_candidate(
+            b"clean evidence",
+            b"def connect():\n    API_TOKEN=abcdefgh12345678\n    return open_session()\n",
+        )
+    )
+    assert minimized.withheld_item_ids == ()
+    assert minimized.redacted_values == (
+        SemanticRedactedValue("suspect", "value_replaced", (2,), _SUSPECT_REF),
+    )
+    assert b"abcdefgh12345678" not in repr(minimized.redacted_values).encode()
+
+
+def test_withheld_item_reports_its_ref_and_matched_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    import yoetz.adapters.privacy.local_enforcer as enforcer_module
+    from yoetz.protocol.redacted_values import SemanticRedactedValue
+
+    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", _no_op_redaction)
+    minimized = _minimize_all(
+        _two_excerpt_semantic_candidate(
+            b"clean evidence", b"first line\nsecond line\nAPI_TOKEN=abcdefgh12345678\n"
+        )
+    )
+    assert minimized.withheld_item_ids == ("suspect",)
+    assert minimized.redacted_values == (
+        SemanticRedactedValue("suspect", "item_withheld", (3,), _SUSPECT_REF),
+    )
+
+
+def test_clean_case_reports_no_redacted_values() -> None:
+    minimized = _minimize_all(_two_excerpt_semantic_candidate(b"clean evidence", b"plain words"))
+    assert minimized.redacted_values == ()
+
+
+def test_heuristic_value_lines_reads_raw_and_json_string_forms() -> None:
+    from yoetz.observability.privacy import heuristic_value_lines
+
+    text = 'first\nAPI_KEY=abcdefgh1234zz\nok\n  password: "hunter2-long-value"\n'
+    assert heuristic_value_lines(text.encode()) == (2, 4)
+    # In the encoded form the escaped newline hides the first assignment's boundary, so only
+    # the later value is found; its line is still counted in the decoded text.
+    assert heuristic_value_lines(canonical_encode(text), json_string=True) == (4,)
+    assert heuristic_value_lines(b"plain words") == ()
+    many = b"".join(b"API_TOKEN=abcdefgh%08d\n" % index for index in range(40))
+    assert heuristic_value_lines(many) == tuple(range(1, 33))

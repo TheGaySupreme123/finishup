@@ -1238,7 +1238,12 @@ Five further codes describe a review that did run but could not deliver everythi
   was sent (issue #982). It weakens neither proof class;
 - `semantic_review_item_withheld` — in-place replacement could not make an item safe to send, so
   that item alone was left out (listed in `semantic_withheld_items`). It bounds only the AI-powered
-  review;
+  review. Either gap comes with `semantic_redacted_values` (owner-approved PL2-1, ADR-009): at most
+  64 `{item_id, source_ref?, disposition: value_replaced|item_withheld, lines}` entries sorted by
+  `item_id`, with up to 32 sorted 1-based line numbers in the item's own text and `source_ref` only
+  when the catalogued ref is an opaque token. Never a value, offset or path. Carried, when present,
+  by the check event (1.4.0), check result, `status view=operation` page and receipt document; every
+  rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`);
 - `semantic_review_credential_heuristic_disabled` — the owner's privacy policy had the
   low-confidence credential heuristic turned off (`credential_heuristic: disabled`, issue #982), so
   values that only look like passwords or tokens were sent as written; high-confidence detectors
@@ -3656,12 +3661,18 @@ call-shaped values such as `password=functionName()`, quoted lookalikes, mixed-l
 malformed source remain withheld. This precision rule does not add an opt-out.
 Since issue #982 the assignment heuristics also skip values that cannot be credential material:
 comparisons and walrus operators (`token == x`, `token := x`); an unquoted next key after a line
-break (an empty `KEY=` followed by `NEXT=`); unquoted values containing `()[]<>|` or a backtick;
-language literals and type names (`None`, `True`, `str`, `Optional`); `self.`/`this.`/`cls.`
-attribute values; documentation placeholders (`<...>`, `${...}`, `{{...}}`, a trailing `...`); and,
-for `*token` names only, values shorter than eight bytes, numbers, digit-free snake/constant
-identifiers, and values with characters outside opaque token material (whitespace, brackets,
-braces, parentheses, pipes, quotes). Password, secret and API-key values keep every other shape.
+break (an empty `KEY=` followed by `NEXT=`); unquoted language literals and type names (`None`,
+`True`, `str`, `Optional`); unquoted `self.`/`this.`/`cls.` attribute values; for password,
+secret and API-key names, an unquoted call or subscript on a name (`get_secret(`, `secrets[i]`),
+`|>`, or a digit-free documentation placeholder (`<your-api-key>`, `${MY_PASSWORD}`, `gw_...`);
+and, for `*token` names only, unquoted values containing `()[]<>|` or a backtick, unquoted
+numbers, documentation placeholders (`<...>`, `${...}`, `{{...}}`, a trailing `...`), values
+shorter than eight bytes, digit-free snake/constant identifiers, and values with characters
+outside opaque token material (whitespace, brackets, braces, parentheses, pipes, quotes).
+Password, secret and API-key values keep every other shape, including punctuation-heavy values
+such as `p<ss>w0rd|x` or `Summer2024...`. A marker followed by more bytes
+(`TOKEN=[withheld-by-yoetz:possible-credential]rest`) still matches. Typed declarations
+(`password: str = "..."`, value span only) and JSON-escaped keys (`\"password\": \"...\"`) match.
 Capture-time redaction covers only high-confidence findings; heuristic-only matches are redacted
 at egress.
 

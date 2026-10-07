@@ -215,6 +215,7 @@ from yoetz.protocol.policy_packs import (
     WORK_INTEGRITY_POLICY_ID,
     current_policy_pack,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 from yoetz.version import ENGINE_VERSION
 
 __all__ = [
@@ -277,6 +278,7 @@ SEMANTIC_CASE_CONTENT_GAPS: Final = frozenset(
         "content_unselected",
         "content_redacted",
         SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
+        SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
         SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
         "preexisting_test_baseline_unknown",
         "preexisting_test_modified",
@@ -586,6 +588,16 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
                         "reason": "never_send_heuristic",
                     }
                     for item_id in result.semantic_withheld_item_ids
+                )
+            }
+        ),
+        # PL2-1: item refs and line numbers only; written only when present.
+        **(
+            {}
+            if not getattr(result, "semantic_redacted_values", ())
+            else {
+                "semantic_redacted_values": tuple(
+                    cast(JsonValue, item.as_wire()) for item in result.semantic_redacted_values
                 )
             }
         ),
@@ -1505,6 +1517,9 @@ class FinalSemanticEvaluation:
     # public check result names these identities and the closed remediation reason, never bytes
     # or source prose.
     semantic_withheld_item_ids: tuple[str, ...] = ()
+    # PL2-1 (issue #982): per item, the catalogued ref and the 1-based lines where the external
+    # reviewer's copy had a credential-like value replaced, or the item withheld. Never values.
+    semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
     case_content_gaps: tuple[str, ...] = ()
     # Missing-item kinds the effective review selection or channel can never carry (issue #907).
     # Computed where the case is composed, so the check can classify what a reviewer names.
@@ -1563,6 +1578,10 @@ class FinalSemanticEvaluation:
             )
         ):
             raise _invalid("semantic_judgment_invalid")
+        try:
+            validate_semantic_redacted_values(self.semantic_redacted_values)
+        except ValueError as exc:
+            raise _invalid("semantic_judgment_invalid") from exc
         if (
             type(self.unsuppliable_missing_kinds) is not tuple
             or self.unsuppliable_missing_kinds
@@ -3567,6 +3586,7 @@ def _judgment_rejected_evaluation(
         case_reference_scope_reduced=result.case_reference_scope_reduced,
         case_included_refs=result.case_included_refs,
         semantic_withheld_item_ids=result.semantic_withheld_item_ids,
+        semantic_redacted_values=result.semantic_redacted_values,
         case_content_gaps=result.case_content_gaps,
     )
 
@@ -4258,6 +4278,7 @@ async def execute_check_commit(
             "missing_for_assessment": missing.items,
             "semantic_included_refs": semantic_included_refs(semantic_result),
             "semantic_withheld_item_ids": semantic_result.semantic_withheld_item_ids,
+            "semantic_redacted_values": semantic_result.semantic_redacted_values,
             "review_input_manifest": recorded_manifest,
             "totals": build_check_totals(
                 frozen.case,
