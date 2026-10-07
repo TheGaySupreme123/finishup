@@ -142,3 +142,34 @@ def test_the_command_field_round_trips_and_keeps_simple_commands_byte_identical(
 )
 def test_requested_command_shape(value: str, shape: str) -> None:
     assert requested_command_shape(value) == shape
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "sort <in.txt>out.txt",
+        "python x.py <input.txt 2>/dev/null",
+        "mysql db <dump.sql 2>&1",
+        "grep '<div>' x.html",
+        "cat <file",
+        "a<b",
+        "R CMD check pkg",
+    ],
+)
+def test_redirections_and_short_leaders_are_commands(value: str) -> None:
+    """Adversarial review of E3: input redirections were refused as placeholders, and an
+    uppercase one-letter leader (`R CMD check`) read as prose."""
+
+    assert requested_command_shape(value) == "command"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "python cracker.py <ciphertext_file>",
+        "python -m parityctl rebuild --packet <incident-packet> --out <output-dir>",
+        "run <input file>",
+    ],
+)
+def test_template_placeholders_stay_placeholders(value: str) -> None:
+    assert requested_command_shape(value) == "placeholder"

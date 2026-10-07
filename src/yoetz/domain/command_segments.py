@@ -63,7 +63,13 @@ _LEADING_KEYWORDS: Final = frozenset(
     {"if", "then", "do", "else", "elif", "while", "until", "{", "!", "nohup", "exec"}
 )
 _CLOSING_WORDS: Final = frozenset({"}", "fi", "done", "esac", "then", "do", "else"})
-_PLACEHOLDER_RE: Final = re.compile(r"<[A-Za-z][A-Za-z0-9_.:-]*(?: [A-Za-z0-9_.:-]+)*>", re.ASCII)
+# A template placeholder: ``<`` not glued to a preceding word or digit (``a<b``, ``2<x`` are
+# redirections or comparisons), a name, further words that start with a letter, and a ``>``
+# followed by end of text, whitespace or a quote (``<in.txt>out.txt`` is two redirections).
+_PLACEHOLDER_RE: Final = re.compile(
+    r"(?<![A-Za-z0-9_])<[A-Za-z][A-Za-z0-9_.:-]*(?: [A-Za-z][A-Za-z0-9_.:-]*)*>(?=$|[\s'\"])",
+    re.ASCII,
+)
 _PROSE_WORD_RE: Final = re.compile(r"^[A-Za-z]+[,.:;]?$", re.ASCII)
 _MASKING_SEPARATORS: Final = frozenset({"||", ";", "|", "&", "\n", "(", ")"})
 
@@ -454,7 +460,10 @@ def requested_command_shape(value: str) -> str:
     words = value.split()
     if (
         len(words) >= 3
+        # Title case with at least two letters (``Broad``), so ``R CMD check pkg`` stays a command.
+        and len(words[0]) >= 2
         and words[0][:1].isupper()
+        and words[0][1:2].islower()
         and all(_PROSE_WORD_RE.fullmatch(word) is not None for word in words)
     ):
         return "prose"

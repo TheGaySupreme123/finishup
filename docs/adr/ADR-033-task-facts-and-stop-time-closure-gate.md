@@ -79,8 +79,11 @@ agent must not be able to stop silently with known work left.
      matching run stated no outcome; or no keyed observed command exists to match against, or the
      requested value names no observable command: a `<placeholder>` token (admitted before
      publication refused it) or plain prose of three or more alphabetic words led by a
-     capitalized one (`Broad GSEA CLI`). A single token (`legacy-score`) is always a command.
-     Publication refuses a new `command` item with an unquoted `<name>` placeholder as
+     title-case word of two or more letters (`Broad GSEA CLI`; `R CMD check pkg` is a command).
+     A single token (`legacy-score`) is always a command. A placeholder is a `<name>` not glued
+     to a preceding word or digit, whose further words start with a letter, closed by `>` at the
+     end, before whitespace or a quote; redirections (`sort <in.txt>out.txt`, `cmd <dump.sql
+     2>&1`) are commands. Publication refuses a new `command` item with an unquoted placeholder as
      `EVENT_INVALID` `requested_command_placeholder`, located at
      `/event_drafts/N/payload/requested_items/K/value`, before append.
    - `edited_after_last_verification` (agent-actionable): an observed edit after the latest
