@@ -406,7 +406,7 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             "A package install resolved to Yoetz's own runtime interpreter, not the task's."
         ),
         "install_into_private_env": (
-            "A package install resolved to a virtual environment outside the workspace."
+            "A package install went into an environment other than the task's interpreter."
         ),
         "write_outside_workspace": (
             "A write landed outside the workspace; it is not part of the delivered change."

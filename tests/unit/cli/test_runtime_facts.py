@@ -82,7 +82,8 @@ def test_uv_variants(env: dict[str, Path]) -> None:
     assert _target(f"uv pip install --python={env['runtime']}/bin/python3 x", env) == (
         "yoetz_runtime"
     )
-    assert _target("uv pip install --python /some/venv/bin/python x", env) == "system"
+    # A named interpreter that does not exist resolves nothing.
+    assert _target("uv pip install --python /some/venv/bin/python x", env) == "unresolved"
     assert _target("uv pip install x", env) == "unresolved"
     assert _target("uv pip install --system x", env) == "system"
     assert _target("uv add x", env) == "workspace_env"
@@ -108,6 +109,102 @@ def test_non_install_commands_are_none(command: str, env: dict[str, Path]) -> No
 
 def test_unbalanced_quotes_do_not_raise(env: dict[str, Path]) -> None:
     assert _target("pip install 'x", env) is None
+
+
+# --- task interpreter (tb4n1 regressions) ------------------------------------------------------
+
+
+def _venv(root: Path, *names: str) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    for name in names:
+        _executable(root / "bin" / name)
+    return root
+
+
+@pytest.fixture
+def task_venv(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The image ships its task interpreter as a venv first on the agent's PATH (``/opt/venv``)."""
+
+    task = _venv(env["system"].parent / "opt" / "venv", "python", "python3", "pip")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(task / "bin"), str(env["system"] / "bin")]))
+    return task
+
+
+def test_bare_install_into_the_task_venv_is_no_fact(env: dict[str, Path], task_venv: Path) -> None:
+    assert _target("pip install x", env) == "system"
+    assert _target("python -m pip install x", env) == "system"
+    assert _target(f"{task_venv}/bin/pip install x", env) == "system"
+    assert _target(f"uv pip install --python {task_venv}/bin/python x", env) == "system"
+    # --user is that interpreter's own user site, not another environment.
+    assert _target("pip install --user x", env) == "system"
+
+
+def test_task_venv_reached_through_a_directory_link_is_the_task(
+    env: dict[str, Path], task_venv: Path
+) -> None:
+    alias = env["system"].parent / "venv-link"
+    alias.symlink_to(task_venv, target_is_directory=True)
+    assert _target(f"{alias}/bin/pip install x", env) == "system"
+
+
+def test_another_venv_by_explicit_path_is_private_env(
+    env: dict[str, Path], task_venv: Path
+) -> None:
+    telecom = _venv(env["system"].parent / "tmp" / "telecom_venv", "pip", "python")
+    sglang = _venv(env["system"].parent / "tmp" / "sglang-stream-tests312", "python")
+    assert _target(f"{telecom}/bin/pip install x", env) == "private_env"
+    assert _target(f"{sglang}/bin/python -m pip install x", env) == "private_env"
+
+
+def test_a_system_interpreter_beside_a_venv_task_is_private_env(
+    env: dict[str, Path], task_venv: Path
+) -> None:
+    assert _target(f"{env['system']}/bin/python3 -m pip install x", env) == "private_env"
+
+
+def test_a_system_task_interpreter_keeps_other_system_pips_unflagged(env: dict[str, Path]) -> None:
+    local = env["system"].parent / "usr-local"
+    _executable(local / "bin" / "pip")
+    # ``/usr/local/bin/pip`` usually serves ``/usr/bin/python3``; without reading it, no fact.
+    assert _target(f"{local}/bin/pip install x", env) == "system"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pip install --target /tmp/deps x",
+        "pip install -t /tmp/deps x",
+        "pip install --target=/tmp/deps x",
+        "python3 -m pip install --prefix /tmp/p x",
+        "pip install --root /tmp/r x",
+        "uv pip install --target /tmp/deps x",
+    ],
+)
+def test_install_location_outside_workspace_is_private_env(
+    command: str, env: dict[str, Path], task_venv: Path
+) -> None:
+    assert _target(command, env) == "private_env"
+
+
+def test_install_location_inside_workspace_or_unknown(env: dict[str, Path]) -> None:
+    assert _target(f"pip install --target {env['workspace']}/vendor x", env) == "workspace_env"
+    assert _target("pip install --target vendor x", env) == "unresolved"
+    assert _target("pip install --target $DEPS x", env) == "unresolved"
+
+
+def test_yoetz_runtime_stays_flagged_and_is_never_the_task(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The runtime first on PATH: bare pip is still Yoetz's runtime (``/opt/yr/bin/pip``).
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(env["runtime"] / "bin"), str(env["system"] / "bin")])
+    )
+    assert _target("pip install x", env) == "yoetz_runtime"
+    assert _target(f"{env['runtime']}/bin/pip install x", env) == "yoetz_runtime"
+    assert runtime_facts._task_roots() == frozenset(  # pyright: ignore[reportPrivateUsage]
+        {str(env["system"].resolve())}
+    )
 
 
 # --- runtime_structural_facts ------------------------------------------------------------------
@@ -230,4 +327,4 @@ def test_a_system_interpreter_prefix_is_never_yoetz_runtime(
 
     monkeypatch.setattr(sys, "prefix", "/usr")
     monkeypatch.setattr(sys, "base_prefix", "/usr")
-    assert runtime_facts.install_target_class("/usr/bin/pip install x", None) == "system"
+    assert runtime_facts.install_target_class("/usr/bin/pip install x", None) != "yoetz_runtime"

@@ -8420,7 +8420,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
 - **Runtime structural fields.** The observation envelope and control-request 2.9.0
   `structural_payload` admit `install_target` (`yoetz_runtime|workspace_env|private_env|system|
   unresolved`), `write_scope` (`outside_workspace`) and `effective_user` (`root|non_root`),
-  produced only by `cli/runtime_facts.runtime_structural_facts`. `observed_action_description(...,
+  produced only by `cli/runtime_facts.runtime_structural_facts`, which judges `install_target`
+  against the task interpreter (the agent's `python3`/`python` on the hook's `PATH`; ADR-033
+  item 7). `observed_action_description(...,
   install_target=, write_outside_workspace=, effective_user=)` appends ` (install <class>)`,
   ` (write outside_workspace)`, ` (user <root|non_root>)` after the tool and runner suffixes;
   `observed_action_runtime_tokens(description)` reads them back. Observation advice 0.1.8 adds the

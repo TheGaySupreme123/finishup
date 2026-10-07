@@ -154,8 +154,19 @@ agent must not be able to stop silently with known work left.
    `install_target` (`yoetz_runtime`, `workspace_env`, `private_env`, `system`, `unresolved`),
    `write_scope` (`outside_workspace`) and `effective_user` (`root`, `non_root`) to the structural
    payload; the control-request 2.9.0 schema and the domain envelope admit exactly these values.
-   Interpreter resolution uses the hook process's `PATH` and never follows links; an interpreter
-   under the hook's own `sys.prefix` is Yoetz's runtime. Materialization appends them to the
+   Interpreter resolution uses the hook process's `PATH` (the agent's); an interpreter under the
+   hook's own `sys.prefix` is Yoetz's runtime. Every other install is judged against the *task
+   interpreter*: Yoetz records none, so the hook resolves the first `python3` and `python` on that
+   `PATH` outside its own runtime. Environments compare by root (the executable's directory's
+   parent, following directory links but never the executable's own link). The task's own
+   environment is `system` (no fact); another virtual environment, or any interpreter outside a
+   virtual environment when the task's is one, is `private_env`; against a non-venv task
+   interpreter another non-venv `pip` stays `system`, because its interpreter is unknowable
+   without reading it. `pip`/`python -m pip`/`uv pip` `--target`, `-t`, `--prefix` or `--root`
+   to an absolute directory is `workspace_env` inside the workspace (vendoring) and `private_env`
+   outside it; a relative or variable directory is `unresolved`. `--user` classifies as the
+   interpreter running pip (its user site is imported by that interpreter; pip refuses it in a
+   virtual environment). `uv pip install` without `--python` stays `unresolved`. Materialization appends them to the
    observed action description in a fixed closed suffix order, which is how the ledger carries
    them. Observation advice delivers `install_into_yoetz_runtime`, `install_into_private_env` and
    `write_outside_workspace` once each at the next advice-bearing event (advice only, never a
