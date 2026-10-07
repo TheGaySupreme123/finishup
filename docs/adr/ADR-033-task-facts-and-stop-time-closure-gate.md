@@ -130,13 +130,17 @@ agent must not be able to stop silently with known work left.
    - an owner-only memory (`observation/closure-gate.json`, opaque session and frontier ids)
      suppresses a second gate at the same session and frontier;
    - planned-verification items are ignored while the session's observation outbox is still
-     draining, because a run the service has not ingested would read as never observed;
+     draining, because a run the service has not ingested would read as never observed. Since
+     #994 the Stop pass first drains the task's rows toward the current frontier (ADR-022
+     amendment of 2026-10-07), so this applies only to rows that remain after that bounded
+     drain, and only to rows that can change this task's facts;
    - any read failure, or less than five seconds of the Stop budget left, lets the agent stop.
 
    Every outcome is a bounded hook diagnostic (`closure_gate_continued`,
    `closure_gate_blocker_rechecked`, `closure_gate_memory_unwritten` (amendment),
    `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_loop_guard`,
-   `closure_gate_budget_exhausted`, `closure_gate_unavailable`) visible in `yoetz observe status`.
+   `closure_gate_budget_exhausted`, `closure_gate_unavailable`) visible in `yoetz observe status`,
+   beside the Stop drain's own `stop_drain_complete` / `stop_drain_incomplete` (#994).
 6. **Per-host delivery.** Codex: `decision: block` with `reason` (its only model-visible Stop
    channel). Claude Code: `hookSpecificOutput.additionalContext` at Stop, the documented non-error
    feedback that continues the conversation under the same `stop_hook_active` guard. Cursor:

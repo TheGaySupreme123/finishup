@@ -198,6 +198,10 @@ _REASONS: Final = frozenset(
         # A host's automatic tool-call reviewer (Claude Code auto mode) denied a
         # scoped AI-powered ``check`` before Yoetz received it, or a permission
         # rule / another hook did (issue #467). Host tool-call authorization,
+        # The Stop pass drained this task's hook rows to the current frontier before the
+        # closure gate read status, or the bounded Stop drain left some pending (tb4n1 B4/C6).
+        "stop_drain_complete",
+        "stop_drain_incomplete",
         # not a Yoetz AI-powered review result: no AI-powered review status can be inferred.
         "host_auto_review_denied",
         "host_permission_rule_denied",

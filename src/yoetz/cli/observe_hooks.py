@@ -9,7 +9,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Awaitable, Callable, Generator, Mapping
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,6 +46,7 @@ from yoetz.adapters.integrations.observation_local import (
     observation_store_lock_scope,
     self_observation_deliverable,
 )
+from yoetz.adapters.integrations.observation_task_pending import task_pending_outbox_count
 from yoetz.adapters.workspace_binding import canonical_workspace_locator, resolve_workspace_locator
 from yoetz.cli import hook_io
 from yoetz.cli.closure_gate import (
@@ -99,7 +100,12 @@ from yoetz.domain.observation import (
     observation_ingest_result_from_json,
     observed_command_commitment,
 )
-from yoetz.domain.observation_budget import ModeLimits, ObservationMode, mode_limits
+from yoetz.domain.observation_budget import (
+    AdmissionLossCause,
+    ModeLimits,
+    ObservationMode,
+    mode_limits,
+)
 from yoetz.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION,
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
@@ -190,8 +196,28 @@ _MAX_CONTENT_CHUNK: Final = 256 * 1024
 # Ingest rejections that are recoverable: keep the outbox entry pending for a
 # later drain. Anything else is permanently invalid and gets quarantined so it
 # is never silently dropped as if committed.
+# The drain budget is spent on service delivery only: its clock starts after the
+# service connection is open (the connect has its own preflight bound below), so
+# loading local state and a cold handshake no longer consume it. tb4n1 measured
+# `drain_budget_exhausted` on 94% of hooks when the connect shared this clock.
 _HOOK_DRAIN_BUDGET_SECONDS: Final = 0.20
-_HOOK_DRAIN_ROW_LIMIT: Final = 4
+_HOOK_DRAIN_ROW_LIMIT: Final = 8
+# Stop is the turn boundary the closure gate decides at. The Stop pass drains the
+# outbox toward the current frontier with a larger bounded slice, so the gate reads
+# observed facts instead of "still draining". The slice is clamped so the gate's own
+# status read keeps its reserve inside the host's ten-second Stop window.
+_STOP_DRAIN_BUDGET_SECONDS: Final = 2.5
+_STOP_DRAIN_ROW_LIMIT: Final = 64
+_STOP_CLOSURE_GATE_RESERVE_SECONDS: Final = 5.0
+# Headroom between the Stop drain's deadline and the gate's reserve check, for the local commit
+# and store-lock wait that can follow the last ingest.
+_STOP_DRAIN_DEADLINE_MARGIN_SECONDS: Final = 0.75
+# While another owner holds the drain lease, the Stop pass waits for that owner's progress, but
+# gives up once the workspace outbox has not moved at all for this long.
+_STOP_DRAIN_STALL_SECONDS: Final = 0.75
+# Every host renders a ten-second Stop window; the pass's observability budget is that window
+# less a small allowance for interpreter start and the output write.
+_STOP_PASS_BUDGET_SECONDS: Final = 9.5
 # Native Claude/Cursor ordinary-profile content is transient by design: it cannot
 # be copied to the structural outbox. Give every ordinary-profile pass a bounded
 # chance to drain its structural RPC, and give content-bearing passes enough time
@@ -2063,6 +2089,10 @@ def _hook_total_budget_seconds(event: str, *, native_content: bool = False) -> f
     """
 
     total = _HOOK_TOTAL_BUDGET_SECONDS
+    if event == "Stop":
+        # The Stop pass drains toward the current frontier and then reads status for the
+        # closure gate, both inside the host's ten-second Stop window (#994).
+        return _STOP_PASS_BUDGET_SECONDS
     if native_content:
         total += _NATIVE_CONTENT_DRAIN_BUDGET_SECONDS - _HOOK_DRAIN_BUDGET_SECONDS
     if event == "SessionStart" or event in _AUTO_ATTACH_RETRY_EVENTS:
@@ -2242,8 +2272,12 @@ async def _drain_outbox(
     monotonic: Callable[[], float] = time.monotonic,
     session_lock_owned: bool = False,
     drain_lease_owned: bool = False,
-) -> None:
+    row_limit: int = _HOOK_DRAIN_ROW_LIMIT,
+    deadline: float | None = None,
+) -> bool:
     """Drain the workspace outbox under a nonblocking per-workspace lease.
+
+    Returns whether this pass held the lease (and so attempted delivery itself).
 
     Codex runs async hooks concurrently; without the lease every concurrent
     hook re-ingests the identical backlog for zero extra delivery. Losing the
@@ -2268,21 +2302,35 @@ async def _drain_outbox(
             priority_source_identity=priority_source_identity,
             monotonic=monotonic,
             session_lock_owned=session_lock_owned,
+            row_limit=row_limit,
+            deadline=deadline,
         )
-        return
+        return True
 
     with store.drain_lease(workspace_commitment) as owned:
         if not owned:
             if content_by_source_identity:
                 # Native content chunks are intentionally absent from the
-                # durable outbox. A concurrent drain therefore cannot replay
-                # this hook's bytes; make that loss visible even though the
-                # structural row continues through the other owner.
-                store.note_coverage_gap(
-                    workspace_commitment,
-                    ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
+                # durable outbox, so the concurrent owner cannot replay this
+                # hook's bytes. Stage them into the service's encrypted capture
+                # handoff anyway: capture_only never advances the cursor or the
+                # ledger, so it needs no drain lease, and the owner (or the
+                # sweeper) that later delivers the structural row consumes the
+                # durable ticket. Only bytes that could not be staged are
+                # reported as a content gap.
+                await _stage_content_without_lease(
+                    store,
+                    workspace_commitment=workspace_commitment,
+                    content_by_source_identity=content_by_source_identity,
+                    content_capture_profile=content_capture_profile,
+                    connect=connect,
+                    event_name=event_name,
+                    _state=_state,
+                    budget_seconds=budget_seconds,
+                    monotonic=monotonic,
+                    deadline=deadline,
                 )
-            return
+            return False
         await _drain_outbox_leased(
             store,
             workspace_commitment=workspace_commitment,
@@ -2296,7 +2344,160 @@ async def _drain_outbox(
             priority_source_identity=priority_source_identity,
             monotonic=monotonic,
             session_lock_owned=session_lock_owned,
+            row_limit=row_limit,
+            deadline=deadline,
         )
+        return True
+
+
+def _drain_connect_timeout(deadline: float | None, monotonic: Callable[[], float]) -> float:
+    """The connect preflight bound, clamped to an absolute pass deadline when one is set."""
+
+    timeout = _HOOK_CONNECT_PREFLIGHT_SECONDS
+    if deadline is not None:
+        timeout = min(timeout, deadline - monotonic())
+    return timeout
+
+
+async def _stage_native_content(
+    client: _HookDrainClient,
+    store: LocalObservationStore,
+    *,
+    workspace_commitment: str,
+    all_pending: Sequence[ObservationOutboxRow],
+    content_by_source_identity: Mapping[str, tuple[ObservationContentChunk, ...]],
+    content_capture_profile: str | None,
+    remaining: Callable[[], float],
+    _state: Path | None,
+) -> set[str] | None:
+    """Stage transient native content into the service's durable encrypted handoff.
+
+    Returns the source identities whose bytes are now durable (the service answered the
+    distinct capture-pending reason only after the encrypted manifests and the retry ticket
+    committed), or ``None`` when a control failure ended staging; the caller then closes the
+    connection and stops. ``capture_only`` never advances the ingest cursor or the ledger.
+    """
+
+    import asyncio
+
+    from yoetz.application.observation_drain import ObservationControlFailure
+
+    staged_content_sources: set[str] = set()
+    for source_identity, chunks in content_by_source_identity.items():
+        if not chunks:
+            continue
+        source_row = next(
+            (row for row in all_pending if row.envelope.source_identity == source_identity),
+            None,
+        )
+        if source_row is None:
+            continue
+        source = source_row.envelope.source
+        codex_profileless = (
+            source is ObservationSource.CODEX_HOOK and content_capture_profile is None
+        )
+        profiled_native = (
+            source
+            in {
+                ObservationSource.CLAUDE_HOOK,
+                ObservationSource.CURSOR_HOOK,
+            }
+            and content_capture_profile is not None
+            and content_capture_profile_matches_source(source.value, content_capture_profile)
+        )
+        if not codex_profileless and not profiled_native:
+            continue
+        left = remaining()
+        if left <= 0:
+            break
+        try:
+            staged = await asyncio.wait_for(
+                _try_service_ingest(
+                    client,
+                    source_row.codex_session_id,
+                    source_row.envelope,
+                    content_chunks=chunks,
+                    content_capture_profile=content_capture_profile,
+                    capture_only=True,
+                    deadline_ms=max(1, int(left * 1_000)),
+                ),
+                timeout=left,
+            )
+        except TimeoutError:
+            break
+        if isinstance(staged, ObservationControlFailure):
+            from yoetz.cli.hook_diagnostics import record_drain_failure
+
+            if not record_drain_failure(staged, source_row.envelope, "retry", _state=_state):
+                store.note_coverage_gap(workspace_commitment, "drain_diagnostic_unavailable")
+            store.note_coverage_gap(
+                workspace_commitment, ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value
+            )
+            return None
+        if staged.reason == OBSERVATION_CONTENT_CAPTURE_PENDING_REASON:
+            staged_content_sources.add(source_identity)
+    return staged_content_sources
+
+
+async def _stage_content_without_lease(
+    store: LocalObservationStore,
+    *,
+    workspace_commitment: str,
+    content_by_source_identity: Mapping[str, tuple[ObservationContentChunk, ...]],
+    content_capture_profile: str | None,
+    connect: HookDrainConnector | None,
+    event_name: str,
+    _state: Path | None,
+    budget_seconds: float,
+    monotonic: Callable[[], float],
+    deadline: float | None = None,
+) -> None:
+    """Make this hook's transient content durable while another owner drains (B4, tb4n1).
+
+    Never raises. Every source whose bytes were not staged keeps the explicit
+    ``content_capture_unavailable`` gap, exactly as before this path existed.
+    """
+
+    import asyncio
+
+    from yoetz.ports.control import ControlClientKind
+
+    staged: set[str] = set()
+    client: _HookDrainClient | None = None
+    try:
+        all_pending = store.list_pending_outbox_rows(workspace_commitment)
+        if all_pending:
+            connector = cast(HookDrainConnector, _connect_service()) if connect is None else connect
+            timeout = _drain_connect_timeout(deadline, monotonic)
+            if timeout > 0:
+                client = await asyncio.wait_for(connector(ControlClientKind.CLI), timeout=timeout)
+                started = monotonic()
+                budget = budget_seconds
+                if deadline is not None:
+                    budget = min(budget, deadline - started)
+                result = await _stage_native_content(
+                    client,
+                    store,
+                    workspace_commitment=workspace_commitment,
+                    all_pending=all_pending,
+                    content_by_source_identity=content_by_source_identity,
+                    content_capture_profile=content_capture_profile,
+                    remaining=lambda: budget - (monotonic() - started),
+                    _state=_state,
+                )
+                staged = set() if result is None else result
+    except Exception:
+        record_hook_diagnostic("drain_preflight_failed", event_name, _state=_state)
+    finally:
+        if any(source not in staged for source in content_by_source_identity):
+            with contextlib.suppress(Exception):
+                store.note_coverage_gap(
+                    workspace_commitment,
+                    ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
+                )
+        if client is not None:
+            with contextlib.suppress(Exception):
+                await client.close()
 
 
 async def _drain_outbox_leased(
@@ -2313,6 +2514,8 @@ async def _drain_outbox_leased(
     priority_source_identity: str | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     session_lock_owned: bool = False,
+    row_limit: int = _HOOK_DRAIN_ROW_LIMIT,
+    deadline: float | None = None,
 ) -> None:
     """Drain all mapped-session work fairly; ack only after service commit.
 
@@ -2333,7 +2536,6 @@ async def _drain_outbox_leased(
     )
     from yoetz.ports.control import ControlClientKind
 
-    started = monotonic()
     all_pending = store.list_pending_outbox_rows(workspace_commitment)
     if not all_pending:
         if content_by_source_identity:
@@ -2345,7 +2547,10 @@ async def _drain_outbox_leased(
 
     connector = cast(HookDrainConnector, _connect_service()) if connect is None else connect
     client: _HookDrainClient
-    preflight_remaining = _HOOK_CONNECT_PREFLIGHT_SECONDS + budget_seconds - (monotonic() - started)
+    # The connect has its own preflight bound; the delivery budget starts only once the
+    # connection is open (tb4n1 B4). An absolute pass deadline (the Stop pass keeps the
+    # closure gate's reserve) clamps both.
+    preflight_remaining = _drain_connect_timeout(deadline, monotonic)
     if preflight_remaining <= 0:
         record_hook_diagnostic("drain_budget_exhausted", event_name, _state=_state)
         if content_by_source_identity:
@@ -2357,7 +2562,7 @@ async def _drain_outbox_leased(
     try:
         client = await asyncio.wait_for(
             connector(ControlClientKind.CLI),
-            timeout=min(_HOOK_CONNECT_PREFLIGHT_SECONDS, preflight_remaining),
+            timeout=preflight_remaining,
         )
     except Exception:
         record_hook_diagnostic("drain_preflight_failed", event_name, _state=_state)
@@ -2367,8 +2572,12 @@ async def _drain_outbox_leased(
                 ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
             )
         return
-    # One elapsed budget includes snapshot hydration, connection preflight,
-    # service calls and the local commit after each returned decision.
+    # The delivery clock starts here, after the connection opened: content staging, the
+    # lifecycle reconciliation, service calls and the local commit after each returned
+    # decision share it. Loading the local snapshot and the cold handshake do not.
+    started = monotonic()
+    if deadline is not None:
+        budget_seconds = min(budget_seconds, max(0.0, deadline - started))
 
     # Stage native content through the already-open service connection before
     # choosing a bounded FIFO prefix. The service returns the distinct pending
@@ -2376,61 +2585,21 @@ async def _drain_outbox_leased(
     # capture_only never advances the cursor or ledger.
     staged_content_sources: set[str] = set()
     if content_by_source_identity:
-        for source_identity, chunks in content_by_source_identity.items():
-            if not chunks:
-                continue
-            source_row = next(
-                (row for row in all_pending if row.envelope.source_identity == source_identity),
-                None,
-            )
-            if source_row is None:
-                continue
-            source = source_row.envelope.source
-            codex_profileless = (
-                source is ObservationSource.CODEX_HOOK and content_capture_profile is None
-            )
-            profiled_native = (
-                source
-                in {
-                    ObservationSource.CLAUDE_HOOK,
-                    ObservationSource.CURSOR_HOOK,
-                }
-                and content_capture_profile is not None
-                and content_capture_profile_matches_source(source.value, content_capture_profile)
-            )
-            if not codex_profileless and not profiled_native:
-                continue
-            remaining = budget_seconds - (monotonic() - started)
-            if remaining <= 0:
-                break
-            try:
-                staged = await asyncio.wait_for(
-                    _try_service_ingest(
-                        client,
-                        source_row.codex_session_id,
-                        source_row.envelope,
-                        content_chunks=chunks,
-                        content_capture_profile=content_capture_profile,
-                        capture_only=True,
-                        deadline_ms=max(1, int(remaining * 1_000)),
-                    ),
-                    timeout=remaining,
-                )
-            except TimeoutError:
-                break
-            if isinstance(staged, ObservationControlFailure):
-                from yoetz.cli.hook_diagnostics import record_drain_failure
-
-                if not record_drain_failure(staged, source_row.envelope, "retry", _state=_state):
-                    store.note_coverage_gap(workspace_commitment, "drain_diagnostic_unavailable")
-                store.note_coverage_gap(
-                    workspace_commitment, ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value
-                )
-                with contextlib.suppress(Exception):
-                    await client.close()
-                return
-            if staged.reason == OBSERVATION_CONTENT_CAPTURE_PENDING_REASON:
-                staged_content_sources.add(source_identity)
+        staged_result = await _stage_native_content(
+            client,
+            store,
+            workspace_commitment=workspace_commitment,
+            all_pending=all_pending,
+            content_by_source_identity=content_by_source_identity,
+            content_capture_profile=content_capture_profile,
+            remaining=lambda: budget_seconds - (monotonic() - started),
+            _state=_state,
+        )
+        if staged_result is None:
+            with contextlib.suppress(Exception):
+                await client.close()
+            return
+        staged_content_sources = staged_result
 
     grouped: dict[str, list[ObservationOutboxRow]] = {}
     for row in all_pending:
@@ -2440,7 +2609,7 @@ async def _drain_outbox_leased(
         session_order.remove(codex_session_id)
         session_order.insert(0, codex_session_id)
     pending: list[ObservationOutboxRow] = []
-    pending_limit = _HOOK_DRAIN_ROW_LIMIT
+    pending_limit = row_limit
     if priority_source_identity is not None:
         # Native content is not replayable, so make the current content row's
         # same-session prefix the first bounded work package. The prefix keeps
@@ -2467,7 +2636,8 @@ async def _drain_outbox_leased(
                 None,
             )
             if priority_index is not None:
-                prefix_count = min(priority_index + 1, _NATIVE_CONTENT_ROW_LIMIT)
+                pending_limit = max(row_limit, _NATIVE_CONTENT_ROW_LIMIT)
+                prefix_count = min(priority_index + 1, pending_limit)
                 pending.extend(priority_queue[:prefix_count])
                 remaining_priority = priority_queue[prefix_count:]
                 if remaining_priority:
@@ -2478,7 +2648,6 @@ async def _drain_outbox_leased(
                     session_order.remove(priority_row.codex_session_id)
                 if remaining_priority:
                     session_order.insert(0, priority_row.codex_session_id)
-                pending_limit = _NATIVE_CONTENT_ROW_LIMIT
     while grouped and len(pending) < pending_limit:
         for session_id in tuple(session_order):
             queue = grouped.get(session_id)
@@ -3541,9 +3710,10 @@ def note_payload_too_large(
     Usually the body was never parsed, so the only identity this pass can
     honestly claim is the host that ran it, the hook name that host named on
     its own command line, and the bound itself. Even the true size is unknown
-    by construction: the ingress reads at most cap-plus-one bytes and stops.
-    Cursor may parse a body up to its skim cap and still find no row to keep
-    (invalid, no session, or no resolvable workspace); that loss lands here too.
+    by construction: the ingress reads at most skim-cap-plus-one bytes and
+    stops. A body inside the skim cap normally keeps a structural row (tb4n1
+    B5); one that fails the skim's safety checks, or (Cursor) keeps no row
+    (invalid, no session, or no resolvable workspace), lands here too.
     Nothing is inferred from unread bytes, and no structural row is minted.
 
     Two records, because there are two audiences. The bounded owner-only
@@ -3612,11 +3782,116 @@ def _report_session_end_unrecorded(event: str, *, _state: Path | None) -> None:
     record_hook_diagnostic("session_end_unrecorded", event, _state=_state)
 
 
+def _task_pending_outbox_count(
+    store: LocalObservationStore,
+    *,
+    workspace_commitment: str,
+    codex_session_id: str,
+    yoetz_session_id: str,
+    _state: Path | None,
+) -> int:
+    """Count local outbox rows still pending that can still change this task's observed facts.
+
+    A row counts when it belongs to this host session or to another host session mapped to
+    the same Yoetz session (a delegated child lane). Rows of other tasks sharing the workspace,
+    and rows of unmapped sessions (which cannot reach any task ledger until mapped), do not
+    hold this task's Stop decision. The shared helper also backs the service's optional
+    pre-check wait (``check`` with ``await_observations``, issue #1012).
+    """
+
+    return task_pending_outbox_count(
+        store,
+        workspace_commitment=workspace_commitment,
+        yoetz_session_id=yoetz_session_id,
+        codex_session_id=codex_session_id,
+        _state=_state,
+    )
+
+
+async def _finish_stop_drain(
+    store: LocalObservationStore,
+    *,
+    workspace_commitment: str,
+    codex_session_id: str,
+    yoetz_session_id: str,
+    connect: HookDrainConnector | None,
+    _state: Path | None,
+    deadline: float,
+    monotonic: Callable[[], float],
+    session_lock_owned: bool,
+) -> int:
+    """Drain this task's rows to the current frontier inside the Stop window (tb4n1 B4/C6).
+
+    Returns the task's rows still pending. Bounded by ``deadline``, which keeps the closure
+    gate's status-read reserve. While another owner (a concurrent hook or the service
+    sweeper) holds the drain lease, the pass waits for that owner's progress instead of
+    giving up; when this pass held the lease and delivered nothing, the remaining rows are
+    blocked on a retryable service condition and are left to the sweeper.
+    """
+
+    import asyncio
+
+    from yoetz.adapters.integrations.observation_task_pending import task_pending_outbox_rows
+
+    def _snapshot() -> tuple[int, frozenset[tuple[str, int]]]:
+        """This task's pending count, and a fingerprint of the whole outbox's movement."""
+
+        task_left = len(
+            task_pending_outbox_rows(
+                store,
+                workspace_commitment=workspace_commitment,
+                yoetz_session_id=yoetz_session_id,
+                codex_session_id=codex_session_id,
+                _state=_state,
+            )
+        )
+        moving = frozenset(
+            (row.row_identity, row.attempts)
+            for row in store.list_pending_outbox_rows(workspace_commitment)
+        )
+        return task_left, moving
+
+    left, outbox = _snapshot()
+    last_progress = monotonic()
+    while left:
+        now = monotonic()
+        if now >= deadline or now - last_progress >= _STOP_DRAIN_STALL_SECONDS:
+            break
+        owned = await _drain_outbox(
+            store,
+            workspace_commitment=workspace_commitment,
+            codex_session_id=codex_session_id,
+            connect=connect,
+            event_name="Stop",
+            _state=_state,
+            budget_seconds=min(_STOP_DRAIN_BUDGET_SECONDS, deadline - now),
+            monotonic=monotonic,
+            session_lock_owned=session_lock_owned,
+            row_limit=_STOP_DRAIN_ROW_LIMIT,
+            deadline=deadline,
+        )
+        after, after_outbox = _snapshot()
+        # A pass that held the lease itself and delivered none of this task's rows is a blocked
+        # backlog (a retryable refusal), left to the sweeper. Behind another owner, any outbox
+        # movement is progress: it may deliver other tasks' rows, or retry, before reaching ours.
+        if owned and after >= left:
+            left = after
+            break
+        moved = owned or after_outbox != outbox
+        if moved:
+            last_progress = monotonic()
+        left, outbox = after, after_outbox
+        if left and not owned:
+            await asyncio.sleep(max(0.0, min(0.05, deadline - monotonic())))
+    return left
+
+
 def _decide_closure_gate(
     mapping: LifecycleMapping,
     *,
     store: LocalObservationStore,
     workspace_commitment: str,
+    codex_session_id: str,
     workspace_locator: str | None,
     payload: Mapping[str, JsonValue],
     connect: ServiceConnector | None,
@@ -3635,7 +3910,7 @@ def _decide_closure_gate(
     reason = "closure_gate_unavailable"
     gate: ClosureGate | None = None
     try:
-        if remaining_seconds < 5.0:
+        if remaining_seconds < _STOP_CLOSURE_GATE_RESERVE_SECONDS:
             reason = "closure_gate_budget_exhausted"
             return None
         from yoetz.cli.hooks import bound_connector, resolve_session_workspace
@@ -3652,8 +3927,20 @@ def _decide_closure_gate(
                 cast(Callable[..., Awaitable[object]], _connect_service()), locator
             )
         )
+        # Observed-run facts are used only when this task's hook rows have all reached the
+        # service: the Stop pass drained toward the current frontier just before this read.
+        # Rows of other tasks in the same workspace no longer suppress the facts (tb4n1 C6).
         try:
-            pending = store.pending_outbox_count(workspace_commitment) > 0
+            pending = (
+                _task_pending_outbox_count(
+                    store,
+                    workspace_commitment=workspace_commitment,
+                    codex_session_id=codex_session_id,
+                    yoetz_session_id=mapping.yoetz_session_id,
+                    _state=_state,
+                )
+                > 0
+            )
         except Exception:
             pending = True
         # Blockers this session was already re-asked about are honoured without asking again.
@@ -4289,7 +4576,10 @@ def handle_observe(
                 flush_ok = store.flush_selected_admission(
                     workspace_commitment,
                     summary_builder=build_routine_read_summary,
-                    force=material_boundary or resolved_event in {"SessionStart", "SessionEnd"},
+                    # Stop is a turn boundary: flush buffered routine accounts so the
+                    # Stop drain and the closure gate see this turn whole (tb4n1 B4/C6).
+                    force=material_boundary
+                    or resolved_event in {"SessionStart", "SessionEnd", "Stop"},
                     material_boundary=material_boundary,
                 )
             except ProtocolValueError:
@@ -4527,8 +4817,12 @@ def handle_observe(
                     )
                 )
             )
+            # Stop is never deferred: the closure gate decides there and must read the
+            # task's observed facts after this pass delivers them (tb4n1 B4/C6).
             defer_contentless_native_drain = (
-                native_profile_drain and content_map is None and resolved_event != "SessionStart"
+                native_profile_drain
+                and content_map is None
+                and resolved_event not in {"SessionStart", "Stop"}
             )
             native_content_drain_budget = (
                 _NATIVE_CONTENT_DRAIN_BUDGET_SECONDS
@@ -4570,17 +4864,33 @@ def handle_observe(
                 )
                 if not admitted:
                     if not flush_ok:
-                        store.record_admission_loss(workspace_commitment, envelope)
+                        store.record_admission_loss(
+                            workspace_commitment,
+                            envelope,
+                            cause=AdmissionLossCause.FLUSH_FAILED,
+                        )
                     if content_chunks:
                         store.note_coverage_gap(
                             workspace_commitment,
                             ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
                         )
                     if store.consume_admission_loss_notice(workspace_commitment):
+                        # The closed refusal dimension, never input content
+                        # (tb4n1 B3): `unknown` only if no range was recorded.
+                        loss_cause = (
+                            store.admission_loss_cause(workspace_commitment, envelope)
+                            or AdmissionLossCause.UNKNOWN
+                        )
                         _stderr_line(
-                            "hook_observe_degraded: outbox_overflow; loss accounted; see observe status"
+                            "hook_observe_degraded: outbox_overflow; loss accounted; "
+                            f"see observe status; cause={loss_cause.value}"
                         )
                         record_hook_diagnostic("outbox_overflow", resolved_event, _state=_state)
+                        record_hook_diagnostic(
+                            "admission_loss_" + loss_cause.value,
+                            resolved_event,
+                            _state=_state,
+                        )
                 elif read_protected and _is_post_event(resolved_event):
                     store.consume_read_protection(
                         workspace_commitment, session_commitment, envelope
@@ -4741,6 +5051,16 @@ def handle_observe(
                 )
             mapping = load_mapping(codex_session_id, _state=_state)
         drain_started = _monotonic()
+        # The Stop pass may spend more of its host window on delivery, up to the point that
+        # still leaves the closure gate its status-read reserve.
+        stop_drain_deadline: float | None = (
+            entry_started
+            + _hook_host_window_seconds(source, "Stop")
+            - _STOP_CLOSURE_GATE_RESERVE_SECONDS
+            - _STOP_DRAIN_DEADLINE_MARGIN_SECONDS
+            if resolved_event == "Stop"
+            else None
+        )
         if resolved_event == "SessionStart":
             session_source_value = _session_start_source(payload)
             if session_source_value != "clear":
@@ -5065,17 +5385,50 @@ def handle_observe(
                     budget_seconds=(
                         _SESSION_END_DRAIN_BUDGET_SECONDS
                         if resolved_event == "SessionEnd"
+                        else _STOP_DRAIN_BUDGET_SECONDS
+                        if resolved_event == "Stop"
                         else native_content_drain_budget
                     ),
                     priority_source_identity=native_content_priority,
                     monotonic=_monotonic,
                     session_lock_owned=_session_lock_owned,
                     drain_lease_owned=native_drain_lease_owned,
+                    row_limit=(
+                        _STOP_DRAIN_ROW_LIMIT if resolved_event == "Stop" else _HOOK_DRAIN_ROW_LIMIT
+                    ),
+                    deadline=stop_drain_deadline,
                 )
 
             with contextlib.suppress(Exception):
                 _resolve_runner()(_drain_all)
             _release_native_drain_lease()
+            if resolved_event == "Stop" and stop_drain_deadline is not None and mapping is not None:
+                # Finish the drain at Stop: the closure gate below then decides on observed
+                # facts. The outcome is a bounded diagnostic either way (tb4n1 B4/C6).
+                stop_mapping = mapping
+
+                async def _finish() -> int:
+                    assert stop_drain_deadline is not None
+                    return await _finish_stop_drain(
+                        store,
+                        workspace_commitment=workspace_commitment,
+                        codex_session_id=codex_session_id,
+                        yoetz_session_id=stop_mapping.yoetz_session_id,
+                        connect=cast(HookDrainConnector | None, connect),
+                        _state=_state,
+                        deadline=stop_drain_deadline,
+                        monotonic=_monotonic,
+                        session_lock_owned=_session_lock_owned,
+                    )
+
+                stop_left = 1
+                with contextlib.suppress(Exception):
+                    stop_left = cast(int, _resolve_runner()(_finish))
+                record_hook_diagnostic(
+                    "stop_drain_complete" if stop_left == 0 else "stop_drain_incomplete",
+                    resolved_event,
+                    _state=_state,
+                )
 
         if content_chunks and skip_service:
             # Content is intentionally ephemeral. Without a ready mapped
@@ -5111,6 +5464,7 @@ def handle_observe(
                 mapping,
                 store=store,
                 workspace_commitment=workspace_commitment,
+                codex_session_id=codex_session_id,
                 workspace_locator=workspace_locator,
                 payload=payload,
                 connect=connect,

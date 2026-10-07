@@ -8466,7 +8466,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `observation/closure-gate-blockers.json` (at most 64 per session). Hook diagnostic reasons:
   `closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_not_required`,
   `closure_gate_repeat_suppressed`, `closure_gate_loop_guard`, `closure_gate_budget_exhausted`,
-  `closure_gate_unavailable`.
+  `closure_gate_unavailable`. Before the gate reads status, the Stop pass drains the task's hook
+  rows toward the current frontier and records `stop_drain_complete` or `stop_drain_incomplete`;
+  `observation_pending` is true only when rows that can change this task's facts remain (#994).
 - **Text surfaces.** `domain/receipts.TASK_FACT_GAP_SENTENCES` holds one fixed sentence per task-fact
   code; `check_time_change_gap_sentence(code)` returns it, so receipt gap details and limitations,
   `render_human_check`/`render_human_status` and the MCP check summary show it. A publish rejection
