@@ -7691,9 +7691,12 @@ hook-captured tool output: authorship is the service-stamped envelope fact, carr
 case as `observation_event_ids`, the observation-authored events recorded after the request, emitted
 only when non-empty so other cases keep their bytes; and a result answers `verification_output` only
 when it carries output (linked evidence or a summary). Yoetz classifies each kept item as
-`agent_suppliable` or `structurally_unavailable_on_this_host` (a kind the effective review selection
-or channel can never carry, or a redacted target), adding `semantic_missing_agent_suppliable` and
-`semantic_missing_structurally_unavailable`. These are check limitations, never findings, and weigh
+`agent_suppliable`, `structurally_unavailable_on_this_host` (a kind the effective review selection
+or channel can never carry, or a redacted target) or a Yoetz limit (`yoetz_limit_unsupported_data_type`,
+`yoetz_limit_packet_room`, `yoetz_limit_repeated_request`; ADR-006, issue #983), adding
+`semantic_missing_agent_suppliable` or `semantic_missing_structurally_unavailable`. Only
+`agent_suppliable` is ever agent work. After a repeated request, later checks skip the AI-powered
+review and disclose the standing gap `semantic_review_skipped_insufficient_packet`. These are check limitations, never findings, and weigh
 on finding resolution exactly like the `semantic_packet_insufficient` they ride beside: a local
 issue is still proven absent, and a `fixed` ruling (#905) still resolves its own finding.
 
@@ -7992,8 +7995,9 @@ Wire (the earlier checklist fields remain available in their original versions):
   that way beside this continuation. When only standing or structurally unavailable limits remain,
   `overall_next.status` is
   `ready_with_limitations` and `acknowledged_incomplete_endpoint: receipt` keeps the supported
-  coverage-limited receipt path explicit. A `structurally_unavailable_on_this_host` item remains
-  a disclosed limitation; it does not become an impossible-to-do action.
+  coverage-limited receipt path explicit. A `structurally_unavailable_on_this_host` or
+  `yoetz_limit_*` item remains a disclosed limitation the agent verifies itself; it does not become
+  an impossible-to-do action, and it is never a blocker.
 - Stable identity: a challenge whose kind matches a recorded AI-powered finding, whose subject
   set is exactly that finding's (the receipt's issue key), and none of whose subjects was recorded
   after that finding (the evidence fingerprint) is a restatement. A narrower or wider challenge is

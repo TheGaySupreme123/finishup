@@ -1355,6 +1355,35 @@ carries `prior_finding_verdicts` (#905) and `missing_for_assessment`, and the un
 `check_recorded` 1.3.0 carries either optional field, or both; a check with neither keeps its
 bytes.
 
+### Yoetz review limits are never agent work (2026-10-07, tb4n1 D1/D3/F2, issue #983)
+
+TB4 run tb4n1 showed the #907 classification turned Yoetz's own packet limits into agent work: 82
+of 238 semantic checks returned `supply_missing_input`, every item `agent_suppliable`, including PNG
+schematics, CAD drawings and diffs the packet clipped for room. Agents fed excerpts in loops and
+reshaped deliverables to fit the packet; interleaved-vigenere moved its data table out of the
+delivered `cracker.py` and failed. Decision (owner, 2026-10-07): content the packet cannot show is
+Yoetz's own limit, marked as such for the agent, never a blocker; the agent verifies it itself.
+
+- The missing-item `availability` vocabulary gains three Yoetz-limit classes, all disclosed through
+  the existing standing gap `semantic_missing_structurally_unavailable` and never actionable:
+  `yoetz_limit_unsupported_data_type` (a target whose recorded file is an image, document, archive,
+  CAD or other binary format, matched lexically on its file name), `yoetz_limit_packet_room` (a
+  target the packet named but whose own content it could not carry, or a diff request while the
+  check-time change was clipped or redacted) and `yoetz_limit_repeated_request` (a repeat of an
+  earlier request that nothing directly tied to it answered). The enum is extended in place on the
+  unreleased `check_recorded` 1.3.0/1.4.0 and `check-result` 1.3.0/1.4.0.
+- One retry: the first request is the one retry; when the latest assessed review concluded
+  `insufficient_packet` naming only Yoetz limits and at least one repeat, later checks of the task
+  run without the AI-powered review (`not_requested`/`deterministic_mode`) and disclose the standing
+  gap `semantic_review_skipped_insufficient_packet`. Such a check counts as the current and closing
+  review for closure readiness, and it never weakens local proof. Semantic review helps only with
+  good data. A later review that concludes anything else clears the request and the skip; a skip
+  holds for the rest of the task otherwise (accepted cost: a late repair gets no AI-powered review).
+- Agent-facing text on every surface (CLI, MCP summary, receipt coverage note, guidance) says a
+  Yoetz limit is not work and never a blocker, and that the agent must never split, move, shrink,
+  stash, delete, `git add` (including `-N`) or git-ignore its work to fit the reviewer. The diff
+  answer rule names path evidence first, because plain `git diff` omits untracked files.
+
 ### Task statement apart from the agent plan (2026-09-30, issue #908)
 
 The reviewer was told to judge "the user's stated goal" but received only the agent's latest plan
@@ -1493,5 +1522,15 @@ claiming completion was never judged for completeness. Decisions:
   treats a packet limit as a reason for the agent to restructure its work. An admitted `fixed`
   ruling on a finding tolerates `semantic_review_refs_reduced` on that check; without one the gap
   still blocks AI-powered absence proof.
+- **Re-raises link by finding id (issue #980).** A provider challenge carries an optional
+  `restates`: the `fnd_` id of an earlier finding from the packet's `prior_finding_refs`. When the
+  fence admits it (listed in that packet, a readable open AI-powered finding inside the frozen
+  fence), the challenge mints no finding: it is recorded on that finding as `answered_not_fixed`
+  when the agent had answered it, else `still_present`, citing the challenge's refs, so the item
+  stays open, its review round advances once per concern, and the reviewer's summary and message
+  are appended to the recorded review summary under that id. A `restates` the fence rejects is
+  dropped and counted in `semantic_review_refs_reduced`; the challenge then stands on its own
+  (resolved and final items are never targets, so a re-raise after them is still a new finding).
+  Without `restates` the earlier exact-subject restatement and answered-reply rules are unchanged.
 - Out of scope, recorded for later: reviewer visibility (diff and test-output truncation, vendored
   trees) and reviewer-run commands.
