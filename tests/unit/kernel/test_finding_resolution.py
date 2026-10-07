@@ -318,6 +318,7 @@ def test_a_non_semantic_gap_weakens_every_proof_class(gap: str) -> None:
         "semantic_review_not_configured",
         "semantic_relevance_review_not_run",
         "optional_semantic_review_blocked_by_policy",
+        "semantic_review_skipped_insufficient_packet",
         # The check-time change is AI-powered review input only (ADR-031).
         *sorted(CHECK_TIME_CHANGE_GAPS),
     ),

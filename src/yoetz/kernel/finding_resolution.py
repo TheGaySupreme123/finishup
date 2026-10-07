@@ -68,6 +68,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
     SEMANTIC_REVIEW_REFS_REDUCED_GAP,
+    SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
 )
 from yoetz.domain.task_statement import (
@@ -174,6 +175,9 @@ CAPTURE_FAILURE_GAPS: Final = frozenset(
 _SEMANTIC_ONLY_GAPS: Final = frozenset(
     {
         SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
+        # The review round was skipped because the last two completed reviews could not assess
+        # the same content (TB4 tb4n1 D3): it says nothing about a local pack.
+        SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
         SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
         SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
         OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
