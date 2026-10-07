@@ -29,7 +29,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
-from yoetz.domain.findings import FINDING_KIND_TRAITS, ResponseDisposition
+from yoetz.domain.findings import (
+    FINDING_KIND_TRAITS,
+    Finding,
+    FindingKind,
+    FindingOrigin,
+    ResponseDisposition,
+)
 from yoetz.domain.values import FindingId
 from yoetz.kernel.finding_resolution import finding_is_resolved
 from yoetz.kernel.projections import ProjectionState
@@ -42,7 +48,10 @@ __all__ = [
     "FindingTodo",
     "FindingTodoCounts",
     "FindingTodoState",
+    "PREMISE_CHALLENGE_KINDS",
     "finding_blocks_receipt",
+    "is_premise_challenge",
+    "standing_premise_disputes",
     "finding_todo",
     "finding_todo_state",
     "todo_counts",
@@ -89,6 +98,9 @@ class FindingTodo:
     state: FindingTodoState
     review_rounds: int
     attempt_budget: int
+    # An ``acknowledged_not_done`` premise challenge the reviewer still disputes (TB4 tb4n1 D7a);
+    # see ``standing_premise_disputes``. Never changes the state.
+    premise_disputed: bool = False
 
     @property
     def budget_reached(self) -> bool:
@@ -143,7 +155,55 @@ def finding_todo(
     budget = _validated_budget(attempt_budget)
     record = state.findings.get(finding_id)
     rounds = 0 if record is None else record.review_rounds
-    return FindingTodo(finding_id, finding_todo_state(state, finding_id), rounds, budget)
+    todo_state = finding_todo_state(state, finding_id)
+    disputed = (
+        todo_state is FindingTodoState.ACKNOWLEDGED_NOT_DONE
+        and record is not None
+        and record.payload is not None
+        and is_premise_challenge(record.payload)
+    )
+    return FindingTodo(finding_id, todo_state, rounds, budget, disputed)
+
+
+# A premise challenge (TB4 tb4n1 D7a): the reviewer says a stated requirement is not delivered or
+# never attempted and asks the agent to do it (``act``). These are the reviewer's answer to an
+# agent concluding the outcome is impossible, infeasible or blocked (cargo, pretrain).
+PREMISE_CHALLENGE_KINDS: Final = frozenset(
+    {FindingKind.TASK_REQUIREMENT_UNMET, FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED}
+)
+
+
+def is_premise_challenge(finding: Finding) -> bool:
+    """Whether *finding* is an AI-powered challenge to the premise that the outcome is out of reach."""
+
+    return (
+        finding.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+        and finding.kind in PREMISE_CHALLENGE_KINDS
+        and finding.challenge is not None
+        and finding.challenge.requested_next_step == "act"
+    )
+
+
+def standing_premise_disputes(
+    state: ProjectionState, finding_ids: Iterable[FindingId] | None = None
+) -> tuple[FindingId, ...]:
+    """Premise challenges the agent answered ``acknowledged_not_done`` (TB4 tb4n1 D7a).
+
+    ``acknowledged_not_done`` keeps its meaning ("I will not do it") and stays final. But when the
+    reviewer challenged the agent's give-up itself (the requirement is unmet and the reviewer asked
+    for it to be done), the acknowledgement does not settle the dispute: the reviewer still
+    disputes the infeasibility conclusion. These items are returned in finding-id order so a
+    readiness or Stop surface can show them once as standing disputes. Nothing here changes a
+    to-do state, blocks a check, or closes anything; the receipt already keeps every
+    ``acknowledged_not_done`` item receipt-blocking.
+    """
+
+    candidates = state.findings if finding_ids is None else finding_ids
+    return tuple(
+        key
+        for key in sorted(candidates, key=str.encode)
+        if finding_todo(state, key).premise_disputed
+    )
 
 
 def finding_blocks_receipt(state: ProjectionState, finding_id: FindingId) -> bool:

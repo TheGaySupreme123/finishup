@@ -1799,7 +1799,8 @@ def apply_check_rulings(
     ``withdrawn`` ruling on an AI-powered finding whose latest readable response is ``rejected``
     latches ``rejection_accepted``; the reviewer accepted the agent's reasoned rejection. Final
     rows (resolved, ``rejection_accepted``, ``acknowledged_not_done``) never change, and nothing
-    here resolves or reopens a finding.
+    here resolves or reopens a finding. Every admitted ruling on a readable AI-powered finding also
+    becomes its ``last_reviewer_verdict`` (TB4 tb4n1 D7).
 
     One check can reach two terminal outcomes for the same rejected finding: an assessable review
     over changed state that does not return it satisfies the absence proof, so
@@ -1812,6 +1813,16 @@ def apply_check_rulings(
     """
 
     rulings = {item.finding_id: item.verdict for item in check.prior_finding_verdicts}
+    for ruled_id, ruling in rulings.items():
+        ruled = findings.get(ruled_id)
+        if (
+            ruled is not None
+            and ruled.payload is not None
+            and ruled.payload.origin is not FindingOrigin.DETERMINISTIC
+        ):
+            # The reviewer's newest answer on this item, carried to the next packet beside the
+            # agent's rebuttal count (TB4 tb4n1 D7). It is a dialogue fact, never a proof.
+            findings[ruled_id] = replace(ruled, last_reviewer_verdict=ruling)
     touched = frozenset(check.returned_finding_ids) | frozenset(rulings)
     for current_id in sorted(touched, key=str.encode):
         record = findings.get(current_id)

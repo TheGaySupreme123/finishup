@@ -37,7 +37,13 @@ from yoetz.domain.events import (
     encode_payload,
     is_observation_authored,
 )
-from yoetz.domain.findings import FINDING_KIND_TRAITS, CheckVerdict, Finding, FindingKind
+from yoetz.domain.findings import (
+    FINDING_KIND_TRAITS,
+    PRIOR_FINDING_VERDICTS,
+    CheckVerdict,
+    Finding,
+    FindingKind,
+)
 from yoetz.domain.values import (
     ActionId,
     ClaimId,
@@ -374,6 +380,13 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     ``resolution_raising_check_event_id`` names that same raising check when the resolution named
     by ``resolved_by_check_event_id`` qualified only through its recorded reduced scope. Redacting
     it reopens the finding exactly like redacting the proving check: unreadable proof is no proof.
+
+    The dialogue facts (TB4 tb4n1 D7) record every rebuttal and the reviewer's answer to it:
+    ``rebuttal_count`` counts the agent's ``rejected`` responses recorded on this finding (each
+    respond is its own event; the projection otherwise keeps only the latest), and
+    ``last_reviewer_verdict`` is the newest admitted reviewer ruling on it (``fixed``,
+    ``still_present``, ``answered_not_fixed``, ``withdrawn`` or ``unassessable``). Both are carried
+    to the next review packet's prior-finding row; neither closes or reopens anything.
     """
 
     resolved_by_check_event_id: EventId | None = None
@@ -384,10 +397,22 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     resolution_depends_on_check_event_ids: tuple[EventId, ...] = ()
     reduced_scope_raising_check_event_id: EventId | None = None
     resolution_raising_check_event_id: EventId | None = None
+    rebuttal_count: int = 0
+    last_reviewer_verdict: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.payload is not None and type(self.payload) is not Finding:
+            raise _invalid()
+        if (
+            type(self.rebuttal_count) is not int
+            or not 0 <= self.rebuttal_count <= _MAX_SQLITE_SIGNED_INTEGER
+        ):
+            raise _invalid()
+        if self.last_reviewer_verdict is not None and (
+            type(self.last_reviewer_verdict) is not str
+            or self.last_reviewer_verdict not in PRIOR_FINDING_VERDICTS
+        ):
             raise _invalid()
         for name in _FINDING_RESOLUTION_EVENT_FIELDS:
             value = getattr(self, name)
@@ -1143,6 +1168,11 @@ def _record_snapshot(record: _ProjectionRecordLike) -> dict[str, JsonValue]:
             )
         if record.resolution_raising_check_event_id is not None:
             result["resolution_raising_check_event_id"] = record.resolution_raising_check_event_id
+        # TB4 tb4n1 D7 dialogue facts: emitted only when set, so earlier snapshots keep their bytes.
+        if record.rebuttal_count:
+            result["rebuttal_count"] = record.rebuttal_count
+        if record.last_reviewer_verdict is not None:
+            result["last_reviewer_verdict"] = record.last_reviewer_verdict
     return result
 
 
@@ -1435,6 +1465,8 @@ def _record_from_snapshot(
                 "check_change_raising_check_event_ids",
                 "check_change_raised_files",
                 "resolution_depends_on_check_event_ids",
+                "rebuttal_count",
+                "last_reviewer_verdict",
             }
         )
     else:
@@ -1537,6 +1569,12 @@ def _record_from_snapshot(
         rounds = source.get("review_rounds", 0)
         if "review_rounds" in source and (type(rounds) is not int or rounds < 1):
             raise _invalid()
+        rebuttals = source.get("rebuttal_count", 0)
+        if "rebuttal_count" in source and (type(rebuttals) is not int or rebuttals < 1):
+            raise _invalid()
+        last_verdict = source.get("last_reviewer_verdict")
+        if "last_reviewer_verdict" in source and type(last_verdict) is not str:
+            raise _invalid()
 
         def event_ids(name: str) -> tuple[EventId, ...]:
             raw = source.get(name)
@@ -1575,6 +1613,8 @@ def _record_from_snapshot(
             resolution_raising_check_event_id=cast(
                 EventId | None, source.get("resolution_raising_check_event_id")
             ),
+            rebuttal_count=cast(int, rebuttals),
+            last_reviewer_verdict=cast(str | None, last_verdict),
         )
     return ProjectionRecord(
         payload=payload,

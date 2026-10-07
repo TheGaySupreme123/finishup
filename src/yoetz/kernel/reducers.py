@@ -1364,6 +1364,16 @@ def reduce_event(
                 if payload is None
                 else _projection_record(accepted, cast(ResponseRecordedPayload, payload))
             )
+            rebutted = findings.get(key)
+            if (
+                payload is not None
+                and rebutted is not None
+                and cast(ResponseRecordedPayload, payload).disposition
+                is ResponseDisposition.REJECTED
+            ):
+                # Every rebuttal is counted, not only the latest response (TB4 tb4n1 D7): the
+                # next review packet carries the count beside the reviewer's last verdict.
+                findings[key] = replace(rebutted, rebuttal_count=rebutted.rebuttal_count + 1)
         elif family == "coordination_context_recorded":
             if accepted.event_id in coordination_contexts:
                 raise _corrupt()

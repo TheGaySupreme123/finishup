@@ -474,3 +474,78 @@ def test_a_final_item_never_gains_review_rounds() -> None:
     open_findings = {fnd(1): finding_record(_finding(1), 4)}
     apply_check_rulings(open_findings, {}, check, evt(9))
     assert open_findings[fnd(1)].review_rounds == 1
+
+
+def _premise(number: int, next_step: str = "act") -> Finding:
+    from yoetz.domain.findings import FindingChallenge, finding_policy_identity
+
+    kind = FindingKind.TASK_REQUIREMENT_UNMET
+    policy_id, policy_version = finding_policy_identity(kind)
+    return replace(
+        _semantic(number),
+        kind=kind,
+        priority=FINDING_KIND_TRAITS[kind][0],
+        policy_id=policy_id,
+        policy_version=policy_version,
+        summary="The required dispatchable single-tour plan is not delivered.",
+        challenge=FindingChallenge(
+            discrepancy="The task requires one dispatchable tour; none is delivered.",
+            alternative_interpretation="A tour may be infeasible under the MTOW limit.",
+            requested_next_step=next_step,
+            uncertainty="Whether fuel planning can bring the tour under the limit.",
+        ),
+    )
+
+
+def test_an_acknowledged_premise_challenge_stays_a_standing_dispute() -> None:
+    """TB4 tb4n1 D7a (cargo): ``acknowledged_not_done`` must not silently end a premise challenge.
+
+    The acknowledgement keeps its meaning and stays final; the item is flagged as a dispute the
+    reviewer still holds, for a readiness or Stop surface to show. A disclosure-only request, a
+    local finding, an open item and another kind are not premise disputes.
+    """
+
+    from yoetz.kernel.finding_todo import is_premise_challenge, standing_premise_disputes
+
+    findings = {
+        fnd(1): finding_record(_premise(1), 4),
+        fnd(2): finding_record(_premise(2, "state_unresolved_limitation"), 4),
+        fnd(3): finding_record(_premise(3), 4),
+        fnd(4): finding_record(_semantic(4), 4),
+    }
+    responses = {
+        fnd(1): _response(1, ResponseDisposition.ACKNOWLEDGED_NOT_DONE),
+        fnd(2): _response(2, ResponseDisposition.ACKNOWLEDGED_NOT_DONE),
+        fnd(4): _response(4, ResponseDisposition.ACKNOWLEDGED_NOT_DONE),
+    }
+    state = _state(findings, responses)
+    assert is_premise_challenge(_premise(1)) and not is_premise_challenge(_semantic(4))
+    assert standing_premise_disputes(state) == (fnd(1),)
+    todo = finding_todo(state, fnd(1))
+    assert todo.state is FindingTodoState.ACKNOWLEDGED_NOT_DONE and todo.premise_disputed
+    assert finding_todo(state, fnd(3)).premise_disputed is False  # still open: no dispute yet
+    assert finding_blocks_receipt(state, fnd(1)) is True
+
+
+def test_rebuttals_and_the_last_reviewer_verdict_are_recorded_and_round_trip() -> None:
+    """TB4 tb4n1 D7b: every rebuttal is counted and the reviewer's newest ruling is kept."""
+
+    findings = {fnd(1): finding_record(_semantic(1), 4), fnd(2): finding_record(_finding(2), 4)}
+    apply_check_rulings(
+        findings, {}, _check(rulings=((1, "answered_not_fixed"), (2, "still_present"))), evt(9)
+    )
+    assert findings[fnd(1)].last_reviewer_verdict == "answered_not_fixed"
+    assert findings[fnd(2)].last_reviewer_verdict is None  # a local finding is not ruled
+    apply_check_rulings(findings, {}, _check(rulings=((1, "unassessable"),)), evt(10))
+    assert findings[fnd(1)].last_reviewer_verdict == "unassessable"
+    counted = replace(findings[fnd(1)], rebuttal_count=2)
+    state = _state({fnd(1): counted, fnd(2): findings[fnd(2)]})
+    snapshot = projection_snapshot(state)
+    rows = snapshot["findings"]
+    assert isinstance(rows, dict)
+    assert "rebuttal_count" not in rows[fnd(2)]  # type: ignore[operator]
+    assert "last_reviewer_verdict" not in rows[fnd(2)]  # type: ignore[operator]
+    decoded = projection_from_snapshot(snapshot)
+    assert decoded == state
+    with pytest.raises(ValueError, match="invalid_projection_state"):
+        replace(counted, last_reviewer_verdict="maybe")

@@ -3771,7 +3771,7 @@ def _judgment_from_response_json(value: object) -> object:
                     cast(ReviewerNextStep, next_step),
                     cast(str, row["uncertainty"]),
                     snippet,
-                    cast(str | None, restates),
+                    restates,
                 )
             )
         except (KeyError, TypeError, ValueError) as exc:

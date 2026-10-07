@@ -2648,6 +2648,15 @@ def _prior_finding_items(
         body["relates_to"] = related
     if payload.challenge is not None:
         body["requested_next_step"] = payload.challenge.requested_next_step
+    # The dialogue so far (TB4 tb4n1 D7): how many times the agent rebutted this finding, the
+    # reviewer's newest ruling on it, and the review rounds it has been left open. Emitted only
+    # when set, so a finding without dialogue keeps its earlier row bytes.
+    if record.rebuttal_count:
+        body["rebuttal_count"] = record.rebuttal_count
+    if record.last_reviewer_verdict is not None:
+        body["last_reviewer_verdict"] = record.last_reviewer_verdict
+    if record.review_rounds:
+        body["review_rounds"] = record.review_rounds
     if response_record is not None and response is None:
         body["response"] = {"visibility": "redacted_never_send"}
     elif response_record is not None and response is not None:
