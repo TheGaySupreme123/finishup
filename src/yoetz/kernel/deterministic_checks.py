@@ -464,11 +464,15 @@ DETERMINISTIC_FINDING_TEMPLATES: Final[
         FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED: DeterministicFindingTemplate(
             "A requested item has no recorded attempt.",
             "Attempt the requested item and record the action naming it in attempted_items."
-            " Revise the obligation only if the user's request itself changed. If something"
-            " outside your control (authority, consent, credentials, a dependency you cannot"
-            " obtain) prevents it, record a decision_recorded naming the obligation in"
+            " Revise the obligation only if the user's request itself changed. If you did the"
+            " work and Yoetz cannot show it (a Yoetz limit), verify it yourself and respond"
+            " self_verified with your evidence; a Yoetz limit is never a blocker. Only when"
+            " something genuinely outside your control (authority, consent, a credential, a"
+            " dependency you cannot obtain) prevents this open obligation, and the task does not"
+            " say the outcome is recoverable, record a decision_recorded naming it in"
             " affected_obligation_ids with the statement line yoetz-blocker:<authority|consent|"
-            "credential|dependency_unavailable>.",
+            "credential|dependency_unavailable>; Yoetz challenges it, and it counts only once you"
+            " publish the same line again in a later decision.",
         ),
         FindingKind.FAILED_WORK_OMITTED: DeterministicFindingTemplate(
             "Recorded failed work is omitted from the published account.",
