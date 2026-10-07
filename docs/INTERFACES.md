@@ -8302,10 +8302,13 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   parts with ids `change-check-time-NNN`, section `excerpt`, category `repository_excerpt`, source
   kind `diff`, source ref `check-time-change`, linked to effective claims and obligations (else the
   latest plan), each prefixed `[Yoetz check-time change, part i of n]`. Each part is at most
-  `min(max_excerpt_bytes, max_total_excerpt_bytes, 4 KiB, item bound)` bytes, marker included.
-  `_check_time_change_reservation(selection, first_part_bytes)` returns the share admitted before
-  other excerpts (half the excerpt count, at least one, and half the total bytes rounded up to the
-  first part); leftovers backfill after every other excerpt. The case digest binds the object
+  `min(max_excerpt_bytes, max_total_excerpt_bytes, item bound)` bytes, marker included (16 KiB
+  under Expanded; issue #983). `_check_time_change_reservation(selection, first_part_bytes)`
+  returns the share admitted before other excerpts (half the excerpt count, at least one, and half
+  the total bytes rounded up to the first part). Leftover parts take the room the reserved excerpt
+  ranks (current diff, latest verification, prior-finding context) leave, ahead of older edit
+  hunks and unreserved or superseded excerpts; any still left backfill after every other excerpt.
+  Untracked files are read up to `MAX_CHECK_CHANGE_TEXT_BYTES` less the header budget (232 KiB). The case digest binds the object
   identity, content digest, base, flags, admitted part count and any unavailability reason; a case
   without a selected change keeps its historical digest input.
 - **Unavailability reasons.** `CheckChangeOutcome.reason` and the builder's reason are keys of

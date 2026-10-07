@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Final, Literal, NamedTuple, cast
@@ -609,8 +609,11 @@ def _check_time_change_reservation(
     to the service-captured change first. The byte share is rounded up to the change's first part,
     so a recipe whose total budget carries one part always admits it ahead of every other excerpt
     (a part is never larger than that total, see ``_check_time_change_part_limit``). Room it does
-    not use stays with the other excerpts; its parts left over after every other excerpt backfill
-    whatever the recipe still has free.
+    not use stays with the other excerpts. Its parts left over then take every byte and slot the
+    reserved excerpt classes (the newest captured edit per path, the latest verification runs and
+    finding repair evidence) leave, ahead of older edit hunks and general tool output (issue #983):
+    the service's own capture is the current state of those hunks, and a planned case narrows the
+    lower-ranked excerpts before the change.
     """
 
     return (
@@ -620,11 +623,17 @@ def _check_time_change_reservation(
 
 
 def _check_time_change_part_limit(selection: ReviewSelectionPolicy) -> int:
-    # A part never exceeds the recipe's whole excerpt budget, so one part always fits it.
+    """The largest check-time change part, marker included (issue #983).
+
+    A part is an excerpt, so it takes the recipe's per-excerpt bound (16 KiB under the Expanded
+    preset) like every other excerpt, not the 4 KiB bound of a structural prose item. Fewer,
+    larger parts also spend less of the case on per-item rows. A part never exceeds the recipe's
+    whole excerpt budget, so one part always fits it.
+    """
+
     return min(
         selection.max_excerpt_bytes,
         selection.max_total_excerpt_bytes,
-        MAX_REVIEW_TEXT_BYTES,
         MAX_SEMANTIC_ITEM_BYTES,
     )
 
@@ -1806,6 +1815,12 @@ class _ExcerptCandidate:
     structural_only: bool = False
 
 
+# Offered (free slots, free bytes); returns the items and refs it admitted in that room.
+type _LowerRankAdmission = Callable[
+    [int, int], tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]
+]
+
+
 @dataclass(frozen=True, slots=True)
 class _ExcerptSelection:
     items: tuple[SemanticCaseItem, ...]
@@ -2194,6 +2209,7 @@ def _select_targeted_excerpts(
     captured_group_leader: Mapping[str, str],
     excerpt_byte_budget: int,
     excerpt_count_budget: int | None = None,
+    before_lower_ranks: _LowerRankAdmission | None = None,
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -2204,6 +2220,10 @@ def _select_targeted_excerpts(
     then by link class; older runs of the same command come last. Older hunks and runs are marked
     ``superseded_by``. Every excerpt still holds exactly one
     recorded source or one part of one capture.
+
+    ``before_lower_ranks`` is offered the slots and bytes the reserved classes (current diff,
+    latest verification, finding repair evidence) leave, once, before any older edit hunk or
+    unreserved excerpt is considered; what it admits is listed at that rank (issue #983).
     """
 
     repair_refs = repair_evidence_refs(projection, allowed)
@@ -2451,8 +2471,25 @@ def _select_targeted_excerpts(
         if excerpt_count_budget is None
         else max(0, min(selection.max_excerpts, excerpt_count_budget))
     )
+    lower_ranks_offered = before_lower_ranks is None
+
+    def offer_lower_rank_room() -> None:
+        nonlocal excerpt_bytes_used, lower_ranks_offered
+        lower_ranks_offered = True
+        if before_lower_ranks is None:
+            return
+        admitted_items, admitted_refs = before_lower_ranks(
+            max(0, excerpt_count_limit - len(targeted)),
+            max(0, excerpt_byte_budget - excerpt_bytes_used),
+        )
+        items.extend(admitted_items)
+        targeted.extend(admitted_refs)
+        excerpt_bytes_used += sum(ref.content_bytes for ref in admitted_refs)
+
     for index in sorted(range(len(candidates)), key=rank):
         candidate = candidates[index]
+        if not lower_ranks_offered and rank(index)[0] >= _RANK_OLDER_EDIT:
+            offer_lower_rank_room()
         admitted_before = len(targeted)
         truncated = candidate.clipped
         admitted_item_ids: list[str] = []
@@ -2513,6 +2550,8 @@ def _select_targeted_excerpts(
         if truncated and len(targeted) > admitted_before:
             gaps.add("truncated_payload")
             truncated_item_ids.update(admitted_item_ids)
+    if not lower_ranks_offered:
+        offer_lower_rank_room()
     return _ExcerptSelection(
         items=tuple(items),
         targeted=tuple(targeted),
@@ -3698,22 +3737,21 @@ def _build_semantic_case_once(
                 change.text, _check_time_change_part_limit(selection)
             )
 
-    def admit_check_time_change(slot_limit: int, byte_limit: int) -> None:
-        """Admit the next check-time change parts within one budget share (ADR-031)."""
+    def check_time_change_parts(
+        slot_limit: int, byte_limit: int
+    ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
+        """The next check-time change parts within one share of the room (ADR-031, #983)."""
 
-        nonlocal excerpt_bytes_used, check_change_admitted
-        slots_used = 0
+        nonlocal check_change_admitted
+        admitted_items: list[SemanticCaseItem] = []
+        admitted_refs: list[TargetedExcerptRef] = []
         bytes_used = 0
-        while check_change_admitted < len(check_change_parts):
+        part_limit = _check_time_change_part_limit(selection)
+        while check_change_admitted < len(check_change_parts) and len(admitted_refs) < slot_limit:
             part = check_change_parts[check_change_admitted]
             size = len(part.encode("utf-8"))
-            if (
-                slots_used >= slot_limit
-                or bytes_used + size > byte_limit
-                or len(targeted) >= selection.max_excerpts
-                or excerpt_bytes_used + size > total_excerpt_budget
-            ):
-                return
+            if bytes_used + size > byte_limit:
+                break
             item = _content_item(
                 item_id=f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{check_change_admitted + 1:03d}",
                 section="excerpt",
@@ -3727,9 +3765,10 @@ def _build_semantic_case_once(
                 occurred_order=0,
                 text=part,
                 over_limit=over_limit,
+                limit=part_limit,
             )
-            items.append(item)
-            targeted.append(
+            admitted_items.append(item)
+            admitted_refs.append(
                 TargetedExcerptRef(
                     excerpt_item_id=item.item_id,
                     source_kind="diff",
@@ -3740,10 +3779,21 @@ def _build_semantic_case_once(
                     content_bytes=item.content_bytes,
                 )
             )
-            excerpt_bytes_used += item.content_bytes
-            slots_used += 1
             bytes_used += item.content_bytes
             check_change_admitted += 1
+        return tuple(admitted_items), tuple(admitted_refs)
+
+    def admit_check_time_change(slot_limit: int, byte_limit: int) -> None:
+        """Admit the next parts within one share and what the whole budget still has free."""
+
+        nonlocal excerpt_bytes_used
+        admitted_items, admitted_refs = check_time_change_parts(
+            min(slot_limit, max(0, selection.max_excerpts - len(targeted))),
+            min(byte_limit, max(0, total_excerpt_budget - excerpt_bytes_used)),
+        )
+        items.extend(admitted_items)
+        targeted.extend(admitted_refs)
+        excerpt_bytes_used += sum(ref.content_bytes for ref in admitted_refs)
 
     if "targeted_excerpts" in sections and selection.max_excerpts > 0:
         # The service-captured change takes its reserved share first; see
@@ -3754,7 +3804,9 @@ def _build_semantic_case_once(
                 len(check_change_parts[0].encode("utf-8")) if check_change_parts else 0,
             )
         )
-        # Recorded excerpts then fill what the change left, most valuable first (#907).
+        # Recorded excerpts then fill what the change left, most valuable first (#907). The
+        # change's remaining parts take the room the reserved classes leave, ahead of older edit
+        # hunks and general output (#983), so a planned case narrows those first.
         excerpts = _select_targeted_excerpts(
             projection=projection,
             allowed=allowed,
@@ -3765,6 +3817,7 @@ def _build_semantic_case_once(
             captured_group_leader=captured_group_leader,
             excerpt_count_budget=selection.max_excerpts - len(targeted),
             excerpt_byte_budget=(max(0, total_excerpt_budget - excerpt_bytes_used)),
+            before_lower_ranks=check_time_change_parts if check_change_parts else None,
         )
         items.extend(excerpts.items)
         targeted.extend(excerpts.targeted)
@@ -3774,7 +3827,7 @@ def _build_semantic_case_once(
         truncated_item_ids.update(excerpts.truncated_item_ids)
         excerpt_bytes_used += sum(ref.content_bytes for ref in excerpts.targeted)
 
-        # Parts the reservation could not hold backfill whatever budget the others left.
+        # Parts still left backfill whatever budget every other excerpt left.
         admit_check_time_change(selection.max_excerpts, selection.max_total_excerpt_bytes)
 
     if check_time_change is not None:

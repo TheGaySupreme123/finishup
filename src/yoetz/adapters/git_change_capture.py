@@ -69,9 +69,12 @@ _WHOLE_DIFF_LIMIT: Final = 8 * 1024 * 1024
 _PER_FILE_DIFF_LIMIT: Final = 1024 * 1024
 _MAX_PER_FILE_DIFFS: Final = 400
 _MAX_UNTRACKED_FILES: Final = 500
-_MAX_UNTRACKED_FILE_BYTES: Final = 65_536
 _BINARY_PROBE_BYTES: Final = 8_000
 _HEADER_BUDGET: Final = 24_576
+# An untracked file is read up to the largest body the capture can carry at all (issue #983): a
+# single new source file of a few hundred KiB is the deliverable, so naming it only would hide it
+# from review. A larger file, or one the remaining body room cannot hold, is still left out whole.
+_MAX_UNTRACKED_FILE_BYTES: Final = MAX_CHECK_CHANGE_TEXT_BYTES - _HEADER_BUDGET
 _MAX_LISTED_FILES: Final = 100
 _MAX_LISTED_PATH_BYTES: Final = 200
 # Room kept for the header lines written after the file listing.

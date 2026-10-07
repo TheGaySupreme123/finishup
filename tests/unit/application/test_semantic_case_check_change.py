@@ -169,23 +169,31 @@ def test_change_is_the_first_excerpt_linked_to_claims_and_obligations() -> None:
 
 
 def test_reserved_share_holds_against_competing_captures_and_backfills_free_room() -> None:
+    # Issue #983 deliberately replaced the 4 KiB parts (16 slots, 15 parts) this case locked: a
+    # part is now one 16 KiB excerpt, and the parts the reservation could not hold take the room
+    # ahead of unreserved tool output, which still gets the bytes left after them.
     case, captured, scope = _captured_case_values(b"competing-tool-output-marker")
-    change = _change(_large_change(20))
+    change = _change(_large_change(40))
 
     semantic = _build(case, change=change, captured=(captured,), scope=scope)
 
     change_ids = _change_items(semantic)
     excerpt_ids = [item.excerpt_item_id for item in semantic.packet.targeted_excerpts]
-    # Eight parts are reserved first, the capture still gets its slot, and the rest of the
-    # budget backfills more parts afterwards.
-    assert excerpt_ids[:8] == change_ids[:8]
-    assert f"excerpt-{evd(1)}" in excerpt_ids
-    assert len(excerpt_ids) == 16
-    assert len(change_ids) == 15
+    # Four 16 KiB parts are the reserved half of the 128 KiB budget, four more take the room the
+    # unreserved capture would otherwise have taken, and the capture still fits what is left.
+    assert (
+        excerpt_ids[:8]
+        == change_ids
+        == [f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}" for index in range(1, 9)]
+    )
+    assert excerpt_ids[8:] == [f"excerpt-{evd(1)}"]
+    assert all(
+        16_000 < item.content_bytes <= 16_384 for item in semantic.packet.targeted_excerpts[:8]
+    )
     assert CHECK_TIME_CHANGE_TRUNCATED_GAP in semantic.packet.coverage.known_gaps
     assert semantic.packet.coverage.ledger_freshness is LedgerFreshness.PARTIAL
     last = next(item for item in semantic.items if item.item_id == change_ids[-1])
-    assert last.content.startswith(b"[Yoetz check-time change, part 15 of ")
+    assert last.content.startswith(b"[Yoetz check-time change, part 8 of 10]")
 
 
 def test_small_change_leaves_its_unused_reservation_to_other_excerpts() -> None:
@@ -286,7 +294,7 @@ def test_case_digest_binds_the_change_and_is_unchanged_without_one() -> None:
 
 
 def test_parts_split_on_lines_and_stay_within_one_item() -> None:
-    text = b"".join(f"+line {index:05d} {'y' * 40}\n".encode() for index in range(300))
+    text = b"".join(f"+line {index:05d} {'y' * 40}\n".encode() for index in range(1_200))
 
     semantic = _build(_case_with_material(), change=_change(text))
 
@@ -296,7 +304,8 @@ def test_parts_split_on_lines_and_stay_within_one_item() -> None:
     assert len(items) > 1
     joined = b""
     for index, item in enumerate(items, start=1):
-        assert item.content_bytes <= 4_096
+        # One excerpt's bound (issue #983), no longer the 4 KiB structural prose bound.
+        assert item.content_bytes <= 16_384
         header, _, body = item.content.partition(b"\n")
         assert header == f"[Yoetz check-time change, part {index} of {len(items)}]".encode()
         assert body.endswith(b"\n")
@@ -345,8 +354,9 @@ def test_shown_files_follow_the_admitted_parts_and_redaction() -> None:
         header
         + _section("whole.ts", 3)
         + _section("redacted.ts", 2).replace(b"x" * 60, b"[REDACTED]" + b"x" * 50, 1)
-        + _section("cut.ts", 1_500)
-        + _section("never.ts", 1_500)
+        # Larger than the whole 128 KiB excerpt budget now that a part is 16 KiB (issue #983).
+        + _section("cut.ts", 2_100)
+        + _section("never.ts", 200)
     )
     change = _change(text)
     case = _build(_case_with_material(), change=change)
@@ -490,11 +500,12 @@ def test_parts_carried_are_counted_from_the_bounded_envelope(
     # not the case before envelope minimization dropped catalog rows.
     import yoetz.application.semantic_case as semantic_case_module
 
-    semantic = _build(_case_with_material(), change=_change(_large_change(12)))
+    # Seven 16 KiB parts (issue #983; the case locked twelve 4 KiB parts before).
+    semantic = _build(_case_with_material(), change=_change(_large_change(28)))
     admitted = len(_change_items(semantic))
-    assert admitted == 12
+    assert admitted == 7
     assert check_time_change_parts_carried(semantic) == admitted
-    assert check_time_change_parts_carried(semantic, withheld_categories=("claim_text",)) == 12
+    assert check_time_change_parts_carried(semantic, withheld_categories=("claim_text",)) == 7
 
     monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 8_000)
     carried = check_time_change_parts_carried(semantic)
@@ -657,3 +668,139 @@ def test_shown_file_views_come_from_exactly_the_carried_envelope_bytes(
 
     assert carried_text == text[: len(carried_text)]
     assert sum(file.shown_bytes for file in shown) == len(carried_text)
+
+
+# --- Issue #983: larger parts and the room the reserved excerpt classes leave -------------------
+
+
+def _cracker_change(table_rows: int = 900) -> bytes:
+    """One new ~140 KiB source file with an embedded numeric table (the tb4n1 cracker.py shape)."""
+
+    head = (
+        b"Yoetz check-time change: header\nFiles:\n  A cracker.py untracked\nEnd of header.\n"
+        b"diff --git a/cracker.py b/cracker.py\nnew file mode 100644\n--- /dev/null\n"
+        b"+++ b/cracker.py\n@@ -0,0 +1,2400 @@\n"
+    )
+    code = b"".join(
+        f"+def step_{index}(state):\n+    return (state * {index} + 7) % 97\n".encode()
+        for index in range(300)
+    )
+    table = (
+        b"+TABLE = [\n"
+        + b"".join(
+            (
+                "+    " + ", ".join(str((row * column) % 1000) for column in range(24)) + ",\n"
+            ).encode()
+            for row in range(table_rows)
+        )
+        + b"+]\n"
+    )
+    tail = b"".join(
+        f"+def solve_{index}(key):\n+    return TABLE[key % {index + 1}]\n".encode()
+        for index in range(300)
+    )
+    return head + code + table + tail
+
+
+def _ledger_build(
+    change: CheckTimeChange, *, ceiling: int | None = 262_144, outputs: int = 30
+) -> tuple[SemanticCase, Any]:
+    from unit.application.test_semantic_case_selection import (
+        _ledger,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    ledger = _ledger(
+        "codex",
+        outputs=outputs,
+        output_text=lambda index: f"output {index}\n" + "tool output line\n" * 300,
+    )
+    semantic = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000001",
+        frozen_case=ledger.case,
+        dependency_digest="sha256:" + "b" * 64,
+        findings=(),
+        review_context_profile=ReviewContextProfile.EXPANDED,
+        review_selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
+        policy_id="pvy_10000000-0000-4000-8000-000000000001",
+        policy_version="1",
+        captured_content=ledger.captured,
+        captured_content_scope=ledger.scope,
+        check_time_change=change,
+        prepared_byte_ceiling=ceiling,
+    )
+    return semantic, ledger
+
+
+def test_a_single_large_source_file_reaches_the_reviewer_in_few_large_parts() -> None:
+    """The tb4n1 shape: a ~140 KiB deliverable beside a busy ledger, under the Expanded preset.
+
+    With 4 KiB parts and only the reserved half of the budget it reached the reviewer as 16 parts
+    of about 63 KiB in all. It now travels as at most eight 16 KiB parts carrying most of the
+    whole 128 KiB excerpt budget, and the prepared document still plans below the channel ceiling.
+    """
+
+    text = _cracker_change()
+    assert 135_000 < len(text) < 150_000
+
+    semantic, _ = _ledger_build(_change(text))
+
+    change_items = [
+        item for item in semantic.items if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+    ]
+    carried = sum(item.content_bytes for item in change_items)
+    assert len(change_items) <= 8
+    assert all(item.content_bytes <= 16_384 for item in change_items)
+    assert carried >= 110_000
+    assert change_items[0].content.startswith(b"[Yoetz check-time change, part 1 of 9]\n")
+    # Parts are whole lines of the change, so the table rows the reviewer sees are never split.
+    joined = b"".join(item.content.partition(b"\n")[2] for item in change_items)
+    assert text.startswith(joined) and joined.endswith(b"\n")
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in semantic.packet.coverage.known_gaps
+    prepared = semantic_case_to_prepared_payload(
+        semantic, {item.item_id for item in semantic.items}
+    )
+    assert len(prepared) <= 262_144 - 4_096
+
+
+def test_leftover_parts_rank_after_reserved_excerpts_and_before_older_hunks_and_output() -> None:
+    semantic, ledger = _ledger_build(_change(_large_change(40)))
+
+    by_id = {item.item_id: item for item in semantic.items}
+    newest = {str(ref) for ref in ledger.newest_edit_for_path.values()}
+    outputs = {str(ref) for ref in ledger.outputs}
+    order: list[str] = []
+    for excerpt in semantic.packet.targeted_excerpts:
+        item = by_id[excerpt.excerpt_item_id]
+        if excerpt.excerpt_item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX):
+            order.append("change")
+        elif item.source_ref in newest:
+            order.append("newest_edit")
+        elif item.superseded_by and item.source_kind == "diff":
+            order.append("older_edit")
+        elif item.source_ref in outputs:
+            order.append("output")
+        else:
+            order.append("other")
+    change_positions = [index for index, kind in enumerate(order) if kind == "change"]
+    assert change_positions[:4] == [0, 1, 2, 3]  # the reserved half of 128 KiB
+    leftover = change_positions[4:]
+    assert leftover, "the parts the reservation could not hold take the next room"
+    # Every newest captured edit precedes the leftover parts; older hunks and output follow them.
+    assert max(index for index, kind in enumerate(order) if kind == "newest_edit") < leftover[0]
+    assert (
+        min(index for index, kind in enumerate(order) if kind in {"older_edit", "output"})
+        > leftover[-1]
+    )
+
+
+def test_a_planned_case_narrows_general_output_before_the_change() -> None:
+    # A narrower owner ceiling: the planner drops the 5 KiB tool outputs, not the change's parts.
+    roomy, ledger = _ledger_build(_change(_large_change(40)))
+    narrow, _ = _ledger_build(_change(_large_change(40)), ceiling=200_000)
+
+    outputs = {str(ref) for ref in ledger.outputs}
+    assert any(item.source_ref in outputs for item in roomy.items if item.section == "excerpt")
+    assert not any(item.source_ref in outputs for item in narrow.items if item.section == "excerpt")
+    assert len(_change_items(narrow)) >= 5
+    assert "content_unselected" in narrow.packet.coverage.known_gaps
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in narrow.packet.coverage.known_gaps
