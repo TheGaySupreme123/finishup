@@ -749,16 +749,19 @@ form, so the lever, if the measurements call for one, is a minimal-import fast p
 async split. That is decided from the aggregate of a Cursor dogfood run in both profiles on macOS,
 Linux and WSL 2; those measurements are not recorded yet, and the gap is owned by issue #915.
 
-### Oversized hook payloads (issue #667)
+### Oversized hook payloads (issue #667, tb4n1 B5)
 
-A Cursor hook body over the 256 KiB trusted parse cap (`MAX_HOOK_STDIN_BYTES`) is not admitted as
-a full event. An ordinary write to a large file reaches this bound: Cursor's native tool input
-carries the whole file content, and the dogfood writes that opened this issue were roughly
-389,000 bytes each. The hook stays fail-open and Cursor continues.
+A Cursor hook body over the 1 MiB trusted parse cap (`MAX_HOOK_STDIN_BYTES`, shared by every host;
+256 KiB until tb4n1 B5) is not admitted as a full event. An ordinary write to a large file can
+reach this bound: Cursor's native tool input carries the whole file content (the dogfood writes
+that opened issue #667 were roughly 389,000 bytes each, which now fit). The hook stays fail-open
+and Cursor continues.
 
-When that body is a complete document at or under the 1 MiB skim cap (`MAX_HOOK_SKIM_BYTES`),
-Yoetz parses it with the same NUL, UTF-8, duplicate-key, and JSON checks as a normal event, then
-keeps a closed identity view. The structural row records the session, tool name, and tool-call id
+When that body is a complete document at or under the 8 MiB skim cap (`MAX_HOOK_SKIM_BYTES`),
+Yoetz parses it with the same NUL, UTF-8, duplicate-key, and JSON checks as a normal event. Image,
+audio, and video bytes (an MCP `image` block, a `data:` URL) are first replaced with a fixed
+placeholder; if the body then fits the trusted cap it is admitted whole and records no gap.
+Otherwise Yoetz keeps a closed identity view. The structural row records the session, tool name, and tool-call id
 when those values are bounded tokens. A path commitment is kept only for `afterFileEdit` and for a
 `postToolUse` edit tool that did not fail or get denied; a read, a pending `preToolUse`, or a
 failed edit commits no changed path. Whether an `error` value was set is kept as a bit, never its
@@ -766,19 +769,38 @@ text, and an unkeepable `workspace_roots` is refused as it is at full size. File
 prompts, and command text are omitted. The row's content references stay empty,
 including when native content capture is authorized. Coverage on that row is
 `payload_content_omitted`, and hook diagnostics record `cursor_payload_content_omitted`. A receipt
-can name the edit and must not treat the omitted bytes as captured.
+can name the edit and must not treat the omitted bytes as captured. A Yoetz MCP tool in a scoped
+spelling (`yoetz:<tool>`, `plugin-yoetz-yoetz:<tool>`, `closure_prepare` included) records
+neither: its content is never captured, so the identity row is complete. Cursor's ordinary
+`postToolUse` spells MCP calls as the generic `MCP:<tool>`, which names no server, so such a call
+cannot be attributed to Yoetz and keeps the gap.
 
 A body over the skim cap is refused before any parse. A complete oversized body that fails
 validation is also refused, and it records `cursor_payload_invalid` as well as the size gap. Both
 of those outcomes record `cursor_payload_too_large` and the workspace `payload_too_large` gap, and
 they mint no structural row. A parsed oversized body that finds no session or no resolvable
 workspace records the same gap. The ordinary profile's `afterMCPExecution` skip is deliberate at
-every size and records no gap. The pure `read_cursor_hook_payload` replay still refuses at 256 KiB,
-so a captured oversized body cannot be reparsed as a trusted full event.
+every size and records no gap. The pure `read_cursor_hook_payload` replay still refuses above the
+trusted cap, so a captured oversized body cannot be reparsed as a trusted full event.
 
-The caps are fixed; raising them is not an operator control. Codex and Claude Code do not skim:
-an oversized body on those hosts stays the no-row `payload_too_large` gap. The refusal or the
-omission costs exactly that one event; the next ordinary event still ingests.
+The caps are fixed; raising them is not an operator control. Codex and Claude Code apply the same
+skim since tb4n1 B5. The refusal or the omission costs exactly that one event; the next ordinary
+event still ingests.
+
+Matcher decision (tb4n1 B5): Cursor's generated hooks carry no per-tool matcher, and its ordinary
+`postToolUse` names MCP tools only as `MCP:<tool>`, so no matcher could exclude Yoetz's own tools
+without also excluding another server's tool of the same name. Excluding them would also leave
+their `preToolUse` unpaired. The size problem is fixed in the reader instead.
+
+Observed images (P3-2, issue #1013): Cursor image results arrive as MCP `image` blocks in `tool_output`. Before the bytes are
+dropped, the hook records up to 8 images per call as digest-only facts: SHA-256 and byte count of
+the decoded image, a media type sniffed from its bytes (PNG, JPEG, GIF, WebP, else
+`image/unknown`), and pixel width and height read from the header only. The service records one
+`evidence_recorded` row per image (`artifact`, `content_digest`, `digest_only`), listed in the
+call's result `evidence_refs`, with the description `Observed image tool result <type> <w>x<h>
+(<n> bytes); pixels were not captured or sent`. No pixel is captured, stored, or sent; the agent
+can cite the evidence id as its own inspection of the output. This holds at every body size up to
+the 8 MiB skim cap.
 
 ### Smart observation selection (issue #687)
 
@@ -993,6 +1015,8 @@ endpoint is bound, network egress is permitted, and an LLM inference channel is 
 provider is still structurally unusable, including when no factory id is available. `stop` still
 emits `{}` and leaves that delivery pending.
 
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Cursor: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
+
 Workspace binding does not trust plugin-hook CWD. It selects a single `workspace_roots` entry first,
 then `CURSOR_PROJECT_DIR`, then the explicit `--workspace` value. A multiroot workspace selects the
 deepest root containing `CURSOR_PROJECT_DIR` or refuses. The reusable git-root helper walks safe
@@ -1005,8 +1029,6 @@ resolved workspace root as `workspace_ref` with `cursor-session:<session_id>` as
 Before automatic new-pair admission, it checks private persisted mappings from eligible ended Cursor
 sessions. Eligibility requires a received `sessionEnd`, every other bound session ended, and a
 candidate bound only to this consented workspace. A unique eligible mapping is selected first: the
-Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Cursor: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
-
 hook holds the workspace and lifecycle locks, revalidates ownership and state, and sends one
 `mode=attach` request carrying that selector plus the new pair. The catalog requires the selected
 root task to be active and non-quarantined, its canonical workspace and repository-privacy binding

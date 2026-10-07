@@ -47,6 +47,7 @@ from yoetz.domain.observation import (
     RoutineReadSummary,
     observation_content_binding_matches,
     routine_read_summary_from_envelope,
+    validate_observed_images,
 )
 from yoetz.domain.observation_loss import ObservationSelectionLoss
 from yoetz.domain.values import (
@@ -596,6 +597,80 @@ def _captured_evidence_drafts(
     return tuple(drafts), tuple(sorted(refs, key=str.encode))
 
 
+def _observed_image_drafts(
+    envelope: ObservationEnvelope,
+    *,
+    task_id: str,
+    parents: tuple[str, ...],
+    mapping_version: str,
+) -> tuple[tuple[MaterializedObservationDraft, ...], tuple[str, ...]]:
+    """One digest-only ``evidence_recorded`` per image the hook saw in this tool result.
+
+    P3-2 (issue #1013): the hook hashed the decoded image and read its header before dropping
+    the bytes, so the ledger can name what the agent looked at without holding or sending a
+    pixel. The description carries only closed tokens and integers. A malformed fact set
+    materializes nothing rather than a guessed row.
+    """
+
+    raw = envelope.structural_payload.get("observed_images")
+    if raw is None:
+        return (), ()
+    try:
+        images = validate_observed_images(raw)
+    except ProtocolValueError, TypeError, ValueError:
+        return (), ()
+    drafts: list[MaterializedObservationDraft] = []
+    refs: list[str] = []
+    for index, image in enumerate(images):
+        source = f"{envelope.source_identity}:image:{index}"
+        evidence = stable_observation_id(
+            kind=IdKind.EVIDENCE,
+            task_id=task_id,
+            source_identity=source,
+            mapping_version=mapping_version,
+            role="observed_image",
+        )
+        event = stable_observation_id(
+            kind=IdKind.EVENT,
+            task_id=task_id,
+            source_identity=source,
+            mapping_version=mapping_version,
+            role="observed_image_event",
+        )
+        media = cast(str, image["media_type"])
+        byte_count = cast(int, image["byte_count"])
+        width, height = image.get("width"), image.get("height")
+        size = f" {width}x{height}" if type(width) is int and type(height) is int else ""
+        refs.append(evidence)
+        drafts.append(
+            _draft(
+                event=event,
+                schema_name="evidence_recorded",
+                occurred_at=envelope.receipt_time,
+                payload=EvidenceRecordedPayload(
+                    evidence_id(evidence),
+                    EvidenceKind.ARTIFACT,
+                    EvidenceImmutability.CONTENT_DIGEST,
+                    envelope.receipt_time,
+                    content_digest=cast(str, image["content_digest"]),
+                    description=(
+                        f"Observed image tool result {media}{size} ({byte_count} bytes); "
+                        "pixels were not captured or sent"
+                    ),
+                    digest_binding=EvidenceDigestBinding(
+                        subject=EvidenceDigestSubject.ARTIFACT_BYTES,
+                        content_availability=EvidenceContentAvailability.DIGEST_ONLY,
+                        byte_count=byte_count,
+                        provenance=EvidenceDigestProvenance.OBSERVATION_CAPTURED,
+                    ),
+                ),
+                parents=parents,
+                role=f"observed_image_{index}",
+            )
+        )
+    return tuple(drafts), tuple(sorted(refs, key=str.encode))
+
+
 def materialize_routine_read_summary(
     summary: RoutineReadSummary,
     *,
@@ -1124,6 +1199,10 @@ def materialize_observation_envelope(
                 mapping_version=mapping,
             )
             drafts.extend(captured_drafts)
+            image_drafts, _image_refs = _observed_image_drafts(
+                envelope, task_id=task_id, parents=(event,), mapping_version=mapping
+            )
+            drafts.extend(image_drafts)
             merged_gaps = (
                 gaps
                 if post_only
@@ -1206,6 +1285,12 @@ def materialize_observation_envelope(
             mapping_version=mapping,
         )
         drafts.extend(captured_drafts)
+        image_drafts, image_refs = _observed_image_drafts(
+            envelope, task_id=task_id, parents=(action_event,), mapping_version=mapping
+        )
+        drafts.extend(image_drafts)
+        captured_drafts = (*captured_drafts, *image_drafts)
+        captured_refs = tuple(sorted({*captured_refs, *image_refs}, key=str.encode))
         exit_status = _exit_status(structural)
         outcome = _post_outcome(structural)
         if outcome is ResultOutcome.UNKNOWN:

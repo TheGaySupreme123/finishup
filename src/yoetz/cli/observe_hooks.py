@@ -65,9 +65,13 @@ from yoetz.cli.hook_diagnostics import (
 from yoetz.cli.hook_io import (
     MAX_HOOK_SKIM_BYTES,
     MAX_HOOK_STDIN_BYTES,
+    OBSERVED_IMAGES_KEY,
     CursorOversizedPayloadError,
+    OversizedHookPayloadError,
     read_cursor_hook_ingress,
+    read_hook_ingress,
     read_hook_payload,
+    strip_hook_media,
 )
 from yoetz.cli.hook_io import (
     claude_context_output as _claude_context_output,
@@ -99,6 +103,7 @@ from yoetz.domain.observation import (
     observation_ingest_request_to_json,
     observation_ingest_result_from_json,
     observed_command_commitment,
+    validate_observed_images,
 )
 from yoetz.domain.observation_budget import (
     AdmissionLossCause,
@@ -134,6 +139,7 @@ from yoetz.domain.values import (
     JsonValue as DomainJsonValue,
 )
 from yoetz.ports.integrations import (
+    YOETZ_SUPPORT_TOOL_NAMES,
     YOETZ_WORKFLOW_TOOL_NAMES,
     observation_pairing_contract,
 )
@@ -991,6 +997,14 @@ def _extract_structural(
     decision = _token_or_none(payload.get("decision"))
     if decision is not None and "permission_decision" not in fields:
         fields["permission_decision"] = decision
+    if event_name == "PostToolUse" and OBSERVED_IMAGES_KEY in payload:
+        # Digest-only image facts the hook ingress computed before it dropped the bytes (P3-2,
+        # issue #1013). The ingress readers discard any host value under this reserved key, so
+        # only facts this process derived reach here; a malformed set is dropped, never repaired.
+        with contextlib.suppress(ProtocolValueError):
+            fields["observed_images"] = list(
+                validate_observed_images(payload.get(OBSERVED_IMAGES_KEY))
+            )
     return JsonObject(fields)
 
 
@@ -1866,6 +1880,63 @@ def _shell_edit_contents(
     return selected
 
 
+# Every host spelling of every Yoetz MCP tool, support tools included. The workflow-only
+# ``YOETZ_OWNED_TOOL_NAMES`` keeps governing self-observation delivery; this wider set decides
+# only that a tool's own content is never captured and that its oversized hook body is complete
+# as a structural row. The spellings are read off the workflow set so they cannot drift.
+_YOETZ_TOOL_SPELLINGS: Final = frozenset(
+    name[: -len("start")] for name in YOETZ_OWNED_TOOL_NAMES if name.endswith("start")
+)
+_YOETZ_MCP_OWNED_TOOL_NAMES: Final = YOETZ_OWNED_TOOL_NAMES | frozenset(
+    f"{prefix}{name}" for prefix in _YOETZ_TOOL_SPELLINGS for name in YOETZ_SUPPORT_TOOL_NAMES
+)
+
+
+def yoetz_mcp_tool(tool_name: object) -> bool:
+    """Whether a host tool name is one of Yoetz's own MCP tools, in any host spelling.
+
+    Codex code mode calls a nested MCP tool by the same ``mcp__yoetz__<tool>`` name, so the
+    nested call's own hook is covered by the same spellings.
+    """
+
+    return type(tool_name) is str and tool_name in _YOETZ_MCP_OWNED_TOOL_NAMES
+
+
+def _oversized_ingress_gap(
+    payload: Mapping[str, JsonValue],
+    *,
+    source: ObservationSource,
+    event: str,
+    _state: Path | None,
+) -> str | None:
+    """Name what an oversized hook body that kept only its identity view lost.
+
+    A Yoetz-owned tool lost nothing: its content is never captured, and its outcome and ids are
+    in the identity view. Every other oversized body keeps its structural row, pairs with its
+    pre-event, and records ``payload_content_omitted`` plus the per-host diagnostic instead of
+    vanishing (tb4n1 B5, issue #667).
+    """
+
+    if event in {"PreToolUse", "PostToolUse"} and yoetz_mcp_tool(payload.get("tool_name")):
+        return None
+    prefix = (
+        "claude"
+        if source is ObservationSource.CLAUDE_HOOK
+        else "cursor"
+        if source is ObservationSource.CURSOR_HOOK
+        else "codex"
+    )
+    degraded = "hook_cursor_observe_degraded" if prefix == "cursor" else "hook_observe_degraded"
+    with contextlib.suppress(BaseException):
+        _stderr_line(
+            f"{degraded}: payload_content_omitted; "
+            "structural identity retained; native content omitted; see observe status"
+        )
+    with contextlib.suppress(BaseException):
+        record_hook_diagnostic(f"{prefix}_payload_content_omitted", event, _state=_state)
+    return ObservationGapCode.PAYLOAD_CONTENT_OMITTED.value
+
+
 def _visible_content_chunks(
     event_name: str,
     payload: Mapping[str, JsonValue],
@@ -1883,16 +1954,21 @@ def _visible_content_chunks(
     from yoetz.observability.privacy import redact_sensitive_content
 
     selected: list[tuple[ObservationContentKind, str, bytes]] = []
-    if (
-        event_name in {"PreToolUse", "PostToolUse"}
-        and _token_or_none(payload.get("tool_name")) in YOETZ_OWNED_TOOL_NAMES
-    ):
+    if event_name in {"PreToolUse", "PostToolUse"} and yoetz_mcp_tool(payload.get("tool_name")):
         # Yoetz's own tool arguments and results are already durable in the
         # ledger the call wrote to or read from. Capturing them back as tool
         # input/output evidence re-encrypted every ``status`` projection the
         # agent read and was the heaviest part of the self-observation loop
-        # (#564). Nothing is omitted that the service does not hold.
+        # (#564). Nothing is omitted that the service does not hold. The
+        # read-only ``closure_prepare`` support tool is a projection of that
+        # same ledger and the largest reply Yoetz serves (tb4n1 B5).
         return (), False
+    if event_name == "PostToolUse":
+        # Image, audio, and video bytes are not reviewable text. A view of a
+        # screenshot is kept as its structure and text; the base64 is replaced
+        # by a fixed placeholder instead of filling the content budget and
+        # marking the event truncated (tb4n1 B5).
+        payload, _media_omitted = strip_hook_media(payload)
 
     def add(kind: ObservationContentKind, label: str, value: JsonValue) -> None:
         if type(value) is str and value:
@@ -3723,13 +3799,18 @@ def note_payload_too_large(
     no evidence at all, so it can never read as captured work (issue #667).
     """
 
-    # Cursor reaches this after its 1 MiB skim cap or a parsed body that kept
-    # no row, so it does not name the shared 256 KiB bound.
+    # Every host reaches this past the shared trusted cap: over the skim cap,
+    # a complete oversized body that failed the skim's safety checks, or (Cursor)
+    # a skimmed body that kept no row. Both bounds are named; the true size is
+    # unknown by construction (tb4n1 B5).
+    bounds = (
+        f"host event over the {MAX_HOOK_STDIN_BYTES}-byte hook ingress cap and not "
+        f"recoverable within the {MAX_HOOK_SKIM_BYTES}-byte skim"
+    )
     detail = (
-        "hook_cursor_observe_degraded: payload_too_large; host event over the hook ingress cap"
+        f"hook_cursor_observe_degraded: payload_too_large; {bounds}"
         if source is ObservationSource.CURSOR_HOOK
-        else "hook_observe_degraded: payload_too_large; host event over the "
-        f"{MAX_HOOK_STDIN_BYTES}-byte hook ingress cap"
+        else f"hook_observe_degraded: payload_too_large; {bounds}"
     )
     with contextlib.suppress(BaseException):
         _stderr_line(f"{detail}; not observed; see observe status")
@@ -4135,8 +4216,23 @@ def handle_observe(
                 )
             return _context_output(resolved_event, additional_context)
 
+        content_omitted = False
         try:
-            payload = read_hook_payload(stdin_bytes)
+            if source is ObservationSource.CODEX_HOOK:
+                # Codex is the one host whose raw body reaches this reader; the
+                # Claude Code and Cursor adapters skim their own raw body and
+                # hand this pass an already-reduced structural object.
+                payload, content_omitted = read_hook_ingress(stdin_bytes)
+            else:
+                payload = read_hook_payload(stdin_bytes)
+        except OversizedHookPayloadError:
+            # A complete body inside the skim cap that failed its safety
+            # checks yields nothing to keep; it is the same size loss.
+            note_payload_too_large(
+                event_name or "observe", source=source, workspace=workspace, _state=_state
+            )
+            _stdout_json({}, stdout)
+            return 0
         except ProtocolValueError as exc:
             if exc.reason_code != "payload_too_large":
                 raise
@@ -4149,6 +4245,16 @@ def handle_observe(
             )
             _stdout_json({}, stdout)
             return 0
+        if content_omitted:
+            # Above the trusted cap the event keeps its structural row (and so
+            # its pairing) instead of being lost; only its content is gone
+            # (tb4n1 B5). The gap also keeps content capture off for this row.
+            _ingress_gap = _oversized_ingress_gap(
+                payload,
+                source=source,
+                event=event_name or _token_or_none(payload.get("hook_event_name")) or "observe",
+                _state=_state,
+            )
         harness_id: Literal["claude", "codex", "cursor"] = (
             "claude"
             if source is ObservationSource.CLAUDE_HOOK
@@ -6398,10 +6504,13 @@ def _handle_claude_observe(
         "fork": "claude_session_fork",
     }
     try:
+        content_omitted = False
         try:
-            payload = read_hook_payload(stdin_bytes)
-        except ProtocolValueError as exc:
-            if exc.reason_code != "payload_too_large":
+            payload, content_omitted = read_hook_ingress(stdin_bytes)
+        except (OversizedHookPayloadError, ProtocolValueError) as exc:
+            if exc.reason_code != "payload_too_large" and not isinstance(
+                exc, OversizedHookPayloadError
+            ):
                 raise
             # This host ingress swallowed every refusal into a bare `{}` with no
             # record at all, so an oversized Claude Code event left no trace of
@@ -6695,11 +6804,24 @@ def _handle_claude_observe(
                 # applies to a successful callback carrying child-only transcript metadata: a
                 # success bit does not authorize parent attribution.
                 child_attribution_gap = True
+        if event_map[raw_event] == "PostToolUse" and OBSERVED_IMAGES_KEY in payload:
+            # Digest-only image facts the ingress reader computed (P3-2, issue #1013).
+            structural[OBSERVED_IMAGES_KEY] = payload[OBSERVED_IMAGES_KEY]
         if ordinary_profile and raw_event in {"PreToolUse", "PostToolUse", "PostToolUseFailure"}:
             _attach_command_commitment(structural, payload, _state=_state)
         derived_runner_class = (
             command_runner_class(payload)
             if ordinary_profile and raw_event in {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
+            else None
+        )
+        claude_ingress_gap = (
+            _oversized_ingress_gap(
+                payload,
+                source=ObservationSource.CLAUDE_HOOK,
+                event=event_map[raw_event],
+                _state=_state,
+            )
+            if content_omitted
             else None
         )
         result = handle_observe(
@@ -6719,8 +6841,9 @@ def _handle_claude_observe(
             _content_capture_profile=(
                 CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID if ordinary_profile else None
             ),
-            _content_payload=payload if ordinary_profile else None,
+            _content_payload=payload if ordinary_profile and not content_omitted else None,
             _derived_runner_class=derived_runner_class,
+            _ingress_gap=claude_ingress_gap,
             _pass_timing=_pass_timing,
         )
         if denied_output is not None:
@@ -7137,6 +7260,9 @@ def _handle_cursor_observe(
                 structural["action"] = "routine_read"
         elif ordinary_profile and raw_event == "preToolUse":
             structural["action"] = "cursor_tool_pending"
+        if event_map[raw_event] == "PostToolUse" and OBSERVED_IMAGES_KEY in payload:
+            # Digest-only image facts the ingress reader computed (P3-2, issue #1013).
+            structural[OBSERVED_IMAGES_KEY] = payload[OBSERVED_IMAGES_KEY]
         if ordinary_profile and raw_event in {"preToolUse", "postToolUse", "postToolUseFailure"}:
             _attach_command_commitment(structural, payload, _state=_state)
         path_value = payload.get("file_path") if raw_event == "afterFileEdit" else None
@@ -7169,18 +7295,18 @@ def _handle_cursor_observe(
                     if effort is not None:
                         structural["model_effort"] = effort
                     break
-        if content_omitted:
-            with contextlib.suppress(BaseException):
-                _stderr_line(
-                    "hook_cursor_observe_degraded: payload_content_omitted; "
-                    "structural identity retained; native content omitted; see observe status"
-                )
-            with contextlib.suppress(BaseException):
-                record_hook_diagnostic(
-                    "cursor_payload_content_omitted",
-                    event_map[raw_event],
-                    _state=_state,
-                )
+        # A Yoetz-owned tool in a scoped spelling lost nothing; Cursor's generic
+        # ``MCP:<tool>`` spelling names no owner, so it keeps the gap (tb4n1 B5).
+        cursor_ingress_gap = (
+            _oversized_ingress_gap(
+                payload,
+                source=ObservationSource.CURSOR_HOOK,
+                event=event_map[raw_event],
+                _state=_state,
+            )
+            if content_omitted
+            else None
+        )
         derived_runner_class = (
             command_runner_class(payload)
             if ordinary_profile and raw_event in {"preToolUse", "postToolUse", "postToolUseFailure"}
@@ -7203,9 +7329,7 @@ def _handle_cursor_observe(
             ),
             _content_payload=None if content_omitted or not ordinary_profile else payload,
             _derived_runner_class=derived_runner_class,
-            _ingress_gap=(
-                ObservationGapCode.PAYLOAD_CONTENT_OMITTED.value if content_omitted else None
-            ),
+            _ingress_gap=cursor_ingress_gap,
             _pass_timing=_pass_timing,
         )
     except BaseException:
@@ -7240,8 +7364,23 @@ def handle_spool(
     event = event_name or "observe"
     timing = HookPassTiming("codex", event, "sync_fallback_spool", started)
     try:
-        raw = stdin_bytes if stdin_bytes is not None else sys.stdin.buffer.read(_MAX_CONTENT_CHUNK)
-        payload = read_hook_payload(raw)
+        raw = (
+            stdin_bytes
+            if stdin_bytes is not None
+            else sys.stdin.buffer.read(MAX_HOOK_SKIM_BYTES + 1)
+        )
+        try:
+            # The spool keeps only structural fields, so an oversized body's
+            # identity view loses nothing it would have kept (tb4n1 B5).
+            payload, _content_omitted = read_hook_ingress(raw)
+        except (OversizedHookPayloadError, ProtocolValueError) as exc:
+            if isinstance(exc, ProtocolValueError) and exc.reason_code != "payload_too_large":
+                raise
+            note_payload_too_large(
+                event, source=ObservationSource.CODEX_HOOK, workspace=workspace, _state=_state
+            )
+            timing.outcome = "failed"
+            return 0
         if workspace is not None and event_name in {
             "PreToolUse",
             "PermissionRequest",

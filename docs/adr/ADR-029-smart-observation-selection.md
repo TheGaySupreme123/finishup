@@ -623,3 +623,45 @@ MCP `check` (all three hosts: Codex, Claude Code and Cursor reach the same tool)
 The terminal interface does not set the flag: its checks are operator-initiated and not tied to
 an agent host session's outbox; it still renders the line if a result carries it. Receipts do not
 carry the member.
+
+## Amendment — image tool results as local digest-only evidence (2026-10-07, #1013)
+
+Owner decision (P3-2): "just ack the image, don't send it".
+
+### Problem
+
+tb4n1 lost image tool results (`view_image`, screenshots read back, MCP image blocks) at the old
+hook ingress cap, and an agent that inspected its rendered deliverable then had no Yoetz-held
+record that it had looked. The review packet cannot carry images, so the agent had nothing to cite.
+
+### Decision
+
+- Every host's observation ingress (Codex `read_hook_ingress`, Claude Code through the same reader,
+  Cursor `read_cursor_hook_ingress`), at any body size up to the skim cap, finds image strings
+  before it drops media bytes: a decodable base64 string inside an image block (MCP and Claude
+  `image`, Responses `input_image`, an object declaring an `image/` media type) or an image
+  `data:` URL anywhere. For at most 8 images per event it records the SHA-256 and byte count of
+  the decoded bytes, a media type sniffed from the bytes (`image/png`, `image/jpeg`, `image/gif`,
+  `image/webp`, else `image/unknown`), and the pixel width and height read from the header only
+  (PNG `IHDR`, JPEG `SOFn` with a bounded segment walk, GIF, WebP `VP8`/`VP8L`/`VP8X`). An
+  unreadable or zero-size header is `image/unknown` with no dimensions. A string that does not
+  decode is not attested. The host's own media label never decides the type.
+- These facts travel as the closed structural `observed_images` member of a `PostToolUse`
+  envelope (control-request 2.9.0, unreleased, additive in place): 1-8 objects with exactly
+  `content_digest`, `byte_count`, `media_type`, and optionally both `width` and `height`. The
+  name is reserved; a host value under it is always discarded at ingress.
+- The service materializes one `evidence_recorded` 1.2.0 per image beside the call's result:
+  `evidence_kind: artifact`, `strength: content_digest`, the image digest, `digest_binding`
+  `{subject: artifact_bytes, content_availability: digest_only, byte_count, provenance:
+  observation_captured}`, a stable id from the envelope's source identity and the image index, and
+  the fixed description `Observed image tool result <media_type> <w>x<h> (<n> bytes); pixels were
+  not captured or sent`. The call's `result_recorded.evidence_refs` lists it (an unpaired post
+  parents it to its standalone evidence instead).
+- No pixel is stored as captured content, persisted locally, or sent to any reviewer. The agent may
+  cite the evidence id when it states it inspected the output; reviewers see it as present and
+  not sent.
+
+### Unchanged
+
+Content selection, consent, and the content budget are unchanged; the image bytes themselves stay
+replaced by the media placeholder in any captured tool output.

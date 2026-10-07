@@ -706,6 +706,8 @@ def test_v25_observation_wire_tracks_domain_structural_keys_without_rewriting_v2
             "install_target",
             "write_scope",
             "effective_user",
+            # And the digest-only image facts (P3-2, issue #1013).
+            "observed_images",
         }
     )
     assert set(v25_properties) == expected_observation_keys
@@ -1368,7 +1370,19 @@ def _assert_v29_request_adds_only_command_commitment(
         "install_target",
         "write_scope",
         "effective_user",
+        "observed_images",
     }
+    image = v29_fields["observed_images"]
+    assert image["maxItems"] == 8
+    assert image["items"]["additionalProperties"] is False
+    assert image["items"]["required"] == ["byte_count", "content_digest", "media_type"]
+    assert image["items"]["properties"]["media_type"]["enum"] == [
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/unknown",
+        "image/webp",
+    ]
     assert v29_fields["install_target"] == {
         "enum": ["private_env", "system", "unresolved", "workspace_env", "yoetz_runtime"],
         "type": "string",
@@ -1392,6 +1406,7 @@ def _assert_v29_request_adds_only_command_commitment(
         "install_target",
         "write_scope",
         "effective_user",
+        "observed_images",
     ):
         del _structural_properties(stripped)[added]
     assert {k: v for k, v in v28.items() if k != "$id"} == {
@@ -1428,6 +1443,57 @@ def test_v29_request_carries_keyed_command_commitment_never_command_text() -> No
     invalid["body"]["envelope"]["structural_payload"]["command"] = "pytest -q tests/x.py"
     with pytest.raises(ProtocolValueError):
         validate_schema_instance("control-request", "2.9.0", cast(JsonValue, invalid))
+
+
+def test_v29_request_admits_digest_only_image_facts_and_nothing_more() -> None:
+    """P3-2 (issue #1013): an image result crosses as its digest, size, type, and header size."""
+
+    image = {
+        "byte_count": 68,
+        "content_digest": "sha256:" + "b" * 64,
+        "height": 2,
+        "media_type": "image/png",
+        "width": 3,
+    }
+    structural = {
+        "action": "claude_tool_success",
+        "capability_profile_id": "claude-code-ordinary-observation-v1",
+        "correlation_kind": "tool_call_id",
+        "hook_name": "PostToolUse",
+        "observed_images": [
+            image,
+            {k: image[k] for k in ("byte_count", "content_digest")}
+            | {"media_type": "image/unknown"},
+        ],
+        "pairing_mode": "post_only",
+        "success": True,
+        "tool_call_id": "tool-1",
+        "tool_name": "Read",
+    }
+    frame = _current_cli_observation_frame(
+        source="claude_hook", codex_session_id="claude:session-1", structural=structural
+    )
+    validate_schema_instance("control-request", "2.9.0", cast(JsonValue, frame))
+    for key, value in (
+        ("pixels", "AAAA"),
+        ("media_type", "image/svg+xml"),
+        ("width", 0),
+        ("content_digest", None),
+    ):
+        invalid = cast(dict[str, Any], json.loads(json.dumps(frame)))
+        item = cast(dict[str, Any], invalid["body"]["envelope"]["structural_payload"])[
+            "observed_images"
+        ][0]
+        if value is None:
+            del item[key]
+        else:
+            item[key] = value
+        with pytest.raises(ProtocolValueError):
+            validate_schema_instance("control-request", "2.9.0", cast(JsonValue, invalid))
+    too_many = cast(dict[str, Any], json.loads(json.dumps(frame)))
+    too_many["body"]["envelope"]["structural_payload"]["observed_images"] = [image] * 9
+    with pytest.raises(ProtocolValueError):
+        validate_schema_instance("control-request", "2.9.0", cast(JsonValue, too_many))
 
 
 _POLICY_V12 = "https://schemas.yoetz.dev/0.1/privacy/privacy-policy-1.2.0.schema.json"

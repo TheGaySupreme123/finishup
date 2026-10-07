@@ -318,6 +318,8 @@ _STRUCTURAL_KEYS: Final = frozenset(
         "install_target",
         "write_scope",
         "effective_user",
+        # Digest-only facts for image tool results the hook saw (P3-2, issue #1013).
+        "observed_images",
     }
 )
 _STRUCTURAL_TOKEN_KEYS: Final = frozenset(
@@ -351,6 +353,78 @@ _RUNTIME_FACT_VALUES: Final = {
     "write_scope": frozenset({"outside_workspace"}),
     "effective_user": frozenset({"root", "non_root"}),
 }
+
+# One image tool result as the hook recorded it: the SHA-256 and byte count of the decoded image,
+# a media type sniffed from its bytes, and the header's pixel size when it could be read. No pixel
+# ever enters the envelope. ``cli/hook_io`` produces exactly this shape (P3-2, issue #1013).
+OBSERVED_IMAGE_MEDIA_TYPES: Final = frozenset(
+    {"image/gif", "image/jpeg", "image/png", "image/unknown", "image/webp"}
+)
+MAX_OBSERVED_IMAGES: Final = 8
+MAX_OBSERVED_IMAGE_DIMENSION: Final = 2_147_483_647
+_MAX_OBSERVED_IMAGE_BYTES: Final = 2**53 - 1
+_OBSERVED_IMAGE_KEYS: Final = frozenset(
+    {"byte_count", "content_digest", "height", "media_type", "width"}
+)
+
+
+def _bounded_int(value: object, minimum: int, maximum: int) -> int:
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise _invalid("invalid_event_value_type")
+    return value
+
+
+def validate_observed_images(value: object) -> tuple[JsonObject, ...]:
+    """Validate the closed ``observed_images`` structural fact and return its items.
+
+    At most ``MAX_OBSERVED_IMAGES`` objects, each with exactly ``content_digest`` (``sha256:``),
+    a positive ``byte_count``, a closed ``media_type``, and either both pixel dimensions or none;
+    ``image/unknown`` never carries dimensions.
+    """
+
+    if type(value) is tuple:
+        items: tuple[object, ...] = cast(tuple[object, ...], value)
+    elif type(value) is list:
+        items = tuple(cast(list[object], value))
+    else:
+        raise _invalid("invalid_event_value_type")
+    if not 1 <= len(items) <= MAX_OBSERVED_IMAGES:
+        raise _invalid("invalid_event_value_type")
+    result: list[JsonObject] = []
+    for raw in items:
+        if not isinstance(raw, Mapping):
+            raise _invalid("invalid_event_value_type")
+        item = cast(Mapping[str, object], raw)
+        keys = set(item)
+        if (
+            not keys <= _OBSERVED_IMAGE_KEYS
+            or not {
+                "byte_count",
+                "content_digest",
+                "media_type",
+            }
+            <= keys
+        ):
+            raise _invalid("unknown_payload_field")
+        digest = item["content_digest"]
+        if type(digest) is not str:
+            raise _invalid("invalid_event_value_type")
+        try:
+            validate_sha256_digest(digest)
+        except (ProtocolValueError, TypeError, ValueError) as exc:
+            raise _invalid("invalid_event_value_type") from exc
+        _bounded_int(item["byte_count"], 1, _MAX_OBSERVED_IMAGE_BYTES)
+        media = item["media_type"]
+        if type(media) is not str or media not in OBSERVED_IMAGE_MEDIA_TYPES:
+            raise _invalid("invalid_event_value_type")
+        sized = {"width", "height"} & keys
+        if sized and (sized != {"width", "height"} or media == "image/unknown"):
+            raise _invalid("invalid_event_value_type")
+        for side in sized:
+            _bounded_int(item[side], 1, MAX_OBSERVED_IMAGE_DIMENSION)
+        result.append(JsonObject(dict(cast(Mapping[str, JsonValue], item))))
+    return tuple(result)
+
 
 _PROSE_KEYS: Final = frozenset(
     {
@@ -483,14 +557,16 @@ class ObservationGapCode(str, Enum):  # noqa: UP042 - exact durable wire enum
     ROUTINE_SUMMARY_INVALID = "routine_summary_invalid"
     # One host hook event whose body exceeded the trusted stdin cap and was not
     # admitted as a structural row. Distinct from ``truncated_payload``, which is
-    # a payload that was admitted and then clipped after parsing. Codex and
-    # Claude Code always stop here. Cursor stops here when the body does not fit
-    # the skim cap or the skim cannot validate a complete document (#667).
+    # a payload that was admitted and then clipped after parsing. Every host
+    # stops here when the body does not fit the skim cap or the skim cannot
+    # validate a complete document (#667; Codex and Claude Code skim since tb4n1).
     PAYLOAD_TOO_LARGE = "payload_too_large"
-    # One Cursor hook event whose complete body fit the skim cap. The structural
-    # row keeps closed identity and carries no native content. Distinct from
-    # ``payload_too_large``, which minted no row, and from ``truncated_payload``,
-    # which clipped an already-admitted body (#667).
+    # One host hook event whose complete body fit the skim cap but not, even
+    # without its image bytes, the trusted cap. The structural row keeps closed
+    # identity and carries no native content. A Yoetz-owned tool records no gap:
+    # its content is never captured. Distinct from ``payload_too_large``, which
+    # minted no row, and from ``truncated_payload``, which clipped an
+    # already-admitted body (#667, tb4n1 B5).
     PAYLOAD_CONTENT_OMITTED = "payload_content_omitted"
     SELECTION_ROUTE_CHANGED = "selection_route_changed"
     POLICY_UNTRUSTED = "policy_untrusted"
@@ -860,6 +936,8 @@ def _structural_payload(value: object) -> JsonObject:
             raise _invalid("invalid_event_value_type")
         if key in _RUNTIME_FACT_VALUES and item not in _RUNTIME_FACT_VALUES[key]:
             raise _invalid("invalid_event_value_type")
+        if key == "observed_images":
+            validate_observed_images(item)
         if key == "protection_reference":
             validate_observation_protection_reference(item)
         if key == "command_commitment":

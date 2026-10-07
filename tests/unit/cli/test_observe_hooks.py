@@ -28,7 +28,7 @@ from yoetz.adapters.integrations.hook_spool import HookSpool
 from yoetz.adapters.integrations.observation_local import LocalObservationStore
 from yoetz.application.recommendations import RecommendationState, store_recommendation_state
 from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.hook_io import MAX_HOOK_STDIN_BYTES
+from yoetz.cli.hook_io import MAX_HOOK_SKIM_BYTES, MAX_HOOK_STDIN_BYTES
 from yoetz.cli.observe_hooks import (
     SUPPORTED_HOOK_EVENTS,
     handle_claude_observe,
@@ -6715,16 +6715,20 @@ def test_session_start_update_advice_without_observation_consent(
 
 
 def _oversize_hook_body(session_id: str) -> bytes:
-    """Return a valid hook object one byte past the shared stdin cap."""
+    """Return a valid hook object past the skim cap, so no host can keep a row for it.
+
+    A body between the trusted cap and the skim cap keeps a structural row since tb4n1 (B5);
+    ``tests/unit/cli/test_hook_oversize_skim.py`` owns that range.
+    """
 
     body = (
         b'{"session_id":"'
         + session_id.encode()
         + b'","tool_name":"shell","command":"COMMAND_CANARY '
-        + b"x" * MAX_HOOK_STDIN_BYTES
+        + b"x" * MAX_HOOK_SKIM_BYTES
         + b'"}'
     )
-    assert len(body) > MAX_HOOK_STDIN_BYTES
+    assert len(body) > MAX_HOOK_SKIM_BYTES > MAX_HOOK_STDIN_BYTES
     return body
 
 

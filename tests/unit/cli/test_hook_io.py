@@ -276,13 +276,15 @@ def test_hook_stdin_cap_is_one_shared_definition() -> None:
     from yoetz.cli import hooks
 
     assert hooks.MAX_HOOK_STDIN_BYTES == MAX_HOOK_STDIN_BYTES
-    assert MAX_HOOK_STDIN_BYTES == 262_144
-    # A second private copy of this number is how the documented 256 KiB cap
+    # Raised from 256 KiB in tb4n1 (B5): Yoetz's own closure_prepare replies,
+    # image views and large outputs outgrew it and lost their PostToolUse rows.
+    assert MAX_HOOK_STDIN_BYTES == 1_048_576
+    # A second private copy of this number is how the documented 1 MiB cap
     # could drift on one side only.
     assert not hasattr(hooks, "_MAX_STDIN_BYTES")
     assert not hasattr(hook_io_module, "_MAX_STDIN_BYTES")
     assert hook_io_module.MAX_HOOK_SKIM_BYTES == MAX_HOOK_SKIM_BYTES
-    assert MAX_HOOK_SKIM_BYTES == 1_048_576
+    assert MAX_HOOK_SKIM_BYTES == 8_388_608
 
 
 def test_cursor_ingress_skims_a_complete_oversize_body_and_drops_content() -> None:

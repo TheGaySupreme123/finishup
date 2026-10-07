@@ -1316,24 +1316,57 @@ budget. Failures, mutations, and ambiguous shell are never suppressed. This is a
 boundary for local CLI self-reads; use the explicit MCP status or receipt route where available or
 account for the CLI read in coverage and capacity.
 
-### Oversized hook payloads (issue #667)
+### Oversized hook payloads (issue #667, tb4n1 B5)
 
-A Codex hook body over the 256 KiB ingress cap (`MAX_HOOK_STDIN_BYTES`) is refused at stdin,
-before any parse. Codex does not use Cursor's 1 MiB identity skim, so the oversized event stays
-an unparsed gap. The hook stays fail-open and the host continues. Yoetz records the bounded
+The Codex hook ingress cap is 1 MiB (`MAX_HOOK_STDIN_BYTES`, shared by every host); a body at or
+under it is parsed in full and its captured content stays bounded by the content budget. It was
+256 KiB until tb4n1, where 96 PostToolUse rows were lost to it: 42 were Yoetz's own
+`closure_prepare` replies (300 KB-1 MB, including nested code-mode calls, which reach the hook as
+`mcp__yoetz__closure_prepare`), most of the rest `view_image` results carrying base64 data URLs
+and large `cat` outputs. Each loss left its pre-event unpaired.
+
+The observe ingress (`yoetz hooks observe`) now skims a complete body up to 8 MiB
+(`MAX_HOOK_SKIM_BYTES`) with the same safety rules as the full parse:
+
+- Image, audio, and video bytes (an `input_image` data URL, an MCP `image` block) are replaced
+  with a fixed placeholder. If the body then fits the 1 MiB cap it is admitted whole, with its
+  text and outcome, and records no gap.
+- A Yoetz MCP tool (`mcp__yoetz__*`, `closure_prepare` included) keeps a closed identity row:
+  session, turn, transcript, tool, call id, and outcome flags. Its content is never captured in
+  any case, so the row is complete, pairs with its pre-event, and records no gap.
+- Any other body still over the cap keeps the same identity row with the
+  `payload_content_omitted` gap and the `codex_payload_content_omitted` hook diagnostic. Command
+  text and output are not retained; the row pairs with its pre-event instead of vanishing.
+
+A body over the skim cap, or a complete oversized body that fails the parse, is still refused
+before any row exists. The hook stays fail-open and the host continues. Yoetz records the bounded
 `codex_payload_too_large` reason against that event in `yoetz observe status` hook diagnostics,
 and notes the `payload_too_large` coverage gap on the consented workspace, where
 `yoetz observe status` shows it. That workspace gap does not yet reach task receipts: no row
-exists, so a receipt simply has no evidence for the dropped event rather than naming the loss. Before this, the refusal reached the outer handler as the bare
-`observe` reason, which named neither the cause nor the affected event, and the native
-`post-tool-use`, `user-prompt-submit`, and `session-start` entry points recorded nothing at all
-because they parse the body before handing the same bytes to the observation ingress.
-The cap is fixed and shared by every host; raising it is not an operator control. Each reader
-consumes at most cap-plus-one bytes, so the true size of a refused body is never measured and
-never recorded — the bound itself is the whole fact. Nothing about the event is parsed, so the
-hook name the host supplied on the command line is the only identity the record can carry: no
-tool name, session, or path. The refusal costs exactly that one event; the next ordinary event
-still ingests.
+exists, so a receipt simply has no evidence for the dropped event rather than naming the loss.
+The native `post-tool-use` (start correlation), `user-prompt-submit`, and `session-start` entry
+points parse the body themselves with the 1 MiB trusted cap and record the same reason above it.
+The caps are fixed; raising them is not an operator control. A reader consumes at most
+cap-plus-one bytes, so the true size of a refused body is never measured and never recorded. The
+refusal costs exactly that one event; the next ordinary event still ingests.
+
+Matcher decision (tb4n1 B5): the PostToolUse observe hook keeps matching every tool, Yoetz's own
+included. Codex matchers are regular expressions without lookaround, so "every tool except
+`mcp__yoetz__*`" is not a clean matcher; excluding only the post-event would leave each Yoetz
+pre-event unpaired, and excluding both would drop the delivered record of Yoetz mutations and of
+any failed Yoetz call that self-observation deliberately keeps. The size problem is fixed in the
+reader instead. `closure_prepare` reply size itself is owned by the closure work, not by this
+ingress.
+
+Observed images (P3-2, issue #1013): Codex `view_image` results and code-mode outputs carry images as `input_image` data URLs. Before the bytes are
+dropped, the hook records up to 8 images per call as digest-only facts: SHA-256 and byte count of
+the decoded image, a media type sniffed from its bytes (PNG, JPEG, GIF, WebP, else
+`image/unknown`), and pixel width and height read from the header only. The service records one
+`evidence_recorded` row per image (`artifact`, `content_digest`, `digest_only`), listed in the
+call's result `evidence_refs`, with the description `Observed image tool result <type> <w>x<h>
+(<n> bytes); pixels were not captured or sent`. No pixel is captured, stored, or sent; the agent
+can cite the evidence id as its own inspection of the output. This holds at every body size up to
+the 8 MiB skim cap.
 
 ## 8. Remove
 

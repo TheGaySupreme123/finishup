@@ -193,7 +193,8 @@ def test_codex_pass_that_faults_is_counted_as_failed(
     def broken(*_args: object, **_kwargs: object) -> object:
         raise RuntimeError("private detail")
 
-    monkeypatch.setattr(observe_hooks, "read_hook_payload", broken)
+    # Codex observation reads through the skim-aware ingress since tb4n1 (B5).
+    monkeypatch.setattr(observe_hooks, "read_hook_ingress", broken)
     stdout = io.BytesIO()
     assert (
         observe_hooks.handle_codex_observe(

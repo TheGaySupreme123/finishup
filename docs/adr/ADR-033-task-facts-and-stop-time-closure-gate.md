@@ -150,6 +150,11 @@ agent must not be able to stop silently with known work left.
    `install_target` (`yoetz_runtime`, `workspace_env`, `private_env`, `system`, `unresolved`),
    `write_scope` (`outside_workspace`) and `effective_user` (`root`, `non_root`) to the structural
    payload; the control-request 2.9.0 schema and the domain envelope admit exactly these values.
+   `write_scope` is not claimed for a scratch write into a temporary directory (`/tmp`,
+   `/var/tmp`, `/dev/shm`, their macOS `/private` aliases, the per-user macOS
+   `/var/folders/<a>/<b>/T`, or the hook process's own temporary directory unless that is `/` or
+   contains the home directory); paths are normalized lexically first, so `/tmp/../etc/x` still
+   counts (tb4n1 E6: 28 of 33 flagged attempts were `/tmp` logs only).
    Interpreter resolution uses the hook process's `PATH` and never follows links; an interpreter
    under the hook's own `sys.prefix` is Yoetz's runtime. Materialization appends them to the
    observed action description in a fixed closed suffix order, which is how the ledger carries

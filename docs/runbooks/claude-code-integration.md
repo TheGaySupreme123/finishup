@@ -877,22 +877,53 @@ measurements are not recorded yet; the gap is owned by issue #915. The frontier-
 change applies here unchanged: an ordinary-profile `PostToolUse` with no pending advice returns
 `{}`.
 
-### Oversized hook payloads (issue #667)
+### Oversized hook payloads (issue #667, tb4n1 B5)
 
-A Claude Code hook body over the 256 KiB ingress cap (`MAX_HOOK_STDIN_BYTES`) is refused at
-stdin, before any parse. Claude Code does not use Cursor's 1 MiB identity skim, so the oversized
-event stays an unparsed gap. The hook stays fail-open and the host continues. Yoetz records the
-bounded `claude_payload_too_large` reason against that event in `yoetz observe status` hook
-diagnostics, and notes the `payload_too_large` coverage gap on the consented workspace, where
+The Claude Code hook ingress cap is 1 MiB (`MAX_HOOK_STDIN_BYTES`, shared by every host); a body
+at or under it is parsed in full and its captured content stays bounded by the content budget. It
+was 256 KiB until tb4n1 (B5), when Yoetz's own `closure_prepare` replies, image reads, and large
+outputs outgrew it and lost their PostToolUse rows, leaving the pre-events unpaired.
+
+`yoetz hooks claude-observe` now skims a complete body up to 8 MiB (`MAX_HOOK_SKIM_BYTES`) with the
+same safety rules as the full parse:
+
+- Image, audio, and video bytes (a `Read` of an image returns `type: image` with base64 under
+  `file`; MCP tools return `image` blocks) are replaced with a fixed placeholder. If the body then
+  fits the 1 MiB cap it is admitted whole and records no gap.
+- A Yoetz MCP tool (`mcp__plugin_yoetz_yoetz__*` or `mcp__yoetz__*`, `closure_prepare` included)
+  keeps a closed identity row: session, tool, call id, lineage ids, and outcome flags. Its content
+  is never captured in any case, so the row is complete, pairs with its pre-event, and records no
+  gap.
+- Any other body still over the cap keeps the same identity row with the
+  `payload_content_omitted` gap and the `claude_payload_content_omitted` hook diagnostic. Command
+  text, file contents, and output are not retained.
+
+A body over the skim cap, or a complete oversized body that fails the parse, is still refused
+before any row exists. The hook stays fail-open and the host continues. Yoetz records the bounded
+`claude_payload_too_large` reason against that event in `yoetz observe status` hook diagnostics,
+and notes the `payload_too_large` coverage gap on the consented workspace, where
 `yoetz observe status` shows it. That workspace gap does not yet reach task receipts: no row
-exists, so a receipt simply has no evidence for the dropped event rather than naming the loss. This host ingress previously swallowed every
-refusal into a bare `{}` with no record at all, so a dropped large edit left no trace.
-The cap is fixed and shared by every host; raising it is not an operator control. Each reader
-consumes at most cap-plus-one bytes, so the true size of a refused body is never measured and
-never recorded — the bound itself is the whole fact. Nothing about the event is parsed, so the
-hook name the host supplied on the command line is the only identity the record can carry: no
-tool name, session, or path. The refusal costs exactly that one event; the next ordinary event
-still ingests.
+exists, so a receipt simply has no evidence for the dropped event rather than naming the loss.
+The caps are fixed; raising them is not an operator control. A reader consumes at most
+cap-plus-one bytes, so the true size of a refused body is never measured and never recorded. The
+refusal costs exactly that one event; the next ordinary event still ingests.
+
+Matcher decision (tb4n1 B5): the ordinary profile keeps its `.*` tool matchers, and the structural
+profile keeps its Yoetz-scoped matcher. Excluding Yoetz tools from PostToolUse alone would leave
+their pre-events unpaired, excluding them from both would drop the delivered record of Yoetz
+mutations and failures, and the structural profile exists only to observe Yoetz's own tools. The
+size problem is fixed in the reader instead.
+
+Observed images (P3-2, issue #1013): A Claude Code `Read` of an image returns `type: image` with base64 under `file`, and MCP tools
+return `image` blocks. Before the bytes are
+dropped, the hook records up to 8 images per call as digest-only facts: SHA-256 and byte count of
+the decoded image, a media type sniffed from its bytes (PNG, JPEG, GIF, WebP, else
+`image/unknown`), and pixel width and height read from the header only. The service records one
+`evidence_recorded` row per image (`artifact`, `content_digest`, `digest_only`), listed in the
+call's result `evidence_refs`, with the description `Observed image tool result <type> <w>x<h>
+(<n> bytes); pixels were not captured or sent`. No pixel is captured, stored, or sent; the agent
+can cite the evidence id as its own inspection of the output. This holds at every body size up to
+the 8 MiB skim cap.
 
 ### Smart observation selection (issue #687)
 
