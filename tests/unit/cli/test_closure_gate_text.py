@@ -286,10 +286,13 @@ def test_required_limitation_ids_follow_the_finding_guidance_and_are_bounded() -
     )
     assert gate is not None
     text = gate.text
-    sentence = "A whole-task completion claim must name these results in limitation_refs: "
+    sentence = (
+        "Status lists the results a whole-task completion claim must name in limitation_refs: "
+    )
     assert sentence in text
     assert text.index("respond `self_verified`") < text.index(sentence) < text.index("Then run")
     assert "res_97700000-0000-4000-8000-000000000004" in text
     assert "res_97700000-0000-4000-8000-000000000005" not in text
     assert "and 65 more (status lists them)" in text
-    assert "only those whose action names a claimed obligation or none" in text
+    assert "names only those whose action names a claimed obligation (or none)" in text
+    assert "you publish in the same batch as the claim too" in text

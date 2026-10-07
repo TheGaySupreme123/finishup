@@ -187,8 +187,10 @@ def _limitation_text(readiness: object) -> str:
     if more > 0:
         named += f" and {more} more (status lists them)"
     return (
-        f"A whole-task completion claim must name these results in limitation_refs: {named}."
-        " A scoped claim needs only those whose action names a claimed obligation or none."
+        f"Status lists the results a whole-task completion claim must name in limitation_refs:"
+        f" {named}. A scoped claim names only those whose action names a claimed obligation (or"
+        " none). Add any failed, partial or unknown result you publish in the same batch as the"
+        " claim too."
     )
 
 
