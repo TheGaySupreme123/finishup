@@ -4833,6 +4833,14 @@ Outcome semantics and back-pressure vocabulary (ADR-022 decisions 12–13):
   `Process exited with code N` function-output header, and an MCP result's `isError`; output text
   is never read as an outcome. A rollout `event_msg`/`item_completed` whose item is a
   `CommandExecution`, `McpToolCall` or `FileChange` is a completed tool call (event kind
+`LocalObservationStore.selection_history_gaps` attaches `observation_input_loss` to a later
+input only when that input's call (or the call that spawned it) matches a bounded pairing
+commitment of a lost input in the same lane; legacy, overflowed (more than 16 lost calls) or
+older-writer-advanced lanes stay route-wide (ADR-029, tb4n1 B3). `record_admission_loss(...,
+cause=AdmissionLossCause)` records the closed refusal cause in that private per-lane detail;
+`selection_loss_causes(workspace)` and `admission_loss_cause(workspace, envelope)` read it. The
+wire loss-range shape is unchanged; hooks surface the cause as the `admission_loss_<cause>`
+diagnostic reason.
   `item_completed`) whose `status` and `exit_code` are its outcome. The Claude ordinary
   `claude-code-hooks-ordinary-v2` mapping also treats Claude's documented `PostToolUse` event as
   an explicit host-tool success fact, without fabricating `exit_status: 0`; `PostToolUseFailure`

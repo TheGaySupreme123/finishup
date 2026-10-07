@@ -24,6 +24,7 @@ from yoetz.domain.observation import (
     ObservationIngestResult,
     ObservationSource,
 )
+from yoetz.domain.observation_budget import AdmissionLossCause
 from yoetz.domain.values import JsonObject, JsonValue, validate_commitment
 from yoetz.ports.control_reasons import CONTROL_ERROR_REASONS
 from yoetz.protocol.ids import IdKind, validate_id
@@ -74,6 +75,10 @@ _REASONS: Final = frozenset(
         "invalid_session",
         "observe",
         "outbox_overflow",
+        # The closed admission dimension that refused a non-replayable input,
+        # recorded beside `outbox_overflow` so a loss range is diagnosable
+        # without input content (tb4n1 B3).
+        *("admission_loss_" + item.value for item in AdmissionLossCause),
         "service_unavailable",
         "service_incompatible",
         "vault_locked",

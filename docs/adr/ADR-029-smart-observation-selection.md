@@ -191,6 +191,40 @@ to every task or assigned to a later mapping. A recovered/empty queue is not evi
 losses were absent. Lane acknowledgement adds only private, bounded retry state; an older writer
 forgetting it can cause a replay but cannot duplicate the stable ledger marker.
 
+**Amendment (tb4n1 B3): bounded inheritance and a recorded cause.** One refused startup input
+used to mark every later observation of its lane (source, native session, generation and route)
+with `observation_input_loss`, so a single refusal made a whole task's evidence unprovable. The
+lane marker above is unchanged: the task still learns once that its lane lost input. What later
+evidence inherits is now bounded to what the lost input could affect. Each loss lane keeps a
+private, content-free detail beside its range: up to 16 pairing commitments (the same
+source/session/generation-scoped digests used for pre/post pairing) of the host calls whose inputs
+were lost. A later input inherits the gap only when its own call, or the call that spawned it,
+matches one of them: the post of a lost pre, any later input of a call whose post was lost, or
+a child of a lost call. An input with no host call identity (a prompt, a session boundary) has no
+partner and marks no later input. A lane that loses more than 16 paired calls, a range recorded
+before this detail existed, or a range advanced by an older writer (which drops the detail; the
+detail's count must equal the range count to be trusted) keeps the previous route-wide
+inheritance. Only commitments and closed codes are stored; raw call ids never enter the detail.
+
+The detail also records the closed refusal cause: `queue_count`, `queue_bytes`,
+`session_queue_count`, `session_queue_bytes`, `protected_reserve`, `session_fair_share`,
+`pressure_count`, `pressure_bytes`, `pressure_capture_backlog`, `capture_scope_unknown`,
+`state_bytes`, `flush_failed`, or `unknown` for a range recorded before causes existed. The wire
+loss-range shape in observe status is unchanged. The cause is surfaced through the hook notice
+(`...; see observe status; cause=<cause>`) and the closed `admission_loss_<cause>` hook-diagnostic
+reason in `hook_diagnostics.reasons`, recorded at the same once-a-minute cadence as
+`outbox_overflow`.
+
+The tb4n1 startup refusals had a concrete source. A capture reservation is created unconfirmed and
+confirmed only after its staging ticket commits outside the store lock. Admission pressure treated
+any unconfirmed reservation as unknown capture scope, drove the capture dimension to its hard
+limit, and refused every native input in that window (one run recorded a refusal 28 ms after a
+1.4 s reservation hold). Under a proven inventory, admission pressure now charges an unconfirmed
+reservation at its reserved byte bound instead. Reservation and recovery keep their stricter view:
+a new reservation still waits for the confirmation, the unconfirmed reservation remains recovery
+demand, and an unproven inventory still refuses admission (now recorded as
+`capture_scope_unknown`).
+
 Detailed and larger capacity default to a current-session override. Workspace persistence is an
 explicit owner choice. A preview precedes non-default authority and describes scope, expiry,
 finite budgets, and increased storage and processing costs. Expiry, revoke, reset, and lowering a

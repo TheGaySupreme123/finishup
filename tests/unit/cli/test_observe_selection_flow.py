@@ -9,6 +9,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -33,6 +34,7 @@ from yoetz.application.observation_drain import ObservationOutboxSweeper
 from yoetz.application.observation_materialize import materialize_observation_envelope
 from yoetz.cli import observe as observe_cli
 from yoetz.cli import observe_hooks
+from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
 from yoetz.cli.observe import _selection_preview_plan
 from yoetz.domain.observation import (
     ObservationEnvelope,
@@ -42,7 +44,7 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.observation_budget import ObservationMode
+from yoetz.domain.observation_budget import AdmissionLossCause, ObservationMode
 from yoetz.domain.observation_settings import ObservationSelection
 from yoetz.domain.values import JsonObject, Timestamp
 from yoetz.protocol.canonical import JsonValue, canonical_encode
@@ -286,7 +288,186 @@ def test_loss_history_survives_recovery_without_retargeting_another_task(tmp_pat
     rows = reopened.list_pending_outbox_rows(commitment)
     assert rows[-1].envelope.event_kind == "RoutineReadSummary"
     batch = materialize_observation_envelope(rows[-1].envelope, task_id=TASK)
-    assert "observation_input_loss" in batch.coverage.known_gaps
+    # The lost input belonged to call "original"; an unrelated later call is
+    # not marked by it (tb4n1 B3). The lane's loss is still reported once.
+    assert "observation_input_loss" not in batch.coverage.known_gaps
+    assert reopened.pending_selection_losses(commitment)
+
+
+_WIRE_LOSS_RANGE_FIELDS = frozenset(
+    {
+        "lane",
+        "source",
+        "session",
+        "source_generation",
+        "route",
+        "first_identity",
+        "last_identity",
+        "first_position",
+        "last_position",
+        "count",
+        "identity_extent",
+    }
+)
+
+
+def _loss_envelope_factory(
+    store: LocalObservationStore, root: Path, workspace: Path, commitment: str
+):
+    """Build routed hook envelopes at chosen positions for distinct host calls."""
+
+    hook(root, workspace, "PreToolUse", "template-call")
+    template = store._load(commitment).admission_buffer.inputs[-1].envelope
+    assert template.structural_payload.get("selection_task_id") == TASK
+
+    def at(position: int, call: str, *, parent: str | None = None) -> ObservationEnvelope:
+        payload: dict[str, JsonValue] = {**template.structural_payload, "tool_call_id": call}
+        if parent is not None:
+            payload["parent_tool_call_id"] = parent
+        return replace(
+            template,
+            # The identity never spells the host call id, so the persisted
+            # state can be checked for a leaked call id below.
+            source_identity=f"hook:loss-test-{position}-{sum(map(ord, call))}",
+            cursor=replace(template.cursor, event_position=position),
+            structural_payload=JsonObject(payload),
+        )
+
+    return at
+
+
+def _state_path(root: Path) -> Path:
+    return next((root / "observation" / "workspaces").glob("*.json"))
+
+
+def test_one_startup_loss_marks_only_inputs_of_the_lost_call(tmp_path: Path) -> None:
+    """tb4n1 music-harmony: one refusal at position 8 marked 133 later results."""
+
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    at = _loss_envelope_factory(store, root, workspace, commitment)
+    lost_pre = at(8, "lost-call")
+    assert store.record_admission_loss(
+        commitment, lost_pre, cause=AdmissionLossCause.CAPTURE_SCOPE_UNKNOWN
+    )
+
+    reopened = LocalObservationStore(_state=root)
+    loss = ("observation_input_loss",)
+    # Every later input of other calls is unaffected by the lost pre.
+    for position in range(9, 240):
+        assert reopened.selection_history_gaps(commitment, at(position, f"call-{position}")) == ()
+    # Its pairing partner and a call it spawned inherit the loss.
+    assert reopened.selection_history_gaps(commitment, at(10, "lost-call")) == loss
+    assert reopened.selection_history_gaps(commitment, at(11, "child", parent="lost-call")) == loss
+    # The lane is still reported to the task once, with its closed cause.
+    assert reopened.pending_selection_losses(commitment)
+    (cause,) = reopened.selection_loss_causes(commitment)
+    assert cause["cause"] == "capture_scope_unknown"
+    assert cause["causes"] == {"capture_scope_unknown": 1}
+    assert cause["inherit_scope"] == "paired_inputs"
+    assert reopened.admission_loss_cause(commitment, lost_pre) is (
+        AdmissionLossCause.CAPTURE_SCOPE_UNKNOWN
+    )
+    # The wire-shaped range is unchanged and no host call id is persisted.
+    accounting = reopened.selection_accounting(commitment)
+    ranges = cast(tuple[Mapping[str, JsonValue], ...], accounting["loss_ranges"])
+    assert set(ranges[0]) == _WIRE_LOSS_RANGE_FIELDS
+    assert "lost-call" not in _state_path(root).read_text(encoding="utf-8")
+
+
+def test_loss_lane_with_too_many_lost_calls_falls_back_to_route_wide(tmp_path: Path) -> None:
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    at = _loss_envelope_factory(store, root, workspace, commitment)
+    for index in range(17):
+        store.record_admission_loss(
+            commitment, at(20 + index, f"lost-{index}"), cause=AdmissionLossCause.QUEUE_BYTES
+        )
+    (cause,) = store.selection_loss_causes(commitment)
+    assert cause["inherit_scope"] == "route"
+    assert cause["causes"] == {"queue_bytes": 17}
+    assert store.selection_history_gaps(commitment, at(500, "unrelated")) == (
+        "observation_input_loss",
+    )
+
+
+@pytest.mark.parametrize(
+    "legacy_edit",
+    ["details_absent", "details_count_stale", "details_malformed"],
+)
+def test_legacy_loss_range_keeps_route_wide_inheritance(tmp_path: Path, legacy_edit: str) -> None:
+    """A range written before causes existed (or advanced by an older writer)."""
+
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    at = _loss_envelope_factory(store, root, workspace, commitment)
+    store.record_admission_loss(commitment, at(8, "lost-call"))
+    path = _state_path(root)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    assert set(state["selection_loss_ranges"][0]) == _WIRE_LOSS_RANGE_FIELDS
+    if legacy_edit == "details_absent":
+        state.pop("selection_loss_details")
+    elif legacy_edit == "details_count_stale":
+        state["selection_loss_ranges"][0]["count"] = 2
+    else:
+        state["selection_loss_details"][0]["pairings"] = ["not-a-digest"]
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    reopened = LocalObservationStore(_state=root)
+    assert reopened.selection_history_gaps(commitment, at(300, "unrelated")) == (
+        "observation_input_loss",
+    )
+    (cause,) = reopened.selection_loss_causes(commitment)
+    assert cause["inherit_scope"] == "route"
+    if legacy_edit != "details_count_stale":
+        assert cause["cause"] == "unknown"
+    # A later loss on a legacy lane cannot narrow its earlier history.
+    reopened.record_admission_loss(
+        commitment, at(301, "second-loss"), cause=AdmissionLossCause.SESSION_FAIR_SHARE
+    )
+    (cause,) = reopened.selection_loss_causes(commitment)
+    assert cause["inherit_scope"] == "route"
+    assert cause["cause"] == "session_fair_share"
+    assert reopened.selection_history_gaps(commitment, at(302, "unrelated-2")) == (
+        "observation_input_loss",
+    )
+
+
+def test_unknown_capture_scope_refusal_records_its_cause_and_diagnostic(
+    tmp_path: Path,
+) -> None:
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    hook(root, workspace, "PreToolUse", "before")
+    store.mark_capture_backlog_scope_unknown(commitment)
+    hook(root, workspace, "PreToolUse", "refused-call")
+    (cause,) = store.selection_loss_causes(commitment)
+    assert cause["cause"] == "capture_scope_unknown"
+    assert cause["inherit_scope"] == "paired_inputs"
+    reasons = cast(Mapping[str, JsonValue], hook_diagnostic_summary(_state=root)["reasons"])
+    assert "outbox_overflow" in reasons
+    assert "admission_loss_capture_scope_unknown" in reasons
+
+
+def test_unconfirmed_capture_reservation_does_not_refuse_native_input(
+    tmp_path: Path,
+) -> None:
+    """tb4n1 music-harmony: a hook ran 28 ms after a 1.4 s reservation hold."""
+
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    store.bootstrap_capture_reservations(
+        commitment,
+        {},
+        observed_at=Timestamp("2026-09-10T00:00:00.000Z"),
+        complete=True,
+    )
+    store.reserve_capture_ticket(commitment, "sha256:" + "a" * 64, TASK, 4_096)
+    assert store._load(commitment).capture_reservations
+    hook(root, workspace, "PreToolUse", "during-reservation")
+    hook(root, workspace, "PostToolUse", "during-reservation")
+    assert store.selection_loss_causes(commitment) == ()
+    assert store.selection_accounting(commitment)["unrecoverable_input_count"] == 0
+    # An unproven inventory still refuses, and now says why.
+    store.mark_capture_backlog_scope_unknown(commitment)
+    hook(root, workspace, "PreToolUse", "after-unknown")
+    (cause,) = store.selection_loss_causes(commitment)
+    assert cause["cause"] == "capture_scope_unknown"
 
 
 def test_selected_admission_exception_rolls_back_ingest_for_exact_retry(

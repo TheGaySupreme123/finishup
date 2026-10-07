@@ -24,6 +24,7 @@ from yoetz.domain.values import JsonObject
 
 __all__ = [
     "AdmissionDecision",
+    "AdmissionLossCause",
     "AdmissionReason",
     "AdmissionRequest",
     "BUDGET_POLICY_VERSION",
@@ -317,6 +318,29 @@ class AdmissionReason(str, Enum):  # noqa: UP042 - stable domain value
     CAPTURE_BYTES = "capture_bytes"
     PROTECTED_RESERVE = "protected_reserve"
     SESSION_FAIR_SHARE = "session_fair_share"
+
+
+class AdmissionLossCause(str, Enum):  # noqa: UP042 - stable domain value
+    """Closed reason one non-replayable host input was refused (tb4n1 B3).
+
+    Each value names the single admission dimension that refused, so a loss
+    range can be diagnosed without any input content. ``unknown`` is only the
+    decode of a range recorded before causes existed.
+    """
+
+    QUEUE_COUNT = "queue_count"  # aggregate selected row count
+    QUEUE_BYTES = "queue_bytes"  # aggregate selected queue bytes
+    SESSION_QUEUE_COUNT = "session_queue_count"  # this session's selected row count
+    SESSION_QUEUE_BYTES = "session_queue_bytes"  # this session's selected queue bytes
+    PROTECTED_RESERVE = "protected_reserve"  # headroom kept for protected rows
+    SESSION_FAIR_SHARE = "session_fair_share"  # per-session share of the aggregate
+    PRESSURE_COUNT = "pressure_count"  # hard pressure limit on a count dimension
+    PRESSURE_BYTES = "pressure_bytes"  # hard pressure limit on a byte dimension
+    PRESSURE_CAPTURE_BACKLOG = "pressure_capture_backlog"  # captured-content backlog full
+    CAPTURE_SCOPE_UNKNOWN = "capture_scope_unknown"  # capture inventory not yet proven
+    STATE_BYTES = "state_bytes"  # the local state document bound
+    FLUSH_FAILED = "flush_failed"  # the hook's pre-flush of buffered inputs was refused
+    UNKNOWN = "unknown"  # recorded before causes existed
 
 
 def _positive(value: object, field: str) -> None:

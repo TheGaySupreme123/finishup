@@ -837,7 +837,10 @@ store path with no Cursor-specific behavior. Lowering, revoking, expiring, or en
 selection can leave more accepted rows than the new target holds. Those rows still drain, and the
 store keeps finite room, tied only to them, for refused-input loss, delivery attempts, and session
 ends. A refused hook reports `hook_observe_degraded: outbox_overflow; loss accounted` only after
-the loss is durable. If a `sessionEnd` hook cannot persist its local end, it stays fail-open within
+the loss is durable. The notice ends with `cause=<cause>`, the closed admission
+dimension that refused, and the same cause is recorded as the `admission_loss_<cause>` reason in
+`hook_diagnostics.reasons` (ADR-029, tb4n1 B3). Only later inputs of the lost host call, or calls it
+spawned, carry `observation_input_loss`; the shared store path applies this to every host. If a `sessionEnd` hook cannot persist its local end, it stays fail-open within
 its three-second budget. It prints `hook_observe_degraded: session_end_unrecorded` and records
 that reason in `hook_diagnostics.reasons`. Cloud agents do not run `sessionEnd`, so for them the
 override ends by revoke or expiry.
