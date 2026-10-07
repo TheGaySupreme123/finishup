@@ -86,7 +86,9 @@ _MEDIA_PLACEHOLDER: Final = "[media bytes omitted by Yoetz]"
 # ``{``, ``[`` and ``,`` count outside strings exceeds this budget is refused before
 # the parse as ``payload_too_large``; the count itself is two C-speed passes.
 _MAX_SKIM_STRUCTURE_TOKENS: Final = 262_144
-_JSON_STRING_TOKEN: Final = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"')
+# An unterminated string consumes to the end of input, so a malformed body cannot make
+# the match restart at every quote (quadratic time; found in review of #999).
+_JSON_STRING_TOKEN: Final = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*(?:"|\\?\Z)')
 _MAX_CONTEXT_CHARS: Final = 2_000
 _MAX_CURSOR_IDENTITY_STRING_BYTES: Final = 8_192
 _MAX_CURSOR_IDENTITY_DEPTH: Final = 6
@@ -685,8 +687,9 @@ class OversizedHookPayloadError(Exception):
 def _skim_structure_within_budget(data: bytes) -> bool:
     """Whether one oversized body's structure is cheap enough to parse in a hook.
 
-    String bodies are removed first (an unterminated string is left in place and its
-    bytes count), so text and base64 never spend the budget.
+    String bodies are removed first (an unterminated string runs to the end of the body,
+    which the parse then refuses), so text and base64 never spend the budget and the
+    count stays linear in the body size.
     """
 
     structural = _JSON_STRING_TOKEN.sub(b'""', data)

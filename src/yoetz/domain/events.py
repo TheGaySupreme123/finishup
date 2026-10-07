@@ -5256,18 +5256,31 @@ class AcceptedEvent:
                     or self.publication_channel is not PublicationChannel.CODEX_JSONL_IMPORT
                 ):
                     raise ProtocolValueError("evidence_digest_provenance_invalid")
-                if binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED and (
-                    self.author.actor_type is not ActorType.HARNESS
-                    or self.author.assurance is not AuthorshipAssurance.HARNESS_OBSERVED
-                    or self.publication_channel is not PublicationChannel.HOOK_OBSERVED
-                    or evidence.strength is not EvidenceImmutability.IMMUTABLE_SNAPSHOT
-                    or binding.content_availability is not EvidenceContentAvailability.CAPTURED
-                    or self.coverage.artifact_observation
-                    is not ArtifactObservation.CONTENT_CAPTURED
-                    or self.coverage.evidence_immutability
-                    is not EvidenceImmutability.IMMUTABLE_SNAPSHOT
-                ):
-                    raise ProtocolValueError("evidence_digest_provenance_invalid")
+                if binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED:
+                    observed_by_service = (
+                        self.author.actor_type is ActorType.HARNESS
+                        and self.author.assurance is AuthorshipAssurance.HARNESS_OBSERVED
+                        and self.publication_channel is PublicationChannel.HOOK_OBSERVED
+                    )
+                    captured_bytes = (
+                        evidence.strength is EvidenceImmutability.IMMUTABLE_SNAPSHOT
+                        and binding.content_availability is EvidenceContentAvailability.CAPTURED
+                        and self.coverage.artifact_observation
+                        is ArtifactObservation.CONTENT_CAPTURED
+                        and self.coverage.evidence_immutability
+                        is EvidenceImmutability.IMMUTABLE_SNAPSHOT
+                    )
+                    # An image a host tool returned: the hook hashed the decoded bytes and kept
+                    # no pixels, so the row is a digest of artifact bytes with nothing captured
+                    # (#1013). It can never pose as captured content.
+                    observed_digest_only = (
+                        evidence.strength is EvidenceImmutability.CONTENT_DIGEST
+                        and binding.content_availability is EvidenceContentAvailability.DIGEST_ONLY
+                        and binding.subject is EvidenceDigestSubject.ARTIFACT_BYTES
+                        and evidence.captured_object_id is None
+                    )
+                    if not observed_by_service or not (captured_bytes or observed_digest_only):
+                        raise ProtocolValueError("evidence_digest_provenance_invalid")
         if compute_entry_digest(accepted_record_digest_preimage(self)) != self.entry_digest:
             raise ProtocolValueError("entry_digest_mismatch")
 

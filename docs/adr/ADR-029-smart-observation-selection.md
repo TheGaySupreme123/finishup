@@ -656,7 +656,10 @@ record that it had looked. The review packet cannot carry images, so the agent h
   observation_captured}`, a stable id from the envelope's source identity and the image index, and
   the fixed description `Observed image tool result <media_type> <w>x<h> (<n> bytes); pixels were
   not captured or sent`. The call's `result_recorded.evidence_refs` lists it (an unpaired post
-  parents it to its standalone evidence instead).
+  parents it to its standalone evidence instead). The accepted-event validator admits
+  `observation_captured` in exactly this digest-only shape (strength `content_digest`,
+  `digest_only`, subject `artifact_bytes`, no captured object, coordinator author on
+  `hook_observed`) beside the captured-bytes shape; anything else is refused.
 - No pixel is stored as captured content, persisted locally, or sent to any reviewer. The agent may
   cite the evidence id when it states it inspected the output; reviewers see it as present and
   not sent.

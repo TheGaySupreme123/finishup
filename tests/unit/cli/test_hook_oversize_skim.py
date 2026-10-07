@@ -630,3 +630,17 @@ def test_hook_io_stays_a_leaf_module() -> None:
     assert all(
         module == "yoetz.cli.hook_io" or module.startswith("yoetz.protocol") for module in modules
     )
+
+
+def test_an_unterminated_string_is_consumed_in_one_match() -> None:
+    """Review of #999: a malformed body must not restart the string match at every quote.
+
+    One match to the end of input keeps the pre-check linear (the old pattern took ~21 s on
+    80 KB of escaped quotes); the parse then refuses the body.
+    """
+
+    from yoetz.cli.hook_io import _JSON_STRING_TOKEN  # pyright: ignore[reportPrivateUsage]
+
+    body = b'{"a": 1, "b": "' + b'\\"' * 50_000
+    assert _JSON_STRING_TOKEN.sub(b'""', body) == b'{"": 1, "": ""'
+    assert len(_JSON_STRING_TOKEN.findall(b'"' + b'\\"' * 50_000)) == 1

@@ -834,7 +834,10 @@ Key payload fields (minimum; full shapes in `src/yoetz/domain/events.py`):
   `observation_captured`. Ordinary publication can assert only `caller_asserted`; approved-check,
   import, and observation provenance are reserved to their authenticated authors/channels.
   `observation_captured` requires the observation coordinator (`harness_observed` on
-  `hook_observed`) and never means verified or independently reproduced. Schemas `1.0.0` and
+  `hook_observed`) and never means verified or independently reproduced. It has exactly two
+  shapes: captured bytes (`immutable_snapshot`, `captured`, content-captured coverage) and, since
+  #1013, an observed image digest (`content_digest`, `digest_only`, subject `artifact_bytes`, no
+  captured object), which can never pose as captured content. Schemas `1.0.0` and
   `1.1.0` remain exact-readable; an untyped legacy digest remains unknown rather than inheriting a
   subject from prose.
 - `claim_recorded/1.0.0`: frozen `claim_id`, `claim_kind` (`completion`|`material`),
