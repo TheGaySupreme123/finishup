@@ -23,7 +23,9 @@ from yoetz.domain.values import ObligationId, actor_id, obligation_id
 from yoetz.kernel import delivered_set
 from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
 from yoetz.kernel.delivered_set import (
+    DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
+    content_moved_declared_items,
     declared_delivered_items,
     declared_output_removed,
 )
@@ -31,6 +33,7 @@ from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.reducers import replay
 from yoetz.kernel.task_facts import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS,
+    STANDING_TASK_FACT_GAPS,
     STOP_GATE_TOKENS,
     RequestedOutputState,
 )
@@ -281,3 +284,120 @@ def test_a_new_deliverable_written_in_the_session_and_now_gone_is_removed() -> N
         )
         == ()
     )
+
+
+def _shrunk(base: int, lost: int, elsewhere: int) -> RequestedOutputState:
+    return RequestedOutputState(
+        "inside",
+        exists=True,
+        changed=True,
+        base_lines=base,
+        lines_lost=lost,
+        undeclared_lines_added=elsewhere,
+    )
+
+
+def test_content_moved_is_a_standing_disclosure_never_a_stop_gate_token() -> None:
+    assert DECLARED_OUTPUT_CONTENT_MOVED_GAP == "declared_output_content_moved"
+    assert DECLARED_OUTPUT_CONTENT_MOVED_GAP in STANDING_TASK_FACT_GAPS
+    assert DECLARED_OUTPUT_CONTENT_MOVED_GAP not in AGENT_ACTIONABLE_TASK_FACT_GAPS
+    assert DECLARED_OUTPUT_CONTENT_MOVED_GAP not in STOP_GATE_TOKENS
+    assert GAP_CLASSIFICATION[DECLARED_OUTPUT_CONTENT_MOVED_GAP] is GapClass.STANDING_LIMITATION
+
+
+@pytest.mark.parametrize(
+    ("state", "moved"),
+    [
+        (_shrunk(201, 200, 200), True),  # interleaved-vigenere
+        (_shrunk(40, 20, 10), True),  # exactly at every threshold
+        (_shrunk(40, 19, 19), False),  # under the 20-line floor
+        (_shrunk(41, 20, 20), False),  # under half of the base
+        (_shrunk(200, 150, 74), False),  # under half of the loss reappeared elsewhere
+        (_shrunk(200, 150, 0), False),  # a plain deletion
+        (RequestedOutputState("inside", exists=True, changed=True), False),  # not read
+        (
+            RequestedOutputState(
+                "inside",
+                exists=False,
+                deleted=True,
+                base_lines=200,
+                lines_lost=200,
+                undeclared_lines_added=200,
+            ),
+            False,  # removed, not shrunk: declared_output_removed owns it
+        ),
+    ],
+)
+def test_content_moved_rule(state: RequestedOutputState, moved: bool) -> None:
+    projection = _projection(_file("/app/cracker.py"))
+    expected = ((_OBLIGATION, 0),) if moved else ()
+    assert content_moved_declared_items(projection, {(_OBLIGATION, 0): state}) == expected
+
+
+def test_content_moved_skips_role_less_and_blocked_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = {(_OBLIGATION, 0): _shrunk(201, 200, 200)}
+    blocked = _projection(_file("/app/cracker.py"), blocker=True)
+    assert content_moved_declared_items(blocked, state) == ()
+
+    def no_role(item: object) -> object:
+        del item
+        return None
+
+    monkeypatch.setattr(delivered_set, "item_role", no_role)
+    assert content_moved_declared_items(_projection(_file("/app/cracker.py")), state) == ()
+
+
+def test_check_adds_content_moved_as_a_disclosure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from yoetz.application import check, check_change
+
+    projection = _projection(_file("/app/cracker.py"))
+
+    async def states(**_kwargs: object) -> dict[tuple[ObligationId, int], RequestedOutputState]:
+        return {(_OBLIGATION, 0): _shrunk(201, 200, 200)}
+
+    monkeypatch.setattr(check_change, "requested_output_states", states)
+    _evaluator, gaps, absent = asyncio.run(
+        check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
+            SimpleNamespace(projection=projection),  # type: ignore[arg-type]
+            None,
+            None,
+            None,
+            "req_00000000-0000-4000-8000-000000000001",
+        )
+    )
+    assert gaps == (DECLARED_OUTPUT_CONTENT_MOVED_GAP,)
+    assert absent is False
+
+
+def test_content_moved_never_fires_the_stop_gate_and_is_noted_when_it_fires() -> None:
+    from yoetz.cli.closure_gate import closure_gate_from_readiness
+
+    def readiness(state: str, actionable: tuple[str, ...]) -> SimpleNamespace:
+        return SimpleNamespace(
+            state=state,
+            agent_actionable=actionable,
+            standing_limitations=(DECLARED_OUTPUT_CONTENT_MOVED_GAP,),
+            open_obligation_count=1,
+            receipt_blocking_finding_count=0,
+            blocked_obligations=(),
+        )
+
+    for alone in (
+        readiness("ready_with_limitations", ()),
+        readiness("action_required", (DECLARED_OUTPUT_CONTENT_MOVED_GAP,)),
+    ):
+        assert (
+            closure_gate_from_readiness(
+                alone, frontier_sequence="7", frontier_digest="d", observation_pending=False
+            )
+            is None
+        )
+    gate = closure_gate_from_readiness(
+        readiness("action_required", ("obligations_open",)),
+        frontier_sequence="7",
+        frontier_digest="d",
+        observation_pending=False,
+    )
+    assert gate is not None
+    assert gate.items == ("obligations_open",)
+    assert "content may have moved out of a delivered file into an undelivered one" in gate.text

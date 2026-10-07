@@ -38,6 +38,7 @@ from typing import Final, cast
 from yoetz import __version__
 from yoetz.config.paths import ensure_owner_only_dir, state_dir
 from yoetz.kernel.task_facts import (
+    DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
     PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
@@ -105,6 +106,24 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
         " never justify moving, splitting or deleting deliverables"
     ),
 }
+
+
+# Informational only (ADR-035): appended when the gate already fires for another reason and
+# readiness lists this standing disclosure. It is never a token, so it never fires the gate.
+_CONTENT_MOVED_NOTE: Final = (
+    "Note: content may have moved out of a delivered file into an undelivered one"
+    " (declared_output_content_moved); check the deliverable still works where the task"
+    " delivers it."
+)
+
+
+def _content_moved_note(readiness: object) -> str:
+    standing = getattr(readiness, "standing_limitations", None)
+    if isinstance(standing, (tuple, list)) and DECLARED_OUTPUT_CONTENT_MOVED_GAP in tuple(
+        cast(tuple[object, ...], standing)
+    ):
+        return " " + _CONTENT_MOVED_NOTE
+    return ""
 
 
 class ClosureGateUnavailable(Exception):
@@ -196,6 +215,7 @@ def closure_gate_from_readiness(
         if not rows:
             return None
         text = f"Yoetz closure gate (shown once for these blockers): {_blocker_text(rows)}"
+        text += _content_moved_note(readiness)
         return ClosureGate(identity, text, (BLOCKER_RECHECK_ITEM,), keys)
     open_count = str(getattr(readiness, "open_obligation_count", "?"))
     blocking_count = str(getattr(readiness, "receipt_blocking_finding_count", "?"))
@@ -217,6 +237,7 @@ def closure_gate_from_readiness(
     )
     if rows:
         text += " " + _blocker_text(rows)
+    text += _content_moved_note(readiness)
     if observation_pending:
         text += " (Hook observations were still draining; observed-run facts were not used.)"
     return ClosureGate(identity, text, items + ((BLOCKER_RECHECK_ITEM,) if rows else ()), keys)

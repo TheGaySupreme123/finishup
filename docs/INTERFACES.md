@@ -8430,6 +8430,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `planned_verification_unobservable`, `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`, `verification_only_as_root`,
   `obligation_blocked_outside_agent_control`, `requested_output_ignored_by_repository`,
+  `declared_output_content_moved` (ADR-035),
   `requested_output_unchanged`,
   `requested_output_outside_workspace`, `requested_output_unverified`. Each code is classified
   once in `GAP_CLASSIFICATION`; standing ones are advisory for the check verdict, the receipt
@@ -8493,8 +8494,19 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   by the check-time change) or an `edit` action of the session naming it (written, then moved). `_requested_output_inputs` in `application/check.py` adds the closed gap
   `declared_output_removed` (`DECLARED_OUTPUT_REMOVED_GAP`, defined in `kernel/task_facts.py`) to
   the check's task-fact gaps. It is agent-actionable, a `STOP_GATE_TOKENS` entry, and has a fixed
-  `TASK_FACT_GAP_SENTENCES` sentence. Content moved out of a declared file that still exists is
-  not detected.
+  `TASK_FACT_GAP_SENTENCES` sentence. `content_moved_declared_items(projection, states) ->
+  tuple[(obligation, item index), ...]` names declared items whose state carries
+  `base_lines`, `lines_lost` and `undeclared_lines_added` with `lines_lost >= 20`
+  (`CONTENT_MOVED_MIN_LINES`), `2 * lines_lost >= base_lines` and
+  `2 * undeclared_lines_added >= lines_lost`; the check then adds the standing disclosure
+  `declared_output_content_moved` (`DECLARED_OUTPUT_CONTENT_MOVED_GAP`), never a Stop-gate token.
+  `requested_output_states` fills those fields only for a declared `file` the change modifies
+  (`M`), through the optional adapter method `count_change_lines(workspace, base_commit,
+  base_paths) -> ChangeLineCounts(changed: tuple[ChangeLineCount(path, added, removed,
+  untracked), ...], base_lines, truncated)` (`ports/change_capture.py`): numstat for tracked
+  changes, newline counts of untracked non-ignored files (bounded, no link followed, no
+  credential-named or binary file), base line counts for the named paths; numbers only, nothing
+  stored. A declared `directory` covers the files beneath it.
 - **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the
   absent-output fact, and skips blocked obligations. `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
@@ -8517,7 +8529,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   frontier_digest=, observation_pending=, reasked_blockers=) -> ClosureGate(identity, text, items,
   blocker_keys) | None` also fires, in `action_required` or `ready_with_limitations`, for a
   `blocked_obligations` pair whose `<obligation id>:<kind>` key is not in `reasked_blockers`. It adds
-  the item `BLOCKER_RECHECK_ITEM` (`blocker_recheck`) and names each obligation and kind once.
+  the item `BLOCKER_RECHECK_ITEM` (`blocker_recheck`) and names each obligation and kind once. When
+  the gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the
+  text carries one informational note; that code alone never fires the gate.
   `read_closure_gate(...)` reads compact status and raises `ClosureGateUnavailable` when it cannot;
   `closure_gate_already_delivered` / `record_closure_gate_delivered(..., blocker_keys=)` keep the
   owner-only `observation/closure-gate.json` once-per-frontier memory, and

@@ -419,6 +419,12 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " deletion: Yoetz review limits never justify moving, splitting or deleting"
             " deliverables."
         ),
+        "declared_output_content_moved": (
+            "A declared delivered file lost most of its lines while the same change added about"
+            " as many lines to files outside the declared delivered set: content may have moved"
+            " out of a delivered file into an undelivered one. Check that the deliverable still"
+            " works where the task delivers it."
+        ),
         "install_into_yoetz_runtime": (
             "A package install resolved to Yoetz's own runtime interpreter, not the task's."
         ),

@@ -47,6 +47,8 @@ from yoetz.ports.change_capture import (
     MAX_CHECK_CHANGE_TEXT_BYTES,
     ChangeBaseKind,
     ChangeCaptureUnavailable,
+    ChangeLineCount,
+    ChangeLineCounts,
     ChangeMetadataEntry,
     CheckChangeCapture,
     CheckChangeMetadata,
@@ -277,6 +279,10 @@ def _nul_fields(payload: bytes) -> list[bytes]:
 
 
 _MAX_REQUESTED_PATH_PROBES: Final = 64
+# The line-count read (ADR-035) opens each untracked file at most this large, and stops opening
+# files once this many bytes were read in one call; what it skips makes the result a lower bound.
+_MAX_LINE_COUNT_FILE_BYTES: Final = 8 * 1024 * 1024
+_MAX_LINE_COUNT_TOTAL_BYTES: Final = 64 * 1024 * 1024
 
 
 def _requested_relative_path(root: Path, value: str) -> bytes | None:
@@ -559,6 +565,112 @@ class GitChangeCaptureAdapter:
                 )
             )
         return tuple(probes)
+
+    def count_change_lines(
+        self, workspace: str, base_commit: str, base_paths: tuple[str, ...]
+    ) -> ChangeLineCounts:
+        """Count added and removed lines per changed file, and base lines of named paths.
+
+        The ADR-035 content-moved fact needs sizes the path/status metadata does not carry. This
+        read returns numbers only: Git's ``--numstat`` for tracked changes from ``base_commit``
+        (binary files count as unknown), and for each untracked file Git does not ignore its
+        newline count, read one component at a time without following a link, bounded per file
+        and per call, never for a credential-named file or a binary one. ``base_paths`` are
+        root-relative paths whose line counts in ``base_commit`` are returned in order, passed to
+        Git as literal pathspecs. No content or path leaves this process; nothing is stored.
+        The counts are a point-in-time read, not re-verified for stability: they feed a
+        non-blocking disclosure only.
+        """
+
+        if len(base_paths) > _MAX_REQUESTED_PATH_PROBES or any(
+            type(path) is not str or not _safe_relative(os.fsencode(path)) for path in base_paths
+        ):
+            raise ChangeCaptureUnavailable("unsupported_repository")
+        deadline = time.monotonic() + self._deadline_seconds
+        pinned = self._open(workspace, deadline)
+        self._refuse_unsafe_config(pinned, deadline)
+        self._refuse_unsafe_object_store(pinned)
+        object_format = self._object_format(pinned, deadline)
+        if (
+            type(base_commit) is not str
+            or not base_commit
+            or self._rev(pinned, base_commit + "^{tree}", deadline) is None
+        ):
+            raise ChangeCaptureUnavailable("unsupported_repository")
+        try:
+            _, numbers = self._git(
+                pinned,
+                ("diff", "--numstat", "-z", *_DIFF_OPTIONS, base_commit, "--"),
+                deadline=deadline,
+                limit=_LIST_LIMIT,
+            )
+        except ValueError:
+            raise ChangeCaptureUnavailable("unsupported_repository") from None
+        changed = [
+            ChangeLineCount(os.fsdecode(path), added, removed)
+            for path, added, removed in _numstat_rows(numbers)
+        ]
+        excludes = self._repository_excludes_file(pinned, deadline)
+        if excludes is None:
+            excludes = _global_excludes_file(deadline)
+        config = ("-c", f"core.excludesFile={excludes}") if excludes is not None else ()
+        listing, truncated = self._untracked_listing(pinned, config, deadline)
+        paths = sorted(_nul_fields(listing))
+        budget = _MAX_LINE_COUNT_TOTAL_BYTES
+        for index, path in enumerate(paths):
+            if index >= _MAX_UNTRACKED_FILES or _expired(deadline):
+                truncated = True
+                break
+            if path.endswith(b"/") or _credential_name(path):
+                continue
+            if not _safe_relative(path):
+                raise ChangeCaptureUnavailable("unsafe_root")
+            lines: int | None = None
+            try:
+                outcome, content = _read_beneath(
+                    pinned.descriptor,
+                    path,
+                    min(_MAX_LINE_COUNT_FILE_BYTES, budget),
+                    _path_identity(pinned.descriptor, path),
+                )
+            except _ChangedDuringCapture:
+                outcome, content = "unreadable", None
+            if outcome in {"regular", "executable"} and content is not None:
+                budget -= len(content)
+                if b"\0" not in content[:_BINARY_PROBE_BYTES]:
+                    lines = content.count(b"\n") + (
+                        1 if content and not content.endswith(b"\n") else 0
+                    )
+            elif outcome == "too_large":
+                truncated = True
+            changed.append(
+                ChangeLineCount(
+                    os.fsdecode(path), lines, None if lines is None else 0, untracked=True
+                )
+            )
+        base_lines: list[int | None] = [None] * len(base_paths)
+        if base_paths:
+            try:
+                _, numbers = self._git(
+                    pinned,
+                    (
+                        "diff",
+                        "--numstat",
+                        "-z",
+                        *_DIFF_OPTIONS,
+                        _EMPTY_TREES[object_format],
+                        base_commit,
+                        "--",
+                        *(f":(literal){path}" for path in base_paths),
+                    ),
+                    deadline=deadline,
+                    limit=_LIST_LIMIT,
+                )
+            except ValueError:
+                raise ChangeCaptureUnavailable("unsupported_repository") from None
+            in_base = {os.fsdecode(path): added for path, added, _ in _numstat_rows(numbers)}
+            base_lines = [in_base.get(path) for path in base_paths]
+        return ChangeLineCounts(tuple(changed), tuple(base_lines), truncated)
 
     def capture_metadata(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeMetadata:
         """Return changed-path facts without reading file or blob content.
@@ -1625,6 +1737,26 @@ def _new_file_diff(path: bytes, content: bytes, executable: bool) -> tuple[bytes
     if not trailing_newline:
         rendered += b"\\ No newline at end of file\n"
     return _decode(rendered), str(len(lines))
+
+
+def _numstat_rows(numbers: bytes) -> list[tuple[bytes, int | None, int | None]]:
+    """``(path, added, removed)`` from ``git diff --numstat -z --no-renames``; ``-`` is ``None``."""
+
+    rows: list[tuple[bytes, int | None, int | None]] = []
+    for record in _nul_fields(numbers):
+        parts = record.split(b"\t", 2)
+        if len(parts) != 3 or not _safe_relative(parts[2]):
+            raise ChangeCaptureUnavailable("git_failed")
+        counts: list[int | None] = []
+        for part in parts[:2]:
+            if part == b"-":
+                counts.append(None)
+            elif part.isdigit() and len(part) <= 12:
+                counts.append(int(part))
+            else:
+                raise ChangeCaptureUnavailable("git_failed")
+        rows.append((parts[2], counts[0], counts[1]))
+    return rows
 
 
 def _read_beneath(

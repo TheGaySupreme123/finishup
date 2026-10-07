@@ -96,7 +96,12 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
-from yoetz.kernel.delivered_set import DECLARED_OUTPUT_REMOVED_GAP, removed_declared_items
+from yoetz.kernel.delivered_set import (
+    DECLARED_OUTPUT_CONTENT_MOVED_GAP,
+    DECLARED_OUTPUT_REMOVED_GAP,
+    content_moved_declared_items,
+    removed_declared_items,
+)
 from yoetz.kernel.deterministic_checks import (
     DETERMINISTIC_TEXT_CONTRACT_DIGEST,
     REQUESTED_OUTPUT_ABSENT_FACT,
@@ -2263,6 +2268,9 @@ async def _requested_output_inputs(
         # One fact per item: a removed deliverable is not also reported as an absent output.
         codes.add(DECLARED_OUTPUT_REMOVED_GAP)
         absent = [item for item in absent if item not in removed]
+    if content_moved_declared_items(case.projection, states):
+        # A non-blocking disclosure (ADR-035): never a Stop-gate token, never a finding.
+        codes.add(DECLARED_OUTPUT_CONTENT_MOVED_GAP)
     gaps = tuple(sorted(codes, key=str.encode))
     return partial(work_integrity_findings, absent_outputs=frozenset(absent)), gaps, bool(absent)
 

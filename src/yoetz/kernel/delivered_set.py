@@ -20,9 +20,13 @@ action of the session named it (a new deliverable written, then moved away: musi
 agent-actionable: restore the delivered file, or correct the requested item when the task really
 asked for the deletion.
 
-Content moved out of a declared file that still exists is not detected: the check-time change
-metadata carries paths and statuses only, no sizes or line counts, so a material shrink cannot be
-established without a new Git read. Nothing is stored; the result is closed codes only.
+``declared_output_content_moved`` is the non-blocking disclosure for content moved out of a
+declared file that still exists (interleaved-vigenere). A bounded line-count read of the
+check-time change sets ``base_lines``, ``lines_lost`` and ``undeclared_lines_added`` on the
+state of a declared file the change modified; ``content_moved_declared_items`` applies the
+deterministic rule below. It is a standing disclosure: it never fires the Stop gate.
+
+Nothing is stored; the result is closed codes only.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from yoetz.domain.values import ObligationId
 from yoetz.kernel.command_attempts import attempted_items_for_obligation
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.task_facts import (
+    DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
     RequestedOutputState,
     blocked_obligations,
@@ -42,13 +47,20 @@ from yoetz.kernel.task_facts import (
 )
 
 __all__ = [
+    "CONTENT_MOVED_MIN_LINES",
+    "DECLARED_OUTPUT_CONTENT_MOVED_GAP",
     "DECLARED_OUTPUT_REMOVED_GAP",
+    "content_moved_declared_items",
     "declared_delivered_items",
     "declared_output_removed",
     "removed_declared_items",
 ]
 
 _DECLARED_KINDS: Final = frozenset({"file", "directory"})
+# The content-moved rule (ADR-035), deliberately conservative: a declared file lost at least this
+# many lines and at least half of its task-base lines, and the same change added at least half as
+# many lines to files outside the declared delivered set.
+CONTENT_MOVED_MIN_LINES: Final = 20
 
 
 def _wire(value: object) -> object:
@@ -128,3 +140,39 @@ def removed_declared_items(
         if value in edited[obligation]:
             removed.append((obligation, index))
     return tuple(removed)
+
+
+def content_moved_declared_items(
+    projection: ProjectionState,
+    states: Mapping[tuple[ObligationId, int], RequestedOutputState],
+) -> tuple[tuple[ObligationId, int], ...]:
+    """Declared delivered files whose content the check-time change moved to undeclared files.
+
+    An item qualifies when its state is ``inside``, still exists, was not deleted, and its
+    line-count fields are all known with ``lines_lost >= CONTENT_MOVED_MIN_LINES``,
+    ``2 * lines_lost >= base_lines`` and ``2 * undeclared_lines_added >= lines_lost``. Lines moved
+    into another declared output, or a shrink with no matching growth outside the declared set,
+    never qualify. Integer arithmetic only, so the answer is deterministic.
+    """
+
+    moved: list[tuple[ObligationId, int]] = []
+    for obligation, index, _kind, _value in declared_delivered_items(projection):
+        state = states.get((obligation, index))
+        if (
+            state is None
+            or state.location != "inside"
+            or state.exists is not True
+            or state.deleted
+            or state.base_lines is None
+            or state.lines_lost is None
+            or state.undeclared_lines_added is None
+        ):
+            continue
+        lost = state.lines_lost
+        if (
+            lost >= CONTENT_MOVED_MIN_LINES
+            and 2 * lost >= state.base_lines
+            and 2 * state.undeclared_lines_added >= lost
+        ):
+            moved.append((obligation, index))
+    return tuple(moved)
