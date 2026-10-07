@@ -6571,8 +6571,9 @@ project views keep their own documented coverage.
 status success; on the unreleased status-result 1.4.0 wire the six checklist fields are optional
 as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null). Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
-`gap_classification_version` (`"3"` since issue #984 added the standing code
-`finding_self_verified`; the wire still admits `"1"` and `"2"` from an earlier 0.3 build),
+`gap_classification_version` (`"4"` since issues #995 and #984 added the standing codes
+`assumption_disclosed`, `verification_limit_disclosed` and `finding_premise_disputed`; `"3"` added
+`finding_self_verified`; the wire still admits `"1"`–`"3"` from an earlier 0.3 build),
 and three groups. `agent_actionable` lists, in order, the
 agent conditions present (`obligations_open`, `findings_unanswered`, `receipt_findings_unresolved`
 unless every receipt-blocking finding's latest response is `acknowledged_not_done`; a
@@ -6588,7 +6589,16 @@ then every actionable gap code and
 `unclassified_gap:<code>` for a base code the running build does not know.
 `standing_limitations` lists the classified standing base codes (plus
 `check_payload_unavailable`). `acknowledged_not_done` lists up to 64 obligation and finding ids
-recorded as not done, and `acknowledged_not_done_count` counts them all. Every recorded page gap
+recorded as not done, and `acknowledged_not_done_count` counts them all. An obligation is recorded as not done
+by `obligation_published` 1.1.0 with `status: "acknowledged_not_done"` and a required
+`acknowledged_not_done_reason` (1..4096 UTF-8 bytes; 1.1.0 is used if and only if a 1.1.0-only
+feature is; issue #997, ADR-032 slice C); it is then not open and not resolved, a later
+publication of it with `open` or `resolved` takes it back, and the obligations view shows it as
+`open`. A `decision_recorded` statement line `yoetz-assumption:<obligation id>` or
+`yoetz-verification-limit:<obligation id>` (issue #995, ADR-033) adds the standing code
+`assumption_disclosed` or `verification_limit_disclosed`; it never blocks or resolves anything,
+and superseding the decision withdraws it. `finding_premise_disputed` (D7a) discloses
+acknowledged findings the review says the task requires; the Stop gate asks about them once. Every recorded page gap
 is classified by its base code through `yoetz.kernel.closure_readiness.GAP_CLASSIFICATION`. A live
 lineage token from the catalog comparison is disclosed only when a recorded evaluation already
 carries its code (`live_lineage_blockers`; `lineage_child_read_gap` is recorded as
@@ -8034,6 +8044,12 @@ Wire (the earlier checklist fields remain available in their original versions):
   is unavailable; it is never part of the check event.
 - `status-result` `1.4.0` findings view: each row carries `todo_state` and `review_rounds`
   (canonical uint string); the page carries `attempt_budget`.
+- `receipt-document` `1.3.0` (issues #995, #997, #984 D7a): optional `disclosed_assumptions`
+  rows `{obligation_id, kind: assumption|verification_limit, decision_event_id}` (conclusion
+  unchanged), `acknowledged_not_done_obligation_ids` (conclusion never
+  `no_unresolved_deterministic_findings`) and `premise_disputed_finding_ids` (a subset of
+  `acknowledged_not_done_finding_ids`), each present only when non-empty, ids and closed tokens
+  only, each with its own markdown/text section.
 - `receipt-document` `1.3.0`: optional `acknowledged_not_done_finding_ids` and
   `rejection_accepted_finding_ids` (sorted, 1–100, each a carried finding; absent when empty). The
   markdown and text renderings add "Acknowledged, not done" and "Rejection accepted" sections that

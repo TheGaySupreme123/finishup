@@ -216,8 +216,9 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   result through `status view=operation`), `check_not_recorded` or `check_not_applicable` (run a
   check after the material change), or an actionable gap such as `completion_plan_not_claimed`.
 - `ready_with_limitations`: nothing further to do. Every remaining condition is a
-  `standing_limitations` code this host, profile or privacy policy always has, or an item in
-  `acknowledged_not_done` (empty in this build: nothing can record that disposition yet). Request
+  `standing_limitations` code this host, profile or privacy policy always has (or a disclosure
+  you recorded, such as `assumption_disclosed`), or an item in `acknowledged_not_done` (a finding
+  or an obligation you recorded as not done). Request
   the receipt now; do not recheck unchanged state. The receipt
   still discloses every limitation and acknowledged item, and its verdict stays coverage-bounded
   (a local-only check stays `insufficient_coverage`).
@@ -233,7 +234,21 @@ cannot or will not do it. A Yoetz limit is never a `yoetz-blocker`: record a blo
 open obligation outside your control, as above. A Stop after you record a blocker asks you once
 to reconsider it, even right after an earlier continuation: if the task says the data or
 dependency is recoverable, continue the work; if it is genuinely outside your control, follow the
-confirmation step that re-check gives you, then stop.
+confirmation step that re-check gives you, then stop. A Stop also asks you once about findings you
+marked `acknowledged_not_done` that the review says the task itself requires
+(`finding_premise_disputed`): do that work unless it is genuinely impossible.
+
+An inherent verification limit (a hidden verifier, a private trace) or a best-effort choice is not
+a blocker: finish the work and disclose it in a `decision_recorded` whose statement holds the
+exact line `yoetz-verification-limit:<obligation id>` or `yoetz-assumption:<obligation id>`, with
+the limit or assumption as the rationale. A disclosure never blocks, resolves or reopens anything;
+readiness lists `verification_limit_disclosed` or `assumption_disclosed`, and the receipt names it.
+Supersede the decision (`supersedes_event_id`) to withdraw it. For an open obligation you truly
+will not do, after repair, republish it on `obligation_published` 1.1.0 with the same meaning
+fields, `status: "acknowledged_not_done"` and an `acknowledged_not_done_reason`: the honest last
+resort, never a blocker. It leaves `obligations_open`, readiness lists it in
+`acknowledged_not_done`, and the receipt discloses it as not done and never reads clean. A later
+publication of it with `open` (or `resolved` with evidence) takes it back.
 
 `blocking_conditions` still names everything that bounds the conclusion; `coverage_gaps_declared`
 there is a disclosure, not a task. Never treat a standing limitation as work, and never describe
@@ -638,7 +653,7 @@ blocker instead of widening disclosure, credentials or runtime authority: publis
 line `yoetz-blocker:<authority|consent|credential|dependency_unavailable>` and a rationale. Missing
 or inconsistent data the task says is recoverable, a failing test, or a result that looks
 infeasible is not a blocker: deliver a best-effort result in the requested form and disclose the
-assumption. A Yoetz limit (something Yoetz cannot show or prove) is never a blocker: verify the
+assumption with a `yoetz-assumption:<obligation id>` decision line. A Yoetz limit (something Yoetz cannot show or prove) is never a blocker: verify the
 work yourself and respond `self_verified` on the finding. Yoetz cannot verify a blocker, so the
 first one is only claimed: the `publish_work` result challenges it (`blocker_notices`), the
 obligation stays agent work (`obligation_blocker_unconfirmed`), and that challenge (or a Stop

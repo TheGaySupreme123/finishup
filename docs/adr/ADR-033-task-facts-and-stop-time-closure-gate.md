@@ -384,3 +384,37 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    whether the serving route required AI-powered review (a strict route records
    `blocked_by_policy`/`route_semantic_ceiling` and its own gap instead), so the receipt cannot
    apply the route rule without reading live configuration, which would break replay.
+
+## Amendment (2026-10-07): disclosures are not blockers; premise disputes are asked once (#995, #997, #984)
+
+Owner-approved 2026-10-07 (issue #995; L5 request D7a under #984).
+
+1. **Disclosure lines (#995).** tb4n1 agents declared blockers on finished work because a hidden
+   verifier or a private trace was out of reach (ks-solver, lake-temp-glm, vpp-loss-divergence), or
+   blocked repeatedly on a choice a best-effort assumption could make (cargo-flight-dispatch). A
+   `decision_recorded` statement line `yoetz-assumption:<obligation id>` or
+   `yoetz-verification-limit:<obligation id>` (exact line, well-formed id; the rationale carries
+   the text) now records that instead (`task_facts.disclosure_declarations`). It never blocks,
+   resolves, or changes an obligation's status; the earliest unsuperseded decision records each
+   `(obligation, kind)`, a decision superseded through `supersedes_event_id` withdraws it (as for
+   blockers), and an id naming no recorded obligation is a `missing_ref` like a blocker's
+   `affected_obligation_ids`. Readiness lists the standing codes `assumption_disclosed` and
+   `verification_limit_disclosed` (`GAP_CLASSIFICATION_VERSION` "4"); `receipt-document` 1.3.0
+   carries `disclosed_assumptions` rows `{obligation_id, kind, decision_event_id}` (ids and the
+   closed kind only) and the section "Assumptions and verification limits the agent disclosed";
+   the conclusion is unchanged. The blocker offer, the re-check, the `blocker_claimed` publish
+   notice, the requested-item repair text, the MCP rejected-outcome hint and the guidance say an
+   inherent verification limit or a best-effort choice is not a blocker: finish and disclose it.
+   The review packet's blocker section does not list disclosures yet.
+2. **Obligation acknowledgement (#997).** The gate and repair texts name an obligation-level
+   `acknowledged_not_done` (ADR-032 slice C amendment) as the honest last resort after repair.
+3. **Premise disputes (D7a).** L5's opaque predicate `finding_todo.standing_premise_disputes`
+   (imported behind a guard: a build without it reports nothing) names acknowledged-not-done
+   findings whose challenge says the task itself requires the work. Readiness discloses the
+   standing code `finding_premise_disputed`; `receipt-document` 1.3.0 lists
+   `premise_disputed_finding_ids` (a subset of `acknowledged_not_done_finding_ids`) in the section
+   "Not done although the review says the task requires it". On a Stop the host has not already
+   continued, the gate asks once (closed item `premise_recheck`, remembered as
+   `premise:<acknowledged count>` beside the blocker keys, so a new acknowledgement asks again);
+   in a combined gate the sentence is dropped before the blocker re-check under the 2,000-character
+   bound.

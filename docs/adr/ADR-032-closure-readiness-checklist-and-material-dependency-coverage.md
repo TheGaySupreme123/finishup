@@ -300,3 +300,37 @@ obligation is so named; obligation-level acknowledgement as not done (decision 6
 The task-fact gap codes of ADR-033 are classified once each in `GAP_CLASSIFICATION`, and the
 Stop hook continues an agent once per frontier while `agent_actionable` holds open obligations,
 an unacknowledged receipt-blocking finding, or one of the repairable task facts.
+
+## Amendment — slice C: obligation-level `acknowledged_not_done` (2026-10-07, #997, #913)
+
+Owner-approved 2026-10-07 (issue #997). Decision 6's obligation form ships. tb4n1 showed why: an
+agent that would not finish one obligation had no honest exit except a `yoetz-blocker`, so 31 of
+38 blocker attempts named obligations.
+
+1. **Wire.** `obligation_published` 1.0.0 is released and frozen. `obligation_published` 1.1.0 is
+   an additive superset: the status enum is `open | resolved | acknowledged_not_done`
+   (`ObligationStatus.ACKNOWLEDGED_NOT_DONE`) and `acknowledged_not_done_reason` (1..4096 UTF-8
+   bytes, non-blank) is required exactly with that status and forbidden otherwise;
+   `resolution_evidence_refs` stays `resolved`-only. A payload uses 1.1.0 if and only if it uses a
+   1.1.0-only feature (this status, or the #1002 item kind and role on the same version), so an
+   open or resolved obligation keeps its 1.0.0 bytes and old ledgers replay unchanged. The
+   event-draft 1.2.0 and opaque-event 1.2.0 drafts gain the pair; the `publish_work` descriptor
+   carries a template.
+2. **Reducer.** Allowed transitions are open→resolved, open→acknowledged_not_done,
+   acknowledged_not_done→open and acknowledged_not_done→resolved; the latest effective publication
+   wins and the meaning fields must repeat. A resolved obligation is not acknowledged afterwards.
+3. **Readiness.** An acknowledged obligation is not open (it leaves `obligations_open` and
+   `open_obligation_count`) and not resolved. `acknowledged_not_done` lists it beside acknowledged
+   findings, so a scope whose only remaining obligations are acknowledged reads
+   `ready_with_limitations`. The `status view=obligations` row keeps the released
+   `open|resolved` vocabulary and shows it as `open` (not resolved); readiness names the
+   acknowledgement.
+4. **Facts and findings.** No planned-verification or requested-output fact, and no
+   `requested_item_never_attempted` finding, is reported for an acknowledged obligation; the
+   acknowledgement discloses it instead. A completion claim over it is admitted.
+5. **Receipt.** `receipt-document` 1.3.0 (unreleased, in place) carries
+   `acknowledged_not_done_obligation_ids` (ids only; the reason stays on the obligation) with the
+   section "Obligations acknowledged as not done", and the conclusion is at best
+   `insufficient_coverage`, never clean (schema rule and domain check).
+6. **Texts.** The gate, the requested-item repair text and the guidance name it as the honest last
+   resort after repair, never a blocker.
