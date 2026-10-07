@@ -163,12 +163,22 @@ content-returning read needed its own decision. This is that decision, for exact
    has free after those. Because the case planner narrows the excerpt budget from the lowest rank
    up, older hunks and general output are narrowed before the change. Each part begins `[Yoetz
    check-time change, part i of n]`, its item ids sort ahead of every other item, and it links to
-   the case's effective claims and obligations (else its latest plan).
-   `_check_time_change_reservation` is the single seam for this share.
+   the case's effective claims and obligations (else its latest plan). When a planned case leaves
+   less room than one whole part, the first part is cut to that room (on a line end where one lies
+   in its second half) and begins `[Yoetz check-time change, part 1 of n, cut to the packet's
+   room]`, so the change still precedes every recorded excerpt; nothing follows a cut part, and the
+   cut is disclosed as `check_time_change_truncated` (issue #983). The shown-file record counts the
+   change bytes the carried parts hold, never a part count, so it stays exact whatever part size a
+   narrowed selection chose. `_check_time_change_reservation` is the single seam for this share.
 7. **Frozen with the job.** The object's pointer, or the fact that it was unavailable, is frozen
    into the job's semantic-case object. A recovered or resumed job reloads exactly that object and
    never re-reads a working tree that has since moved, so the case digest is unchanged. The object
-   is check-scoped and not a ledger root.
+   is check-scoped and not a ledger root. Known upgrade limitation (issue #983): a job frozen by a
+   build that split the change into 4 KiB parts, or before the first part could be cut to the room
+   a narrowed case leaves, rebuilds a different case after the upgrade. The
+   `semantic_execution_case_changed` guard then ends that one review as `failed` /
+   `coordinator_failure` and keeps its local-check result rather than sending bytes it did not
+   freeze; the next check composes a fresh review. Recovery does not re-compose the frozen job.
 8. **Disclosed limits.** `check_time_change_unavailable` (selected but nothing carried),
    `check_time_change_base_unavailable`, `check_time_change_truncated` (a file or part not shown)
    and `check_time_change_redacted` join the packet and check coverage. Beside

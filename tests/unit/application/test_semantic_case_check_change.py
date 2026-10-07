@@ -30,6 +30,7 @@ from yoetz.application.semantic_case import (
     CheckTimeChange,
     CheckTimeChangeShownFile,
     build_semantic_case,
+    check_time_change_bytes_carried,
     check_time_change_parts_carried,
     check_time_change_shown_files,
     semantic_case_to_prepared_payload,
@@ -361,11 +362,11 @@ def test_shown_files_follow_the_admitted_parts_and_redaction() -> None:
     change = _change(text)
     case = _build(_case_with_material(), change=change)
     admitted = len(_change_items(case))
-    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
-
-    files = check_time_change_shown_files(change.capture, selection, admitted)
-
     shown_bytes = sum(len(chunk) for chunk in _check_time_change_chunks(text)[:admitted])
+    assert check_time_change_bytes_carried(case) == shown_bytes
+
+    files = check_time_change_shown_files(change.capture, shown_bytes)
+
     whole_len = len(_section("whole.ts", 3))
     redacted_len = len(_section("redacted.ts", 2))
     cut_start = len(header) + whole_len + redacted_len
@@ -403,13 +404,11 @@ def test_shown_files_follow_the_admitted_parts_and_redaction() -> None:
     assert all(b"never.ts" not in identity for identity, *_ in files)
     assert all(b"listed-only" not in identity for identity, *_ in files)
     # With every part admitted the whole unredacted change is fully shown.
-    everything = check_time_change_shown_files(
-        change.capture, selection, len(_check_time_change_chunks(text))
-    )
+    everything = check_time_change_shown_files(change.capture, len(text))
     assert {identity: whole for identity, whole, *_ in everything}[
         b"diff --git a/never.ts b/never.ts"
     ] is True
-    assert check_time_change_shown_files(change.capture, selection, 0) == ()
+    assert check_time_change_shown_files(change.capture, 0) == ()
 
 
 def test_many_changed_files_record_only_the_few_the_packet_showed() -> None:
@@ -419,9 +418,8 @@ def test_many_changed_files_record_only_the_few_the_packet_showed() -> None:
     text = header + b"".join(_section(f"generated/{index:03d}.ts", 20) for index in range(140))
     change = _change(text)
     case = _build(_case_with_material(), change=change)
-    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
 
-    files = check_time_change_shown_files(change.capture, selection, len(_change_items(case)))
+    files = check_time_change_shown_files(change.capture, check_time_change_bytes_carried(case))
 
     assert 0 < len(files) < 128
     assert sum(whole for _, whole, *_ in files) == len(files) - 1  # one straddles the edge
@@ -575,10 +573,9 @@ def test_every_adapter_reason_has_a_closed_sentence() -> None:
         check_time_change_unavailable_reason_gap("not_a_reason")
 
 
-def _view_of(text: bytes, parts: int = 1) -> CheckTimeChangeShownFile:
+def _view_of(text: bytes) -> CheckTimeChangeShownFile:
     change = _change(text).capture
-    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
-    (file,) = check_time_change_shown_files(change, selection, parts)
+    (file,) = check_time_change_shown_files(change, len(text))
     return file
 
 
@@ -622,13 +619,12 @@ async def test_partial_files_record_a_keyed_view_commitment_never_the_view() -> 
     class _Runtime:
         objects = _Objects()
 
-    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
     change = _change(_SECTION)
     change = CheckTimeChange(
         change.object_ref, replace(change.capture, base_commit="a" * 40, redacted=True)
     )
 
-    files = await check_change_shown_files(cast(Any, _Runtime()), change, selection, 1)
+    files = await check_change_shown_files(cast(Any, _Runtime()), change, len(_SECTION))
 
     (partial,) = files.partially_shown
     assert partial.view_commitment is not None
@@ -662,9 +658,8 @@ def test_shown_file_views_come_from_exactly_the_carried_envelope_bytes(
         for item in sorted(semantic.items, key=lambda item: item.item_id)
         if item.item_id in catalog and item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
     )
-    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
 
-    shown = check_time_change_shown_files(change.capture, selection, carried)
+    shown = check_time_change_shown_files(change.capture, check_time_change_bytes_carried(semantic))
 
     assert carried_text == text[: len(carried_text)]
     assert sum(file.shown_bytes for file in shown) == len(carried_text)
@@ -703,7 +698,12 @@ def _cracker_change(table_rows: int = 900) -> bytes:
 
 
 def _ledger_build(
-    change: CheckTimeChange, *, ceiling: int | None = 262_144, outputs: int = 30
+    change: CheckTimeChange,
+    *,
+    ceiling: int | None = 262_144,
+    outputs: int = 30,
+    findings: Any = None,
+    selection: ReviewSelectionPolicy | None = None,
 ) -> tuple[SemanticCase, Any]:
     from unit.application.test_semantic_case_selection import (
         _ledger,  # pyright: ignore[reportPrivateUsage]
@@ -713,6 +713,7 @@ def _ledger_build(
         "codex",
         outputs=outputs,
         output_text=lambda index: f"output {index}\n" + "tool output line\n" * 300,
+        findings=findings,
     )
     semantic = build_semantic_case(
         case_id="cas_10000000-0000-4000-8000-000000000001",
@@ -720,7 +721,8 @@ def _ledger_build(
         dependency_digest="sha256:" + "b" * 64,
         findings=(),
         review_context_profile=ReviewContextProfile.EXPANDED,
-        review_selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
+        review_selection=selection
+        or ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
         policy_id="pvy_10000000-0000-4000-8000-000000000001",
         policy_version="1",
         captured_content=ledger.captured,
@@ -804,3 +806,91 @@ def test_a_planned_case_narrows_general_output_before_the_change() -> None:
     assert len(_change_items(narrow)) >= 5
     assert "content_unselected" in narrow.packet.coverage.known_gaps
     assert CHECK_TIME_CHANGE_TRUNCATED_GAP in narrow.packet.coverage.known_gaps
+
+
+def _open_prior_findings() -> dict[Any, Any]:
+    from builders.policy_cases import finding_record, fnd
+    from unit.application.test_semantic_case_prior_findings import (
+        _CHALLENGE,  # pyright: ignore[reportPrivateUsage]
+        _semantic,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.application.semantic_case import MAX_PRIOR_FINDINGS
+
+    return {
+        fnd(number): finding_record(_semantic(number, challenge=_CHALLENGE), 80 + number)
+        for number in range(1, MAX_PRIOR_FINDINGS + 1)
+    }
+
+
+def _assert_change_leads_and_is_accounted(semantic: SemanticCase, text: bytes) -> int:
+    change_items = sorted(
+        (item for item in semantic.items if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)),
+        key=lambda item: item.item_id,
+    )
+    assert change_items, "the change under review must keep at least its leading part"
+    assert semantic.packet.targeted_excerpts[0].excerpt_item_id == change_items[0].item_id
+    gaps = set(semantic.packet.coverage.known_gaps)
+    assert CHECK_TIME_CHANGE_UNAVAILABLE_GAP not in gaps
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in gaps
+    joined = b"".join(item.content.partition(b"\n")[2] for item in change_items)
+    assert text.startswith(joined)
+    carried = check_time_change_bytes_carried(semantic)
+    assert carried == len(joined)
+    (shown,) = check_time_change_shown_files(_change(text).capture, carried)
+    assert shown.shown_bytes == carried - text.index(b"diff --git")
+    assert not shown.section_admitted
+    return len(change_items)
+
+
+@pytest.mark.parametrize("ceiling", (262_144, 220_000, 200_000, 170_000, 160_000))
+def test_the_change_keeps_its_leading_part_beside_sixteen_prior_findings(ceiling: int) -> None:
+    """tb4n1 (issue #983): a narrowed case dropped every 16 KiB part while small excerpts stayed.
+
+    Sixteen open reviewer findings with full prose and a ~140 KiB single-file change: at every
+    ceiling the change's first part (cut to the room when a whole part does not fit) reaches the
+    reviewer ahead of every recorded excerpt, and the shown-file record counts exactly its bytes.
+    """
+
+    text = _cracker_change()
+    semantic, _ = _ledger_build(_change(text), ceiling=ceiling, findings=_open_prior_findings())
+
+    assert len(semantic.packet.prior_finding_refs) == 16
+    _assert_change_leads_and_is_accounted(semantic, text)
+    prepared = semantic_case_to_prepared_payload(
+        semantic, {item.item_id for item in semantic.items}
+    )
+    assert len(prepared) <= ceiling
+
+
+def test_a_tight_case_cuts_the_first_part_to_the_room_and_says_so() -> None:
+    text = _cracker_change()
+    # About 2 KiB of room is left above the fixed material: less than one whole part.
+    semantic, _ = _ledger_build(_change(text), ceiling=160_000, findings=_open_prior_findings())
+
+    (first,) = [
+        item for item in semantic.items if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+    ]
+    assert first.content.startswith(
+        b"[Yoetz check-time change, part 1 of 9, cut to the packet's room]\n"
+    )
+    assert first.content_bytes < 16_384
+    assert _assert_change_leads_and_is_accounted(semantic, text) == 1
+
+
+@pytest.mark.parametrize("limit", (200_000, 170_000, 162_000))
+def test_the_channel_ceiling_planner_keeps_the_change_and_its_accounting(limit: int) -> None:
+    """The service planner narrows the selection itself; the change still leads (issue #983)."""
+
+    from yoetz.service.semantic_ceiling import plan_under_channel_ceiling
+
+    text = _cracker_change()
+    findings = _open_prior_findings()
+    approved = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
+
+    def rebuild(selection: ReviewSelectionPolicy) -> SemanticCase:
+        return _ledger_build(_change(text), ceiling=None, findings=findings, selection=selection)[0]
+
+    planned, _, rounds = plan_under_channel_ceiling(rebuild(approved), approved, limit, rebuild)
+
+    assert rounds > 1
+    _assert_change_leads_and_is_accounted(planned, text)

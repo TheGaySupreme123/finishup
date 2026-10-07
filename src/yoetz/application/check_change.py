@@ -128,8 +128,7 @@ class CheckChangeOutcome:
 async def check_change_shown_files(
     runtime: TaskRuntime,
     change: CheckTimeChange,
-    selection: ReviewSelectionPolicy,
-    admitted_parts: int,
+    shown_bytes: int,
 ) -> CheckChangeShownFiles:
     """Keyed commitments to the changed files one review packet carried (ADR-031).
 
@@ -142,7 +141,7 @@ async def check_change_shown_files(
     says it is incomplete. A recovered job derives the same commitments from its stored object.
     """
 
-    files = check_time_change_shown_files(change.capture, selection, admitted_parts)
+    files = check_time_change_shown_files(change.capture, shown_bytes)
     complete = len(files) <= MAX_CHECK_CHANGE_SHOWN_FILES
     base = change.capture.base_commit.encode("ascii")
     fully: set[str] = set()
