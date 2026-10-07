@@ -11,6 +11,7 @@ from typing import Final, Literal, cast
 
 from yoetz.domain.check_totals import render_check_totals
 from yoetz.domain.events import (
+    AcceptedEvent,
     CheckRecordedPayload,
     ClaimKind,
     ClaimRecordedPayloadV1_1,
@@ -1436,11 +1437,14 @@ def _input_loss_causes(context: ReceiptBuildContext) -> tuple[str, ...]:
 
     from yoetz.domain.observation_budget import AdmissionLossCause
 
+    if "observation_input_loss" not in context.coverage.known_gaps:
+        return ()
     allowed = {item.value for item in AdmissionLossCause}
     hook_observed = {
         record.event_id
         for record in context.records
-        if PublicationChannel.HOOK_OBSERVED in record.coverage.publication_channels
+        if isinstance(record, AcceptedEvent)
+        and PublicationChannel.HOOK_OBSERVED in record.coverage.publication_channels
     }
     causes: set[str] = set()
     for record in context.projection.evidence.values():
