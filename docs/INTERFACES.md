@@ -1164,6 +1164,10 @@ otherwise to `insufficient_coverage`. Ordinarily an `insufficient_coverage` chec
 actionable finding. The two closed completion-scope gaps are the narrow exception: selected findings
 remain visible, but the gap dominates both the check verdict and receipt conclusion because empty
 completion scope cannot support an action-required completion verdict.
+A clean conclusion also needs every policy execution complete: `run/completed`, or
+`skipped/not_applicable` on the whole case (no root of that pack's kind exists; #986), never
+`scope_excluded`, `material_unavailable` or `failed`; and only gaps in
+`kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS` (ADR-033 amendment of 2026-10-07).
 
 `domain/receipts.py` owns the exact schema-shaped `ReceiptDocument`, `ReceiptVersionSlice`,
 policy/schema version entries, obligation/response/gap/redaction records, and canonical sections. It
@@ -8385,8 +8389,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `requested_output_unchanged`,
   `requested_output_outside_workspace`, `requested_output_unverified`. Each code is classified
   once in `GAP_CLASSIFICATION`; standing ones are advisory for the check verdict, the receipt
-  conclusion and `DETERMINISTIC_SCOPED_STANDING_GAPS`, and every task-fact code is tolerated by a
-  local absence proof. `build_deterministic_case` and the compact status gaps add them beside the
+  conclusion and `DETERMINISTIC_SCOPED_STANDING_GAPS` (all through
+  `kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`, #986), and every task-fact code is tolerated
+  by a local absence proof. `build_deterministic_case` and the compact status gaps add them beside the
   plan-drift signals.
 - **Planned-verification identity.** `register_command_identity_key(key)` (the service calls it at
   composition with the local observation store key) lets `requested_command_identity(value)`
@@ -8396,29 +8401,63 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   run whose runner class is `test`, `lint`, `typecheck` or `build`, or any cooperative (MCP or local
   CLI) action. `cooperative_event_ids_from_records(records)` and `observed_event_ids_from_records`
   supply the two sets.
-- **Blocker decisions.** `blocked_obligations(projection) -> Mapping[ObligationId, kind]` reads
-  readable, unsuperseded `decision_recorded` events whose statement holds the exact line
-  `yoetz-blocker:<kind>` (`BLOCKER_MARKER`; `BLOCKER_KINDS` = `authority`, `consent`,
-  `credential`, `dependency_unavailable`) for their `affected_obligation_ids`.
-  `blocker_declarations(projection) -> Mapping[ObligationId, BlockerDeclaration(kind,
-  decision_event_id)]` is the same read with the declaring decision (the earliest in ledger order
-  wins). `ClosureReadinessFacts` gains `open_obligation_ids`, `blocked_obligation_ids` and
-  `blocked_obligation_details` (`(obligation, kind, decision event id)` per blocked open
-  obligation); `derive_closure_readiness` replaces `obligations_open` with the standing
-  `obligation_blocked_outside_agent_control` when every open effective obligation is blocked, and
-  `StatusClosureReadinessModel` admits exactly that shape. Status `closure_readiness` carries the
-  optional `blocked_obligations` list (`obligation_id`, `blocker_kind`, `decision_event_id`; at most
-  64, ids and the closed kind only, absent from an earlier 0.3 build), and the CLI/terminal status
-  renders it as "Recorded blockers (agent-declared, unverified)". Standing task facts never become
+- **Blocker decisions (claimed, then confirmed; #985).** `blocker_declarations(projection,
+  batches) -> Mapping[ObligationId, BlockerDeclaration(kind, decision_event_id,
+  confirmation_event_id)]` reads readable, unsuperseded `decision_recorded` events whose statement
+  holds the exact line `yoetz-blocker:<kind>` (`BLOCKER_MARKER`; `BLOCKER_KINDS` = `authority`,
+  `consent`, `credential`, `dependency_unavailable`) for their `affected_obligation_ids`. The
+  earliest decision in ledger order *claims* the obligation; the earliest later decision repeating
+  the same kind for it in a different publish batch (`decision_batches(records)`: decision event id
+  to its `operation_id`) *confirms* it. A repeat in the same batch, two lines in one decision, or a
+  dry run never confirms; without batches nothing confirms. `blocked_obligations(projection,
+  batches)` returns confirmed blockers only; case-only readers (work-integrity,
+  the check-time output read) use `confirmed_blocked_obligation_ids(case gaps)`, which reads the
+  frozen `obligation_blocked_outside_agent_control:<obligation>` markers. Only a confirmed blocker
+  suppresses planned-verification facts, requested-output facts and `requested_item_never_attempted`.
+  Task facts emit `obligation_blocked_outside_agent_control` (standing) for a confirmed open
+  obligation and the agent-actionable Stop-gate token `obligation_blocker_unconfirmed`
+  (`OBLIGATION_BLOCKER_UNCONFIRMED_GAP`) for a claimed one. `ClosureReadinessFacts` carries
+  `open_obligation_ids`, `blocked_obligation_ids`, `blocked_obligation_details` (`(obligation,
+  kind, decision event id)`) and `blocked_obligation_confirmations` (`(obligation, confirming
+  event id)`). When every open effective obligation is blocked, `derive_closure_readiness`
+  replaces `obligations_open` with `obligation_blocker_unconfirmed` (agent-actionable) while any is
+  only claimed, and adds the standing `obligation_blocked_outside_agent_control` for confirmed
+  ones; when all are confirmed, `completion_plan_not_claimed` also moves to standing.
+  `StatusClosureReadinessModel` admits exactly those shapes. Status `closure_readiness` carries
+  the optional `blocked_obligations` list (`obligation_id`, `blocker_kind`, `decision_event_id`,
+  `confirmation` `claimed|confirmed`, and `confirmation_event_id` exactly when confirmed; at most
+  64, ids and closed tokens only, absent from an earlier 0.3 build), and the CLI/terminal status
+  renders it as "Recorded blockers (agent-declared, unverified)". F3 (ADR-025 decision 8):
+  `ClosureReadinessFacts.limitation_refs_required` is
+  `kernel.claim_limitations.required_limitation_ids_for_projection` (the reducer's own rule for a
+  whole-task claim). Status `closure_readiness` carries the optional pair
+  `limitation_refs_required` (sorted `res_` ids, at most 64) and `limitation_refs_required_count`,
+  which are present together. The MCP status summary, the CLI/terminal status and the Stop gate
+  name them; the gate names at most 5. Standing task facts never become
   `ledger_stale_or_incomplete` findings.
-- **Closing review of blockers (#976).** `semantic_case.recorded_blockers(projection)` returns
-  `(decision event id, kind, open obligation ids)` per blocker decision, and
-  `review_question_set(phase, blockers)` adds one final-phase question that lists them (at most
-  16, ids and closed kinds) and asks the reviewer to verify each once against the task statement
-  and the work. The reviewer should challenge a contradicted blocker by citing the decision or
-  obligation; that challenge becomes an ordinary AI-powered finding. Blocker decisions lead the
-  decision section, and their statement and rationale travel only as the privacy-gated decision
-  excerpt.
+- **Publish-time blocker notices (#985 C2b/C3).** `publish_work` success and dry-run results
+  (publish-work-result 1.1.0) carry optional `blocker_notices` (1..64 rows: `obligation_id`,
+  `blocker_kind`, `notice` `blocker_claimed|blocker_confirmed|blocker_without_effect`, and `text`,
+  the fixed `PUBLISH_BLOCKER_NOTICE_TEXTS[notice]`), one per `(obligation, kind)` of the batch's
+  blocker lines, from `task_facts.blocker_publication_notices(projection_with_batch,
+  ((event_id, payload), ...))`. `blocker_claimed` is the challenge (repair first; a Yoetz limit is
+  never a blocker, respond `self_verified`; recoverable data is not a blocker; confirm by
+  repeating the line in a later publish). `blocker_without_effect` marks a blocker naming no open
+  obligation: it changes no readiness, gap or finding (use `self_verified`, or
+  `acknowledged_not_done` as a last resort). `mcp.summaries.render_publish_blocker_notices`
+  renders the rows on the MCP text channel; structural pointers admit the four leaves.
+- **Closing review of blockers (#976, #978).** `semantic_case.recorded_blockers(projection)`
+  returns `(decision event id, kind, open obligation ids)` per blocker decision on open
+  obligations, claimed or confirmed, and `review_question_set(phase, blockers)` adds one
+  final-phase question that lists them (at most 16, ids and closed kinds) followed by
+  `BLOCKER_REVIEW_INSTRUCTION`: quote the blocked obligation's description and evidence expectation
+  from its packet item `obligation-<id>`, then challenge (required) when it is the task's main
+  deliverable, the statement says the outcome is achievable or the data recoverable, the material
+  contradicts it, the obvious prerequisite was not attempted, or it names a Yoetz/review limit.
+  That challenge becomes an ordinary AI-powered finding. Blocker decisions lead the decision
+  section, and their statement and rationale, like the obligation text, travel only as
+  privacy-gated packet items. Golden question:
+  `tests/fixtures/tb4_replay/pretrain_blocker_review_question.json`.
 - **Requested outputs.** `ChangeCapturePort` implementations may offer
   `probe_requested_paths(workspace, values) -> tuple[RequestedPathProbe, ...]`
   (`ports/change_capture.py`; `location` `inside|outside`, root-relative `relative`, `exists`,

@@ -136,9 +136,10 @@ each status read and never cached across frontiers:
 - `acknowledged_not_done`: findings answered `acknowledged_not_done`, with the required reason.
   A finding answered `self_verified` is not listed here: it reads as the standing
   `finding_self_verified` and is never agent work.
-  An obligation cannot be recorded as not done. One that a recorded blocker decision names
-  (`yoetz-blocker:<kind>`, see below) reads as the standing
-  `obligation_blocked_outside_agent_control`; any other unfinished obligation stays in
+  An obligation cannot be recorded as not done. One that a confirmed blocker decision names
+  (`yoetz-blocker:<kind>` repeated in a later `publish_work` call, see below) reads as the
+  standing `obligation_blocked_outside_agent_control`; a blocker you only claimed reads as the
+  agent-actionable `obligation_blocker_unconfirmed`; any other unfinished obligation stays in
   `agent_actionable`, and you disclose it in your final answer.
 
 A closed, versioned table (`gap_classification_version`) assigns every gap code the product
@@ -667,15 +668,21 @@ relevant test/doctest/lint check, or repair the named defect. Select the target 
 changed files and existing project checks, never invent a command. Record the action and its
 result; put exact requested items on an obligation in the effective plan and record their
 `attempted_items` on the action. Do not resolve an obligation while its requested items remain
-unattempted. If something outside your control prevents the attempt (authority, consent,
-credentials, or a dependency you cannot obtain), record it as a blocker instead of widening
-disclosure, credentials or runtime authority: publish `decision_recorded` naming the obligation in
-`affected_obligation_ids` with the exact statement line
-`yoetz-blocker:<authority|consent|credential|dependency_unavailable>` and a rationale. Missing or
-inconsistent data the task says is recoverable, a failing test, or a result that looks infeasible
-is not a blocker: deliver a best-effort result in the requested form and disclose the assumption.
-Yoetz cannot verify a blocker: the next Stop asks you once to re-confirm it, and the closing review
-checks it against the task and may challenge it. Only then report the remaining limitation or narrow the claim. `respond` rejects an `acknowledged` answer to an
+unattempted. If something genuinely outside your control prevents the attempt on an open
+obligation (authority, consent, credentials, or a dependency you cannot obtain), record it as a
+blocker instead of widening disclosure, credentials or runtime authority: publish
+`decision_recorded` naming the obligation in `affected_obligation_ids` with the exact statement
+line `yoetz-blocker:<authority|consent|credential|dependency_unavailable>` and a rationale. Missing
+or inconsistent data the task says is recoverable, a failing test, or a result that looks
+infeasible is not a blocker: deliver a best-effort result in the requested form and disclose the
+assumption. A Yoetz limit (something Yoetz cannot show or prove) is never a blocker: verify the
+work yourself and respond `self_verified` on the finding. Yoetz cannot verify a blocker, so the
+first one is only claimed: the `publish_work` result challenges it (`blocker_notices`), and the
+obligation stays agent work (`obligation_blocker_unconfirmed`) until you publish the same line for
+it again in a later `publish_work` call; a repeat in the same call never confirms it. A blocker
+naming only finished obligations has no effect. A Stop asks you once to re-confirm it, and the
+closing review checks it against the task and challenges it when the blocked obligation is the
+main deliverable or the task says the outcome is achievable. Only then report the remaining limitation or narrow the claim. `respond` rejects an `acknowledged` answer to an
 AI-powered review finding unless `evidence_refs` cites evidence or a result recorded after the
 finding (`resolution_attempt_required`); the result of the blocked attempt counts (outcome
 `failure` or `partial`: there is no `blocked` outcome). An acknowledgement or

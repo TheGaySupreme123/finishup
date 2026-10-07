@@ -233,11 +233,16 @@ receipt-blocking finding, or one of those planned-verification or excluded-outpu
 the stop is continued once with the list. When something outside your control blocks an
 obligation (authority, consent, credentials, or a dependency you cannot obtain), record a
 `decision_recorded` naming it in `affected_obligation_ids` with the statement line
-`yoetz-blocker:<authority|consent|credential|dependency_unavailable>`; it then reads as a disclosed
-limitation instead of open work. Yoetz cannot verify a blocker, so the next stop asks you once to
-confirm each blocked obligation and its kind: data the task says is recoverable, a failing test,
-or a result that only looks infeasible is not a blocker, so continue the work instead. Stopping
-again keeps the blocker, and the closing review checks it against the task once.
+`yoetz-blocker:<authority|consent|credential|dependency_unavailable>`. A Yoetz limit (something
+Yoetz cannot show or prove) is never a blocker: verify the work yourself and respond
+`self_verified` instead. Yoetz cannot verify a blocker either, so the first one is only claimed:
+the `publish_work` result challenges it (data the task says is recoverable, a failing test, or a
+result that only looks infeasible is not a blocker, so continue the work instead), and the
+obligation stays open work (`obligation_blocker_unconfirmed`) until you publish the same line for
+it again in a later `publish_work` call. It then reads as a disclosed limitation. A blocker that
+names only finished obligations has no effect. The next stop may ask you once to confirm a
+blocker, and the closing review checks it against the task once and challenges it when the
+blocked obligation is the task's main deliverable.
 
 ### `receipt`
 Projects the honest summary of what was checked, at what coverage, and what remains open. Formats:

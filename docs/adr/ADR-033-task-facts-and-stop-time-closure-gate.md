@@ -316,3 +316,58 @@ and its text offered the blocker as the exit. The owner decided:
    unchanged. Before any bridge call for the session, a route-less read still uses the policy
    route. The applied route is visible on `status` `view: versions` (`route_profile` on each
    version slice); the compact view carries no route field, so it is not labelled there.
+
+## Amendment (2026-10-07): a blocker is claimed until confirmed after the challenge (#985, #978, #986)
+
+tb4n1 showed three more blocker defects. In the deterministic arm one blocker line on every open
+obligation turned readiness `ready_with_limitations` with nothing left to do although the main
+deliverable was undone (pretrain-shard-corruption, payments-pipeline-fix; both scored 0).
+Thirty-one of 38 blocker attempts named only finished obligations to excuse findings Yoetz could
+not clear; such a blocker changed nothing yet read as a claim. And the closing review accepted
+every blocker it was shown, including one the task statement contradicted. The owner decisions for
+C2 (challenge a blocker when it is published) and C4/C5 apply:
+
+1. **Claimed, then confirmed.** The first accepted blocker decision for an `(obligation, kind)`
+   only *claims* it. It stays agent work: readiness lists the agent-actionable Stop-gate token
+   `obligation_blocker_unconfirmed` instead of `obligations_open`, and a claimed blocker
+   suppresses no task fact or `requested_item_never_attempted`. It becomes the standing
+   `obligation_blocked_outside_agent_control` only when the same `yoetz-blocker:<kind>` line for
+   that obligation arrives in a later publish batch, which is necessarily after the publish-time
+   challenge below (and, if the agent stopped, the Stop re-ask). A repeat in the same batch, two
+   lines in one decision, or a dry run never confirms. The rule reads only recorded facts (ledger
+   position and the record's operation id), so it is replay-stable and needs no migration.
+   Status rows carry `confirmation` (`claimed|confirmed`) and `confirmation_event_id` (additive on
+   the unreleased status-result 1.4.0). When every open obligation is confirmed blocked,
+   `completion_plan_not_claimed` is disclosed as standing too (C9).
+2. **Publish-time challenge and no-effect notice.** A `publish_work` result, dry runs included,
+   carries `blocker_notices` with fixed text per `(obligation, kind)`: `blocker_claimed` (repair
+   first; a Yoetz limit is never a blocker, respond `self_verified`; data the task says is
+   recoverable is not a blocker; how to confirm), `blocker_confirmed`, or
+   `blocker_without_effect` for a blocker naming no open obligation. The last is accepted (no
+   protocol break) and changes no readiness, gap, finding or receipt section; it points to
+   `self_verified`, or `acknowledged_not_done` as a last resort. Rejecting such a blocker at
+   admission stays a later option.
+3. **The closing review must challenge the main deliverable (#978).** The blocker question tells
+   the reviewer to quote the blocked obligation's own description and evidence expectation from
+   its privacy-gated packet item and requires a challenge when the obligation is the task's main
+   deliverable, the statement says the outcome is achievable or the data recoverable, the material
+   contradicts the blocker, the obvious prerequisite was not attempted, or it names a Yoetz or
+   review limit. The question itself carries ids and fixed text only, never the obligation text,
+   because questions are not privacy-scanned. A golden question pins the tb4n1 pretrain case.
+4. **Blocker texts agree (#984 F1).** The `requested_item_never_attempted` repair text, the MCP
+   outcome hint, the approved-checks continuation, the guidance and the skills all say: repair
+   first; for a Yoetz limit, verify yourself and respond `self_verified`; `acknowledged_not_done`
+   is the last resort; `yoetz-blocker` only for an open obligation genuinely blocked outside your
+   control, confirmed in a later publish.
+5. **One clean-compatible gap list (#986 E2).** `kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`
+   (standing in `GAP_CLASSIFICATION` and tolerated by the deterministic local absence proof,
+   excluding AI-review `semantic_*` and evidence-strength `evidence_*` codes, plus the existing
+   advisory sets) bounds both the receipt conclusion and the scoped deterministic verdict, and a
+   pack that is `skipped/not_applicable` on the whole case (coordination on a single-agent run)
+   counts as complete; `scope_excluded` and `material_unavailable` do not. Host-observation gaps
+   such as `host_outcome_unavailable` and `unpaired_event` therefore no longer bar
+   `no_unresolved_deterministic_findings`. `semantic_review_not_requested` still bounds the
+   receipt: a check records only `deterministic_mode` or `no_material_semantic_case` with it, never
+   whether the serving route required AI-powered review (a strict route records
+   `blocked_by_policy`/`route_semantic_ceiling` and its own gap instead), so the receipt cannot
+   apply the route rule without reading live configuration, which would break replay.
