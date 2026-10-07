@@ -410,7 +410,6 @@ _MISSING_AVAILABILITIES: Final = frozenset(
         "agent_suppliable",
         "structurally_unavailable_on_this_host",
         "yoetz_limit_packet_room",
-        "yoetz_limit_repeated_request",
         "yoetz_limit_unsupported_data_type",
     }
 )
@@ -1005,7 +1004,17 @@ def summary_for_check(envelope: object) -> str:
         and status == "not_requested"
         and reason == "deterministic_mode"
     )
-    if scoped_local_verdict:
+    if status == "not_requested" and (
+        "semantic_review_skipped_insufficient_packet" in _safe_gap_codes(source)
+    ):
+        # tb4n1 D3: not a local-only request; the round stopped after one insufficient retry.
+        prefix = (
+            "AI-powered review skipped: the reviewer twice could not assess the packet and "
+            "nothing was edited since (verify it yourself; an edit re-arms it); "
+            f"local check verdict: {verdict}; "
+            f"findings returned: {findings}; suppressed: {suppressed}; "
+        )
+    elif scoped_local_verdict:
         prefix = (
             "No issue detected within deterministic coverage; AI-powered review was not requested; "
             f"findings returned: {findings}; suppressed: {suppressed}; "

@@ -13,7 +13,6 @@ from yoetz.application.ledger_snapshot import projection_for_records, trusted_pr
 from yoetz.application.missing_for_assessment import (
     MissingItemsReview,
     review_missing_for_assessment,
-    semantic_round_exhausted,
 )
 from yoetz.domain.coordination import CoordinationError, CoordinationErrorCode
 from yoetz.domain.events import (
@@ -141,6 +140,7 @@ from yoetz.kernel.policies.work_integrity import work_integrity_findings
 from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
+from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import STANDING_TASK_FACT_GAPS, requested_output_facts
 from yoetz.kernel.test_edit_visibility import PreExistingTestEdits, preexisting_test_edits
 from yoetz.observability.logging import (
@@ -1280,21 +1280,22 @@ class _PacketLimits(TypedDict):
     change_clipped: bool
 
 
-def _packet_limits(semantic_result: FinalSemanticEvaluation) -> _PacketLimits:
+def _packet_limits(
+    semantic_result: FinalSemanticEvaluation, deterministic: tuple[Finding, ...]
+) -> _PacketLimits:
     """What the sent packet could not show, for classifying named missing items (tb4n1 D1).
 
-    ``packet_limited_refs`` are refs the packet named but whose own content item it could not
-    carry; known only when the evaluator reported both the citable refs and the refs whose
-    content reached the exact sent packet, otherwise nothing is inferred. ``change_clipped`` says
-    the check-time change was clipped for room or redacted.
+    ``packet_limited_refs`` are refs an omission row of the exact sent packet withheld for room,
+    selection or policy; a ``not_recorded`` omission (nothing more was ever recorded) never
+    counts, and this check's own local findings are never packet content. Unknown when the sent
+    packet was not read. ``change_clipped`` says the check-time change was clipped for room or
+    redacted.
     """
 
-    citable = semantic_result.case_citable_refs
-    included = semantic_result.case_included_refs
+    withheld = semantic_result.case_withheld_refs
+    local = {str(item.finding_id) for item in deterministic}
     return {
-        "packet_limited_refs": (
-            frozenset() if citable is None or included is None else frozenset(citable - included)
-        ),
+        "packet_limited_refs": (frozenset() if withheld is None else frozenset(withheld - local)),
         "change_clipped": bool(
             {CHECK_TIME_CHANGE_TRUNCATED_GAP, CHECK_TIME_CHANGE_REDACTED_GAP}
             & set(semantic_result.case_content_gaps)
@@ -1302,19 +1303,45 @@ def _packet_limits(semantic_result: FinalSemanticEvaluation) -> _PacketLimits:
     }
 
 
-def _round_stopped_gaps(
-    request: CheckRequest, case: DeterministicCase, status: SemanticStatus
-) -> set[str]:
-    """Disclose a review this check skipped because the packet twice could not show the content
-    the reviewer needed (tb4n1 D3); a caller-chosen local-only check discloses nothing extra."""
+async def _review_round_stopped_at(
+    runtime: TaskRuntime, request: CheckRequest, frozen: FrozenCase
+) -> bool:
+    """``review_round_stopped`` over the ledger prefix the check froze; fails open to a review.
 
-    if (
-        status is SemanticStatus.NOT_REQUESTED
-        and request.mode != "deterministic_only"
-        and semantic_round_exhausted(case.projection)
-    ):
-        return {SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP}
-    return set()
+    A caller-chosen local-only check never asks, so it never carries the skip disclosure.
+    """
+
+    if request.mode == "deterministic_only":
+        return False
+    try:
+        records = tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, through=frozen.case.frontier.sequence
+                )
+            ]
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc, component="check", operation="review_round_read", request_id=request.request_id
+        )
+        return False
+    return review_round_stopped(records)
+
+
+def _semantic_wait(request: CheckRequest, runtime: TaskRuntime, *, round_stopped: bool) -> bool:
+    return (
+        request.mode != "deterministic_only"
+        and not round_stopped
+        and RuntimeCapability.SEMANTIC in runtime.capabilities
+    )
+
+
+def _round_stopped_gaps(*, round_stopped: bool) -> set[str]:
+    """Disclose a review this check skipped after the one insufficient-packet retry (tb4n1 D3)."""
+
+    return {SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP} if round_stopped else set()
 
 
 def _bounded_overall_refs(values: Iterable[object]) -> tuple[str, ...]:
@@ -1541,6 +1568,10 @@ class FinalSemanticEvaluation:
     # envelope bounding and privacy minimization (issue #904); None when no packet was sent or it
     # could not be read. The check records them only for a completed reduced review.
     case_included_refs: frozenset[str] | None = None
+    # tb4n1 D1: the frontier references an omission row of the exact sent packet withheld for a
+    # reason other than ``not_recorded`` (room, selection or policy). A reviewer request for one of
+    # them is Yoetz's limit, never agent work. ``None`` when the packet was not read.
+    case_withheld_refs: frozenset[str] | None = None
     # Opaque case item identities omitted by the low-confidence never-send heuristic. The
     # public check result names these identities and the closed remediation reason, never bytes
     # or source prose.
@@ -3481,12 +3512,11 @@ async def _semantic_evaluation(
     lineage_evaluation: LineageEvaluation | None = None,
     require_complete_specification: bool = False,
     task_fact_gaps: tuple[str, ...] = (),
+    round_stopped: bool = False,
 ) -> FinalSemanticEvaluation:
-    if request.mode == "deterministic_only" or (
-        type(frozen) is FrozenCase and semantic_round_exhausted(frozen.case.projection)
-    ):
-        # tb4n1 D3: after the reviewer twice could not assess the same content, the round stops;
-        # the check runs its local checks only and discloses why (see the commit path).
+    if request.mode == "deterministic_only" or round_stopped:
+        # tb4n1 D3: after two insufficient-packet reviews in a row with no edit since, the round
+        # stops; the check runs its local checks only and discloses why (see the commit path).
         return FinalSemanticEvaluation(
             SemanticStatus.NOT_REQUESTED,
             SemanticReason.DETERMINISTIC_MODE,
@@ -4058,10 +4088,10 @@ async def execute_check_commit(
             else:
                 deterministic = checkpoint.findings
                 executions = checkpoint.executions
-        semantic_wait = (
-            request.mode != "deterministic_only"
-            and RuntimeCapability.SEMANTIC in runtime.capabilities
-        )
+        # tb4n1 D3: the reviewer twice in a row could not assess the packet and no edit followed,
+        # so this check skips the AI-powered review rather than loop on the same packet.
+        round_stopped = await _review_round_stopped_at(runtime, request, frozen)
+        semantic_wait = _semantic_wait(request, runtime, round_stopped=round_stopped)
         if semantic_wait and frozen.lease.phase is CheckPhase.LOCAL_READY:
             lease = await runtime.ledger.advance_check_phase(
                 frozen.lease,
@@ -4078,6 +4108,7 @@ async def execute_check_commit(
             route_profile=route_profile,
             lineage_evaluation=lineage_evaluation,
             require_complete_specification=request.mode == "semantic_required",
+            round_stopped=round_stopped,
             task_fact_gaps=tuple(
                 sorted(
                     {
@@ -4203,7 +4234,7 @@ async def execute_check_commit(
                 citable_refs=semantic_result.case_citable_refs,
                 captured_edit_paths=semantic_result.case_captured_edit_paths,
                 workspace_root=semantic_result.case_workspace_root,
-                **_packet_limits(semantic_result),
+                **_packet_limits(semantic_result, deterministic),
             )
             declared_gaps |= missing.gaps
         if (
@@ -4219,7 +4250,7 @@ async def execute_check_commit(
             declared_gaps.add(OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP)
         declared_gaps |= carried_semantic_attempt_gaps(
             frozen.case, semantic_result.status
-        ) | _round_stopped_gaps(request, frozen.case, semantic_result.status)
+        ) | _round_stopped_gaps(round_stopped=round_stopped)
         # A review that ran without material its own profile selected is not full coverage, even
         # though it reports succeeded. Saying so here is what stops a hollow review from reading
         # as a clean one in the check result and the receipt derived from it.

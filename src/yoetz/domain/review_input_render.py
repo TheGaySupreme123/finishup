@@ -65,7 +65,6 @@ _MISSING_AVAILABILITIES: Final = frozenset(
         "agent_suppliable",
         "structurally_unavailable_on_this_host",
         "yoetz_limit_packet_room",
-        "yoetz_limit_repeated_request",
         "yoetz_limit_unsupported_data_type",
     }
 )
@@ -298,8 +297,8 @@ def has_yoetz_limit_missing(items: object) -> bool:
 # blocker, and forbids reshaping the deliverable for the reviewer (tb4n1 D1/F2, #983).
 YOETZ_LIMIT_MISSING_TEXT: Final = (
     "Yoetz limit: the review packet cannot show the yoetz_limit_* items (an unsupported data "
-    "type such as an image or binary file, content clipped for packet room, or a request "
-    "already asked once). This is not work for you and never a blocker: verify that content "
+    "type such as an image or binary file, or content clipped for packet room). This is not "
+    "work for you and never a blocker: verify that content "
     "yourself and record how you verified it; the receipt discloses the limit. Never split, "
     "move, shrink, stash, delete, git-add or git-ignore your work to fit the reviewer."
 )

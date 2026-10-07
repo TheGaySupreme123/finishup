@@ -259,7 +259,6 @@ MISSING_ITEM_AVAILABILITIES: Final = frozenset(
         "agent_suppliable",
         "structurally_unavailable_on_this_host",
         "yoetz_limit_packet_room",
-        "yoetz_limit_repeated_request",
         "yoetz_limit_unsupported_data_type",
     }
 )
@@ -2206,7 +2205,6 @@ type MissingItemAvailabilityWire = Literal[
     "agent_suppliable",
     "structurally_unavailable_on_this_host",
     "yoetz_limit_packet_room",
-    "yoetz_limit_repeated_request",
     "yoetz_limit_unsupported_data_type",
 ]
 

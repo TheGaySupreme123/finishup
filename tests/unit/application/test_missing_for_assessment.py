@@ -1077,7 +1077,7 @@ def test_an_image_or_binary_target_is_an_unsupported_data_type_never_agent_work(
             "yoetz_limit_unsupported_data_type"
         ], name
         assert "semantic_missing_agent_suppliable" not in review.gaps
-        assert "semantic_missing_structurally_unavailable" in review.gaps
+        assert "semantic_missing_yoetz_limit" in review.gaps
 
 
 def test_content_the_packet_named_but_could_not_carry_is_packet_room_not_agent_work() -> None:

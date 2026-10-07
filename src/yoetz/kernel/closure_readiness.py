@@ -212,6 +212,7 @@ GAP_CLASSIFICATION: Final[Mapping[str, GapClass]] = MappingProxyType(
         # supply is agent work; the rest disclose how the review was bounded.
         "semantic_missing_agent_suppliable": _A,
         "semantic_missing_structurally_unavailable": _S,
+        "semantic_missing_yoetz_limit": _S,  # tb4n1 D1: Yoetz cannot show it; self-verify
         "semantic_missing_already_supplied": _S,
         "semantic_missing_items_rejected": _S,
         "semantic_missing_non_convergent": _S,

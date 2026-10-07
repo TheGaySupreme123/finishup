@@ -3256,6 +3256,7 @@ def _map_egress_to_final(
                 if projection is None
                 else sent_ledger_refs(result.disclosure, projection)
             ),
+            case_withheld_refs=None if result.disclosure is None else result.disclosure.withheld,
             semantic_withheld_item_ids=withheld_item_ids,
             provider_input_manifest=(
                 None if result.disclosure is None else result.disclosure.provider_input_manifest
@@ -3893,6 +3894,12 @@ async def _publish_semantic_response_object(
         body["disclosed_content_refs"] = cast(
             CanonicalJsonValue, sorted(evaluation.case_included_refs, key=str.encode)
         )
+    if evaluation.case_withheld_refs is not None:
+        # tb4n1 D1: refs the sent packet named but withheld for room or policy, so a recovered
+        # check classifies a reviewer's missing item the same way.
+        body["withheld_content_refs"] = cast(
+            CanonicalJsonValue, sorted(evaluation.case_withheld_refs, key=str.encode)
+        )
     if evaluation.semantic_withheld_item_ids:
         # Keep only bounded opaque identities in the durable response.  Matched bytes and source
         # prose stay in the encrypted proposal/case path and never enter this recovery object.
@@ -4018,6 +4025,12 @@ async def _recover_response_evaluation(
         refs = cast(list[object], raw_disclosed)
         if all(type(ref) is str for ref in refs):
             disclosed = frozenset(cast(list[str], refs))
+    withheld_refs: frozenset[str] | None = None
+    raw_withheld = body.get("withheld_content_refs")
+    if type(raw_withheld) is list:
+        withheld_list = cast(list[object], raw_withheld)
+        if all(type(ref) is str for ref in withheld_list):
+            withheld_refs = frozenset(cast(list[str], withheld_list))
     provider_manifest = None
     provider_manifest_failure: str | None = None
     raw_provider_manifest = body.get("provider_input_manifest")
@@ -4064,6 +4077,7 @@ async def _recover_response_evaluation(
         judgment=judgment,
         provenance=provenance,
         case_included_refs=disclosed,
+        case_withheld_refs=withheld_refs,
         semantic_withheld_item_ids=withheld_item_ids,
         provider_input_manifest=provider_manifest,
         provider_input_manifest_failure=provider_manifest_failure,
@@ -5370,6 +5384,7 @@ def _privacy_gated_semantic_evaluator(
                 provenance = None
                 continuation = None
                 disclosed: frozenset[str] | None = None
+                withheld_refs: frozenset[str] | None = None
                 semantic_withheld_item_ids: tuple[str, ...] = ()
                 provider_manifest = None
                 provider_manifest_failure = None
@@ -5383,6 +5398,7 @@ def _privacy_gated_semantic_evaluator(
                         provenance = evaluation.provenance
                         # What the exact sent packet carried, from the selected attempt (#904).
                         disclosed = evaluation.case_included_refs
+                        withheld_refs = evaluation.case_withheld_refs
                         provider_manifest = evaluation.provider_input_manifest
                         provider_manifest_failure = evaluation.provider_input_manifest_failure
                         provider_input_text_by_ref = evaluation.provider_input_text_by_ref
@@ -5430,6 +5446,7 @@ def _privacy_gated_semantic_evaluator(
                     case_content_over_item_limit=over_item_limit,
                     case_reference_scope_reduced=reference_scope_reduced,
                     case_included_refs=disclosed,
+                    case_withheld_refs=withheld_refs,
                     semantic_withheld_item_ids=semantic_withheld_item_ids,
                     case_content_gaps=combined_content_gaps,
                     unsuppliable_missing_kinds=unsuppliable,

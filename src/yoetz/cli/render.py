@@ -357,6 +357,12 @@ def render_human_check(result: CheckSuccessModel) -> str:
         lines.append("Withheld review items (the reviewer continued without them):")
         for item in result.semantic_withheld_items:
             lines.append(f"- {item.item_id}: {_token(item.reason)}")
+    if "semantic_review_skipped_insufficient_packet" in tuple(result.coverage.known_gaps):
+        lines.append(
+            "AI-powered review skipped: the reviewer twice could not assess the packet and nothing "
+            "was edited since. This is a Yoetz limit, not a blocker: verify the work yourself; "
+            "an edit re-arms the review."
+        )
     if result.coverage.known_gaps:
         lines.append("Coverage gaps: " + ", ".join(result.coverage.known_gaps))
         lines.extend(_check_time_change_sentences(result.coverage.known_gaps))

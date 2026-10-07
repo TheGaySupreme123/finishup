@@ -4,7 +4,7 @@ The reviewer may name only refs its packet carried. Yoetz, not the reviewer, dec
 agent can supply each item: a kind the effective review selection or channel can never carry, or a
 target the owner redacted, is ``structurally_unavailable_on_this_host``; content the packet cannot
 show (an unsupported data type such as an image or binary file, content clipped or omitted for
-packet room, or a repeat nothing could answer) is a ``yoetz_limit_*`` class (tb4n1 D1, #983);
+packet room) is a ``yoetz_limit_*`` class (tb4n1 D1, #983);
 everything else is ``agent_suppliable``. Only ``agent_suppliable`` is ever agent work. A later review sees the earlier request beside what was recorded since, and
 an item re-requested after it was supplied is dropped unless the reviewer cites that new material.
 "Supplied" is judged per named target: only new material directly tied to that target counts
@@ -48,6 +48,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_MISSING_ITEMS_REJECTED_GAP,
     SEMANTIC_MISSING_NON_CONVERGENT_GAP,
     SEMANTIC_MISSING_UNAVAILABLE_GAP,
+    SEMANTIC_MISSING_YOETZ_LIMIT_GAP,
 )
 from yoetz.domain.values import EventId
 from yoetz.kernel.deterministic_checks import DeterministicCase
@@ -57,12 +58,12 @@ from yoetz.protocol.models import MISSING_FOR_ASSESSMENT_KINDS, DataCategory
 
 __all__ = [
     "YOETZ_LIMIT_PACKET_ROOM",
-    "YOETZ_LIMIT_REPEATED_REQUEST",
     "YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE",
     "MissingItemsReview",
+    "observed_image_evidence",
     "review_missing_for_assessment",
-    "semantic_round_exhausted",
     "supplied_since",
+    "unsupported_data_type",
     "unsuppliable_missing_kinds",
 ]
 
@@ -73,7 +74,6 @@ STRUCTURALLY_UNAVAILABLE: Final = "structurally_unavailable_on_this_host"
 # must never split, move, shrink, stash, delete, git-add or git-ignore its work to fit the packet.
 YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE: Final = "yoetz_limit_unsupported_data_type"
 YOETZ_LIMIT_PACKET_ROOM: Final = "yoetz_limit_packet_room"
-YOETZ_LIMIT_REPEATED_REQUEST: Final = "yoetz_limit_repeated_request"
 # Content the review packet never carries: images, documents, archives, CAD and other binary
 # formats. Matched on the file name a target records, case-insensitively.
 _UNSUPPORTED_SUFFIXES: Final = frozenset(
@@ -908,10 +908,10 @@ def review_missing_for_assessment(
     target whose recorded file is an image or other binary format
     (``yoetz_limit_unsupported_data_type``); a target the packet named but could not carry whole
     (``packet_limited_refs``), or a diff request while the check-time change was clipped for room
-    (``change_clipped``) (``yoetz_limit_packet_room``); and a repeat of an earlier request that
-    nothing directly tied to it answered (``yoetz_limit_repeated_request``), so one retry is the
-    most the agent is ever asked for. The agent verifies such content itself; the receipt
-    discloses the limit.
+    (``change_clipped``) (``yoetz_limit_packet_room``). The agent verifies such content itself;
+    the receipt discloses the limit. An unanswered repeat stays the agent's work with
+    ``semantic_missing_non_convergent``; the review round itself stops after one retry
+    (``kernel.review_round``).
     """
 
     if judgment.conclusion != "insufficient_packet":
@@ -974,14 +974,13 @@ def review_missing_for_assessment(
                 change_clipped=change_clipped,
             )
         )
-        if matching_prior and availability != STRUCTURALLY_UNAVAILABLE:
+        if matching_prior and availability == AGENT_SUPPLIABLE:
             # The reviewer named only an earlier target set and no directly related publication
-            # answered it. Asking again would not converge: the first request was the one retry
-            # (tb4n1 D3), so the repeat is Yoetz's limit and the agent verifies it itself, and
-            # the task's later checks skip the AI-powered review (``semantic_round_exhausted``).
-            # A genuinely new target is intentionally excluded by the subset test above.
+            # answered it. It stays the agent's work (a run never recorded is still owed), with
+            # the non-convergent disclosure; the review round itself stops after the one retry
+            # (``review_round_stopped``, tb4n1 D3). A genuinely new target is intentionally
+            # excluded by the subset test above.
             gaps.add(SEMANTIC_MISSING_NON_CONVERGENT_GAP)
-            availability = YOETZ_LIMIT_REPEATED_REQUEST
         key = (entry.kind, refs)
         if kept.get(key, AGENT_SUPPLIABLE) == AGENT_SUPPLIABLE:
             kept[key] = availability
@@ -1000,6 +999,8 @@ def review_missing_for_assessment(
             SEMANTIC_MISSING_AGENT_SUPPLIABLE_GAP
             if item.availability == AGENT_SUPPLIABLE
             else SEMANTIC_MISSING_UNAVAILABLE_GAP
+            if item.availability == STRUCTURALLY_UNAVAILABLE
+            else SEMANTIC_MISSING_YOETZ_LIMIT_GAP
         )
     return MissingItemsReview(items, frozenset(gaps))
 
@@ -1020,8 +1021,52 @@ class _TargetFiles:
     captured: Mapping[str, frozenset[str]]
 
     def __call__(self, target: str) -> frozenset[str]:
-        names = {path for path, _certain in self.links.subject(target).paths}
-        names.update(self.captured.get(target, frozenset()))
+        projection = self.links.projection
+        # An ``evt_`` target names the event that recorded a row; resolve it to that row's own
+        # id, and read the file names any plan, task statement or obligation text mentions.
+        refs = {target}
+        names: set[str] = set()
+        for family in (
+            projection.actions,
+            projection.results,
+            projection.evidence,
+            projection.claims,
+            projection.obligations,
+        ):
+            for key, row in family.items():
+                if str(row.source_event_id) == target:
+                    refs.add(str(key))
+        for ref in tuple(refs):
+            names.update(path for path, _certain in self.links.subject(ref).paths)
+            names.update(self.captured.get(ref, frozenset()))
+            names.update(self._evidence_names(ref))
+        return frozenset(name for name in names if name)
+
+    def named_in_text(self, target: str) -> frozenset[str]:
+        """File names the plan, task statement or obligation a target names mentions.
+
+        Used only for an ``other`` item (a requirement the reviewer could not see, such as "the
+        schematic itself is unavailable"); a run or a diff request is judged by its own files.
+        """
+
+        projection = self.links.projection
+        names: set[str] = set()
+        for row in projection.plans.values():
+            if str(row.source_event_id) == target and row.payload is not None and not row.redacted:
+                names.update(_named_files(row.payload.summary))
+                names.update(_named_files(row.payload.task_statement or ""))
+        for key, row in projection.obligations.items():
+            if (
+                target in {str(key), str(row.source_event_id)}
+                and row.payload is not None
+                and not row.redacted
+            ):
+                names.update(item.value for item in row.payload.requested_items)
+                names.update(_named_files(row.payload.description))
+        return frozenset(names)
+
+    def _evidence_names(self, target: str) -> set[str]:
+        names: set[str] = set()
         projection = self.links.projection
         evidence_refs = {target}
         for row in projection.results.values():
@@ -1037,7 +1082,7 @@ class _TargetFiles:
                 if reference is not None and "://" not in reference:
                     names.add(reference.strip())
                 names.update(self.captured.get(str(ref), frozenset()))
-        return frozenset(name for name in names if name)
+        return names
 
     def observed_image(self, target: str) -> bool:
         """Whether the target is, or cites, a hook-observed image kept as a digest only.
@@ -1053,24 +1098,40 @@ class _TargetFiles:
             payload = row.payload
             if payload is not None and str(payload.action_id) == target:
                 refs.update(str(ref) for ref in payload.evidence_refs)
-        for ref, row in projection.evidence.items():
-            payload = row.payload
-            if (
-                str(ref) not in refs
-                or payload is None
-                or type(payload) is not EvidenceRecordedPayload
-            ):
-                continue
-            binding = payload.digest_binding
-            if (
-                binding is not None
-                and binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED
-                and binding.subject is EvidenceDigestSubject.ARTIFACT_BYTES
-                and binding.content_availability is not EvidenceContentAvailability.CAPTURED
-                and (payload.description or "").startswith("Observed image")
-            ):
-                return True
+        return any(
+            str(ref) in refs and observed_image_evidence(row.payload)
+            for ref, row in projection.evidence.items()
+        )
+
+
+def observed_image_evidence(payload: object) -> bool:
+    """Whether an evidence payload is a hook-observed image kept as a digest only (L3 P3-2)."""
+
+    if type(payload) is not EvidenceRecordedPayload:
         return False
+    binding = payload.digest_binding
+    return (
+        binding is not None
+        and binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED
+        and binding.subject is EvidenceDigestSubject.ARTIFACT_BYTES
+        and binding.content_availability is not EvidenceContentAvailability.CAPTURED
+        and (payload.description or "").startswith("Observed image")
+    )
+
+
+def unsupported_data_type(name: str) -> bool:
+    """Whether a recorded file name is a type the review packet never carries (by suffix)."""
+
+    return _unsupported_data_type(name)
+
+
+_NAMED_FILE: Final = re.compile(r"[A-Za-z0-9_./~-]+\.[A-Za-z0-9]{1,12}")
+
+
+def _named_files(text: str) -> set[str]:
+    """File-like tokens a recorded text names, bounded; compared lexically, never opened."""
+
+    return set(_NAMED_FILE.findall(text[:65536])[:256])
 
 
 def _unsupported_data_type(name: str) -> bool:
@@ -1089,8 +1150,15 @@ def _yoetz_limit(
 ) -> str:
     """Whether Yoetz's own packet, not the agent, is why the reviewer could not see the item."""
 
-    if any(_unsupported_data_type(name) for ref in refs for name in paths_of(ref)) or any(
-        paths_of.observed_image(ref) for ref in refs
+    if (
+        any(_unsupported_data_type(name) for ref in refs for name in paths_of(ref))
+        or any(paths_of.observed_image(ref) for ref in refs)
+        or (
+            kind == "other"
+            and any(
+                _unsupported_data_type(name) for ref in refs for name in paths_of.named_in_text(ref)
+            )
+        )
     ):
         return YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE
     if set(refs) & packet_limited_refs:
@@ -1098,25 +1166,6 @@ def _yoetz_limit(
     if kind == "current_diff_for_path" and change_clipped:
         return YOETZ_LIMIT_PACKET_ROOM
     return AGENT_SUPPLIABLE
-
-
-def semantic_round_exhausted(projection: ProjectionState) -> bool:
-    """Whether the reviewer already asked twice for content no packet could show (tb4n1 D3).
-
-    True when the latest assessed review concluded ``insufficient_packet`` naming only Yoetz
-    limits, at least one of them a repeat of the earlier request (the one retry). Another
-    AI-powered review over the same packet cannot assess more, so the check skips it and
-    discloses ``semantic_review_skipped_insufficient_packet``; semantic review helps only with
-    good data. A review that concludes anything else clears the pending request and the skip.
-    """
-
-    pending = projection.pending_missing_for_assessment
-    return (
-        pending is not None
-        and bool(pending.items)
-        and all(item.availability != AGENT_SUPPLIABLE for item in pending.items)
-        and any(item.availability == YOETZ_LIMIT_REPEATED_REQUEST for item in pending.items)
-    )
 
 
 def _answered(

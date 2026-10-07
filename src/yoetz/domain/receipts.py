@@ -122,6 +122,7 @@ __all__ = [
     "SEMANTIC_MISSING_NON_CONVERGENT_GAP",
     "SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP",
     "SEMANTIC_MISSING_UNAVAILABLE_GAP",
+    "SEMANTIC_MISSING_YOETZ_LIMIT_GAP",
     "SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES",
     "SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP",
     "SEMANTIC_PROVIDER_INPUT_MANIFEST_MISMATCH_GAP",
@@ -214,6 +215,9 @@ SEMANTIC_REVIEW_REFS_REDUCED_GAP: Final = "semantic_review_refs_reduced"
 # pointed outside the packet and was dropped. None of them is a finding or a clean review.
 SEMANTIC_MISSING_AGENT_SUPPLIABLE_GAP: Final = "semantic_missing_agent_suppliable"
 SEMANTIC_MISSING_UNAVAILABLE_GAP: Final = "semantic_missing_structurally_unavailable"
+# tb4n1 D1 (#983): the reviewer named content Yoetz's own packet cannot show (an unsupported data
+# type, or content clipped or omitted for packet room). Never agent work; the agent self-verifies.
+SEMANTIC_MISSING_YOETZ_LIMIT_GAP: Final = "semantic_missing_yoetz_limit"
 SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP: Final = "semantic_missing_already_supplied"
 SEMANTIC_MISSING_ITEMS_REJECTED_GAP: Final = "semantic_missing_items_rejected"
 # A later review named the same target again without a directly related agent publication.  This
