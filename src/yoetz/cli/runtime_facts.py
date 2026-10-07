@@ -25,7 +25,11 @@ for delivery are reduced here to closed tokens and nothing else crosses into the
   for the same user, and pip refuses it inside a virtual environment, so it classifies as that
   interpreter.
 * ``write_scope`` — ``outside_workspace`` when an edit tool names a file outside the workspace
-  root, or a shell command redirects or ``tee``s into an absolute path outside it.
+  root, or a shell command redirects or ``tee``s into an absolute path outside it. A scratch
+  write into a temporary directory (``/tmp``, ``/var/tmp``, ``/dev/shm``, their macOS
+  ``/private`` aliases, the per-user macOS ``/var/folders/<a>/<b>/T`` directory, or this
+  process's own temporary directory) is not a misplaced deliverable and claims nothing. Paths are
+  normalized lexically first, so ``/tmp/../etc/x`` is ``/etc/x``.
 * ``effective_user`` — ``root`` or ``non_root``: the effective user this hook process (spawned by
   the host beside the agent's commands) runs as. It says nothing about the delivery environment.
 
@@ -35,10 +39,12 @@ No path, command text or environment value is returned, stored or logged.
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import shlex
 import shutil
 import sys
+import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from typing import Final, cast
 
@@ -75,6 +81,12 @@ _PATCH_PATH: Final = re.compile(r"^\*\*\* (?:Add File|Update File|Move to): (.+)
 _REDIRECT_OPERATORS: Final = frozenset({">", ">>", ">|", "&>", "&>>"})
 _SHELL_TOOLS: Final = frozenset({"Bash", "bash", "Shell", "shell", "exec_command", "local_shell"})
 _LOCATION_FLAGS: Final = ("--target", "-t", "--prefix", "--root")
+# Scratch roots every supported OS reserves for temporary files (issue E6, tb4n1: 28 of 33
+# attempts flagged only `/tmp` logs). `/dev/` stays wholly exempt below for device targets.
+_TEMP_ROOTS: Final = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/dev/shm")
+# macOS per-user temporary directory: `/var/folders/<a>/<b>/T` (the `C` cache sibling is not
+# temporary). `/var` is a symlink to `/private/var`, so both spellings name the same directory.
+_MACOS_USER_TEMP: Final = re.compile(r"^/(?:private/)?var/folders/[^/]+/[^/]+/T(?:/|$)")
 
 
 def _raw_command(tool_input: Mapping[str, JsonValue]) -> str | None:
@@ -306,9 +318,54 @@ def _write_targets(command: str) -> list[str]:
     return [target for target in targets if target.startswith("/")]
 
 
+def _process_temp_roots() -> tuple[str, ...]:
+    """This process's own temporary directory, lexically and as the OS resolves it.
+
+    ``TMPDIR`` is host environment, so a root that is the filesystem root or contains the home
+    directory is never trusted as scratch space.
+    """
+
+    candidates: set[str] = set()
+    for raw in (os.environ.get("TMPDIR"), tempfile.gettempdir()):
+        if not raw or not raw.startswith("/"):
+            continue
+        lexical = posixpath.normpath(raw)
+        candidates.add(lexical)
+        try:
+            candidates.add(os.path.realpath(lexical))
+        except OSError, ValueError:
+            pass
+    home = os.environ.get("HOME")
+    guarded = posixpath.normpath(home) if home and home.startswith("/") else None
+    return tuple(
+        root
+        for root in sorted(candidates)
+        if root.startswith("/")
+        and root != "/"
+        and not (guarded is not None and _under(guarded, root))
+    )
+
+
+def _scratch_path(path: str) -> bool:
+    """Whether an absolute path lands in a temporary or device directory.
+
+    Normalized lexically first (never through the filesystem), so ``..`` cannot climb out of a
+    temporary root while still reading as inside it.
+    """
+
+    normalized = posixpath.normpath(path)
+    if normalized.startswith("//"):
+        normalized = "/" + normalized.lstrip("/")
+    if normalized.startswith("/dev/"):
+        return True
+    if _MACOS_USER_TEMP.match(normalized):
+        return True
+    return any(_under(normalized, root) for root in (*_TEMP_ROOTS, *_process_temp_roots()))
+
+
 def _shell_writes_outside(command: str, inside: Callable[[str], bool]) -> bool:
     return any(
-        not target.startswith("/dev/") and not inside(target) for target in _write_targets(command)
+        not _scratch_path(target) and not inside(target) for target in _write_targets(command)
     )
 
 
@@ -360,7 +417,7 @@ def runtime_structural_facts(
     )
     if tool_name in _PATCH_TOOLS or tool_name in _EDIT_TOOLS:
         if workspace_locator is not None and any(
-            path.startswith("/") and not inside(path)
+            path.startswith("/") and not _scratch_path(path) and not inside(path)
             for path in _edit_paths(tool_name, tool_input, payload)
         ):
             facts["write_scope"] = "outside_workspace"
