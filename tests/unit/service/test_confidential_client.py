@@ -28,6 +28,7 @@ from yoetz.service.confidential_protocol import (
     SecretIngressBinding,
     SecretRequiredPhase,
     ServerCloseEnvelope,
+    ServerErrorEnvelope,
     ServerOpenedEnvelope,
     ServerResultEnvelope,
     VaultInitializePreview,
@@ -439,3 +440,41 @@ async def test_recovery_client_accepts_the_security_reauthentication_frame() -> 
 async def test_recovery_client_still_refuses_a_purpose_this_ceremony_never_uses() -> None:
     with pytest.raises(ConfidentialClientError, match="correlation_mismatch"):
         await _open_recovery(ConfidentialSecretPurpose.PROVIDER_CREDENTIAL)
+
+
+class _RefusingHumanStream(_HumanStream):
+    """A service that declines the ceremony at open with a bounded refusal."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__()
+        self.code = code
+
+    async def send_all(self, data: Buffer) -> None:
+        self.sent.append(bytes(data))
+        await self.feed(encode_human_frame(ServerErrorEnvelope(code=self.code, retryable=False)))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("code", ["kind_forbidden", "state_forbidden", "ceremony_unsupported"])
+async def test_a_refusal_at_open_reaches_the_caller_as_its_bounded_reason(code: str) -> None:
+    """tb4n1 A8: `yoetz service idle-relock disabled` under the production daemon printed
+    "service_unavailable: the confidential ceremony could not be completed" although the
+    daemon answered kind_forbidden."""
+
+    human_stream = _RefusingHumanStream(code)
+
+    async def connect_human() -> AuthenticatedUnixStream:
+        return cast(AuthenticatedUnixStream, human_stream)
+
+    async def connect_secret() -> AuthenticatedUnixStream:
+        return cast(AuthenticatedUnixStream, _SecretStream())
+
+    factory = getattr(HumanControlClient, "_with_connectors")
+    client = cast(HumanControlClient, factory(connect_human, connect_secret, timeout_seconds=1.0))
+    with pytest.raises(ConfidentialClientError) as raised:
+        await client.open(
+            HumanCeremonyKind.VAULT_INITIALIZE,
+            EmptyVaultTarget(expected_mode="uninitialized"),
+        )
+    assert raised.value.reason == code
+    assert human_stream.closed
