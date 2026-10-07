@@ -7009,8 +7009,14 @@ class LocalObservationStore:
             if cast(int, previous["count"]) + 1 != count:
                 scope = "route"
         causes[cause.value] = min(_MAX_SAFE_INTEGER, causes.get(cause.value, 0) + 1)
+        own_keys = _loss_own_pairing_keys(envelope) or _loss_related_pairing_keys(envelope)
+        if scope == "paired_inputs" and not own_keys:
+            # A lost input that names no host call (a prompt, a session or subagent lifecycle
+            # event) cannot be bounded to a pairing: every later input of the lane may depend
+            # on it, so the lane stays route-wide (review of #998).
+            scope = "route"
         if scope == "paired_inputs":
-            for key in sorted(_loss_own_pairing_keys(envelope), key=str.encode):
+            for key in sorted(own_keys, key=str.encode):
                 if key in pairings:
                     continue
                 if len(pairings) >= _MAX_LOSS_PAIRINGS:

@@ -800,3 +800,40 @@ def test_pressure_that_withholds_detail_is_disclosed_on_check_coverage_and_spare
             == 0
         )
     assert captures == ["PreToolUse", "PostToolUse"]
+
+
+@pytest.mark.parametrize(
+    ("lost_event", "lost_extra", "scope"),
+    [
+        (
+            "PostToolUse",
+            {"tool_name": "Bash", "tool_use_id": "call-1", "exit_status": 0},
+            "paired_inputs",
+        ),
+        # Names no host call: every later input of the lane may depend on it.
+        ("UserPromptSubmit", {}, "route"),
+        # Names only its spawning call: bounded to that call and its children.
+        ("SubagentStart", {"parent_tool_call_id": "spawn-9", "subagent_id": "a1"}, "paired_inputs"),
+    ],
+)
+def test_a_lost_input_without_a_call_id_keeps_route_wide_inheritance(
+    tmp_path: Path, lost_event: str, lost_extra: dict[str, JsonValue], scope: str
+) -> None:
+    """Review of #998: a bounded scope needs a call to bound to, or it under-reports the loss."""
+
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    store.bind_codex_session(workspace, "lost-scope")
+    lost = observe_hooks.map_hook_payload_to_envelope(
+        lost_event,
+        {"session_id": "lost-scope", "hook_event_name": lost_event, **lost_extra},
+        session_commitment=store.session_commitment("lost-scope"),
+        event_ordinal=1,
+        key_material=store.key_material(),
+        source=ObservationSource.CODEX_HOOK,
+    )
+    store.record_admission_loss(workspace, lost, cause=AdmissionLossCause.QUEUE_BYTES)
+    (lane,) = store.selection_loss_causes(workspace)
+    assert lane["inherit_scope"] == scope
+    assert lane["cause"] == AdmissionLossCause.QUEUE_BYTES.value
