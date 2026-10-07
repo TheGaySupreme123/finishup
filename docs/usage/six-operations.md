@@ -173,9 +173,15 @@ material edit, evidence change, or plan change. A readable response to a finding
 current check does not require a recheck, nor does acknowledging an observation-authored
 non-actionable finding or publishing `work_closed`; a redacted or unreadable response does.
 `acknowledged_not_done` records, with a required reason, that you will not do what a finding asks;
-it is final, is not reviewed again, and keeps the receipt from reading clean. A finding that is
-already `verified_resolved`, `acknowledged_not_done` or `rejection_accepted` is final: `respond`
-records nothing and answers `finding_terminal`.
+it is final, is not reviewed again, and keeps the receipt from reading clean; use it only if you
+truly will not or cannot do the work. `self_verified` is for a finding you repaired that Yoetz still
+cannot prove after a later check because of its own limits: say how you verified the repair in
+`reason` and cite at least one recorded evidence or result id in `evidence_refs`. It is final, is
+not your work any more, and keeps the receipt at best `insufficient_coverage`; Yoetz refuses it
+with `finding_not_rechecked` before a later check, or `finding_not_proof_limited` while that check
+still sees the issue. A finding that is already `verified_resolved`, `acknowledged_not_done`,
+`self_verified` or `rejection_accepted` is final: `respond` records nothing and answers
+`finding_terminal`.
 
 ### `status`
 Reads current state — use it after a resume, a compaction, a handoff, or any uncertainty about what

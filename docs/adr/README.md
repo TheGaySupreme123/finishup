@@ -37,6 +37,7 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [030](ADR-030-typed-recovery-directives.md) | Typed recovery directives for public errors (proposed) |
 | [031](ADR-031-check-time-change-capture.md) | The service captures the check-time change as one reviewed object |
 | [032](ADR-032-closure-readiness-checklist-and-material-dependency-coverage.md) | Closure readiness as a checklist, and material-dependency coverage (proposed) |
+| [034](ADR-034-proof-limited-findings-self-verified.md) | Proof-limited findings: the `self_verified` respond disposition |
 
 Unresolved gates are centralized in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md), not scattered
 through individual ADRs.

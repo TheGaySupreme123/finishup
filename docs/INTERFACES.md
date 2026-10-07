@@ -6557,10 +6557,13 @@ project views keep their own documented coverage.
 status success; on the unreleased status-result 1.4.0 wire the six checklist fields are optional
 as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null). Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
-`gap_classification_version` (`"2"`; the wire still admits `"1"` from an earlier 0.3 build),
+`gap_classification_version` (`"3"` since issue #984 added the standing code
+`finding_self_verified`; the wire still admits `"1"` and `"2"` from an earlier 0.3 build),
 and three groups. `agent_actionable` lists, in order, the
 agent conditions present (`obligations_open`, `findings_unanswered`, `receipt_findings_unresolved`
-unless every receipt-blocking finding's latest response is `acknowledged_not_done`,
+unless every receipt-blocking finding's latest response is `acknowledged_not_done`; a
+`self_verified` finding never counts as receipt-blocking and is disclosed as the standing code
+`finding_self_verified` instead,
 `no_plan_published`, `no_obligations_declared`, `projection_stale`), then `check_in_progress`
 while a check holds the session frontier (read at the head through the ledger's
 `has_active_frozen_case`; an unanswerable probe counts as in flight), then `check_not_recorded` or
@@ -7908,6 +7911,29 @@ nothing to do); a latched row is never resolved later; redacting the latching ch
 latch. Terminal items are left out of the prior-findings section and rulings on them are not
 admitted. `receipt_blocking_finding_count` counts `acknowledged_not_done` rows and no longer counts
 `rejection_accepted` rows.
+
+#### `self_verified`: proof-limited findings (issue #984, ADR-034)
+
+`self_verified` is a terminal `respond` disposition for a finding the agent repaired that Yoetz
+cannot prove repaired because of its own limits (a *Yoetz limit*: capture, redaction or observation
+loss, review-packet limits). It requires `reason` (non-blank, at most 4096 bytes: how the agent
+verified the repair) and 1–64 `evidence_refs` naming recorded `evd_`/`res_` ids of this task (any
+evidence version, strength or content availability); it accepts no waiver fields. It rides the same
+`respond-request`/`respond-result` `1.1.0` and `response_recorded` `1.1.0` versions as
+`acknowledged_not_done`. Typed `INVALID_REQUEST` refusals: `response_fields_invalid` (`/reason`
+blank, `/evidence_refs` empty), `finding_terminal`, `finding_not_rechecked` (no later check tested
+the finding: repair, then `check`), `finding_not_proof_limited` (the newest check that could resolve
+it still sees it or names agent work); the last two continue as `input_correction_new_identity`.
+Eligibility is `kernel/self_verification.self_verification_refusal(state, finding_id, records)`
+over the resolution reasons of that check (ADR-034): any `coverage:<code>` classified standing in
+`GAP_CLASSIFICATION` is a Yoetz limit. The to-do state `self_verified` is terminal and never
+resolved (`finding_is_resolved` is false for it, like `acknowledged_not_done`), is not counted by
+`receipt_blocking_finding_count`, is left out of the next review, and is disclosed: closure
+readiness lists the standing code `finding_self_verified`; `receipt-document` `1.3.0` carries
+`self_verified_finding_ids` (1–100, a `no_unresolved_deterministic_findings` conclusion beside it is
+invalid) and markdown/text render a "Self-verified by the agent; Yoetz could not prove the repair"
+section; the conclusion is at best `insufficient_coverage`. `check-result` `finding_checklist.counts`
+and the status findings view carry `self_verified` as a count and a `todo_state`.
 
 `review_rounds` counts later recorded checks that assessed a finding and left it open: a check that
 returned a local finding again over a later subject, or a recorded `still_present`,

@@ -165,6 +165,15 @@ def document(root: Path) -> dict[str, Any]:
         "reason": "The task statement excludes the llvmlite upgrade.",
         "evidence_refs": [],
     }
+    # Issue #984: the agent repaired the first finding, Yoetz could not prove it, and the agent
+    # verified it itself, citing its own recorded result. Rides response_recorded 1.1.0 too.
+    self_verified: dict[str, Any] = {
+        "finding_id": _FIRST,
+        "finding_frontier": frontier,
+        "disposition": "self_verified",
+        "reason": "Re-ran the Map-key regression myself after the packet could not show it.",
+        "evidence_refs": ["res_866db2dd-0000-4000-8000-000000000003"],
+    }
     vectors: list[dict[str, Any]] = []
     for family, version, wire in (
         ("finding_recorded", "1.3.0", legacy),
@@ -174,6 +183,7 @@ def document(root: Path) -> dict[str, Any]:
         ("check_recorded", "1.3.0", ruled),
         ("response_recorded", "1.0.0", rejected),
         ("response_recorded", "1.1.0", not_done),
+        ("response_recorded", "1.1.0", self_verified),
     ):
         payload = decode_payload(EventSchema(family, version), freeze_json(wire))
         encoded = encode_payload(payload)
@@ -242,6 +252,18 @@ def document(root: Path) -> dict[str, Any]:
     operations: list[dict[str, Any]] = [
         {"schema": "respond-request", "schema_version": "1.1.0", "payload": request},
         {"schema": "respond-result", "schema_version": "1.1.0", "payload": result},
+        {
+            "schema": "respond-request",
+            "schema_version": "1.1.0",
+            "payload": {
+                **request,
+                "request_id": "req_01c5aaf7-0000-4000-8000-000000000002",
+                "finding_id": _FIRST,
+                "disposition": "self_verified",
+                "reason": self_verified["reason"],
+                "evidence_refs": self_verified["evidence_refs"],
+            },
+        },
     ]
     return {
         "fixture_schema": "yoetz.fixture-case/1.0.0",
@@ -249,7 +271,8 @@ def document(root: Path) -> dict[str, Any]:
         "fixture_id": _ID,
         "purpose": (
             "Pin the additive review-dialogue event bytes beside unchanged legacy rows, and the "
-            "terminal acknowledged_not_done response on its 1.1.0 event and respond wire."
+            "terminal acknowledged_not_done and self_verified responses on their 1.1.0 event and "
+            "respond wire."
         ),
         "minimum_versions": {"fixture_contract": "1.0.0", "protocol": "1.0"},
         "owns_requirements": ["ISSUE-905/review-dialogue"],

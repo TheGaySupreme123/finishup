@@ -208,6 +208,7 @@ def test_golden_responses_pin_acknowledged_not_done_on_1_1_0_only() -> None:
     assert [(item["schema_version"], item["payload"]["disposition"]) for item in responses] == [
         ("1.0.0", "rejected"),
         ("1.1.0", "acknowledged_not_done"),
+        ("1.1.0", "self_verified"),
     ]
     for vector in responses:
         version, wire = vector["schema_version"], vector["payload"]
@@ -216,9 +217,14 @@ def test_golden_responses_pin_acknowledged_not_done_on_1_1_0_only() -> None:
         encoded = encode_payload(payload)
         assert canonical_encode(encoded).hex() == vector["canonical_hex"]
         assert canonical_digest(encoded) == vector["digest"]
-    not_done = responses[1]["payload"]
+    for terminal in (responses[1]["payload"], responses[2]["payload"]):
+        with pytest.raises(SchemaInstanceInvalid):
+            validate_schema_instance("response-recorded", "1.0.0", terminal)
+    # Issue #984: a self-verification without evidence is not admitted even on 1.1.0.
     with pytest.raises(SchemaInstanceInvalid):
-        validate_schema_instance("response-recorded", "1.0.0", not_done)
+        validate_schema_instance(
+            "response-recorded", "1.1.0", {**responses[2]["payload"], "evidence_refs": []}
+        )
     # The event pairing itself (acknowledged_not_done exactly on 1.1.0) is enforced where an
     # event is drafted or accepted; tests/unit/kernel/test_finding_todo.py locks it.
 
@@ -229,6 +235,7 @@ def test_golden_responses_pin_acknowledged_not_done_on_1_1_0_only() -> None:
     assert [(item["schema"], item["schema_version"]) for item in operations] == [
         ("respond-request", "1.1.0"),
         ("respond-result", "1.1.0"),
+        ("respond-request", "1.1.0"),
     ]
     for item in operations:
         validate_schema_instance(item["schema"], item["schema_version"], item["payload"])

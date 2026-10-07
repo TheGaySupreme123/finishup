@@ -746,7 +746,11 @@ actionable finding is still current: repair the record and recheck if you can, b
 qualifying check resolves it, never another response. If the repaired record was rechecked and the
 issue still fires, or it did not re-fire but `status view=findings` with `filter.include_resolved:
 true` still reports `resolved=false`,
-do not recheck unchanged state again. Request the receipt and keep the final claim no stronger than
+do not recheck unchanged state again. If you repaired it and Yoetz cannot prove it (a Yoetz limit),
+verify it yourself, record that evidence, and respond `self_verified` with how you verified it and
+the evidence ids; it then stops being your work and the receipt names it as self-verified. Respond
+`acknowledged_not_done` only if you truly will not or cannot do the work. A Yoetz limit is never a
+`yoetz-blocker`. Request the receipt and keep the final claim no stronger than
 its conclusion, coverage, freshness, receipt-blocking findings, and limitations. A local-check
 recheck can still qualify when only `captured_object_unavailable`, `content_unselected`,
 `host_outcome_unavailable`, or `unpaired_event` limits its case-wide host-observation coverage and
