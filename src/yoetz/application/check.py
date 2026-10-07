@@ -2340,6 +2340,11 @@ def prior_finding_ids(projection: ProjectionState) -> dict[FindingIdentity, Find
     An AI-powered finding with the same kind, policy and subject is a different issue; letting a
     local re-derivation take its ID would rewrite that row's origin and leave the real local row
     unreturned, and so look resolved (issue #884).
+
+    A ``self_verified`` row (issue #984) is not offered either: the agent answered it because Yoetz
+    could not prove the repair. If the rule fires again, Yoetz positively sees the issue, so the
+    re-derivation is a new finding the agent must answer instead of landing silently on the
+    terminal row.
     """
 
     prior: dict[FindingIdentity, FindingId] = {}
@@ -2348,6 +2353,7 @@ def prior_finding_ids(projection: ProjectionState) -> dict[FindingIdentity, Find
             record.payload is None
             or record.resolved_by_check_event_id is not None
             or record.payload.origin is not FindingOrigin.DETERMINISTIC
+            or finding_todo_state(projection, key) is FindingTodoState.SELF_VERIFIED
         ):
             continue
         prior[(record.payload.kind, record.payload.policy_id, record.payload.subject_refs)] = key
@@ -3226,16 +3232,21 @@ def _record_restatement(
     reviewer still finds it (``still_present``, citing what the challenge cited), so the check
     cannot resolve it by silence. A restatement contradicts an explicit ``fixed`` or
     ``withdrawn`` ruling on the same item, which becomes ``unassessable``. An
-    ``acknowledged_not_done``, ``rejection_accepted`` or ``self_verified`` (issue #984) item is
-    final, stays disclosed on the receipt, and needs nothing recorded. (A ``verified_resolved`` item is never a restatement
-    target: see ``_restated_finding``.) When no ruling can be recorded (the check's ruling bound
-    is full) the restatement is not suppressed and is minted as before.
+    ``acknowledged_not_done`` or ``rejection_accepted`` item is final, stays disclosed on the
+    receipt, and needs nothing recorded. A ``self_verified`` item (issue #984) is final too, but
+    only because Yoetz could not see the repair; a reviewer that still raises the issue is a new
+    sighting, so the restatement is not suppressed and is minted as a new finding the agent must
+    answer. (A ``verified_resolved`` item is never a restatement target: see
+    ``_restated_finding``.) When no ruling can be recorded (the check's ruling bound is full) the
+    restatement is not suppressed and is minted as before.
     """
 
-    if finding_todo_state(case.projection, restated) in {
+    todo = finding_todo_state(case.projection, restated)
+    if todo is FindingTodoState.SELF_VERIFIED:
+        return False, False
+    if todo in {
         FindingTodoState.ACKNOWLEDGED_NOT_DONE,
         FindingTodoState.REJECTION_ACCEPTED,
-        FindingTodoState.SELF_VERIFIED,
     }:
         return True, False
     key = str(restated)

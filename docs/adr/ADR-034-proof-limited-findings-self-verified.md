@@ -106,17 +106,27 @@ does not change any proof rule.
    holds:
    - the reasons are empty;
    - they name agent work: `finding_not_in_checked_frontier`, `matching_policy_not_completed`,
-     `subject_outside_checked_scope`, `no_material_change_since_finding`, or an unreadable check
-     or unreadable returned findings;
+     `subject_outside_checked_scope`, `no_material_change_since_finding`, `findings_suppressed`
+     (the check's ranking cap withheld findings, so whether the issue fired again is unknown), or
+     an unreadable check or unreadable returned findings;
+   - `semantic_review_not_completed`, unless that check's review could not complete for a durable
+     reason (not requested, not configured, blocked by policy or forbidden data, classification
+     uncertain, human denied, approval expired); a timeout, rate limit or unavailable transport is
+     transient, so the agent runs `check` again;
    - they include a `coverage:<code>` that `GAP_CLASSIFICATION` does not class as standing
      (agent-actionable, route-dependent or unknown);
    - for a deterministic finding, `issue_returned_again`;
    - for an AI-powered finding, `issue_returned_again`, `reviewer_verdict_still_present` or
-     `reviewer_verdict_answered_not_fixed`, unless the same check also carries a review limit
-     (`semantic_packet_insufficient`, `reviewer_assessment_incomplete`,
-     `finding_material_outside_reduced_review_scope`, `freshness_unproven`, or a standing
-     `coverage:` code).
-3. Every other reason is a Yoetz limit, so the finding is eligible. Because a standing code counts
+     `reviewer_verdict_answered_not_fixed`, unless the same check also carries a *packet* limit:
+     `semantic_packet_insufficient`, `reviewer_assessment_incomplete`,
+     `finding_material_outside_reduced_review_scope`, or a packet-side `coverage:` code (reduced
+     reference scope, reduced refs, item or capacity limits, withheld or redacted review content,
+     unselected, redacted or truncated content, a truncated or redacted check-time change). An
+     unrelated capture or observation loss, or unproven freshness, never overrides a reviewer that
+     saw the repair and still sees the issue.
+3. `respond` also requires at least one cited evidence or result id recorded after the finding:
+   evidence from before the repair cannot show that the repair was verified.
+4. Every other reason is a Yoetz limit, so the finding is eligible. Because a standing code counts
    as a limit, a new gap code becomes self-verifiable as soon as `closure_readiness` classifies it
    standing.
 
@@ -154,8 +164,8 @@ budget hint and the `respond` descriptor. The shared sentence is
 A `self_verified` item is final:
 
 - `respond` refuses anything further with `finding_terminal`;
-- a replayed request is an idempotent no-op;
-- new evidence about the same problem is raised by a later check as a new finding.
+- a replay of the same request (same `request_id`) returns the recorded answer; any other answer on the item is refused with `finding_terminal` and records nothing;
+- a later positive sighting is never folded onto the terminal row: a local rule that fires again is allocated a new finding id (`prior_finding_ids` skips `self_verified` rows), and a reviewer restatement of the issue is minted as a new open finding instead of being suppressed.
 
 The disposition never closes another finding and never removes a coverage gap. If the agent
 wrongly self-verifies, the receipt still shows the item, its reason and its evidence, and a

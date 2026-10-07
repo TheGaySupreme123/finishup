@@ -202,13 +202,20 @@ def _records(*rows: object) -> tuple[LedgerRecord, ...]:
         (_SEM, ("issue_returned_again", "semantic_packet_insufficient")),
         (_SEM, ("reviewer_verdict_still_present", "coverage:content_redacted")),
         (_SEM, ("reviewer_verdict_answered_not_fixed", "reviewer_assessment_incomplete")),
-        (_SEM, ("semantic_review_not_completed", "coverage:semantic_relevance_review_not_run")),
     ],
 )
 def test_only_yoetz_limits_are_self_verifiable(
     origin: FindingOrigin, reasons: tuple[str, ...]
 ) -> None:
     assert reasons_proof_limited(reasons, origin) is True
+
+
+def test_a_review_that_cannot_complete_is_a_limit_only_when_durable() -> None:
+    reasons = ("semantic_review_not_completed", "coverage:semantic_relevance_review_not_run")
+    # A policy, privacy or configuration block no retry removes: a Yoetz limit.
+    assert reasons_proof_limited(reasons, _SEM, review_undeliverable=True) is True
+    # A timeout, rate limit or unavailable transport is transient: run check again.
+    assert reasons_proof_limited(reasons, _SEM) is False
 
 
 @pytest.mark.parametrize(
@@ -229,6 +236,13 @@ def test_only_yoetz_limits_are_self_verifiable(
         (_SEM, ("reviewer_verdict_still_present",)),
         (_SEM, ("reviewer_verdict_answered_not_fixed",)),
         (_SEM, ("no_material_change_since_finding", "coverage:content_redacted")),
+        # A reviewer that saw the repair and still sees the issue is not overridden by an
+        # unrelated capture loss or by freshness alone (adversarial review of #984).
+        (_SEM, ("reviewer_verdict_still_present", "coverage:observation_input_loss")),
+        (_SEM, ("issue_returned_again", "freshness_unproven")),
+        # The check's ranking cap withheld findings: whether it fired again is unknown.
+        (_DET, ("findings_suppressed", "coverage:content_redacted")),
+        (_SEM, ("findings_suppressed", "semantic_packet_insufficient")),
     ],
 )
 def test_yoetz_still_seeing_it_or_agent_work_is_refused(
@@ -360,3 +374,21 @@ def test_unresolved_explanation_orders_repair_then_self_verification_then_acknow
     acknowledge = explanation.index("acknowledged_not_done only if you truly will not")
     assert repair < verify < acknowledge
     assert "never a `yoetz-blocker`" in explanation
+
+
+# -- A later positive sighting is never hidden under the terminal row (adversarial review) ---
+
+
+def test_a_rule_that_fires_again_after_self_verification_mints_a_new_finding() -> None:
+    from yoetz.application.check import prior_finding_ids
+
+    finding = _finding()
+    key = (finding.kind, finding.policy_id, finding.subject_refs)
+    assert prior_finding_ids(_state(finding)) == {key: fnd(1)}
+    # Self-verified: the re-derivation must not land silently on the terminal row; it takes a
+    # fresh id the agent must answer.
+    answered = _state(finding, response=ResponseDisposition.SELF_VERIFIED)
+    assert prior_finding_ids(answered) == {}
+    # Acknowledged-not-done keeps converging on its row: the agent said it will not do it.
+    acknowledged = _state(finding, response=ResponseDisposition.ACKNOWLEDGED_NOT_DONE)
+    assert prior_finding_ids(acknowledged) == {key: fnd(1)}

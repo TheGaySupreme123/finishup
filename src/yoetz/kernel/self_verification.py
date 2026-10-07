@@ -25,10 +25,13 @@ later check). The proof rules themselves are unchanged.
     becomes self-verifiable as soon as ``kernel/closure_readiness.py`` classifies it);
   - ``issue_returned_again`` for a deterministic finding (the rule fired again);
   - for an AI-powered finding, ``issue_returned_again``, ``reviewer_verdict_still_present`` or
-    ``reviewer_verdict_answered_not_fixed``, unless that same check also carries a review limit
+    ``reviewer_verdict_answered_not_fixed``, unless that same check also carries a *packet* limit
     (``semantic_packet_insufficient``, ``reviewer_assessment_incomplete``,
-    ``finding_material_outside_reduced_review_scope``, ``freshness_unproven`` or a standing
-    ``coverage:`` code): a reviewer that saw a limited packet does not positively see the issue;
+    ``finding_material_outside_reduced_review_scope`` or a packet-side ``coverage:`` code): a
+    reviewer that saw a limited packet does not positively see the issue, but an unrelated capture
+    loss never overrides one that saw the repair;
+  - ``findings_suppressed`` (the ranking cap withheld findings) and a transient
+    ``semantic_review_not_completed`` (only a durable review block is a Yoetz limit);
   - no reasons at all (the finding resolved, or the cause is not a recorded limit), or a check
     that is unreadable or whose returned findings are unreadable (Yoetz cannot tell whether the
     issue fired again; a new check answers it).
@@ -41,12 +44,13 @@ from __future__ import annotations
 
 from typing import Final
 
-from yoetz.domain.events import LedgerRecord
+from yoetz.domain.events import CheckRecordedPayload, LedgerRecord
 from yoetz.domain.findings import FindingOrigin
 from yoetz.domain.values import FindingId
 from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
 from yoetz.kernel.finding_resolution import finding_resolution_attempt
 from yoetz.kernel.projections import ProjectionState
+from yoetz.protocol.models import SemanticStatus
 
 __all__ = [
     "FINDING_NOT_PROOF_LIMITED",
@@ -68,6 +72,9 @@ _AGENT_WORK_REASONS: Final = frozenset(
         "no_material_change_since_finding",
         "check_unreadable",
         "returned_findings_unreadable",
+        # The check's own ranking cap withheld findings (``ranking.py``): whether this issue fired
+        # again is unknown until a check returns every finding, so it is not a Yoetz limit.
+        "findings_suppressed",
     }
 )
 # What a reviewer (or a local rule) says when it positively still sees the issue.
@@ -78,13 +85,52 @@ _STILL_SEEN_REASONS: Final = frozenset(
         "reviewer_verdict_answered_not_fixed",
     }
 )
-# Review-side limits that make an AI-powered "still seen" ruling a limited one.
+# Review-side limits that make an AI-powered "still seen" ruling a limited one: the reviewer's
+# packet itself could not show the repair. Only packet-side limits qualify; an unrelated capture or
+# observation loss elsewhere in the case never overrides a reviewer that saw the repair and still
+# sees the issue (adversarial review of #984).
 _REVIEW_LIMIT_REASONS: Final = frozenset(
     {
         "semantic_packet_insufficient",
         "reviewer_assessment_incomplete",
         "finding_material_outside_reduced_review_scope",
-        "freshness_unproven",
+    }
+)
+# Packet-side ``coverage:`` codes: what the review packet could not carry or show.
+_PACKET_LIMIT_CODES: Final = frozenset(
+    {
+        "semantic_reference_scope_reduced",
+        "semantic_review_refs_reduced",
+        "semantic_case_content_over_item_limit",
+        "semantic_case_finding_refs_over_limit",
+        "semantic_case_capacity_exceeded",
+        "semantic_included_refs_not_recorded",
+        "semantic_prior_findings_over_limit",
+        "semantic_review_item_withheld",
+        "semantic_review_value_redacted",
+        "semantic_review_skipped_insufficient_packet",
+        "semantic_review_context_withheld",
+        "content_redacted",
+        "content_unselected",
+        "truncated_payload",
+        "check_time_change_truncated",
+        "check_time_change_redacted",
+        "check_time_change_unavailable",
+    }
+)
+# An AI-powered review that did not complete is a Yoetz limit only when no retry can complete it
+# (policy, privacy, configuration or a human decision). A timeout, a rate limit or an unavailable
+# transport is transient: the agent runs ``check`` again.
+_REVIEW_NOT_COMPLETED: Final = "semantic_review_not_completed"
+_DURABLE_UNDELIVERABLE_STATUSES: Final = frozenset(
+    {
+        SemanticStatus.NOT_REQUESTED,
+        SemanticStatus.NOT_CONFIGURED,
+        SemanticStatus.BLOCKED_BY_POLICY,
+        SemanticStatus.BLOCKED_FORBIDDEN_DATA,
+        SemanticStatus.CLASSIFICATION_UNCERTAIN,
+        SemanticStatus.HUMAN_DENIED,
+        SemanticStatus.APPROVAL_EXPIRED,
     }
 )
 _COVERAGE_PREFIX: Final = "coverage:"
@@ -99,10 +145,29 @@ def _standing_coverage(reason: str) -> bool | None:
     return GAP_CLASSIFICATION.get(code) is GapClass.STANDING_LIMITATION
 
 
-def reasons_proof_limited(reasons: tuple[str, ...], origin: FindingOrigin) -> bool:
-    """Whether a check's resolution *reasons* name only Yoetz limits for a finding of *origin*."""
+def _packet_limit(reason: str) -> bool:
+    return reason in _REVIEW_LIMIT_REASONS or (
+        reason.startswith(_COVERAGE_PREFIX)
+        and reason[len(_COVERAGE_PREFIX) :] in _PACKET_LIMIT_CODES
+    )
+
+
+def reasons_proof_limited(
+    reasons: tuple[str, ...],
+    origin: FindingOrigin,
+    *,
+    review_undeliverable: bool = False,
+) -> bool:
+    """Whether a check's resolution *reasons* name only Yoetz limits for a finding of *origin*.
+
+    ``review_undeliverable`` is true when that check's AI-powered review did not complete for a
+    durable reason (policy, privacy, configuration, a human decision); without it,
+    ``semantic_review_not_completed`` is transient agent work (run ``check`` again).
+    """
 
     if not reasons:
+        return False
+    if _REVIEW_NOT_COMPLETED in reasons and not review_undeliverable:
         return False
     if any(reason in _AGENT_WORK_REASONS for reason in reasons):
         return False
@@ -112,10 +177,7 @@ def reasons_proof_limited(reasons: tuple[str, ...], origin: FindingOrigin) -> bo
     if still_seen:
         if origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED:
             return False
-        review_limited = any(
-            reason in _REVIEW_LIMIT_REASONS or _standing_coverage(reason) is True
-            for reason in reasons
-        )
+        review_limited = any(_packet_limit(reason) for reason in reasons)
         if not review_limited:
             return False
     return True
@@ -138,7 +200,14 @@ def self_verification_refusal(
         not attempt.could_resolve and "finding_not_in_checked_frontier" in attempt.reasons
     ):
         return FINDING_NOT_RECHECKED
-    if not reasons_proof_limited(attempt.reasons, record.payload.origin):
+    check = next((row.payload for row in records if row.event_id == attempt.check_event_id), None)
+    undeliverable = (
+        type(check) is CheckRecordedPayload
+        and check.semantic_status in _DURABLE_UNDELIVERABLE_STATUSES
+    )
+    if not reasons_proof_limited(
+        attempt.reasons, record.payload.origin, review_undeliverable=undeliverable
+    ):
         return FINDING_NOT_PROOF_LIMITED
     return None
 

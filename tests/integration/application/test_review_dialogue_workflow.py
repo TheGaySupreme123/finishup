@@ -1158,6 +1158,55 @@ async def test_self_verified_closes_a_repair_only_a_yoetz_limit_keeps_unproven()
     )
 
 
+async def test_a_reviewer_restating_a_self_verified_issue_mints_a_new_finding() -> None:
+    """A later positive sighting is never hidden under ``self_verified`` (adversarial review).
+
+    ``self_verified`` is final only because Yoetz could not see the repair. A reviewer that raises
+    the same issue again is a new sighting: it is minted as a new open finding the agent must
+    answer, not folded silently onto the terminal row.
+    """
+
+    seed = 4400
+    reviewer = _Reviewer(
+        [
+            _challenge_obligation,
+            _rule_first_finding_on_a_complete_packet(None),
+            _challenge_obligation,
+        ],
+        content_gaps={1: ("content_unselected",)},
+    )
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    result_id, repaired = await _repair(session, at, seed + 20)
+    evidence_id, evidenced = await _artifact_evidence(session, repaired, seed + 30)
+    second = await _check(session, evidenced, seed + 40)
+    after = frontier_json(second.result_frontier)
+    recorded = await session.app.respond(
+        RespondRequest.model_validate(
+            _self_verified_wire(
+                session,
+                after,
+                at,
+                raised,
+                seed + 52,
+                "Re-ran the suite myself; output recorded.",
+                (evidence_id, result_id),
+            )
+        )
+    )
+    third = await _check(session, frontier_json(recorded.result_frontier), seed + 60)
+    successor = _semantic(third)
+    assert successor.finding_id != raised.finding_id
+    assert "semantic_restatements_suppressed" not in third.coverage.known_gaps
+    live = _live_projection(session.app)
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.SELF_VERIFIED
+    assert finding_todo_state(live, successor.finding_id) is FindingTodoState.OPEN
+    assert receipt_blocking_finding_count(live) == 1
+    assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(live)
+
+
 async def test_self_verified_is_refused_while_a_complete_review_still_sees_the_issue() -> None:
     """A reviewer with no packet limit ruled it still present: that is not a Yoetz limit."""
 

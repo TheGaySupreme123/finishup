@@ -641,12 +641,28 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                 )
                 if present is None or present.payload is None:
                     raise _error(
-                        PublicErrorCode.INVALID_REQUEST, "A response reference is invalid."
+                        PublicErrorCode.INVALID_REQUEST,
+                        "A response reference is invalid.",
+                        reason_code="response_fields_invalid",
+                        field="/evidence_refs",
                     )
                 # "After the finding" means after the finding's own record, not after whichever
                 # in-chain frontier the caller chose to name it by: any frontier at or after the
                 # record is accepted, including the current status frontier (issue #911).
                 attempted = attempted or present.source_frontier > finding_record.source_frontier
+            if request.disposition == "self_verified" and not attempted:
+                # Issue #984: the agent's own verification is evidence recorded after the finding;
+                # evidence from before the repair cannot show that the repair was verified.
+                raise _error(
+                    PublicErrorCode.INVALID_REQUEST,
+                    (
+                        "self_verified needs at least one evidence_refs id recorded after the "
+                        "finding: publish the evidence of your own verification of the repair, "
+                        "then cite its evd_ or res_ id."
+                    ),
+                    reason_code="response_fields_invalid",
+                    field="/evidence_refs",
+                )
             if (
                 request.disposition == "acknowledged"
                 and reviewer_finding
