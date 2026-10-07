@@ -8140,7 +8140,10 @@ plan. Names and contracts:
   a hook-observed, non-`exploration`/`vcs` command result (an outcome-less result counts for
   corroboration but never triggers the rule) or captured output such a result links, at that
   result's frontier. Standalone captures, an edit's output and exploration or VCS output never
-  corroborate.
+  corroborate. Self-generated evidence stays admissible (#977 item 5, ADR-033; tb4n1 E7, #987):
+  the agent's own admissible `command` result (a disclosed failing one included) or
+  `test_result`/`command_output` evidence published after the latest hook-observed edit also
+  satisfies the rule.
 - The unreleased local control 2.9.0 carries the fields in place and admits either
   privacy-policy wire version. A newer client meets an older running service at the schema-manifest
   digest in `control-hello` (`manifest_mismatch`, superseded through `yoetz service restart`), and a

@@ -8,7 +8,9 @@ from typing import Final, cast
 from yoetz.domain.events import (
     ActionKind,
     ClaimKind,
+    ClaimRecordedPayload,
     ClaimRecordedPayloadV1_1,
+    EvidenceKind,
     ObligationChangeKind,
     ObligationStatus,
     ResponseDisposition,
@@ -16,6 +18,7 @@ from yoetz.domain.events import (
 )
 from yoetz.domain.findings import FindingKind, FindingOrigin
 from yoetz.domain.values import (
+    EventId,
     EvidenceId,
     ObligationId,
     ResultId,
@@ -525,18 +528,23 @@ def _observed_verification_facts(
 
 
 def _uncorroborated_completion_findings(case: DeterministicCase) -> list[DeterministicAssessment]:
-    """A completion claim must cite an observed verification run made after the latest edit.
+    """A completion claim must cite a verification made after the latest observed edit.
 
     Applies only when hook observation recorded an edit or a verification run in this task, so a
     host without hooks keeps its ordinary coverage disclosure instead of an unanswerable finding.
     The support chain is the claim's ``supporting_refs`` and ``limitation_refs`` plus the
     resolution evidence of the resolved obligations it names: an honestly disclosed failing run is
-    corroboration too. A rerun of the check changes none of these relations.
+    corroboration too. Self-generated evidence stays admissible (#977 item 5, ADR-033; tb4n1 E7):
+    a hook-observed verification run, or the agent's own admissible verification record (a
+    ``command`` result or ``test_result``/``command_output`` evidence) published after the latest
+    observed edit, satisfies the rule. Only a chain whose every verification predates that edit,
+    or that cites none, is reported. A rerun of the check changes none of these relations.
     """
 
     latest_edit, verification_observed, runs = _observed_verification_facts(case)
     if latest_edit is None and not verification_observed:
         return []
+    observed = observed_event_ids_from_coverage(case.coverage_by_ref)
     after = latest_edit or 0
     output: list[DeterministicAssessment] = []
     for claim_id, record in effective_claim_items(case.projection):
@@ -552,6 +560,10 @@ def _uncorroborated_completion_findings(case: DeterministicCase) -> list[Determi
                 chain.update(obligation.payload.resolution_evidence_refs)
         if any(runs.get(ref, -1) > after for ref in chain):
             continue
+        if any(
+            _self_published_verification_after(case, claim, ref, after, observed) for ref in chain
+        ):
+            continue
         output.append(
             build_policy_assessment(
                 case,
@@ -563,6 +575,60 @@ def _uncorroborated_completion_findings(case: DeterministicCase) -> list[Determi
             )
         )
     return output
+
+
+_SELF_VERIFICATION_EVIDENCE: Final = frozenset(
+    {EvidenceKind.TEST_RESULT, EvidenceKind.COMMAND_OUTPUT}
+)
+
+
+def _self_published_verification_after(
+    case: DeterministicCase,
+    claim: ClaimRecordedPayload,
+    ref: str,
+    after: int,
+    observed: frozenset[EventId],
+) -> bool:
+    """Whether ``ref`` is the agent's own verification record published after frontier ``after``.
+
+    Hook-observed records keep their verification-class rule in ``_observed_verification_facts``;
+    this admits only cooperative records: a ``command`` action's result (a disclosed failing one
+    included) or ``test_result``/``command_output`` evidence, admissible for the claim.
+    """
+
+    support = cast(FindingBasisRef, ref)
+    admissible = _claim_support_is_admissible(case, claim.claim_kind, claim.subject_state, support)
+    if ref.startswith("evd_"):
+        evidence = case.projection.evidence.get(EvidenceId(ref))
+        return (
+            admissible
+            and evidence is not None
+            and evidence.payload is not None
+            and evidence.source_event_id not in observed
+            and evidence.payload.evidence_kind in _SELF_VERIFICATION_EVIDENCE
+            and evidence.source_frontier > after
+        )
+    if ref.startswith("res_"):
+        result = case.projection.results.get(ResultId(ref))
+        if (
+            result is None
+            or result.payload is None
+            or result.source_event_id in observed
+            or result.source_frontier <= after
+            or not (admissible or _is_limitation(claim, ref))
+        ):
+            return False
+        action = case.projection.actions.get(result.payload.action_id)
+        return (
+            action is not None
+            and action.payload is not None
+            and action.payload.action_kind is ActionKind.COMMAND
+        )
+    return False
+
+
+def _is_limitation(claim: ClaimRecordedPayload, ref: str) -> bool:
+    return type(claim) is ClaimRecordedPayloadV1_1 and ref in claim.limitation_refs
 
 
 def _orphan_result_findings(case: DeterministicCase) -> list[DeterministicAssessment]:

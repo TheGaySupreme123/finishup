@@ -166,7 +166,7 @@ TASK_STATEMENT_SCOPE_EMPTY_FACT: Final = "task_statement_scope_empty"
 # The unjustified pre-existing test edit (ADR-032), and the statement event its repair must cite.
 PREEXISTING_TEST_EDIT_UNJUSTIFIED_FACT: Final = "preexisting_test_edit_unjustified"
 TASK_STATEMENT_RECORDED_FACT: Final = "task_statement_recorded"
-# A completion claim cites no hook-observed verification run made after the latest observed edit.
+# A completion claim cites no verification (observed or self-published) made after the latest observed edit.
 OBSERVED_VERIFICATION_UNCITED_FACT: Final = "observed_verification_uncited"
 OBSERVED_VERIFICATION_ABSENT_FACT: Final = "observed_verification_absent"
 REQUESTED_OUTPUT_ABSENT_SUMMARY: Final = (
@@ -691,15 +691,16 @@ def render_deterministic_finding_text(
     ):
         claim_refs = ", ".join(ref for ref in refs if ref.startswith("clm_"))
         return (
-            "A completion claim cites no hook-observed verification run made after the latest"
-            " observed edit.",
-            f"Subjects: {', '.join(refs)}. Main agent: Self-asserted evidence is not"
-            " corroborated by observation. Run the verification the request needs after your"
-            " last edit, find that run in status view=results (tool, occurrence, exit status),"
-            " and replace the claim with claim_recorded/1.1.0 supersedes_claim_refs"
-            f" [{claim_refs}], citing the observed res_ id in supporting_refs (or in"
-            " limitation_refs when it failed). A check rerun alone returns this finding again;"
-            " if no verification is possible, narrow the claim or answer with respond.",
+            "A completion claim cites no verification made after the latest observed edit.",
+            f"Subjects: {', '.join(refs)}. Main agent: Every verification the claim cites"
+            " predates your latest edit, or it cites none. Run the verification the request"
+            " needs after your last edit and replace the claim with claim_recorded/1.1.0"
+            f" supersedes_claim_refs [{claim_refs}], citing that run in supporting_refs (or in"
+            " limitation_refs when it failed): the observed res_ id from status view=results"
+            " (tool, occurrence, exit status), or your own command result or test_result"
+            " evidence published after the edit; self-generated evidence is admissible."
+            " A check rerun alone returns this finding again; if no verification is possible,"
+            " narrow the claim or answer with respond.",
         )
     if kind is FindingKind.MATERIAL_LIMITATION_OMITTED:
         limitation_refs = tuple(

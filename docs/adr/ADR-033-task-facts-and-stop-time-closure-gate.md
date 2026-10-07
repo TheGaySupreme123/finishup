@@ -176,6 +176,13 @@ agent must not be able to stop silently with known work left.
    continuation above, bounded to once per frontier and per host turn, honouring declared
    blockers, and never claiming work is incorrect.
 
+9. **Self-generated verification counts after the last edit (tb4n1 E7, #987).** The ADR-032 uncorroborated-completion rule
+   asked for a hook-observed run even when the claim cited the agent's own command result
+   published after the last edit (2 D / 6 S tb4n1 attempts), contradicting the self-generated
+   evidence decision above. The agent's own admissible `command` result or
+   `test_result`/`command_output` evidence published after the latest hook-observed edit now
+   satisfies it; the rule reports only a claim whose every cited verification predates that edit.
+
 ## Consequences
 
 - The deterministic arm now tells the agent, at check time, at status and at Stop, whether its own

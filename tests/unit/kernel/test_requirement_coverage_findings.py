@@ -391,11 +391,29 @@ def _uncorroborated(case: DeterministicCase) -> list[str]:
     ]
 
 
-def test_cargo_shape_self_asserted_completion_after_observed_work_is_actionable() -> None:
-    """TB4 cargo: observed edits and test runs, but the claim cites only its own result."""
+def test_self_generated_verification_after_the_last_edit_stays_admissible() -> None:
+    """tb4n1 E7: self-generated evidence stays allowed (#977 item 5, ADR-033).
+
+    TB4 cargo shape: observed edits and test runs, and the claim cites the agent's own command
+    result published after the last observed edit. In tb4n1 this fired in 2 D and 6 S attempts
+    (rs-archive D, payments D, pretrain S, sglang S, ...) and asked for citation bookkeeping only.
+    """
 
     case = _corroboration_case(
         edits=(20,),
+        commands=((30, "test", ResultOutcome.SUCCESS),),
+        cooperative_result=60,
+        claim=_claim(res(60)),
+    )
+
+    assert _uncorroborated(case) == []
+
+
+def test_self_generated_verification_before_a_later_edit_is_actionable() -> None:
+    """The fact the rule keeps: no verification, observed or self-published, after the last edit."""
+
+    case = _corroboration_case(
+        edits=(20, 70),
         commands=((30, "test", ResultOutcome.SUCCESS),),
         cooperative_result=60,
         claim=_claim(res(60)),
@@ -412,6 +430,7 @@ def test_cargo_shape_self_asserted_completion_after_observed_work_is_actionable(
     assert "status view=results" in candidate.detail
     assert f"supersedes_claim_refs [{clm(1)}]" in candidate.detail
     assert "A check rerun alone returns this finding again" in candidate.detail
+    assert "Self-asserted evidence is not" not in candidate.detail
 
 
 def test_claim_citing_an_observed_run_after_the_last_edit_is_quiet() -> None:
