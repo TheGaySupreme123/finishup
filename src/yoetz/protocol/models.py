@@ -4298,6 +4298,11 @@ class StatusClosureReadinessModel(_ClosedModel):
     # Open obligations a recorded blocker decision names (#977). Optional on the unreleased 1.4.0
     # wire: an earlier 0.3 build omits it, and absence never means "nothing is blocked".
     blocked_obligations: tuple[StatusBlockedObligationModel, ...] | None = None
+    # F3: result ids a whole-task completion claim recorded now must name in ``limitation_refs``
+    # (the reducer's rule; sorted, first 64) and their full count. Optional on the unreleased
+    # 1.4.0 wire, present together; absence never means "nothing is required".
+    limitation_refs_required: tuple[ResultIdWire, ...] | None = None
+    limitation_refs_required_count: CanonicalUInt64Wire | None = None
 
     optional_non_null_fields = frozenset(
         {
@@ -4308,12 +4313,24 @@ class StatusClosureReadinessModel(_ClosedModel):
             "acknowledged_not_done",
             "acknowledged_not_done_count",
             "blocked_obligations",
+            "limitation_refs_required",
+            "limitation_refs_required_count",
         }
     )
 
     @model_validator(mode="after")
     def _validate_closure_readiness(self) -> StatusClosureReadinessModel:
         _require_unique(self.blocking_conditions, limit=8)
+        if (self.limitation_refs_required is None) != (self.limitation_refs_required_count is None):
+            raise ValueError("closure_readiness_limitation_refs_partial")
+        if self.limitation_refs_required is not None:
+            _require_unique(self.limitation_refs_required, limit=64)
+            if len(self.limitation_refs_required) != min(
+                int(cast(str, self.limitation_refs_required_count)), 64
+            ) or self.limitation_refs_required != tuple(
+                sorted(self.limitation_refs_required, key=str.encode)
+            ):
+                raise ValueError("closure_readiness_limitation_refs_mismatch")
         if self.blocked_obligations is not None:
             _require_unique(
                 tuple(item.obligation_id for item in self.blocked_obligations), limit=64
@@ -6632,7 +6649,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1423:
+    if len(result) != 1425:
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

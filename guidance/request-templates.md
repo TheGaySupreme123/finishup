@@ -480,7 +480,10 @@ Use `claim_recorded/1.1.0` for new claims. Its payload keeps admissible evidence
 results, and resolved obligations in `supporting_refs`, while partial or failed results belong in
 `limitation_refs`. A completion claim must list every live failed, partial, or unknown result in
 its scope, including command runs host hooks recorded that you never published; a failure retires
-only when a later observed run of the same command passes before the claim. Do not copy every
+only when a later observed run of the same command passes before the claim. Before claiming, read
+`status` `closure_readiness.limitation_refs_required`: it lists the result ids a whole-task
+completion claim must name. A scoped claim needs only those whose action names a claimed
+obligation, or names none. Do not copy every
 non-success id from `status view=results`: if one is missing, the rejection names the exact ids
 (and their count) to add, so add those and retry with a new `request_id`. It also admits `claim_id`, `claim_kind`, `disputes_refs`, `obligation_refs`,
 `statement`, `subject_state`, and `supersedes_claim_refs` — never `attempted_items`, which lives on

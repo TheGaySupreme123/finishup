@@ -4346,6 +4346,17 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
             },
             {
                 "if": {
+                    "anyOf": [
+                        {"required": ["limitation_refs_required"]},
+                        {"required": ["limitation_refs_required_count"]},
+                    ]
+                },
+                "then": {
+                    "required": ["limitation_refs_required", "limitation_refs_required_count"]
+                },
+            },
+            {
+                "if": {
                     "properties": {"state": {"const": "action_required"}},
                     "required": ["state"],
                 },

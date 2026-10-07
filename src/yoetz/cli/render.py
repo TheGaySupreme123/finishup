@@ -470,6 +470,16 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
                 for item in readiness.blocked_obligations
             )
         )
+    if readiness.limitation_refs_required and readiness.limitation_refs_required_count:
+        # F3: ids only; what a whole-task completion claim must name in limitation_refs.
+        hidden = int(readiness.limitation_refs_required_count) - len(
+            readiness.limitation_refs_required
+        )
+        lines.append(
+            "A whole-task completion claim must name in limitation_refs: "
+            + ", ".join(readiness.limitation_refs_required)
+            + (f" (+{hidden} more)" if hidden > 0 else "")
+        )
     if readiness.acknowledged_not_done:
         listed = ", ".join(readiness.acknowledged_not_done)
         hidden = int(readiness.acknowledged_not_done_count) - len(readiness.acknowledged_not_done)

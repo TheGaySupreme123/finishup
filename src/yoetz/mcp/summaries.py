@@ -74,6 +74,13 @@ _VALIDATION_POINTER: Final = re.compile(
 _MAX_NAMED_VALIDATION_LOCATIONS: Final = 2
 _SAFE_TOKEN: Final = re.compile(r"^[A-Za-z0-9_+.-]{1,128}$", re.ASCII)
 _GAP_CODE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
+# F3: the status summary names at most this many required limitation ids, then "+N more"; the
+# structured closure_readiness lists up to 64.
+_MAX_SUMMARY_LIMITATION_IDS: Final = 3
+_CLOSURE_CLAUSE_RESERVE: Final = 96
+_RESULT_REF: Final = re.compile(
+    r"^res_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.ASCII
+)
 _READINESS_ITEM: Final = re.compile(r"^(?:unclassified_gap:)?[a-z][a-z0-9_]{0,127}$", re.ASCII)
 _MISSING_REF: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", re.ASCII)
 # Closed shape for the frozen field and family tokens the repair clause may carry (issue #266).
@@ -494,6 +501,40 @@ def _bounded_list_clause(prefix: str, values: Sequence[str], *, byte_budget: int
     remaining = len(values) - len(selected)
     suffix = f"; +{remaining} more" if remaining else ""
     return f"{prefix}{', '.join(selected)}{suffix}; "
+
+
+def _limitation_refs_required_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
+    """Name the result ids a whole-task completion claim must list in ``limitation_refs`` (F3).
+
+    Ids and the service count only, so the first completion claim is accepted. A scoped claim
+    needs only those whose action names a claimed obligation or none.
+    """
+
+    readiness = source.get("closure_readiness")
+    if not isinstance(readiness, Mapping):
+        return ""
+    typed = cast(Mapping[str, JsonValue], readiness)
+    count = _safe_count(typed.get("limitation_refs_required_count"))
+    raw = typed.get("limitation_refs_required")
+    if count in {"unavailable", "0"} or not isinstance(raw, list | tuple):
+        return ""
+    values = tuple(
+        value
+        for value in cast(Sequence[object], raw)
+        if type(value) is str and _RESULT_REF.fullmatch(value) is not None
+    )
+    prefix = f"limitation_refs a whole-task completion claim must name ({count}): "
+    selected: list[str] = []
+    rendered = ""
+    for value in values[:_MAX_SUMMARY_LIMITATION_IDS]:
+        candidate = [*selected, value]
+        remaining = int(count) - len(candidate)
+        suffix = f"; +{remaining} more" if remaining > 0 else ""
+        clause = f"{prefix}{', '.join(candidate)}{suffix}; "
+        if len(clause.encode("ascii")) > byte_budget:
+            break
+        selected, rendered = candidate, clause
+    return rendered
 
 
 def _obligation_ids_from_status(source: Mapping[str, JsonValue], view: str) -> tuple[str, ...]:
@@ -1250,14 +1291,22 @@ def summary_for_status(envelope: object) -> str:
         f"unanswered findings: {unanswered}; "
         f"receipt-blocking findings: {receipt_blocking}; reported gaps: {gaps}."
     )
+    # F3: the ids a first completion claim must disclose get room before the closure clause,
+    # which shrinks to its shorter variants; a reserve keeps the closure state named.
+    clause = _limitation_refs_required_clause(
+        source,
+        byte_budget=_MAX_SUMMARY_BYTES
+        - len((prefix + suffix).encode("ascii"))
+        - _CLOSURE_CLAUSE_RESERVE,
+    )
     suffix += _closure_clause(
-        source, byte_budget=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
+        source, byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii"))
     )
     obligation_ids = _obligation_ids_from_status(source, view)
-    clause = _bounded_list_clause(
+    clause += _bounded_list_clause(
         "obligation IDs: ",
         obligation_ids,
-        byte_budget=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii")),
+        byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
     )
     if view == "findings":
         clause += _bounded_list_clause(

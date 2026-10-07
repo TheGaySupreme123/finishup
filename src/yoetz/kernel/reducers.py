@@ -63,17 +63,17 @@ from yoetz.domain.values import (
     result_id,
     validate_sha256_digest,
 )
+from yoetz.kernel.claim_limitations import (
+    DISCLOSABLE_LIMITING_OUTCOMES,
+    required_limitation_result_ids,
+    result_is_relevant_to_claim_scope,
+)
 from yoetz.kernel.finding_resolution import (
     apply_check_resolution,
     apply_check_rulings,
     reopen_findings_resolved_by,
 )
-from yoetz.kernel.observed_failures import (
-    ObservedFailureState,
-    is_observed_run_record,
-    observed_action_is_exploratory,
-    observed_failure_states_from_records,
-)
+from yoetz.kernel.observed_failures import is_observed_run_record
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import (
     ClaimProjectionRecord,
@@ -113,12 +113,8 @@ __all__ = [
 ]
 
 _MAX_SQLITE_SIGNED_INTEGER: Final = 2**63 - 1
-# A v1.1 completion claim must disclose every relevant typed non-success result. An `unknown`
-# outcome is not upgraded into a typed partial or failure (ADR-025 decision 3), so it is never
-# required -- but it is limiting to the local limitation policy, so `limitation_refs` also
-# accepts it as the disclosure channel a v1.1 claim would otherwise have none of.
-_TYPED_LIMITING_OUTCOMES: Final = frozenset({ResultOutcome.FAILURE, ResultOutcome.PARTIAL})
-_DISCLOSABLE_LIMITING_OUTCOMES: Final = _TYPED_LIMITING_OUTCOMES | {ResultOutcome.UNKNOWN}
+# The v1.1 completion-claim limitation rule lives in ``yoetz.kernel.claim_limitations`` so a
+# surface can name the required ids before the claim (F3); the reducer reads the same rule.
 _MATERIAL_FAMILIES: Final = frozenset(
     {
         "action_recorded",
@@ -737,14 +733,12 @@ def _result_is_relevant_to_claim(
     *,
     claim_frontier: int,
 ) -> bool:
-    if result_record.payload is None or result_record.source_frontier > claim_frontier:
-        return False
-    action = actions.get(result_record.payload.action_id)
-    if action is None or action.payload is None:
-        return True
-    claim_scope = _claim_scope(payload)
-    action_scope = frozenset(action.payload.obligation_refs)
-    return not claim_scope or not action_scope or not claim_scope.isdisjoint(action_scope)
+    return result_is_relevant_to_claim_scope(
+        _claim_scope(payload),
+        result_record,
+        actions,
+        claim_frontier=claim_frontier,
+    )
 
 
 def _claim_effective_meaning(
@@ -837,40 +831,20 @@ def _apply_claim(
                 "supporting_refs_must_exclude_limitations",
                 event.event_id,
             )
-        # A hook-observed failure that a later run of the same command superseded is no longer
-        # required (#909). An edit alone changes the state under test without proving a covering
-        # rerun, so it remains live and nameable below.
-        observed_states = observed_failure_states_from_records(
+        # Superseded observed failures (#909) and observed explorations are not required; the
+        # rule is shared with the surfaces that list the required ids before a claim (F3).
+        required = required_limitation_result_ids(
             results,
             actions,
             observed_event_ids,
-            through=event.ledger.ingestion_sequence,
-        )
-        required = frozenset(
-            result_id_value
-            for result_id_value, record in results.items()
-            if record.payload is not None
-            and record.payload.outcome in _TYPED_LIMITING_OUTCOMES
-            and observed_states.get(result_id_value, ObservedFailureState.LIVE)
-            is ObservedFailureState.LIVE
-            and not (
-                (action := actions.get(record.payload.action_id)) is not None
-                and action.payload is not None
-                and action.source_event_id in observed_event_ids
-                and observed_action_is_exploratory(action.payload)
-            )
-            and _result_is_relevant_to_claim(
-                payload,
-                record,
-                actions,
-                claim_frontier=event.ledger.ingestion_sequence,
-            )
+            claim_scope=_claim_scope(payload),
+            claim_frontier=event.ledger.ingestion_sequence,
         )
         supplied = frozenset(payload.limitation_refs)
         if any(
             (record := results.get(result_ref)) is None
             or record.payload is None
-            or record.payload.outcome not in _DISCLOSABLE_LIMITING_OUTCOMES
+            or record.payload.outcome not in DISCLOSABLE_LIMITING_OUTCOMES
             or not _limitation_scope_is_authorable(
                 payload,
                 record,

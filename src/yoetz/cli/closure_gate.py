@@ -164,6 +164,32 @@ _MAX_TEXT_CHARS: Final = 2_000
 _DRAIN_TEXT: Final = "(Observations were still draining; planned-verification facts unused.)"
 # A re-check names at most this many blocked obligations; the rest are counted.
 _MAX_NAMED_BLOCKERS: Final = 3
+# F3: the gate names at most this many result ids a completion claim must disclose.
+_MAX_NAMED_LIMITATIONS: Final = 5
+
+
+def _limitation_text(readiness: object) -> str:
+    """Name the ids a whole-task completion claim must list in ``limitation_refs`` (F3)."""
+
+    raw = getattr(readiness, "limitation_refs_required", None)
+    count = getattr(readiness, "limitation_refs_required_count", None)
+    if not isinstance(raw, (tuple, list)) or type(count) is not str or not count.isdigit():
+        return ""
+    ids = [
+        value
+        for value in tuple(cast(tuple[object, ...], raw))
+        if type(value) is str and value.startswith("res_") and len(value) <= 64
+    ]
+    if not ids:
+        return ""
+    named = ", ".join(ids[:_MAX_NAMED_LIMITATIONS])
+    more = int(count) - min(len(ids), _MAX_NAMED_LIMITATIONS)
+    if more > 0:
+        named += f" and {more} more (status lists them)"
+    return (
+        f"A whole-task completion claim must name these results in limitation_refs: {named}."
+        " A scoped claim needs only those whose action names a claimed obligation or none."
+    )
 
 
 class ClosureGateUnavailable(Exception):
@@ -290,8 +316,11 @@ def closure_gate_from_readiness(
         f" requires action before you stop. Remaining: {remaining}."
     )
     recheck = _blocker_text(rows, short=offers_blocker) if rows else ""
+    limitations = _limitation_text(readiness)
 
-    def compose(*, drain: bool, short_obligation: bool, verification: bool) -> str:
+    def compose(
+        *, drain: bool, short_obligation: bool, verification: bool, limits: bool = True
+    ) -> str:
         parts = [head]
         if "obligations_open" in items:
             parts.append(_OBLIGATION_SHORT_TEXT if short_obligation else _OBLIGATION_TEXT)
@@ -299,6 +328,8 @@ def closure_gate_from_readiness(
             parts.append(_VERIFICATION_TEXT)
         if "receipt_findings_unresolved" in items:
             parts.append(_FINDING_TEXT)
+        if limits and limitations:
+            parts.append(limitations)
         parts.append(_CLOSE_TEXT)
         # The blocker exit is offered only for open obligations: findings, reviews and Yoetz
         # limits are never excused by a blocker (F1, #984).
@@ -313,15 +344,22 @@ def closure_gate_from_readiness(
         return " ".join(parts)
 
     # Every host clips at 2,000 characters. Drop whole optional sentences, never the re-check:
-    # the drain note first, then the long obligation sentence, then the verification hint.
+    # the drain note first, then the long obligation sentence, then the verification hint, then
+    # the required limitation ids (F3).
     text = ""
-    for drain, short_obligation, verification in (
-        (True, False, True),
-        (False, False, True),
-        (False, True, True),
-        (False, True, False),
+    for drain, short_obligation, verification, limits in (
+        (True, False, True, True),
+        (False, False, True, True),
+        (False, True, True, True),
+        (False, True, False, True),
+        (False, True, False, False),
     ):
-        text = compose(drain=drain, short_obligation=short_obligation, verification=verification)
+        text = compose(
+            drain=drain,
+            short_obligation=short_obligation,
+            verification=verification,
+            limits=limits,
+        )
         if len(text) <= _MAX_TEXT_CHARS:
             break
     else:

@@ -213,7 +213,7 @@ def test_the_blocker_offer_never_carries_the_confirm_instruction() -> None:
     assert "confirm" not in offer
 
 
-def _worst_case(*, rows: int, pending: bool) -> Any:
+def _worst_case(*, rows: int, pending: bool, limits: int = 0) -> Any:
     return closure_gate_from_readiness(
         SimpleNamespace(
             state="action_required",
@@ -236,6 +236,11 @@ def _worst_case(*, rows: int, pending: bool) -> Any:
                 )
                 for index in range(rows)
             ),
+            # F3: required limitation ids (at most 64 listed) and an extreme count.
+            limitation_refs_required=tuple(
+                f"res_97700000-0000-4000-8000-{index:012d}" for index in range(min(limits, 64))
+            ),
+            limitation_refs_required_count=str(limits),
         ),
         frontier_sequence="999999",
         frontier_digest=_DIGEST,
@@ -243,12 +248,13 @@ def _worst_case(*, rows: int, pending: bool) -> Any:
     )
 
 
+@pytest.mark.parametrize("limits", [0, 1, 9_999])
 @pytest.mark.parametrize("pending", [False, True])
 @pytest.mark.parametrize("rows", [0, 1, 99])
 def test_worst_case_text_stays_within_the_host_bound_and_keeps_the_recheck(
-    rows: int, pending: bool
+    rows: int, pending: bool, limits: int
 ) -> None:
-    gate = _worst_case(rows=rows, pending=pending)
+    gate = _worst_case(rows=rows, pending=pending, limits=limits)
     assert gate is not None
     assert len(gate.text) <= 2000, len(gate.text)
     if rows:
@@ -256,3 +262,34 @@ def test_worst_case_text_stays_within_the_host_bound_and_keeps_the_recheck(
         assert "same yoetz-blocker line again" in gate.text
         if rows > 3:
             assert f"and {rows - 3} more" in gate.text
+
+
+def test_required_limitation_ids_follow_the_finding_guidance_and_are_bounded() -> None:
+    """F3: name at most five ids a completion claim must disclose, then count the rest."""
+
+    readiness = SimpleNamespace(
+        state="action_required",
+        agent_actionable=("receipt_findings_unresolved",),
+        open_obligation_count="0",
+        receipt_blocking_finding_count="1",
+        blocked_obligations=(),
+        limitation_refs_required=tuple(
+            f"res_97700000-0000-4000-8000-{index:012d}" for index in range(7)
+        ),
+        limitation_refs_required_count="70",
+    )
+    gate = closure_gate_from_readiness(
+        readiness,
+        frontier_sequence="12",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+    )
+    assert gate is not None
+    text = gate.text
+    sentence = "A whole-task completion claim must name these results in limitation_refs: "
+    assert sentence in text
+    assert text.index("respond `self_verified`") < text.index(sentence) < text.index("Then run")
+    assert "res_97700000-0000-4000-8000-000000000004" in text
+    assert "res_97700000-0000-4000-8000-000000000005" not in text
+    assert "and 65 more (status lists them)" in text
+    assert "only those whose action names a claimed obligation or none" in text

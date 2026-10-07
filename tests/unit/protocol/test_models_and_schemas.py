@@ -310,11 +310,11 @@ _STATUS_PAGE_DEF_BY_VIEW_FOR_TEST: tuple[tuple[str, str], ...] = (
 )
 _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("check", None): 365,
-    ("publish_work", None): 57,
+    ("publish_work", None): 61,
     ("receipt", None): 277,
     ("respond", None): 53,
     ("start", None): 72,
-    ("status", None): 56,
+    ("status", None): 60,
     ("status", "advice"): 25,
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,

@@ -130,6 +130,18 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    `status(results)` resolves each result id to source event, payload availability, outcome, action,
    and evidence ids. A new status wire version is unnecessary.
 
+8. **The required limitation ids are shown before the claim (amendment, F3; owner-approved).**
+   In tb4n1, 34 of 35 `claim_revision_mismatch` rejections were `limitation_refs_complete`: the
+   first completion claim missed a live failed or partial result, and only the retry, built from
+   the rejection's ids, succeeded. The required-set rule is now one pure kernel helper
+   (`kernel/claim_limitations.py`) that the replay reducer enforces unchanged. Status
+   `closure_readiness` on the unreleased status-result 1.4.0 carries the optional pair
+   `limitation_refs_required` (sorted result ids, at most 64) and `limitation_refs_required_count`.
+   This is the set a whole-task completion claim recorded now must name. A scoped claim needs
+   only those whose action names a claimed obligation, or names none. The MCP status summary,
+   the CLI/terminal status and the Stop gate name these ids (ids only, bounded). The gate drops
+   its sentence before the blocker re-check to stay within 2,000 characters.
+
 ## Consequences
 
 A clean prior claim can be replaced after scope grows and produces an honest partial result. The

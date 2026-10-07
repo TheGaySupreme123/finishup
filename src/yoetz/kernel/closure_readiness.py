@@ -42,9 +42,11 @@ from yoetz.domain.receipts import (
     COMPLETION_PLAN_NOT_CLAIMED_GAP,
 )
 from yoetz.domain.values import EventId, FindingId, ObligationId
+from yoetz.kernel.claim_limitations import required_limitation_ids_for_projection
 from yoetz.kernel.claims import completion_claim_present
 from yoetz.kernel.finding_resolution import finding_is_resolved
 from yoetz.kernel.finding_todo import FindingTodoState, finding_blocks_receipt, finding_todo_state
+from yoetz.kernel.observed_failures import observed_event_ids_from_records
 from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS, PLAN_DRIFT_GAPS
 from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
 from yoetz.kernel.receipt_capacity import current_receipt_findings
@@ -512,6 +514,10 @@ class ClosureReadinessFacts:
     # Issue #984: current findings in the terminal ``self_verified`` state. Not agent work (they
     # never count as receipt-blocking); readiness discloses them as ``finding_self_verified``.
     self_verified_finding_ids: tuple[FindingId, ...] = ()
+    # F3: every result id a whole-task completion claim recorded now must name in
+    # ``limitation_refs`` (``kernel.claim_limitations``, the reducer's rule), sorted. Status
+    # lists them before the claim so the first claim is accepted.
+    limitation_refs_required: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -534,6 +540,7 @@ class ClosureReadinessFacts:
             self.acknowledged_obligation_ids,
             self.open_obligation_ids,
             self.blocked_obligation_ids,
+            self.limitation_refs_required,
         ):
             if type(values) is not tuple or values != tuple(sorted(set(values), key=str.encode)):
                 raise ValueError("closure_readiness_facts_invalid")
@@ -790,6 +797,9 @@ def closure_readiness_facts(
         closing_review_current=closing_current,
         semantic_review_used=review_used,
         self_verified_finding_ids=tuple(sorted(self_verified, key=str.encode)),
+        limitation_refs_required=tuple(
+            required_limitation_ids_for_projection(state, observed_event_ids_from_records(records))
+        ),
     )
 
 
