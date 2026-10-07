@@ -263,15 +263,21 @@ and its text offered the blocker as the exit. The owner decided:
    for the ordinary items. Hard caps: at most one re-check per Stop, and at most two gate
    continuations per host turn, counted in a third owner-only file
    (`observation/closure-gate-turns.json`, opaque session ids and a count, 128 sessions) and reset
-   at the next Stop the host did not continue. On an active Stop the memory is written before the
+   at every mapped Stop the host did not continue, whether or not the gate is evaluated there; an
+   unreadable or corrupt counter counts as the cap. On an active Stop the memory is written before the
    text is emitted; if it cannot be written, or status fails, the agent stops (fail open). The new
    diagnostic `closure_gate_active_stop_rechecked` joins `closure_gate_continued` and
    `closure_gate_blocker_rechecked` when that happens; `closure_gate_loop_guard` is recorded only
    when an active Stop emitted nothing. A blocker row readiness reports as `confirmation:
    confirmed` (the agent re-published the same line in a later decision) is never re-asked, and
    the readiness token `obligation_blocker_unconfirmed` is a gate item like `obligations_open`.
-   The re-check text asks the agent to confirm a genuine blocker by publishing the same
-   `yoetz-blocker` line again.
+   How to confirm a blocker (publish the same `yoetz-blocker` line again in a later decision) is
+   told only after the challenge: in the re-check, or in a later gate whose blocker was already
+   re-asked. The offer that introduces the blocker line never says it, so publishing the line
+   twice up front cannot skip the challenge (the kernel rule that a repeat confirms only after
+   the challenge is owned by the blockers change). The re-check tells the agent that a Yoetz
+   limit is never a blocker: finish the obligation and disclose any limit in the final answer
+   (`self_verified` is for findings only).
 2. **Repair first; a Yoetz limit is never a blocker (#984).** For receipt-blocking findings the
    text says: repair what you can; for a finding you repaired that Yoetz still cannot prove (its
    resolution names a Yoetz limit such as redaction, observation loss or a review-packet limit),
@@ -280,8 +286,9 @@ and its text offered the blocker as the exit. The owner decided:
    not do it. Every gate says a Yoetz limit is never a `yoetz-blocker`. The blocker sentence, with
    "Data the task says is recoverable is not such a blocker" and the confirmation step, is offered
    only when open obligations (or an unconfirmed blocker) remain, never for a findings-only gate.
-   The text stays under every host's 2,000-character bound and names at most three blocked
-   obligations.
+   The text never exceeds every host's 2,000-character bound: whole optional sentences are
+   dropped (the drain note first, then the long obligation sentence, then the verification hint)
+   and the re-check sentence is always kept; it names at most three blocked obligations.
 3. **The drain note only when it changed the decision.** `observation_pending` is now computed for
    this task's own hook rows after the Stop drain (#994, owned by the observation lead). The
    planned-verification items are used when it is false; the "(Observations were still draining
@@ -290,14 +297,22 @@ and its text offered the blocker as the exit. The owner decided:
    Code's Stop `additionalContext` also continues the conversation, so ordinary advice at Stop
    spent the turn's continuation the gate needs (tb4n1 hof-topology). Ordinary advice now stays
    pending for the next `PostToolUse` or `SessionStart` on every host; Cursor never delivered it
-   at `stop`. Standing advice (provider repair) therefore reaches Codex and Claude Code at
-   `SessionStart`, as it already did on Cursor.
+   at `stop`. Standing advice (provider repair, e.g. `connect_provider`) therefore no longer
+   reaches Codex or Claude Code at Stop. To keep its once-per-turn cadence, a Stop that finds it
+   pending marks the session (owner-only `observation/stop-withheld-standing-advice.json`, opaque
+   session commitments only), and the first later advice-eligible `PostToolUse` may carry it;
+   the mark clears once it is delivered or nothing is pending. Otherwise it reaches them at
+   `SessionStart`. Cursor is unchanged (`sessionStart` only).
 5. **The gate and the CLI read the agent's route.** A route-less `status` (the Stop gate, the CLI,
    an export) read the policy route, so on a strict-route session it listed
    `semantic_review_not_requested` as work the agent's own MCP view never showed (37 of 37
-   deterministic exports). The service now remembers, in memory and per session, the route that
-   session's MCP bridge last named on `status` or `check` (bounded to 256 sessions, ids and the
-   closed route only) and applies it to a later route-less `status` for the same session. A
-   route-less `check` is unchanged. Before the bridge has made a call since the service started,
-   a route-less read still uses the policy route; status carries no route label on the compact
-   view, so that case is not labelled.
+   deterministic exports). The service now remembers, per session, the route that session's MCP
+   bridge named on its last successful `status` or `check`, in an owner-only file in the service
+   state directory (`session-routes.json`: `ses_` ids and the closed route only, at most 256
+   sessions with least-recently-written eviction, atomic replace, symlinks never followed,
+   loaded lazily), so it survives a service restart or upgrade. A later route-less `status` for
+   the same session reads on that route. A failed call teaches nothing; when two bridges on
+   different routes serve one session, the last successful call wins. A route-less `check` is
+   unchanged. Before any bridge call for the session, a route-less read still uses the policy
+   route. The applied route is visible on `status` `view: versions` (`route_profile` on each
+   version slice); the compact view carries no route field, so it is not labelled there.

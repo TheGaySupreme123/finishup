@@ -8446,9 +8446,12 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `closure_gate_active_stop_rechecked`, `closure_gate_not_required`,
   `closure_gate_repeat_suppressed`, `closure_gate_loop_guard` (an active Stop that emitted
   nothing), `closure_gate_budget_exhausted`, `closure_gate_unavailable`. A route-less `status`
-  control call uses the route the same session's MCP bridge last named on `status` or `check`
-  since the service started (in memory, 256 sessions), else the policy route; a route-less
-  `check` is unchanged (ADR-033 amendment 2026-10-07).
+  control call uses the route the same session's MCP bridge named on its last successful
+  `status` or `check` (`service/session_routes.SessionRouteMemory`, owner-only
+  `session-routes.json` in the service state directory, 256 sessions, last writer wins), else
+  the policy route; a route-less `check` is unchanged (ADR-033 amendment 2026-10-07).
+  `set_standing_advice_withheld` / `standing_advice_withheld` carry standing advice a Codex or
+  Claude Code Stop withheld to the first later `PostToolUse`.
 - **Text surfaces.** `domain/receipts.TASK_FACT_GAP_SENTENCES` holds one fixed sentence per task-fact
   code; `check_time_change_gap_sentence(code)` returns it, so receipt gap details and limitations,
   `render_human_check`/`render_human_status` and the MCP check summary show it. A publish rejection
