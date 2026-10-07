@@ -334,3 +334,10 @@ agent that would not finish one obligation had no honest exit except a `yoetz-bl
    `insufficient_coverage`, never clean (schema rule and domain check).
 6. **Texts.** The gate, the requested-item repair text and the guidance name it as the honest last
    resort after repair, never a blocker.
+7. **One listing under either counting regime.** Projections may count an acknowledged
+   obligation among open obligations (`open_obligation_count`, the `obligations_open` blocking
+   condition) or not. Readiness never treats it as open work: the derived open set excludes it,
+   `obligations_open` is not agent-actionable when every open obligation is acknowledged (or
+   confirmed blocked) and none is unreadable, and it appears once, under `acknowledged_not_done`.
+   The Stop gate then names no number for open obligations. A resolved obligation stays final:
+   a later acknowledgement or reopening is refused.

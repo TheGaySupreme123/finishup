@@ -365,6 +365,13 @@ def closure_gate_from_readiness(
             keys + premise_keys,
         )
     open_count = str(getattr(readiness, "open_obligation_count", "?"))
+    acknowledged = getattr(readiness, "acknowledged_not_done", None)
+    if isinstance(acknowledged, (tuple, list)) and any(
+        type(item) is str and item.startswith("obl_")
+        for item in tuple(cast(tuple[object, ...], acknowledged))
+    ):
+        # #997: a projection may count acknowledged obligations as open; name no number then.
+        open_count = "some"
     blocking_count = str(getattr(readiness, "receipt_blocking_finding_count", "?"))
     remaining = "; ".join(
         _ITEM_TEXT[token].format(open=open_count, blocking=blocking_count) for token in items

@@ -4468,13 +4468,17 @@ class StatusClosureReadinessModel(_ClosedModel):
         blocked_rows = self.blocked_obligations
         open_count = None if self.open_obligation_count is None else int(self.open_obligation_count)
         if "obligations_open" in self.blocking_conditions and "obligations_open" not in actionable:
-            # Replaced by a confirmed blocker (standing) or a claimed one still to confirm (#985).
+            # Replaced by a confirmed blocker (standing) or a claimed one still to confirm (#985),
+            # or the open count includes obligations acknowledged as not done (#997).
+            acknowledged_obligations = any(item.startswith("obl_") for item in acknowledged_ids)
             if (
                 "obligation_blocked_outside_agent_control" not in standing
                 and "obligation_blocker_unconfirmed" not in actionable
+                and not acknowledged_obligations
             ) or (
                 blocked_rows is not None
                 and open_count is not None
+                and not acknowledged_obligations
                 and len(blocked_rows) != min(open_count, 64)
             ):
                 raise ValueError("closure_readiness_actionable_condition_mismatch")

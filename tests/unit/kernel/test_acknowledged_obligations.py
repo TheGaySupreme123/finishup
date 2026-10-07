@@ -223,3 +223,50 @@ def test_resolved_is_final_an_acknowledgement_never_reopens_it() -> None:
     _acknowledge(ledger)
     with pytest.raises(reducers.ObligationResolutionMismatch):
         replay(ledger.prefix)
+
+
+def test_l6_counting_regime_lists_an_acknowledged_obligation_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L6's projection counts acknowledged_not_done as open: readiness still lists it once."""
+
+    from types import SimpleNamespace
+
+    from yoetz.cli.closure_gate import closure_gate_from_readiness
+    from yoetz.kernel import closure_readiness
+
+    ledger = _ledger()
+    _acknowledge(ledger)
+    _acknowledge(ledger, _OTHER)
+    prefix = ledger.prefix
+    projection = replay(prefix)
+
+    def l6_open(state: object) -> tuple[str, ...]:
+        del state
+        return (_OBLIGATION, _OTHER)
+
+    monkeypatch.setattr(closure_readiness, "open_effective_obligations", l6_open)
+    facts = replace(closure_readiness_facts(projection, prefix), check_applicability="applicable")
+    assert facts.open_obligation_ids == ()
+    readiness = derive_closure_readiness(
+        ("obligations_open",), (), facts, semantic_review_required=False
+    )
+    assert readiness.state == "ready_with_limitations"
+    assert "obligations_open" not in readiness.agent_actionable
+    assert readiness.acknowledged_not_done == (_OBLIGATION, _OTHER)
+    assert readiness.acknowledged_not_done_count == 2
+
+    # The gate never names the projection's open count as open work in that regime.
+    view = SimpleNamespace(
+        state="action_required",
+        agent_actionable=("obligations_open",),
+        open_obligation_count="3",
+        receipt_blocking_finding_count="0",
+        acknowledged_not_done=(_OBLIGATION, _OTHER),
+        blocked_obligations=(),
+    )
+    gate = closure_gate_from_readiness(
+        view, frontier_sequence="5", frontier_digest="d", observation_pending=False
+    )
+    assert gate is not None
+    assert "Remaining: some open obligation(s)" in gate.text

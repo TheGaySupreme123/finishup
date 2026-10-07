@@ -186,9 +186,9 @@ def test_only_an_acknowledgement_moves_a_receipt_blocking_finding_off_the_agent_
 def test_an_obligation_acknowledgement_never_clears_an_open_obligation() -> None:
     """PR #937 review F2: the obligation seam may name an item but never reads it as done.
 
-    No recorded obligation form feeds ``acknowledged_obligation_ids`` yet (#913 slice C), so the
-    derived facts keep it empty. Whatever eventually does must also close the obligation: an
-    acknowledgement alone leaves ``obligations_open`` agent-actionable.
+    #997 (slice C) clears ``obligations_open`` only when the derived facts also say no readable
+    or unreadable open obligation remains; a fact set that does not say (as here) leaves
+    ``obligations_open`` agent-actionable.
     """
 
     split = derive_closure_readiness(

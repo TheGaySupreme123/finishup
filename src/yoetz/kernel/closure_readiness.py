@@ -54,6 +54,7 @@ from yoetz.kernel.finding_todo import (
 )
 from yoetz.kernel.observed_failures import observed_event_ids_from_records
 from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS, PLAN_DRIFT_GAPS
+from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.reducers import invalidates_recorded_check
@@ -562,6 +563,10 @@ class ClosureReadinessFacts:
     # Issue #995: ``(obligation, kind, decision event id)`` for each recorded disclosure line
     # (``task_facts.disclosure_declarations``), in obligation then kind order. Standing only.
     disclosed_obligations: tuple[tuple[ObligationId, str, EventId], ...] = ()
+    # #997: an effective obligation whose payload is unreadable may be open; it keeps
+    # ``obligations_open`` actionable even when every readable one is acknowledged. A hand-built
+    # fact set that does not say defaults to unknown, which never clears the condition.
+    open_obligations_unreadable: bool = True
     # Issue #984 (D7a): acknowledged-not-done findings whose premise the reviewer disputes.
     premise_disputed_finding_ids: tuple[FindingId, ...] = ()
 
@@ -810,6 +815,16 @@ def premise_disputed_finding_ids(state: ProjectionState) -> tuple[FindingId, ...
     return tuple(sorted(disputed, key=str.encode))
 
 
+def _open_obligations_unreadable(state: ProjectionState) -> bool:
+    scope = current_plan_scope(state.plans, state.coverage_gaps)
+    refs = scope.effective_obligation_refs
+    if refs is None:
+        return True
+    return any(
+        (record := state.obligations.get(item)) is None or record.payload is None for item in refs
+    )
+
+
 def closure_readiness_facts(
     state: ProjectionState, records: tuple[LedgerRecord, ...]
 ) -> ClosureReadinessFacts:
@@ -844,7 +859,14 @@ def closure_readiness_facts(
     }
     # The receipt's applicability rule reads the same observation-limitation set (issue #911).
     limitations = observation_limitation_finding_ids(state, records)
-    open_obligations = open_effective_obligations(state)
+    # #997: an acknowledged obligation is never open work here, whichever counting regime the
+    # projection uses (L6 counts it among open obligations); it is listed once, as acknowledged.
+    acknowledged_obligations = _acknowledged_obligation_ids(state)
+    open_obligations = tuple(
+        item
+        for item in open_effective_obligations(state)
+        if item not in set(acknowledged_obligations)
+    )
     blocked = blocker_declarations(state, decision_batches(records))
     blocked_open = tuple(
         sorted({item for item in open_obligations if item in blocked}, key=str.encode)
@@ -855,7 +877,8 @@ def closure_readiness_facts(
         semantic_review_current=_semantic_review_current(records, limitations),
         receipt_blocking_finding_ids=tuple(sorted(blocking, key=str.encode)),
         acknowledged_finding_ids=tuple(sorted(acknowledged, key=str.encode)),
-        acknowledged_obligation_ids=_acknowledged_obligation_ids(state),
+        acknowledged_obligation_ids=acknowledged_obligations,
+        open_obligations_unreadable=_open_obligations_unreadable(state),
         open_obligation_ids=tuple(sorted(set(open_obligations), key=str.encode)),
         blocked_obligation_ids=blocked_open,
         blocked_obligation_details=tuple(
@@ -928,6 +951,16 @@ def derive_closure_readiness(
             settled = {*facts.acknowledged_finding_ids, *facts.self_verified_finding_ids}
             if blocking and blocking <= settled:
                 continue
+        if (
+            condition == "obligations_open"
+            and facts is not None
+            and not facts.open_obligation_ids
+            and facts.acknowledged_obligation_ids
+            and not facts.open_obligations_unreadable
+        ):
+            # #997: the only obligations the projection counts as open are acknowledged as not
+            # done (L6's counting regime). They are listed once, under acknowledged_not_done.
+            continue
         if (
             condition == "obligations_open"
             and facts is not None
