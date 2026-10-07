@@ -335,6 +335,12 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = (
         "verified row not_assessable and say so; never list it in missing_for_assessment and never "
         "conclude insufficient_packet because of it. Judge what the readable material shows about "
         "it (the code or script that produces it, recorded checks of it). "
+        # Issues #983 and #1004: the packet's two labels for such files.
+        "An excerpt that begins [Yoetz: an image or binary file ... exists and was not sent marks "
+        "such a file: it exists and is not assessable from the packet. An excerpt that begins "
+        "[Yoetz: agent-rendered text of <path> is the agent's own text rendering of that binary "
+        "file (for example pdftotext or a property dump): judge it as the agent's account of "
+        "the file, never as the file itself. "
         # L2 seam (TB4 tb4n1): Yoetz's egress placeholder for a credential-like value.
         "The exact token [withheld-by-yoetz:possible-credential] marks a value Yoetz withheld "
         "because it may be a credential; the rest of the line is the agent's real content. Never "

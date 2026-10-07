@@ -27,7 +27,6 @@ from builders.policy_cases import (
 from builders.privacy_policies import local_only_policy, minimal_external_policy
 from yoetz.application.missing_for_assessment import (
     review_missing_for_assessment,
-    semantic_round_exhausted,
     supplied_since,
     unsuppliable_missing_kinds,
 )
@@ -370,10 +369,10 @@ def test_material_for_another_target_never_answers_a_named_request() -> None:
     review = review_missing_for_assessment(
         case, (), _repeat("verification_output", str(act(1))), unsuppliable_kinds=frozenset()
     )
-    # Still named (never dropped as supplied), but an unanswered repeat is the one retry: it is
-    # Yoetz's limit now, not agent work (tb4n1 D1/D3, #983).
+    # Still named and still the agent's work: a run never recorded is owed (tb4n1 D1 review);
+    # the review round stops separately after one retry (kernel.review_round).
     assert [(item.kind, item.target_refs, item.availability) for item in review.items] == [
-        ("verification_output", (str(act(1)),), "yoetz_limit_repeated_request")
+        ("verification_output", (str(act(1)),), "agent_suppliable")
     ]
     assert "semantic_missing_already_supplied" not in review.gaps
     assert "semantic_missing_non_convergent" in review.gaps
@@ -1120,41 +1119,6 @@ def test_content_the_packet_named_but_could_not_carry_is_packet_room_not_agent_w
     assert [item.availability for item in shown.items] == ["agent_suppliable"]
 
 
-def test_a_repeated_unshowable_request_stops_the_review_round() -> None:
-    """tb4n1 D3 (retro-console-soc S, 12 of 13 closing reviews ``insufficient_packet``).
-
-    The first request for a clipped diff is a packet-room limit; the reviewer asking again for the
-    same target is the one retry, after which the task's checks skip the AI-powered review.
-    """
-
-    base = make_case(
-        evidence={evd(5): evidence_record(_diff(5, "rtl/top.sv"), 5)},
-        extra_refs=(evd(5),),
-    )
-    first = review_missing_for_assessment(
-        base,
-        (),
-        _first_request("current_diff_for_path", str(evd(5))),
-        unsuppliable_kinds=frozenset(),
-        change_clipped=True,
-    )
-    assert [item.availability for item in first.items] == ["yoetz_limit_packet_room"]
-    once = _pending(base, *first.items)
-    assert not semantic_round_exhausted(once.projection)
-    repeat = review_missing_for_assessment(
-        once,
-        (),
-        _first_request("current_diff_for_path", str(evd(5))),
-        unsuppliable_kinds=frozenset(),
-        change_clipped=True,
-    )
-    assert [item.availability for item in repeat.items] == ["yoetz_limit_repeated_request"]
-    assert semantic_round_exhausted(_pending(base, *repeat.items).projection)
-    # An item the agent can still supply never stops the round.
-    suppliable = MissingForAssessmentItem("verification_output", (str(evd(5)),), "agent_suppliable")
-    assert not semantic_round_exhausted(_pending(base, *repeat.items, suppliable).projection)
-
-
 def test_a_hook_observed_image_is_an_unsupported_data_type() -> None:
     """tb4n1 D6 + L3 P3-2: an observed image tool result is kept as a digest only, never sent."""
 
@@ -1178,3 +1142,40 @@ def test_a_hook_observed_image_is_an_unsupported_data_type() -> None:
         case, (), _first_request("other", str(evd(7))), unsuppliable_kinds=frozenset()
     )
     assert [item.availability for item in review.items] == ["yoetz_limit_unsupported_data_type"]
+
+
+def test_agent_rendered_text_of_a_binary_answers_a_request_for_it() -> None:
+    """PL5-2 (#1004): text output recorded with the binary's path as its reference supplies it.
+
+    The reviewer named the PDF deliverable; the agent then records ``pdftotext`` output whose
+    ``reference`` is that PDF's path. The request is counted as supplied and dropped, never
+    asked again.
+    """
+
+    rendering = EvidenceRecordedPayload(
+        evd(70),
+        EvidenceKind.COMMAND_OUTPUT,
+        EvidenceImmutability.METADATA_ONLY,
+        timestamp_from_string("2026-09-27T00:00:00.000Z"),
+        reference="out/invoice.pdf",
+        description="INVOICE 2026-0042\nTotal due: 1,240.00 EUR",
+    )
+    case = _pending(
+        make_case(
+            evidence={
+                evd(5): evidence_record(_diff(5, "out/invoice.pdf"), 5),
+                evd(70): evidence_record(rendering, 70),
+            },
+            extra_refs=(evd(5), evd(70)),
+        ),
+        MissingForAssessmentItem("other", (str(evd(5)),), "yoetz_limit_unsupported_data_type"),
+    )
+    pending = case.projection.pending_missing_for_assessment
+    assert pending is not None
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    assert supplied_since(case.projection, pending, allowed) == ((str(evd(70)),),)
+    dropped = review_missing_for_assessment(
+        case, (), _repeat("other", str(evd(5))), unsuppliable_kinds=frozenset()
+    )
+    assert dropped.items == ()
+    assert "semantic_missing_already_supplied" in dropped.gaps

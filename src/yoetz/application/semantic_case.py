@@ -22,7 +22,11 @@ from yoetz.application.check import (
     case_coverage,
     run_deterministic_policies,
 )
-from yoetz.application.missing_for_assessment import supplied_since
+from yoetz.application.missing_for_assessment import (
+    observed_image_evidence,
+    supplied_since,
+    unsupported_data_type,
+)
 from yoetz.domain.events import (
     MAX_PRIOR_FINDING_LISTED_REFS,
     ActionKind,
@@ -1817,6 +1821,8 @@ class _ExcerptCandidate:
     verification_action: str | None = None
     verification_run: str | None = None
     structural_only: bool = False
+    # An image or binary file the packet never carries, named by this row (issue #983).
+    binary_notice: bool = False
 
 
 # Offered (free slots, free bytes); returns the items and refs it admitted in that room.
@@ -1956,6 +1962,50 @@ def _verification_identities(
         for evidence_ref in payload.evidence_refs:
             by_evidence[str(evidence_ref)] = run
     return by_evidence, by_result
+
+
+# Image and binary files (TB4 tb4n1 D6, issues #983 and #1004). The packet is text: their bytes
+# and pixels never travel. A row that records one is carried as a notice that the file exists and
+# was not sent, and an agent's text rendering of one (``pdftotext``, a CAD property dump, ``file``
+# or ``identify`` output recorded with the file's path as its ``reference``) is labelled as the
+# agent's rendering, never as the file. Both labels are plain text inside the excerpt, so no new
+# wire field is needed; the newest notices are reserved room, bounded.
+_BINARY_NOTICE_MARKER: Final = (
+    "[Yoetz: an image or binary file{at} exists and was not sent (evidence {ref}); "
+    "its content is not assessable from this packet]\n"
+)
+_BINARY_RENDERING_MARKER: Final = (
+    "[Yoetz: agent-rendered text of {path} (evidence {ref}); the binary file itself is not sent]\n"
+)
+MAX_BINARY_NOTICES: Final = 16
+_MAX_MARKER_PATH_BYTES: Final = 256
+
+
+def _binary_file_label(
+    ref: str, payload: EvidenceRecordedPayload, *, captured: bool
+) -> tuple[str, bool] | None:
+    """The label for a row that records an image or binary file, and whether it is a notice.
+
+    A hook-observed image (L3 P3-2) and a row whose ``reference`` names such a file and records
+    the file itself (an artifact, or its bytes' digest) are notices: the file exists and was not
+    sent. A row that names such a file but carries text (captured output, or the agent's own
+    command output, test or other description) is the agent's rendering of it. The path is
+    compared lexically, never opened.
+    """
+
+    if observed_image_evidence(payload):
+        return _BINARY_NOTICE_MARKER.format(at="", ref=ref), True
+    reference = (payload.reference or "").strip()
+    if not reference or "://" in reference or not unsupported_data_type(reference):
+        return None
+    path = _encoded_prefix(" ".join(reference.split()), _MAX_MARKER_PATH_BYTES)
+    binding = payload.digest_binding
+    file_itself = payload.evidence_kind is EvidenceKind.ARTIFACT or (
+        binding is not None and binding.subject is EvidenceDigestSubject.ARTIFACT_BYTES
+    )
+    if captured or (not file_itself and payload.description):
+        return _BINARY_RENDERING_MARKER.format(path=path, ref=ref), False
+    return _BINARY_NOTICE_MARKER.format(at=f" at {path}", ref=ref), True
 
 
 def _evidence_candidates(
@@ -2105,13 +2155,21 @@ def _evidence_candidates(
                 ).decode("utf-8")
         else:
             text = payload.description or payload.reference
+        split_diff = captured_group is not None and excerpt_kind == "diff"
+        binary = (
+            None
+            if split_diff
+            else _binary_file_label(ref, payload, captured=captured_group is not None)
+        )
+        if binary is not None:
+            # The label leads the excerpt, so a head-and-tail clip always keeps it.
+            text = binary[0] + (text or "")
         if text is None or not text:
             omissions.append(
                 _omit(ref, DataCategory.EVIDENCE_EXCERPT, excerpt_kind, "not_recorded")
             )
             continue
         encoded = text.encode("utf-8")
-        split_diff = captured_group is not None and excerpt_kind == "diff"
         clipped = False
         if split_diff:
             # Split authenticated code, not freeform claim prose, into independently bounded
@@ -2197,6 +2255,7 @@ def _evidence_candidates(
                     and payload.strength is EvidenceImmutability.METADATA_ONLY
                     and payload.content_digest is None
                 ),
+                binary_notice=binary is not None and binary[1],
             )
         )
     return candidates
@@ -2437,6 +2496,16 @@ def _select_targeted_excerpts(
         if candidate.source_kind == "command" and candidate.source_ref in reserved_actions:
             reserved_runs.add(index)
 
+    # The newest notices that an image or binary file exists and was not sent are short and are
+    # what keeps a reviewer from asking for content no packet can carry (#983): reserved, bounded.
+    binary_notices = set(
+        sorted(
+            (index for index, candidate in enumerate(candidates) if candidate.binary_notice),
+            key=recency,
+            reverse=True,
+        )[:MAX_BINARY_NOTICES]
+    )
+
     def rank(index: int) -> tuple[int, int, int, int, bytes, bytes]:
         candidate = candidates[index]
         linked = bool(candidate.identity_refs & linked_subjects)
@@ -2444,7 +2513,7 @@ def _select_targeted_excerpts(
             klass = _RANK_CURRENT_DIFF
         elif index in reserved_runs:
             klass = _RANK_LATEST_VERIFICATION
-        elif candidate.identity_refs & repair_refs:
+        elif candidate.identity_refs & repair_refs or index in binary_notices:
             klass = _RANK_PRIOR_FINDING_CONTEXT
         elif index in superseded_by:
             klass = _RANK_OLDER_EDIT if candidate.edit_paths is not None else _RANK_SUPERSEDED

@@ -1384,6 +1384,35 @@ Yoetz's own limit, marked as such for the agent, never a blocker; the agent veri
   stash, delete, `git add` (including `-N`) or git-ignore its work to fit the reviewer. The diff
   answer rule names path evidence first, because plain `git diff` omits untracked files.
 
+### Image and binary files: acknowledged, never sent; agent renderings labelled (2026-10-07, tb4n1 D6, issues #983, #1004)
+
+TB4 run tb4n1 cad-model, medical-claims, freecad-platform and cumulative-layout looped on
+`insufficient_packet` for PNG, CAD and PDF deliverables the packet never carries. Decision (owner,
+2026-10-07): acknowledge that such a file exists, never send its bytes or pixels (an image channel
+stays deferred); and let the agent supply a text rendering of a binary deliverable (PL5-2, #1004).
+
+- **Notice row.** An evidence row that records an image or binary file is carried as an excerpt that
+  begins `[Yoetz: an image or binary file at <path> exists and was not sent (evidence <evd>); its
+  content is not assessable from this packet]`, followed by the row's recorded description. Such a
+  row is a hook-observed image (the L3 digest-only `artifact_bytes` row, `observation_captured`,
+  description `Observed image ...`; no path, so the notice cites only the evidence id) or a row whose
+  `reference` names a file of the unsupported types the missing-item classifier uses (matched
+  lexically, never opened) and that records the file itself (an `artifact`, or an `artifact_bytes`
+  digest, or no text). The newest 16 notices are reserved excerpt room beside finding repair
+  evidence; further ones compete as ordinary evidence. Captured edits and the check-time change are
+  unchanged: they carry text the tool wrote, and git already prints `Binary files ... differ`.
+- **Agent rendering.** A row whose `reference` names such a file but which carries text (the agent's
+  `command_output`, `test_result` or `other` description, or captured output) is labelled
+  `[Yoetz: agent-rendered text of <path> (evidence <evd>); the binary file itself is not sent]`.
+  The reviewer instruction explains both labels and says a rendering is the agent's account of
+  the file, never the file. A missing item that targets the binary's row is answered by such a
+  rendering under the existing path rule (new agent evidence whose `reference` is one of the
+  target's paths), so it counts as supplied.
+- **Wire.** No new field or enum value: both labels are excerpt text inside the existing
+  `evidence_excerpt` category, and the manifest discloses the rows through the existing
+  `caller_evidence` section (`source_refs`, `item_ids`). The path in a label is whitespace-folded
+  and bounded to 256 bytes; the egress scanner sees it like any excerpt text.
+
 ### Task statement apart from the agent plan (2026-09-30, issue #908)
 
 The reviewer was told to judge "the user's stated goal" but received only the agent's latest plan

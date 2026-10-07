@@ -7703,6 +7703,20 @@ review and disclose the standing gap `semantic_review_skipped_insufficient_packe
 on finding resolution exactly like the `semantic_packet_insufficient` they ride beside: a local
 issue is still proven absent, and a `fixed` ruling (#905) still resolves its own finding.
 
+Image and binary files in the packet (ADR-006, issues #983, #1004; no new wire field). No bytes or
+pixels of such a file ever leave the machine. An evidence row that records one (a hook-observed
+image, or a row whose `reference` names an unsupported file type and records the file itself) is
+carried as an `evidence_excerpt` that begins `[Yoetz: an image or binary file at <path> exists and
+was not sent (evidence <evd>); its content is not assessable from this packet]` (an observed image
+has no path and cites only its evidence id). The newest 16 (`MAX_BINARY_NOTICES` in
+`application.semantic_case`) are reserved excerpt room. A row whose `reference` names such a file
+and which carries text (`command_output`, `test_result`, `other` or captured output) is labelled
+`[Yoetz: agent-rendered text of <path> (evidence <evd>); the binary file itself is not sent]`. Both
+appear in the manifest's `caller_evidence` section. The predicates are
+`application.missing_for_assessment.unsupported_data_type(name)` and
+`observed_image_evidence(payload)`. A rendering recorded after a missing-item request for the
+binary's row answers it under the path rule above.
+
 The unreleased `check_recorded` 1.3.0 is extended in place with the optional
 `missing_for_assessment` (kind, target refs, availability; no reviewer prose; 1–8 items, only beside
 `insufficient_packet`), present only when at least one item survives, beside issue #905's optional

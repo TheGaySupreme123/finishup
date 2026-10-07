@@ -379,3 +379,11 @@ def test_a_re_raise_names_the_finding_it_restates() -> None:
 
     assert "set its restates to that finding_ref, whatever the agent answered" in _TEXT
     assert "restates" in CHALLENGE_FIELD_GLOSSARY
+
+
+def test_the_reviewer_reads_the_binary_notice_and_rendering_labels() -> None:
+    """Issues #983 and #1004: the packet's labels for image and binary files are explained."""
+
+    assert "[Yoetz: an image or binary file ... exists and was not sent marks" in _TEXT
+    assert "[Yoetz: agent-rendered text of <path> is the agent's own text rendering" in _TEXT
+    assert "never as the file itself" in _TEXT
