@@ -3939,7 +3939,10 @@ closed pair `routine | final` (`yoetz.ports.semantic_budget`).
 `select_semantic_budget_profile(projection, *, final_review=False)` returns `final` when the frozen
 projection holds an effective, readable `completion` claim or the check request carries
 `final_review: true` (the closing review, issue #976), and `routine` otherwise. The review input
-manifest records the selected phase as the optional `review_phase`. The selected value is frozen as
+manifest records the selected phase as the optional `review_phase`, and beside its capped
+`omitted_item_count` (listed rows, at most 64) the optional `omitted_item_total`
+(`MAX_REVIEW_OMISSION_TOTAL`, 1,048,576): every distinct omission before the cap, never fewer than
+the rows listed. The selected value is frozen as
 `execution.budget_profile` in the `yoetz.semantic-case/2` snapshot. An absent key reads as
 `final`, and any other value is `semantic_execution_invalid`. It is exposed to the provider
 factory only for the duration of one physical dispatch, and dispatches outside a check see

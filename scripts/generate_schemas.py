@@ -5139,6 +5139,9 @@ def _add_review_input_manifest_to_outbound_case(document: dict[str, JsonValue]) 
                 "type": "array",
             },
             "omitted_item_count": {"maximum": 64, "minimum": 0, "type": "integer"},
+            # Issue #976 (tb4n1 D11), optional in place: every distinct omission before the
+            # listed rows were capped, so the count no longer saturates at 64.
+            "omitted_item_total": {"maximum": 1048576, "minimum": 0, "type": "integer"},
             "phase": {"enum": ["composed", "provider_bound"], "type": "string"},
             # Issue #976, optional in place: the review phase the packet's question set named.
             "review_phase": {"enum": ["routine", "final"], "type": "string"},

@@ -78,6 +78,7 @@ __all__ = [
     "MAX_REVIEW_CHANGE_OBSERVATIONS",
     "MAX_REVIEW_EXCERPTS",
     "MAX_REVIEW_OMISSIONS",
+    "MAX_REVIEW_OMISSION_TOTAL",
     "MAX_REVIEW_TEXT_BYTES",
     "MAX_TASK_STATEMENT_BYTES",
     "MAX_REVIEW_TIMELINE_ITEMS",
@@ -227,6 +228,9 @@ MAX_REVIEW_CHANGE_OBSERVATIONS: Final = 32
 # (issue #907 Phase 1b).
 MAX_REVIEW_EXCERPTS: Final = 64
 MAX_REVIEW_OMISSIONS: Final = 64
+# The true count of distinct omissions behind a review input manifest's capped listed count
+# (issue #976): far above anything a bounded ledger case produces, so it never saturates.
+MAX_REVIEW_OMISSION_TOTAL: Final = 1_048_576
 MAX_REVIEW_CHALLENGES: Final = 3
 # JSON Schema ``maxLength`` counts Unicode code points, while the durable AI-powered review contract
 # bounds review prose by UTF-8 bytes. Four bytes is the largest UTF-8 encoding of one valid
@@ -3238,7 +3242,7 @@ class ReviewInputMissingModel(_ClosedModel):
 
 
 class ReviewInputManifestModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"review_phase"})
+    optional_non_null_fields = frozenset({"review_phase", "omitted_item_total"})
 
     schema_: Literal["yoetz.review-input-manifest/1"] = Field(alias="schema")
     specification: ReviewInputSectionModel
@@ -3250,7 +3254,10 @@ class ReviewInputManifestModel(_ClosedModel):
     missing_inputs: tuple[ReviewInputMissingModel, ...] = Field(max_length=8)
     selected_item_count: int = Field(ge=0, le=304)
     selected_excerpt_bytes: int = Field(ge=0, le=MAX_SEMANTIC_CASE_BYTES)
+    # Omission rows the manifest's packet lists, capped at MAX_REVIEW_OMISSIONS.
     omitted_item_count: int = Field(ge=0, le=MAX_REVIEW_OMISSIONS)
+    # Issue #976 (tb4n1 D11), optional in place: every distinct omission before that cap.
+    omitted_item_total: int | None = Field(default=None, ge=0, le=MAX_REVIEW_OMISSION_TOTAL)
     # Issue #976: the review phase the packet's question set named (closing review = final).
     review_phase: Literal["routine", "final"] | None = None
 
@@ -5316,6 +5323,7 @@ _REVIEW_INPUT_MANIFEST_LEAVES: Final = (
     "missing_inputs/*/supplied_refs/*",
     "missing_inputs/*/target_refs/*",
     "omitted_item_count",
+    "omitted_item_total",
     "phase",
     "prior_finding_context/content_bytes",
     "prior_finding_context/content_digest",
@@ -6521,7 +6529,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1415:
+    if len(result) != 1417:
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

@@ -1475,6 +1475,12 @@ claiming completion was never judged for completeness. Decisions:
 - **Recorded phase.** The review input manifest carries the optional `review_phase`
   (`routine`/`final`) on the composed and provider-bound manifests, check results, `check_recorded`
   and status. Older manifests omit it.
+- **True omission total.** `omitted_item_count` is the number of omission rows the packet lists,
+  capped at 64, so it saturated on most real checks. The manifest also carries the optional
+  `omitted_item_total` (at most 1,048,576), every distinct omission before that cap; the
+  provider-bound manifest adds the rows egress withheld beyond the composed listing. Check, status
+  and receipt renderings show `omitted items <total> (<count> listed)` when the two differ. Older
+  manifests omit it and render their listed count.
 - **Closure integration.** Closure readiness (ADR-032) lists the agent-actionable
   `closing_review_required` while AI-powered review is required on the route or has completed on the
   task, and no check since the last material change is a completed final-phase review. A review

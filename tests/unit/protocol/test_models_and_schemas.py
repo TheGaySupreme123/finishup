@@ -309,7 +309,7 @@ _STATUS_PAGE_DEF_BY_VIEW_FOR_TEST: tuple[tuple[str, str], ...] = (
     ("versions", "versions_page"),
 )
 _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
-    ("check", None): 364,
+    ("check", None): 365,
     ("publish_work", None): 57,
     ("receipt", None): 276,
     ("respond", None): 53,
@@ -321,7 +321,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("status", "compact"): 57,
     ("status", "evidence"): 19,
     ("status", "findings"): 125,
-    ("status", "history"): 62,
+    ("status", "history"): 63,
     ("status", "lineage"): 16,
     ("status", "obligations"): 33,
     ("status", "operation"): 44,
@@ -1274,7 +1274,8 @@ def test_protocol_models_public_exports_are_closed() -> None:
         MAX_PROJECTION_POINTER_BYTES MAX_REASON_BYTES MAX_SEMANTIC_ITEM_BYTES
         MAX_SEMANTIC_CASE_BYTES MAX_REVIEW_TEXT_BYTES MAX_REVIEW_TIMELINE_ITEMS
         MAX_REVIEW_ASSESSMENTS MAX_REVIEW_CHANGE_OBSERVATIONS MAX_REVIEW_EXCERPTS
-        MAX_REVIEW_OMISSIONS MAX_REVIEW_CHALLENGES MAX_TASK_STATEMENT_BYTES PROTOCOL_VERSION
+        MAX_REVIEW_OMISSIONS MAX_REVIEW_OMISSION_TOTAL MAX_REVIEW_CHALLENGES
+        MAX_TASK_STATEMENT_BYTES PROTOCOL_VERSION
         ActorAssertionModel
         ActorType CheckRequest CheckRequestModel CheckResult CheckResultModel CheckScopeModel
         ClientInfoModel ClientKind CoverageModel DataCategory FrontierModel IntegrationKind
@@ -2483,7 +2484,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     rules = cast(tuple[Any, ...], getattr(models, "_RESULT_LEAF_RULES"))
 
     derived_patterns = _derived_result_success_patterns(catalog)
-    assert len(derived_patterns) == 1388
+    assert len(derived_patterns) == 1390
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2492,7 +2493,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert derived_counts == _EXPECTED_RESULT_PATTERN_COUNTS
 
     assert type(rules) is tuple
-    assert len(rules) == 1415
+    assert len(rules) == 1417
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {
@@ -2501,7 +2502,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1388
+    assert len(registry_patterns) == 1390
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)

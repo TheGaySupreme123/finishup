@@ -3143,7 +3143,7 @@ def _review_input_manifest_from_json(value: JsonValue | None) -> JsonObject | No
                 "omitted_item_count",
             }
         ),
-        optional=frozenset({"review_phase"}),
+        optional=frozenset({"review_phase", "omitted_item_total"}),
     )
     if _field(source, "schema") != "yoetz.review-input-manifest/1":
         raise ProtocolValueError("invalid_event_value_type")
@@ -3196,6 +3196,11 @@ def _review_input_manifest_from_json(value: JsonValue | None) -> JsonObject | No
     for field_name in ("selected_item_count", "selected_excerpt_bytes", "omitted_item_count"):
         value_int = _field(source, field_name)
         if type(value_int) is not int or value_int < 0:
+            raise ProtocolValueError("invalid_event_value_type")
+    if "omitted_item_total" in source:
+        # Issue #976: the true omission total beside the capped listed count.
+        total = source["omitted_item_total"]
+        if type(total) is not int or not cast(int, _field(source, "omitted_item_count")) <= total:
             raise ProtocolValueError("invalid_event_value_type")
     missing = _array(_field(source, "missing_inputs"))
     if len(missing) > 8:

@@ -52,6 +52,7 @@ from yoetz.protocol.models import (
     MAX_REVIEW_CHALLENGES,
     MAX_REVIEW_CHANGE_OBSERVATIONS,
     MAX_REVIEW_EXCERPTS,
+    MAX_REVIEW_OMISSION_TOTAL,
     MAX_REVIEW_OMISSIONS,
     MAX_REVIEW_TEXT_BYTES,
     MAX_REVIEW_TIMELINE_ITEMS,
@@ -1117,9 +1118,13 @@ class ReviewInputManifest:
     missing_inputs: tuple[ReviewInputMissing, ...] = ()
     selected_item_count: int = 0
     selected_excerpt_bytes: int = 0
+    # The omission rows the packet lists, capped at ``MAX_REVIEW_OMISSIONS``.
     omitted_item_count: int = 0
     # Issue #976: the review phase the packet's question set named; ``None`` on older manifests.
     review_phase: Literal["routine", "final"] | None = None
+    # Every distinct omission before that cap (issue #976, tb4n1 D11); ``None`` on older
+    # manifests, which reported only the capped count.
+    omitted_item_total: int | None = None
 
     def __post_init__(self) -> None:
         if self.schema != "yoetz.review-input-manifest/1":
@@ -1164,6 +1169,11 @@ class ReviewInputManifest:
         if (
             type(self.omitted_item_count) is not int
             or not 0 <= self.omitted_item_count <= MAX_REVIEW_OMISSIONS
+        ):
+            raise _invalid_case()
+        if self.omitted_item_total is not None and (
+            type(self.omitted_item_total) is not int
+            or not self.omitted_item_count <= self.omitted_item_total <= MAX_REVIEW_OMISSION_TOTAL
         ):
             raise _invalid_case()
 

@@ -143,6 +143,7 @@ from yoetz.protocol.canonical import (
 )
 from yoetz.protocol.coverage import LedgerFreshness, coverage_to_json
 from yoetz.protocol.models import (
+    MAX_REVIEW_OMISSION_TOTAL,
     MAX_REVIEW_OMISSIONS,
     MAX_REVIEW_TEXT_BYTES,
     MAX_REVIEW_TIMELINE_ITEMS,
@@ -3982,8 +3983,11 @@ def _build_semantic_case_once(
         )
     )
     changes.sort(key=lambda item: tuple(ref.encode("ascii") for ref in item.subject_refs))
+    # Every distinct omission, before the listed rows are capped: the manifest reports this true
+    # total beside the capped listed count, which otherwise saturates (issue #976, tb4n1 D11).
+    omission_universe = set(omissions)
     omissions = sorted(
-        set(omissions),
+        omission_universe,
         key=lambda item: (
             item.subject_ref.encode("ascii"),
             item.category.value.encode("ascii"),
@@ -4038,6 +4042,7 @@ def _build_semantic_case_once(
             if item.item_id == f"prior-finding-{item.source_ref}"
         ]
         if prior_omissions:
+            omission_universe.update(prior_omissions)
             omissions = sorted(
                 set([*omissions, *prior_omissions]),
                 key=lambda item: (
@@ -4182,6 +4187,7 @@ def _build_semantic_case_once(
         sections=sections,
         items=items,
         omissions=omissions,
+        omitted_item_total=len(omission_universe),
         task_statement_ids=task_statement_ids,
         task_statement_gaps=task_statement_gaps,
         recorded_statement=recorded_statement,
@@ -4559,6 +4565,11 @@ def review_input_manifest_to_json(manifest: ReviewInputManifest) -> dict[str, Js
             for item in manifest.missing_inputs
         ],
         "omitted_item_count": manifest.omitted_item_count,
+        **(
+            {}
+            if manifest.omitted_item_total is None
+            else {"omitted_item_total": manifest.omitted_item_total}
+        ),
         "phase": manifest.phase,
         "prior_finding_context": _review_input_section_to_json(manifest.prior_finding_context),
         **({} if manifest.review_phase is None else {"review_phase": manifest.review_phase}),
@@ -4660,6 +4671,7 @@ def review_input_manifest(
     task_statement_gaps: frozenset[str] | set[str],
     recorded_statement: object | None,
     pending_missing: object | None,
+    omitted_item_total: int | None = None,
     supplied_missing: Sequence[Sequence[str]] = (),
     prior_finding_refs: Sequence[str] = (),
     check_time_change_selected: bool = False,
@@ -4672,7 +4684,8 @@ def review_input_manifest(
     This is a structural view of the case after selection. It intentionally receives already
     selected ``SemanticCaseItem`` values and omission rows, never a provider body or a live
     workspace. The statement's digest/length/revision are included even though its prose remains
-    in the separately authorized task-statement item.
+    in the separately authorized task-statement item. ``omitted_item_total`` is every distinct
+    omission before the listed rows were capped (never fewer than the rows listed).
     """
 
     typed_statement = recorded_statement
@@ -4940,6 +4953,12 @@ def review_input_manifest(
         MAX_REVIEW_OMISSIONS,
         len(omissions),
     )
+    omitted_total = min(
+        MAX_REVIEW_OMISSION_TOTAL,
+        max(
+            omitted_item_count, len(omissions) if omitted_item_total is None else omitted_item_total
+        ),
+    )
     return ReviewInputManifest(
         schema="yoetz.review-input-manifest/1",
         specification=statement,
@@ -4951,6 +4970,7 @@ def review_input_manifest(
         selected_item_count=len(items),
         selected_excerpt_bytes=sum(item.content_bytes for item in excerpt_items),
         omitted_item_count=omitted_item_count,
+        omitted_item_total=omitted_total,
         review_phase=review_phase,
     )
 
@@ -5558,6 +5578,18 @@ def _provider_bound_input_manifest(
     projected["selected_item_count"] = len(content_rows)
     projected["selected_excerpt_bytes"] = total_excerpt_bytes
     projected["omitted_item_count"] = min(MAX_REVIEW_OMISSIONS, len(omission_rows))
+    composed_listed = composed.get("omitted_item_count")
+    composed_total = composed.get("omitted_item_total")
+    if type(composed_total) is int and type(composed_listed) is int:
+        # The composed total, plus every row egress added beyond the rows the composed case
+        # listed (content withheld or trimmed after composition); never below the rows listed.
+        projected["omitted_item_total"] = min(
+            MAX_REVIEW_OMISSION_TOTAL,
+            max(
+                len(omission_rows),
+                composed_total + max(0, len(omission_rows) - composed_listed),
+            ),
+        )
     admitted_refs = {
         cast(str, row["source_ref"]) for row in content_rows if type(row.get("source_ref")) is str
     }
@@ -5646,7 +5678,7 @@ def _decode_review_input_manifest(
     body = cast(Mapping[str, object], raw)
     if (
         any(type(key) is not str for key in body)
-        or frozenset(body) - {"review_phase"} != _REVIEW_INPUT_MANIFEST_KEYS
+        or frozenset(body) - {"review_phase", "omitted_item_total"} != _REVIEW_INPUT_MANIFEST_KEYS
         or body.get("review_phase", "routine") not in {"routine", "final"}
     ):
         return None
@@ -5749,10 +5781,12 @@ def _decode_review_input_manifest(
     selected_item_count = body.get("selected_item_count")
     selected_excerpt_bytes = body.get("selected_excerpt_bytes")
     omitted_item_count = body.get("omitted_item_count")
+    omitted_item_total = body.get("omitted_item_total")
     if (
         type(selected_item_count) is not int
         or type(selected_excerpt_bytes) is not int
         or type(omitted_item_count) is not int
+        or (omitted_item_total is not None and type(omitted_item_total) is not int)
     ):
         return None
     try:
@@ -5768,6 +5802,7 @@ def _decode_review_input_manifest(
             selected_item_count=selected_item_count,
             selected_excerpt_bytes=selected_excerpt_bytes,
             omitted_item_count=omitted_item_count,
+            omitted_item_total=omitted_item_total,
             review_phase=cast(Literal["routine", "final"] | None, body.get("review_phase")),
         )
     except KeyError, TypeError, ValueError:
