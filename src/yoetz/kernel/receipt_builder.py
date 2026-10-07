@@ -103,7 +103,10 @@ from yoetz.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     CaseGap,
 )
-from yoetz.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
+from yoetz.kernel.deterministic_scope import (
+    CLEAN_COMPATIBLE_GAPS,
+    HOST_OBSERVATION_GUARDED_GAPS,
+)
 from yoetz.kernel.finding_resolution import (
     finding_resolution_explanation,
     issue_key,
@@ -945,6 +948,10 @@ def _conclusion(
         or (execution.outcome == "skipped" and execution.reason == "not_applicable")
         for execution in check.policy_executions
     )
+    # A host-observation gap is advisory only when the applicable check itself carried it: that
+    # check reached its clean verdict only after its command counters showed no unknown or live
+    # failed outcome. One that arrived after the check was never so guarded (#986).
+    advisory_gaps = advisory_gaps - (HOST_OBSERVATION_GUARDED_GAPS - set(check.coverage.known_gaps))
     if (
         not executions_complete
         or any(gap.code not in advisory_gaps for gap in context.gaps)

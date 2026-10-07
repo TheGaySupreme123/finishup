@@ -49,7 +49,6 @@ from yoetz.domain.receipts import (
     OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     PREEXISTING_TEST_BASELINE_UNKNOWN_GAP,
-    PREEXISTING_TEST_INFORMATIONAL_GAPS,
     SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
     SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
     SEMANTIC_CHALLENGES_REJECTED_GAP,
@@ -106,7 +105,12 @@ from yoetz.kernel.deterministic_checks import (
     finding_basis_to_json,
     render_deterministic_finding_text,
 )
-from yoetz.kernel.deterministic_scope import deterministic_scope_is_clean
+from yoetz.kernel.deterministic_scope import (
+    CLEAN_COMPATIBLE_GAPS,
+    HOST_OBSERVATION_GUARDED_GAPS,
+    commands_complete,
+    deterministic_scope_is_clean,
+)
 from yoetz.kernel.finding_resolution import (
     SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
     SEMANTIC_REFERENCE_SCOPE_REDUCED_GAP,
@@ -125,7 +129,6 @@ from yoetz.kernel.observed_failures import (
     observed_event_ids_from_coverage,
     observed_failure_states,
 )
-from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.policies.research_evidence import research_evidence_findings
 from yoetz.kernel.policies.response_support import (
@@ -137,7 +140,6 @@ from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.task_facts import (
-    STANDING_TASK_FACT_GAPS,
     confirmed_blocked_obligation_ids,
     requested_output_facts,
 )
@@ -3331,6 +3333,19 @@ def _sorted_verdicts(
     return tuple(admitted[key] for key in sorted(admitted, key=str.encode))
 
 
+def full_check_gaps_clean(known_gaps: Iterable[str], totals: Mapping[str, object]) -> bool:
+    """Whether a full check's gaps allow ``complete`` (#986): the one clean-compatible list.
+
+    The same list bounds the receipt and the scoped deterministic verdict. A host-observation
+    member counts only when the case's command counters show no unknown or live failed outcome.
+    """
+
+    extra = set(known_gaps) - CLEAN_COMPATIBLE_GAPS
+    if extra:
+        return False
+    return not (set(known_gaps) & HOST_OBSERVATION_GUARDED_GAPS) or commands_complete(totals)
+
+
 def _request_digest(
     request: CheckRequest,
     scope: CheckScope,
@@ -4170,11 +4185,14 @@ async def execute_check_commit(
         elif scoped_local_clean:
             completeness = CheckCompleteness.SCOPED_COMPLETE
         elif (
-            set(coverage.known_gaps)
-            - PLAN_DRIFT_ADVISORY_GAPS
-            - PREEXISTING_TEST_INFORMATIONAL_GAPS
-            - STANDING_TASK_FACT_GAPS
-        ) or semantic_failed:
+            not full_check_gaps_clean(
+                coverage.known_gaps,
+                build_check_totals(
+                    frozen.case, candidate_findings, test_edits=deterministic_test_edit_facts
+                ),
+            )
+            or semantic_failed
+        ):
             completeness = CheckCompleteness.COVERAGE_INCOMPLETE
         else:
             completeness = CheckCompleteness.COMPLETE

@@ -29,6 +29,8 @@ from yoetz.protocol.coverage import Coverage
 __all__ = [
     "CLEAN_COMPATIBLE_GAPS",
     "DETERMINISTIC_SCOPED_STANDING_GAPS",
+    "HOST_OBSERVATION_GUARDED_GAPS",
+    "commands_complete",
     "deterministic_scope_is_clean",
 ]
 
@@ -78,6 +80,21 @@ def _counter(totals: Mapping[str, object], group: str, key: str) -> int | None:
     if type(value) is not str or not value.isascii() or not value.isdecimal():
         return None
     return int(value)
+
+
+# Host-observation members of the list are clean-compatible only where the check that carried
+# them also proved, from its frozen-case counters, that no observed command has an unknown or live
+# failed outcome (``commands_complete``). A receipt therefore treats them as advisory only when
+# the applicable check's own coverage already carried them (#986).
+HOST_OBSERVATION_GUARDED_GAPS: Final = CLEAN_COMPATIBLE_GAPS & frozenset(
+    {"captured_object_unavailable", "host_outcome_unavailable", "unpaired_event"}
+)
+
+
+def commands_complete(totals: Mapping[str, object]) -> bool:
+    """True when the case's command counters show no unknown and no live failed outcome."""
+
+    return all(_counter(totals, "commands", key) == 0 for key in ("unknown", "live_failed"))
 
 
 def deterministic_scope_is_clean(

@@ -1932,6 +1932,46 @@ def test_single_agent_deterministic_run_with_standing_host_gaps_reaches_a_clean_
     }
 
 
+def test_a_host_gap_the_applicable_check_never_carried_still_bounds_the_receipt() -> None:
+    """#986: a host-observation gap is advisory only where the check's counters guarded it."""
+
+    gaps = ("host_outcome_unavailable",)
+    receipt_coverage = _coverage(gaps=gaps)
+    unguarded = _build(
+        _context(
+            coverage=receipt_coverage,
+            gaps=(CaseGap(gaps[0], gaps[0], ()),),
+            check=_single_agent_check(_coverage()),
+        )
+    )
+    assert unguarded.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    guarded = _build(
+        _context(
+            coverage=receipt_coverage,
+            gaps=(CaseGap(gaps[0], gaps[0], ()),),
+            check=_single_agent_check(receipt_coverage),
+        )
+    )
+    assert guarded.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+
+
+def test_full_check_completeness_reads_the_same_clean_list() -> None:
+    """#986: a policy- or semantic-route check is ``complete`` under the same list, and a
+    host-observation gap counts only when the command counters show no unknown outcome."""
+
+    from yoetz.application.check import full_check_gaps_clean
+    from yoetz.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
+
+    clean = {"commands": {"unknown": "0", "live_failed": "0"}}
+    unknown = {"commands": {"unknown": "1", "live_failed": "0"}}
+    assert full_check_gaps_clean(("unpaired_event", "plan_unrefined_before_first_edit"), clean)
+    assert not full_check_gaps_clean(("host_outcome_unavailable",), unknown)
+    assert full_check_gaps_clean(("content_unselected",), unknown)
+    assert not full_check_gaps_clean(("observation_input_loss",), clean)
+    assert not full_check_gaps_clean(("semantic_review_not_requested",), clean)
+    assert all(full_check_gaps_clean((code,), clean) for code in sorted(CLEAN_COMPATIBLE_GAPS))
+
+
 @pytest.mark.parametrize("reason", ("scope_excluded", "material_unavailable"))
 def test_a_pack_that_left_roots_unexamined_keeps_the_receipt_bounded(reason: str) -> None:
     """``not_applicable`` means nothing to judge; a scoped or unreadable pack is real loss."""
