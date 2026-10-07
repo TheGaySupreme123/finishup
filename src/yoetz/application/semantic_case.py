@@ -81,6 +81,7 @@ from yoetz.domain.task_statement import (
     TaskStatementSource,
 )
 from yoetz.domain.values import (
+    EventId,
     JsonObject,
     SubjectStateRelation,
     freeze_json,
@@ -178,6 +179,7 @@ __all__ = [
     "assemble_filtered_review_packet",
     "build_semantic_case",
     "recorded_blockers",
+    "BLOCKER_REVIEW_INSTRUCTION",
     "review_question_set",
     "captured_edit_paths",
     "review_selection_digest",
@@ -266,6 +268,8 @@ _REVIEW_QUESTIONS: Final = (
 )
 
 
+# The review lists claimed and confirmed blockers alike, so it never needs the publish batches.
+_NO_BATCHES: Final[Mapping[EventId, str]] = MappingProxyType({})
 # A closing review names at most this many recorded blockers in its blocker question.
 MAX_REVIEWED_BLOCKERS: Final = 16
 
@@ -273,14 +277,17 @@ MAX_REVIEWED_BLOCKERS: Final = 16
 def recorded_blockers(projection: ProjectionState) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
     """``(decision event id, kind, open obligation ids)`` for each recorded blocker (#976, #977).
 
-    Only open effective obligations count, as in closure readiness. Ids and the closed kind only:
-    the decision's statement and rationale reach the reviewer through its privacy-gated decision
-    item, never through this summary.
+    Only open effective obligations count, as in closure readiness; a blocker the agent only
+    claimed is listed as well as a confirmed one (#985), because the closing review is where a
+    claim is tested. A blocker naming only finished obligations has no effect and is not asked
+    about (its publish result already told the agent so). Ids and the closed kind only: the
+    decision's statement and rationale, and the obligation's own text, reach the reviewer through
+    their privacy-gated packet items, never through this summary.
     """
 
     open_obligations = set(open_effective_obligations(projection))
     grouped: dict[str, tuple[str, set[str]]] = {}
-    for obligation, declaration in blocker_declarations(projection).items():
+    for obligation, declaration in blocker_declarations(projection, _NO_BATCHES).items():
         if obligation not in open_obligations:
             continue
         row = grouped.setdefault(str(declaration.decision_event_id), (declaration.kind, set()))
@@ -296,7 +303,29 @@ def recorded_blockers(projection: ProjectionState) -> tuple[tuple[str, str, tupl
 # Obligations named per blocker decision, and the byte bound of the listing itself, so the
 # question stays far below ``MAX_REVIEW_TEXT_BYTES`` however many obligations a decision names.
 _MAX_BLOCKER_OBLIGATIONS_LISTED: Final = 8
-_MAX_BLOCKER_LISTING_BYTES: Final = 2_048
+_MAX_BLOCKER_LISTING_BYTES: Final = 1_536
+# Issue #978 (tb4v2/tb4n1 pretrain-shard-corruption): the reviewer accepted a
+# ``dependency_unavailable`` blocker on the task's main deliverable although the statement said
+# "The final state should recover the intended training examples". The question therefore makes
+# the reviewer read the blocked obligation's own text first and lists the cases in which a
+# challenge is required, not optional. The obligation text itself stays in its privacy-gated
+# packet item (``obligation-<id>``); this fixed text never carries agent or user content.
+BLOCKER_REVIEW_INSTRUCTION: Final = (
+    "For each blocker, first quote the blocked obligation's own description and evidence"
+    " expectation from its packet item obligation-<obligation id> (say so if the packet does not"
+    " carry it),"
+    " then verify the blocker once against the task statement and the work. You must challenge it"
+    " (one finding citing whichever of its decision and obligation ids citable_refs lists, naming"
+    " the work the agent can still do) when any of these holds: the blocked obligation is the"
+    " task's main deliverable; the task statement says the outcome is achievable or the data"
+    " recoverable (for example that the final state should recover the intended data); the"
+    " readable material contradicts it (the dependency is present, the authority was granted);"
+    " the agent has not attempted the obvious prerequisite (inspecting the inputs it has, deriving"
+    " or reconstructing what is missing); or it names something Yoetz or this review could not"
+    " show or prove, which is never a blocker. Only a genuine blocker outside the agent's control"
+    " (authority, consent, a credential, a dependency it cannot obtain) that none of these"
+    " contradicts stands as a disclosed limitation: do not challenge that one."
+)
 
 
 def _blocker_question(blockers: tuple[tuple[str, str, tuple[str, ...]], ...]) -> str:
@@ -316,12 +345,8 @@ def _blocker_question(blockers: tuple[tuple[str, str, tuple[str, ...]], ...]) ->
     return (
         f"Recorded blockers: {'; '.join(rows)}"
         + (f" (+{more} more blocker decisions)" if more > 0 else "")
-        + ". Verify each blocker once against the task statement and the work. When the task "
-        "statement or the readable material contradicts it (the task says the data is "
-        "recoverable, the dependency is present, the authority was granted), challenge it once, "
-        "citing whichever of its decision and obligation ids citable_refs lists, and name the "
-        "work the agent can still do. Otherwise it stands as a disclosed limitation outside the "
-        "agent's control: do not challenge it."
+        + ". "
+        + BLOCKER_REVIEW_INSTRUCTION
     )
 
 
@@ -3267,7 +3292,8 @@ def _build_semantic_case_once(
     # Recorded blockers go first so the decision cap never drops one the closing review must
     # verify (#976, #977).
     blocker_decision_refs = {
-        str(item.decision_event_id) for item in blocker_declarations(projection).values()
+        str(item.decision_event_id)
+        for item in blocker_declarations(projection, _NO_BATCHES).values()
     }
     for event_id, record in sorted(
         projection.decisions.items(),
