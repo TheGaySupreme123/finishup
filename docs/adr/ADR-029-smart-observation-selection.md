@@ -213,7 +213,13 @@ The detail also records the closed refusal cause: `queue_count`, `queue_bytes`,
 loss-range shape in observe status is unchanged. The cause is surfaced through the hook notice
 (`...; see observe status; cause=<cause>`) and the closed `admission_loss_<cause>` hook-diagnostic
 reason in `hook_diagnostics.reasons`, recorded at the same once-a-minute cadence as
-`outbox_overflow`.
+`outbox_overflow`. The lane's causes also travel with its pending loss report, so the
+service-authored lane marker evidence (task `status view=evidence`) ends its fixed description
+with `Refusal cause: <codes>.`, and a receipt whose coverage carries `observation_input_loss` adds
+`Recorded refusal cause: <codes>.`, read only from `hook_observed` marker evidence and only as
+closed tokens. The marker's lane and operation identities are unchanged. Bounding the loss's
+proof effect on findings (the lane marker still folds `observation_input_loss` into every later
+check) is follow-up #1014.
 
 The tb4n1 startup refusals had a concrete source. A capture reservation is created unconfirmed and
 confirmed only after its staging ticket commits outside the store lock. Admission pressure treated
