@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gc
+import json
 from collections.abc import Buffer, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -102,6 +104,7 @@ from yoetz.service.control_protocol import (
 )
 from yoetz.service.daemon import ServiceComposition, ServiceDaemon
 from yoetz.service.lifecycle import LifecycleError, ServiceLifecycle
+from yoetz.service.session_routes import SessionRouteMemory
 from yoetz.service.vault import VaultMode, VaultService
 
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000001"
@@ -642,48 +645,110 @@ def _route_call(
     )
 
 
-def test_route_less_status_reads_the_route_the_sessions_bridge_serves() -> None:
+def _route_daemon(path: Path | None) -> Any:
+    return SimpleNamespace(_session_routes=SessionRouteMemory(path))
+
+
+def test_route_less_status_reads_the_route_the_sessions_bridge_serves(tmp_path: Path) -> None:
     """tb4n1 C8 (#985): the Stop gate and the CLI read the agent's MCP route, not policy.
 
     37 of 37 deterministic-arm exports listed ``semantic_review_not_requested`` as work while
     the agent's strict MCP view never did, because route-less reads used the policy route.
     """
 
-    daemon = cast(Any, SimpleNamespace(_session_routes={}))
-    remember = ServiceDaemon._with_session_route  # pyright: ignore[reportPrivateUsage]
+    daemon = _route_daemon(tmp_path / "session-routes.json")
+    lookup = ServiceDaemon._with_session_route  # pyright: ignore[reportPrivateUsage]
+    remember = ServiceDaemon._remember_session_route  # pyright: ignore[reportPrivateUsage]
     status = _status_body()
     # Nothing remembered: a route-less status keeps the policy default (None reaches the handler).
-    assert remember(daemon, _route_call(ControlMethod.STATUS, status, None)).route_profile is None
-    # The session's strict bridge reads status: the route is remembered for that session.
-    assert (
-        remember(daemon, _route_call(ControlMethod.STATUS, status, "strict")).route_profile
-        == "strict"
-    )
-    assert remember(daemon, _route_call(ControlMethod.STATUS, status, None)).route_profile == (
+    assert lookup(daemon, _route_call(ControlMethod.STATUS, status, None)).route_profile is None
+    # A strict bridge status is looked up unchanged and remembered only once it completed.
+    strict = _route_call(ControlMethod.STATUS, status, "strict")
+    assert lookup(daemon, strict) is strict
+    assert lookup(daemon, _route_call(ControlMethod.STATUS, status, None)).route_profile is None
+    remember(daemon, strict)
+    assert lookup(daemon, _route_call(ControlMethod.STATUS, status, None)).route_profile == (
         "strict"
     )
     # Another session is unaffected.
     other = status.model_copy(update={"session_id": "ses_00000000-0000-4000-8000-000000000049"})
-    assert remember(daemon, _route_call(ControlMethod.STATUS, other, None)).route_profile is None
+    assert lookup(daemon, _route_call(ControlMethod.STATUS, other, None)).route_profile is None
     # A route-less check never inherits: the route decides what a check may dispatch.
     check = _check_body().model_copy(update={"session_id": status.session_id})
-    assert remember(daemon, _route_call(ControlMethod.CHECK, check, None)).route_profile is None
-    # A policy bridge check for the session replaces the remembered route.
+    assert lookup(daemon, _route_call(ControlMethod.CHECK, check, None)).route_profile is None
+    # A later successful policy check for the session wins (last writer wins).
     remember(daemon, _route_call(ControlMethod.CHECK, check, "policy"))
-    assert remember(daemon, _route_call(ControlMethod.STATUS, status, None)).route_profile == (
+    assert lookup(daemon, _route_call(ControlMethod.STATUS, status, None)).route_profile == (
         "policy"
     )
+    # The memory survives a new service instance over the same state directory.
+    restarted = _route_daemon(tmp_path / "session-routes.json")
+    assert lookup(restarted, _route_call(ControlMethod.STATUS, status, None)).route_profile == (
+        "policy"
+    )
+    stored = (tmp_path / "session-routes.json").stat()
+    assert stored.st_mode & 0o777 == 0o600
 
 
-def test_session_route_memory_is_bounded() -> None:
-    daemon = cast(Any, SimpleNamespace(_session_routes={}))
-    remember = ServiceDaemon._with_session_route  # pyright: ignore[reportPrivateUsage]
-    for index in range(300):
-        body = _status_body().model_copy(
-            update={"session_id": f"ses_00000000-0000-4000-8000-{index:012d}"}
-        )
-        remember(daemon, _route_call(ControlMethod.STATUS, body, "strict"))
-    assert len(daemon._session_routes) == 256
+def test_session_route_memory_is_bounded_lru_and_tolerates_bad_files(tmp_path: Path) -> None:
+    path = tmp_path / "session-routes.json"
+    memory = SessionRouteMemory(path)
+    ids = [f"ses_00000000-0000-4000-8000-{index:012d}" for index in range(300)]
+    for session in ids:
+        memory.remember(session, "strict")
+    memory.remember(ids[0], "policy")  # rewritten after eviction: newest again
+    reloaded = SessionRouteMemory(path)
+    assert reloaded.get(ids[0]) == "policy"
+    assert reloaded.get(ids[1]) is None
+    assert reloaded.get(ids[-1]) == "strict"
+    assert len(json.loads(path.read_text())) == 256
+    for content in ("{not json", "[1]", '{"ses_x": "loose", "not-a-session": "strict"}'):
+        path.write_text(content)
+        assert SessionRouteMemory(path).get("ses_x") is None
+    target = tmp_path / "elsewhere.json"
+    target.write_text(json.dumps({ids[5]: "strict"}))
+    path.unlink()
+    path.symlink_to(target)
+    assert SessionRouteMemory(path).get(ids[5]) is None
+    linked = SessionRouteMemory(path)
+    linked.remember(ids[5], "policy")
+    # The write replaced the link itself and never wrote through it.
+    assert not path.is_symlink()
+    assert json.loads(target.read_text()) == {ids[5]: "strict"}
+
+
+@pytest.mark.anyio
+async def test_failed_route_carrying_status_is_not_remembered(tmp_path: Path) -> None:
+    daemon, application, _vault, _listener = _daemon(session_route_path=tmp_path / "routes.json")
+    seen: list[object] = []
+    failures = [True]
+
+    async def status(
+        request: object,
+        *,
+        route_profile: McpRouteProfile | None = None,
+        repository_privacy_context: RepositoryPrivacyContext | None = None,
+    ) -> object:
+        del request, repository_privacy_context
+        seen.append(route_profile)
+        if failures.pop() if failures else False:
+            raise RuntimeError("status failed")
+        return JsonObject({"ok": True})
+
+    application.status = status  # type: ignore[method-assign]
+    dispatch = daemon._dispatch_ready_under_maintenance_gate  # pyright: ignore[reportPrivateUsage]
+    context = cast(Any, None)
+    await daemon.start()
+    try:
+        with pytest.raises(Exception):  # noqa: B017 - any failure: the route must not be learned
+            await dispatch(
+                context, _route_call(ControlMethod.STATUS, _status_body(), "strict"), None
+            )
+        with contextlib.suppress(Exception):
+            await dispatch(context, _route_call(ControlMethod.STATUS, _status_body(), None), None)
+    finally:
+        await daemon.close()
+    assert seen == ["strict", None]
 
 
 @pytest.mark.anyio
@@ -824,7 +889,9 @@ async def test_locator_bound_session_keeps_v1_tighten_machine_only() -> None:
     assert seen == [body]
 
 
-def _daemon() -> tuple[ServiceDaemon, _Application, _Vault, _Listener]:
+def _daemon(
+    *, session_route_path: Path | None = None
+) -> tuple[ServiceDaemon, _Application, _Vault, _Listener]:
     application = _Application()
     vault = _Vault()
     listener = _Listener()
@@ -843,6 +910,7 @@ def _daemon() -> tuple[ServiceDaemon, _Application, _Vault, _Listener]:
         session_monitor=_Monitor(),  # pyright: ignore[reportArgumentType]
         vault=vault,
         application=application,
+        session_route_path=session_route_path,
     )
     return ServiceDaemon(_composition=composition), application, vault, listener
 
@@ -1823,6 +1891,81 @@ async def test_connected_status_carries_the_serving_route_into_closure_readiness
         server_task.cancel()
         await asyncio.gather(server_task, return_exceptions=True)
         await daemon.close()
+
+
+@pytest.mark.anyio
+async def test_route_less_status_reads_the_remembered_strict_route_across_a_restart(
+    tmp_path: Path,
+) -> None:
+    """tb4n1 C8 (#985) over a real status read: the gate/CLI view matches the strict MCP view.
+
+    A route-less read used to take the policy route and list ``semantic_review_not_requested``
+    as work. After the session's strict bridge has read status, a route-less read of the same
+    ledger shows it as a standing limitation, also from a new service over the same state.
+    """
+
+    from integration.application import test_closure_readiness_checklist as checklist
+
+    session, _checked = await checklist._bandit_b(  # pyright: ignore[reportPrivateUsage]
+        "memory", semantic="required"
+    )
+    route_path = tmp_path / "session-routes.json"
+
+    async def read(route: McpRouteProfile | None) -> tuple[str | None, tuple[str, ...] | None]:
+        daemon, application, _vault, _listener = _daemon(session_route_path=route_path)
+        fallback_projection = application.project_result_for_client
+
+        async def status(
+            request: object,
+            *,
+            route_profile: McpRouteProfile | None = None,
+            repository_privacy_context: RepositoryPrivacyContext | None = None,
+        ) -> StatusInternalResult:
+            del repository_privacy_context
+            assert isinstance(request, StatusRequest)
+            return await session.app.status(request, route_profile=route_profile)
+
+        async def project(
+            context: ClientProjectionContext, binding: ControlProjectionBinding, result: object
+        ) -> ProjectedControlBody:
+            if binding.method is ControlMethod.STATUS:
+                assert type(result) is StatusInternalResult
+                return checklist.public_status(result)
+            return await fallback_projection(context, binding, result)
+
+        application.status = status  # type: ignore[method-assign]
+        application.project_result_for_client = project  # type: ignore[method-assign]
+        await daemon.start()
+        client_stream, server_stream = _connected_control_pair()
+        server_task = asyncio.create_task(daemon._serve_control_connection(server_stream))  # pyright: ignore[reportPrivateUsage]
+        service_client = None
+        try:
+            handshake = await client_handshake(client_stream, ControlClientKind.MCP_BRIDGE, "0.3.0")
+            service_client = _connected_client(  # pyright: ignore[reportPrivateUsage]
+                client_stream,  # pyright: ignore[reportArgumentType]
+                handshake,
+                ControlClientKind.MCP_BRIDGE,
+            )
+            result = (
+                await service_client.status(
+                    session.status_request(), deadline_ms=3_000, route_profile=route
+                )
+            ).root
+            assert type(result) is StatusSuccessModel
+            readiness = result.closure_readiness
+            return readiness.state, readiness.agent_actionable
+        finally:
+            if service_client is not None:
+                await service_client.close()
+            server_task.cancel()
+            await asyncio.gather(server_task, return_exceptions=True)
+            await daemon.close()
+
+    # Before any bridge call the route-less read is the policy view.
+    assert await read(None) == ("action_required", ("semantic_review_not_requested",))
+    assert await read("strict") == ("ready_with_limitations", ())
+    # Each read above ran on a fresh service over the same state: the route survived.
+    assert await read(None) == ("ready_with_limitations", ())
 
 
 @pytest.mark.anyio

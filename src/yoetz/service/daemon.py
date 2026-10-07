@@ -99,7 +99,6 @@ from yoetz.ports.control import (
     ControlError,
     ControlMethod,
     ControlResult,
-    McpRouteProfile,
     RepositoryPrivacyContext,
     ServiceState,
     ServiceStatus,
@@ -207,6 +206,7 @@ from yoetz.service.lifecycle import (
 from yoetz.service.loop_health import ControlPlaneWatchdog
 from yoetz.service.ready_composition import build_ready_application_factory
 from yoetz.service.secret_ingress import SecretIngressService
+from yoetz.service.session_routes import SESSION_ROUTE_FILE_NAME, SessionRouteMemory
 from yoetz.service.unlock import UnlockCoordinator, UnlockThrottleRecord, UnlockThrottleStore
 from yoetz.service.vault import VaultError, VaultMode, VaultService
 
@@ -227,8 +227,6 @@ _CONTROL_INACTIVE_SESSION_DEADLINE_SECONDS: Final = 300.0
 # not the session has calls in flight; a stalled partial frame closes the stream (issue #921).
 _CONTROL_FRAME_READ_DEADLINE_SECONDS: Final = CONTROL_FRAME_READ_DEADLINE_SECONDS
 _OBSERVATION_SWEEP_INTERVAL_SECONDS: Final = 60.0
-# Sessions whose MCP serving route the service remembers for route-less status reads (#985).
-_MAX_REMEMBERED_SESSION_ROUTES: Final = 256
 # Hard stop for one sweep. The sweeper yields on its own budget
 # (``DEFAULT_OBSERVATION_SWEEP_BUDGET_SECONDS``, composed in ready_composition) well
 # under this, returning its partial summary so progress licenses the immediate
@@ -683,6 +681,8 @@ class ServiceComposition:
     privacy_policy_app_relay: _PrivacyPolicyAppRelay | None = None
     auto_unlock_reason: str = "none"
     auto_unlock_bundle: Path | None = None
+    # Where the per-session MCP serving route is remembered (#985); ``None`` keeps it in memory.
+    session_route_path: Path | None = None
     maintenance_gate: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # Observation sweeps serialize one row at a time on this gate.  Keep it separate from the
     # installation-wide maintenance lease so a native capture can stage a content ticket while a
@@ -722,7 +722,7 @@ class ServiceDaemon:
         self._stopping = False
         self._state_reason = "none"
         # The serving route each session's MCP bridge last named on a status or check (#985).
-        self._session_routes: dict[str, McpRouteProfile] = {}
+        self._session_routes = SessionRouteMemory(_composition.session_route_path)
         # Composition is frozen; keep the live auto-unlock reason on the daemon so soft-lock
         # re-ready can update it without replacing the composition object.
         self._auto_unlock_reason = _composition.auto_unlock_reason
@@ -1321,16 +1321,16 @@ class ServiceDaemon:
             handler = getattr(application, request.method.value, None)
             if not callable(handler):
                 raise ControlError("method_forbidden")
-            request = self._with_session_route(request)
+            routed = self._with_session_route(request)
             try:
                 if request.deadline_ms is None or detached_check:
                     internal = await self._invoke_ready_handler(
-                        handler, request, repository_privacy_context
+                        handler, routed, repository_privacy_context
                     )
                 else:
                     async with asyncio.timeout(request.deadline_ms / 1_000):
                         internal = await self._invoke_ready_handler(
-                            handler, request, repository_privacy_context
+                            handler, routed, repository_privacy_context
                         )
             except TimeoutError as exc:
                 # Includes local observation-store contention inside the handler: the wire
@@ -1349,6 +1349,8 @@ class ServiceDaemon:
                 if _request_is_read_only(request):
                     raise self._read_projection_failure(request, exc, phase="handler") from exc
                 raise
+            # Only a call the handler completed teaches the session's route (#985).
+            self._remember_session_route(request)
             # The handler has returned, so a write may already be durable. Everything below only
             # shapes the response; an unexpected failure there must not be reported as a failed
             # operation.
@@ -1372,28 +1374,33 @@ class ServiceDaemon:
         The MCP bridge names its serving route (``policy`` or ``strict``) on every ``status`` and
         ``check``; the Stop-hook closure gate and the CLI carry none, so they used to read the
         policy route and could list ``semantic_review_not_requested`` as work the agent's strict
-        view never shows. The route a session's bridge last named since this service started is
-        remembered in memory (bounded, ids and the closed route only) and applied to a later
-        route-less ``status`` for the same session, so every reader sees the agent's view. A
-        route-less ``check`` is never changed: the route still decides what a check may
-        dispatch. With nothing remembered the read keeps the policy route.
+        view never shows. ``SessionRouteMemory`` keeps the route the session's last successful
+        route-carrying call named (owner-only file in the service state directory, so it
+        survives a restart; last writer wins when two bridges serve one session), and a later
+        route-less ``status`` for the same session reads on it. A route-less ``check`` is never
+        changed: the route still decides what a check may dispatch. With nothing remembered the
+        read keeps the policy route.
         """
 
-        if request.method not in {ControlMethod.CHECK, ControlMethod.STATUS}:
+        if request.method is not ControlMethod.STATUS or request.route_profile is not None:
             return request
         session_id = getattr(request.body, "session_id", None)
         if type(session_id) is not str:
             return request
-        if request.route_profile is not None:
-            self._session_routes.pop(session_id, None)
-            self._session_routes[session_id] = request.route_profile
-            while len(self._session_routes) > _MAX_REMEMBERED_SESSION_ROUTES:
-                self._session_routes.pop(next(iter(self._session_routes)))
-            return request
         remembered = self._session_routes.get(session_id)
-        if request.method is ControlMethod.STATUS and remembered is not None:
-            return replace(request, route_profile=remembered)
-        return request
+        if remembered is None:
+            return request
+        return replace(request, route_profile=remembered)
+
+    def _remember_session_route(self, request: ControlCallRequest) -> None:
+        if request.route_profile is None or request.method not in {
+            ControlMethod.CHECK,
+            ControlMethod.STATUS,
+        }:
+            return
+        session_id = getattr(request.body, "session_id", None)
+        if type(session_id) is str:
+            self._session_routes.remember(session_id, request.route_profile)
 
     @staticmethod
     async def _invoke_ready_handler(
@@ -4478,6 +4485,7 @@ async def _production_composition(
             privacy_policy_app_relay=privacy_relay,
             auto_unlock_reason=auto_unlock_reason,
             auto_unlock_bundle=paths.bundle,
+            session_route_path=paths.state / SESSION_ROUTE_FILE_NAME,
             observation_gate=observation_gate,
         )
     except BaseException:
