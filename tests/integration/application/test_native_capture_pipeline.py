@@ -3081,7 +3081,11 @@ async def test_codex_recorded_outcome_shapes_reach_the_ledger(tmp_path: Path) ->
         payload, gaps = recorded
         assert payload.outcome is ResultOutcome(cast(str, facts["outcome"])), variant
         assert payload.exit_status == facts["exit_status"], variant
-        assert (HOST_OUTCOME_UNAVAILABLE_GAP in gaps) is facts["host_outcome_unavailable"], variant
+        # #1001: the stream's corrected outcome for the running shell supersedes its unknown hook
+        # result, so the frozen case no longer carries that record's host_outcome_unavailable.
+        corrected = call_id == "call_910_shell_running"
+        expected_gap = bool(facts["host_outcome_unavailable"]) and not corrected
+        assert (HOST_OUTCOME_UNAVAILABLE_GAP in gaps) is expected_gap, variant
         if hook_inputs[variant]["provenance"] != "constructed_control":
             folded.update(gaps)
     # Every recorded shape states its outcome, so none of them carries the standing gap.
@@ -3099,7 +3103,8 @@ async def test_codex_recorded_outcome_shapes_reach_the_ledger(tmp_path: Path) ->
     assert running_record is not None
     running, running_gaps = running_record
     assert running.outcome is ResultOutcome.UNKNOWN  # the hook row is never rewritten
-    assert HOST_OUTCOME_UNAVAILABLE_GAP in running_gaps
+    # Superseded by the correction below for readers of the frozen case (#1001).
+    assert HOST_OUTCOME_UNAVAILABLE_GAP not in running_gaps
     corrections = [
         record.payload
         for record in results.values()
