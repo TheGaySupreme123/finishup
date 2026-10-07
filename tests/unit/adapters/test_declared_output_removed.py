@@ -42,7 +42,11 @@ def declared_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from yoetz.kernel import delivered_set
 
-    monkeypatch.setattr(delivered_set, "item_role", lambda item: "output")
+    def output_role(item: object) -> object:
+        del item
+        return "output"
+
+    monkeypatch.setattr(delivered_set, "item_role", output_role)
 
 
 @pytest.fixture(autouse=True)

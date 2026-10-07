@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from types import MappingProxyType, SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -80,10 +81,12 @@ _GONE = RequestedOutputState("inside", exists=False, deleted=True)
 def declared_outputs(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Treat role-less 1.0.0 items as ``output`` here; L6's 1.1.0 role is not on this branch."""
 
-    if request.node.name != "test_input_role_is_ignored_and_directory_counts":
-        monkeypatch.setattr(
-            delivered_set, "item_role", lambda item: getattr(item, "role", None) or "output"
-        )
+    def output_role(item: object) -> object:
+        return getattr(item, "role", None) or "output"
+
+    name = cast(str, getattr(request, "node").name)
+    if name != "test_input_role_is_ignored_and_directory_counts":
+        monkeypatch.setattr(delivered_set, "item_role", output_role)
 
 
 def test_gap_is_agent_actionable_and_continues_the_stop_gate() -> None:
