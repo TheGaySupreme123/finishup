@@ -6243,6 +6243,24 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         }
         fields["write_scope"] = {"enum": ["outside_workspace"], "type": "string"}
         fields["effective_user"] = {"enum": ["non_root", "root"], "type": "string"}
+        # Keyed commitments to the simple commands of a compound or wrapped command and what the
+        # whole outcome means for one of them (#977): planned-verification matching only.
+        fields["command_segment_commitments"] = {
+            "items": {
+                "maxLength": 76,
+                "minLength": 76,
+                "pattern": _CONTROL_COMMITMENT_PATTERN,
+                "type": "string",
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": True,
+        }
+        fields["command_composition"] = {
+            "enum": ["and_chain", "masked", "single"],
+            "type": "string",
+        }
     if entry.schema_name == "control-result":
         definitions = cast(dict[str, JsonValue], document["$defs"])
         runtime = definitions.get("observation_selection_runtime")

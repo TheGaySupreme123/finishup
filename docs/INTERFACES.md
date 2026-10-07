@@ -8381,6 +8381,25 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   composition with the local observation store key) lets `requested_command_identity(value)`
   compute `hmac-sha256:` over `normalize_observed_command(value)`, the identity a hook records as
   `omitted:<commitment>`. Without a registered key no planned-verification code is produced.
+  `requested_command_identities(value) -> (whole, segment identities) | None` adds the planned
+  value's own segment commitments.
+- **Command segments (`domain/command_segments.py`, ADR-033 decision 1).**
+  `command_segments(normalized) -> CommandSegments(segments, composition) | None` splits a
+  normalized command into its simple commands (quote-aware; `None` when unsplittable or already
+  simple); `command_segment_commitments(key, normalized) -> (sorted commitments, composition) |
+  None` keys them, excludes the whole commitment and keeps at most `MAX_SEGMENT_COMMITMENTS` (32:
+  first and last 16 distinct in command order). `COMMAND_COMPOSITIONS` = `single`, `and_chain`,
+  `masked`. `requested_command_shape(value) -> "command" | "placeholder" | "prose"`. Hooks put
+  the result on the structural fields `command_segment_commitments` and `command_composition`
+  (control-request 2.9.0, hook spool, Codex session stream);
+  `kernel.observed_failures.observed_command_field(commitment, segments, composition)` writes the
+  action `command` field (`omitted:<identity>` unchanged for a simple command, else
+  `omitted:<identity> <composition> <segment>...`), `command_identity` reads only the leading
+  identity, and `command_segment_identities(command)` reads the suffix or returns `None`.
+- **Placeholder refusal.** `publish_work` refuses an `obligation_published` `command` item whose
+  value holds an unquoted `<name>` token with `EVENT_INVALID`, reason
+  `requested_command_placeholder`, field `/event_drafts/N/payload/requested_items/K/value`, and a
+  fixed corrective message; the trusted import channel is exempt.
 - **`acting_started(projection, observed, cooperative)`.** True after an observed edit, an observed
   run whose runner class is `test`, `lint`, `typecheck` or `build`, or any cooperative (MCP or local
   CLI) action. `cooperative_event_ids_from_records(records)` and `observed_event_ids_from_records`

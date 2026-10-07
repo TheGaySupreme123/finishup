@@ -190,7 +190,10 @@ def test_claude_red_green_rerun_is_clean_and_red_latest_is_one_finding(tmp_path:
     assert actions[0].command == actions[1].command
     assert actions[0].command is not None and actions[0].command.startswith("omitted:hmac-sha256:")
     assert (
-        actions[0].description == "Observed command via Claude Code hook (tool Bash) (runner test)"
+        # The hook appends the effective user it ran as (ADR-033 runtime facts), which depends
+        # on the test process, not on the host.
+        actions[0].description.removesuffix(" (user root)").removesuffix(" (user non_root)")
+        == "Observed command via Claude Code hook (tool Bash) (runner test)"
     )
     clean.claim(versioned=True)
     assert omissions(clean) == ()
@@ -267,7 +270,10 @@ def test_codex_red_green_rerun_is_clean_and_red_latest_is_one_finding(tmp_path: 
     red, green = results.values()
     assert red.command == green.command
     assert red.command is not None and red.command.startswith("omitted:hmac-sha256:")
-    assert red.description == "Observed command via Codex hook (tool Bash) (runner test)"
+    assert (
+        red.description.removesuffix(" (user root)").removesuffix(" (user non_root)")
+        == "Observed command via Codex hook (tool Bash) (runner test)"
+    )
     clean.claim(versioned=True)
     assert omissions(clean) == ()
     assert "1 was later passed by the same command" in receipt_limitations(clean)

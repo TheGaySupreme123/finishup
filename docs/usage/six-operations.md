@@ -218,8 +218,12 @@ local-only check with limitations is still `insufficient_coverage`. `ready` mean
 at all, and `unknown` means read status again once it is readable.
 
 Local checks also report facts about the task's own work: a planned verification command (an
-obligation's requested command) that was never seen running exactly as recorded, failed on its
-latest run, or last ran before your latest edit; a requested output file that is missing (a
+obligation's requested command) that was not matched to an observed run, failed on its latest
+run, or last ran before your latest edit. A run matches when it is the planned command or
+contains it as one part, such as `cd /app && pytest -q && git diff --check`, `pytest -q > log
+2>&1`, `time pytest -q`, or a line of a `bash <<'EOF'` script; when the run combined other
+commands, its outcome counts for the planned command only if an `&&` chain succeeded. A requested
+command with a `<placeholder>` is refused when you publish it: write the concrete command; a requested output file that is missing (a
 receipt-blocking finding, even if an action named it) or excluded from Git; one you recorded
 editing (an `edit` action naming it) that is still unchanged or lies outside the repository; and
 installs or writes that went outside the task's workspace. If you stop while open obligations, a

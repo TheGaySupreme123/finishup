@@ -5,13 +5,19 @@ action names this item"). This module computes facts about the task's own work t
 and the ledger already establish, so the agent can act on them:
 
 * **Planned verification.** An effective obligation's ``requested_items`` of kind ``command`` is
-  a verification the agent said it would run. Its exact identity is the installation-keyed
-  command commitment the hook computes for every observed shell call (#909): the requested
-  value gets the same light normalization and the same keyed commitment, so command text is
-  never compared, stored or shown. A planned command is reported as never observed, as failing
-  on its latest observed run, or as stale when an observed edit follows that run. A wrapped or
-  reformatted variant is a different identity: the remedy is to run the planned command as
-  recorded, or to correct the requested item to the command actually run.
+  a verification the agent said it would run. Its identity is the installation-keyed command
+  commitment the hook computes for every observed shell call (#909): the requested value gets
+  the same light normalization and the same keyed commitment, so command text is never
+  compared, stored or shown. A run also matches when the planned command is one of the simple
+  commands the run composed (``cd /app && X && git diff --check``, ``X > log 2>&1``,
+  ``time X``, ``FOO=1 X``, ``X | tee log``, a line of a ``bash <<'EOF'`` script): the hook
+  commits to each segment beside the whole command (``domain.command_segments``). A segment
+  match takes the run's outcome only when the run is that one command with prefixes or
+  redirections; a successful ``&&`` chain is a success of every part; otherwise the outcome is
+  unknown. A planned command is reported as not matched to an observed run, as failing on its
+  latest matched run, or as stale when an observed edit follows that run. A requested value
+  with a ``<placeholder>`` or one that is plain prose (``Broad GSEA CLI``) names no command a
+  hook could observe and is reported as unobservable instead.
 * **Edits after the last verification.** An observed edit after the latest observed run the hook
   classified as ``test``, ``lint``, ``typecheck`` or ``build``.
 * **Runtime facts** the hook classified at the host boundary (closed suffixes on the observed
@@ -40,6 +46,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Final
 
+from yoetz.domain.command_segments import command_segment_commitments, requested_command_shape
 from yoetz.domain.events import (
     AcceptedEvent,
     ActionKind,
@@ -56,6 +63,7 @@ from yoetz.domain.values import EventId, ObligationId
 from yoetz.kernel.command_attempts import attempted_items_for_obligation
 from yoetz.kernel.observed_failures import (
     command_identity,
+    command_segment_identities,
     observed_action_runner_class,
     observed_action_runtime_tokens,
     observed_event_ids_from_records,
@@ -99,6 +107,7 @@ __all__ = [
     "effective_obligations",
     "open_effective_obligations",
     "register_command_identity_key",
+    "requested_command_identities",
     "requested_command_identity",
     "requested_output_facts",
     "task_fact_signals",
@@ -220,6 +229,27 @@ def requested_command_identity(value: str) -> str | None:
         return None
 
 
+def requested_command_identities(value: str) -> tuple[str, frozenset[str]] | None:
+    """The whole keyed identity of a requested command and its segment identities, or ``None``.
+
+    The segments are what ``domain.command_segments`` would commit for the same text, so a
+    planned ``X > log`` or ``cd /app && X`` also matches a run that shares those parts.
+    """
+
+    key = _COMMAND_IDENTITY_KEY[0]
+    if key is None:
+        return None
+    normalized = normalize_observed_command(value)
+    if normalized is None:
+        return None
+    try:
+        whole = observed_command_commitment(key, normalized)
+        segments = command_segment_commitments(key, normalized)
+    except ValueError:
+        return None
+    return whole, frozenset(() if segments is None else segments[0])
+
+
 # ---------------------------------------------------------------------------------------------
 # Ledger facts
 # ---------------------------------------------------------------------------------------------
@@ -306,6 +336,8 @@ class _ObservedRun:
     identity: str | None
     runner: str | None
     tokens: frozenset[str]
+    segments: frozenset[str] = frozenset()
+    composition: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,6 +373,37 @@ def cooperative_event_ids_from_coverage[Ref: str](
         and _COOPERATIVE_CHANNELS & set(coverage.publication_channels)
         and PublicationChannel.HOOK_OBSERVED not in set(coverage.publication_channels)
     )
+
+
+def _segment_fields(command: str | None) -> tuple[frozenset[str], str | None]:
+    parsed = command_segment_identities(command)
+    return (frozenset(), None) if parsed is None else parsed
+
+
+def _planned_outcome(
+    run: _ObservedRun, whole: str, segments: frozenset[str]
+) -> ResultOutcome | None:
+    """The outcome ``run`` establishes for one planned command, or ``None`` when unmatched.
+
+    An identical command, or a planned command whose only simple command is the run (``X > log``
+    planned, ``X`` run), takes the run's outcome. A planned command that is one simple command
+    of the run, or whose simple commands all are, takes it only when the run is that one command
+    with prefixes or redirections (``single``); a successful ``&&`` chain proves every part
+    succeeded, and every other case (a failed chain, a pipe, ``;``, ``||``, a script) names no
+    outcome for the part, so it is unknown.
+    """
+
+    if run.identity is None:
+        return None
+    if run.identity == whole or (len(segments) == 1 and run.identity in segments):
+        return run.outcome
+    if whole not in run.segments and not (segments and segments <= run.segments | {run.identity}):
+        return None
+    if run.composition == "single":
+        return run.outcome
+    if run.composition == "and_chain" and run.outcome is ResultOutcome.SUCCESS:
+        return ResultOutcome.SUCCESS
+    return ResultOutcome.UNKNOWN
 
 
 def _observed_state(
@@ -384,6 +447,7 @@ def _observed_state(
                     command_identity(action.payload.command),
                     runner,
                     tokens,
+                    *_segment_fields(action.payload.command),
                 )
             )
     for action_ref, action in projection.actions.items():
@@ -418,6 +482,7 @@ def _observed_state(
                     command_identity(payload.command),
                     observed_action_runner_class(payload.description),
                     tokens,
+                    *_segment_fields(payload.command),
                 )
             )
     runs.sort(key=lambda run: run.position)
@@ -488,18 +553,28 @@ def task_fact_signals(
             for item in payload.requested_items:
                 if item.item_kind is not RequestedItemKind.COMMAND:
                     continue
-                if not keyed_runs:
+                if not keyed_runs or requested_command_shape(item.value) != "command":
+                    # No keyed run to match against, or a requested value no hook could observe
+                    # (a ``<placeholder>`` admitted before publication rejected it, or prose).
                     markers.add((PLANNED_VERIFICATION_UNOBSERVABLE_GAP, obligation))
                     continue
-                identity = requested_command_identity(item.value)
-                matching = [run for run in keyed_runs if run.identity == identity]
-                if identity is None or not matching:
+                identities = requested_command_identities(item.value)
+                matching = (
+                    []
+                    if identities is None
+                    else [
+                        (run, outcome)
+                        for run in keyed_runs
+                        if (outcome := _planned_outcome(run, *identities)) is not None
+                    ]
+                )
+                if not matching:
                     markers.add((PLANNED_VERIFICATION_NOT_OBSERVED_GAP, obligation))
                     continue
-                latest = matching[-1]
-                if latest.outcome in {ResultOutcome.FAILURE, ResultOutcome.PARTIAL}:
+                latest, outcome = matching[-1]
+                if outcome in {ResultOutcome.FAILURE, ResultOutcome.PARTIAL}:
                     markers.add((PLANNED_VERIFICATION_FAILED_GAP, obligation))
-                elif latest.outcome is ResultOutcome.UNKNOWN:
+                elif outcome is ResultOutcome.UNKNOWN:
                     markers.add((PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP, obligation))
                 if state.latest_edit is not None and state.latest_edit > latest.position:
                     markers.add((PLANNED_VERIFICATION_STALE_GAP, obligation))

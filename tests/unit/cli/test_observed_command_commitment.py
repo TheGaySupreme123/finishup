@@ -393,3 +393,123 @@ def test_legacy_spool_keeps_only_the_keyed_identity_for_replay(tmp_path: Path) -
         key_material=store.key_material(),
     )
     assert replayed.structural_payload["command_commitment"] == expected
+
+
+# --- Segment commitments for planned-verification matching (#977 E3) ---------------------------
+
+
+def test_a_composed_command_carries_keyed_segment_commitments_never_text() -> None:
+    command = f"cd /app && python evaluate.py {_CANARY} && git diff --check"
+    envelope = _codex_envelope(_exec_command(command, "call-seg"))
+    structural = envelope.structural_payload
+    segments = cast(tuple[str, ...], structural["command_segment_commitments"])
+    assert structural["command_composition"] == "and_chain"
+    assert segments == tuple(sorted(segments))
+    assert observed_command_commitment(_KEY, f"python evaluate.py {_CANARY}") in segments
+    assert structural["command_commitment"] not in segments
+    assert _CANARY.encode() not in canonical_encode(cast(JsonValue, dict(structural)))
+
+    batch = materialize_observation_envelope(
+        envelope, task_id="tsk_00000000-0000-4000-8000-000000000909"
+    )
+    (action,) = [
+        cast(ActionRecordedPayload, item.draft.payload)
+        for item in batch.drafts
+        if item.draft.schema.name == "action_recorded"
+    ]
+    assert action.command == " ".join(
+        ("omitted:" + str(structural["command_commitment"]), "and_chain", *segments)
+    )
+    assert _CANARY not in (action.command or "")
+    # A simple command keeps the historical single-identity field byte for byte.
+    simple = _codex_envelope(_exec_command("pytest -q", "call-simple"))
+    assert "command_segment_commitments" not in simple.structural_payload
+    assert "command_composition" not in simple.structural_payload
+
+
+def test_claude_ordinary_redirected_run_commits_to_the_bare_command(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    store = LocalObservationStore(_state=state)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    command = f"bash /app/{_CANARY}.sh > /tmp/{_CANARY}.log 2>&1"
+    assert (
+        observe_hooks.handle_claude_observe(
+            event_name="PostToolUse",
+            stdin_bytes=canonical_encode(
+                {
+                    "hook_event_name": "PostToolUse",
+                    "session_id": "claude-977",
+                    "tool_name": "Bash",
+                    "tool_use_id": "toolu-seg",
+                    "tool_input": {"command": command},
+                    "tool_response": {"stdout": "", "stderr": "", "interrupted": False},
+                }
+            ),
+            stdout=io.BytesIO(),
+            workspace=str(tmp_path),
+            _state=state,
+            skip_service=True,
+            observation_profile=CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
+        )
+        == 0
+    )
+    (envelope,) = LocalObservationStore(_state=state).list_envelopes(workspace)
+    key = LocalObservationStore(_state=state).key_material()
+    assert envelope.structural_payload["command_composition"] == "single"
+    assert envelope.structural_payload["command_segment_commitments"] == (
+        observed_command_commitment(key, f"bash /app/{_CANARY}.sh"),
+    )
+    assert _CANARY.encode() not in _state_bytes(state)
+
+
+def test_spool_replay_forwards_only_valid_segment_commitments(tmp_path: Path) -> None:
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    assert (
+        observe_hooks.handle_spool(
+            event_name="PostToolUse",
+            stdin_bytes=canonical_encode(
+                {
+                    "session_id": "spool-977",
+                    "tool_name": "shell",
+                    "tool_use_id": "call-spool-seg",
+                    "exit_status": 0,
+                    "tool_input": {"cmd": f"npm test {_CANARY} && npm run build"},
+                }
+            ),
+            stdout=io.BytesIO(),
+            workspace=str(tmp_path),
+            _state=tmp_path,
+        )
+        == 0
+    )
+    (spooled,) = list((tmp_path / "hook-spool").glob("*.jsonl"))
+    assert _CANARY.encode() not in spooled.read_bytes()
+    key = store.key_material()
+    whole = observed_command_commitment(key, f"npm test {_CANARY} && npm run build")
+    segments = sorted(
+        observed_command_commitment(key, part) for part in (f"npm test {_CANARY}", "npm run build")
+    )
+    for value in segments:
+        assert value.encode() in spooled.read_bytes()
+
+    def replay(supplied: object) -> Mapping[str, object]:
+        return observe_hooks.map_hook_payload_to_envelope(
+            "PostToolUse",
+            {
+                "session_id": "spool-977",
+                "tool_name": "shell",
+                "command_commitment": whole,
+                "command_segment_commitments": cast(JsonValue, supplied),
+                "command_composition": "and_chain",
+            },
+            session_commitment="hmac-sha256:" + "5" * 64,
+            event_ordinal=1,
+            key_material=key,
+        ).structural_payload
+
+    assert replay(segments)["command_segment_commitments"] == tuple(segments)
+    for invalid in (list(reversed(segments)), ["npm test"], [], "x"):
+        assert "command_segment_commitments" not in replay(invalid)

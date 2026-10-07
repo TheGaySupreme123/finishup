@@ -366,8 +366,9 @@ def check_time_change_gap_sentence(code: str) -> str | None:
 TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
     {
         "planned_verification_not_observed": (
-            "A planned verification (an obligation's requested command) was never observed running"
-            " exactly as recorded; run it as recorded or correct the requested command."
+            "A planned verification (an obligation's requested command) was not matched to an"
+            " observed run, whole or as one part of a composed command; run it as recorded or"
+            " correct the requested command."
         ),
         "planned_verification_failed": (
             "A planned verification command failed on its latest observed run."
@@ -379,8 +380,9 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             "A planned verification command ran, but the host stated no outcome for it."
         ),
         "planned_verification_unobservable": (
-            "No observed command carries a command identity, so planned verification could not be"
-            " matched."
+            "A planned verification could not be matched: no observed command carries a command"
+            " identity, or the requested command is a placeholder or a description rather than a"
+            " command."
         ),
         "edited_after_last_verification": (
             "An observed edit followed the last observed test, lint, typecheck or build run."

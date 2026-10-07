@@ -619,3 +619,143 @@ def test_a_started_run_without_a_result_is_unknown_not_unobserved() -> None:
     codes = _codes(ledger)
     assert PLANNED_VERIFICATION_NOT_OBSERVED_GAP not in codes
     assert PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP in codes
+
+
+# --- Segment-aware planned-verification matching (#977 E3, tb4n1) ------------------------------
+
+_PLANNED_GAPS = {
+    PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
+    PLANNED_VERIFICATION_FAILED_GAP,
+    PLANNED_VERIFICATION_STALE_GAP,
+    PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
+    PLANNED_VERIFICATION_UNOBSERVABLE_GAP,
+}
+
+
+def _planned_codes(planned: str, *runs: tuple[str, ResultOutcome]) -> set[str]:
+    ledger = ObservedLedger()
+    _planned(ledger, _command(planned))
+    _plan(ledger, _OBLIGATION)
+    for command, outcome in runs:
+        ledger.run(
+            command,
+            outcome,
+            exit_status=0 if outcome is ResultOutcome.SUCCESS else 1,
+        )
+    return _codes(ledger) & _PLANNED_GAPS
+
+
+@pytest.mark.parametrize(
+    ("planned", "observed"),
+    [
+        # batched-eval det: the exact command inside a cd/&& chain.
+        (
+            "python evaluate.py --batch-size 8 --out /app/results.json",
+            "cd /app && python evaluate.py --batch-size 8 --out /app/results.json"
+            " && git diff --check",
+        ),
+        # react det.
+        ("npm test", "npm test && npm run build"),
+        # time and env-assignment prefixes.
+        ("python run.py", "time python run.py"),
+        ("make test", "FOO=1 make test"),
+        ("pytest -q", "env PYTHONPATH=src pytest -q"),
+        # A host shell wrapper around a chain.
+        ("pytest -q", "/bin/bash -lc 'cd /app && pytest -q'"),
+    ],
+)
+def test_planned_command_matches_one_segment_of_a_successful_and_chain(
+    planned: str, observed: str
+) -> None:
+    assert _planned_codes(planned, (observed, ResultOutcome.SUCCESS)) == set()
+
+
+def test_pretrain_redirected_run_matches_and_keeps_its_outcome() -> None:
+    planned = "bash /app/run_pretrain.sh"
+    observed = "bash /app/run_pretrain.sh > /tmp/pretrain-before.log 2>&1"
+    assert _planned_codes(planned, (observed, ResultOutcome.SUCCESS)) == set()
+    # A redirected single command is that command: its failure is the planned run's failure.
+    assert _planned_codes(planned, (observed, ResultOutcome.FAILURE)) == {
+        PLANNED_VERIFICATION_FAILED_GAP
+    }
+    # The planned value may carry the redirection while the run does not.
+    assert _planned_codes(observed, (planned, ResultOutcome.SUCCESS)) == set()
+
+
+def test_a_failed_chain_names_no_failing_segment() -> None:
+    assert _planned_codes("npm test", ("npm test && npm run build", ResultOutcome.FAILURE)) == {
+        PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP
+    }
+
+
+def test_a_masking_composition_counts_the_run_but_not_its_outcome() -> None:
+    assert _planned_codes("pytest -q", ("pytest -q | tee log.txt", ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP
+    }
+
+
+def test_cargo_layout_planned_command_on_the_last_line_of_a_shell_heredoc() -> None:
+    script = "bash <<'EOF'\nset -e\ncd /app\ncargo build --release\npython check.py\nEOF"
+    codes = _planned_codes("python check.py", (script, ResultOutcome.SUCCESS))
+    assert PLANNED_VERIFICATION_NOT_OBSERVED_GAP not in codes
+    assert codes == {PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP}
+
+
+def test_a_python_heredoc_body_is_data_not_commands() -> None:
+    script = "python3 - <<'PY'\nimport subprocess\npython check.py\nPY"
+    assert _planned_codes("python check.py", (script, ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_NOT_OBSERVED_GAP
+    }
+
+
+def test_a_different_command_in_a_chain_still_does_not_match() -> None:
+    assert _planned_codes(
+        "pytest -q tests/unit", ("cd /app && pytest -q && ls", ResultOutcome.SUCCESS)
+    ) == {PLANNED_VERIFICATION_NOT_OBSERVED_GAP}
+    # Quoted separators are text, not composition.
+    assert _planned_codes("b", ("echo 'a && b'", ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_NOT_OBSERVED_GAP
+    }
+
+
+def test_a_compound_planned_command_matches_when_every_part_ran_in_one_run() -> None:
+    planned = "npm test && npm run build"
+    assert (
+        _planned_codes(planned, ("cd /app && npm test && npm run build", ResultOutcome.SUCCESS))
+        == set()
+    )
+    assert _planned_codes(planned, ("npm test", ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_NOT_OBSERVED_GAP
+    }
+
+
+def test_segment_matches_go_stale_after_a_later_edit() -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("npm test"))
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("npm test && npm run build")
+    ledger.edit()
+    assert _codes(ledger) & _PLANNED_GAPS == {PLANNED_VERIFICATION_STALE_GAP}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "python cracker.py <ciphertext_file>",
+        "python -m parityctl rebuild --packet <incident-packet> --out <output-dir>",
+        "Broad GSEA CLI",
+    ],
+)
+def test_placeholder_or_prose_items_are_unobservable_not_unrun(value: str) -> None:
+    assert _planned_codes(value, ("python cracker.py data.bin", ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_UNOBSERVABLE_GAP
+    }
+
+
+def test_a_single_token_requested_command_is_still_a_command() -> None:
+    assert _planned_codes("legacy-score", ("python other.py", ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_NOT_OBSERVED_GAP
+    }
+    assert (
+        _planned_codes("legacy-score", ("cd /app && legacy-score", ResultOutcome.SUCCESS)) == set()
+    )

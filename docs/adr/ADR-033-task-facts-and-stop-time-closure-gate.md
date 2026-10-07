@@ -44,15 +44,45 @@ agent must not be able to stop silently with known work left.
    once in `GAP_CLASSIFICATION`:
    - `planned_verification_not_observed`, `planned_verification_failed`,
      `planned_verification_stale` (agent-actionable): an effective obligation's requested item of
-     kind `command` was never observed run, failed on its latest observed run, or last ran before
-     the latest observed edit. The match uses the installation-keyed command commitment the hook
-     already computes (#909): the requested value gets the same light normalization and keyed
-     HMAC, so no command text is compared, stored or shown. A wrapped or reformatted variant is a
-     different identity; the remedy is to run the command as recorded or correct the requested
-     item. The service registers the key at composition; a process without it computes no planned
-     fact rather than claiming a command never ran.
+     kind `command` was not matched to an observed run, failed on its latest matched run, or last
+     ran before the latest observed edit. The match uses the installation-keyed command commitment
+     the hook already computes (#909): the requested value gets the same light normalization and
+     keyed HMAC, so no command text is compared, stored or shown. Segment matching (tb4n1, owner
+     decision "segment match of compound commands, reject placeholders"): the hook also commits,
+     in-process, to each simple command of a composed run (`domain.command_segments`: top-level
+     unquoted `&&`, `||`, `;`, `|`, `&`, parentheses and line breaks; leading `VAR=value`, `time`,
+     `env`, `nohup`, `exec` and introducing shell keywords and every redirection dropped; the body
+     of a here-document fed to a shell; the argument of a `bash -lc`/`sh -c` wrapper), at most 32
+     sorted commitments plus a closed composition token (`single`, `and_chain`, `masked`) on the
+     control-request 2.9.0 structural fields `command_segment_commitments` and
+     `command_composition`. Materialization appends them to the observed action's `command` field
+     as `omitted:<identity> <composition> <segment>...`; a simple command keeps the historical
+     `omitted:<identity>` bytes, and failure supersession still reads only the leading identity.
+     Mixed versions: the two structural fields change the control-request 2.9.0 bytes and so the
+     schema-manifest digest the handshake pins, so a newer hook or CLI never sends them to an
+     older running service; it supersedes that service on first connect
+     (`tests/subprocess/test_installed_upgrade_supersedes_stale_service.py`) and no row is lost
+     to a schema refusal. A newer service reads older rows unchanged: they carry no suffix, so
+     only the whole-command identity matches, exactly as before. An older service reading a newer
+     ledger (a downgrade, which no supported path performs; 0.2.x never opens a 0.3 ledger without
+     the backup-first migration) sees no identity on composed rows only: it matches nothing on
+     them and cannot supersede a composed failure by a later rerun, so it errs toward "not
+     observed" and a still-live failure, never toward a false match.
+     A planned command matches a run that is it, that is its only simple command, or that
+     contains it (or all of its simple commands) as segments. A segment match takes the run's
+     outcome for `single`, a success for a successful `and_chain`, and is otherwise
+     `planned_verification_outcome_unknown`: a pipe, `;`, `||` or script outcome names no part.
+     An unsplittable command (unterminated quote, substitution or here-document) has only its
+     whole identity. The service registers the key at composition; a process without it computes
+     no planned fact rather than claiming a command never ran.
    - `planned_verification_outcome_unknown` and `planned_verification_unobservable` (standing): a
-     matching run stated no outcome, or no keyed observed command exists to match against.
+     matching run stated no outcome; or no keyed observed command exists to match against, or the
+     requested value names no observable command: a `<placeholder>` token (admitted before
+     publication refused it) or plain prose of three or more alphabetic words led by a
+     capitalized one (`Broad GSEA CLI`). A single token (`legacy-score`) is always a command.
+     Publication refuses a new `command` item with an unquoted `<name>` placeholder as
+     `EVENT_INVALID` `requested_command_placeholder`, located at
+     `/event_drafts/N/payload/requested_items/K/value`, before append.
    - `edited_after_last_verification` (agent-actionable): an observed edit after the latest
      observed run the hook classified as `test`, `lint`, `typecheck` or `build`.
    - `install_into_yoetz_runtime`, `install_into_private_env`, `write_outside_workspace`,

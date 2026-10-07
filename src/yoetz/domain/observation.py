@@ -318,6 +318,10 @@ _STRUCTURAL_KEYS: Final = frozenset(
         "install_target",
         "write_scope",
         "effective_user",
+        # Keyed commitments to the simple commands of a compound or wrapped command, and what the
+        # whole outcome means for one of them (#977): planned-verification matching only.
+        "command_segment_commitments",
+        "command_composition",
     }
 )
 _STRUCTURAL_TOKEN_KEYS: Final = frozenset(
@@ -350,7 +354,9 @@ _RUNTIME_FACT_VALUES: Final = {
     ),
     "write_scope": frozenset({"outside_workspace"}),
     "effective_user": frozenset({"root", "non_root"}),
+    "command_composition": frozenset({"single", "and_chain", "masked"}),
 }
+_MAX_COMMAND_SEGMENT_COMMITMENTS: Final = 32
 
 _PROSE_KEYS: Final = frozenset(
     {
@@ -839,6 +845,27 @@ def _reject_path_like(value: object) -> None:
             _reject_path_like(item)
 
 
+def _command_segment_commitments(value: object) -> None:
+    """A non-empty, bounded, ascending set of ``hmac-sha256:`` segment commitments."""
+
+    if type(value) is not tuple:
+        raise _invalid("invalid_event_value_type")
+    items = cast(tuple[object, ...], value)
+    if not 1 <= len(items) <= _MAX_COMMAND_SEGMENT_COMMITMENTS:
+        raise _invalid("invalid_event_value_type")
+    previous: str | None = None
+    for item in items:
+        if type(item) is not str:
+            raise _invalid("invalid_event_value_type")
+        try:
+            validate_commitment(item)
+        except ProtocolValueError as exc:
+            raise _invalid("invalid_event_value_type") from exc
+        if previous is not None and item <= previous:
+            raise _invalid("duplicate_set_member" if item == previous else "unsorted_set_field")
+        previous = item
+
+
 def _structural_payload(value: object) -> JsonObject:
     if type(value) is not JsonObject:
         try:
@@ -869,6 +896,8 @@ def _structural_payload(value: object) -> JsonObject:
                 validate_commitment(item)
             except ProtocolValueError as exc:
                 raise _invalid("invalid_event_value_type") from exc
+        if key == "command_segment_commitments":
+            _command_segment_commitments(item)
         _reject_path_like(item)
     encoded = canonical_encode(payload)
     if len(encoded) > _MAX_STRUCTURAL_BYTES:

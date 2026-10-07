@@ -279,7 +279,10 @@ whose `item_kind` admits `change`, `command`, `file`, `source`, `url` and whose 
 exact item string. The requested outcome lives in `description` and `acceptance_criteria`;
 `outcome` is not an admitted `item_kind`. When you later attempt an item, copy that exact `value`
 string into `attempted_items` on the `action_recorded` event that attempted it — see the action
-template below. Matching is exact: do not normalize, reorder words, or paraphrase.
+template below. Matching is exact: do not normalize, reorder words, or paraphrase. A `command`
+item is the concrete command you will run, never a template: a value with a `<placeholder>` such
+as `<output-dir>` is refused with `requested_command_placeholder`. When the exact command is not
+known yet, state the check in `acceptance_criteria` instead.
 
 ### Alternate `plan_published`: explicitly no obligations
 

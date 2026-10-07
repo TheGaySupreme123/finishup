@@ -46,6 +46,8 @@ _SAFE_FIELDS: Final = frozenset(
         "action",
         "changed_paths_digest",
         "command_commitment",
+        "command_segment_commitments",
+        "command_composition",
         "mapping_hint",
         "capability_profile_id",
         "codex_version",

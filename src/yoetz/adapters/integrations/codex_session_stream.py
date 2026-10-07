@@ -38,6 +38,7 @@ from yoetz.adapters.integrations.observation_local import (
     PendingRolloutItem,
     self_observation_deliverable,
 )
+from yoetz.domain.command_segments import command_segment_commitments
 from yoetz.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
@@ -1168,6 +1169,10 @@ def structural_from_stream_record(
             normalized = normalize_observed_command(body.get("command"))
             if normalized is not None:
                 fields["command_commitment"] = observed_command_commitment(key_material, normalized)
+                segments = command_segment_commitments(key_material, normalized)
+                if segments is not None:
+                    fields["command_segment_commitments"] = segments[0]
+                    fields["command_composition"] = segments[1]
         if item_type == "CommandExecution":
             command_payload = JsonObject(
                 {
