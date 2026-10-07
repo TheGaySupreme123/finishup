@@ -1900,6 +1900,7 @@ def apply_check_rulings(
     """
 
     rulings = {item.finding_id: item.verdict for item in check.prior_finding_verdicts}
+    _break_duplicate_links(findings, responses, check, check_event_id, rulings)
     touched = frozenset(check.returned_finding_ids) | frozenset(rulings)
     for current_id in sorted(touched, key=str.encode):
         record = findings.get(current_id)
@@ -1955,6 +1956,58 @@ def apply_check_rulings(
             )
 
 
+# The reviewer rulings that say the issue of a ``duplicate_of`` finding is still there (#996).
+DUPLICATE_LINK_BREAKING_VERDICTS: Final = frozenset({"answered_not_fixed", "still_present"})
+
+
+def _break_duplicate_links(
+    findings: dict[FindingId, FindingProjectionRecord],
+    responses: Mapping[FindingId, ProjectionRecord[ResponseRecordedPayload]],
+    check: CheckRecordedPayload,
+    check_event_id: EventId,
+    rulings: Mapping[FindingId, str],
+) -> None:
+    """Latch the first check that raises a linked duplicate's issue again (issue #996).
+
+    A finding whose latest readable response is ``duplicate_of`` keeps its link until a later
+    check says its own issue is still there: the check returned it again, returned a readable
+    local finding with the same issue key (a deterministic rule fired again on the same subject),
+    or the reviewer ruled it ``still_present`` or ``answered_not_fixed``. The latch is permanent
+    for that finding: from then on it needs its own answer. An AI-powered issue key is too coarse
+    to stand for one issue, so only the finding's own id or ruling breaks its link.
+    """
+
+    returned_local_keys = {
+        issue_key(record.payload)
+        for returned_id in check.returned_finding_ids
+        if (record := findings.get(returned_id)) is not None
+        and record.payload is not None
+        and record.payload.origin is FindingOrigin.DETERMINISTIC
+    }
+    returned = frozenset(check.returned_finding_ids)
+    for current_id, record in tuple(findings.items()):
+        latest = responses.get(current_id)
+        if (
+            record.payload is None
+            or record.duplicate_link_broken_by_check_event_id is not None
+            or latest is None
+            or latest.payload is None
+            or latest.payload.disposition is not ResponseDisposition.DUPLICATE_OF
+        ):
+            continue
+        if (
+            current_id in returned
+            or rulings.get(current_id) in DUPLICATE_LINK_BREAKING_VERDICTS
+            or (
+                record.payload.origin is FindingOrigin.DETERMINISTIC
+                and issue_key(record.payload) in returned_local_keys
+            )
+        ):
+            findings[current_id] = replace(
+                record, duplicate_link_broken_by_check_event_id=check_event_id
+            )
+
+
 def _readable_rejection(response: ProjectionRecord[ResponseRecordedPayload] | None) -> bool:
     """Whether the finding's latest response is a readable, reasoned ``rejected``."""
 
@@ -1995,6 +2048,9 @@ def reopen_findings_resolved_by(
             record = replace(record, reduced_scope_raising_check_event_id=None)
         if record.rejection_accepted_by_check_event_id in event_ids:
             record = replace(record, rejection_accepted_by_check_event_id=None)
+        # Issue #996: a full replay of the redacted ledger never saw the breaking check.
+        if record.duplicate_link_broken_by_check_event_id in event_ids:
+            record = replace(record, duplicate_link_broken_by_check_event_id=None)
         if event_ids & set(record.check_change_raising_check_event_ids):
             record = replace(record, check_change_raised_files=None)
         findings[current_id] = record

@@ -2650,6 +2650,11 @@ def _prior_finding_items(
         }
         if str(response_record.source_event_id) in allowed:
             answer["response_event_ref"] = str(response_record.source_event_id)
+        # Issue #996: the earlier finding a ``duplicate_of`` answer links to, so the reviewer
+        # can rule ``still_present`` on this one if it is not the same issue.
+        duplicate_of = response.duplicate_of_finding_id
+        if duplicate_of is not None and str(duplicate_of) in allowed:
+            answer["duplicate_of_ref"] = str(duplicate_of)
         body["response"] = answer
     prose: list[tuple[str, str, int]] = []
     if include_prose:

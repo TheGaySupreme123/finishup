@@ -210,6 +210,7 @@ def _checklist_clause(rows: object, budget: object, next_step: object | None) ->
         return ""
     counts = dict.fromkeys(_TODO_STATES, 0)
     at_budget = 0
+    linked = 0
     budget_value = int(budget) if type(budget) is str and _BUDGET.fullmatch(budget) else None
     for raw in cast(Sequence[JsonValue], rows):
         if not isinstance(raw, Mapping):
@@ -221,6 +222,8 @@ def _checklist_clause(rows: object, budget: object, next_step: object | None) ->
         if type(state) is not str or state not in counts:
             continue
         counts[state] += 1
+        # Issue #996: a holding duplicate link; the row's state is its earlier finding's.
+        linked += is_valid_id(IdKind.FINDING, row.get("duplicate_of_finding_id"))
         rounds = row.get("review_rounds")
         if (
             state == "open"
@@ -239,6 +242,7 @@ def _checklist_clause(rows: object, budget: object, next_step: object | None) ->
         + f", not done {counts['acknowledged_not_done']}"
         + f", rejection accepted {counts['rejection_accepted']}"
         + _self_verified_part(counts["self_verified"])
+        + (f", linked duplicates {linked}" if linked else "")
         + "; "
     )
     if type(next_step) is str and next_step in _CHECKLIST_NEXT:

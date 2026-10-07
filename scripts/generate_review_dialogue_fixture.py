@@ -174,6 +174,15 @@ def document(root: Path) -> dict[str, Any]:
         "reason": "Re-ran the Map-key regression myself after the packet could not show it.",
         "evidence_refs": ["res_866db2dd-0000-4000-8000-000000000003"],
     }
+    # Issue #996 (numba, as above): the restatement was minted as a new finding anyway; the agent
+    # links it to the earlier finding it already answered instead of answering it again.
+    duplicate: dict[str, Any] = {
+        "finding_id": _RESTATED,
+        "finding_frontier": frontier,
+        "disposition": "duplicate_of",
+        "evidence_refs": [],
+        "duplicate_of_finding_id": _FIRST,
+    }
     vectors: list[dict[str, Any]] = []
     for family, version, wire in (
         ("finding_recorded", "1.3.0", legacy),
@@ -184,6 +193,7 @@ def document(root: Path) -> dict[str, Any]:
         ("response_recorded", "1.0.0", rejected),
         ("response_recorded", "1.1.0", not_done),
         ("response_recorded", "1.1.0", self_verified),
+        ("response_recorded", "1.1.0", duplicate),
     ):
         payload = decode_payload(EventSchema(family, version), freeze_json(wire))
         encoded = encode_payload(payload)
@@ -264,6 +274,17 @@ def document(root: Path) -> dict[str, Any]:
                 "evidence_refs": self_verified["evidence_refs"],
             },
         },
+        {
+            "schema": "respond-request",
+            "schema_version": "1.1.0",
+            "payload": {
+                **{key: value for key, value in request.items() if key != "reason"},
+                "request_id": "req_01c5aaf7-0000-4000-8000-000000000003",
+                "finding_id": _RESTATED,
+                "disposition": "duplicate_of",
+                "duplicate_of_finding_id": _FIRST,
+            },
+        },
     ]
     return {
         "fixture_schema": "yoetz.fixture-case/1.0.0",
@@ -271,8 +292,8 @@ def document(root: Path) -> dict[str, Any]:
         "fixture_id": _ID,
         "purpose": (
             "Pin the additive review-dialogue event bytes beside unchanged legacy rows, and the "
-            "terminal acknowledged_not_done and self_verified responses on their 1.1.0 event and "
-            "respond wire."
+            "terminal acknowledged_not_done and self_verified responses and the duplicate_of link "
+            "on their 1.1.0 event and respond wire."
         ),
         "minimum_versions": {"fixture_contract": "1.0.0", "protocol": "1.0"},
         "owns_requirements": ["ISSUE-905/review-dialogue"],

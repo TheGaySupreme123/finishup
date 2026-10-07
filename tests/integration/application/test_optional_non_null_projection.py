@@ -243,7 +243,10 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
         ),
     ),
     (RespondEvidenceSummaryModel, frozenset({"description"})),
-    (RespondResponseModel, frozenset({"reason", "waiver_scope", "waiver_expiry"})),
+    (
+        RespondResponseModel,
+        frozenset({"reason", "waiver_scope", "waiver_expiry", "duplicate_of_finding_id"}),
+    ),
     (
         StartSuccessModel,
         frozenset({"attach_handle", "parent_task_id", "depth", "origin", "acceptance"}),
@@ -267,7 +270,15 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (StatusCompactObligationModel, frozenset({"acceptance_criteria"})),
     (
         StatusFindingItemModel,
-        frozenset({"todo_state", "review_rounds", "finding_frontier", "challenge"}),
+        frozenset(
+            {
+                "todo_state",
+                "review_rounds",
+                "finding_frontier",
+                "challenge",
+                "duplicate_of_finding_id",
+            }
+        ),
     ),
     (CheckProjectedFindingModel, frozenset({"challenge"})),
     (CheckVerifiedItemModel, frozenset({"requirement_or_claim", "snippet"})),
@@ -1430,6 +1441,10 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         ("RespondResponseModel", "waiver_expiry"): (
             "test_respond_omits_unset_optional_response_fields"
         ),
+        # Issue #996: set only on a duplicate_of answer.
+        ("RespondResponseModel", "duplicate_of_finding_id"): (
+            "test_respond_omits_unset_optional_response_fields"
+        ),
         ("StatusCompactObligationModel", "acceptance_criteria"): (
             "test_obligation_without_acceptance_criteria_projects"
         ),
@@ -1525,7 +1540,13 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         ("ProjectTextRefModel", ("envelope_digest",)),
         (
             "StatusFindingItemModel",
-            ("todo_state", "review_rounds", "finding_frontier", "challenge"),
+            (
+                "todo_state",
+                "review_rounds",
+                "finding_frontier",
+                "challenge",
+                "duplicate_of_finding_id",
+            ),
         ),
         ("CheckProjectedFindingModel", ("challenge",)),
         ("CheckVerifiedItemModel", ("snippet",)),

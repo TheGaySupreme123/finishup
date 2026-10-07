@@ -296,6 +296,37 @@ def _findings_status_result() -> StatusResultModel:
     return StatusResultModel.model_validate(wire)
 
 
+async def test_findings_view_shows_a_linked_duplicate_through_the_cli_renderer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #996: the terminal interface names the earlier finding a duplicate is linked to."""
+
+    earlier = _finding_row(0, "open")
+    duplicate = {
+        **_finding_row(1, "open"),
+        "disposition": "duplicate_of",
+        "response_event_id": "evt_52000000-0000-4000-8000-000000000041",
+        "duplicate_of_finding_id": earlier["finding_id"],
+    }
+    wire = _lineage_status_result().model_dump(mode="json")
+    wire["view"] = "findings"
+    wire["page"] = {"items": [earlier, duplicate], "next_cursor": None, "attempt_budget": "5"}
+    status = StatusResultModel.model_validate(wire)
+    client = _Client(status)
+
+    @asynccontextmanager
+    async def connect(_runtime: YoetzRuntime) -> AsyncGenerator[_Client]:
+        yield client
+
+    monkeypatch.setattr(YoetzRuntime, "_client", connect)
+    runtime = YoetzRuntime(cwd=tmp_path)
+    await runtime.open_task(_SESSION)
+
+    rendered = await runtime.task_status(_SESSION, "findings")
+    assert f"  duplicate of: {earlier['finding_id']}" in rendered.lines
+    assert f"[ ] F-2 {duplicate['finding_id']} open (2/5)" in rendered.lines
+
+
 async def test_findings_view_shows_each_items_final_state_through_the_cli_renderer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

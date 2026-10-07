@@ -85,3 +85,19 @@ def test_no_compact_cue_is_invented_below_the_budget() -> None:
     text = summary_for_check(_check_envelope("work_open_findings"))
     assert "decide_at_budget" not in text
     assert "at budget" not in text
+
+
+def test_linked_duplicates_are_named_only_when_present() -> None:
+    """Issue #996: a holding link is counted from its structural id; its state is the earlier
+    finding's, so the open count already reads as that finding allows."""
+
+    linked = {
+        **_row(2, "claim_without_admissible_evidence", "open", "0"),
+        "duplicate_of_finding_id": "fnd_59000000-0000-4000-8000-000000000001",
+    }
+    text = _summary(_row(1, "completion_with_open_obligations", "open", "0"), linked)
+    assert "to-do: open 2, verified 0, not done 0, rejection accepted 0, linked duplicates 1;" in (
+        text
+    )
+    forged = {**linked, "duplicate_of_finding_id": "not an id"}
+    assert "linked duplicates" not in _summary(forged)

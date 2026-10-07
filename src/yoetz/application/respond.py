@@ -19,7 +19,7 @@ from yoetz.domain.events import (
     media_type_for,
 )
 from yoetz.domain.findings import (
-    TERMINAL_RESPONSE_DISPOSITIONS,
+    RESPONSE_V1_1_DISPOSITIONS,
     Finding,
     FindingKind,
     FindingOrigin,
@@ -39,7 +39,11 @@ from yoetz.domain.values import (
     timestamp_from_datetime,
     timestamp_from_string,
 )
-from yoetz.kernel.finding_todo import TERMINAL_TODO_STATES, finding_todo_state
+from yoetz.kernel.finding_todo import (
+    TERMINAL_TODO_STATES,
+    duplicate_link_target,
+    finding_todo_state,
+)
 from yoetz.kernel.projections import FindingProjectionRecord, ProjectionState
 from yoetz.kernel.self_verification import FINDING_NOT_RECHECKED, self_verification_refusal
 from yoetz.ports.clock import ClockPort
@@ -224,34 +228,35 @@ def _channel(request: RespondRequest) -> PublicationChannel:
 
 
 def _identity(request: RespondRequest, *, policy_digest: str) -> JsonValue:
-    return cast(
-        JsonValue,
-        {
-            "protocol_version": request.protocol_version,
-            "schema_version": request.schema_version,
-            "request_id": request.request_id,
-            "session_id": request.session_id,
-            "writer_id": request.writer_id,
-            "expected_frontier": request.expected_frontier.model_dump(mode="json"),
-            "finding_id": request.finding_id,
-            "finding_frontier": request.finding_frontier.model_dump(mode="json"),
-            "disposition": request.disposition,
-            "reason": request.reason,
-            "waiver_scope": request.waiver_scope,
-            "waiver_expiry": request.waiver_expiry,
-            "evidence_refs": () if request.evidence_refs is None else request.evidence_refs,
-            "actor": {
-                "actor_id": request.actor.actor_id,
-                "actor_type": request.actor.actor_type.value,
-            },
-            "client": {
-                "integration": request.client.integration.value,
-                "kind": request.client.kind.value,
-                "version": request.client.version,
-            },
-            "waiver_policy_digest": policy_digest,
+    identity: dict[str, object] = {
+        "protocol_version": request.protocol_version,
+        "schema_version": request.schema_version,
+        "request_id": request.request_id,
+        "session_id": request.session_id,
+        "writer_id": request.writer_id,
+        "expected_frontier": request.expected_frontier.model_dump(mode="json"),
+        "finding_id": request.finding_id,
+        "finding_frontier": request.finding_frontier.model_dump(mode="json"),
+        "disposition": request.disposition,
+        "reason": request.reason,
+        "waiver_scope": request.waiver_scope,
+        "waiver_expiry": request.waiver_expiry,
+        "evidence_refs": () if request.evidence_refs is None else request.evidence_refs,
+        "actor": {
+            "actor_id": request.actor.actor_id,
+            "actor_type": request.actor.actor_type.value,
         },
-    )
+        "client": {
+            "integration": request.client.integration.value,
+            "kind": request.client.kind.value,
+            "version": request.client.version,
+        },
+        "waiver_policy_digest": policy_digest,
+    }
+    # Issue #996: present only when set, so every earlier request keeps its exact digest.
+    if request.duplicate_of_finding_id is not None:
+        identity["duplicate_of_finding_id"] = request.duplicate_of_finding_id
+    return cast(JsonValue, identity)
 
 
 async def _preflight(
@@ -397,6 +402,90 @@ def _admit_self_verification(
         )
 
 
+# Issue #996 typed refusals of a ``duplicate_of`` answer.
+DUPLICATE_TARGET_SAME_FINDING: Final = "duplicate_target_same_finding"
+DUPLICATE_TARGET_UNKNOWN: Final = "duplicate_target_unknown"
+DUPLICATE_TARGET_NOT_EARLIER: Final = "duplicate_target_not_earlier"
+DUPLICATE_TARGET_IS_DUPLICATE: Final = "duplicate_target_is_duplicate"
+DUPLICATE_LINK_BROKEN: Final = "duplicate_link_broken"
+
+
+def _admit_duplicate_link(
+    request: RespondRequest,
+    finding_record: FindingProjectionRecord,
+    projection: ProjectionState,
+) -> None:
+    """Admit a ``duplicate_of`` link only to a readable, earlier, unlinked finding (issue #996).
+
+    The target is checked against the current projection; origins may differ. A target that is
+    itself linked as a duplicate is refused rather than silently re-pointed, so the recorded link
+    is always the one the agent named; the refusal names the finding to link to instead. A
+    finding whose earlier link a later check broke needs its own answer and cannot be re-linked.
+    """
+
+    duplicate = finding_id(request.finding_id)
+    finding_record = projection.findings.get(duplicate) or finding_record
+    raw_target = request.duplicate_of_finding_id
+    if raw_target is None:
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            "duplicate_of requires duplicate_of_finding_id: the earlier finding this one repeats.",
+            reason_code="response_fields_invalid",
+            field="/duplicate_of_finding_id",
+        )
+    target = finding_id(raw_target)
+    if target == duplicate:
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            "A finding cannot be a duplicate of itself; name the earlier finding it repeats.",
+            reason_code=DUPLICATE_TARGET_SAME_FINDING,
+            field="/duplicate_of_finding_id",
+        )
+    if finding_record.duplicate_link_broken_by_check_event_id is not None:
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "A later check raised this finding's issue again after it was linked as a "
+                "duplicate, so the link no longer applies and it cannot be linked again. Repair "
+                "it and check, or answer it with another disposition."
+            ),
+            reason_code=DUPLICATE_LINK_BROKEN,
+            field="/finding_id",
+        )
+    target_record = projection.findings.get(target)
+    if target_record is None or target_record.payload is None:
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "The duplicate_of_finding_id is not a readable finding of this task. Name an "
+                "earlier finding from status view=findings."
+            ),
+            reason_code=DUPLICATE_TARGET_UNKNOWN,
+            field="/duplicate_of_finding_id",
+        )
+    if target_record.source_frontier >= finding_record.source_frontier:
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "The duplicate_of_finding_id was recorded after this finding. A duplicate link "
+                "points back to the earlier finding; answer the later one as the duplicate."
+            ),
+            reason_code=DUPLICATE_TARGET_NOT_EARLIER,
+            field="/duplicate_of_finding_id",
+        )
+    root = duplicate_link_target(projection, target)
+    if root is not None:
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "The duplicate_of_finding_id is itself linked as a duplicate of "
+                f"{root}. Link to the finding that answers for it instead."
+            ),
+            reason_code=DUPLICATE_TARGET_IS_DUPLICATE,
+            field="/duplicate_of_finding_id",
+        )
+
+
 async def _records_through(
     runtime: TaskRuntime, frontier: Frontier
 ) -> tuple[tuple[LedgerRecord, ...], ProjectionState]:
@@ -504,6 +593,8 @@ async def _public_result(
         response_wire["waiver_scope"] = payload.waiver_scope.value
     if payload.waiver_expiry is not None:
         response_wire["waiver_expiry"] = payload.waiver_expiry.wire
+    if payload.duplicate_of_finding_id is not None:
+        response_wire["duplicate_of_finding_id"] = payload.duplicate_of_finding_id
     response = RespondResponseModel.model_validate(response_wire)
     warning_codes: tuple[Literal["waiver_expired_at_recording"], ...] = ()
     if (
@@ -612,6 +703,15 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                 )
             if request.disposition == "self_verified":
                 _admit_self_verification(request, current_projection, current_records)
+            if request.disposition == "duplicate_of":
+                _admit_duplicate_link(request, finding_record, current_projection)
+            elif request.duplicate_of_finding_id is not None:
+                raise _error(
+                    PublicErrorCode.INVALID_REQUEST,
+                    "duplicate_of_finding_id is accepted only with disposition duplicate_of.",
+                    reason_code="response_fields_invalid",
+                    field="/duplicate_of_finding_id",
+                )
             reviewer_finding = finding_record.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
             reasoned = request.reason is not None and bool(request.reason.strip())
             if request.disposition == "acknowledged" and reviewer_finding and not reasoned:
@@ -702,6 +802,9 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                     evidence_id(ref) if ref.startswith("evd_") else result_id(ref)
                     for ref in (() if request.evidence_refs is None else request.evidence_refs)
                 ),
+                None
+                if request.duplicate_of_finding_id is None
+                else finding_id(request.duplicate_of_finding_id),
             )
             now = app.clock.now_utc()
             draft = EventDraft(
@@ -709,7 +812,7 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                 EventSchema(
                     "response_recorded",
                     RESPONSE_EVENT_SCHEMA_VERSION
-                    if payload.disposition in TERMINAL_RESPONSE_DISPOSITIONS
+                    if payload.disposition in RESPONSE_V1_1_DISPOSITIONS
                     else "1.0.0",
                 ),
                 timestamp_from_datetime(now),

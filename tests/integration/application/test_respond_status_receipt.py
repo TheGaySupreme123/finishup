@@ -167,6 +167,7 @@ from yoetz.protocol.models import (
     StatusCompactItemModel,
     StatusCompactPageModel,
     StatusEvidencePageModel,
+    StatusFindingItemModel,
     StatusFindingsPageModel,
     StatusObligationsPageModel,
     StatusOperationPageModel,
@@ -8592,3 +8593,205 @@ async def test_self_verified_answers_a_local_finding_only_observation_loss_keeps
         )
     )
     assert receipt.conclusion != "no_unresolved_deterministic_findings"
+
+
+async def _check_again(
+    app: Application, started: StartInternalResult, frontier: Frontier | FrontierModel, seed: int
+) -> CheckCommitResult:
+    checked = await app.check(
+        CheckRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(frontier),
+                "mode": "deterministic_only",
+                "max_findings": "3",
+            }
+        )
+    )
+    assert type(checked) is CheckCommitResult
+    return checked
+
+
+def _duplicate_wire(
+    started: StartInternalResult,
+    frontier: Frontier | FrontierModel,
+    finding: str,
+    target: str,
+    seed: int,
+) -> dict[str, JsonValue]:
+    return {
+        **_request_base(protocol_id("req_", seed)),
+        "session_id": started.session_id,
+        "writer_id": started.writer_id,
+        "expected_frontier": _frontier(frontier),
+        "finding_id": finding,
+        "finding_frontier": _frontier(frontier),
+        "disposition": "duplicate_of",
+        "duplicate_of_finding_id": target,
+    }
+
+
+async def _refused_duplicate(
+    app: Application,
+    started: StartInternalResult,
+    frontier: Frontier | FrontierModel,
+    finding: str,
+    target: str,
+    seed: int,
+) -> str:
+    with pytest.raises(PublicOperationError) as refused:
+        await app.respond(
+            RespondRequest.model_validate(_duplicate_wire(started, frontier, finding, target, seed))
+        )
+    return cast(str, refused.value.safe_details["reason_code"])
+
+
+def _row(page: StatusFindingsPageModel, finding: str) -> StatusFindingItemModel:
+    return next(item for item in page.items if item.finding_id == finding)
+
+
+async def test_duplicate_of_admission_refuses_self_unknown_later_and_chained_targets() -> None:
+    """Issue #996: a link points back to an earlier, readable finding that is not itself a
+    duplicate. Origins and kinds may differ; field rules are enforced by the request schema."""
+
+    app, _runtime, _ = _build_app(seed_offset=61)
+    started, checked, _obligation = await _bootstrap_finding(app, seed=9960)
+    earliest, middle, latest = (item.finding_id for item in checked.findings)
+    at = checked.result_frontier
+
+    assert await _refused_duplicate(app, started, at, middle, middle, 10101) == (
+        "duplicate_target_same_finding"
+    )
+    unknown = protocol_id("fnd_", 10102)
+    assert await _refused_duplicate(app, started, at, middle, unknown, 10103) == (
+        "duplicate_target_unknown"
+    )
+    assert await _refused_duplicate(app, started, at, earliest, middle, 10104) == (
+        "duplicate_target_not_earlier"
+    )
+    # The target is required with duplicate_of and refused with any other disposition.
+    missing = _duplicate_wire(started, at, middle, earliest, 10105)
+    del missing["duplicate_of_finding_id"]
+    with pytest.raises(pydantic.ValidationError):
+        RespondRequest.model_validate(missing)
+    stray = {**_duplicate_wire(started, at, middle, earliest, 10106), "disposition": "rejected"}
+    stray["reason"] = "Not a duplicate."
+    with pytest.raises(pydantic.ValidationError):
+        RespondRequest.model_validate(stray)
+
+    linked = await app.respond(
+        RespondRequest.model_validate(_duplicate_wire(started, at, middle, earliest, 10107))
+    )
+    assert linked.response.disposition == "duplicate_of"
+    assert linked.response.duplicate_of_finding_id == earliest
+    # A chain is refused rather than silently re-pointed: link to the root instead.
+    assert await _refused_duplicate(
+        app, started, linked.result_frontier, latest, middle, 10108
+    ) == ("duplicate_target_is_duplicate")
+    rooted = await app.respond(
+        RespondRequest.model_validate(
+            _duplicate_wire(started, linked.result_frontier, latest, earliest, 10109)
+        )
+    )
+    assert rooted.response.duplicate_of_finding_id == earliest
+
+
+@pytest.mark.parametrize("ledger_backend", ("memory", "sqlite"))
+async def test_duplicate_of_counts_once_inherits_state_and_breaks_on_re_raise(
+    ledger_backend: Literal["memory", "sqlite"],
+) -> None:
+    """Issue #996 (tb4n1 D5/#980): a re-raised concern minted as a new finding is answered by
+    linking it to the earlier finding. The pair counts once in readiness, the duplicate reads
+    exactly as the earlier finding allows, and a later check that returns it again breaks the
+    link so it needs its own answer."""
+
+    app, _runtime, _ = _build_app(seed_offset=62, ledger_backend=ledger_backend)
+    started, checked, _obligation = await _bootstrap_finding(app, seed=9980)
+    earliest, middle, _latest = (item.finding_id for item in checked.findings)
+    before = await _compact_readiness(app, started, 10201)
+    assert before.unanswered_finding_count == "3"
+    assert before.receipt_blocking_finding_count == "3"
+
+    linked = await app.respond(
+        RespondRequest.model_validate(
+            _duplicate_wire(started, checked.result_frontier, middle, earliest, 10202)
+        )
+    )
+    page = await _findings_view(app, started, 10203, include_resolved=True)
+    row = _row(page, middle)
+    assert row.disposition == "duplicate_of"
+    assert row.duplicate_of_finding_id == earliest
+    assert row.todo_state == "open"
+    assert row.resolved is False
+    linked_readiness = await _compact_readiness(app, started, 10204)
+    # One repair or answer on the earlier finding covers both: the pair counts once.
+    assert linked_readiness.unanswered_finding_count == "2"
+    assert linked_readiness.receipt_blocking_finding_count == "2"
+    assert "receipt_findings_unresolved" in linked_readiness.blocking_conditions
+
+    # The earlier finding's final answer is inherited, never improved on.
+    ended = await app.respond(
+        RespondRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 10205)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(linked.result_frontier),
+                "finding_id": earliest,
+                "finding_frontier": _frontier(linked.result_frontier),
+                "disposition": "acknowledged_not_done",
+                "reason": "The exercise result is out of scope for this run.",
+            }
+        )
+    )
+    page = await _findings_view(app, started, 10206, include_resolved=True)
+    assert _row(page, middle).todo_state == "acknowledged_not_done"
+    assert _row(page, earliest).todo_state == "acknowledged_not_done"
+    readiness = await _compact_readiness(app, started, 10207)
+    assert readiness.acknowledged_not_done is not None
+    assert earliest in readiness.acknowledged_not_done
+    assert middle not in readiness.acknowledged_not_done
+    with pytest.raises(PublicOperationError) as terminal:
+        await app.respond(
+            RespondRequest.model_validate(
+                _duplicate_wire(started, ended.result_frontier, middle, earliest, 10208)
+            )
+        )
+    assert terminal.value.safe_details["reason_code"] == "finding_terminal"
+
+    # The receipt carries the duplicate's answer and never reads cleaner than the earlier
+    # finding allows (the link section itself is on the 1.3.0 artifact; see test_receipts).
+    receipt = await _receipt_912(app, started, ended.result_frontier, 10310, "json")
+    document = cast(dict[str, JsonValue], receipt.document)
+    dispositions = {
+        cast(dict[str, JsonValue], item)["finding_id"]: cast(dict[str, JsonValue], item)[
+            "disposition"
+        ]
+        for item in cast(list[JsonValue], document["responses"])
+    }
+    assert dispositions[middle] == "duplicate_of"
+    assert receipt.conclusion == "unresolved_findings_remain"
+    frontier = receipt.result_frontier
+    for seed, receipt_format in ((10311, "markdown"), (10312, "text")):
+        rendered = await _receipt_912(
+            app, started, frontier, seed, cast(Literal["markdown", "text"], receipt_format)
+        )
+        assert rendered.human_text is not None
+        assert rendered.conclusion == "unresolved_findings_remain"
+        frontier = rendered.result_frontier
+
+    # A later check returns the duplicate's issue again: the link breaks for good.
+    again = await _check_again(app, started, frontier, 10212)
+    assert middle in {item.finding_id for item in again.findings}
+    page = await _findings_view(app, started, 10213, include_resolved=True)
+    row = _row(page, middle)
+    assert row.disposition == "duplicate_of"
+    assert row.duplicate_of_finding_id is None
+    assert row.todo_state == "open"
+    broken = await _compact_readiness(app, started, 10214)
+    assert broken.unanswered_finding_count == "2"
+    assert await _refused_duplicate(
+        app, started, again.result_frontier, middle, earliest, 10215
+    ) == ("duplicate_link_broken")

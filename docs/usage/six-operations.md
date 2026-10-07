@@ -181,7 +181,10 @@ not your work any more, and keeps the receipt at best `insufficient_coverage`; Y
 with `finding_not_rechecked` before a later check, or `finding_not_proof_limited` while that check
 still sees the issue. A finding that is already `verified_resolved`, `acknowledged_not_done`,
 `self_verified` or `rejection_accepted` is final: `respond` records nothing and answers
-`finding_terminal`.
+`finding_terminal`. `duplicate_of` links a finding that repeats an earlier one you already answered:
+name the earlier finding in `duplicate_of_finding_id`. While the link holds the finding reads as the
+earlier one does and needs no separate answer; a later check that raises it again breaks the link,
+and then it needs its own answer.
 
 ### `status`
 Reads current state — use it after a resume, a compaction, a handoff, or any uncertainty about what

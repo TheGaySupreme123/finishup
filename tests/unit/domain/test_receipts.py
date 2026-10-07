@@ -153,6 +153,7 @@ def test_receipt_document_is_frozen_and_exactly_shaped() -> None:
         "acknowledged_not_done_finding_ids",
         "rejection_accepted_finding_ids",
         "self_verified_finding_ids",
+        "duplicate_finding_links",
         "semantic_withheld_items",
     )
     assert is_dataclass(document)
@@ -634,3 +635,44 @@ def test_genuine_strict_ceiling_compact_keeps_terminal_wording() -> None:
         "review was blocked before dispatch by network-egress policy. No provider attempt "
         "or AI-powered finding was recorded."
     )
+
+
+def test_duplicate_links_round_trip_by_ids_and_render_in_their_own_section() -> None:
+    """Issue #996: holding ``duplicate_of`` links, ids only, on the 1.3.0 artifact."""
+
+    wire = _terminal_artifact("unresolved_findings_remain")
+    findings = cast(list[dict[str, Any]], wire["findings"])
+    duplicate = cast(str, findings[0]["finding_id"])
+    earlier = "fnd_00000000-0000-4000-8000-000000000996"
+    wire["duplicate_finding_links"] = [
+        {"finding_id": duplicate, "duplicate_of_finding_id": earlier}
+    ]
+    document = receipt_document_from_json(wire)
+    assert [
+        (item.finding_id, item.duplicate_of_finding_id) for item in document.duplicate_finding_links
+    ] == [(duplicate, earlier)]
+    encoded = receipt_document_to_json(document)
+    assert encoded["duplicate_finding_links"] == wire["duplicate_finding_links"]
+    assert receipt_document_from_json(encoded) == document
+    for markdown, heading in ((True, "## Linked duplicates"), (False, "Linked duplicates")):
+        rendered = render_receipt_human(document, markdown=markdown)
+        assert heading in rendered
+        assert f"- {duplicate} duplicates {earlier}" in rendered
+        assert "never resolves a finding by itself" in rendered
+    # The link never settles the row: it stays among the unresolved findings it reads as.
+    assert duplicate in {item.finding_id for item in unresolved_findings_for_render(document)}
+
+    for bad in (
+        [{"finding_id": duplicate, "duplicate_of_finding_id": duplicate}],  # itself
+        [{"finding_id": earlier, "duplicate_of_finding_id": duplicate}],  # not carried
+        [{"finding_id": duplicate, "duplicate_of_finding_id": earlier, "reason": "x"}],  # prose
+        [],  # present only when non-empty
+    ):
+        broken = deepcopy(wire)
+        broken["duplicate_finding_links"] = bad
+        with pytest.raises(ProtocolValueError):
+            receipt_document_from_json(broken)
+    legacy = _variant("unresolved-findings.case.json", "mixed_open_responses")
+    legacy["duplicate_finding_links"] = wire["duplicate_finding_links"]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(legacy)

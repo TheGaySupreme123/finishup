@@ -45,7 +45,12 @@ from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel.claim_limitations import required_limitation_ids_for_projection
 from yoetz.kernel.claims import completion_claim_present
 from yoetz.kernel.finding_resolution import finding_is_resolved
-from yoetz.kernel.finding_todo import FindingTodoState, finding_blocks_receipt, finding_todo_state
+from yoetz.kernel.finding_todo import (
+    FindingTodoState,
+    duplicate_root,
+    finding_blocks_receipt,
+    finding_todo_state,
+)
 from yoetz.kernel.observed_failures import observed_event_ids_from_records
 from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS, PLAN_DRIFT_GAPS
 from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
@@ -754,19 +759,20 @@ def closure_readiness_facts(
     )
     # Same predicate as receipt_blocking_finding_count (``finding_todo.finding_blocks_receipt``): an
     # actionable finding kind that no later qualifying check resolved and that is not a terminal
-    # ``rejection_accepted`` item (issue #905).
+    # ``rejection_accepted`` item (issue #905). A linked ``duplicate_of`` item (issue #996) is
+    # named by the finding that answers for it (``duplicate_root``), so a pair counts once.
     blocking = {
-        finding.finding_id
+        duplicate_root(state, finding.finding_id)
         for finding in current
         if finding_blocks_receipt(state, finding.finding_id)
     }
     acknowledged = {
-        finding.finding_id
+        duplicate_root(state, finding.finding_id)
         for finding in current
         if finding_acknowledged_not_done(state, finding.finding_id)
     }
     self_verified = {
-        finding.finding_id
+        duplicate_root(state, finding.finding_id)
         for finding in current
         if finding_todo_state(state, finding.finding_id) is FindingTodoState.SELF_VERIFIED
     }

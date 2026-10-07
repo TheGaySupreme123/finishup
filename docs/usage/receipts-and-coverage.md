@@ -247,6 +247,33 @@ being your work and never counts as receipt-blocking, but it is never resolved: 
 lists `finding_self_verified` as a standing limitation, the receipt names it in its own
 "Self-verified by the agent; Yoetz could not prove the repair" section, and the receipt's
 conclusion is at best `insufficient_coverage`. A Yoetz limit is never a `yoetz-blocker`.
+
+Three more things the receipt discloses in their own sections, by id only:
+
+- **Assumptions and verification limits.** When you make a best-effort choice, or a check is
+  inherently out of reach (a hidden verifier, a private trace), that is not a blocker: finish the
+  work and record a decision whose statement holds the line `yoetz-assumption:<obligation id>` or
+  `yoetz-verification-limit:<obligation id>`, with the assumption or limit as the rationale. Closure
+  readiness lists `assumption_disclosed` or `verification_limit_disclosed` as standing
+  limitations, and the receipt names each one under "Assumptions and verification limits the agent
+  disclosed". Nothing is blocked or resolved by it; supersede the decision to withdraw it.
+- **Obligations acknowledged as not done.** For an obligation you truly will not do, after
+  trying to repair it, publish it again with `status: "acknowledged_not_done"` and an
+  `acknowledged_not_done_reason` (event version 1.1.0). It is no longer open work, readiness lists
+  it under `acknowledged_not_done`, and the receipt names it under "Obligations acknowledged as not
+  done" and never reads clean. Publishing the obligation again as `open` (or `resolved` with
+  evidence) takes it back.
+- **Findings the review says the task requires.** A finding you answered `acknowledged_not_done`
+  whose review challenge says the task itself requires the work is listed as
+  `finding_premise_disputed` and under "Not done although the review says the task requires it".
+  A Stop asks you about it once.
+
+`duplicate_of` links a finding that repeats an earlier one you already answered (the same concern
+raised again as a new finding) to that earlier finding. It is not a final state of its own: while
+the link holds, the finding reads exactly as the earlier one does and is counted once with it, so
+one repair or answer covers both. It never reads cleaner than the earlier finding, and the receipt
+lists each link by ids in a "Linked duplicates" section. A later check that raises the finding
+again, or a review that says it is still present, breaks the link; it then needs its own answer.
 `rejection_accepted` no longer blocks the receipt's conclusion but is listed in its own "Rejection
 accepted" section. Both sections name finding ids only. A review that restates a recorded AI-powered
 finding without anything recorded since does not add a second item: it is seen again and suppressed,

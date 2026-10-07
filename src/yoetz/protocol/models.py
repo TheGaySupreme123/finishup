@@ -1679,7 +1679,7 @@ class CheckRequestModel(PublicRequestModel):
 
 class RespondRequestModel(PublicRequestModel):
     optional_non_null_fields = frozenset(
-        {"reason", "waiver_scope", "waiver_expiry", "evidence_refs"}
+        {"reason", "waiver_scope", "waiver_expiry", "evidence_refs", "duplicate_of_finding_id"}
     )
 
     session_id: SessionIdWire
@@ -1690,6 +1690,7 @@ class RespondRequestModel(PublicRequestModel):
     disposition: Literal[
         "acknowledged",
         "acknowledged_not_done",
+        "duplicate_of",
         "provenance_disputed",
         "rejected",
         "self_verified",
@@ -1699,6 +1700,8 @@ class RespondRequestModel(PublicRequestModel):
     waiver_scope: Literal["finding_only"] | None = None
     waiver_expiry: TimestampWire | None = None
     evidence_refs: tuple[EvidenceOrResultIdWire, ...] | None = None
+    # Issue #996: the earlier finding a ``duplicate_of`` answer links to; only with it.
+    duplicate_of_finding_id: FindingIdWire | None = None
 
     @model_validator(mode="after")
     def _validate_respond_request(self) -> RespondRequestModel:
@@ -1749,6 +1752,7 @@ class StatusFindingsFilterModel(_ClosedModel):
         Literal[
             "acknowledged",
             "acknowledged_not_done",
+            "duplicate_of",
             "none",
             "provenance_disputed",
             "rejected",
@@ -2099,6 +2103,7 @@ class ClosureSelectionModel(_ClosedModel):
         Literal[
             "acknowledged",
             "acknowledged_not_done",
+            "duplicate_of",
             "provenance_disputed",
             "rejected",
             "self_verified",
@@ -3635,7 +3640,9 @@ class RespondEvidenceSummaryModel(_ClosedModel):
 
 
 class RespondResponseModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"reason", "waiver_scope", "waiver_expiry"})
+    optional_non_null_fields = frozenset(
+        {"reason", "waiver_scope", "waiver_expiry", "duplicate_of_finding_id"}
+    )
 
     response_event_id: EventIdWire
     finding_id: FindingIdWire
@@ -3643,6 +3650,7 @@ class RespondResponseModel(_ClosedModel):
     disposition: Literal[
         "acknowledged",
         "acknowledged_not_done",
+        "duplicate_of",
         "provenance_disputed",
         "rejected",
         "self_verified",
@@ -3652,17 +3660,23 @@ class RespondResponseModel(_ClosedModel):
     reason: String1To4096 | OmittedContentModel | None = None
     waiver_scope: Literal["finding_only"] | None = None
     waiver_expiry: TimestampWire | None = None
+    duplicate_of_finding_id: FindingIdWire | None = None
 
     @model_validator(mode="after")
     def _validate_response_fields(self) -> RespondResponseModel:
         if len(self.evidence) > 64:
             raise ValueError("response_evidence_limit")
+        # Issue #996: the link target is present exactly on a ``duplicate_of`` answer.
+        if (self.disposition == "duplicate_of") != (
+            self.duplicate_of_finding_id is not None
+        ) or self.duplicate_of_finding_id == self.finding_id:
+            raise ValueError("response_fields_invalid")
         if (
             isinstance(self.reason, OmittedContentModel)
             and self.reason.category is not DataCategory.FINDING_SUMMARY
         ):
             raise ValueError("reason_omission_category_invalid")
-        if self.disposition == "acknowledged":
+        if self.disposition in {"acknowledged", "duplicate_of"}:
             if self.waiver_scope is not None or self.waiver_expiry is not None:
                 raise ValueError("response_fields_invalid")
         elif self.disposition in {
@@ -4031,7 +4045,7 @@ FindingTodoStateLiteral = Literal[
 class StatusFindingItemModel(_ClosedModel):
     # Issue #905 to-do facts: present on every current row, absent only on older recordings.
     optional_non_null_fields = frozenset(
-        {"challenge", "todo_state", "review_rounds", "finding_frontier"}
+        {"challenge", "todo_state", "review_rounds", "finding_frontier", "duplicate_of_finding_id"}
     )
 
     finding_id: FindingIdWire
@@ -4049,6 +4063,7 @@ class StatusFindingItemModel(_ClosedModel):
     disposition: Literal[
         "acknowledged",
         "acknowledged_not_done",
+        "duplicate_of",
         "none",
         "provenance_disputed",
         "rejected",
@@ -4067,6 +4082,10 @@ class StatusFindingItemModel(_ClosedModel):
     # (sequence plus that event's head digest), for every origin. ``respond`` accepts it
     # as ``finding_frontier`` as-is, so no historical frontier has to be reconstructed.
     finding_frontier: FrontierModel | None = None
+    # Issue #996: the earlier finding this one is linked to, present exactly while its
+    # ``duplicate_of`` link holds; ``todo_state`` is then derived from that finding. A
+    # ``duplicate_of`` row without it is a link a later check broke: it needs its own answer.
+    duplicate_of_finding_id: FindingIdWire | None = None
 
     @model_validator(mode="after")
     def _validate_finding_item(self) -> StatusFindingItemModel:
@@ -4100,6 +4119,14 @@ class StatusFindingItemModel(_ClosedModel):
             or self.waiver_expiry is not None
         ):
             raise ValueError("self_verified_finding_state_invalid")
+        if self.duplicate_of_finding_id is not None and (
+            self.disposition != "duplicate_of" or self.duplicate_of_finding_id == self.finding_id
+        ):
+            raise ValueError("duplicate_of_finding_state_invalid")
+        if self.disposition == "duplicate_of" and (
+            self.waiver_scope is not None or self.waiver_expiry is not None
+        ):
+            raise ValueError("duplicate_of_finding_state_invalid")
         return self
 
 
@@ -5852,7 +5879,14 @@ _RESPOND_STRUCTURAL_POINTERS: Final = (
     )
     + _prefix_leaf_patterns(
         "/response",
-        ("disposition", "finding_id", "response_event_id", "waiver_expiry", "waiver_scope"),
+        (
+            "disposition",
+            "duplicate_of_finding_id",
+            "finding_id",
+            "response_event_id",
+            "waiver_expiry",
+            "waiver_scope",
+        ),
     )
     + _prefix_leaf_patterns("/response/finding_frontier", FRONTIER_LEAVES)
     + _prefix_leaf_patterns("/response/evidence/*", ("reference_id",))
@@ -6071,6 +6105,7 @@ _STATUS_FINDINGS_STRUCTURAL_POINTERS: Final = (
         "/page/items/*",
         (
             "disposition",
+            "duplicate_of_finding_id",
             "finding_id",
             "kind",
             "origin",
@@ -6347,6 +6382,8 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
             "acknowledged_not_done_finding_ids/*",
             "claim_refs/*",
             "conclusion",
+            "duplicate_finding_links/*/duplicate_of_finding_id",
+            "duplicate_finding_links/*/finding_id",
             "evidence_refs/*",
             "generated_at",
             "receipt_id",
@@ -6654,7 +6691,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1426:
+    if len(result) != 1430:
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

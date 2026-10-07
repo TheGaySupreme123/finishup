@@ -66,6 +66,12 @@ from yoetz.protocol.models import (
 from yoetz.protocol.recovery import continuation_for_semantic_outcome, directive_for
 
 __all__ = [
+    "ACKNOWLEDGED_OBLIGATIONS_SECTION_TITLE",
+    "PREMISE_DISPUTED_SECTION_TITLE",
+    "DISCLOSED_ASSUMPTIONS_SECTION_TITLE",
+    "ReceiptDisclosure",
+    "DUPLICATE_LINKS_SECTION_TITLE",
+    "ReceiptDuplicateLink",
     "SELF_VERIFIED_SECTION_TITLE",
     "CHILD_SELF_VERIFIED_NOTE",
     "receipt_document_carries_terminal_sections",
@@ -486,6 +492,23 @@ _TERMINAL_ID_FIELDS: Final = (
 SELF_VERIFIED_SECTION_TITLE: Final = "Self-verified by the agent; Yoetz could not prove the repair"
 # Issue #984 (ADR-034): how a child's self-verified finding reads on the parent receipt.
 CHILD_SELF_VERIFIED_NOTE: Final = "self-verified by the child agent; Yoetz could not prove it"
+DUPLICATE_LINKS_SECTION_TITLE: Final = "Linked duplicates"
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptDuplicateLink:
+    """One holding ``duplicate_of`` link (issue #996): ids only, never prose."""
+
+    finding_id: FindingId
+    duplicate_of_finding_id: FindingId
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "finding_id", finding_id(self.finding_id))
+        object.__setattr__(
+            self, "duplicate_of_finding_id", finding_id(self.duplicate_of_finding_id)
+        )
+        if self.finding_id == self.duplicate_of_finding_id:
+            raise ProtocolValueError("invalid_receipt_document")
 
 
 class ReceiptObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
@@ -874,7 +897,7 @@ class ReceiptResponse:
             raise ProtocolValueError(invalid)
         if self.waiver_expiry is not None and type(self.waiver_expiry) is not Timestamp:
             raise ProtocolValueError(invalid)
-        if self.disposition is ResponseDisposition.ACKNOWLEDGED:
+        if self.disposition in {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.DUPLICATE_OF}:
             if self.waiver_scope is not None or self.waiver_expiry is not None:
                 raise ProtocolValueError(invalid)
         elif self.disposition in {
@@ -1088,6 +1111,9 @@ class ReceiptDocument:
     # Issue #984 (ADR-034): the agent repaired these and verified the repair itself because Yoetz
     # could not prove it. Disclosed by id in their own section; the conclusion is never clean.
     self_verified_finding_ids: tuple[FindingId, ...] = ()
+    # Issue #996: holding ``duplicate_of`` links of carried findings, sorted by finding id. Each
+    # duplicate reads as its earlier finding allows; the link never resolves anything.
+    duplicate_finding_links: tuple[ReceiptDuplicateLink, ...] = ()
     # Opaque review item identities withheld by the never-send heuristic.  The field is omitted
     # when empty so historical receipt objects retain their exact bytes.
     semantic_withheld_items: tuple[ReceiptSemanticWithheldItem, ...] = ()
@@ -1169,6 +1195,15 @@ class ReceiptDocument:
         ):
             # A repair only the agent verified never reads as clean (issue #984).
             raise ProtocolValueError("invalid_receipt_conclusion")
+        links = _validate_tuple(self.duplicate_finding_links, 0, 100, invalid)
+        if any(type(value) is not ReceiptDuplicateLink for value in links):
+            raise ProtocolValueError(invalid)
+        linked = tuple(
+            str(item.finding_id) for item in cast(tuple[ReceiptDuplicateLink, ...], links)
+        )
+        _validate_sorted_unique_strings(linked)
+        if links and (receipt_schema_version != "1.3.0" or not carried_ids.issuperset(linked)):
+            raise ProtocolValueError(invalid)
         withheld = _validate_tuple(self.semantic_withheld_items, 0, 64, invalid)
         if any(type(value) is not ReceiptSemanticWithheldItem for value in withheld):
             raise ProtocolValueError(invalid)
@@ -1532,6 +1567,7 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
             {
                 "acknowledged_not_done_finding_ids",
                 "children",
+                "duplicate_finding_links",
                 "rejection_accepted_finding_ids",
                 "self_verified_finding_ids",
                 "semantic_withheld_items",
@@ -1575,7 +1611,7 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         raise ProtocolValueError("invalid_receipt_document")
     if not has_children and artifact_version == "1.3.0":
         raise ProtocolValueError("invalid_receipt_document")
-    for name in _TERMINAL_ID_FIELDS:
+    for name in (*_TERMINAL_ID_FIELDS, "duplicate_finding_links"):
         if name in source and not _array(source[name], invalid):
             raise ProtocolValueError(invalid)
     semantic_provenance_value = (
@@ -1631,9 +1667,23 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
             finding_id(item)
             for item in _array(source.get("self_verified_finding_ids", ()), invalid)
         ),
+        duplicate_finding_links=tuple(
+            _duplicate_link_from_json(item, invalid)
+            for item in _array(source.get("duplicate_finding_links", ()), invalid)
+        ),
         semantic_withheld_items=semantic_withheld_items,
     )
     return document
+
+
+def _duplicate_link_from_json(value: object, invalid: str) -> ReceiptDuplicateLink:
+    source = _closed_object(
+        value, frozenset({"finding_id", "duplicate_of_finding_id"}), frozenset(), invalid
+    )
+    return ReceiptDuplicateLink(
+        finding_id=finding_id(_field(source, "finding_id", invalid)),
+        duplicate_of_finding_id=finding_id(_field(source, "duplicate_of_finding_id", invalid)),
+    )
 
 
 def _frontier_to_json(frontier: Frontier) -> dict[str, object]:
@@ -1787,6 +1837,11 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
         result["rejection_accepted_finding_ids"] = list(document.rejection_accepted_finding_ids)
     if document.self_verified_finding_ids:
         result["self_verified_finding_ids"] = list(document.self_verified_finding_ids)
+    if document.duplicate_finding_links:
+        result["duplicate_finding_links"] = [
+            {"finding_id": item.finding_id, "duplicate_of_finding_id": item.duplicate_of_finding_id}
+            for item in document.duplicate_finding_links
+        ]
     if document.semantic_withheld_items:
         result["semantic_withheld_items"] = [
             {"item_id": item.item_id, "reason": item.reason}
@@ -1977,6 +2032,24 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                     "its own recorded evidence, because Yoetz could not prove the repair. They "
                     "are not resolved by Yoetz and keep this receipt from reading clean.",
                     *(f"- {item}" for item in document.self_verified_finding_ids),
+                )
+            )
+        )
+    if document.duplicate_finding_links:
+        heading = (
+            f"## {DUPLICATE_LINKS_SECTION_TITLE}" if markdown else DUPLICATE_LINKS_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent linked these findings to an earlier finding that names the same "
+                    "issue. Each reads exactly as the earlier finding allows; a link never "
+                    "resolves a finding by itself.",
+                    *(
+                        f"- {item.finding_id} duplicates {item.duplicate_of_finding_id}"
+                        for item in document.duplicate_finding_links
+                    ),
                 )
             )
         )

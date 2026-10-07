@@ -3637,6 +3637,11 @@ def _status_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     findings_filter = cast(dict[str, JsonValue], definitions["findings_filter"])
     filter_properties = cast(dict[str, JsonValue], findings_filter["properties"])
     _admit_terminal_dispositions(cast(dict[str, JsonValue], filter_properties["disposition"]))
+    # Issue #996: select linked duplicates too.
+    filter_disposition = cast(dict[str, JsonValue], filter_properties["disposition"])
+    filter_values = cast(list[JsonValue], filter_disposition["enum"])
+    filter_values.append(_DUPLICATE_OF)
+    filter_values.sort(key=lambda item: str(item).encode("ascii"))
     rules = cast(list[JsonValue], document["allOf"])
     # The no-filter branch in v1.1 also contains the previously-added results view.  Keep the
     # selector views explicitly filter-free in this successor.
@@ -3850,6 +3855,35 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                 },
             }
         )
+    # Issue #996: a ``duplicate_of`` row carries its earlier finding exactly while the link holds.
+    item_disposition = cast(dict[str, JsonValue], finding_item_properties["disposition"])
+    item_values = cast(list[JsonValue], item_disposition["enum"])
+    item_values.append(_DUPLICATE_OF)
+    item_values.sort(key=lambda item: str(item).encode("ascii"))
+    finding_item_properties[_DUPLICATE_OF_FIELD] = {"$ref": "#/$defs/finding_id"}
+    cast(list[JsonValue], finding_item["allOf"]).extend(
+        [
+            {
+                "if": {
+                    "properties": {"disposition": {"const": _DUPLICATE_OF}},
+                    "required": ["disposition"],
+                },
+                "then": {
+                    "properties": {
+                        "waiver_expiry": {"type": "null"},
+                        "waiver_scope": {"type": "null"},
+                    }
+                },
+            },
+            {
+                "if": {"required": [_DUPLICATE_OF_FIELD]},
+                "then": {
+                    "properties": {"disposition": {"const": _DUPLICATE_OF}},
+                    "required": ["disposition"],
+                },
+            },
+        ]
+    )
     for definition_name in ("candidate_finding_item", "finding_item"):
         finding_definition = cast(dict[str, JsonValue], definitions[definition_name])
         finding_properties = cast(dict[str, JsonValue], finding_definition["properties"])
@@ -4684,6 +4718,10 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     _insert_before_waived(
         cast(list[JsonValue], receipt_response["allOf"]), _self_verified_condition()
     )
+    # Issue #996: the link itself is disclosed by ids in ``duplicate_finding_links``.
+    _admit_duplicate_of(
+        response_properties, cast(list[JsonValue], receipt_response["allOf"]), link_field=False
+    )
     properties = cast(dict[str, JsonValue], document["properties"])
     findings = cast(dict[str, JsonValue], properties["findings"])
     findings["items"] = {"$ref": SCHEMA_NAMESPACE + "findings/finding-1.4.0.schema.json"}
@@ -4702,6 +4740,23 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
             "type": "array",
             "uniqueItems": True,
         }
+    # Issue #996: holding ``duplicate_of`` links, ids only; present only when non-empty.
+    definitions["duplicate_finding_link"] = {
+        "additionalProperties": False,
+        "properties": {
+            "duplicate_of_finding_id": {"$ref": "#/$defs/finding_id"},
+            "finding_id": {"$ref": "#/$defs/finding_id"},
+        },
+        "required": ["duplicate_of_finding_id", "finding_id"],
+        "type": "object",
+    }
+    properties["duplicate_finding_links"] = {
+        "items": {"$ref": "#/$defs/duplicate_finding_link"},
+        "maxItems": 100,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
     # A repair only the agent verified never reads as clean (issue #984, ADR-034).
     cast(list[JsonValue], document.setdefault("allOf", [])).append(
         {
@@ -7293,6 +7348,70 @@ def _admit_terminal_dispositions(disposition: dict[str, JsonValue]) -> None:
     values.sort(key=lambda item: str(item).encode("ascii"))
 
 
+_DUPLICATE_OF: Final = "duplicate_of"
+_DUPLICATE_OF_FIELD: Final = "duplicate_of_finding_id"
+
+
+def _admit_duplicate_of(
+    properties: dict[str, JsonValue],
+    rules: list[JsonValue],
+    *,
+    one_of: bool = False,
+    link_field: bool = True,
+) -> dict[str, JsonValue] | None:
+    """Admit the ``duplicate_of`` disposition (issue #996) on one response-shaped object.
+
+    It accepts no waiver fields; with ``link_field`` it requires ``duplicate_of_finding_id`` (the
+    same pattern as ``finding_id``) and returns the rule that keeps that field off every other
+    disposition, for the caller to place on the object.
+    """
+
+    disposition = cast(dict[str, JsonValue], properties["disposition"])
+    values = cast(list[JsonValue], disposition["enum"])
+    if _DUPLICATE_OF not in values:
+        values.append(_DUPLICATE_OF)
+    values.sort(key=lambda item: str(item).encode("ascii"))
+    required: list[JsonValue] = [_DUPLICATE_OF_FIELD] if link_field else []
+    if one_of:
+        rule: dict[str, JsonValue] = {
+            **_no_waiver_fields(),
+            "properties": {"disposition": {"const": _DUPLICATE_OF}},
+        }
+        if required:
+            rule["required"] = required
+    else:
+        then: dict[str, JsonValue] = dict(_no_waiver_fields())
+        if required:
+            then["required"] = required
+        rule = {
+            "if": {
+                "properties": {"disposition": {"const": _DUPLICATE_OF}},
+                "required": ["disposition"],
+            },
+            "then": then,
+        }
+    # Disposition order: right after ``acknowledged_not_done`` (or ``acknowledged``).
+    index = 0
+    for position, existing in enumerate(rules):
+        current = cast(dict[str, JsonValue], existing)
+        guard = cast(dict[str, JsonValue], current.get("if", current))
+        guard_properties = cast(dict[str, JsonValue], guard.get("properties", {}))
+        const = cast(dict[str, JsonValue], guard_properties.get("disposition", {})).get("const")
+        if const in {"acknowledged", _ACKNOWLEDGED_NOT_DONE}:
+            index = position + 1
+    rules.insert(index, rule)
+    if not link_field:
+        return None
+    properties[_DUPLICATE_OF_FIELD] = json.loads(json.dumps(properties["finding_id"]))
+    return {
+        "if": {"required": [_DUPLICATE_OF_FIELD]},
+        "then": {
+            "properties": {"disposition": {"const": _DUPLICATE_OF}},
+            "required": ["disposition"],
+        },
+    }
+
+
 def _insert_before_waived(rules: list[JsonValue], rule: dict[str, JsonValue]) -> None:
     """Insert one per-disposition rule in disposition order, before the ``waived`` rule."""
 
@@ -7367,6 +7486,9 @@ def _response_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue
             "required": ["reason", "evidence_refs"],
         },
     )
+    link_rule = _admit_duplicate_of(properties, rules, one_of=True)
+    assert link_rule is not None
+    cast(list[JsonValue], document.setdefault("allOf", [])).append(link_rule)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     return document
 
@@ -7386,6 +7508,9 @@ def _respond_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _admit_terminal_dispositions(disposition)
     rules.insert(1, _acknowledged_not_done_condition())
     _insert_before_waived(rules, _self_verified_condition())
+    link_rule = _admit_duplicate_of(properties, rules)
+    assert link_rule is not None
+    rules.append(link_rule)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     if "title" in document:
         document["title"] = f"Yoetz respond request {entry.schema_version}"
@@ -7409,6 +7534,9 @@ def _respond_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _admit_terminal_dispositions(disposition)
     rules.insert(1, _acknowledged_not_done_condition())
     _insert_before_waived(rules, _self_verified_condition("evidence"))
+    link_rule = _admit_duplicate_of(properties, rules)
+    assert link_rule is not None
+    rules.append(link_rule)
     _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     if "title" in document:

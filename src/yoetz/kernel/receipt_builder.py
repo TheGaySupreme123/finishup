@@ -47,6 +47,7 @@ from yoetz.domain.receipts import (
     ReceiptChildren,
     ReceiptConclusion,
     ReceiptDocument,
+    ReceiptDuplicateLink,
     ReceiptGap,
     ReceiptObligation,
     ReceiptObligationStatus,
@@ -192,12 +193,21 @@ class ReceiptFindingState:
     acknowledged_not_done: bool = False
     rejection_accepted: bool = False
     self_verified: bool = False
+    # Issue #996: the earlier finding a holding ``duplicate_of`` link names. The flags above are
+    # then the ones derived from it (``finding_todo``); the link is disclosed by ids.
+    duplicate_of_finding_id: FindingId | None = None
 
     def __post_init__(self) -> None:
         try:
             object.__setattr__(self, "finding_id", finding_id(self.finding_id))
+            if self.duplicate_of_finding_id is not None:
+                object.__setattr__(
+                    self, "duplicate_of_finding_id", finding_id(self.duplicate_of_finding_id)
+                )
         except ValueError as exc:
             raise ValueError(_CONTEXT_INVALID) from exc
+        if self.duplicate_of_finding_id == self.finding_id:
+            raise ValueError(_CONTEXT_INVALID)
         if (
             type(self.resolved) is not bool
             or type(self.acknowledged_not_done) is not bool
@@ -806,7 +816,11 @@ def _apply_profile(
         )
         transformed_responses: list[ReceiptResponse] = []
         for response in responses:
-            if response.disposition is ResponseDisposition.ACKNOWLEDGED:
+            # A ``duplicate_of`` answer (issue #996) has an optional reason like acknowledged.
+            if response.disposition in {
+                ResponseDisposition.ACKNOWLEDGED,
+                ResponseDisposition.DUPLICATE_OF,
+            }:
                 if response.reason is not None:
                     counts[
                         (
@@ -1957,6 +1971,17 @@ def build_receipt(
         if terminal_sections
         else ()
     )
+    duplicate_links = (
+        tuple(
+            ReceiptDuplicateLink(state.finding_id, state.duplicate_of_finding_id)
+            for state in sorted(
+                context.finding_states, key=lambda item: _ascii_key(item.finding_id)
+            )
+            if state.duplicate_of_finding_id is not None and state.finding_id in retained_ids
+        )[:100]
+        if terminal_sections
+        else ()
+    )
     return ReceiptDocument(
         receipt_id=receipt_id,
         task_id=task_id,
@@ -1984,6 +2009,7 @@ def build_receipt(
         acknowledged_not_done_finding_ids=acknowledged_not_done_ids,
         rejection_accepted_finding_ids=rejection_accepted_ids,
         self_verified_finding_ids=self_verified_ids,
+        duplicate_finding_links=duplicate_links,
         semantic_withheld_items=tuple(
             ReceiptSemanticWithheldItem(item_id=item_id)
             for item_id in (

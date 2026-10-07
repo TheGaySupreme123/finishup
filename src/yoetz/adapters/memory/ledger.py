@@ -107,7 +107,7 @@ from yoetz.kernel.finding_resolution import (
     finding_is_resolved,
     finding_resolution_explanation,
 )
-from yoetz.kernel.finding_todo import finding_todo_state
+from yoetz.kernel.finding_todo import duplicate_link_target, finding_todo_state
 from yoetz.kernel.observed_failures import (
     observed_event_ids_from_records,
     observed_run_facts,
@@ -1694,6 +1694,10 @@ def _projection_items(
                     else FrontierModel.model_validate(dict(finding_frontier.as_wire()))
                 ),
             }
+            # Issue #996: present exactly while a ``duplicate_of`` link holds.
+            duplicate_of = duplicate_link_target(projection, finding.finding_id)
+            if duplicate_of is not None:
+                finding_fields["duplicate_of_finding_id"] = duplicate_of
             if finding.challenge is not None:
                 finding_fields["challenge"] = {
                     "alternative_interpretation": finding.challenge.alternative_interpretation,

@@ -113,6 +113,13 @@ def _response(disposition: ResponseDisposition) -> ResponseRecordedPayload:
         reason=reason,
         waiver_scope=waiver_scope,
         waiver_expiry=waiver_expiry,
+        # Issue #996: a duplicate link names an earlier finding; this one is not recorded here,
+        # so the link does not hold and the finding keeps its own (open) state.
+        duplicate_of_finding_id=(
+            finding_id("fnd_00000000-0000-4000-8000-000000000996")
+            if disposition is ResponseDisposition.DUPLICATE_OF
+            else None
+        ),
     )
 
 

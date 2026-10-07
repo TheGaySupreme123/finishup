@@ -2095,3 +2095,82 @@ def test_child_self_verified_finding_reads_self_verified_on_the_parent_receipt()
     wire_row["self_verified"] = False
     with pytest.raises(ProtocolValueError):
         receipt_document_from_json(wire)
+
+
+def test_a_linked_duplicate_is_disclosed_by_ids_and_never_reads_cleaner() -> None:
+    """Issue #996: the duplicate's flags are its earlier finding's; the link is ids only."""
+
+    finding = _finding()
+    earlier = finding_id("fnd_00000000-0000-4000-8000-000000000996")
+    base = _context(finding=finding, check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()))
+    context = replace(
+        base,
+        finding_states=(
+            ReceiptFindingState(
+                finding.finding_id, resolved=False, duplicate_of_finding_id=earlier
+            ),
+        ),
+    )
+    legacy = _build(context)
+    assert legacy.duplicate_finding_links == ()
+    current = build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        replace(
+            _versions(),
+            schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+        ),
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+    assert [
+        (item.finding_id, item.duplicate_of_finding_id) for item in current.duplicate_finding_links
+    ] == [(finding.finding_id, earlier)]
+    # The earlier finding is open, so the duplicate is too: never a clean conclusion.
+    assert current.conclusion is ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN
+    with pytest.raises(ValueError):
+        ReceiptFindingState(
+            finding.finding_id, resolved=False, duplicate_of_finding_id=finding.finding_id
+        )
+
+
+def test_acknowledged_obligation_is_disclosed_and_never_clean() -> None:
+    """Issue #997 (ADR-032 slice C): an obligation the agent will not do caps the conclusion."""
+
+    from yoetz.protocol.canonical import JsonValue
+    from yoetz.protocol.schemas import validate_schema_instance
+
+    obligation = ObligationPublishedPayload(
+        obligation_id("obl_00000000-0000-4000-8000-000000000020"),
+        "Run focused verification",
+        "Recorded successful result",
+        ObligationStatus.ACKNOWLEDGED_NOT_DONE,
+        acknowledged_not_done_reason="The deployment policy is the task owner's decision.",
+    )
+    plan = PlanPublishedPayload(1, "Verified task", (obligation.obligation_id,), ())
+    context = _context(
+        check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()), plan=plan, obligation=obligation
+    )
+    current = build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        replace(
+            _versions(),
+            schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+        ),
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+    assert current.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    assert current.acknowledged_not_done_obligation_ids == (obligation.obligation_id,)
+    wire = receipt_document_to_json(current)
+    validate_schema_instance("receipt-document", "1.3.0", cast(JsonValue, wire))
+    assert "Obligations acknowledged as not done" in render_receipt_human(current, markdown=True)
+    # The reason stays on the obligation; the receipt carries ids only.
+    assert "task owner's decision" not in str(wire.get("acknowledged_not_done_obligation_ids"))

@@ -74,6 +74,7 @@ __all__ = [
     "PriorFindingVerdictRecord",
     "RankedFindings",
     "ResponseDisposition",
+    "RESPONSE_V1_1_DISPOSITIONS",
     "RUNTIME_FAILURE_STAGES",
     "RuntimeAttemptEvidence",
     "SELF_VERIFIED_GUIDANCE",
@@ -192,6 +193,13 @@ class ResponseDisposition(str, Enum):  # noqa: UP042 - exact wire enum base
     # asks. Terminal: the item is never re-reviewed, never resolves, and never reads as clean.
     # Recorded only on ``response_recorded`` 1.1.0.
     ACKNOWLEDGED_NOT_DONE = "acknowledged_not_done"
+    # Issue #996 (ADR-034 amendment): the agent links this finding to an earlier finding that
+    # names the same issue and that it already answered or is answering. Requires
+    # ``duplicate_of_finding_id``; reason and evidence are optional, waiver fields are refused.
+    # Not terminal: while the link holds the to-do state is derived from the earlier finding, and
+    # a later check that raises this finding's issue again breaks the link
+    # (``kernel/finding_todo.py``). Recorded only on ``response_recorded`` 1.1.0.
+    DUPLICATE_OF = "duplicate_of"
     PROVENANCE_DISPUTED = "provenance_disputed"
     REJECTED = "rejected"
     # Issue #984 (ADR-034): the agent repaired the finding, Yoetz cannot prove the repair because
@@ -206,6 +214,12 @@ class ResponseDisposition(str, Enum):  # noqa: UP042 - exact wire enum base
 # The dispositions that make a finding's to-do state final when recorded (issues #905, #984).
 TERMINAL_RESPONSE_DISPOSITIONS: Final = frozenset(
     {ResponseDisposition.ACKNOWLEDGED_NOT_DONE, ResponseDisposition.SELF_VERIFIED}
+)
+
+# The dispositions recorded only on ``response_recorded`` 1.1.0 (issues #905, #984, #996); every
+# other disposition keeps the released 1.0.0 bytes.
+RESPONSE_V1_1_DISPOSITIONS: Final = TERMINAL_RESPONSE_DISPOSITIONS | frozenset(
+    {ResponseDisposition.DUPLICATE_OF}
 )
 
 # The one sentence every agent-facing text reuses when it tells the agent what to do with a

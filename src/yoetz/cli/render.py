@@ -635,6 +635,9 @@ def render_human_status(result: StatusSuccessModel) -> str:
                     f"  finding_frontier: {finding.finding_frontier.sequence} "
                     f"({finding.finding_frontier.head_digest})"
                 )
+            if finding.duplicate_of_finding_id is not None:
+                # Issue #996: the to-do state above is the earlier finding's while this holds.
+                lines.append(f"  duplicate of: {finding.duplicate_of_finding_id}")
     if isinstance(result.page, StatusResultsPageModel):
         lines.extend(_render_result_items(result.page))
     if isinstance(result.page, StatusObligationsPageModel):

@@ -25,7 +25,7 @@ from yoetz.domain.coordination import (
 from yoetz.domain.findings import (
     FINDING_KIND_TRAITS,
     MAX_RECORDED_VERDICTS,
-    TERMINAL_RESPONSE_DISPOSITIONS,
+    RESPONSE_V1_1_DISPOSITIONS,
     CheckVerdict,
     Finding,
     FindingKind,
@@ -281,8 +281,9 @@ SEMANTIC_EVENT_SCHEMA_VERSIONS: Final = ("1.1.0", SEMANTIC_EVENT_SCHEMA_VERSION)
 FINDING_EVENT_SCHEMA_VERSION: Final = "1.3.0"
 FINDING_SNIPPET_EVENT_SCHEMA_VERSION: Final = "1.4.0"
 # ``response_recorded`` 1.0.0 is released and frozen. 1.1.0 exists only to admit the terminal
-# ``acknowledged_not_done`` (issue #905) and ``self_verified`` (issue #984) dispositions; every
-# other disposition keeps 1.0.0 bytes, so the version is a pure function of the payload and old
+# ``acknowledged_not_done`` (issue #905), ``self_verified`` (issue #984) and ``duplicate_of``
+# (issue #996, with its ``duplicate_of_finding_id``) dispositions; every other disposition keeps
+# 1.0.0 bytes, so the version is a pure function of the payload and old
 # ledgers replay unchanged.
 RESPONSE_EVENT_SCHEMA_VERSION: Final = "1.1.0"
 COORDINATION_EVENT_SCHEMA_VERSION: Final = "1.0.0"
@@ -2299,11 +2300,21 @@ class ResponseRecordedPayload:
     waiver_scope: WaiverScope | None = None
     waiver_expiry: Timestamp | None = None
     evidence_refs: tuple[EvidenceId | ResultId, ...] = ()
+    # Issue #996: the earlier finding a ``duplicate_of`` response links to; set only for it.
+    duplicate_of_finding_id: FindingId | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "finding_id", finding_id(self.finding_id))
         object.__setattr__(self, "finding_frontier", _frontier(self.finding_frontier))
         disposition = _exact_enum(self.disposition, ResponseDisposition)
+        if self.duplicate_of_finding_id is not None:
+            object.__setattr__(
+                self, "duplicate_of_finding_id", finding_id(self.duplicate_of_finding_id)
+            )
+        if (disposition is ResponseDisposition.DUPLICATE_OF) != (
+            self.duplicate_of_finding_id is not None
+        ) or self.duplicate_of_finding_id == self.finding_id:
+            raise ProtocolValueError("response_fields_invalid")
         object.__setattr__(self, "disposition", disposition)
         if self.reason is not None:
             object.__setattr__(
@@ -3747,7 +3758,15 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
         ),
         "response_recorded": (
             frozenset({"finding_id", "finding_frontier", "disposition"}),
-            frozenset({"reason", "waiver_scope", "waiver_expiry", "evidence_refs"}),
+            frozenset(
+                {
+                    "reason",
+                    "waiver_scope",
+                    "waiver_expiry",
+                    "evidence_refs",
+                    "duplicate_of_finding_id",
+                }
+            ),
         ),
         "redaction_recorded": (
             frozenset(
@@ -4220,6 +4239,7 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
         evidence = _optional(source, "evidence_refs")
         waiver_scope_value = _optional(source, "waiver_scope")
         waiver_expiry_value = _optional(source, "waiver_expiry")
+        duplicate_of_value = _optional(source, "duplicate_of_finding_id")
         return ResponseRecordedPayload(
             finding_id=finding_id(_field(source, "finding_id")),
             finding_frontier=frontier_from_json(_field(source, "finding_frontier")),
@@ -4237,6 +4257,9 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 ()
                 if evidence is None
                 else cast(tuple[EvidenceId | ResultId, ...], tuple(_array(evidence)))
+            ),
+            duplicate_of_finding_id=(
+                None if duplicate_of_value is None else finding_id(duplicate_of_value)
             ),
         )
     if schema.name == "redaction_recorded":
@@ -4760,6 +4783,7 @@ def encode_payload(payload: EventPayload) -> JsonValue:
             None if value.waiver_expiry is None else value.waiver_expiry.wire,
         )
         _optional_tuple(result, "evidence_refs", cast(tuple[object, ...], value.evidence_refs))
+        _optional_value(result, "duplicate_of_finding_id", value.duplicate_of_finding_id)
         return _json_object(result)
     if payload_type is RedactionRecordedPayload:
         value = cast(RedactionRecordedPayload, payload)
@@ -4950,7 +4974,7 @@ def _validate_event_schema_payload(
             # of those readable; 1.4.0 is reserved for snippets and the new semantic kinds.
             raise ProtocolValueError("invalid_event_schema")
     if type(payload) is ResponseRecordedPayload:
-        if (payload.disposition in TERMINAL_RESPONSE_DISPOSITIONS) != (
+        if (payload.disposition in RESPONSE_V1_1_DISPOSITIONS) != (
             schema.version == RESPONSE_EVENT_SCHEMA_VERSION
         ):
             raise ProtocolValueError("invalid_event_schema")

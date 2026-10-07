@@ -7949,6 +7949,34 @@ invalid) and markdown/text render a "Self-verified by the agent; Yoetz could not
 section; the conclusion is at best `insufficient_coverage`. `check-result` `finding_checklist.counts`
 and the status findings view carry `self_verified` as a count and a `todo_state`.
 
+#### `duplicate_of`: a re-raised finding linked to an earlier one (issue #996, ADR-034 amendment)
+
+`duplicate_of` is a non-terminal `respond` disposition for a finding that repeats an earlier finding
+the agent already answered or is answering (a re-raise minted as a new finding that automatic
+`restates` linking missed). It requires `duplicate_of_finding_id` (a `fnd_` id, admitted only with
+this disposition); `reason` and `evidence_refs` are optional; waiver fields are refused. It rides
+`respond-request`/`respond-result` `1.1.0` and `response_recorded` `1.1.0` (the result and event
+echo `duplicate_of_finding_id`). Typed `INVALID_REQUEST` refusals, each continuing as
+`input_correction_new_identity`: `duplicate_target_same_finding`, `duplicate_target_unknown` (not a
+readable finding of this task), `duplicate_target_not_earlier` (the target was recorded after this
+finding), `duplicate_target_is_duplicate` (the target is itself linked; Yoetz refuses rather than
+re-pointing, so a chain is never recorded by the agent and the message names the root), and
+`duplicate_link_broken` (a later check broke this finding's earlier link; it cannot be re-linked).
+Differing origins or kinds are never refused. While the link holds
+(`kernel/finding_todo.duplicate_link_target`) the duplicate's to-do state is derived from the root
+of its links (`duplicate_root`): `verified_resolved`, `self_verified`, `acknowledged_not_done` and
+`rejection_accepted` are inherited, and an open root leaves it open but answered. Only the
+duplicate's own qualifying check proof reads better than its root. Readiness counts a linked pair
+once: `unanswered_finding_count`, `receipt_blocking_finding_count` and the readiness facts name the
+root. The link breaks for good when a later check returns the duplicate again, returns a local
+finding with its issue key, or a review rules it `still_present` or `answered_not_fixed`: the
+projection records `duplicate_link_broken_by_check_event_id` (emitted in snapshots only when set,
+cleared when that check is redacted), and the finding reverts to its own state and counts as
+unanswered. The status findings row carries `duplicate_of_finding_id` exactly while the link holds;
+`receipt-document` `1.3.0` carries `duplicate_finding_links` (1–100 `{finding_id,
+duplicate_of_finding_id}`, ids only, each `finding_id` a carried finding) and markdown/text render a
+"Linked duplicates" section. The next review's prior-finding row carries `duplicate_of_ref`.
+
 `review_rounds` counts later recorded checks that assessed a finding and left it open: a check that
 returned a local finding again over a later subject, or a recorded `still_present`,
 `answered_not_fixed` or `unassessable` ruling. Projection snapshots emit `review_rounds` and

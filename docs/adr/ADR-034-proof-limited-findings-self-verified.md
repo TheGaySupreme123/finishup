@@ -179,3 +179,54 @@ A `self_verified` item is final:
 The disposition never closes another finding and never removes a coverage gap. If the agent
 wrongly self-verifies, the receipt still shows the item, its reason and its evidence, and a
 reviewer or human reads them there.
+
+## Amendment 1 (issue #996): `duplicate_of` links a re-raised finding to an earlier one
+
+**Status:** Accepted. Owner decision on 2026-10-07 while reviewing tb4n1: "P4-2 (duplicate_of):
+APPROVED. Build it after L5's D5 automatic `restates` linking so it covers what that misses." This
+counts as the maintainer acknowledgement for this design-gated protocol change on the unreleased
+`respond-request`/`respond-result` `1.1.0`, `response_recorded` `1.1.0`, `status-request` `1.2.0`,
+`status-result` `1.4.0` and `receipt-document` `1.3.0` wires.
+
+**Context.** In tb4n1 a reviewer concern raised again was minted as a new finding, so agents
+answered the same issue repeatedly (music-harmony semantic: 34 publishes and 50 status calls after
+the gate). D5 links a re-raise automatically when the reviewer cites the earlier open finding
+(`restates`). It misses re-raises minted anyway: prior findings over the packet limit,
+deterministic duplicates, and restatements of a terminal item.
+
+**Decision.**
+
+- `respond` gains the disposition `duplicate_of` with a required `duplicate_of_finding_id`.
+  `reason` and `evidence_refs` are optional; waiver fields are refused. It is not terminal.
+- Admission refuses, with typed reason codes, a target that is the same finding
+  (`duplicate_target_same_finding`), unknown or unreadable (`duplicate_target_unknown`), recorded
+  after this finding (`duplicate_target_not_earlier`), or itself linked as a duplicate
+  (`duplicate_target_is_duplicate`). Yoetz refuses a chained target instead of re-pointing it to
+  the root, so the recorded link is always the one the agent named; the refusal names the root.
+  A finding whose earlier link a check broke cannot be re-linked (`duplicate_link_broken`).
+  Differing origins or kinds are not refused.
+- While the link holds, the duplicate's to-do state is derived from the root of its links
+  (`kernel/finding_todo.duplicate_root`; a chain can still form when the target is linked later,
+  and it is finite because every link points to an earlier record). `verified_resolved`,
+  `self_verified`, `acknowledged_not_done` and `rejection_accepted` are inherited. An open root
+  leaves the duplicate open, but its answer is the root's: readiness counts the pair once in
+  `findings_unanswered` and `receipt_findings_unresolved`, naming the root.
+- The link breaks for good when a later check returns the duplicate again, returns a local
+  finding with its issue key (the rule fired again), or a review rules it `still_present` or
+  `answered_not_fixed`. An AI-powered issue key alone is too coarse to break a link. The break is
+  replay-derived (`duplicate_link_broken_by_check_event_id`, cleared if that check is redacted,
+  as a full replay would). The duplicate reverts to its own state, its `duplicate_of` answer no
+  longer counts, and it needs its own answer.
+- Status findings rows carry `duplicate_of_finding_id` exactly while the link holds. Receipts on
+  the 1.3.0 artifact list `duplicate_finding_links` by ids in a "Linked duplicates" section. The
+  next review's prior-finding row carries `duplicate_of_ref`, so the reviewer can break a wrong
+  link by ruling `still_present`.
+
+**Honesty.** A duplicate never reads resolved unless its root was resolved by a qualifying check
+or its own qualifying check proved it absent. It never reads cleaner than its root, and the link
+never makes a receipt clean by itself: an open root keeps `unresolved_findings_remain`, and an
+inherited `self_verified` keeps the conclusion at best `insufficient_coverage`.
+
+**Reverse path.** The link is not final. The agent can answer the duplicate with another
+disposition at any time while it is not in an inherited final state; a later check or a review
+breaks the link; redacting the breaking check restores it.

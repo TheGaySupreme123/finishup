@@ -791,6 +791,7 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     assert admitted == (
         "acknowledged",
         "acknowledged_not_done",
+        "duplicate_of",
         "provenance_disputed",
         "rejected",
         "self_verified",
@@ -809,6 +810,14 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     assert text.index("repair it and check first") < text.index("respond self_verified")
     assert text.index("respond self_verified") < text.index("acknowledged_not_done only if")
     assert "never a yoetz-blocker" in text
+    # Issue #996: the link target is advertised with its rule, and the text says what it does.
+    target = cast(
+        dict[str, Any], cast(dict[str, Any], schema["properties"])["duplicate_of_finding_id"]
+    )
+    assert "earlier" in cast(str, target["description"])
+    assert "duplicate_of_finding_id" in rules
+    assert "respond duplicate_of" in text
+    assert "never makes a finding read cleaner" in text
 
 
 def test_guidance_resources_are_exact_and_static() -> None:
