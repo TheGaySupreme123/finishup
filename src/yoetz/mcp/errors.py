@@ -45,6 +45,7 @@ __all__ = [
 # present and valid, or that a whole payload is wrong when one key inside it is.
 _SAFE_LOCATION_SEGMENTS: Final = frozenset(
     {
+        "acknowledged_not_done_reason",
         "context_digest",
         "detection_id",
         "membership_generation",
@@ -1384,6 +1385,18 @@ def _select_union_branch(
     }
     if len(families) == 1 and len(admitted) == 1 and "" not in admitted:
         return with_family[0]
+    if len(families) == 1 and "" not in admitted:
+        # Versions of one family that widen an enum (obligation_published 1.1.0 adds
+        # ``acknowledged_not_done``, #997): name the widest, when it contains every other.
+        sets = [frozenset(value.split(", ")) for value in admitted]
+        widest = max(sets, key=len)
+        if all(item <= widest for item in sets):
+            return next(
+                item
+                for item in with_family
+                if frozenset(_branch_leaf_admitted_values(document, item[0], remaining).split(", "))
+                == widest
+            )
     # Ambiguous: stay on the union node so callers can name admitted schema names.
     return None
 

@@ -1237,7 +1237,10 @@ def _obligation_item(
     )
     values = dict(
         obligation_id=obligation,
-        status=typed.payload.status.value,
+        # Issue #997: an obligation acknowledged as not done is not resolved; the obligations
+        # view keeps the released open/resolved vocabulary and closure readiness names it in
+        # ``acknowledged_not_done``.
+        status="resolved" if typed.payload.status.value == "resolved" else "open",
         description=typed.payload.description,
         evidence_expectation=typed.payload.evidence_expectation,
         source_refs=typed.payload.source_refs,

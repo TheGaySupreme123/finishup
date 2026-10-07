@@ -231,6 +231,7 @@ __all__ = [
     "ResultRecordedPayload",
     "RuntimeProfile",
     "RESPONSE_EVENT_SCHEMA_VERSION",
+    "OBLIGATION_SCHEMA_VERSION",
     "SESSION_EVENT_SCHEMA_VERSION",
     "TASK_STATEMENT_EVENT_SCHEMAS",
     "TASK_STATEMENT_PLAN_SCHEMA_VERSION",
@@ -286,6 +287,11 @@ FINDING_SNIPPET_EVENT_SCHEMA_VERSION: Final = "1.4.0"
 # 1.0.0 bytes, so the version is a pure function of the payload and old
 # ledgers replay unchanged.
 RESPONSE_EVENT_SCHEMA_VERSION: Final = "1.1.0"
+# ``obligation_published`` 1.0.0 is released and frozen. 1.1.0 is an additive superset that admits
+# the status ``acknowledged_not_done`` with its required ``acknowledged_not_done_reason`` (issue #997, ADR-032
+# slice C; L6's #1002 adds its own 1.1.0-only item fields to the same version). A payload using any
+# 1.1.0-only feature must ride 1.1.0; 1.0.0 never carries one, so old ledgers replay unchanged.
+OBLIGATION_SCHEMA_VERSION: Final = "1.1.0"
 COORDINATION_EVENT_SCHEMA_VERSION: Final = "1.0.0"
 SESSION_EVENT_SCHEMA_VERSION: Final = "1.1.0"
 # Lineage fields are additive to the original event families.  The old session-opened schema
@@ -397,6 +403,9 @@ class RequestedItemKind(str, Enum):  # noqa: UP042 - exact wire enum base
 class ObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
     OPEN = "open"
     RESOLVED = "resolved"
+    # ``obligation_published`` 1.1.0 only (issue #997, ADR-032 slice C): the agent will not do
+    # this obligation and says why. Not open, not resolved; disclosed as not done.
+    ACKNOWLEDGED_NOT_DONE = "acknowledged_not_done"
 
 
 class NoObligationsReason(str, Enum):  # noqa: UP042 - exact wire enum base
@@ -908,6 +917,7 @@ def _locator_key_kind(schema: EventSchema) -> str:
             )
         )
         or schema == EventSchema("response_recorded", RESPONSE_EVENT_SCHEMA_VERSION)
+        or schema == EventSchema("obligation_published", OBLIGATION_SCHEMA_VERSION)
     )
     if schema.version != SCHEMA_VERSION and not additive:
         return "none"
@@ -1861,6 +1871,8 @@ class ObligationPublishedPayload:
     requested_items: tuple[RequestedItem, ...] = ()
     source_refs: tuple[EventId, ...] = ()
     resolution_evidence_refs: tuple[EvidenceId | ResultId, ...] = ()
+    # Issue #997: why the agent will not do it; required exactly with ``acknowledged_not_done``.
+    acknowledged_not_done_reason: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "obligation_id", obligation_id(self.obligation_id))
@@ -1894,8 +1906,15 @@ class ObligationPublishedPayload:
             field="resolution_evidence_refs",
         )
         object.__setattr__(self, "resolution_evidence_refs", resolution_refs)
-        if status is ObligationStatus.OPEN and resolution_refs:
+        if status is not ObligationStatus.RESOLVED and resolution_refs:
             raise ProtocolValueError("obligation_resolution_invalid")
+        if status is ObligationStatus.ACKNOWLEDGED_NOT_DONE:
+            reason = _bounded_text(self.acknowledged_not_done_reason, MAX_REASON_BYTES, minimum=1)
+            if not reason.strip() or len(reason.encode("utf-8")) > MAX_REASON_BYTES:
+                raise ProtocolValueError("event_text_out_of_bounds")
+            object.__setattr__(self, "acknowledged_not_done_reason", reason)
+        elif self.acknowledged_not_done_reason is not None:
+            raise ProtocolValueError("invalid_event_value_type")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2966,6 +2985,7 @@ PAYLOAD_TYPES: Final[Mapping[EventSchema, type[EventPayload]]] = MappingProxyTyp
         EventSchema("plan_published", SCHEMA_VERSION): PlanPublishedPayload,
         EventSchema("plan_published", TASK_STATEMENT_PLAN_SCHEMA_VERSION): PlanPublishedPayload,
         EventSchema("obligation_published", SCHEMA_VERSION): ObligationPublishedPayload,
+        EventSchema("obligation_published", OBLIGATION_SCHEMA_VERSION): ObligationPublishedPayload,
         EventSchema("assignment_recorded", SCHEMA_VERSION): AssignmentRecordedPayload,
         EventSchema("decision_recorded", SCHEMA_VERSION): DecisionRecordedPayload,
         EventSchema("action_recorded", SCHEMA_VERSION): ActionRecordedPayload,
@@ -3961,6 +3981,8 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
         optional = frozenset({*optional, "digest_binding"})
     if schema == EventSchema("claim_recorded", CLAIM_SCHEMA_VERSION):
         required = frozenset({*required, "limitation_refs", "supersedes_claim_refs"})
+    if schema == EventSchema("obligation_published", OBLIGATION_SCHEMA_VERSION):
+        optional = frozenset({*optional, "acknowledged_not_done_reason"})
     source = _closed_object(frozen, required=required, optional=optional)
 
     if schema.name == "child_dependencies_recorded":
@@ -4043,11 +4065,11 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
     if schema.name == "obligation_published":
         status = _enum_from_json(_field(source, "status"), ObligationStatus)
         resolution_refs = _optional(source, "resolution_evidence_refs")
-        if status is ObligationStatus.OPEN and "resolution_evidence_refs" in source:
+        if status is not ObligationStatus.RESOLVED and "resolution_evidence_refs" in source:
             raise ProtocolValueError("obligation_resolution_invalid")
         requested = _optional(source, "requested_items")
         source_refs = _optional(source, "source_refs")
-        return ObligationPublishedPayload(
+        obligation = ObligationPublishedPayload(
             obligation_id=obligation_id(_field(source, "obligation_id")),
             description=cast(str, _field(source, "description")),
             evidence_expectation=cast(str, _field(source, "evidence_expectation")),
@@ -4069,7 +4091,12 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                     tuple(_array(resolution_refs)),
                 )
             ),
+            acknowledged_not_done_reason=cast(
+                str | None, _optional(source, "acknowledged_not_done_reason")
+            ),
         )
+        _validate_event_schema_payload(schema, obligation)
+        return obligation
     if schema.name == "assignment_recorded":
         obligations = tuple(_array(_field(source, "obligation_ids")))
         write_policy_value = _optional(source, "write_policy")
@@ -4629,6 +4656,7 @@ def encode_payload(payload: EventPayload) -> JsonValue:
         _optional_tuple(result, "source_refs", cast(tuple[object, ...], value.source_refs))
         if value.status is ObligationStatus.RESOLVED:
             result["resolution_evidence_refs"] = value.resolution_evidence_refs
+        _optional_value(result, "acknowledged_not_done_reason", value.acknowledged_not_done_reason)
         return _json_object(result)
     if payload_type is AssignmentRecordedPayload:
         value = cast(AssignmentRecordedPayload, payload)
@@ -4972,6 +5000,13 @@ def _validate_event_schema_payload(
             # Ordinary findings written by older ledgers legally use the released 1.0.0 shape,
             # semantic 1.1/1.2 additions, or the current dialogue-capable 1.3.0 shape. Keep all
             # of those readable; 1.4.0 is reserved for snippets and the new semantic kinds.
+            raise ProtocolValueError("invalid_event_schema")
+    if type(payload) is ObligationPublishedPayload:
+        # Issue #997: the ``acknowledged_not_done`` status is 1.1.0-only (1.0.0 is frozen).
+        # Selection: 1.1.0 iff a 1.1.0-only feature is used (L6's #1002 item fields join this).
+        if (payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE) != (
+            schema.version == OBLIGATION_SCHEMA_VERSION
+        ):
             raise ProtocolValueError("invalid_event_schema")
     if type(payload) is ResponseRecordedPayload:
         if (payload.disposition in RESPONSE_V1_1_DISPOSITIONS) != (

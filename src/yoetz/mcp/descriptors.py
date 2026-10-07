@@ -164,12 +164,16 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
         "publish-work-request": MappingProxyType(
             {
                 "max_oneof_nodes": 8,
-                "max_oneof_branches": 38,
+                # +3 for obligation_published 1.1.0 (#997): its family branch and the
+                # acknowledged_not_done status rule.
+                "max_oneof_branches": 41,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 23,
+                # +1 for the obligation_published 1.1.0 payload definition (#997).
+                "max_defs_count": 24,
                 "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 52_000,
+                # +2.7 KB for obligation_published 1.1.0 and its template (#997).
+                "max_encoded_bytes": 55_000,
             }
         ),
         "check-request": MappingProxyType(
@@ -835,6 +839,36 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
                             "requested_items": [{"item_kind": "command", "value": "pytest -q"}],
                             "resolution_evidence_refs": [_example_id("evidence", 2)],
                         },
+                    ),
+                ],
+                "actor": dict(_EXAMPLE_ACTOR),
+                "client": dict(_EXAMPLE_CLIENT),
+            },
+            # Issue #997 (ADR-032 slice C): the honest last resort for an obligation the agent
+            # will not do, after repair: repeat the meaning fields, status acknowledged_not_done
+            # with a reason, on obligation_published 1.1.0. A later open or resolved
+            # publication of the same obligation takes it back.
+            {
+                "protocol_version": "0.1",
+                "schema_version": "1.0.0",
+                "request_id": _example_id("request", 13),
+                "session_id": _example_id("session", 1),
+                "writer_id": _example_id("writer", 1),
+                "expected_frontier": {"sequence": "2", "head_digest": _EXAMPLE_HEAD_DIGEST},
+                "event_drafts": [
+                    _example_draft(
+                        13,
+                        "obligation_published",
+                        {
+                            "obligation_id": _example_id("obligation", 2),
+                            "description": "State the outcome this work owes.",
+                            "acceptance_criteria": "A focused test slice passes at the claimed state.",
+                            "evidence_expectation": "A named test run or reviewed diff.",
+                            "status": "acknowledged_not_done",
+                            "requested_items": [{"item_kind": "command", "value": "pytest -q"}],
+                            "acknowledged_not_done_reason": "Out of scope for this change; reported to the user.",
+                        },
+                        version="1.1.0",
                     ),
                 ],
                 "actor": dict(_EXAMPLE_ACTOR),
@@ -2094,8 +2128,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:1215dffdc9c195752d67ca25b3d8852f2497f65480708cd2e9debbda16a8a295",
-        "strict": "sha256:0eb3f62d725adb7060c16d9e9308970129ce6e12b961276575aba2903e13f2a9",
+        "policy": "sha256:9b47fea6e2073c77fcf0576aa541f0d269cb6191672edcd7f89be5a2cf67dedd",
+        "strict": "sha256:50d3520d2cfa39623025122bf28c0e43f11472d762ca10d53dfde57941e7c3f1",
     }
 )
 
