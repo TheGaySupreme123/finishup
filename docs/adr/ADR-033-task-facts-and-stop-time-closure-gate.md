@@ -166,7 +166,16 @@ agent must not be able to stop silently with known work left.
    to an absolute directory is `workspace_env` inside the workspace (vendoring) and `private_env`
    outside it; a relative or variable directory is `unresolved`. `--user` classifies as the
    interpreter running pip (its user site is imported by that interpreter; pip refuses it in a
-   virtual environment). `uv pip install` without `--python` stays `unresolved`. Materialization appends them to the
+   virtual environment). `uv pip install` without `--python` stays `unresolved`. `write_scope`
+   ignores writes into temporary scratch space (tb4n1 E6, #1000: 28 of 33 firings were `/tmp`
+   logs, none a misplaced deliverable): `/tmp`, `/private/tmp`, `/var/tmp`, `/private/var/tmp`,
+   `/dev/shm`, anything under `/dev/`, the macOS per-user `/var/folders/*/*/T`, and the
+   `TMPDIR`/`TEMP`/`TMP` values, read from the environment and never probed (no
+   `tempfile.gettempdir`, which touches the filesystem, may fall back to the working directory
+   and raises). An environment root that is `/`, contains the home directory, or is or contains
+   the workspace is never trusted. The rule is lexical (`..` is normalized first, links are not
+   followed), so a symlink under a temporary root that points elsewhere stays exempt; that is
+   accepted. Materialization appends them to the
    observed action description in a fixed closed suffix order, which is how the ledger carries
    them. Observation advice delivers `install_into_yoetz_runtime`, `install_into_private_env` and
    `write_outside_workspace` once each at the next advice-bearing event (advice only, never a
