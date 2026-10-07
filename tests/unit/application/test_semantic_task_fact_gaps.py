@@ -200,3 +200,49 @@ def test_task_fact_gap_codes_reach_packet_known_gaps() -> None:
     assert set(gaps) <= set(semantic.packet.coverage.known_gaps)
     clean = _build(_case_with_material(), ReviewContextProfile.EXPANDED)
     assert not set(gaps) & set(clean.packet.coverage.known_gaps)
+
+
+async def test_a_round_stopped_after_one_retry_never_calls_the_reviewer() -> None:
+    """tb4n1 D3: after a repeated unshowable request, the check skips the AI-powered review."""
+
+    from dataclasses import replace
+
+    from builders.policy_cases import evd, make_case
+    from yoetz.domain.events import MissingForAssessmentItem
+    from yoetz.domain.values import event_id
+    from yoetz.kernel.projections import PendingMissingForAssessment
+    from yoetz.ports.ledger import FrozenCase
+    from yoetz.protocol.models import SemanticStatus
+
+    calls: list[object] = []
+
+    async def seam(*args: object, **kwargs: object) -> object:
+        calls.append(args)
+        return object()
+
+    base = make_case()
+    pending = PendingMissingForAssessment(
+        event_id("evt_00000000-0000-4000-8000-000000000050"),
+        0,
+        (
+            MissingForAssessmentItem(
+                "current_diff_for_path", (str(evd(5)),), "yoetz_limit_repeated_request"
+            ),
+        ),
+    )
+    case = replace(
+        base, projection=replace(base.projection, pending_missing_for_assessment=pending)
+    )
+    frozen = object.__new__(FrozenCase)
+    object.__setattr__(frozen, "case", case)
+    request, runtime = _check_inputs()
+    result = await _semantic_evaluation(
+        cast(Any, SimpleNamespace(evaluate_semantic_check=seam)),
+        request,
+        runtime,
+        frozen,
+        (),
+        route_profile="policy",
+    )
+    assert calls == []
+    assert result.status is SemanticStatus.NOT_REQUESTED

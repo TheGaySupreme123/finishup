@@ -3478,7 +3478,9 @@ async def _semantic_evaluation(
     require_complete_specification: bool = False,
     task_fact_gaps: tuple[str, ...] = (),
 ) -> FinalSemanticEvaluation:
-    if request.mode == "deterministic_only" or semantic_round_exhausted(frozen.case.projection):
+    if request.mode == "deterministic_only" or (
+        type(frozen) is FrozenCase and semantic_round_exhausted(frozen.case.projection)
+    ):
         # tb4n1 D3: after the reviewer twice could not assess the same content, the round stops;
         # the check runs its local checks only and discloses why (see the commit path).
         return FinalSemanticEvaluation(
