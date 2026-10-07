@@ -23,6 +23,4 @@ For closure, publish evidence before `check`, answer findings, and request `rece
 `check` after the plan and each milestone; on a finding, change work or record what it names,
 not just recheck. At `ready_with_limitations`, nothing further is to do: request the receipt without another check;
 `standing_limitations` are disclosed, never tasks. A `respond` does not clear a finding.
-Repair first; if Yoetz cannot prove a repair (a Yoetz limit), verify it yourself and respond
-`self_verified`. A Yoetz limit is never a `yoetz-blocker`; block only an open obligation outside
-your control; its publish result challenges it.
+Yoetz limit: verify, respond `self_verified`; never `yoetz-blocker`.
