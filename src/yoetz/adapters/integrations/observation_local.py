@@ -7113,6 +7113,7 @@ class LocalObservationStore:
     @staticmethod
     def _pending_selection_losses(state: _WorkspaceState) -> tuple[JsonObject, ...]:
         result: list[JsonObject] = []
+        details = _loss_details_by_lane(state)
         for item in state.selection_loss_ranges:
             try:
                 loss = ObservationSelectionLoss.from_local_range_for_recovery(item)
@@ -7123,7 +7124,15 @@ class LocalObservationStore:
                 or loss.lane in state.selection_reported_loss_lanes
             ):
                 continue
-            result.append(item)
+            # The closed refusal causes travel with the report so the durable lane marker
+            # discloses them (tb4n1 B3, #998); a lane without valid detail reports `unknown`.
+            detail = details.get(cast(str, item.get("lane")))
+            causes: tuple[str, ...] = (
+                tuple(sorted(cast(Mapping[str, int], detail["causes"])))
+                if detail is not None and detail.get("count") == item.get("count")
+                else (AdmissionLossCause.UNKNOWN.value,)
+            )
+            result.append(JsonObject({**item, "loss_causes": causes}))
         return tuple(result)
 
     def acknowledge_selection_loss(self, workspace: str, lane: str) -> None:

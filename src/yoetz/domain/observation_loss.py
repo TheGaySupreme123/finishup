@@ -22,6 +22,9 @@ class ObservationSelectionLoss:
     writer_id: str
     authority_generation: str
     unreconciled: bool = False
+    # Closed admission refusal causes recorded for this lane (tb4n1 B3, #998). Not part of the
+    # lane identity or the marker's operation identity; disclosure only.
+    causes: tuple[str, ...] = ()
 
     @classmethod
     def from_local_range(cls, value: JsonObject) -> ObservationSelectionLoss:
@@ -52,7 +55,14 @@ class ObservationSelectionLoss:
             )
         ):
             raise ValueError("selection_loss_invalid")
-        return cls(lane, ObservationSource(source), session, generation, *route)
+        return cls(
+            lane,
+            ObservationSource(source),
+            session,
+            generation,
+            *route,
+            causes=_loss_causes(value.get("loss_causes")),
+        )
 
     @classmethod
     def from_local_range_for_recovery(cls, value: JsonObject) -> ObservationSelectionLoss:
@@ -110,8 +120,9 @@ class ObservationSelectionLoss:
                 pass
             else:
                 lane_valid = lane == expected_lane
+        causes = _loss_causes(value.get("loss_causes"))
         if lane_valid:
-            return cls(cast(str, lane), source_value, session, generation, *route)
+            return cls(cast(str, lane), source_value, session, generation, *route, causes=causes)
         recovery_lane = canonical_digest(
             JsonObject(
                 {
@@ -123,7 +134,7 @@ class ObservationSelectionLoss:
                 }
             )
         )
-        return cls(recovery_lane, source_value, session, generation, *route, True)
+        return cls(recovery_lane, source_value, session, generation, *route, True, causes=causes)
 
     def identity(self) -> JsonObject:
         identity: dict[str, str | int] = {
@@ -139,3 +150,15 @@ class ObservationSelectionLoss:
         if self.unreconciled:
             identity["reconciliation"] = "unreconciled"
         return JsonObject(identity)
+
+
+def _loss_causes(value: object) -> tuple[str, ...]:
+    """Closed admission refusal causes from a local loss report; anything else is dropped."""
+
+    from yoetz.domain.observation_budget import AdmissionLossCause
+
+    if not isinstance(value, (list, tuple)):
+        return ()
+    items: tuple[object, ...] = tuple(cast(list[object] | tuple[object, ...], value))
+    allowed = {item.value for item in AdmissionLossCause}
+    return tuple(sorted({item for item in items if type(item) is str} & allowed))

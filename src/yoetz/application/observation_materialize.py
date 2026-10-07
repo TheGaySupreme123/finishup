@@ -826,7 +826,9 @@ def materialize_selection_loss(
                 if loss.unreconciled
                 else "marker reports historical coverage loss; "
             )
-            + "exact aggregate counts remain in local selection accounting. Attribution: "
+            + "exact aggregate counts remain in local selection accounting. "
+            + ("Refusal cause: " + ", ".join(loss.causes) + ". " if loss.causes else "")
+            + "Attribution: "
             + canonical_encode(loss.identity()).decode()
         ),
     )
