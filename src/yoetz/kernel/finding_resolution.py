@@ -789,7 +789,16 @@ def prior_finding_verdict(check: CheckRecordedPayload, finding: Finding) -> str 
 # ``insufficient_packet`` answer nor excerpts the count or byte budget cut (``content_unselected``,
 # ledger or captured) weaken that ruling. Silence never gets this tolerance, so a selection gap
 # still blocks closing an AI-powered finding by not returning it.
-_FIXED_RULING_TOLERATED_GAPS: Final = _INSUFFICIENT_PACKET_GAPS | frozenset({"content_unselected"})
+#
+# ``semantic_review_refs_reduced`` joins them (TB4 tb4n1, issue #976): the fence removed a
+# citation of a ref that was not sent from some reviewer item, so the reviewer cited more than it
+# was shown; it does not mean the review saw less. The ``fixed`` ruling itself is admitted only
+# with every cited ref intact and fenced to what was sent (``_admit_prior_verdicts``), so the
+# reduction can never be the ruling's own basis. Without an explicit ``fixed`` ruling the gap
+# keeps blocking AI-powered proof.
+_FIXED_RULING_TOLERATED_GAPS: Final = _INSUFFICIENT_PACKET_GAPS | frozenset(
+    {"content_unselected", SEMANTIC_REVIEW_REFS_REDUCED_GAP}
+)
 
 
 def _prior_verdict_effect(
@@ -798,8 +807,9 @@ def _prior_verdict_effect(
     """How an explicit per-finding ruling bears on this finding's absence proof (issue #905).
 
     ``fixed`` is the reviewer judging this finding on material recorded after it, so a
-    whole-packet ``insufficient_packet`` (and its coverage marker) and excerpts the packet's
-    budget cut (``content_unselected``, issue #907) no longer veto it; every
+    whole-packet ``insufficient_packet`` (and its coverage marker), excerpts the packet's
+    budget cut (``content_unselected``, issue #907) and citations of unsent refs the fence removed
+    from reviewer items (``semantic_review_refs_reduced``, issue #976) no longer veto it; every
     other rule still applies, including freshness, material change and the issue not being
     returned again. ``withdrawn`` (the reviewer accepting the agent's rejection) keeps the
     ordinary rules here, under which an assessable review that does not re-raise a finding over

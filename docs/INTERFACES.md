@@ -1244,7 +1244,9 @@ Five further codes describe a review that did run but could not deliver everythi
   `review_summary` under a fixed header saying they are advisory and unverified (issue #976);
 - `semantic_review_refs_reduced` — a reviewer item cited refs the sent packet did not carry: a
   challenge keeps only its sent refs and stands on them, a verified row is dropped (it reads as
-  support, so it may not rest on unsent material) (issue #976);
+  support, so it may not rest on unsent material) (issue #976). It blocks absence proof of an
+  AI-powered finding except under that review's own explicit, admitted `fixed` ruling on the
+  finding: the gap means the reviewer cited more than it was shown, not that it saw less;
 - `semantic_review_snippet_invalid` — a reviewer quote could not be proved against the exact safe
   provider-bound text of the rows it cites, including after response recovery without the
   ephemeral text index. The quote is removed from a kept challenge, a verified row is dropped, and
