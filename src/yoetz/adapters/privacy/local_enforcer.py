@@ -16,6 +16,7 @@ from yoetz.domain.privacy import (
     CandidateContextItem,
     ClassifiedContext,
     ClassifiedContextItem,
+    CredentialHeuristic,
     DataClass,
     DisclosureProvenance,
     ForbiddenDataKind,
@@ -199,15 +200,26 @@ def scan_exact_bytes_with_confidence(data: bytes) -> SensitiveScan:
     )
 
 
-def scan_exact_bytes(data: bytes) -> tuple[ForbiddenDataKind, ...]:
+def scan_exact_bytes(
+    data: bytes, *, credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
+) -> tuple[ForbiddenDataKind, ...]:
     """Map the shared scanner to the closed never-send vocabulary.
 
     This public backstop deliberately includes heuristic findings. The semantic minimizer uses
     ``scan_exact_bytes_with_confidence`` to omit a heuristic-only item; a heuristic that survives
     into a final rendered body still fails closed here.
+
+    ``credential_heuristic=DISABLED`` is the owner opt-out (issue #982): only the high-confidence
+    class is reported. Known credential shapes, private-key markers, URI passwords, canaries and
+    scanner saturation are in that class, so they still fail closed.
     """
 
-    return scan_exact_bytes_with_confidence(data).all_findings
+    scan = scan_exact_bytes_with_confidence(data)
+    if credential_heuristic is CredentialHeuristic.ENFORCED:
+        return scan.all_findings
+    if credential_heuristic is not CredentialHeuristic.DISABLED:
+        raise ValueError("credential_heuristic_invalid")
+    return scan.high_confidence
 
 
 _SEMANTIC_PACKET_SCHEMA = "yoetz.review-packet-case/2"
@@ -310,6 +322,39 @@ def _items_carrying_heuristic(
     return frozenset(offending)
 
 
+def _redact_encoded_heuristic_spans(content: bytes) -> tuple[bytes, int] | None:
+    """Replace heuristic values as they appear in the item's JSON-string encoding.
+
+    The raw-text pass cannot see an assignment that only exists in the encoded form (for example
+    ``token = \\"...\\"`` inside an embedded JSON document). This pass redacts on the exact
+    encoding the packet carries, decodes the result back to the item's text, and returns it only
+    when both forms then scan clean. ``None`` means the caller must withhold the whole item.
+    No scanned bytes are retained.
+    """
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    encoded = canonical_encode(text)
+    sanitized_encoded, span_count = redact_heuristic_spans(encoded)
+    if span_count == 0:
+        return None
+    try:
+        decoded = strict_json_parse(sanitized_encoded)
+    except TypeError, ValueError, UnicodeDecodeError:
+        return None
+    if type(decoded) is not str:
+        return None
+    sanitized = decoded.encode("utf-8")
+    if any(
+        scan_exact_bytes_with_confidence(form).all_findings
+        for form in (sanitized, canonical_encode(decoded))
+    ):
+        return None
+    return sanitized, span_count
+
+
 class LocalPrivacyEnforcer:
     """Provider-free implementation of the local privacy classifier port."""
 
@@ -344,6 +389,11 @@ class LocalPrivacyEnforcer:
     ) -> ClassifiedContext:
         if type(candidate) is not CandidateContext or type(policy) is not EffectivePrivacyPolicy:
             raise TypeError("privacy_classification_input_invalid")
+        # The owner policy decides whether the low-confidence assignment heuristic participates
+        # at all (issue #982). The setting travels on the classified context, so minimization
+        # and every later scan of these bytes apply the same value.
+        credential_heuristic = policy.policy.credential_heuristic
+        heuristic_enforced = credential_heuristic is CredentialHeuristic.ENFORCED
         classified: list[ClassifiedContextItem] = []
         for item in candidate.items:
             source_findings = {
@@ -353,7 +403,9 @@ class LocalPrivacyEnforcer:
             }
             scan = scan_exact_bytes_with_confidence(item.plaintext)
             source_findings.update(scan.high_confidence)
-            heuristic_findings = set(scan.heuristic)
+            heuristic_findings: set[ForbiddenDataKind] = (
+                set(scan.heuristic) if heuristic_enforced else set()
+            )
             scope_valid = item.source_disclosure_permitted and candidate.scope.contains(
                 item.source_scope
             )
@@ -387,7 +439,7 @@ class LocalPrivacyEnforcer:
                     ),
                 )
             )
-        return ClassifiedContext(candidate, tuple(classified))
+        return ClassifiedContext(candidate, tuple(classified), credential_heuristic)
 
     def minimize_and_scan(
         self, classified: ClassifiedContext, decision: PrivacyDecision
@@ -395,6 +447,7 @@ class LocalPrivacyEnforcer:
         if type(classified) is not ClassifiedContext or type(decision) is not PrivacyDecision:
             raise TypeError("privacy_minimization_input_invalid")
         approved = set(decision.approved_item_ids)
+        heuristic_enforced = classified.credential_heuristic is CredentialHeuristic.ENFORCED
         included: tuple[ClassifiedContextItem, ...] = tuple(
             item
             for item in classified.items
@@ -432,23 +485,53 @@ class LocalPrivacyEnforcer:
                 transformed_content=transformed_content,
             )
             # Partial withholding (issue #976): a low-confidence heuristic that survives into the
-            # prepared bytes withholds only the item(s) whose own encoded content carries it, and
-            # the packet is re-assembled, in bounded rounds. A high-confidence finding, a
+            # prepared bytes is replaced in place inside the item(s) whose own encoded content
+            # carries it, or, failing that, withholds only those items, and the packet is
+            # re-assembled, in bounded rounds. A high-confidence finding, a
             # heuristic in the structural envelope, or one no single item explains leaves the
             # prepared bytes as they are, and egress still fails the whole case closed.
-            for _round in range(_MAX_PARTIAL_WITHHOLD_ROUNDS):
+            encoded_redacted_ids: set[str] = set()
+            # With the owner opt-out (issue #982) heuristic matches are not findings at all, so
+            # there is nothing to replace or withhold here.
+            for _round in range(_MAX_PARTIAL_WITHHOLD_ROUNDS if heuristic_enforced else 0):
                 surviving = scan_exact_bytes_with_confidence(prepared)
                 if not surviving.heuristic or surviving.high_confidence:
                     break
                 offending = _items_carrying_heuristic(included, transformed_content)
                 if not offending or REVIEW_PACKET_ITEM_ID in offending:
                     break
-                included = tuple(
-                    item for item in included if item.candidate.item_id not in offending
-                )
-                for item_id in offending:
-                    transformed_content.pop(item_id, None)
-                withheld_item_ids = tuple(sorted({*withheld_item_ids, *offending}, key=str.encode))
+                # Redact the value, not the item (issue #982, owner decision B2): first replace
+                # only the suspicious values as they appear in the packet's JSON encoding, so the
+                # reviewer keeps the rest of the line, item and file. An item is withheld only
+                # when that in-place replacement cannot make it scan clean, or already failed.
+                to_withhold: set[str] = set()
+                for item in included:
+                    item_id = item.candidate.item_id
+                    if item_id not in offending:
+                        continue
+                    replaced = (
+                        None
+                        if item_id in encoded_redacted_ids
+                        else _redact_encoded_heuristic_spans(
+                            transformed_content.get(item_id, item.candidate.plaintext)
+                        )
+                    )
+                    if replaced is None:
+                        to_withhold.add(item_id)
+                        continue
+                    sanitized, span_count = replaced
+                    transformed_content[item_id] = sanitized
+                    redacted_span_count += span_count
+                    encoded_redacted_ids.add(item_id)
+                if to_withhold:
+                    included = tuple(
+                        item for item in included if item.candidate.item_id not in to_withhold
+                    )
+                    for item_id in to_withhold:
+                        transformed_content.pop(item_id, None)
+                    withheld_item_ids = tuple(
+                        sorted({*withheld_item_ids, *to_withhold}, key=str.encode)
+                    )
                 prepared = _assemble_semantic_review_payload(
                     classified,
                     included,
@@ -522,12 +605,17 @@ class LocalPrivacyEnforcer:
             scanner_profile_digest=self._scanner.profile_digest,
             forbidden_findings=prepared_scan.high_confidence,
             withheld_item_ids=withheld_item_ids,
-            heuristic_findings=prepared_scan.heuristic,
+            heuristic_findings=prepared_scan.heuristic if heuristic_enforced else (),
             redacted_span_count=redacted_span_count,
         )
 
-    def scan_exact_bytes(self, data: bytes) -> tuple[ForbiddenDataKind, ...]:
-        return scan_exact_bytes(data)
+    def scan_exact_bytes(
+        self,
+        data: bytes,
+        *,
+        credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+    ) -> tuple[ForbiddenDataKind, ...]:
+        return scan_exact_bytes(data, credential_heuristic=credential_heuristic)
 
     def scanner_identity(self) -> tuple[str, str]:
         """Return the registry/profile pair that guards prepared and rendered bytes."""

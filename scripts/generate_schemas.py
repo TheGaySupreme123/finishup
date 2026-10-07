@@ -407,6 +407,10 @@ def _privacy_policy_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         preset_sections.sort(key=lambda value: cast(str, value).encode("ascii"))
         if profile.get("const") == "expanded":
             preset["max_excerpts"] = MAX_REVIEW_EXCERPTS
+    # The owner opt-out for the low-confidence credential heuristic (issue #982). Optional, and
+    # written only when ``disabled``, so every policy without it keeps its bytes and digest; an
+    # absent field means ``enforced``. Older wire versions cannot carry it.
+    properties["credential_heuristic"] = {"enum": ["disabled", "enforced"], "type": "string"}
     return document
 
 
@@ -1754,6 +1758,9 @@ def _extend_receipt_schema_fields(
         scan_properties = cast(dict[str, JsonValue], scan["properties"])
         scan_properties["stage"] = {"enum": list(_RECEIPT_SCAN_STAGES), "type": "string"}
         scan_properties["not_run_reason"] = reason_schema
+        # Present only when the owner policy in force had the low-confidence credential heuristic
+        # turned off for this disclosure (issue #982); absent means it was enforced.
+        scan_properties["credential_heuristic"] = {"const": "disabled", "type": "string"}
         scan_all_of = scan.setdefault("allOf", [])
         if not isinstance(scan_all_of, list):
             raise SchemaGenerationError("receipt_secret_scan_schema_template_invalid")

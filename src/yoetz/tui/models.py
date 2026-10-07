@@ -303,6 +303,8 @@ class PrivacyPosture:
     # True when the approved review selection is an earlier version of its recipe (for example
     # Expanded before privacy policy 1.2.0); the newer one needs its own approval (issue #907).
     recipe_outdated: bool = False
+    # True when the owner turned the possible-credential filter off (issue #982 opt-out).
+    credential_heuristic_disabled: bool = False
 
     @property
     def choice(self) -> PrivacyChoice | None:

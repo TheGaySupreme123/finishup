@@ -233,6 +233,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP,
+    SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
     PolicyVersionEntry,
     ReceiptVersionSlice,
     SchemaVersionEntry,
@@ -3083,8 +3084,11 @@ def _egress_withheld_item_ids(result: object) -> tuple[str, ...]:
 def _egress_case_content_gaps(result: object) -> tuple[str, ...]:
     """Project bounded egress transformations into the existing check coverage vocabulary."""
 
+    # Egress redaction replaced credential-like values in the packet sent to the external model.
+    # It bounds that review only, never local proof (issue #982), so it has its own review-scoped
+    # code instead of the capture-time ``content_redacted``.
     value = getattr(result, "redacted_span_count", 0)
-    return ("content_redacted",) if type(value) is int and value > 0 else ()
+    return (SEMANTIC_REVIEW_VALUE_REDACTED_GAP,) if type(value) is int and value > 0 else ()
 
 
 def _provider_manifest_has_redaction(manifest: object) -> bool:
@@ -4049,7 +4053,9 @@ async def _recover_response_evaluation(
     else:
         provider_manifest_failure = SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP
     case_content_gaps = (
-        ("content_redacted",) if _provider_manifest_has_redaction(provider_manifest) else ()
+        (SEMANTIC_REVIEW_VALUE_REDACTED_GAP,)
+        if _provider_manifest_has_redaction(provider_manifest)
+        else ()
     )
     return FinalSemanticEvaluation(
         status,
@@ -4476,6 +4482,7 @@ def _privacy_gated_semantic_evaluator(
         # Bound here too: the catch-all below can be reached before the policy is resolved, and
         # an unbound name there would turn a reportable failure into a second one.
         withheld: tuple[str, ...] = ()
+        credential_heuristic_disabled = False
         over_item_limit = False
         reference_scope_reduced = False
         content_gaps: tuple[str, ...] = ()
@@ -4577,6 +4584,9 @@ def _privacy_gated_semantic_evaluator(
             policy_id = policy.policy_id
             policy_version = str(policy.version)
             withheld = tuple(item.value for item in policy.withheld_review_categories)
+            # The owner opt-out (issue #982) is carried to the check so every review that ran
+            # under it discloses that possible-credential values were not filtered.
+            credential_heuristic_disabled = not policy.credential_heuristic_enforced
             unsuppliable = unsuppliable_missing_kinds(review_selection, withheld)
             if withheld:
                 record_bounded_event_without_raising(
@@ -5420,6 +5430,7 @@ def _privacy_gated_semantic_evaluator(
                     attempt_accounting=accounting,
                     operation_lease=current_lease[0],
                     withheld_review_categories=withheld,
+                    credential_heuristic_disabled=credential_heuristic_disabled,
                     case_content_over_item_limit=over_item_limit,
                     case_reference_scope_reduced=reference_scope_reduced,
                     case_included_refs=disclosed,

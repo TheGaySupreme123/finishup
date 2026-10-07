@@ -83,11 +83,46 @@ silent: every path shows the complete change before you decide. The machine row 
 ceiling; external LLM work also needs an exact granted row for the current repository beneath it.
 
 Secret-shaped text that only looks like a credential (an assignment to a name such as `token`) is
-redacted in place. If such text could still reach the prepared packet, Yoetz withholds only the item
-that carries it and reviews the rest; the check lists the withheld items and reports the
-`content_redacted` gap. Only a concrete credential, a private key, or a scanner that cannot finish
+redacted in place when it would leave your machine: only the value is replaced, by
+`[withheld-by-yoetz:possible-credential]`, and the rest of the line and file is still reviewed. The
+check reports `semantic_review_value_redacted`. If a value cannot be replaced safely, Yoetz withholds
+only the item that carries it and reviews the rest; the check lists the withheld items and reports
+`semantic_review_item_withheld`. Both limit only the AI-powered review; local checks still see your
+work in full, and you never need to change consent or your code to clear them. Only a concrete credential, a private key, or a scanner that cannot finish
 blocks the whole review. You never need to hide or git-ignore a requested output to keep it out of
 review.
+
+What Yoetz records on your machine follows the same split. A concrete credential shape (a known
+API-key or access-token format, a private-key header, or a password inside a URL) is replaced before
+anything is stored. Text that only looks like a credential is kept as captured in the encrypted
+local store, so local checks see your work as it is; it is replaced only when content would leave
+your machine.
+
+### Turning the possible-credential filter off
+
+The replacement of text that only *looks* like a credential is a filter you can turn off, for
+example when it keeps hiding values your review needs and you know they are not secrets:
+
+```text
+yoetz privacy credential-heuristic disable   # stop replacing values that only look like credentials
+yoetz privacy credential-heuristic enable    # turn the filter back on (the default)
+```
+
+Turning it off means values assigned to names such as `password`, `secret`, `api_key` or
+`*_token` are sent to AI-powered review as written, instead of as
+`[withheld-by-yoetz:possible-credential]`. It never affects the never-send set: a known
+credential shape, a private key, a password inside a URL, or a scanner that cannot finish still
+blocks or redacts exactly as before. Because more may leave your machine, turning it off is a
+loosening of your policy: it is proposed for the current repository and applies only after you
+approve it in the trusted approval on this terminal, which shows it as **Possible-credential
+filter: On → Off**. No agent can turn it off for you. Turning it back on is a tightening and
+applies at once, for every repository.
+
+While it is off, `yoetz privacy show`, `yoetz provider status` and `/privacy` say so, every
+privacy receipt for a disclosure made under it records it, and every check whose AI-powered review
+ran under it reports `semantic_review_credential_heuristic_disabled`. That code describes your
+choice, not a problem with the agent's work. The setting is part of your privacy policy, so
+`yoetz privacy export-desired` and `apply-desired` carry it too, through the same approval.
 
 ## Commands
 
@@ -100,6 +135,7 @@ yoetz privacy propose           # propose a change for decision
 yoetz privacy decide-policy     # approve or deny one exact pending policy proposal on the terminal
 yoetz privacy export-desired    # effective nonsecret policy as desired-state TOML (never secrets)
 yoetz privacy apply-desired     # apply desired-state TOML; tighten may proceed, widen never silent
+yoetz privacy credential-heuristic disable|enable  # possible-credential filter off / back on
 yoetz privacy pending           # list disclosure decisions waiting for you
 yoetz privacy decide-disclosure # decide one exact pending disclosure by id (see below)
 yoetz privacy receipts          # inspect bounded structural egress receipts

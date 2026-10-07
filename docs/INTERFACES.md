@@ -1233,6 +1233,17 @@ The typed declaration records the participant's scope decision but never purchas
 Five further codes describe a review that did run but could not deliver everything it produced:
 
 - `semantic_review_context_withheld` — the review ran without categories its own profile selected;
+- `semantic_review_value_redacted` — egress privacy replaced one or more credential-like values in
+  the sent packet, in place, with `[withheld-by-yoetz:possible-credential]`; the rest of each item
+  was sent (issue #982). It weakens neither proof class;
+- `semantic_review_item_withheld` — in-place replacement could not make an item safe to send, so
+  that item alone was left out (listed in `semantic_withheld_items`). It bounds only the AI-powered
+  review;
+- `semantic_review_credential_heuristic_disabled` — the owner's privacy policy had the
+  low-confidence credential heuristic turned off (`credential_heuristic: disabled`, issue #982), so
+  values that only look like passwords or tokens were sent as written; high-confidence detectors
+  still applied. Emitted when the review succeeded or its packet was sent. A standing limitation
+  and owner disclosure choice, never agent work; it weakens neither proof class;
 - `semantic_challenges_rejected` — the reviewer returned challenges and post-validation dropped at
   least one (no cited ref had content in the sent packet — reason `ref_not_carried` —, a citation
   outside the advertised set or the frozen case, an unchanged-claim over a withheld source, or
@@ -1963,7 +1974,8 @@ unprovable. For local rows the tolerated set is the AI-powered review absence/we
 (`semantic_review_not_requested|semantic_review_not_configured|
 semantic_relevance_review_not_run|optional_semantic_review_blocked_by_policy|
 optional_semantic_review_registration_drift|
-semantic_review_context_withheld|semantic_challenges_rejected|semantic_review_snippet_invalid|
+semantic_review_context_withheld|semantic_review_item_withheld|semantic_review_value_redacted|
+semantic_review_credential_heuristic_disabled|semantic_challenges_rejected|semantic_review_snippet_invalid|
 semantic_review_refs_reduced|
 semantic_missing_agent_suppliable|semantic_missing_structurally_unavailable|
 semantic_missing_already_supplied|semantic_missing_items_rejected|
@@ -3641,8 +3653,17 @@ such as `parser.token = Token.EOF`, a lower-case object property such as `token:
 Token.ConstKeyword`, or a lower-case Python `token = node.token` assignment inside a valid
 function. Bare dotted assignments such as `TOKEN=opaque.value` or `token=opaque.value`,
 call-shaped values such as `password=functionName()`, quoted lookalikes, mixed-language text, and
-malformed source remain withheld. This precision rule does not add an opt-out and does not change
-capture-time redaction.
+malformed source remain withheld. This precision rule does not add an opt-out.
+Since issue #982 the assignment heuristics also skip values that cannot be credential material:
+comparisons and walrus operators (`token == x`, `token := x`); an unquoted next key after a line
+break (an empty `KEY=` followed by `NEXT=`); unquoted values containing `()[]<>|` or a backtick;
+language literals and type names (`None`, `True`, `str`, `Optional`); `self.`/`this.`/`cls.`
+attribute values; documentation placeholders (`<...>`, `${...}`, `{{...}}`, a trailing `...`); and,
+for `*token` names only, values shorter than eight bytes, numbers, digit-free snake/constant
+identifiers, and values with characters outside opaque token material (whitespace, brackets,
+braces, parentheses, pipes, quotes). Password, secret and API-key values keep every other shape.
+Capture-time redaction covers only high-confidence findings; heuristic-only matches are redacted
+at egress.
 
 `PreDispatchAuditDecision` is structural-only and terminal; it permits no prepared bytes,
 authorization, or dispatch. A v0.1 content-bearing `DisclosureProposal` has one owning `task_id` and
@@ -3675,7 +3696,21 @@ admits each member on its own. The policy diff vocabulary gains
 after the primary in the Destination group; adding or changing the fallback is a widening,
 removing it a tightening. Intersection keeps a fallback only when both scopes name the
 identical one. The field is introduced in `privacy-policy-1.1.0` as optional and emitted only when
-present, so single-endpoint policy digests are unchanged. `PrivacyProfile` governs the
+present, so single-endpoint policy digests are unchanged. `credential_heuristic` (issue #982,
+owner opt-out) is `enforced` (default; absent means enforced) or `disabled`. `disabled` makes every
+disclosure path ignore low-confidence assignment matches — classification, minimization, the
+prepared, rendered-body and resume scans — while high-confidence findings (known credential
+shapes, private-key markers, URI passwords, canaries, scanner saturation) always block or redact.
+The value travels on `ClassifiedContext`, `ApprovedOutboundCase` and
+`ApprovedLocalDisclosureCase` (`PrivacyClassifierPort.scan_exact_bytes(...,
+credential_heuristic=...)`), and every receipt prepared under it records
+`secret_scan.credential_heuristic: "disabled"` (egress-receipt 1.1.0; absent when enforced). The
+policy diff vocabulary gains `("global", "credential_heuristic")`, a flag rendered
+"Possible-credential filter" in the Information disclosed group, ordered right after
+`provider_data_use_evidence`; turning it off is a widening, back on a tightening. Intersection
+keeps `enforced` unless both scopes are `disabled`. The field is written only when `disabled`
+(privacy-policy wire 1.2.0 minimum; 1.0.0/1.1.0 documents naming it are rejected), so every
+existing policy, meet and receipt digest is unchanged. `PrivacyProfile` governs the
 `llm_inference` row/content rules only; `ReviewContextProfile` can only narrow which case items are
 considered and never grants a category, class, destination, scope, or byte. `local_only` disables
 external LLM construction and external task/user-content disclosure but is not a bundled decision
@@ -4636,10 +4671,13 @@ Visible task messages, tool input/result, task-linked terminal output,
 changed-file/diff material, approved-check output, lifecycle, and readiness facts may be captured.
 Hidden reasoning, system/platform/developer prompts, credentials, detected secrets, unrelated files,
 and untethered logs are excluded before storage. Every byte that reaches encrypted observation
-persistence passes `prepare_persisted_plaintext`: known secret spans are redacted in memory before
-encoding, matches persist only redaction metadata, and scanner failure, finding-capacity exhaustion,
-or a canary match records `content_capture_unavailable` and stores no excerpt or approved-check
-output object. SQLite/envelopes
+persistence passes `prepare_persisted_plaintext`: high-confidence secret spans (known credential
+shapes, private-key markers, URI passwords) are redacted in memory before encoding, matches persist
+only redaction metadata, and scanner failure, high-confidence finding-capacity exhaustion, or a
+canary match records `content_capture_unavailable` and stores no excerpt or approved-check output
+object. Heuristic-only assignment matches are kept as captured in the encrypted local store, where
+local and deterministic checks may read them, and are redacted only at egress (issue #982); a
+chunk or excerpt is marked `redacted` only when its bytes were actually replaced. SQLite/envelopes
 retain only encrypted object IDs, commitments, classifications, sizes, and relations.
 Vault/service failure records `content_capture_unavailable` and no plaintext spool.
 Unrecognized visible events accept an opaque stable envelope plus encrypted content and
@@ -6924,7 +6962,10 @@ facade and are never MCP tools.
   sink/filter profile.
   `observability/privacy.py`: canary-testable redaction helpers,
   `prepare_persisted_plaintext(data, *, canaries=())` (fail-closed scan before encrypted
-  observation persistence: redact known spans, withhold on canary or scanner failure),
+  observation persistence: redact high-confidence spans, keep heuristic-only matches for egress
+  redaction, withhold on canary, high-confidence saturation, or scanner failure),
+  `redact_high_confidence_content(data)` (the same capture-time rule for hook, approved-check and
+  import content),
   `session_id_hash(session_id, log_mac: MacKeyHandle)`, and
   `privacy_request_commitment(final_request_body, audit_mac: MacKeyHandle)`; raw MAC keys are never
   accepted.
@@ -7496,8 +7537,12 @@ a finding recorded before that stamp, the reducer reads the raising check's reco
 gap outside the baseline set gets a readable baseline on the first later check carrying none of
 those gaps; while one is present it keeps blocking. Resolution classifies selection codes
 (`semantic_reference_scope_reduced`, `content_unselected`) apart from capture-failure codes
-(`content_redacted`, `truncated_payload`, `event_payload_unavailable`, `redacted_event`,
-`redacted_object`), which neither proof class tolerates and no baseline absorbs. `truncated_payload`
+(`truncated_payload`, `event_payload_unavailable`, `redacted_event`,
+`redacted_object`), which neither proof class tolerates and no baseline absorbs. Since issue #982
+`content_redacted` is a host-observation limit instead (it never vetoes local proof and is an
+AI-powered-proof baseline), `semantic_review_item_withheld` is semantic-only and a baseline, and
+`semantic_review_value_redacted` and `semantic_review_credential_heuristic_disabled` are tolerated
+by both proof classes. `truncated_payload`
 keeps blocking until its source is settled. Coverage wording and every receipt gap are unchanged.
 
 The baseline tolerates `semantic_reference_scope_reduced` for a semantic finding only when the

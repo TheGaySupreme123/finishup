@@ -278,6 +278,9 @@ def encode_privacy_receipt_view(view: PrivacyReceiptView) -> JsonObject:
         secret_scan["stage"] = receipt.secret_scan.stage.value
         if receipt.secret_scan.not_run_reason is not None:
             secret_scan["not_run_reason"] = receipt.secret_scan.not_run_reason.value
+        if receipt.secret_scan.credential_heuristic.value != "enforced":
+            # The owner had the low-confidence credential heuristic off for this disclosure.
+            secret_scan["credential_heuristic"] = receipt.secret_scan.credential_heuristic.value
     body: dict[str, JsonValue] = {
         "schema_version": receipt.schema_version,
         "receipt_id": receipt.receipt_id,

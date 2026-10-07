@@ -1000,15 +1000,21 @@ a bounded scope. Its effect on resolution is now decided (interim step, by maint
   fallback, and it reopens a resolution that qualified only through that check's recorded scope
   (`resolution_raising_check_event_id`), exactly as redacting the proving check does.
 - **A limitation outside the baseline.** A finding raised under a gap outside the baseline set
-  (for example `completion_plan_not_claimed`, `content_redacted` or
+  (for example `completion_plan_not_claimed`, `redacted_object` or
   `command_attempt_uncorroborated`) gets a readable baseline on the first later check that carries
   none of those gaps. That check saw at least as much as the raising one. While such a gap is still
   present it keeps blocking. Unknown, stale or unexplained redacted original freshness stays
   unreadable.
 - **Selection versus capture failure.** Resolution classifies deliberate selection
   (`semantic_reference_scope_reduced`, `content_unselected`) apart from capture failure
-  (`content_redacted`, `truncated_payload`, unavailable or redacted event payloads, redacted
-  objects). Capture failures are never tolerated by either proof class and never join a baseline.
+  (`truncated_payload`, unavailable or redacted event payloads, redacted objects). Capture failures
+  are never tolerated by either proof class and never join a baseline. `content_redacted` (a
+  high-confidence secret shape redacted before storage) is not a capture failure since issue #982:
+  local packs never read the bytes it replaced, so it is a host-observation limit that never vetoes
+  local proof and is an AI-powered-proof baseline. The egress privacy codes
+  `semantic_review_value_redacted` (tolerated by both proof classes) and
+  `semantic_review_item_withheld` (semantic-only; an AI-powered-proof baseline) bound only the
+  review.
   Every tolerated set stays closed, so an unclassified code still blocks both proof classes.
 - **`truncated_payload` still blocks.** It waits for a test that settles which producer puts it on
   a check and whether evicted observations had already been delivered.

@@ -1491,6 +1491,27 @@ async def test_succeeded_review_with_withheld_context_is_not_reported_as_full_co
     assert SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP not in clean.coverage.known_gaps
 
 
+@pytest.mark.anyio
+async def test_withheld_review_item_is_a_review_scoped_gap_not_content_redacted() -> None:
+    """Issue #982 (owner decision B2; regression from 860811ed, tb4n1 rs-archive S).
+
+    Withholding one item from the external reviewer used to stamp ``content_redacted`` on the
+    whole check, so local findings that never needed that item became unresolvable. The check now
+    records only the review-scoped ``semantic_review_item_withheld``.
+    """
+
+    from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
+
+    app = _App(semantic=True)
+    app.semantic_result = replace(
+        _succeeded(SemanticJudgment("no_material_discrepancy", ())),
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+    )
+    result = await execute_check_commit(app, _request("semantic_if_configured"))
+    assert SEMANTIC_REVIEW_ITEM_WITHHELD_GAP in result.coverage.known_gaps
+    assert "content_redacted" not in result.coverage.known_gaps
+
+
 def _succeeded(judgment: SemanticJudgment) -> FinalSemanticEvaluation:
     digest = "sha256:" + "a" * 64
     return FinalSemanticEvaluation(

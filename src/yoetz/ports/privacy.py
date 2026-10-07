@@ -18,6 +18,7 @@ from yoetz.domain.privacy import (
     AuthorizationScopeKind,
     CandidateContext,
     ClassifiedContext,
+    CredentialHeuristic,
     DisclosureProposal,
     DisclosureProvenance,
     EgressAuthorization,
@@ -1118,7 +1119,14 @@ class PrivacyClassifierPort(Protocol):
         self, classified: ClassifiedContext, decision: PrivacyDecision
     ) -> MinimizedDisclosure: ...
 
-    def scan_exact_bytes(self, data: bytes) -> tuple[ForbiddenDataKind, ...]: ...
+    def scan_exact_bytes(
+        self,
+        data: bytes,
+        *,
+        credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+    ) -> tuple[ForbiddenDataKind, ...]:
+        """Final exact-byte scan; ``DISABLED`` (owner opt-out, #982) reports high-confidence only."""
+        ...
 
 
 class HumanPrivacyControlPort(Protocol):

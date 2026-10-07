@@ -200,7 +200,8 @@ def _task_statement_posture(policy_map: Mapping[str, object]) -> tuple[bool | No
     text = task_statement_disclosure_text(
         section_selected=selected,
         channel_sends_task_description=channel_sends,
-        predates_section=policy_map.get("schema_version") in {"1.0.0", "1.1.0"}
+        # Read from the selection: the wire version also moves for other fields (#982).
+        predates_section=not selected
         and policy_map.get("review_context_profile") in {"goal_aware", "assisted", "expanded"},
     )
     return selected and channel_sends, text
@@ -1109,6 +1110,7 @@ class YoetzRuntime:
         task_statement_sent, task_statement_disclosure = _task_statement_posture(policy_map)
         return PrivacyPosture(
             recipe_outdated=_review_recipe_outdated(policy_map),
+            credential_heuristic_disabled=policy_map.get("credential_heuristic") == "disabled",
             profile=profile if isinstance(profile, str) else None,
             llm_inference_enabled=llm_enabled,
             readable=True,

@@ -36,6 +36,7 @@ from yoetz.adapters.providers.openai_responses_factory import (
 from yoetz.domain.privacy import (
     AuthorizationScopeKind,
     ChannelPolicy,
+    CredentialHeuristic,
     DataClass,
     EgressChannel,
     PrivacyPolicy,
@@ -56,6 +57,8 @@ __all__ = [
     "PrivacySetupReport",
     "PrivacySetupSnapshot",
     "build_candidate_policy",
+    "credential_heuristic_candidate",
+    "run_credential_heuristic_change",
     "configured_bindings",
     "get_privacy_setup_snapshot",
     "propose_privacy_candidate",
@@ -345,6 +348,9 @@ def build_candidate_policy(
         current.trusted_human_control_data_classes,
         now,
         current.policy_digest,
+        # A recipe change keeps the owner's credential-heuristic choice (issue #982); only
+        # ``yoetz privacy credential-heuristic`` moves it.
+        current.credential_heuristic,
     )
     identity = encode_privacy_policy_json(placeholder)
     identity.pop("policy_digest")
@@ -1440,6 +1446,146 @@ async def run_privacy_setup(
             candidate.profile.value,
             proposal_id,
             grant_state="granted",
+            migration_state=snapshot.migration_state,
+        )
+    return PrivacySetupReport(
+        "cancelled",
+        current.profile.value,
+        proposal_id,
+        "privacy_decision_not_approved" if status != "stale" else "privacy_proposal_stale",
+        snapshot.grant_state,
+        snapshot.migration_state,
+    )
+
+
+def credential_heuristic_candidate(
+    current: PrivacyPolicy, setting: CredentialHeuristic, *, now: datetime
+) -> PrivacyPolicy:
+    """The exact successor of ``current`` that changes only the credential-heuristic setting.
+
+    Every other disclosure dimension is copied unchanged, so the trusted ceremony renders this
+    one line and nothing else (issue #982).
+    """
+
+    if type(current) is not PrivacyPolicy or type(setting) is not CredentialHeuristic:
+        raise TypeError("privacy_credential_heuristic_candidate_invalid")
+    now = now.replace(microsecond=(now.microsecond // 1000) * 1000)
+    placeholder = replace(
+        current,
+        version=current.version + 1,
+        policy_digest="sha256:" + "0" * 64,
+        created_at=now,
+        supersedes_policy_digest=current.policy_digest,
+        credential_heuristic=setting,
+    )
+    identity = encode_privacy_policy_json(placeholder)
+    identity.pop("policy_digest")
+    return replace(placeholder, policy_digest=canonical_digest(cast(JsonValue, identity)))
+
+
+async def _machine_effective_policy() -> PrivacyPolicy:
+    from yoetz.cli.app import build_service_client
+    from yoetz.cli.provider_status import machine_scope_request
+
+    client = await build_service_client()
+    try:
+        raw = await client.privacy_get_effective(machine_scope_request())
+    finally:
+        await client.close()
+    plain = cast(Mapping[str, JsonValue], raw)
+    return decode_privacy_policy_canonical(canonical_encode(plain["policy"]))
+
+
+async def _tighten_machine(candidate: PrivacyPolicy, expected_policy_digest: str) -> None:
+    from yoetz.cli.app import build_service_client
+
+    client = await build_service_client()
+    try:
+        result = await client.privacy_tighten_policy(
+            JsonObject(
+                {
+                    "expected_policy_digest": expected_policy_digest,
+                    "candidate_policy": encode_privacy_policy_json(candidate),
+                }
+            )
+        )
+    finally:
+        await client.close()
+    if result.get("outcome") != "tightening_applied":
+        raise ValueError("privacy_tightening_not_applied")
+
+
+async def run_credential_heuristic_change(
+    setting: CredentialHeuristic,
+    *,
+    workspace_locator: Path | None = None,
+) -> PrivacySetupReport:
+    """Turn the low-confidence credential heuristic off or back on (issue #982 owner opt-out).
+
+    Turning it **off** widens what may leave this computer, so it is proposed for this
+    repository and applied only through the separately reauthenticated trusted-terminal
+    decision, exactly like every other widening; an agent can never apply it. Turning it back
+    **on** narrows disclosure: it is a tightening of the installation-wide ceiling, applied
+    immediately, and it re-enables the heuristic for every repository because the effective
+    policy is the meet of the ceiling and the repository grant.
+    """
+
+    if type(setting) is not CredentialHeuristic:
+        raise TypeError("privacy_credential_heuristic_invalid")
+    if setting is CredentialHeuristic.ENFORCED:
+        machine = await _machine_effective_policy()
+        if machine.credential_heuristic_enforced:
+            return PrivacySetupReport("unchanged", machine.profile.value)
+        candidate = credential_heuristic_candidate(machine, setting, now=datetime.now(UTC))
+        await _tighten_machine(candidate, machine.policy_digest)
+        return PrivacySetupReport("configured", candidate.profile.value)
+    if not _interactive_terminal():
+        return PrivacySetupReport("failed", "unknown", reason="local_terminal_required")
+    locator = Path.cwd() if workspace_locator is None else workspace_locator
+    snapshot = await get_privacy_setup_snapshot(locator)
+    current = snapshot.composed_policy
+    if snapshot.grant_state != "granted":
+        # Without a repository grant nothing leaves this computer for this repository, and a
+        # proposal built here would also have to grant the repository. Setup owns that choice.
+        return PrivacySetupReport(
+            "failed",
+            current.profile.value,
+            reason="repository_privacy_grant_missing",
+            grant_state=snapshot.grant_state,
+            migration_state=snapshot.migration_state,
+        )
+    if current.credential_heuristic is setting:
+        return PrivacySetupReport(
+            "unchanged",
+            current.profile.value,
+            grant_state=snapshot.grant_state,
+            migration_state=snapshot.migration_state,
+        )
+    candidate = credential_heuristic_candidate(current, setting, now=datetime.now(UTC))
+    typer.echo(
+        "Turning off the possible-credential filter lets values that only look like passwords or "
+        "tokens (for example `password = ...` or `api_token = ...`) be sent to the reviewer as "
+        "written. Known credential shapes, private keys and URL passwords are always withheld."
+    )
+    proposal_id = await _propose(candidate, snapshot.authority_digest, workspace_locator=locator)
+    if proposal_id is None:
+        # Never expected for a widening; report what the service did rather than guess.
+        return PrivacySetupReport(
+            "configured",
+            candidate.profile.value,
+            grant_state=snapshot.grant_state,
+            migration_state=snapshot.migration_state,
+        )
+    typer.echo("")
+    typer.echo("Final widening decision (trusted local ceremony)")
+    decision = await _decide(proposal_id)
+    status = getattr(decision, "status", None)
+    if status == "committed":
+        return PrivacySetupReport(
+            "configured",
+            candidate.profile.value,
+            proposal_id,
+            grant_state=snapshot.grant_state,
             migration_state=snapshot.migration_state,
         )
     return PrivacySetupReport(

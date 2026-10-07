@@ -726,6 +726,9 @@ async def provider_status_report(
     fallback_credential_connected: bool | None = None
     llm_inference_enabled: bool | None = None
     policy_profile: str | None = None
+    # ``disabled`` only when the composed policy turned the possible-credential filter off
+    # (issue #982 owner opt-out); the default is never printed.
+    credential_heuristic_disabled = False
     repository_grant_state: str | None = None
     repository_migration_state: str | None = None
     # Set only when a service actually answered, so presence is observed rather than inferred
@@ -778,6 +781,9 @@ async def provider_status_report(
                         if type(profile) is str:
                             policy_profile = profile
                         llm_inference_enabled = _channel_enabled(policy_map, "llm_inference")
+                        credential_heuristic_disabled = (
+                            policy_map.get("credential_heuristic") == "disabled"
+                        )
             else:
                 credential_connected = None
         finally:
@@ -1022,6 +1028,7 @@ async def provider_status_report(
         ),
         "llm_inference_enabled": llm_inference_enabled,
         "privacy_profile": policy_profile,
+        **({"credential_heuristic": "disabled"} if credential_heuristic_disabled else {}),
         "repository_grant_state": repository_grant_state,
         "repository_migration_state": repository_migration_state,
         "service_state": service_state,

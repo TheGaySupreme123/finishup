@@ -1730,6 +1730,12 @@ class YoetzTui(App[int]):
             authority_lines.append(current.repository_migration_summary)
         if current.task_statement_disclosure is not None:
             authority_lines.append(f"Task statement: {current.task_statement_disclosure}")
+        if current.credential_heuristic_disabled:
+            # Owner opt-out (issue #982): visible wherever the policy is summarized.
+            authority_lines.append(
+                "Possible-credential filter: off (values that only look like passwords or tokens "
+                "may be sent); turn it back on with 'yoetz privacy credential-heuristic enable'"
+            )
         self.say(
             Level.ACTIVE,
             "Privacy",

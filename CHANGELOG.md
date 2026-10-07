@@ -8,6 +8,17 @@ reverse-chronological released versions.
 
 ### Added
 
+- You can turn off the possible-credential filter for AI-powered review with
+  `yoetz privacy credential-heuristic disable`, and back on with `enable` (#982). Off, values that
+  only look like passwords or tokens are sent as written instead of as
+  `[withheld-by-yoetz:possible-credential]`; known credential shapes, private keys, URL passwords
+  and an unfinished scan still block or redact. Turning it off is a policy loosening that applies
+  only after the trusted approval on your terminal (no agent can apply it); turning it back on
+  applies at once. `privacy show`, `provider status`, `/privacy`, every privacy receipt
+  (`secret_scan.credential_heuristic`) and every check whose review ran under it
+  (`semantic_review_credential_heuristic_disabled`) say so. The field is part of the privacy
+  policy, written only when off, so existing policies keep their exact bytes and digests.
+
 - Local checks now report facts about the task's own work, not only about the ledger (#977,
   ADR-033). Closure readiness, check results and receipts name a planned verification (an
   obligation's requested command) that hooks never saw run, that failed on its latest run, or that
@@ -183,6 +194,17 @@ reverse-chronological released versions.
   budget without dropping any rule.
 
 ### Fixed
+
+- Withholding a credential-like value from the external reviewer no longer taints the whole check
+  (#982, a regression from per-item withholding). Only the value is replaced, in place, by
+  `[withheld-by-yoetz:possible-credential]`, and the rest of the item is still reviewed
+  (`semantic_review_value_redacted`). An item is withheld only when that cannot be done
+  (`semantic_review_item_withheld`). Both bound only the AI-powered review; neither adds
+  `content_redacted` or blocks local finding resolution any more. A capture-time `content_redacted`
+  no longer vetoes local proof either.
+
+- A closing review with one withheld item keeps a valid provider manifest and its `final` review
+  phase (#979).
 
 - Status no longer fails when every open obligation is named by a recorded blocker, and a check
   whose only remaining gap is such a blocker no longer fails internally with

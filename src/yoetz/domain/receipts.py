@@ -129,6 +129,10 @@ __all__ = [
     "SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP",
     "SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP",
     "SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP",
+    "SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP",
+    "SEMANTIC_REVIEW_EGRESS_REDACTION_GAPS",
+    "SEMANTIC_REVIEW_ITEM_WITHHELD_GAP",
+    "SEMANTIC_REVIEW_VALUE_REDACTED_GAP",
     "SEMANTIC_PACKET_INSUFFICIENT_GAP",
     "SEMANTIC_REVIEW_NOT_CONFIGURED_GAP",
     "SEMANTIC_REVIEW_NOT_REQUESTED_GAP",
@@ -193,6 +197,24 @@ SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP: Final = "semantic_relevance_review_not_ru
 # The review ran, but the inference channel withheld categories the review profile
 # selected, so it judged the work without material it was configured to receive.
 SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP: Final = "semantic_review_context_withheld"
+# Egress-only privacy redaction of the review packet (issue #982, owner decision B2). Privacy
+# filtering exists to keep sensitive values away from the external model, so these bound only the
+# AI-powered review that ran without them, never local proof. ``value_redacted``: one or more
+# credential-like values were replaced in place by ``EGRESS_CREDENTIAL_PLACEHOLDER`` and the rest
+# of each item was sent. ``item_withheld``: in-place replacement could not make an item safe to
+# send, so that item alone was left out of the packet (listed in ``semantic_withheld_items``).
+SEMANTIC_REVIEW_VALUE_REDACTED_GAP: Final = "semantic_review_value_redacted"
+SEMANTIC_REVIEW_ITEM_WITHHELD_GAP: Final = "semantic_review_item_withheld"
+SEMANTIC_REVIEW_EGRESS_REDACTION_GAPS: Final = frozenset(
+    {SEMANTIC_REVIEW_VALUE_REDACTED_GAP, SEMANTIC_REVIEW_ITEM_WITHHELD_GAP}
+)
+# The owner's privacy policy had the low-confidence credential heuristic turned off for this
+# review's disclosure (issue #982 owner opt-out): values that only look like passwords or tokens
+# were sent as written; known credential shapes, private keys and URL passwords were still
+# withheld. An owner choice that disclosed more, never agent work and never a review defect.
+SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP: Final = (
+    "semantic_review_credential_heuristic_disabled"
+)
 # A valid provider answer that could not assess the supplied content is not a clean review.
 SEMANTIC_PACKET_INSUFFICIENT_GAP: Final = "semantic_packet_insufficient"
 # The review ran and returned challenges, and at least one of them was dropped by the

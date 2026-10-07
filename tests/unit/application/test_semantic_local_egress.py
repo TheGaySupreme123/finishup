@@ -306,7 +306,7 @@ async def test_local_semantic_success_persists_receipt_and_finalizes_local_prove
     redacted_final = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
         replace(result, redacted_span_count=2), ready_composition.IdPort()
     )
-    assert redacted_final.case_content_gaps == ("content_redacted",)
+    assert redacted_final.case_content_gaps == ("semantic_review_value_redacted",)
 
 
 @pytest.mark.anyio

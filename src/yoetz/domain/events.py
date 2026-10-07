@@ -40,7 +40,7 @@ from yoetz.domain.findings import (
     semantic_provenance_from_json,
     semantic_provenance_to_json,
 )
-from yoetz.domain.receipts import ReceiptConclusion
+from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP, ReceiptConclusion
 from yoetz.domain.values import (
     ActionId,
     Actor,
@@ -2705,8 +2705,10 @@ class CheckRecordedPayload:
     # completed review whose coverage records the reduced scope; resolution tests a finding's
     # relevant material against it.
     semantic_included_refs: tuple[str, ...] | None = None
-    # Opaque item identities omitted by the low-confidence never-send heuristic. The companion
-    # ``content_redacted`` coverage gap is required whenever this field is present.
+    # Opaque item identities omitted by the low-confidence never-send heuristic. A companion
+    # coverage gap is required whenever this field is present: ``semantic_review_item_withheld``
+    # (review-scoped, issue #982) on current checks, or ``content_redacted`` on checks recorded
+    # before that change, which stay valid on replay.
     semantic_withheld_item_ids: tuple[str, ...] = ()
     # Metadata-only input coverage for the exact check packet (issue #951).
     review_input_manifest: JsonObject | None = None
@@ -2842,6 +2844,7 @@ class CheckRecordedPayload:
             or (
                 self.semantic_withheld_item_ids
                 and "content_redacted" not in self.coverage.known_gaps
+                and SEMANTIC_REVIEW_ITEM_WITHHELD_GAP not in self.coverage.known_gaps
             )
         ):
             raise ProtocolValueError("invalid_event_value_type")

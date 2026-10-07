@@ -1265,7 +1265,6 @@ def test_completed_semantic_recheck_can_retain_original_readable_capture_limits(
         "semantic_review_context_withheld",
         "semantic_challenges_rejected",
         "truncated_payload",
-        "content_redacted",
         "event_payload_unavailable",
         "redacted_event",
         "missing_ref",
@@ -2801,7 +2800,7 @@ _DRIZZLE_LATER_REVIEW = (
 
 @pytest.mark.parametrize(
     "beyond_baseline",
-    ["completion_plan_not_claimed", "content_redacted", "missing_ref"],
+    ["completion_plan_not_claimed", "redacted_object", "missing_ref"],
 )
 def test_a_lapsed_limit_beyond_the_baseline_makes_the_baseline_readable(
     beyond_baseline: str,
@@ -2902,7 +2901,10 @@ def test_selection_and_capture_failure_classes_are_disjoint_and_closed() -> None
         "captured_object_unavailable": (False, True),
         "content_capture_unavailable": (True, True),
         "content_unselected": (False, True),
-        "content_redacted": (True, False),
+        # Capture-time redaction of a high-confidence secret shape (issue #982): local packs never
+        # read the bytes it replaced, so it never vetoes local proof; for AI-powered proof it is a
+        # recorded capture baseline like any other native capture limit.
+        "content_redacted": (False, True),
         "truncated_payload": (True, False),
         "semantic_case_finding_refs_over_limit": (False, False),
         SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP: (False, True),
@@ -2920,11 +2922,20 @@ def test_selection_and_capture_failure_classes_are_disjoint_and_closed() -> None
         "preexisting_test_skipped",
     }
     test_edit_actionable = {"preexisting_test_edit_unjustified"}
+    # In-place egress redaction of a credential-like value (issue #982, owner decision B2) bounds
+    # only what the external model saw, and only the value: it weakens neither proof class.
+    egress_value_redaction = {"semantic_review_value_redacted"}
     packet_codes = SEMANTIC_CASE_CONTENT_GAPS | {
         SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
         SEMANTIC_REFERENCE_SCOPE_REDUCED_GAP,
     }
-    assert packet_codes == set(decided) | test_edit_accounting | test_edit_actionable
+    assert packet_codes == (
+        set(decided) | test_edit_accounting | test_edit_actionable | egress_value_redaction
+    )
+    for code in sorted(egress_value_redaction):
+        later = _review_check(code)
+        assert _blockers(_finding(), later) == (), code
+        assert _blockers(_semantic_finding(), later) == (), code
     requirement = replace(
         _test_edit_finding(),
         coverage=_coverage(semantic=True, freshness=LedgerFreshness.PARTIAL),
@@ -3453,3 +3464,21 @@ def test_an_unknown_pack_version_is_not_decodable() -> None:
         PolicyVersion("coordination", "0.2.0")
     with pytest.raises(ValueError):
         replace(_finding(), policy_version="0.9.0")
+
+
+def test_egress_item_withholding_bounds_only_the_ai_powered_review() -> None:
+    """Issue #982 (owner decision B2, regression from 860811ed).
+
+    Withholding one packet item from the external reviewer used to stamp ``content_redacted`` on
+    the whole check, which made every local finding on the task unresolvable. The review-scoped
+    code never vetoes local proof, and for AI-powered proof it is a recorded baseline only.
+    """
+
+    from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
+
+    later = _review_check(SEMANTIC_REVIEW_ITEM_WITHHELD_GAP)
+    assert _blockers(_finding(), later) == ()
+    assert _blockers(_semantic_finding(), later) == (
+        "coverage:" + SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
+    )
+    assert _blockers(_semantic_finding(SEMANTIC_REVIEW_ITEM_WITHHELD_GAP), later) == ()

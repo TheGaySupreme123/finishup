@@ -134,7 +134,7 @@ GAP_CLASSIFICATION: Final[Mapping[str, GapClass]] = MappingProxyType(
         "capture_budget_exhausted": _S,
         "content_capture_profile_mismatch": _S,
         "content_unselected": _S,  # deliberate selection: the policy chose not to capture
-        "content_redacted": _S,  # capture failure: privacy-policy redaction
+        "content_redacted": _S,  # capture-time redaction of a high-confidence secret shape
         "routine_read_detail_omitted": _S,
         "routine_read_summary_invalid": _S,
         "routine_summary_invalid": _S,
@@ -207,6 +207,13 @@ GAP_CLASSIFICATION: Final[Mapping[str, GapClass]] = MappingProxyType(
         "semantic_review_not_configured": _S,
         "semantic_relevance_review_not_run": _S,  # provider or evaluator failure
         "semantic_review_context_withheld": _S,
+        # Egress-only privacy redaction of the review packet (#982): bounds the review, never the
+        # agent's work. Never ask the agent to reveal the value or widen consent to clear it.
+        "semantic_review_value_redacted": _S,
+        "semantic_review_item_withheld": _S,
+        # Owner opt-out (#982): the policy disabled the low-confidence credential heuristic, so the
+        # review saw more, not less. A disclosure, never agent work.
+        "semantic_review_credential_heuristic_disabled": _S,
         "semantic_packet_insufficient": _S,  # agent-suppliable items arrive as findings (#907)
         # #907: what an insufficient_packet review named as missing. Only an item the agent can
         # supply is agent work; the rest disclose how the review was bounded.

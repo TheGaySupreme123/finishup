@@ -284,7 +284,10 @@ def test_heuristic_only_item_is_span_redacted_without_blocking_clean_item() -> N
     assert minimized.heuristic_findings == ()
     assert minimized.redacted_span_count == 1
     assert b"bounded-but-suspicious-value" not in minimized.prepared_bytes
-    assert base64.b64encode(b"auth_token: '[REDACTED]'") in minimized.prepared_bytes
+    assert (
+        base64.b64encode(b"auth_token: '[withheld-by-yoetz:possible-credential]'")
+        in minimized.prepared_bytes
+    )
 
 
 def test_mixed_case_keeps_concrete_credentials_as_whole_case_findings() -> None:
@@ -467,9 +470,9 @@ def test_semantic_heuristic_omission_keeps_review_packet_reference_closure() -> 
     assert type(content) is str
     assert json.loads(content) == {
         "event_id": "evt_10000000-0000-4000-8000-000000000011",
-        "payload": {"auth_token": "[REDACTED]"},
+        "payload": {"auth_token": "[withheld-by-yoetz:possible-credential]"},
     }
-    assert packet["question_set"] == ["auth_token: [REDACTED]"]
+    assert packet["question_set"] == ["auth_token: [withheld-by-yoetz:possible-credential]"]
 
 
 def test_malformed_semantic_envelope_cannot_dispatch_empty_fallback() -> None:
@@ -947,8 +950,8 @@ def _minimize_all(candidate: CandidateContext):  # noqa: ANN202 - test helper
 @pytest.mark.parametrize(
     "line",
     (
-        b"        self.token = functools.lru_cache(maxsize=2048)(self._token)\n",
-        b"    for char in token:\n            node = x\n",
+        b'        self.api_key = "Zx81Kq0Lm2Pq9Rs7"\n',
+        b"    API_TOKEN=abcdefgh12345678\n",
     ),
 )
 def test_redacted_code_line_survives_packet_encoding_without_blocking(line: bytes) -> None:
@@ -963,7 +966,7 @@ def test_redacted_code_line_survives_packet_encoding_without_blocking(line: byte
     assert minimized.forbidden_findings == ()
     assert set(minimized.included_item_ids) == {"clean", "review-packet", "suspect"}
     assert minimized.withheld_item_ids == ()
-    assert b"[REDACTED]" in minimized.prepared_bytes
+    assert b"[withheld-by-yoetz:possible-credential]" in minimized.prepared_bytes
 
 
 def test_surviving_heuristic_withholds_only_the_offending_item(
@@ -983,6 +986,44 @@ def test_surviving_heuristic_withholds_only_the_offending_item(
     assert set(minimized.included_item_ids) == {"clean", "review-packet"}
     assert minimized.withheld_item_ids == ("suspect",)
     assert b"abcdefgh12345678" not in minimized.prepared_bytes
+    assert b"clean evidence" in minimized.prepared_bytes
+
+
+def test_surviving_heuristic_redacts_only_the_value_in_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner decision B2 (issue #982): redact the value, not the item.
+
+    When a heuristic survives the raw-text pass into the prepared packet, the offending item is
+    re-redacted on its packet encoding and stays in the review; only the value is replaced, by the
+    fixed placeholder that says it may be a credential. The rest of the item is still sent.
+    """
+
+    import yoetz.adapters.privacy.local_enforcer as enforcer_module
+    from yoetz.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
+
+    real = enforcer_module.redact_heuristic_spans
+    calls = {"count": 0}
+
+    def first_pass_misses(data: bytes) -> tuple[bytes, int]:
+        calls["count"] += 1
+        return (data, 0) if calls["count"] == 1 else real(data)
+
+    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", first_pass_misses)
+    minimized = _minimize_all(
+        _two_excerpt_semantic_candidate(
+            b"clean evidence",
+            b"def connect():\n    API_TOKEN=abcdefgh12345678\n    return open_session()\n",
+        )
+    )
+    assert minimized.heuristic_findings == ()
+    assert minimized.forbidden_findings == ()
+    assert set(minimized.included_item_ids) == {"clean", "review-packet", "suspect"}
+    assert minimized.withheld_item_ids == ()
+    assert minimized.redacted_span_count >= 1
+    assert b"abcdefgh12345678" not in minimized.prepared_bytes
+    assert EGRESS_CREDENTIAL_PLACEHOLDER in minimized.prepared_bytes
+    assert b"return open_session()" in minimized.prepared_bytes
     assert b"clean evidence" in minimized.prepared_bytes
 
 

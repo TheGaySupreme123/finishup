@@ -20,6 +20,7 @@ from yoetz.domain.privacy import (
     AuthorizationScopeKind,
     ChannelPolicy,
     ConsentSource,
+    CredentialHeuristic,
     DataCategory,
     DataClass,
     DisclosureProposal,
@@ -140,10 +141,30 @@ def _json(value: object) -> JsonValue:
     if type(value) is tuple:
         return [_json(item) for item in cast(tuple[object, ...], value)]
     if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _json(getattr(value, field.name)) for field in fields(value)}
+        return {
+            field.name: _json(getattr(value, field.name))
+            for field in fields(value)
+            # The credential-heuristic default is never written (issue #982): every policy,
+            # case and receipt from before the field existed keeps its exact canonical bytes.
+            if getattr(value, field.name) is not CredentialHeuristic.ENFORCED
+        }
     if type(value) is dict:
         return {str(key): _json(item) for key, item in cast(dict[object, object], value).items()}
     raise TypeError("privacy_catalog_canonical_value_invalid")
+
+
+def _credential_heuristic_from_json(
+    value: JsonValue | None, *, allow_enforced: bool = True
+) -> CredentialHeuristic:
+    """Absent means ``enforced``; only the closed values decode (issue #982)."""
+
+    if value is None:
+        return CredentialHeuristic.ENFORCED
+    if value == CredentialHeuristic.DISABLED.value:
+        return CredentialHeuristic.DISABLED
+    if allow_enforced and value == CredentialHeuristic.ENFORCED.value:
+        return CredentialHeuristic.ENFORCED
+    raise ValueError("privacy_audit_row_corrupt")
 
 
 def _scope_json(scope: AuthorizationScope) -> dict[str, JsonValue]:
@@ -318,6 +339,7 @@ def _receipt_common_from_json(source: dict[str, JsonValue]) -> _ReceiptCommon:
                 if scan.get("not_run_reason") is None
                 else PrivacyReason(cast(str, scan["not_run_reason"]))
             ),
+            _credential_heuristic_from_json(scan.get("credential_heuristic"), allow_enforced=False),
         ),
         "withheld_item_ids": tuple(
             sorted(_strings(source.get("withheld_item_ids") or []), key=str.encode)
@@ -607,7 +629,15 @@ def _policy_from_domain_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         tuple(DataClass(item) for item in _strings(source["trusted_human_control_data_classes"])),
         parse_rfc3339_millis(source["created_at"]),
         cast(str | None, source.get("supersedes_policy_digest")),
+        _policy_credential_heuristic(source),
     )
+
+
+def _policy_credential_heuristic(source: dict[str, JsonValue]) -> CredentialHeuristic:
+    try:
+        return _credential_heuristic_from_json(source.get("credential_heuristic"))
+    except ValueError:
+        raise ValueError("privacy_policy_row_corrupt") from None
 
 
 def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
@@ -622,6 +652,9 @@ def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
     if source.get("schema_version") == "1.0.0" and any(
         "fallback_provider_binding" in _mapping(channel) for channel in channels
     ):
+        raise ValueError("privacy_policy_row_corrupt")
+    if source.get("schema_version") in {"1.0.0", "1.1.0"} and "credential_heuristic" in source:
+        # The credential-heuristic opt-out exists from wire 1.2.0 on (issue #982).
         raise ValueError("privacy_policy_row_corrupt")
     review_selection = _review_from_json(source["review_selection"])
     if source.get("schema_version") in {"1.0.0", "1.1.0"} and (
@@ -659,6 +692,7 @@ def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         trusted_classes,
         parse_rfc3339_millis(source["created_at"]),
         cast(str | None, source.get("supersedes_policy_digest")),
+        _policy_credential_heuristic(source),
     )
 
 
@@ -687,7 +721,7 @@ def encode_privacy_policy_json(policy: PrivacyPolicy) -> dict[str, JsonValue]:
     if set(by_channel) != set(EgressChannel):
         raise ValueError("privacy_policy_channel_set_invalid")
     encoded: dict[str, JsonValue] = {
-        "schema_version": review_selection_policy_schema_version(policy.review_selection),
+        "schema_version": _privacy_policy_wire_version(policy),
         "policy_id": policy.policy_id,
         "version": str(policy.version),
         "policy_digest": policy.policy_digest,
@@ -722,7 +756,22 @@ def encode_privacy_policy_json(policy: PrivacyPolicy) -> dict[str, JsonValue]:
         encoded["local_model_binding"] = _json(policy.local_model_binding)
     if policy.supersedes_policy_digest is not None:
         encoded["supersedes_policy_digest"] = policy.supersedes_policy_digest
+    if not policy.credential_heuristic_enforced:
+        encoded["credential_heuristic"] = policy.credential_heuristic.value
     return cast(dict[str, JsonValue], _omit_json_nulls(encoded))
+
+
+def _privacy_policy_wire_version(policy: PrivacyPolicy) -> str:
+    """The oldest wire version that expresses ``policy`` exactly.
+
+    The credential-heuristic opt-out exists only from 1.2.0 on (issue #982); a policy that keeps
+    the default is still written at the version its review selection needs.
+    """
+
+    version = review_selection_policy_schema_version(policy.review_selection)
+    if not policy.credential_heuristic_enforced:
+        return "1.2.0"
+    return version
 
 
 def _omit_json_nulls(value: JsonValue) -> JsonValue:

@@ -22,6 +22,7 @@ from yoetz.domain.privacy import (
     CandidateContext,
     ClassifiedContext,
     ConsentSource,
+    CredentialHeuristic,
     DataCategory,
     DataClass,
     DisclosureProposal,
@@ -194,16 +195,26 @@ def _current_scanner_identity(
 
 
 def _resume_scan_is_clean(
-    classifier: PrivacyClassifierPort, prepared_bytes: bytes
+    classifier: PrivacyClassifierPort,
+    prepared_bytes: bytes,
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
 ) -> tuple[ForbiddenDataKind, ...] | None:
     """Scan the exact persisted transformed bytes with the current scanner.
 
     ``None`` means the scanner boundary itself was unavailable or malformed.  It is distinct from
     an empty clean result so a resume cannot turn a broken classifier into a successful dispatch.
+    ``credential_heuristic`` is the owner policy's setting; resume already requires that policy
+    to be exactly the one the proposal was prepared under (issue #982).
     """
 
     try:
-        findings = classifier.scan_exact_bytes(prepared_bytes)
+        findings = (
+            classifier.scan_exact_bytes(prepared_bytes)
+            if credential_heuristic is CredentialHeuristic.ENFORCED
+            else classifier.scan_exact_bytes(
+                prepared_bytes, credential_heuristic=credential_heuristic
+            )
+        )
     except Exception:
         return None
     if type(findings) is not tuple or any(type(item) is not ForbiddenDataKind for item in findings):
@@ -481,6 +492,7 @@ def _semantic_local_receipt(
             len(set(minimized.forbidden_findings) | set(minimized.heuristic_findings)),
             not (minimized.forbidden_findings or minimized.heuristic_findings),
             ReceiptSecretScanStage.RENDERED_BODY,
+            credential_heuristic=effective.policy.credential_heuristic,
         ),
         reason,
         1,
@@ -1315,7 +1327,9 @@ class PrivacyCoordinator:
                 withheld_item_ids=proposal.withheld_item_ids,
                 redacted_span_count=redacted_span_count,
             )
-        prepared_findings = _resume_scan_is_clean(self._classifier, proposal.prepared_bytes)
+        prepared_findings = _resume_scan_is_clean(
+            self._classifier, proposal.prepared_bytes, effective.policy.credential_heuristic
+        )
         if prepared_findings is None:
             return SemanticEgressBlocked(
                 request_id,
@@ -1897,6 +1911,7 @@ class PrivacyCoordinator:
                 proposal.prepared_case_digest,
                 minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
+                credential_heuristic=effective.policy.credential_heuristic,
             )
             if not await self._semantic_dispatch_is_current():
                 return SemanticEgressBlocked(
@@ -2007,6 +2022,7 @@ class PrivacyCoordinator:
             proposal.prepared_case_digest,
             minimized.withheld_item_ids,
             redacted_span_count=minimized.redacted_span_count,
+            credential_heuristic=effective.policy.credential_heuristic,
         )
         if not await self._semantic_dispatch_is_current():
             return SemanticEgressBlocked(
@@ -2324,6 +2340,7 @@ class PrivacyCoordinator:
                     if scan_stage is ReceiptSecretScanStage.NOT_RUN
                     else None
                 ),
+                effective.policy.credential_heuristic,
             ),
             reason,
             1,
@@ -2747,6 +2764,7 @@ class PrivacyCoordinator:
                 scan_stage is not ReceiptSecretScanStage.NOT_RUN and match_count == 0,
                 scan_stage,
                 effective_not_run_reason,
+                classified.credential_heuristic,
             ),
             reason,
             1,

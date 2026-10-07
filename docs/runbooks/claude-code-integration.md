@@ -1665,6 +1665,16 @@ under that same request ID. Never mint a replacement write ID to recover an unkn
 A lost first `start` still uses exact same-body replay because session/writer IDs may be absent.
 This behavior is identical on macOS, Linux and Windows via WSL 2. CLI callers may set `--deadline-ms`.
 
+## Possible-credential filter opt-out (issue #982)
+
+Decision for Claude Code: supported, service-side, identical on every host. `credential_heuristic` is a
+field of the owner's privacy policy that the service applies at every disclosure, so Claude Code needs
+no host-specific step and gets no write path: `yoetz privacy credential-heuristic disable` is a
+widening that applies only after the trusted-terminal decision, `enable` is an immediate
+tightening, and MCP tools and hooks can only see the setting (privacy show, provider status, the
+`semantic_review_credential_heuristic_disabled` check gap and the receipt's
+`secret_scan.credential_heuristic`). No Claude Code capability gap.
+
 ## Privacy receipts listing (issue #921)
 
 `yoetz privacy receipts list` and `get` are host-agnostic: every host's sessions write receipts
