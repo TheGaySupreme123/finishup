@@ -189,6 +189,9 @@ _REASONS: Final = frozenset(
         # once-per-frontier/once-per-blocker memory could not be written.
         "closure_gate_blocker_rechecked",
         "closure_gate_memory_unwritten",
+        # A Stop the host had already continued this turn still re-asked a blocker published
+        # since the last gate, once, within the per-turn cap (#985).
+        "closure_gate_active_stop_rechecked",
         "hook_slo_breached",
         # A host's automatic tool-call reviewer (Claude Code auto mode) denied a
         # scoped AI-powered ``check`` before Yoetz received it, or a permission

@@ -8,21 +8,28 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
   unacknowledged receipt-blocking finding, and the task facts the agent can repair (a planned
   verification not observed, failing or stale; a requested output Git would not deliver);
 * once per ledger frontier and session: a second Stop at the same frontier passes, so an agent
-  that cannot or will not act is never trapped; the host's own loop guard (``stop_hook_active``,
-  Cursor ``loop_count``) is honoured before any service read;
+  that cannot or will not act is never trapped;
 * an obligation a recorded blocker decision names (authority, consent, credentials, an
   unobtainable dependency) is a standing disclosure in readiness. Yoetz cannot verify the claim,
-  so the first Stop that finds a blocker the agent has not been asked about continues the agent
-  once with a re-check that names the obligation and the claimed kind (``blocked_obligations`` in
-  readiness). The re-check is remembered per session and ``(obligation, kind)``: stopping again,
-  or recording the same blocker again, is the re-confirmation, and the blocker is then honoured
-  without asking again. Nothing judges the claim here; the closing review does (#976);
-* while hook observations are still draining, the facts that depend on observed runs are not
-  used to continue the agent.
+  so a Stop that finds a blocker the agent has not been asked about continues the agent once
+  with a re-check that names the obligation and the claimed kind (``blocked_obligations`` in
+  readiness). The re-check is remembered per session and ``(obligation, kind)``; the agent
+  confirms a genuine blocker by publishing the same line again, and it is then never re-asked.
+  This re-check also runs on a Stop the host already continued this turn (``stop_hook_active``,
+  Cursor ``loop_count > 0``), because a blocker is usually published after the first gate
+  (#985). On such an active Stop only a new blocker key may continue the agent, at most once per
+  Stop and at most ``MAX_GATE_BLOCKS_PER_TURN`` gate continuations per host turn; anything
+  else, including any error or a short time budget, lets the agent stop;
+* the text pushes repair or self-verification first; ``acknowledged_not_done`` is the last
+  resort, a Yoetz limit is never a ``yoetz-blocker``, and the blocker exit is offered only when
+  open obligations remain (#984);
+* while this task's hook observations are still draining, the facts that depend on observed
+  runs are not used to continue the agent, and the text says so only when that changed the
+  decision.
 
-The delivered text holds only closed tokens, counts and service-minted ids. The once-per-frontier
-and once-per-blocker memory is two small owner-only files in the observation state directory
-holding opaque session, frontier and obligation ids and closed blocker kinds.
+The delivered text holds only closed tokens, counts and service-minted ids. The memory is three
+small owner-only files in the observation state directory holding opaque session, frontier and
+obligation ids, closed blocker kinds and a per-session turn counter.
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
@@ -57,15 +64,20 @@ __all__ = [
     "ClosureGate",
     "ClosureGateUnavailable",
     "BLOCKER_RECHECK_ITEM",
+    "BLOCKER_UNCONFIRMED_TOKEN",
+    "MAX_GATE_BLOCKS_PER_TURN",
     "closure_gate_already_delivered",
     "closure_gate_from_readiness",
     "closure_gate_reasked_blockers",
+    "closure_gate_turn_blocks",
     "read_closure_gate",
     "record_closure_gate_delivered",
+    "reset_closure_gate_turn",
 ]
 
 _FILE_NAME: Final = "closure-gate.json"
 _BLOCKER_FILE_NAME: Final = "closure-gate-blockers.json"
+_TURN_FILE_NAME: Final = "closure-gate-turns.json"
 _LOCK_NAME: Final = "closure-gate.lock"
 _MAX_SESSIONS: Final = 128
 _MAX_BLOCKER_KEYS: Final = 64
@@ -73,6 +85,9 @@ _BLOCKER_KINDS: Final = frozenset({"authority", "consent", "credential", "depend
 # The closed item a blocker re-check adds to ``ClosureGate.items`` (#977).
 BLOCKER_RECHECK_ITEM: Final = "blocker_recheck"
 _STATUS_DEADLINE_MS: Final = 4_000
+# Hard caps (#985): a host turn gets at most this many gate continuations (the first Stop's gate
+# plus one active-Stop blocker re-check), and an active Stop at most one.
+MAX_GATE_BLOCKS_PER_TURN: Final = 2
 _OBSERVATION_DEPENDENT: Final = frozenset(
     {
         PLANNED_VERIFICATION_FAILED_GAP,
@@ -80,25 +95,62 @@ _OBSERVATION_DEPENDENT: Final = frozenset(
         PLANNED_VERIFICATION_STALE_GAP,
     }
 )
+# The C4 readiness token for a recorded blocker the agent has not yet confirmed after being
+# challenged (#985). The kernel owns ``STOP_GATE_TOKENS``; the gate also recognises this literal so
+# it works whichever lands first, and lists it right after open obligations.
+BLOCKER_UNCONFIRMED_TOKEN: Final = "obligation_blocker_unconfirmed"
+_GATE_TOKENS: Final = (
+    STOP_GATE_TOKENS
+    if BLOCKER_UNCONFIRMED_TOKEN in STOP_GATE_TOKENS
+    else (STOP_GATE_TOKENS[0], BLOCKER_UNCONFIRMED_TOKEN, *STOP_GATE_TOKENS[1:])
+)
+_BLOCKER_LINE: Final = "yoetz-blocker:<authority|consent|credential|dependency_unavailable>"
 _ITEM_TEXT: Final[Mapping[str, str]] = {
     "obligations_open": "{open} open obligation(s)",
+    BLOCKER_UNCONFIRMED_TOKEN: "a recorded blocker you have not confirmed",
     "receipt_findings_unresolved": "{blocking} receipt-blocking finding(s) not repaired",
     "closing_review_required": (
         "the closing review has not run since your last change: run `check` with"
         " `final_review: true` (a recorded blocker does not waive it)"
     ),
-    PLANNED_VERIFICATION_NOT_OBSERVED_GAP: (
-        "a planned verification command (an obligation's requested command item) was never seen"
-        " run exactly as recorded"
-    ),
-    PLANNED_VERIFICATION_FAILED_GAP: "a planned verification command failed on its latest run",
-    PLANNED_VERIFICATION_STALE_GAP: (
-        "a planned verification command last ran before your latest edit"
-    ),
-    REQUESTED_OUTPUT_GIT_IGNORED_GAP: (
-        "a requested output file is git-ignored or excluded, so a diff-based delivery omits it"
-    ),
+    PLANNED_VERIFICATION_NOT_OBSERVED_GAP: "a planned verification never seen run as recorded",
+    PLANNED_VERIFICATION_FAILED_GAP: "a planned verification failed on its latest run",
+    PLANNED_VERIFICATION_STALE_GAP: "a planned verification last ran before your latest edit",
+    REQUESTED_OUTPUT_GIT_IGNORED_GAP: "a requested output is git-ignored, so a diff omits it",
 }
+# Repair-first guidance, one sentence per present item family (F1, #984). Acknowledgement is the
+# last resort and a Yoetz limit is never a ``yoetz-blocker``.
+_OBLIGATION_TEXT: Final = (
+    "Finish each open obligation: write every requested output at its path (status"
+    " view=obligations names them); for an inconsistent input write a best-effort artifact and"
+    " disclose the assumption."
+)
+_VERIFICATION_TEXT: Final = (
+    "Run each planned verification after your last edit, or correct the requested command."
+)
+_FINDING_TEXT: Final = (
+    "For each receipt-blocking finding, repair what you can. If you repaired one and Yoetz still cannot prove it (its resolution names a Yoetz limit such as redaction,"
+    " observation loss or a review-packet limit), verify it yourself, record that evidence, and"
+    " respond `self_verified` with how you verified it and the evidence ids. Do not reshape your"
+    " work for Yoetz. Respond `acknowledged_not_done` only if you truly cannot or will not do it."
+)
+_CLOSE_TEXT: Final = (
+    "Then run `check` and request the receipt. A Yoetz limit is never a `yoetz-blocker`."
+)
+_BLOCKER_OFFER_TEXT: Final = (
+    "Leave an open obligation undone only for a blocker outside your control (authority,"
+    " consent, credentials, a dependency you cannot obtain): publish decision_recorded with"
+    f" affected_obligation_ids and the line {_BLOCKER_LINE}; Yoetz asks once, and you confirm by"
+    " publishing the same line again. Data the task says is recoverable is not such a blocker."
+)
+_OBLIGATION_SHORT_TEXT: Final = (
+    "Finish each open obligation (status view=obligations names the requested outputs)."
+)
+# Every host clips the Stop text at 2,000 characters; the gate stays under that whole.
+_MAX_TEXT_CHARS: Final = 2_000
+_DRAIN_TEXT: Final = "(Observations were still draining; planned-verification facts unused.)"
+# A re-check names at most this many blocked obligations; the rest are counted.
+_MAX_NAMED_BLOCKERS: Final = 3
 
 
 class ClosureGateUnavailable(Exception):
@@ -117,7 +169,12 @@ class ClosureGate:
 
 
 def _blocker_rows(readiness: object) -> tuple[tuple[str, str], ...]:
-    """``(obligation id, kind)`` pairs from readiness ``blocked_obligations``; malformed rows drop."""
+    """``(obligation id, kind)`` pairs from readiness ``blocked_obligations``; malformed rows drop.
+
+    A row readiness marks ``confirmation: confirmed`` (the agent re-published the same blocker in
+    a later decision, #985) is a standing claim and is not re-asked; a claimed row, or one from a
+    build without that field, is.
+    """
 
     raw = getattr(readiness, "blocked_obligations", None)
     if not isinstance(raw, (tuple, list)):
@@ -126,6 +183,8 @@ def _blocker_rows(readiness: object) -> tuple[tuple[str, str], ...]:
     for item in tuple(cast(tuple[object, ...], raw)):
         obligation = getattr(item, "obligation_id", None)
         kind = getattr(item, "blocker_kind", None)
+        if getattr(item, "confirmation", None) == "confirmed":
+            continue
         if (
             type(obligation) is str
             and obligation.startswith("obl_")
@@ -137,15 +196,26 @@ def _blocker_rows(readiness: object) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(rows.items(), key=lambda row: row[0].encode()))
 
 
-def _blocker_text(rows: tuple[tuple[str, str], ...]) -> str:
-    named = ", ".join(f"{obligation} ({kind})" for obligation, kind in rows)
+def _blocker_text(rows: tuple[tuple[str, str], ...], *, short: bool = False) -> str:
+    named = ", ".join(f"{obligation} ({kind})" for obligation, kind in rows[:_MAX_NAMED_BLOCKERS])
+    if len(rows) > _MAX_NAMED_BLOCKERS:
+        named += f" and {len(rows) - _MAX_NAMED_BLOCKERS} more"
+    if short:
+        # The blocker offer above already defines a blocker; only the re-check itself remains.
+        return (
+            f"Blocker re-check (asked once): you recorded {named} as blocked. Continue that work"
+            " unless it is genuinely blocked (a Yoetz limit never is); if it is, confirm it as"
+            " above, then stop."
+        )
     return (
         f"Blocker re-check (asked once): you recorded {named} as blocked outside your control."
-        " Confirm each is genuinely outside your control: authority or consent you do not have,"
-        " a credential you lack, or a dependency you cannot obtain. Missing or inconsistent data"
-        " the task says is recoverable, a failing test, or a result that looks infeasible is not"
-        " a blocker: continue the work on that obligation instead. If a blocker is genuine, stop"
-        " again; Yoetz will not ask again and the receipt discloses it as a standing limitation."
+        " Repair first: missing or inconsistent data the task says is recoverable, a failing"
+        " test or a result that looks infeasible is not a blocker, so continue the work on that"
+        " obligation. A Yoetz limit is never a blocker either: verify that work yourself and"
+        " respond `self_verified`. A blocker is only authority or consent you do not have, a"
+        " credential you lack, or a dependency you cannot obtain. If it is genuine, confirm it by"
+        " publishing the same yoetz-blocker line again in a later decision, then stop; Yoetz will"
+        " not ask again and the receipt discloses it as a standing limitation."
     )
 
 
@@ -156,11 +226,15 @@ def closure_gate_from_readiness(
     frontier_digest: str,
     observation_pending: bool,
     reasked_blockers: frozenset[str] = frozenset(),
+    active_stop: bool = False,
 ) -> ClosureGate | None:
     """Decide the gate from one ``closure_readiness`` object; ``None`` means let the agent stop.
 
     ``reasked_blockers`` holds the ``<obligation id>:<kind>`` keys this session was already
     re-asked about; any other blocked obligation in readiness is re-asked once.
+    ``active_stop`` is a Stop the host already continued this turn (``stop_hook_active``,
+    Cursor ``loop_count > 0``): only a blocker key not yet re-asked may continue it, never the
+    ordinary items (#985).
     """
 
     state = getattr(readiness, "state", None)
@@ -171,8 +245,11 @@ def closure_gate_from_readiness(
         for obligation, kind in _blocker_rows(readiness)
         if f"{obligation}:{kind}" not in reasked_blockers
     )
+    identity = f"{frontier_sequence}:{frontier_digest}"
+    keys = tuple(f"{obligation}:{kind}" for obligation, kind in rows)
     items: tuple[str, ...] = ()
-    if state == "action_required":
+    drain_changed_decision = False
+    if state == "action_required" and not active_stop:
         actionable = getattr(readiness, "agent_actionable", None)
         if not isinstance(actionable, (tuple, list)):
             return None
@@ -181,11 +258,10 @@ def closure_gate_from_readiness(
         }
         items = tuple(
             token
-            for token in STOP_GATE_TOKENS
+            for token in _GATE_TOKENS
             if token in present and not (observation_pending and token in _OBSERVATION_DEPENDENT)
         )
-    identity = f"{frontier_sequence}:{frontier_digest}"
-    keys = tuple(f"{obligation}:{kind}" for obligation, kind in rows)
+        drain_changed_decision = observation_pending and bool(present & _OBSERVATION_DEPENDENT)
     if not items:
         if not rows:
             return None
@@ -196,23 +272,29 @@ def closure_gate_from_readiness(
     remaining = "; ".join(
         _ITEM_TEXT[token].format(open=open_count, blocking=blocking_count) for token in items
     )
+    guidance: list[str] = []
+    if "obligations_open" in items:
+        guidance.append(_OBLIGATION_TEXT)
+    if any(token in _OBSERVATION_DEPENDENT for token in items):
+        guidance.append(_VERIFICATION_TEXT)
+    if "receipt_findings_unresolved" in items:
+        guidance.append(_FINDING_TEXT)
+    guidance.append(_CLOSE_TEXT)
+    # The blocker exit is offered only for open obligations: findings, reviews and Yoetz limits
+    # are never excused by a blocker (F1, #984).
+    offers_blocker = "obligations_open" in items or BLOCKER_UNCONFIRMED_TOKEN in items
+    if offers_blocker:
+        guidance.append(_BLOCKER_OFFER_TEXT)
+    tail = (" " + _blocker_text(rows, short=offers_blocker) if rows else "") + (
+        " " + _DRAIN_TEXT if drain_changed_decision else ""
+    )
     text = (
         f"Yoetz closure gate (shown once for ledger frontier {frontier_sequence}): closure still"
-        f" requires action before you stop. Remaining: {remaining}. Finish the work: run each"
-        " planned verification after your last edit (or correct the requested command to the one"
-        " you run), write every requested output at its requested path (status"
-        " view=obligations names them; an inconsistent input is not a reason to omit one, write a"
-        " best-effort artifact and disclose the assumption), repair the receipt-blocking"
-        " findings, then check and request the receipt. Stop without that only for a blocker"
-        " outside your control (authority, consent, credentials, a dependency you cannot obtain):"
-        " publish decision_recorded with affected_obligation_ids and the statement line"
-        " yoetz-blocker:<authority|consent|credential|dependency_unavailable>, then say so in"
-        " your final answer. Data the task says is recoverable is not such a blocker."
+        f" requires action before you stop. Remaining: {remaining}. {' '.join(guidance)}{tail}"
     )
-    if rows:
-        text += " " + _blocker_text(rows)
-    if observation_pending:
-        text += " (Hook observations were still draining; observed-run facts were not used.)"
+    if len(text) > _MAX_TEXT_CHARS and _OBLIGATION_TEXT in text:
+        # Only when nearly every item is present: keep every instruction, shorten the longest.
+        text = text.replace(_OBLIGATION_TEXT, _OBLIGATION_SHORT_TEXT)
     return ClosureGate(identity, text, items + ((BLOCKER_RECHECK_ITEM,) if rows else ()), keys)
 
 
@@ -242,6 +324,7 @@ async def read_closure_gate(
     actor_id: str,
     observation_pending: bool,
     reasked_blockers: frozenset[str] = frozenset(),
+    active_stop: bool = False,
 ) -> ClosureGate | None:
     """Read the mapped session's compact status and decide the gate.
 
@@ -273,6 +356,7 @@ async def read_closure_gate(
             frontier_digest=digest,
             observation_pending=observation_pending,
             reasked_blockers=reasked_blockers,
+            active_stop=active_stop,
         )
     except ClosureGateUnavailable:
         raise
@@ -330,39 +414,75 @@ def _store(directory: Path, path: Path, name: str, entries: dict[str, str]) -> N
     os.replace(temporary, path)
 
 
+@contextlib.contextmanager
+def _locked(_state: Path | None) -> Generator[Path]:
+    directory, _path, lock_path = _paths(_state)
+    ensure_owner_only_dir(directory)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        if fcntl is not None:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield directory
+    finally:
+        os.close(descriptor)
+
+
+def closure_gate_turn_blocks(session_id: str, *, _state: Path | None = None) -> int:
+    """How many gate continuations this session's current host turn already received (#985)."""
+
+    _directory, path, _lock = _paths(_state, _TURN_FILE_NAME)
+    value = _load(path).get(session_id, "0")
+    return int(value) if value.isdecimal() and len(value) <= 3 else MAX_GATE_BLOCKS_PER_TURN
+
+
+def reset_closure_gate_turn(session_id: str, *, _state: Path | None = None) -> None:
+    """Forget the turn counter at a Stop the host did not continue (a new turn). Never raises."""
+
+    with contextlib.suppress(Exception):
+        _directory, path, _lock = _paths(_state, _TURN_FILE_NAME)
+        if session_id not in _load(path):
+            return
+        with _locked(_state) as directory:
+            entries = _load(path)
+            if entries.pop(session_id, None) is not None:
+                _store(directory, path, _TURN_FILE_NAME, entries)
+
+
 def record_closure_gate_delivered(
     session_id: str,
     identity: str,
     *,
     blocker_keys: tuple[str, ...] = (),
+    active_stop: bool = False,
     _state: Path | None = None,
 ) -> bool:
     """Remember that this session's gate fired at this frontier and which blockers it re-asked.
 
-    Never raises.
+    Also counts the continuation toward this host turn's cap: a Stop the host had not continued
+    starts the turn at one, an active Stop adds one. Never raises.
     """
 
     try:
-        directory, path, lock_path = _paths(_state)
+        _directory, path, _lock = _paths(_state)
         _directory, blocker_path, _lock = _paths(_state, _BLOCKER_FILE_NAME)
-        ensure_owner_only_dir(directory)
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(lock_path, flags, 0o600)
-        try:
-            if fcntl is not None:
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
+        _directory, turn_path, _lock = _paths(_state, _TURN_FILE_NAME)
+        with _locked(_state) as directory:
             if blocker_keys:
                 blockers = _load(blocker_path)
                 known = [key for key in blockers.pop(session_id, "").split(" ") if key]
                 merged = list(dict.fromkeys((*known, *blocker_keys)))[-_MAX_BLOCKER_KEYS:]
                 blockers[session_id] = " ".join(merged)
                 _store(directory, blocker_path, _BLOCKER_FILE_NAME, blockers)
+            turns = _load(turn_path)
+            previous = turns.pop(session_id, "0")
+            count = int(previous) if active_stop and previous.isdecimal() else 0
+            turns[session_id] = str(min(count + 1, 999))
+            _store(directory, turn_path, _TURN_FILE_NAME, turns)
             entries = _load(path)
             entries.pop(session_id, None)
             entries[session_id] = identity
             _store(directory, path, _FILE_NAME, entries)
-        finally:
-            os.close(descriptor)
         return True
     except Exception:
         return False

@@ -8435,10 +8435,20 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `closure_gate_already_delivered` / `record_closure_gate_delivered(..., blocker_keys=)` keep the
   owner-only `observation/closure-gate.json` once-per-frontier memory, and
   `closure_gate_reasked_blockers(session_id)` reads the per-session re-asked keys in
-  `observation/closure-gate-blockers.json` (at most 64 per session). Hook diagnostic reasons:
-  `closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_not_required`,
-  `closure_gate_repeat_suppressed`, `closure_gate_loop_guard`, `closure_gate_budget_exhausted`,
-  `closure_gate_unavailable`.
+  `observation/closure-gate-blockers.json` (at most 64 per session). Both decision functions take
+  `active_stop=` (#985): on a Stop the host already continued, only a not-yet-asked blocker key
+  can continue the agent. `closure_gate_turn_blocks(session_id)` / `reset_closure_gate_turn` keep
+  the per-turn count in `observation/closure-gate-turns.json`, capped at
+  `MAX_GATE_BLOCKS_PER_TURN` (2); `record_closure_gate_delivered(..., active_stop=)` counts.
+  A `blocked_obligations` row with `confirmation: confirmed` is not re-asked, and
+  `BLOCKER_UNCONFIRMED_TOKEN` (`obligation_blocker_unconfirmed`) is a gate item. Hook diagnostic
+  reasons: `closure_gate_continued`, `closure_gate_blocker_rechecked`,
+  `closure_gate_active_stop_rechecked`, `closure_gate_not_required`,
+  `closure_gate_repeat_suppressed`, `closure_gate_loop_guard` (an active Stop that emitted
+  nothing), `closure_gate_budget_exhausted`, `closure_gate_unavailable`. A route-less `status`
+  control call uses the route the same session's MCP bridge last named on `status` or `check`
+  since the service started (in memory, 256 sessions), else the policy route; a route-less
+  `check` is unchanged (ADR-033 amendment 2026-10-07).
 - **Text surfaces.** `domain/receipts.TASK_FACT_GAP_SENTENCES` holds one fixed sentence per task-fact
   code; `check_time_change_gap_sentence(code)` returns it, so receipt gap details and limitations,
   `render_human_check`/`render_human_status` and the MCP check summary show it. A publish rejection

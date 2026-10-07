@@ -156,7 +156,10 @@ def _host_root(tmp_path: Path, name: str) -> Path:
 def test_intended_unusable_provider_uses_each_hosts_advice_channel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Effective intent with no usable factory still asks each host, on its own channel (#844)."""
+    """Effective intent with no usable factory still asks each host, on its own channel (#844).
+
+    Every host receives it at a session boundary that cannot continue the agent (#985).
+    """
 
     facts = [_PRIVATE]
     _install_composition(monkeypatch, facts)
@@ -217,19 +220,28 @@ def test_intended_unusable_provider_uses_each_hosts_advice_channel(
     )
     _assert_no_provider_repair(claude_tool.getvalue().decode())
 
+    # Ordinary advice never rides a Stop on any host (#985): Codex would render it as
+    # `decision: block` and Claude's Stop feedback also continues the turn, spending the
+    # continuation the closure gate needs. It stays pending for the next SessionStart.
     codex_stop = _codex(codex_root, "Stop", "codex-intended")
-    assert set(codex_stop) == {"decision", "reason"}
-    assert codex_stop["decision"] == "block"
-    assert "connect_provider" in cast(str, codex_stop["reason"])
-    assert "semantic:not_ready" in cast(str, codex_stop["reason"])
-
+    assert codex_stop == {}
     claude_stop = _claude(claude_root, "Stop", "claude-intended")
-    assert set(claude_stop) == {"hookSpecificOutput"}
-    specific = cast(Mapping[str, JsonValue], claude_stop["hookSpecificOutput"])
-    assert specific["hookEventName"] == "Stop"
+    assert claude_stop == {}
+
+    codex_start = _codex(codex_root, "SessionStart", "codex-intended")
+    codex_context = cast(
+        str, cast(Mapping[str, JsonValue], codex_start["hookSpecificOutput"])["additionalContext"]
+    )
+    assert "connect_provider" in codex_context
+    assert "semantic:not_ready" in codex_context
+    assert "decision" not in codex_start
+
+    claude_start = _claude(claude_root, "SessionStart", "claude-intended")
+    specific = cast(Mapping[str, JsonValue], claude_start["hookSpecificOutput"])
+    assert specific["hookEventName"] == "SessionStart"
     assert "connect_provider" in cast(str, specific["additionalContext"])
     assert "semantic:not_ready" in cast(str, specific["additionalContext"])
-    assert "decision" not in claude_stop
+    assert "decision" not in claude_start
 
     cursor_session_commitment = cursor_store.session_commitment(f"cursor:{cursor_session}")
     assert (

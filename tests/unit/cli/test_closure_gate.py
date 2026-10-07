@@ -58,7 +58,10 @@ def test_every_stop_gate_token_fires(token: str) -> None:
     assert gate is not None
     assert gate.items == (token,)
     assert gate.identity == f"7:{_DIGEST}"
-    assert "yoetz-blocker:" in gate.text
+    # The blocker exit is offered only for open obligations (F1, #984).
+    offers_blocker = token in {"obligations_open", gate_module.BLOCKER_UNCONFIRMED_TOKEN}
+    assert ("yoetz-blocker:<" in gate.text) is offers_blocker
+    assert "A Yoetz limit is never a `yoetz-blocker`" in gate.text
     assert len(gate.text) <= 2000
     assert "/" not in gate.text.replace("<authority|consent|credential|dependency_unavailable>", "")
 
@@ -271,13 +274,15 @@ def test_stop_continues_once_per_frontier(tmp_path: Path, host: _Host) -> None:
     host.assert_gate(third)
 
 
-def test_loop_guard_skips_the_gate_and_the_status_read(tmp_path: Path, host: _Host) -> None:
+def test_active_stop_never_continues_for_ordinary_items(tmp_path: Path, host: _Host) -> None:
     session = "gate-guard"
     h = _Harness(tmp_path, host.key(session))
     output = _stop(h, host, session, guarded=True)
     assert "closure gate" not in json.dumps(output)
-    assert h.status_calls == 0
-    assert "closure_gate_loop_guard" in h.reasons()
+    # The active Stop reads status for a new blocker (#985) but open obligations alone never
+    # continue it; only the loop guard is recorded.
+    assert h.status_calls == 1
+    assert h.reasons() == ["closure_gate_loop_guard"]
     assert not closure_gate_already_delivered(h.session_id, f"5:{_DIGEST}", _state=tmp_path)
 
 
@@ -440,13 +445,156 @@ def test_stop_rechecks_a_blocker_once_then_honours_it(tmp_path: Path, host: _Hos
     assert h.reasons()[-2:] == ["closure_gate_not_required", "closure_gate_not_required"]
 
 
-def test_loop_guard_still_wins_over_an_unasked_blocker(tmp_path: Path, host: _Host) -> None:
-    session = "gate-blocker-guard"
+def _text(host: _Host, output: Mapping[str, Any]) -> str:
+    if host.name == "codex":
+        assert output["decision"] == "block"
+        return cast(str, output["reason"])
+    if host.name == "claude":
+        return cast(str, output["hookSpecificOutput"]["additionalContext"])
+    assert set(output) == {"followup_message"}
+    return cast(str, output["followup_message"])
+
+
+def test_blocker_published_after_the_gate_is_reasked_once_on_the_active_stop(
+    tmp_path: Path, host: _Host
+) -> None:
+    """tb4n1 pretrain det: gate at the first Stop, blocker 17 min later, loop-guarded Stop (#985)."""
+
+    session = "gate-late-blocker"
     h = _Harness(tmp_path, host.key(session))
+    first = _stop(h, host, session)
+    host.assert_gate(first)
+    assert h.reasons() == ["closure_gate_continued"]
+
+    # The agent publishes a blocker and stops again; the host marks the Stop active.
+    h.readiness = _blocked_readiness(state="action_required", actionable=("obligations_open",))
+    h.sequence = "6"
+    second = _stop(h, host, session, guarded=True)
+    text = _text(host, second)
+    assert text.startswith("Yoetz closure gate (shown once for these blockers)")
+    assert f"{_OBL} (dependency_unavailable)" in text
+    # Ordinary items never ride an active Stop.
+    assert "open obligation(s)" not in text
+    assert h.reasons()[1:] == [
+        "closure_gate_continued",
+        "closure_gate_blocker_rechecked",
+        "closure_gate_active_stop_rechecked",
+    ]
+    assert gate_module.closure_gate_turn_blocks(h.session_id, _state=tmp_path) == 2
+
+    # The same blocker on the next active Stop is not asked again.
+    h.sequence = "7"
+    third = _stop(h, host, session, guarded=True)
+    assert "closure gate" not in json.dumps(third)
+    assert h.reasons()[-1] == "closure_gate_loop_guard"
+
+
+def test_active_stop_is_capped_at_two_gate_blocks_per_turn(tmp_path: Path, host: _Host) -> None:
+    session = "gate-turn-cap"
+    h = _Harness(tmp_path, host.key(session))
+    host.assert_gate(_stop(h, host, session))
     h.readiness = _blocked_readiness()
+    h.sequence = "6"
+    assert "Blocker re-check" in _text(host, _stop(h, host, session, guarded=True))
+    # A second, different blocker in the same turn: the per-turn cap (2) lets the agent stop
+    # without even reading status.
+    other = "obl_97700000-0000-4000-8000-000000000003"
+    h.readiness = _blocked_readiness(_blocked(), _blocked("consent", other))
+    h.sequence = "7"
+    calls = h.status_calls
+    assert "closure gate" not in json.dumps(_stop(h, host, session, guarded=True))
+    assert h.status_calls == calls
+    assert h.reasons()[-1] == "closure_gate_loop_guard"
+    # A new turn (a Stop the host did not continue) resets the cap; the unasked blocker is
+    # re-asked once there.
+    h.sequence = "8"
+    fresh = _text(host, _stop(h, host, session))
+    assert f"{other} (consent)" in fresh
+    assert f"{_OBL} (dependency_unavailable)" not in fresh
+
+
+def test_active_stop_fails_open_when_status_fails(tmp_path: Path, host: _Host) -> None:
+    session = "gate-active-down"
+    h = _Harness(tmp_path, host.key(session))
+
+    async def broken(_kind: object) -> object:
+        raise OSError("service down")
+
+    h.connect = broken
     output = _stop(h, host, session, guarded=True)
     assert "closure gate" not in json.dumps(output)
-    assert h.status_calls == 0
+    assert h.reasons() == ["closure_gate_loop_guard"]
+
+
+def test_active_stop_fails_open_when_memory_is_unwritable(
+    tmp_path: Path, host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = "gate-active-unwritable"
+    h = _Harness(tmp_path, host.key(session))
+    h.readiness = _blocked_readiness()
+
+    def unwritable(*args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        return False
+
+    monkeypatch.setattr(observe_hooks, "record_closure_gate_delivered", unwritable)
+    # Without durable once-per-key memory nothing bounds an active Stop, so it is not emitted.
+    for _ in range(3):
+        output = _stop(h, host, session, guarded=True)
+        assert "closure gate" not in json.dumps(output)
+    assert set(h.reasons()) == {"closure_gate_loop_guard"}
+
+
+def test_a_confirmed_blocker_row_is_not_reasked() -> None:
+    row = SimpleNamespace(
+        obligation_id=_OBL,
+        blocker_kind="consent",
+        decision_event_id=_EVT,
+        confirmation="confirmed",
+    )
+    assert _gate(_blocked_readiness(row)) is None
+    claimed = SimpleNamespace(
+        obligation_id=_OBL, blocker_kind="consent", decision_event_id=_EVT, confirmation="claimed"
+    )
+    gate = _gate(_blocked_readiness(claimed))
+    assert gate is not None
+    assert gate.blocker_keys == (f"{_OBL}:consent",)
+
+
+def test_unconfirmed_blocker_token_gates_and_offers_the_confirmation() -> None:
+    gate = _gate(
+        _blocked_readiness(
+            state="action_required", actionable=(gate_module.BLOCKER_UNCONFIRMED_TOKEN,)
+        )
+    )
+    assert gate is not None
+    assert gate.items == (gate_module.BLOCKER_UNCONFIRMED_TOKEN, gate_module.BLOCKER_RECHECK_ITEM)
+    assert "confirm by publishing the same line again" in gate.text
+
+
+def test_active_stop_decision_ignores_ordinary_items() -> None:
+    readiness = _blocked_readiness(
+        state="action_required", actionable=("obligations_open", "receipt_findings_unresolved")
+    )
+    gate = closure_gate_from_readiness(
+        readiness,
+        frontier_sequence="9",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+        active_stop=True,
+    )
+    assert gate is not None
+    assert gate.items == (gate_module.BLOCKER_RECHECK_ITEM,)
+    assert (
+        closure_gate_from_readiness(
+            _readiness(actionable=("obligations_open",)),
+            frontier_sequence="9",
+            frontier_digest=_DIGEST,
+            observation_pending=False,
+            active_stop=True,
+        )
+        is None
+    )
 
 
 def test_a_blocker_recheck_is_not_held_back_by_draining_observations() -> None:
@@ -472,6 +620,6 @@ def test_an_unwritable_memory_is_a_visible_diagnostic(
     monkeypatch.setattr(observe_hooks, "record_closure_gate_delivered", unwritable)
     _stop(h, host, session)
     assert "closure_gate_memory_unwritten" in h.reasons()
-    # The host loop guard still ends the turn even though nothing was remembered.
+    # The active Stop still ends the turn: without memory it never re-asks (fail open).
     guarded = _stop(h, host, session, guarded=True)
     assert "closure gate" not in json.dumps(guarded)

@@ -226,10 +226,14 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 
 If you stop while `agent_actionable` still names open obligations, an unrepaired receipt-blocking
 finding, a planned verification that was not observed, failed, or ran before your last edit, or a
-git-ignored requested output, the Stop hook continues you once with that list. Finish the work, or
-record a blocker outside your control as above; then stop. The first Stop after you record a
-blocker also asks you once to confirm it: if the task says the data or dependency is recoverable,
-continue the work; if it is genuinely outside your control, stop again and Yoetz honours it.
+git-ignored requested output, the Stop hook continues you once with that list. Repair first. If
+you repaired a finding and Yoetz still cannot prove it (a Yoetz limit), verify it yourself, record
+that evidence, and respond `self_verified`; respond `acknowledged_not_done` only if you truly
+cannot or will not do it. A Yoetz limit is never a `yoetz-blocker`: record a blocker only for an
+open obligation outside your control, as above. A Stop after you record a blocker asks you once
+to confirm it, even right after an earlier continuation: if the task says the data or dependency
+is recoverable, continue the work; if it is genuinely outside your control, publish the same
+`yoetz-blocker` line again in a later decision, then stop.
 
 `blocking_conditions` still names everything that bounds the conclusion; `coverage_gaps_declared`
 there is a disclosure, not a task. Never treat a standing limitation as work, and never describe

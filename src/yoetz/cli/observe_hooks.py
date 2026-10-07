@@ -50,11 +50,14 @@ from yoetz.adapters.workspace_binding import canonical_workspace_locator, resolv
 from yoetz.cli import hook_io
 from yoetz.cli.closure_gate import (
     BLOCKER_RECHECK_ITEM,
+    MAX_GATE_BLOCKS_PER_TURN,
     ClosureGate,
     closure_gate_already_delivered,
     closure_gate_reasked_blockers,
+    closure_gate_turn_blocks,
     read_closure_gate,
     record_closure_gate_delivered,
+    reset_closure_gate_turn,
 )
 from yoetz.cli.hook_diagnostics import (
     record_hook_diagnostic,
@@ -3624,17 +3627,29 @@ def _decide_closure_gate(
     harness_id: str,
     remaining_seconds: float,
     _state: Path | None,
+    active_stop: bool = False,
 ) -> ClosureGate | None:
     """Decide the Stop-time closure gate for one mapped session (#977). Never raises.
 
     Reads the service's compact status for the mapped session; the gate fires at most once per
     session and ledger frontier. Every outcome lands in the bounded hook diagnostics so an
     operator (or a benchmark export of ``yoetz observe status``) can see what the gate decided.
+    On an ``active_stop`` (the host already continued this turn) only a blocker key not yet
+    re-asked may continue the agent, within the per-turn cap; the caller records the outcome
+    (#985).
     """
 
     reason = "closure_gate_unavailable"
     gate: ClosureGate | None = None
     try:
+        if not active_stop:
+            # A Stop the host did not continue starts a new turn for the per-turn cap.
+            reset_closure_gate_turn(mapping.yoetz_session_id, _state=_state)
+        elif (
+            closure_gate_turn_blocks(mapping.yoetz_session_id, _state=_state)
+            >= MAX_GATE_BLOCKS_PER_TURN
+        ):
+            return None
         if remaining_seconds < 5.0:
             reason = "closure_gate_budget_exhausted"
             return None
@@ -3667,16 +3682,28 @@ def _decide_closure_gate(
                 actor_id=f"yoetz:{harness_id}-hooks",
                 observation_pending=pending,
                 reasked_blockers=reasked,
+                active_stop=active_stop,
             )
 
         decided = cast(ClosureGate | None, run(_read))
         if decided is None:
             reason = "closure_gate_not_required"
             return None
-        if closure_gate_already_delivered(
+        if not active_stop and closure_gate_already_delivered(
             mapping.yoetz_session_id, decided.identity, _state=_state
         ):
             reason = "closure_gate_repeat_suppressed"
+            return None
+        if active_stop and not record_closure_gate_delivered(
+            mapping.yoetz_session_id,
+            decided.identity,
+            blocker_keys=decided.blocker_keys,
+            active_stop=True,
+            _state=_state,
+        ):
+            # Nothing else bounds an active Stop: without durable once-per-key and per-turn
+            # memory the re-check is not emitted, so the agent may stop (fail open). Recording
+            # before the write can only under-ask, never loop.
             return None
         gate = decided
         reason = ""
@@ -3684,7 +3711,8 @@ def _decide_closure_gate(
     except Exception:
         return None
     finally:
-        if reason:
+        # An active Stop that emits nothing is recorded once by the caller as the loop guard.
+        if reason and not active_stop:
             with contextlib.suppress(Exception):
                 record_hook_diagnostic(reason, "Stop", _state=_state)
 
@@ -5096,12 +5124,12 @@ def handle_observe(
         pending_delivery: AdviceDelivery | None = None
         delivery_session_id: str | None = None
         # stop_hook_active is the host loop guard: a prior Stop already
-        # continued this turn. Blocking again would loop; leave advice for a
-        # later turn or SessionStart instead of consuming it here.
+        # continued this turn. Ordinary items and advice never continue it again; only a
+        # blocker published since the last gate is re-asked once, within the per-turn cap
+        # (#985), and anything else records the loop guard.
         stop_already_active = payload.get("stop_hook_active") is True
         if (
             resolved_event == "Stop"
-            and not stop_already_active
             and not child_attribution_gap
             and not skip_service
             and not pending_mapping_deferred
@@ -5121,11 +5149,15 @@ def handle_observe(
                     - (_monotonic() - entry_started)
                 ),
                 _state=_state,
+                active_stop=stop_already_active,
             )
             if closure_gate is not None:
                 # The gate is the whole Stop message: it names what remains, and ordinary
                 # advice waits for a later event rather than diluting it.
                 additional = closure_gate.text
+            elif stop_already_active:
+                with contextlib.suppress(Exception):
+                    record_hook_diagnostic("closure_gate_loop_guard", resolved_event, _state=_state)
         elif resolved_event == "Stop" and stop_already_active and mapping is not None:
             with contextlib.suppress(Exception):
                 record_hook_diagnostic("closure_gate_loop_guard", resolved_event, _state=_state)
@@ -5138,6 +5170,11 @@ def handle_observe(
             and closure_gate is None
             and (not additional or attach_advisory_only)
             and resolved_event in ADVICE_SAFE_EVENTS
+            # Ordinary advice never rides a Stop (#985): on every host the Stop channel continues
+            # the agent (Codex `decision: block`, Claude Stop feedback, Cursor follow-up), so it
+            # would spend the turn's continuation the closure gate needs. It stays pending for
+            # the next PostToolUse or SessionStart.
+            and resolved_event != "Stop"
             and not skip_advice_loop
             and not stop_already_active
             and (
@@ -5226,7 +5263,8 @@ def handle_observe(
                 emitted = _stdout_json({}, stdout)
             if emitted and host_consumable and closure_gate is not None and mapping is not None:
                 with contextlib.suppress(BaseException):
-                    if not record_closure_gate_delivered(
+                    # An active-Stop re-check was remembered before it was written (above).
+                    if not stop_already_active and not record_closure_gate_delivered(
                         mapping.yoetz_session_id,
                         closure_gate.identity,
                         blocker_keys=closure_gate.blocker_keys,
@@ -5240,6 +5278,10 @@ def handle_observe(
                     if BLOCKER_RECHECK_ITEM in closure_gate.items:
                         record_hook_diagnostic(
                             "closure_gate_blocker_rechecked", resolved_event, _state=_state
+                        )
+                    if stop_already_active:
+                        record_hook_diagnostic(
+                            "closure_gate_active_stop_rechecked", resolved_event, _state=_state
                         )
             if emitted and host_consumable and pending_delivery is not None:
                 # Strictly after the write: delivered-but-unrecorded costs one
@@ -6709,8 +6751,10 @@ def _handle_cursor_observe(
             structural["mapping_hint"] = CURSOR_ORDINARY_HOOK_MAPPING_VERSION
         loop_count = payload.get("loop_count")
         if raw_event == "stop" and type(loop_count) is int and loop_count > 0:
-            # Cursor's own loop guard: this stop follows an earlier follow-up message. The
-            # closure gate continues an agent at most once, exactly like stop_hook_active (#977).
+            # Cursor's own loop guard: this stop follows an earlier follow-up message. It maps to
+            # stop_hook_active, so the closure gate treats it as an active Stop: only a new
+            # blocker key is re-asked, within the per-turn cap of 2, well under Cursor's own
+            # default loop_limit of 5 (#977, #985).
             structural["stop_hook_active"] = True
         identity_fields = (
             (

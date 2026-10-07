@@ -244,3 +244,60 @@ quiet. The owner decided the following, with no prerequisite such as a prior fai
 
 The receipt still discloses blocked obligations as standing limitations, and the reviewer's
 verdict on a blocker appears as a normal finding.
+
+## Amendment (2026-10-07): the re-check reaches active Stops, repair-first text, one view (#984, #985)
+
+TB4 run tb4n1 showed the gate was single-shot per Codex run: 35 of the 38 attempts that declared a
+blocker did so after the first gate, and their next Stop arrived with `stop_hook_active` set, so
+the hook recorded `closure_gate_loop_guard` without reading status and the re-check of decision 1
+above never ran. Codex honours repeated Stop blocks within one turn (codex-rs `turn.rs` sets
+`stop_hook_active` once per turn and keeps honouring blocks; its test
+`stop_hook_can_block_multiple_times_in_same_turn` asserts it); the limit was Yoetz's own. The gate
+also fired on receipt-blocking findings the agent could not clear because of Yoetz's own limits,
+and its text offered the blocker as the exit. The owner decided:
+
+1. **Active Stops re-ask new blockers, capped.** A Stop the host already continued this turn
+   (`stop_hook_active` on Codex and Claude Code, Cursor `loop_count > 0`) still reads status when
+   at least five seconds of the Stop budget remain. It continues the agent only for a
+   `blocked_obligations` key `<obligation id>:<kind>` the session has not been asked about, never
+   for the ordinary items. Hard caps: at most one re-check per Stop, and at most two gate
+   continuations per host turn, counted in a third owner-only file
+   (`observation/closure-gate-turns.json`, opaque session ids and a count, 128 sessions) and reset
+   at the next Stop the host did not continue. On an active Stop the memory is written before the
+   text is emitted; if it cannot be written, or status fails, the agent stops (fail open). The new
+   diagnostic `closure_gate_active_stop_rechecked` joins `closure_gate_continued` and
+   `closure_gate_blocker_rechecked` when that happens; `closure_gate_loop_guard` is recorded only
+   when an active Stop emitted nothing. A blocker row readiness reports as `confirmation:
+   confirmed` (the agent re-published the same line in a later decision) is never re-asked, and
+   the readiness token `obligation_blocker_unconfirmed` is a gate item like `obligations_open`.
+   The re-check text asks the agent to confirm a genuine blocker by publishing the same
+   `yoetz-blocker` line again.
+2. **Repair first; a Yoetz limit is never a blocker (#984).** For receipt-blocking findings the
+   text says: repair what you can; for a finding you repaired that Yoetz still cannot prove (its
+   resolution names a Yoetz limit such as redaction, observation loss or a review-packet limit),
+   verify it yourself, record that evidence and respond `self_verified` with how you verified it
+   and the evidence ids (ADR-034); respond `acknowledged_not_done` only if you truly cannot or will
+   not do it. Every gate says a Yoetz limit is never a `yoetz-blocker`. The blocker sentence, with
+   "Data the task says is recoverable is not such a blocker" and the confirmation step, is offered
+   only when open obligations (or an unconfirmed blocker) remain, never for a findings-only gate.
+   The text stays under every host's 2,000-character bound and names at most three blocked
+   obligations.
+3. **The drain note only when it changed the decision.** `observation_pending` is now computed for
+   this task's own hook rows after the Stop drain (#994, owned by the observation lead). The
+   planned-verification items are used when it is false; the "(Observations were still draining
+   ...)" note is added only when a planned-verification item was present and dropped.
+4. **No ordinary advice on any Stop.** Codex renders Stop text as `decision: block`, and Claude
+   Code's Stop `additionalContext` also continues the conversation, so ordinary advice at Stop
+   spent the turn's continuation the gate needs (tb4n1 hof-topology). Ordinary advice now stays
+   pending for the next `PostToolUse` or `SessionStart` on every host; Cursor never delivered it
+   at `stop`. Standing advice (provider repair) therefore reaches Codex and Claude Code at
+   `SessionStart`, as it already did on Cursor.
+5. **The gate and the CLI read the agent's route.** A route-less `status` (the Stop gate, the CLI,
+   an export) read the policy route, so on a strict-route session it listed
+   `semantic_review_not_requested` as work the agent's own MCP view never showed (37 of 37
+   deterministic exports). The service now remembers, in memory and per session, the route that
+   session's MCP bridge last named on `status` or `check` (bounded to 256 sessions, ids and the
+   closed route only) and applies it to a later route-less `status` for the same session. A
+   route-less `check` is unchanged. Before the bridge has made a call since the service started,
+   a route-less read still uses the policy route; status carries no route label on the compact
+   view, so that case is not labelled.
