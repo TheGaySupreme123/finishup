@@ -415,7 +415,8 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
         "requested_output_unverified": ("Requested output files could not be read at check time."),
         "declared_output_removed": (
             "A declared delivered file was deleted or renamed away in the checked change. Restore"
-            " the delivered file: Yoetz review limits never justify moving, splitting or deleting"
+            " the delivered file, or correct the requested item if the task asked for the"
+            " deletion: Yoetz review limits never justify moving, splitting or deleting"
             " deliverables."
         ),
         "install_into_yoetz_runtime": (

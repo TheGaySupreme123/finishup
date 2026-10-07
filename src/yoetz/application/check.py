@@ -1277,6 +1277,7 @@ def build_overall_next(
 
 class _PacketLimits(TypedDict):
     packet_limited_refs: frozenset[str]
+    privacy_withheld_refs: frozenset[str]
     change_clipped: bool
 
 
@@ -1296,6 +1297,7 @@ def _packet_limits(
     local = {str(item.finding_id) for item in deterministic}
     return {
         "packet_limited_refs": (frozenset() if withheld is None else frozenset(withheld - local)),
+        "privacy_withheld_refs": frozenset(semantic_result.case_privacy_withheld_refs - local),
         "change_clipped": bool(
             {CHECK_TIME_CHANGE_TRUNCATED_GAP, CHECK_TIME_CHANGE_REDACTED_GAP}
             & set(semantic_result.case_content_gaps)
@@ -1308,10 +1310,12 @@ async def _review_round_stopped_at(
 ) -> bool:
     """``review_round_stopped`` over the ledger prefix the check froze; fails open to a review.
 
-    A caller-chosen local-only check never asks, so it never carries the skip disclosure.
+    A caller-chosen local-only check never asks, so it never carries the skip disclosure; a
+    ``semantic_required`` check always runs the review it requires (its route reports an
+    incomplete check rather than a skipped one).
     """
 
-    if request.mode == "deterministic_only":
+    if request.mode in {"deterministic_only", "semantic_required"}:
         return False
     try:
         records = tuple(
@@ -1572,6 +1576,8 @@ class FinalSemanticEvaluation:
     # reason other than ``not_recorded`` (room, selection or policy). A reviewer request for one of
     # them is Yoetz's limit, never agent work. ``None`` when the packet was not read.
     case_withheld_refs: frozenset[str] | None = None
+    # The subset an owner privacy rule withheld; a request for it is a privacy limit.
+    case_privacy_withheld_refs: frozenset[str] = frozenset()
     # Opaque case item identities omitted by the low-confidence never-send heuristic. The
     # public check result names these identities and the closed remediation reason, never bytes
     # or source prose.

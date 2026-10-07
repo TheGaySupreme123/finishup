@@ -100,8 +100,9 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
         "a requested output file is git-ignored or excluded, so a diff-based delivery omits it"
     ),
     DECLARED_OUTPUT_REMOVED_GAP: (
-        "a declared delivered file was deleted or renamed away; restore the delivered file:"
-        " Yoetz review limits never justify moving, splitting or deleting deliverables"
+        "a declared delivered file was deleted or renamed away; restore the delivered file, or"
+        " correct the requested item if the task asked for the deletion: Yoetz review limits"
+        " never justify moving, splitting or deleting deliverables"
     ),
 }
 

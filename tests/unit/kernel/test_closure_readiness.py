@@ -492,7 +492,9 @@ def test_a_deterministic_only_route_never_asks_for_a_closing_review() -> None:
     assert "closing_review_required" in required.agent_actionable
 
 
-def test_a_review_round_stopped_for_an_insufficient_packet_is_not_asked_for_again() -> None:
+def test_a_review_round_stopped_for_an_insufficient_packet_is_not_asked_for_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """tb4n1 D3: retro-console-soc ran 13 closing reviews, 12 of them ``insufficient_packet``.
 
     Once the reviewer twice could not assess the same content, the check skips the review and
@@ -520,6 +522,10 @@ def test_a_review_round_stopped_for_an_insufficient_packet_is_not_asked_for_agai
             ),
         ),
     )
+    import yoetz.kernel.closure_readiness as readiness
+
+    # The round is still stopped (two insufficient reviews, no edit since): see test_review_round.
+    monkeypatch.setattr(readiness, "review_round_stopped", lambda records: True)
     facts = closure_readiness_facts(replay(stopped), stopped)
     assert facts.closing_review_current is True
     assert facts.semantic_review_current is True
@@ -533,6 +539,11 @@ def test_a_review_round_stopped_for_an_insufficient_packet_is_not_asked_for_agai
     assert "semantic_review_not_requested" not in split.agent_actionable
     assert "semantic_review_skipped_insufficient_packet" in split.standing_limitations
 
+    # An edit since re-armed the round: the skipped check is no longer the current review.
+    monkeypatch.setattr(readiness, "review_round_stopped", lambda records: False)
+    rearmed = closure_readiness_facts(replay(stopped), stopped)
+    assert rearmed.closing_review_current is False
+    assert rearmed.semantic_review_current is False
     # A plain deterministic-only check carries no such marker and does not stop the round.
     plain = _with_check_payload(
         prefix,

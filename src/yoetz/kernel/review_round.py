@@ -21,22 +21,34 @@ from yoetz.domain.events import (
 )
 from yoetz.protocol.models import SemanticStatus
 
-__all__ = ["INSUFFICIENT_PACKET_ROUND_LIMIT", "review_round_stopped"]
+__all__ = [
+    "INSUFFICIENT_PACKET_ROUND_LIMIT",
+    "INSUFFICIENT_PACKET_TASK_LIMIT",
+    "review_round_stopped",
+]
 
 # The first ``insufficient_packet`` review and its one retry.
 INSUFFICIENT_PACKET_ROUND_LIMIT: Final = 2
+# Across the whole task, edits re-arm the round at most this many insufficient reviews: a host
+# whose writes are shell commands never records an edit action, and a trivial edit must not buy
+# endless reviews of a packet that cannot show the work.
+INSUFFICIENT_PACKET_TASK_LIMIT: Final = 4
 
 
 def review_round_stopped(records: Iterable[LedgerRecord]) -> bool:
     """Whether the next check skips the AI-powered review.
 
-    True when the last ``INSUFFICIENT_PACKET_ROUND_LIMIT`` completed reviews all concluded
-    ``insufficient_packet`` and no edit action was recorded after the older of them. Checks that
-    did not run a review (local-only, skipped, blocked or failed) neither count nor reset; a
-    completed review with any other conclusion resets the count.
+    True when the newest completed review concluded ``insufficient_packet`` and either the last
+    ``INSUFFICIENT_PACKET_ROUND_LIMIT`` completed reviews all did with no edit action recorded
+    after the older of them, or the task has recorded ``INSUFFICIENT_PACKET_TASK_LIMIT`` such
+    reviews in all. Checks that did not run a review (local-only, skipped, blocked or failed)
+    neither count nor reset; a completed review with any other conclusion resets both counts.
     """
 
     consecutive = 0
+    total = 0
+    edited = False
+    newest_insufficient: bool | None = None
     for record in reversed(tuple(records)):
         payload = record.payload
         name = record.schema.name
@@ -46,14 +58,24 @@ def review_round_stopped(records: Iterable[LedgerRecord]) -> bool:
             and payload.action_kind is ActionKind.EDIT
         ):
             # An edit after (or between) the insufficient reviews is new work worth a review.
-            return False
+            edited = True
+            continue
         if name != "check_recorded" or type(payload) is not CheckRecordedPayload:
             continue
         if payload.semantic_status is not SemanticStatus.SUCCEEDED:
             continue
-        if payload.semantic_conclusion != "insufficient_packet":
-            return False
-        consecutive += 1
-        if consecutive >= INSUFFICIENT_PACKET_ROUND_LIMIT:
+        insufficient = payload.semantic_conclusion == "insufficient_packet"
+        if newest_insufficient is None:
+            newest_insufficient = insufficient
+            if not insufficient:
+                return False
+        if not insufficient:
+            break
+        total += 1
+        if not edited:
+            consecutive += 1
+            if consecutive >= INSUFFICIENT_PACKET_ROUND_LIMIT:
+                return True
+        if total >= INSUFFICIENT_PACKET_TASK_LIMIT:
             return True
     return False

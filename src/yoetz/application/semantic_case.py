@@ -5900,6 +5900,9 @@ class ReviewPacketDisclosure:
     carried: frozenset[str]
     withheld: frozenset[str]
     payload_events: frozenset[str]
+    # tb4n1 D1: the subset of ``withheld`` an owner privacy rule withheld (policy, never-send),
+    # so a reviewer request for it is a privacy limit, not packet room.
+    privacy_withheld: frozenset[str] = frozenset()
     # Metadata emitted from the exact provider-bound packet after privacy admission and
     # minimization.  This is kept separate from the composed manifest so a receipt cannot
     # accidentally report pre-admission selection as provider delivery.
@@ -5928,6 +5931,11 @@ class ReviewPacketDisclosureResult:
             raise ValueError("review_packet_disclosure_failure_invalid")
         if self.failure is None and self.disclosure is None:
             raise ValueError("review_packet_disclosure_result_invalid")
+
+
+_PRIVACY_OMISSION_REASONS: Final = frozenset(
+    {"withheld_by_policy", "redacted_never_send", "never_send_heuristic"}
+)
 
 
 def review_packet_disclosure(prepared: bytes) -> ReviewPacketDisclosure | None:
@@ -5978,12 +5986,15 @@ def review_packet_disclosure_result(prepared: bytes) -> ReviewPacketDisclosureRe
     omission_rows = omissions_raw if type(omissions_raw) is list else []
     omitted: set[str] = set()
     withheld: set[str] = set()
+    privacy_withheld: set[str] = set()
     for row in cast(list[JsonValue], omission_rows):
         if not isinstance(row, dict) or type(subject := row.get("subject_ref")) is not str:
             continue
         omitted.add(subject)
         if row.get("reason") != "not_recorded":
             withheld.add(subject)
+        if row.get("reason") in _PRIVACY_OMISSION_REASONS:
+            privacy_withheld.add(subject)
     carried: set[str] = set()
     payload_events: set[str] = set()
     finding_rows: set[str] = set()
@@ -6140,6 +6151,7 @@ def review_packet_disclosure_result(prepared: bytes) -> ReviewPacketDisclosureRe
     disclosure = ReviewPacketDisclosure(
         carried=kept,
         withheld=frozenset(withheld & frontier),
+        privacy_withheld=frozenset(privacy_withheld & frontier),
         payload_events=frozenset(payload_events) & kept,
         provider_input_manifest=provider_manifest,
         provider_input_text_by_ref=MappingProxyType(

@@ -37,6 +37,15 @@ _GIT_ENV = {
 
 
 @pytest.fixture(autouse=True)
+def declared_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Treat role-less 1.0.0 items as ``output``; L6's 1.1.0 role is not on this branch."""
+
+    from yoetz.kernel import delivered_set
+
+    monkeypatch.setattr(delivered_set, "item_role", lambda item: "output")
+
+
+@pytest.fixture(autouse=True)
 def isolated_global_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     home.mkdir(mode=0o700)

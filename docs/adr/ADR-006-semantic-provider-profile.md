@@ -1375,14 +1375,22 @@ Yoetz's own limit, marked as such for the agent, never a blocker; the agent veri
   their event recorded. The enum is extended in place on the unreleased `check_recorded`
   1.3.0/1.4.0 and `check-result` 1.3.0/1.4.0. An unanswered repeat stays `agent_suppliable` with
   `semantic_missing_non_convergent`: a run never recorded is still owed.
-- One retry (`kernel/review_round.py`): when the last two completed reviews both concluded
-  `insufficient_packet` (named items or not) and no edit action was recorded after the older one,
-  the check skips the AI-powered review (`not_requested`/`deterministic_mode`) and discloses the
+- One retry (`kernel/review_round.py`): when the newest completed review concluded
+  `insufficient_packet` and either the last two completed reviews both did (named items or not)
+  with no edit action recorded after the older one, or the task has four such reviews in all (a
+  host whose writes are shell commands records no edit action, and a trivial edit must not buy
+  endless reviews), the check skips the AI-powered review (`not_requested`/`deterministic_mode`) and discloses the
   standing gap `semantic_review_skipped_insufficient_packet`; CLI, MCP summary and receipt say the
   review was skipped, not that it was not requested. Such a check counts as the current and
   closing review for closure readiness and never weakens local proof. Publishing evidence does not
-  re-arm it (feeding the reviewer is the loop this ends); a recorded edit does, and a completed
-  review with another conclusion resets the count.
+  re-arm it (feeding the reviewer is the loop this ends); a recorded edit does until the task
+  cap, and a completed review with another conclusion resets both counts. A `semantic_required`
+  check is never skipped. A packet row privacy withheld is `structurally_unavailable_on_this_host`,
+  never packet room. Accepted limits: a response object written before this change carries no
+  withheld refs, so a recovered pre-upgrade check classifies nothing as packet room; an unreadable
+  ledger prefix fails open to a review. Once stopped for the task cap, open AI-powered findings
+  stay open; the agent answers them through its own verification (the standing gap makes them
+  Yoetz-limited).
 - Agent-facing text on every surface (CLI, MCP summary, receipt coverage note, guidance) says a
   Yoetz limit is not work and never a blocker, and that the agent must never split, move, shrink,
   stash, delete, `git add` (including `-N`) or git-ignore its work to fit the reviewer. The diff

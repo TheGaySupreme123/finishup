@@ -1179,3 +1179,40 @@ def test_agent_rendered_text_of_a_binary_answers_a_request_for_it() -> None:
     )
     assert dropped.items == ()
     assert "semantic_missing_already_supplied" in dropped.gaps
+
+
+def _requesting(number: int, *files: str) -> ObligationPublishedPayload:
+    from yoetz.domain.events import RequestedItem, RequestedItemKind
+
+    return ObligationPublishedPayload(
+        obl(number),
+        "Deliver the requested files",
+        "the files",
+        ObligationStatus.OPEN,
+        requested_items=tuple(RequestedItem(RequestedItemKind.FILE, name) for name in files),
+    )
+
+
+def test_an_other_item_is_a_yoetz_limit_only_when_every_requested_output_is_binary() -> None:
+    """tb4n1 review: cad-model's unseen schematic is a limit; satb's unwritten score is work."""
+
+    cad = make_case(
+        obligations={
+            obl(3): obligation_record(_requesting(3, "/app/part.step", "/app/part.png"), 3)
+        },
+        extra_refs=(obl(3),),
+    )
+    review = review_missing_for_assessment(
+        cad, (), _first_request("other", str(obl(3))), unsuppliable_kinds=frozenset()
+    )
+    assert [item.availability for item in review.items] == ["yoetz_limit_unsupported_data_type"]
+    satb = make_case(
+        obligations={
+            obl(3): obligation_record(_requesting(3, "/app/input.mp3", "/app/score.musicxml"), 3)
+        },
+        extra_refs=(obl(3),),
+    )
+    review = review_missing_for_assessment(
+        satb, (), _first_request("other", str(obl(3))), unsuppliable_kinds=frozenset()
+    )
+    assert [item.availability for item in review.items] == ["agent_suppliable"]

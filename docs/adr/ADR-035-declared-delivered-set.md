@@ -24,24 +24,27 @@ needs a deterministic fact that tells the agent when its change removed a delive
 ## Decision
 
 1. **Declared delivered set.** The set is every requested item of an effective, unblocked
-   obligation whose item kind is `file` or `directory` and whose `role` is not `input`.
-   `obligation_published` 1.0.0 items have no role, and a `file` item there may name an input, so
-   an item without a role counts as declared. The `directory` kind and `role` arrive with
-   `obligation_published` 1.1.0 (#1002, #1003). The module reads both by their wire values, so it
-   works on either version. It adds no item kind or role of its own.
+   obligation whose item kind is `file` or `directory` and whose `role` is `output`.
+   `obligation_published` 1.0.0 items have no role, and a `file` item there may name an input or
+   a file the task asks to delete, so a role-less item is never declared. The `directory` kind
+   and `role` arrive with `obligation_published` 1.1.0 (#1002, #1003); until that version lands
+   the fact cannot fire. The module reads both by their wire values. It adds no item kind or role
+   of its own.
 2. **`declared_output_removed`.** At check time, the existing metadata-only workspace read
    (`requested_output_states`, ADR-033) gives each requested item a state. A declared item is
    removed when its state is `inside`, `exists=False` and `deleted=True`. This means the
    check-time change deletes it (`D`) or renames it away (`R` with the declared path as the
    original; the Git capture folds exact renames). The check adds the closed gap code beside the
-   requested-output gaps. A read Yoetz could not make (`unverified`, `outside`, unknown
-   existence) never raises it. A declared file that was never in the task base and is missing
-   is already `requested_output_absent`.
+   requested-output gaps. A declared file that was never in the task base is removed when it is
+   now missing and an `edit` action of the session named it in `attempted_items` (written, then
+   moved away: music-harmony's new `harmony.musicxml`). A read Yoetz could not make
+   (`unverified`, `outside`, unknown existence) never raises it.
 3. **Classification.** The code is agent-actionable (`AGENT_ACTIONABLE_TASK_FACT_GAPS`, so `_A` in
    `GAP_CLASSIFICATION`). It makes a check `coverage_incomplete`, and it is a `STOP_GATE_TOKENS`
    entry. Like every task fact, a local absence proof tolerates it. Its receipt sentence and
-   Stop-gate text give the repair: "Restore the delivered file: Yoetz review limits never justify
-   moving, splitting or deleting deliverables."
+   Stop-gate text give the repair: "Restore the delivered file, or correct the requested item if
+   the task asked for the deletion: Yoetz review limits never justify moving, splitting or
+   deleting deliverables."
 4. **Ways out.** The fact clears when the delivered file is back at its declared path. If the
    task really asked for the deletion, the agent corrects the requested item instead: it
    supersedes the obligation without that item, or, from 1.1.0, marks the item `role: input`.
@@ -61,8 +64,8 @@ the reviewer").
 
 ## Consequences
 
-- A task that deletes a requested `file` item without a role now reports an agent-actionable fact
-  until the item is corrected. This is the accepted cost of reading role-less items as declared.
+- Only `role: output` items count, so a task that asks for a deletion or rename of a role-less
+  or input item never gets the fact.
 - `directory` items raise the fact only when `requested_output_states` supplies a state for them.
   On this branch it reads `file` items only.
 - No path, size or content is stored. The result is one closed code.

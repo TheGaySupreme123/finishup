@@ -76,6 +76,16 @@ def _file(value: str) -> RequestedItem:
 _GONE = RequestedOutputState("inside", exists=False, deleted=True)
 
 
+@pytest.fixture(autouse=True)
+def declared_outputs(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Treat role-less 1.0.0 items as ``output`` here; L6's 1.1.0 role is not on this branch."""
+
+    if request.node.name != "test_input_role_is_ignored_and_directory_counts":
+        monkeypatch.setattr(
+            delivered_set, "item_role", lambda item: getattr(item, "role", None) or "output"
+        )
+
+
 def test_gap_is_agent_actionable_and_continues_the_stop_gate() -> None:
     assert DECLARED_OUTPUT_REMOVED_GAP == "declared_output_removed"
     assert DECLARED_OUTPUT_REMOVED_GAP in AGENT_ACTIONABLE_TASK_FACT_GAPS
@@ -167,10 +177,10 @@ def test_input_role_is_ignored_and_directory_counts(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(delivered_set, "blocked_obligations", blocked)
 
     rows = declared_delivered_items(projection)  # type: ignore[arg-type]
+    # A role-less item may be an input or a file the task asks to delete: never declared.
     assert [(index, kind) for _o, index, kind, _v in rows] == [
         (1, "file"),
         (2, "directory"),
-        (4, "file"),
     ]
     # A deleted input is not a removed deliverable.
     assert declared_output_removed(projection, {(obligation, 0): _GONE}) == ()  # type: ignore[arg-type]
@@ -202,3 +212,49 @@ def test_check_reports_the_gap_beside_requested_output_facts(
     )
     assert gaps == (DECLARED_OUTPUT_REMOVED_GAP,)
     assert absent is True
+
+
+def test_a_new_deliverable_written_in_the_session_and_now_gone_is_removed() -> None:
+    """tb4n1 music-harmony: harmony.musicxml was a new file, written, then moved out of /app."""
+
+    from yoetz.domain.events import ActionKind, ActionRecordedPayload
+    from yoetz.domain.values import action_id
+
+    ledger = ObservedLedger()
+    ledger.append(
+        EventSchema("obligation_published", "1.0.0"),
+        ObligationPublishedPayload(
+            obligation_id=_OBLIGATION,
+            description="Deliver the score",
+            evidence_expectation="The file",
+            status=ObligationStatus.OPEN,
+            requested_items=(_file("/app/harmony.musicxml"),),
+        ),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", (_OBLIGATION,)),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("action_recorded", "1.0.0"),
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000001"),
+            ActionKind.EDIT,
+            "Wrote the score",
+            obligation_refs=(_OBLIGATION,),
+            attempted_items=("/app/harmony.musicxml",),
+        ),
+        observed=False,
+    )
+    projection = replay(ledger.prefix)
+    never_tracked = RequestedOutputState("inside", exists=False)
+    assert declared_output_removed(projection, {(_OBLIGATION, 0): never_tracked}) == (_OBLIGATION,)
+    # Never written in the session: an absent output, not a removed deliverable.
+    assert (
+        declared_output_removed(
+            _projection(_file("/app/harmony.musicxml")), {(_OBLIGATION, 0): never_tracked}
+        )
+        == ()
+    )

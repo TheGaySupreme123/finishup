@@ -77,3 +77,17 @@ def test_an_edit_or_an_assessed_review_re_arms_the_round() -> None:
 def test_checks_without_a_completed_review_neither_count_nor_reset() -> None:
     skipped = _check(None, SemanticStatus.NOT_REQUESTED)
     assert _stopped(_check("insufficient_packet"), skipped, _check("insufficient_packet"), skipped)
+
+
+def test_edits_re_arm_the_round_at_most_until_the_task_cap() -> None:
+    """tb4n1 review: retro-console-soc's writes were shell commands; lake/html/medical edited
+    between checks, so the edit re-arm alone never stopped those loops."""
+
+    edit = _action(ActionKind.EDIT)
+    insufficient = _check("insufficient_packet")
+    assert not _stopped(insufficient, edit, insufficient, edit, insufficient)
+    assert _stopped(insufficient, edit, insufficient, edit, insufficient, edit, insufficient)
+    # The newest completed review assessed the work: never stopped.
+    assert not _stopped(
+        insufficient, insufficient, insufficient, insufficient, _check("challenges_returned")
+    )

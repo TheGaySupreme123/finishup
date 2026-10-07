@@ -3256,7 +3256,14 @@ def _map_egress_to_final(
                 if projection is None
                 else sent_ledger_refs(result.disclosure, projection)
             ),
-            case_withheld_refs=None if result.disclosure is None else result.disclosure.withheld,
+            case_withheld_refs=(
+                None
+                if result.disclosure is None
+                else result.disclosure.withheld - result.disclosure.privacy_withheld
+            ),
+            case_privacy_withheld_refs=(
+                frozenset() if result.disclosure is None else result.disclosure.privacy_withheld
+            ),
             semantic_withheld_item_ids=withheld_item_ids,
             provider_input_manifest=(
                 None if result.disclosure is None else result.disclosure.provider_input_manifest
@@ -3900,6 +3907,10 @@ async def _publish_semantic_response_object(
         body["withheld_content_refs"] = cast(
             CanonicalJsonValue, sorted(evaluation.case_withheld_refs, key=str.encode)
         )
+    if evaluation.case_privacy_withheld_refs:
+        body["privacy_withheld_content_refs"] = cast(
+            CanonicalJsonValue, sorted(evaluation.case_privacy_withheld_refs, key=str.encode)
+        )
     if evaluation.semantic_withheld_item_ids:
         # Keep only bounded opaque identities in the durable response.  Matched bytes and source
         # prose stay in the encrypted proposal/case path and never enter this recovery object.
@@ -4031,6 +4042,12 @@ async def _recover_response_evaluation(
         withheld_list = cast(list[object], raw_withheld)
         if all(type(ref) is str for ref in withheld_list):
             withheld_refs = frozenset(cast(list[str], withheld_list))
+    privacy_refs: frozenset[str] = frozenset()
+    raw_privacy = body.get("privacy_withheld_content_refs")
+    if type(raw_privacy) is list:
+        privacy_list = cast(list[object], raw_privacy)
+        if all(type(ref) is str for ref in privacy_list):
+            privacy_refs = frozenset(cast(list[str], privacy_list))
     provider_manifest = None
     provider_manifest_failure: str | None = None
     raw_provider_manifest = body.get("provider_input_manifest")
@@ -4078,6 +4095,7 @@ async def _recover_response_evaluation(
         provenance=provenance,
         case_included_refs=disclosed,
         case_withheld_refs=withheld_refs,
+        case_privacy_withheld_refs=privacy_refs,
         semantic_withheld_item_ids=withheld_item_ids,
         provider_input_manifest=provider_manifest,
         provider_input_manifest_failure=provider_manifest_failure,
@@ -5385,6 +5403,7 @@ def _privacy_gated_semantic_evaluator(
                 continuation = None
                 disclosed: frozenset[str] | None = None
                 withheld_refs: frozenset[str] | None = None
+                privacy_refs: frozenset[str] = frozenset()
                 semantic_withheld_item_ids: tuple[str, ...] = ()
                 provider_manifest = None
                 provider_manifest_failure = None
@@ -5399,6 +5418,7 @@ def _privacy_gated_semantic_evaluator(
                         # What the exact sent packet carried, from the selected attempt (#904).
                         disclosed = evaluation.case_included_refs
                         withheld_refs = evaluation.case_withheld_refs
+                        privacy_refs = evaluation.case_privacy_withheld_refs
                         provider_manifest = evaluation.provider_input_manifest
                         provider_manifest_failure = evaluation.provider_input_manifest_failure
                         provider_input_text_by_ref = evaluation.provider_input_text_by_ref
@@ -5447,6 +5467,7 @@ def _privacy_gated_semantic_evaluator(
                     case_reference_scope_reduced=reference_scope_reduced,
                     case_included_refs=disclosed,
                     case_withheld_refs=withheld_refs,
+                    case_privacy_withheld_refs=privacy_refs,
                     semantic_withheld_item_ids=semantic_withheld_item_ids,
                     case_content_gaps=combined_content_gaps,
                     unsuppliable_missing_kinds=unsuppliable,

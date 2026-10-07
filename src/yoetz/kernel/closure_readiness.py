@@ -46,6 +46,7 @@ from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS, PLAN_DRIFT_GAPS
 from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.reducers import invalidates_recorded_check
+from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS,
     OBLIGATION_BLOCKED_GAP,
@@ -619,7 +620,8 @@ def _semantic_review_current(
         if record.schema.name != "check_recorded" or type(payload) is not CheckRecordedPayload:
             continue
         if _review_round_stopped(payload):
-            return True
+            # Current only while the round is still stopped: an edit since re-arms the review.
+            return review_round_stopped(records)
         if payload.semantic_status is not SemanticStatus.SUCCEEDED:
             continue
         return not any(
@@ -688,8 +690,10 @@ def _closing_review_facts(
         ):
             return False, used
         status = payload.semantic_status
-        if status in _UNDELIVERABLE_SEMANTIC_STATUSES or _review_round_stopped(payload):
+        if status in _UNDELIVERABLE_SEMANTIC_STATUSES:
             return True, used
+        if _review_round_stopped(payload):
+            return review_round_stopped(records), used
         if status is not SemanticStatus.SUCCEEDED:
             continue
         manifest = payload.review_input_manifest

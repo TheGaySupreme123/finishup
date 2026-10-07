@@ -7699,7 +7699,7 @@ or channel can never carry, or a redacted target) or a Yoetz limit (`yoetz_limit
 `yoetz_limit_packet_room`; ADR-006, issue #983), adding `semantic_missing_agent_suppliable`,
 `semantic_missing_structurally_unavailable` or `semantic_missing_yoetz_limit`. Only
 `agent_suppliable` is ever agent work. After two `insufficient_packet` reviews in a row with no edit
-since, checks skip the AI-powered review and disclose the standing gap
+since, or four in the task, checks other than `semantic_required` skip the AI-powered review and disclose the standing gap
 `semantic_review_skipped_insufficient_packet` (`kernel/review_round.py`). These are check limitations, never findings, and weigh
 on finding resolution exactly like the `semantic_packet_insufficient` they ride beside: a local
 issue is still proven absent, and a `fixed` ruling (#905) still resolves its own finding.
@@ -8456,10 +8456,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
 - **Declared delivered set (ADR-035, issue #1005).** `kernel/delivered_set.py`:
   `declared_delivered_items(projection) -> tuple[(obligation, item index, item kind, value), ...]`
   is every effective, unblocked obligation's requested item of kind `file` or `directory` whose
-  `role` is not `input` (an item without a role counts). `declared_output_removed(projection,
+  `role` is `output` (a role-less 1.0.0 item never counts). `declared_output_removed(projection,
   states) -> tuple[ObligationId, ...]` names the obligations whose declared item has an `inside`
-  `RequestedOutputState` with `exists=False` and `deleted=True` (deleted, or renamed away, by the
-  check-time change). `_requested_output_inputs` in `application/check.py` adds the closed gap
+  `RequestedOutputState` with `exists=False` and either `deleted=True` (deleted, or renamed away,
+  by the check-time change) or an `edit` action of the session naming it (written, then moved). `_requested_output_inputs` in `application/check.py` adds the closed gap
   `declared_output_removed` (`DECLARED_OUTPUT_REMOVED_GAP`, defined in `kernel/task_facts.py`) to
   the check's task-fact gaps. It is agent-actionable, a `STOP_GATE_TOKENS` entry, and has a fixed
   `TASK_FACT_GAP_SENTENCES` sentence. Content moved out of a declared file that still exists is

@@ -889,6 +889,7 @@ def review_missing_for_assessment(
     captured_edit_paths: Mapping[str, frozenset[str]] | None = None,
     workspace_root: str | None = None,
     packet_limited_refs: frozenset[str] = frozenset(),
+    privacy_withheld_refs: frozenset[str] = frozenset(),
     change_clipped: bool = False,
 ) -> MissingItemsReview:
     """Fence what the reviewer named to the packet it was shown and classify who can supply it.
@@ -965,7 +966,7 @@ def review_missing_for_assessment(
             continue
         availability = (
             STRUCTURALLY_UNAVAILABLE
-            if entry.kind in unsuppliable_kinds or set(refs) & redacted
+            if entry.kind in unsuppliable_kinds or set(refs) & (redacted | privacy_withheld_refs)
             else _yoetz_limit(
                 entry.kind,
                 refs,
@@ -1042,28 +1043,34 @@ class _TargetFiles:
             names.update(self._evidence_names(ref))
         return frozenset(name for name in names if name)
 
-    def named_in_text(self, target: str) -> frozenset[str]:
-        """File names the plan, task statement or obligation a target names mentions.
+    def requested_files(self, target: str) -> frozenset[str] | None:
+        """The requested output files in scope of a plan, statement or obligation target.
 
-        Used only for an ``other`` item (a requirement the reviewer could not see, such as "the
-        schematic itself is unavailable"); a run or a diff request is judged by its own files.
+        Used only for an ``other`` item (a requirement the reviewer could not see, such as
+        cad-model's "the schematic itself is unavailable"). An obligation target scopes its own
+        requested ``file`` items; a plan or statement target scopes every effective obligation's.
+        ``None`` when the target is none of these. Items the agent marked as inputs never count.
+        Prose is never scanned: a file a statement only mentions may be an input.
         """
 
         projection = self.links.projection
-        names: set[str] = set()
-        for row in projection.plans.values():
-            if str(row.source_event_id) == target and row.payload is not None and not row.redacted:
-                names.update(_named_files(row.payload.summary))
-                names.update(_named_files(row.payload.task_statement or ""))
-        for key, row in projection.obligations.items():
-            if (
-                target in {str(key), str(row.source_event_id)}
-                and row.payload is not None
-                and not row.redacted
-            ):
-                names.update(item.value for item in row.payload.requested_items)
-                names.update(_named_files(row.payload.description))
-        return frozenset(names)
+        obligations = [
+            row
+            for key, row in projection.obligations.items()
+            if target in {str(key), str(row.source_event_id)}
+        ]
+        if not obligations:
+            if not any(str(row.source_event_id) == target for row in projection.plans.values()):
+                return None
+            obligations = list(projection.obligations.values())
+        return frozenset(
+            item.value
+            for row in obligations
+            if row.payload is not None and not row.redacted
+            for item in row.payload.requested_items
+            if getattr(item.item_kind, "value", item.item_kind) == "file"
+            and getattr(item, "role", None) != "input"
+        )
 
     def _evidence_names(self, target: str) -> set[str]:
         names: set[str] = set()
@@ -1125,19 +1132,22 @@ def unsupported_data_type(name: str) -> bool:
     return _unsupported_data_type(name)
 
 
-_NAMED_FILE: Final = re.compile(r"[A-Za-z0-9_./~-]+\.[A-Za-z0-9]{1,12}")
-
-
-def _named_files(text: str) -> set[str]:
-    """File-like tokens a recorded text names, bounded; compared lexically, never opened."""
-
-    return set(_NAMED_FILE.findall(text[:65536])[:256])
-
-
 def _unsupported_data_type(name: str) -> bool:
     base = name.rstrip("/").rsplit("/", 1)[-1].lower()
     dot = base.rfind(".")
     return dot > 0 and base[dot:] in _UNSUPPORTED_SUFFIXES
+
+
+def _only_unsupported_outputs(refs: tuple[str, ...], paths_of: _TargetFiles) -> bool:
+    """Every requested output file in the targets' scope is a type the packet never carries.
+
+    One text deliverable in scope (missing or unshown) keeps the item the agent's work: the
+    reviewer may be asking for exactly that file (satb's unwritten score, an unwritten script).
+    """
+
+    scoped = [files for ref in refs if (files := paths_of.requested_files(ref)) is not None]
+    names = {name for files in scoped for name in files}
+    return bool(names) and all(_unsupported_data_type(name) for name in names)
 
 
 def _yoetz_limit(
@@ -1153,12 +1163,7 @@ def _yoetz_limit(
     if (
         any(_unsupported_data_type(name) for ref in refs for name in paths_of(ref))
         or any(paths_of.observed_image(ref) for ref in refs)
-        or (
-            kind == "other"
-            and any(
-                _unsupported_data_type(name) for ref in refs for name in paths_of.named_in_text(ref)
-            )
-        )
+        or (kind == "other" and _only_unsupported_outputs(refs, paths_of))
     ):
         return YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE
     if set(refs) & packet_limited_refs:
