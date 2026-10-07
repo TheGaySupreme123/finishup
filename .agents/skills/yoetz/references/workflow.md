@@ -229,7 +229,10 @@ finding, a planned verification that was not observed, failed, or ran before you
 git-ignored requested output, or a declared deliverable you deleted or renamed away
 (`declared_output_removed`: a requested `file` item marked as an output), the Stop hook continues
 you once with that list; restore that delivered file where the task needs it, or correct the
-requested item if the task asked for the deletion. Finish the work, or
+requested item if the task asked for the deletion. A delivered file that lost most of its lines
+while the same change added them to an undelivered file is disclosed on the receipt
+(`declared_output_content_moved`; it never stops you): check the deliverable still works where
+the task delivers it. Finish the work, or
 record a blocker outside your control as above; then stop. The first Stop after you record a
 blocker also asks you once to confirm it: if the task says the data or dependency is recoverable,
 continue the work; if it is genuinely outside your control, stop again and Yoetz honours it.
