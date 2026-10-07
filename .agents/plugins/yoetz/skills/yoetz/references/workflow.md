@@ -226,7 +226,9 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 
 If you stop while `agent_actionable` still names open obligations, an unrepaired receipt-blocking
 finding, a planned verification that was not observed, failed, or ran before your last edit, or a
-git-ignored requested output, the Stop hook continues you once with that list. Finish the work, or
+git-ignored requested output, or a declared deliverable you deleted or renamed away
+(`declared_output_removed`: a requested `file` item that is not an input), the Stop hook continues
+you once with that list; restore that delivered file where the task needs it. Finish the work, or
 record a blocker outside your control as above; then stop. The first Stop after you record a
 blocker also asks you once to confirm it: if the task says the data or dependency is recoverable,
 continue the work; if it is genuinely outside your control, stop again and Yoetz honours it.
@@ -591,22 +593,36 @@ new defect finding and carries `semantic_packet_insufficient`; it is never a cle
 permission to claim the work is verified. Existing findings and coverage limitations remain.
 
 The check result lists what the reviewer needed in `missing_for_assessment`: each item's kind, case
-refs, and whether it is `agent_suppliable` or `structurally_unavailable_on_this_host` (gaps
-`semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`). Recheck only
+refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_host`, or a Yoetz limit
+(gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`). A Yoetz
+limit is content the review packet cannot show: `yoetz_limit_unsupported_data_type` (an image,
+PDF, CAD, archive or other binary file), `yoetz_limit_packet_room` (content clipped or left out for
+packet room) or `yoetz_limit_repeated_request` (the reviewer asked again for something it already
+asked for once). A Yoetz limit is never work for you and never a blocker: verify that content
+yourself, record how you verified it, and continue; the receipt discloses the limit. For a finding
+you repaired that Yoetz cannot prove, respond `self_verified` with how you verified it and your
+evidence ids.
+
+**Never reshape your deliverable for the reviewer.** Never split, move, shrink, rename, stash,
+delete, `git add` (including `git add -N`), git-ignore or exclude deliverables or workspace files to
+fit the review packet or to make a diff show them. Delivered files stay exactly where and how the
+task needs them. Answer with new records (bounded evidence) or disclose the limit. Recheck only
 after supplying a named `agent_suppliable` item, such as the named verification output with the
 action and result that produced it. Tie it directly to the named ref, with new records. For a
 verification-output, command, diff or `other` item, evidence whose `reference` is the named ref's id
 always answers it; a plan or claim item needs a new plan version or a `claim_recorded/1.1.0`
 correction superseding the named claim. Otherwise: a result (with output) of the named action or of
-a rerun of the same command, cited evidence included; for a diff, a `git diff` run and its result,
-or evidence whose `reference` is the file's path, covering every file the named edit changed (`git
-diff` with no path covers all). Paths compare normalized but exact: `./src//a.py` is `src/a.py`,
+a rerun of the same command, cited evidence included; for a diff, evidence whose `reference` is the
+file's path (a bounded excerpt of the file), or a `git diff` run and its result, covering every file
+the named edit changed (`git diff` with no path covers all tracked files). Plain `git diff` prints
+nothing for a new, untracked file: answer for such a file with path evidence, never by staging it. Paths compare normalized but exact: `./src//a.py` is `src/a.py`,
 case counts, an absolute path counts only inside your workspace, and a bare name such as `Makefile`
 needs `./Makefile` on your side. Commands compare with whitespace collapsed (`uv run pytest` is not
 `pytest`); a run a hook observed (recorded as `omitted:<digest>`) matches another hook run with the
 same digest. `--stat` or `--name-only` diffs, an artifact another command wrote, re-citing the old
 ref, a shared obligation, or material for another path, run or claim do not answer the item. If no
-item is suppliable, the reviewer named none (`semantic_missing_items_rejected`), or
+item is suppliable (only Yoetz limits remain), the reviewer named none
+(`semantic_missing_items_rejected`), or
 `semantic_missing_already_supplied` says it repeated a request after you published material for it,
 report the named limitation instead. Hook-captured tool output never counts as supplied. A named
 item is a check limitation, never a finding.
@@ -616,8 +632,8 @@ item is the overall next action before requesting an ordinary receipt. The struc
 `overall_next` projection names that action and its bounded target refs (which may be empty for a
 global input); `finding_checklist.next` remains a finding-only continuation and does not override
 it. When open obligations or undisclosed live failures remain, its action is
-`review_recorded_work` with bounded obligation/result/action ids. When only standing or
-`structurally_unavailable_on_this_host` limits remain, `overall_next` reports
+`review_recorded_work` with bounded obligation/result/action ids. When only standing,
+`structurally_unavailable_on_this_host` or Yoetz-limit items remain, `overall_next` reports
 `ready_with_limitations` and the receipt endpoint remains available for acknowledging the
 limitation. Such an item stays a disclosed limitation rather than an impossible to-do.
 

@@ -629,22 +629,16 @@ new defect finding and carries `semantic_packet_insufficient`; it is never a cle
 permission to claim the work is verified. Existing findings and coverage limitations remain.
 
 The check result lists what the reviewer needed in `missing_for_assessment`: each item's kind, case
-refs, and whether it is `agent_suppliable` or `structurally_unavailable_on_this_host` (gaps
-`semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`). Recheck only
-after supplying a named `agent_suppliable` item, such as the named verification output with the
-action and result that produced it. Tie it directly to the named ref, with new records. For a
-verification-output, command, diff or `other` item, evidence whose `reference` is the named ref's id
-always answers it; a plan or claim item needs a new plan version or a `claim_recorded/1.1.0`
-correction superseding the named claim. Otherwise: a result (with output) of the named action or of
-a rerun of the same command, cited evidence included; for a diff, a `git diff` run and its result,
-or evidence whose `reference` is the file's path, covering every file the named edit changed (`git
-diff` with no path covers all). Paths compare normalized but exact: `./src//a.py` is `src/a.py`,
-case counts, an absolute path counts only inside your workspace, and a bare name such as `Makefile`
-needs `./Makefile` on your side. Commands compare with whitespace collapsed (`uv run pytest` is not
-`pytest`); a run a hook observed (recorded as `omitted:<digest>`) matches another hook run with the
-same digest. `--stat` or `--name-only` diffs, an artifact another command wrote, re-citing the old
-ref, a shared obligation, or material for another path, run or claim do not answer the item. If no
-item is suppliable, the reviewer named none (`semantic_missing_items_rejected`), or
+refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_host`, or a Yoetz limit
+(gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`). A
+`yoetz_limit_*` item is content the packet cannot show (unsupported data type, packet room, a
+repeated request): never your work and never a blocker; verify it yourself (see
+[workflow](workflow.md#missing-review-content-and-concrete-repair-attempts)). Never reshape a
+deliverable to fit the reviewer. Recheck only
+after supplying a named `agent_suppliable` item with new records tied directly to the named ref;
+what answers each kind (path evidence first for a new, untracked file; never stage it) is in
+[workflow](workflow.md#missing-review-content-and-concrete-repair-attempts). If only Yoetz limits
+remain, the reviewer named none (`semantic_missing_items_rejected`), or
 `semantic_missing_already_supplied` says it repeated a request after you published material for it,
 report the named limitation instead. Hook-captured tool output never counts as supplied. A named
 item is a check limitation, never a finding.
@@ -654,8 +648,8 @@ item is the overall next action before requesting an ordinary receipt. The struc
 `overall_next` projection names that action and its bounded target refs (which may be empty for a
 global input); `finding_checklist.next` remains a finding-only continuation and does not override
 it. When open obligations or undisclosed live failures remain, its action is
-`review_recorded_work` with bounded obligation/result/action ids. When only standing or
-`structurally_unavailable_on_this_host` limits remain, `overall_next` reports
+`review_recorded_work` with bounded obligation/result/action ids. When only standing,
+`structurally_unavailable_on_this_host` or Yoetz-limit items remain, `overall_next` reports
 `ready_with_limitations` and the receipt endpoint remains available for acknowledging the
 limitation. Such an item stays a disclosed limitation rather than an impossible to-do.
 
@@ -693,4 +687,4 @@ attempt; any other kind, even one citing only a check, and a finding naming any 
 response, or work record, or restating a finding about the work, still does. After repairing a
 finding, run at least one re-review in the same mode before the receipt.
 
-Findings form a to-do list that ends. Each finding is `open` or in a final state: `verified_resolved` (a later qualifying check proved it absent), `acknowledged_not_done` (you said, with a required non-empty reason, that you will not do it), or `rejection_accepted` (you rejected an AI-powered finding with a reason and a later review withdrew it). A final item is never re-reviewed and cannot change again; `respond` records nothing on it and answers `finding_terminal`, so do not retry. New evidence about the same problem comes back as a new finding. `acknowledged_not_done` stays receipt-blocking in its own receipt section and never reads as clean. The check result's `finding_checklist` and `status` with `view: "findings"` show each item's state and its review rounds against the owner's budget (default 5), for example `[ ] F-3 open (2/5)`, plus one `next` token: `work_open_findings`, `decide_at_budget`, or `request_receipt`. This token is a finding-only continuation; when an agent-suppliable review input is also listed, follow the overall input continuation first. At the budget, stop repeating the same repair: repair with new evidence, or respond `acknowledged_not_done` with the reason. Checks are never throttled and nothing is closed or acknowledged for you.
+Findings form a to-do list that ends. Each finding is `open` or in a final state: `verified_resolved` (a later qualifying check proved it absent), `acknowledged_not_done` (you said, with a required non-empty reason, that you will not do it), or `rejection_accepted` (you rejected an AI-powered finding with a reason and a later review withdrew it). A final item is never re-reviewed and cannot change again; `respond` records nothing on it and answers `finding_terminal`, so do not retry. When the reviewer raises an open finding's problem again, it records that on the same finding: the item stays open, its review round advances, and the reviewer's new words appear in the review summary under that finding's id, so one concern stays one item and the round budget counts that concern. A problem raised again after an item reached a final state comes back as a new finding. `acknowledged_not_done` stays receipt-blocking in its own receipt section and never reads as clean. The check result's `finding_checklist` and `status` with `view: "findings"` show each item's state and its review rounds against the owner's budget (default 5), for example `[ ] F-3 open (2/5)`, plus one `next` token: `work_open_findings`, `decide_at_budget`, or `request_receipt`. This token is a finding-only continuation; when an agent-suppliable review input is also listed, follow the overall input continuation first. At the budget, stop repeating the same repair: repair with new evidence, or respond `acknowledged_not_done` with the reason. Checks are never throttled and nothing is closed or acknowledged for you.

@@ -23,7 +23,7 @@ Discover the `start` schema, use a fresh `req_` UUIDv4, and provide `mode`, `tas
 
 # Essential boundaries
 
-Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history, credentials, secrets, whole files/repositories, or broad unrelated source. Never hide, delete, or git-ignore a deliverable (incl. `.git/info/exclude`) to keep secrets from review; Yoetz redacts and discloses. Recover via schemas/guidance, never SQLite or source. On `retryable: false`, follow only the typed `continuation`; keep an unknown write's request id. If Yoetz is unavailable, say no record or receipt exists.
+Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history, credentials, secrets, whole files/repositories, or broad unrelated source. Never hide, delete, or git-ignore a deliverable (incl. `.git/info/exclude`) to keep secrets from review; Yoetz redacts and discloses. Never reshape your deliverable for the reviewer: never split, move, shrink, stash, delete, `git add` (incl. `-N`) or git-ignore deliverables or workspace files to fit the review packet; content the packet cannot show is a Yoetz limit, so verify it yourself and disclose it. Recover via schemas/guidance, never SQLite or source. On `retryable: false`, follow only the typed `continuation`; keep an unknown write's request id. If Yoetz is unavailable, say no record or receipt exists.
 
 # Review and closure
 

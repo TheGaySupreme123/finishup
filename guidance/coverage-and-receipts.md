@@ -629,22 +629,16 @@ new defect finding and carries `semantic_packet_insufficient`; it is never a cle
 permission to claim the work is verified. Existing findings and coverage limitations remain.
 
 The check result lists what the reviewer needed in `missing_for_assessment`: each item's kind, case
-refs, and whether it is `agent_suppliable` or `structurally_unavailable_on_this_host` (gaps
-`semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`). Recheck only
-after supplying a named `agent_suppliable` item, such as the named verification output with the
-action and result that produced it. Tie it directly to the named ref, with new records. For a
-verification-output, command, diff or `other` item, evidence whose `reference` is the named ref's id
-always answers it; a plan or claim item needs a new plan version or a `claim_recorded/1.1.0`
-correction superseding the named claim. Otherwise: a result (with output) of the named action or of
-a rerun of the same command, cited evidence included; for a diff, a `git diff` run and its result,
-or evidence whose `reference` is the file's path, covering every file the named edit changed (`git
-diff` with no path covers all). Paths compare normalized but exact: `./src//a.py` is `src/a.py`,
-case counts, an absolute path counts only inside your workspace, and a bare name such as `Makefile`
-needs `./Makefile` on your side. Commands compare with whitespace collapsed (`uv run pytest` is not
-`pytest`); a run a hook observed (recorded as `omitted:<digest>`) matches another hook run with the
-same digest. `--stat` or `--name-only` diffs, an artifact another command wrote, re-citing the old
-ref, a shared obligation, or material for another path, run or claim do not answer the item. If no
-item is suppliable, the reviewer named none (`semantic_missing_items_rejected`), or
+refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_host`, or a Yoetz limit
+(gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`). A
+`yoetz_limit_*` item is content the packet cannot show (unsupported data type, packet room, a
+repeated request): never your work and never a blocker; verify it yourself (see
+[workflow](workflow.md#missing-review-content-and-concrete-repair-attempts)). Never reshape a
+deliverable to fit the reviewer. Recheck only
+after supplying a named `agent_suppliable` item with new records tied directly to the named ref;
+what answers each kind (path evidence first for a new, untracked file; never stage it) is in
+[workflow](workflow.md#missing-review-content-and-concrete-repair-attempts). If only Yoetz limits
+remain, the reviewer named none (`semantic_missing_items_rejected`), or
 `semantic_missing_already_supplied` says it repeated a request after you published material for it,
 report the named limitation instead. Hook-captured tool output never counts as supplied. A named
 item is a check limitation, never a finding.
@@ -654,8 +648,8 @@ item is the overall next action before requesting an ordinary receipt. The struc
 `overall_next` projection names that action and its bounded target refs (which may be empty for a
 global input); `finding_checklist.next` remains a finding-only continuation and does not override
 it. When open obligations or undisclosed live failures remain, its action is
-`review_recorded_work` with bounded obligation/result/action ids. When only standing or
-`structurally_unavailable_on_this_host` limits remain, `overall_next` reports
+`review_recorded_work` with bounded obligation/result/action ids. When only standing,
+`structurally_unavailable_on_this_host` or Yoetz-limit items remain, `overall_next` reports
 `ready_with_limitations` and the receipt endpoint remains available for acknowledging the
 limitation. Such an item stays a disclosed limitation rather than an impossible to-do.
 
