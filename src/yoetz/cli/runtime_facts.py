@@ -86,6 +86,12 @@ _TEMP_ROOTS: Final = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/
 # macOS per-user temporary directory: `/var/folders/<a>/<b>/T` (the `C` cache sibling is not
 # temporary). `/var` is a symlink to `/private/var`, so both spellings name the same directory.
 _MACOS_USER_TEMP: Final = re.compile(r"^/(?:private/)?var/folders/[^/]+/[^/]+/T(?:/|$)")
+# WSL 2: the Windows per-user and system temporary directories as mounted under /mnt/<drive>.
+_WSL_WINDOWS_TEMP: Final = re.compile(
+    r"^/mnt/[a-z]/(?:users/[^/]+/appdata/local/temp|windows/temp)(?:/|$)", re.IGNORECASE
+)
+# The last component of an environment temp directory must name temporary space.
+_TEMP_NAME: Final = re.compile(r"te?mp|scratch", re.IGNORECASE)
 
 
 def _raw_command(tool_input: Mapping[str, JsonValue]) -> str | None:
@@ -114,12 +120,28 @@ def _segments(command: str) -> list[list[str]]:
     return [segment for segment in segments if segment]
 
 
+# Prefix-command options that take a separate operand (``sudo -u user``, ``env -u NAME``,
+# ``time -o file``); every other ``-x`` option of a prefix command takes none.
+_PREFIX_OPTIONS_WITH_OPERAND: Final = frozenset(
+    {"-u", "-g", "-C", "-D", "-R", "-T", "-h", "-p", "-r", "-t", "-U", "-o", "-f", "-S"}
+)
+
+
 def _strip_prefix(segment: list[str]) -> list[str]:
     index = 0
     while index < len(segment) and (
         _ASSIGNMENT.match(segment[index]) or segment[index] in _PREFIX_COMMANDS
     ):
+        prefix = segment[index] in _PREFIX_COMMANDS
         index += 1
+        # ``sudo -H -u builder pip install x``: skip the prefix command's own options.
+        while prefix and index < len(segment) and segment[index].startswith("-"):
+            option = segment[index]
+            index += 1
+            if option == "--":
+                break
+            if option in _PREFIX_OPTIONS_WITH_OPERAND and index < len(segment):
+                index += 1
     return segment[index:]
 
 
@@ -145,7 +167,11 @@ def _environment_root(path: str) -> str:
 
 
 def _is_venv(root: str) -> bool:
-    return os.path.isfile(os.path.join(root, "pyvenv.cfg"))
+    """Whether ``root`` is a Python environment of its own: a venv or a conda environment."""
+
+    return os.path.isfile(os.path.join(root, "pyvenv.cfg")) or os.path.isdir(
+        os.path.join(root, "conda-meta")
+    )
 
 
 def _task_roots() -> frozenset[str]:
@@ -210,6 +236,9 @@ def _location_option(options: list[str]) -> str | None:
                 return options[index + 1]
             if flag.startswith("--") and option.startswith(flag + "="):
                 return option.split("=", 1)[1]
+            # pip's short option also takes its operand attached: ``-t/opt/deps``.
+            if flag == "-t" and option.startswith("-t") and len(option) > 2:
+                return option[2:]
     return None
 
 
@@ -336,7 +365,12 @@ def _process_temp_roots(workspace: str | None) -> tuple[str, ...]:
         raw = os.environ.get(name)
         if not raw or not raw.startswith("/") or "\x00" in raw:
             continue
-        candidates.add(posixpath.normpath(raw))
+        normalized = posixpath.normpath(raw)
+        # Only a directory named as temporary space is trusted: a TMPDIR pointed at a
+        # deliverable location (``/results``) must not hide real writes there.
+        if _TEMP_NAME.search(posixpath.basename(normalized)) is None:
+            continue
+        candidates.add(normalized)
     return tuple(
         root
         for root in sorted(candidates)
@@ -356,7 +390,7 @@ def _scratch_path(path: str, workspace: str | None = None) -> bool:
         normalized = "/" + normalized.lstrip("/")
     if normalized.startswith("/dev/"):
         return True
-    if _MACOS_USER_TEMP.match(normalized):
+    if _MACOS_USER_TEMP.match(normalized) or _WSL_WINDOWS_TEMP.match(normalized):
         return True
     return any(_under(normalized, root) for root in (*_TEMP_ROOTS, *_process_temp_roots(workspace)))
 

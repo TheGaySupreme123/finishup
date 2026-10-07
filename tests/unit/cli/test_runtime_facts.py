@@ -438,3 +438,50 @@ def test_a_temp_dir_that_is_or_contains_the_workspace_is_never_trusted(
     assert _facts("Write", {"file_path": "/srv/other/out.txt"}, workspace) == {
         "write_scope": "outside_workspace"
     }
+
+
+# --- adversarial review follow-ups (E5, E6) -----------------------------------------------------
+
+
+def test_sudo_options_and_attached_target_are_read(env: dict[str, Path], task_venv: Path) -> None:
+    telecom = _venv(env["system"].parent / "tmp" / "telecom_venv", "pip", "python")
+    assert _target(f"sudo -H -u builder {telecom}/bin/pip install x", env) == "private_env"
+    assert _target("sudo -E pip install x", env) == "system"
+    assert _target("pip install -t/opt/deps x", env) == "private_env"
+
+
+def test_a_conda_environment_is_an_environment_of_its_own(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = env["system"].parent / "opt" / "conda"
+    (base / "conda-meta").mkdir(parents=True)
+    for name in ("python", "python3", "pip"):
+        _executable(base / "bin" / name)
+    other = base / "envs" / "scratch"
+    (other / "conda-meta").mkdir(parents=True)
+    _executable(other / "bin" / "pip")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(base / "bin"), str(env["system"] / "bin")]))
+    assert _target("pip install x", env) == "system"
+    assert _target(f"{other}/bin/pip install x", env) == "private_env"
+
+
+def test_a_temp_dir_not_named_as_temporary_space_is_never_trusted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A TMPDIR pointed at a deliverable directory (`/results`) must not hide writes there."""
+
+    monkeypatch.setenv("TMPDIR", "/results")
+    monkeypatch.setenv("HOME", "/home/someone")
+    workspace = Path("/srv/work")
+    assert _facts("Write", {"file_path": "/results/report.json"}, workspace) == {
+        "write_scope": "outside_workspace"
+    }
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["/mnt/c/Users/dev/AppData/Local/Temp/run.log", "/mnt/d/Windows/Temp/x.txt"],
+)
+def test_wsl_windows_temp_is_scratch(target: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", "/home/someone")
+    assert "write_scope" not in _facts("Write", {"file_path": target}, Path("/srv/work"))

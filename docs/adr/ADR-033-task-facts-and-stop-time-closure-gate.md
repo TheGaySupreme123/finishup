@@ -198,11 +198,16 @@ agent must not be able to stop silently with known work left.
    to an absolute directory is `workspace_env` inside the workspace (vendoring) and `private_env`
    outside it; a relative or variable directory is `unresolved`. `--user` classifies as the
    interpreter running pip (its user site is imported by that interpreter; pip refuses it in a
-   virtual environment). `uv pip install` without `--python` stays `unresolved`. `write_scope`
+   virtual environment). A conda environment (`conda-meta/`) counts as an environment of its own
+   like a venv, and a prefix command's own options (`sudo -H -u builder`) and pip's attached
+   `-t/dir` are read. `uv pip install` without `--python` stays `unresolved`. `write_scope`
    ignores writes into temporary scratch space (tb4n1 E6, #1000: 28 of 33 firings were `/tmp`
    logs, none a misplaced deliverable): `/tmp`, `/private/tmp`, `/var/tmp`, `/private/var/tmp`,
    `/dev/shm`, anything under `/dev/`, the macOS per-user `/var/folders/*/*/T`, and the
-   `TMPDIR`/`TEMP`/`TMP` values, read from the environment and never probed (no
+   WSL 2 Windows temporary directories (`/mnt/<drive>/Users/*/AppData/Local/Temp`,
+   `/mnt/<drive>/Windows/Temp`), and the `TMPDIR`/`TEMP`/`TMP` values whose last component names
+   temporary space (`tmp`, `temp`, `scratch`; a `TMPDIR=/results` hides nothing), read from the
+   environment and never probed (no
    `tempfile.gettempdir`, which touches the filesystem, may fall back to the working directory
    and raises). An environment root that is `/`, contains the home directory, or is or contains
    the workspace is never trusted. The rule is lexical (`..` is normalized first, links are not
