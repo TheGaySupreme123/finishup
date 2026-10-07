@@ -983,7 +983,7 @@ class Finding:
 PRIOR_FINDING_VERDICTS: Final = frozenset(
     {"fixed", "still_present", "answered_not_fixed", "unassessable", "withdrawn"}
 )
-MAX_RECORDED_VERDICTS: Final = 8
+MAX_RECORDED_VERDICTS: Final = 16
 
 
 @dataclass(frozen=True, slots=True)

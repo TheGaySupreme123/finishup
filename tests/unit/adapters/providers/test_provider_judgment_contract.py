@@ -920,12 +920,13 @@ def test_a_malformed_or_surplus_ruling_is_dropped_and_counted_not_fatal() -> Non
                 **_judgment(),
                 "prior_finding_verdicts": [
                     _ruling(verdict="unassessable", finding_id=_finding(number))
-                    for number in range(1, 10)
+                    for number in range(1, 18)
                 ],
             },
         )
     )
-    assert len(surplus.prior_finding_verdicts) == 8
+    # Sixteen rulings, one per carried earlier finding (issue #976).
+    assert len(surplus.prior_finding_verdicts) == 16
     assert surplus.prior_finding_verdicts_dropped == 1
 
 

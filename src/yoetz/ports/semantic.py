@@ -76,6 +76,7 @@ if TYPE_CHECKING:
 __all__ = [
     "MAX_PRIOR_FINDING_ITEMS",
     "MAX_PRIOR_FINDING_REFS",
+    "MAX_REVIEW_INPUT_SECTION_ITEMS",
     "MAX_SEMANTIC_CASE_ITEMS",
     "MAX_SEMANTIC_ITEM_SUBJECT_REFS",
     "PRIOR_FINDING_VERDICT_KINDS",
@@ -234,11 +235,15 @@ _MAX_INTERNAL_SUBJECT_REFS: Final = 64
 # they had when a packet carried at most 16 excerpts.
 _MAX_CASE_ITEMS: Final = 256 + MAX_REVIEW_EXCERPTS - 16
 MAX_SEMANTIC_CASE_ITEMS: Final = _MAX_CASE_ITEMS
-# The prior-findings section (issue #905): at most eight earlier AI-powered findings, each one
-# structural row plus up to six prose rows (summary, message, three challenge fields, response).
-MAX_PRIOR_FINDING_ITEMS: Final = 56
+# The prior-findings section (issue #905): at most sixteen earlier AI-powered findings (issue
+# #976), each one structural row plus up to six prose rows (summary, message, three challenge
+# fields, response).
+MAX_PRIOR_FINDING_ITEMS: Final = 112
 # The rulable list: one entry per carried earlier finding, never one per row (issue #905).
-MAX_PRIOR_FINDING_REFS: Final = 8
+MAX_PRIOR_FINDING_REFS: Final = 16
+# Item ids one review-input manifest section lists: the prior-findings section's rows, its local
+# answers and the pending missing-for-assessment row, rounded up (issue #976).
+MAX_REVIEW_INPUT_SECTION_ITEMS: Final = 128
 _OPAQUE_REF_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", re.ASCII)
 _IDENTITY_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]*$", re.ASCII)
 _MODEL_IDENTITY_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$", re.ASCII)
@@ -1026,7 +1031,9 @@ class ReviewInputSection:
 
         object.__setattr__(self, "source_refs", opaque_refs(self.source_refs, maximum=16))
         object.__setattr__(
-            self, "selected_item_ids", opaque_refs(self.selected_item_ids, maximum=64)
+            self,
+            "selected_item_ids",
+            opaque_refs(self.selected_item_ids, maximum=MAX_REVIEW_INPUT_SECTION_ITEMS),
         )
         object.__setattr__(self, "omitted_refs", opaque_refs(self.omitted_refs, maximum=16))
         if type(self.omission_reasons) is not tuple or len(self.omission_reasons) > 8:
@@ -1239,7 +1246,7 @@ class ReviewPacket:
     prior_finding_item_ids: tuple[str, ...] = ()
     # The rulable list: each carried earlier finding once, newest first. A finding contributes a
     # structural row and, under a prose profile, several prose rows; the reviewer rules once per
-    # entry here, never once per row, so the eight-ruling cap always covers every finding.
+    # entry here, never once per row, so the sixteen-ruling cap always covers every finding.
     prior_finding_refs: tuple[str, ...] = ()
     # At most one statement item: the task's current statement, never a plan (issue #908).
     task_statement_item_ids: tuple[str, ...] = ()
@@ -1686,7 +1693,7 @@ type PriorFindingVerdictKind = Literal[
 PRIOR_FINDING_VERDICT_KINDS: Final = frozenset(
     {"fixed", "still_present", "answered_not_fixed", "unassessable", "withdrawn"}
 )
-_MAX_PRIOR_FINDING_VERDICTS: Final = 8
+_MAX_PRIOR_FINDING_VERDICTS: Final = MAX_PRIOR_FINDING_REFS
 
 
 @dataclass(frozen=True, slots=True)

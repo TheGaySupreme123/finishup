@@ -3172,7 +3172,7 @@ def _review_input_manifest_from_json(value: JsonValue | None) -> JsonObject | No
             raise ProtocolValueError("invalid_event_value_type")
         for field_name, maximum in (
             ("source_refs", 16),
-            ("item_ids", 64),
+            ("item_ids", 128),
             ("omitted_refs", 16),
             ("omission_reasons", 8),
         ):

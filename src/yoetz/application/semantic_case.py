@@ -113,6 +113,7 @@ from yoetz.ports.change_capture import CHECK_CHANGE_MEDIA_TYPE, CheckChangeCaptu
 from yoetz.ports.objects import ObjectKind, ObjectRef
 from yoetz.ports.semantic import (
     MAX_PRIOR_FINDING_ITEMS,
+    MAX_REVIEW_INPUT_SECTION_ITEMS,
     MAX_SEMANTIC_CASE_ITEMS,
     MAX_SEMANTIC_ITEM_SUBJECT_REFS,
     ChangeObservation,
@@ -230,8 +231,10 @@ _PACKET_ID_LIST_KEYS: Final = (
     "timeline_item_ids",
 )
 # The prior-findings section (issue #905) has its own bounds, outside the timeline's 64 rows.
-MAX_PRIOR_FINDINGS: Final = 8
-MAX_PRIOR_FINDING_SECTION_BYTES: Final = 48 * 1024
+# Sixteen findings in 96 KiB (TB4 tb4n1 D10, issue #976: eight dropped open findings in six
+# attempts); the section still takes only the room the case bounds leave.
+MAX_PRIOR_FINDINGS: Final = 16
+MAX_PRIOR_FINDING_SECTION_BYTES: Final = 96 * 1024
 # Answers to local findings carried beside them (issue #976); they share the section's bounds.
 MAX_LOCAL_FINDING_ANSWERS: Final = 4
 # Refs listed per structural row; the full counts travel beside them.
@@ -5710,7 +5713,7 @@ def _decode_review_input_manifest(
         ):
             return None
         source_refs = _tuple_strings(section.get("source_refs"), maximum=16)
-        item_ids = _tuple_strings(section.get("item_ids"), maximum=64)
+        item_ids = _tuple_strings(section.get("item_ids"), maximum=MAX_REVIEW_INPUT_SECTION_ITEMS)
         omitted_refs = _tuple_strings(section.get("omitted_refs"), maximum=16)
         omission_reasons = _tuple_strings(section.get("omission_reasons"), maximum=8)
         if (

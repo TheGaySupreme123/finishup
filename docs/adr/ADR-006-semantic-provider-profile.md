@@ -1184,14 +1184,14 @@ unresolved AI-powered findings in their own `prior_finding` section, outside the
 hook rows never crowd it out. Under egress-envelope pressure its rows yield first, oldest finding
 first, so it never displaces work content: a structural row with what was asked, the latest answer
 (disposition, cited refs) and the evidence and results recorded after the finding, plus the prose
-rows the profile's finding-prose selection already permits. It is bounded (8 findings, 48 KiB,
+rows the profile's finding-prose selection already permits. It is bounded (16 findings, 96 KiB since issue #976; 8 and 48 KiB before;
 leftover case capacity only); what does not fit is named as `not_selected` omissions and discloses
 `semantic_prior_findings_over_limit`, a gap that stays on the receipt but does not veto absence
 proof. Findings recorded without challenge fields degrade to summary and message with a `not_recorded`
 omission. No new data category leaves the machine. A carried finding contributes one structural
 row and, under a prose profile, up to six prose rows, so `review_packet.prior_finding_item_ids`
-(up to 56 rows) is row accounting, not the ruling unit. `review_packet.prior_finding_refs` is the
-ruling unit: each carried finding's `finding_ref` exactly once, newest first, at most 8, and only
+(up to 112 rows) is row accounting, not the ruling unit. `review_packet.prior_finding_refs` is the
+ruling unit: each carried finding's `finding_ref` exactly once, newest first, at most 16, and only
 while that finding's structural row is still carried after bounding.
 
 **Per-finding rulings.** `provider-judgment/1.1.0` adds a required `prior_finding_verdicts`

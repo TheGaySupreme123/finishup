@@ -5018,7 +5018,18 @@ def _outbound_case_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 def _add_review_input_manifest_to_outbound_case(document: dict[str, JsonValue]) -> None:
     """Add the metadata-only composed/provider-bound input manifest (issues #951/#907)."""
 
+    from yoetz.ports.semantic import MAX_REVIEW_INPUT_SECTION_ITEMS, MAX_SEMANTIC_CASE_ITEMS
+
     definitions = cast(dict[str, JsonValue], document["$defs"])
+    # A section lists every selected item id. The prior-findings section alone can hold sixteen
+    # findings of up to seven rows each (issue #976), so the list is bounded above 64.
+    definitions["item_id_list_review_input_section"] = {
+        "items": {"$ref": "#/$defs/opaque_ref"},
+        "maxItems": MAX_REVIEW_INPUT_SECTION_ITEMS,
+        "minItems": 0,
+        "type": "array",
+        "uniqueItems": True,
+    }
     section_reasons = [
         "capture_unavailable",
         "content_unselected",
@@ -5036,7 +5047,7 @@ def _add_review_input_manifest_to_outbound_case(document: dict[str, JsonValue]) 
         "properties": {
             "content_bytes": {"maximum": 524288, "minimum": 0, "type": "integer"},
             "content_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
-            "item_ids": {"$ref": "#/$defs/item_id_list_64"},
+            "item_ids": {"$ref": "#/$defs/item_id_list_review_input_section"},
             "omission_reasons": {
                 "items": {"enum": section_reasons, "type": "string"},
                 "maxItems": 8,
@@ -5147,7 +5158,11 @@ def _add_review_input_manifest_to_outbound_case(document: dict[str, JsonValue]) 
             "review_phase": {"enum": ["routine", "final"], "type": "string"},
             "schema": {"const": "yoetz.review-input-manifest/1", "type": "string"},
             "selected_excerpt_bytes": {"maximum": 524288, "minimum": 0, "type": "integer"},
-            "selected_item_count": {"maximum": 256, "minimum": 0, "type": "integer"},
+            "selected_item_count": {
+                "maximum": MAX_SEMANTIC_CASE_ITEMS,
+                "minimum": 0,
+                "type": "integer",
+            },
         },
         "required": [
             "schema",

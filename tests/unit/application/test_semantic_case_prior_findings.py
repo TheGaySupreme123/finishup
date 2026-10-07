@@ -567,3 +567,54 @@ def test_closing_review_request_builds_the_final_phase_and_records_it() -> None:
     assert closing.packet.input_manifest is not None
     assert closing.packet.input_manifest.review_phase == "final"
     assert closing.case_digest != routine.case_digest
+
+
+def test_twelve_open_reviewer_findings_are_all_carried() -> None:
+    """TB4 tb4n1 D10 (issue #976): eight was the cap, and six attempts dropped open findings.
+
+    A task with twelve open reviewer findings, each with full challenge prose, carries every one
+    of them to the next reviewer, in the case and in the bytes the provider receives, and the
+    rulable list names each once, newest first.
+    """
+
+    extra = {
+        fnd(number): finding_record(_semantic(number, challenge=_CHALLENGE), 20 + number)
+        for number in range(3, 13)
+    }
+    case = _build(_numba_case(extra))
+
+    expected = tuple(str(fnd(number)) for number in range(12, 0, -1))
+    assert case.packet.prior_finding_refs == expected
+    assert SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP not in case.packet.coverage.known_gaps
+    payload = cast(
+        Mapping[str, JsonValue],
+        strict_json_parse(
+            semantic_case_to_prepared_payload(case, {item.item_id for item in case.items})
+        ),
+    )
+    packet = cast(Mapping[str, JsonValue], payload["review_packet"])
+    assert packet["prior_finding_refs"] == list(expected)
+
+
+def test_over_the_limit_the_newest_open_findings_win_and_terminal_ones_never_compete() -> None:
+    """Issue #976: past sixteen, the newest open findings are carried; a terminal one is never."""
+
+    extra: dict[FindingId, FindingProjectionRecord] = {
+        fnd(number): finding_record(_semantic(number, challenge=_CHALLENGE), 20 + number)
+        for number in range(3, 3 + MAX_PRIOR_FINDINGS)
+    }
+    # The newest finding is final (acknowledged_not_done): it is history, not a live question.
+    newest = 3 + MAX_PRIOR_FINDINGS
+    extra[fnd(newest)] = finding_record(_semantic(newest, challenge=_CHALLENGE), 90)
+    done = ResponseRecordedPayload(
+        finding_id=fnd(newest),
+        finding_frontier=FRONTIER,
+        disposition=ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
+        reason="The package index is unreachable from this sandbox; not done.",
+    )
+    case = _build(_numba_case(extra, {fnd(newest): record(done, 91)}))
+
+    carried = case.packet.prior_finding_refs
+    assert len(carried) == MAX_PRIOR_FINDINGS == 16
+    assert str(fnd(newest)) not in carried
+    assert carried == tuple(str(fnd(number)) for number in range(newest - 1, 2, -1))

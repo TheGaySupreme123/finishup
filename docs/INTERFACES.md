@@ -7838,10 +7838,10 @@ lists `acknowledged_not_done` AI-powered findings of kind `task_requirement_unme
 standing dispute for readiness or Stop surfaces.
 
 The review packet (`outbound-case` `1.2.0`) adds the `prior_finding` section,
-`review_packet.prior_finding_item_ids` (every row of the section, at most 56) and
+`review_packet.prior_finding_item_ids` (every row of the section, at most 112) and
 `review_packet.prior_finding_refs` (the ruling unit: each carried finding's `finding_ref` exactly
-once, newest first, at most 8, listed only while its structural row is carried). It carries the newest readable, unresolved AI-powered
-findings (at most 8, 48 KiB of item content, and only case capacity the other sections leave;
+once, newest first, at most 16, listed only while its structural row is carried). It carries the newest readable, unresolved AI-powered
+findings (at most 16, 96 KiB of item content (issue #976; 8 and 48 KiB before), and only case capacity the other sections leave;
 outside the timeline's 64 rows, so hook rows never crowd it out). Under egress-envelope pressure its
 rows are removed first, oldest finding first, before any other bounding step, so the section never
 displaces work content; removed rows count in `catalog_dropped_count` and add
@@ -7861,7 +7861,8 @@ section existed. A finding recorded without challenge fields is disclosed throug
 record is complete for its version, and nothing it lacks was lost.
 
 The provider judgment is `provider-judgment` `1.1.0`: every conclusion branch requires
-`prior_finding_verdicts` (0–8 of `{finding_id, verdict, cited_refs, note}`; `verdict` ∈
+`prior_finding_verdicts` (0–8 of `{finding_id, verdict, cited_refs, note}`, 0–16 in the unreleased
+`1.2.0` extended in place for issue #976; `verdict` ∈
 `fixed|still_present|answered_not_fixed|unassessable|withdrawn`), for the Codex app-server,
 Responses and Chat Completions cells alike (the prompt-only Chat Completions shape names it too).
 The reviewer returns exactly one ruling per `finding_ref` in `review_packet.prior_finding_refs`,
@@ -7876,7 +7877,7 @@ the prior-findings rows and `citable_refs` of the packet the reviewer was actual
 on a readable open finding the packet did not carry is recorded as `unassessable`); admitted
 rulings are recorded as
 the optional `check_recorded` `1.3.0` field `prior_finding_verdicts` (`{finding_id, verdict,
-cited_refs}`, 1–8, ASCII-sorted by finding id, never the note; unreleased 1.3.0 extended in place),
+cited_refs}`, 1–16 (issue #976), ASCII-sorted by finding id, never the note; unreleased 1.3.0 extended in place),
 present only when at least one ruling was admitted, so a check without rulings keeps its bytes
 (issue #907's optional `missing_for_assessment` shares the version the same way).
 `semantic_prior_verdicts_unsupported` discloses dropped or reduced rulings and, like

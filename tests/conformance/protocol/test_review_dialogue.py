@@ -144,7 +144,7 @@ def test_outbound_case_names_the_prior_findings_section_only_from_1_2_0() -> Non
     assert "prior_finding_refs" in after["$defs"]["review_packet"]["required"]
     refs = after["$defs"]["review_packet"]["properties"]["prior_finding_refs"]
     assert refs["items"] == {"$ref": "#/$defs/finding_id"}
-    assert refs["maxItems"] == 8
+    assert refs["maxItems"] == 16  # issue #976: sixteen findings (eight before)
     assert refs["uniqueItems"] is True
     # No new data category crosses egress with the section.
     assert before["$defs"]["data_category"] == after["$defs"]["data_category"]

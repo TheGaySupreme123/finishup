@@ -1148,7 +1148,7 @@ def test_full_excerpts_never_crowd_the_prior_findings_section_out() -> None:
         return f"output {index}\n" + "x" * 16_000 + "\nDONE"
 
     open_findings = {
-        fnd(number): finding_record(_semantic(number, challenge=_CHALLENGE), 90 + number)
+        fnd(number): finding_record(_semantic(number, challenge=_CHALLENGE), 80 + number)
         for number in range(1, MAX_PRIOR_FINDINGS + 1)
     }
     ledger = _ledger(

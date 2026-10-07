@@ -2277,7 +2277,7 @@ class ProviderVerifiedItemModel(_ClosedModel):
 
 # Issue #905: one ruling per earlier AI-powered finding the packet's prior-findings section
 # carries. ``withdrawn`` accepts the main agent's rejection; ``unassessable`` speaks only for its
-# own finding. The section carries at most eight findings.
+# own finding. The section carries at most sixteen findings (issue #976).
 type PriorFindingVerdictWire = Literal[
     "fixed",
     "still_present",
@@ -2285,7 +2285,7 @@ type PriorFindingVerdictWire = Literal[
     "unassessable",
     "withdrawn",
 ]
-MAX_PRIOR_FINDING_VERDICTS: Final = 8
+MAX_PRIOR_FINDING_VERDICTS: Final = 16
 ProviderFindingIdWire = Annotated[
     str,
     Field(pattern=r"^fnd_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
@@ -3204,7 +3204,8 @@ class ReviewInputSectionModel(_ClosedModel):
         "not_selected",
     ]
     source_refs: tuple[String1To256, ...] = Field(max_length=16)
-    item_ids: tuple[String1To256, ...] = Field(max_length=64)
+    # The prior-findings section lists up to sixteen findings' rows (issue #976).
+    item_ids: tuple[String1To256, ...] = Field(max_length=128)
     omitted_refs: tuple[String1To256, ...] = Field(max_length=16)
     omission_reasons: tuple[
         Literal[
