@@ -56,6 +56,7 @@ __all__ = [
     "ClassifiedContextItem",
     "ConsentSource",
     "CredentialHeuristic",
+    "external_review_credential_heuristic",
     "DataCategory",
     "DataClass",
     "DisclosureProposal",
@@ -1177,13 +1178,7 @@ class PrivacyPolicy:
             ),
             identity.created_at,
             None,
-            # The heuristic is off only when every composed scope turned it off.
-            (
-                CredentialHeuristic.DISABLED
-                if not self.credential_heuristic_enforced
-                and not other.credential_heuristic_enforced
-                else CredentialHeuristic.ENFORCED
-            ),
+            _composed_credential_heuristic(self, other),
         )
         meet_identity: dict[str, JsonValue] = {
             "components": cast(JsonValue, sorted((self.policy_digest, other.policy_digest))),
@@ -1242,6 +1237,45 @@ class PrivacyPolicy:
                 key=lambda item: item.value.encode("ascii"),
             )
         )
+
+
+def external_review_credential_heuristic(
+    policy: PrivacyPolicy, binding: ProviderBinding | None, *, local_sink: object = None
+) -> CredentialHeuristic:
+    """The credential-heuristic setting one disclosure applies (owner decision, 2026-10-07).
+
+    The opt-out reaches only the external AI reviewer: an LLM-inference disclosure to an external
+    provider binding. Every local output (agent context, local model, local views) keeps the
+    heuristic exactly as when it is enabled.
+    """
+
+    if type(policy) is not PrivacyPolicy:
+        raise _invalid()
+    if local_sink is None and binding is not None and binding.transport == "external":
+        return policy.credential_heuristic
+    return CredentialHeuristic.ENFORCED
+
+
+def _composed_credential_heuristic(
+    first: PrivacyPolicy, second: PrivacyPolicy
+) -> CredentialHeuristic:
+    """Compose the credential-heuristic setting of two scopes (owner decision, 2026-10-07).
+
+    The opt-out belongs to the repository grant: between the installation-wide row and a
+    repository row, the repository row decides, so a repository is "off" only where its own grant
+    says off. The installation-wide value is only the default a repository without a grant
+    inherits. Any narrower composition (task or request rows) can only keep the filter on.
+    """
+
+    kinds = {first.effective_scope.kind, second.effective_scope.kind}
+    if kinds == {AuthorizationScopeKind.MACHINE, AuthorizationScopeKind.WORKSPACE}:
+        repository = (
+            first if first.effective_scope.kind is AuthorizationScopeKind.WORKSPACE else second
+        )
+        return repository.credential_heuristic
+    if first.credential_heuristic_enforced or second.credential_heuristic_enforced:
+        return CredentialHeuristic.ENFORCED
+    return CredentialHeuristic.DISABLED
 
 
 @dataclass(frozen=True, slots=True)

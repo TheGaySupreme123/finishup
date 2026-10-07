@@ -2459,11 +2459,63 @@ class Application:
     ) -> StatusInternalResult:
         await self._require_repository_route(request, repository_privacy_context)
         await self._renew_activity_session(request.session_id, request)
-        return await execute_status(
+        result = await execute_status(
             self,  # pyright: ignore[reportArgumentType]
             request,
             route_profile=route_profile,
         )
+        state = await self._credential_heuristic_state(repository_privacy_context)
+        return result if state is None else replace(result, credential_heuristic=state)
+
+    async def _credential_heuristic_state(
+        self, repository_privacy_context: RepositoryPrivacyContext | None
+    ) -> tuple[str, str] | None:
+        """The possible-credential filter state status shows before any check (issue #982).
+
+        ``repository`` follows the current repository's own grant (owner decision, 2026-10-07);
+        without a grant nothing reaches the external reviewer, so it reads ``enforced``.
+        ``machine_default`` is what a repository without a grant inherits. Read-only; any read
+        failure reports ``unknown`` rather than guessing. ``None`` when this application has no
+        privacy support at all.
+        """
+
+        if (
+            ControlMethod.PRIVACY_GET_SETUP not in self.support_handlers
+            or ControlMethod.PRIVACY_GET_EFFECTIVE not in self.support_handlers
+        ):
+            return None
+
+        def state_of(policy: object) -> str:
+            if not isinstance(policy, Mapping):
+                return "unknown"
+            value = cast(Mapping[str, object], policy).get("credential_heuristic", "enforced")
+            if value == "enforced" or value == "disabled":
+                return cast(str, value)
+            return "unknown"
+
+        repository = "unknown"
+        if repository_privacy_context is not None:
+            try:
+                setup = await self._support(
+                    ControlMethod.PRIVACY_GET_SETUP,
+                    JsonObject({"schema_version": "2.0.0"}),
+                    repository_privacy_context=repository_privacy_context,
+                )
+                grant = setup.get("grant_state")
+                if grant == "missing":
+                    repository = "enforced"
+                elif grant == "granted":
+                    repository = state_of(setup.get("composed_policy"))
+            except Exception:  # noqa: BLE001 - status stays readable; the state is unknown
+                repository = "unknown"
+        try:
+            effective = await self._support(
+                ControlMethod.PRIVACY_GET_EFFECTIVE, JsonObject({"schema_version": "1.0.0"})
+            )
+            machine_default = state_of(effective.get("policy"))
+        except Exception:  # noqa: BLE001 - status stays readable; the state is unknown
+            machine_default = "unknown"
+        return repository, machine_default
 
     async def receipt(
         self,

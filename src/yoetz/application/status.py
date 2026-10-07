@@ -246,6 +246,9 @@ class StatusInternalResult:
     # Service-read ledger authorship of the page's evidence rows at ``subject_frontier``. It feeds
     # the agent-context provenance decision and is deliberately not part of ``as_json``.
     item_authorship: tuple[ProjectionItemAuthorship, ...] = ()
+    # ``(repository, machine_default)`` possible-credential filter state, composed by the service
+    # from the owner's privacy policy (issue #982); ``None`` when not composed.
+    credential_heuristic: tuple[str, str] | None = None
 
     def as_json(self) -> dict[str, JsonValue]:
         # Unset optional non-null leaves (today: obligation ``acceptance_criteria``, structural
@@ -278,6 +281,16 @@ class StatusInternalResult:
             ),
             "closure_readiness": cast(
                 JsonValue, _dump_closed_omitting_optional_nulls(self.closure_readiness)
+            ),
+            **(
+                {}
+                if self.credential_heuristic is None
+                else {
+                    "credential_heuristic": {
+                        "repository": self.credential_heuristic[0],
+                        "machine_default": self.credential_heuristic[1],
+                    }
+                }
             ),
         }
 

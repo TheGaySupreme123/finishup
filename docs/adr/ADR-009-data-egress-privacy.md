@@ -819,32 +819,45 @@ blocked the whole packet with `never_send_detected`. Decisions:
 ## Credential-heuristic opt-out amendment (2026-10-07, issue #982)
 
 Owner decision (2026-10-07, binding): "allow fully removing also externally as a flag the user can
-use (and we will for future tests)". Decisions:
+use (and we will for future tests)". Follow-up owner decisions the same day fixed its scope: the
+opt-out is part of the repository grant, re-enabling is per repository, it reaches the external
+reviewer only, and status shows it before any check. Decisions:
 
 - The privacy policy gains `credential_heuristic`, `enforced` (default) or `disabled`. It is part
   of the durable, versioned owner policy, so it is set, reviewed, recorded and reversed like every
   other policy dimension. A policy without the field means `enforced`. The field is written only
   when `disabled`, so every policy approved before it existed keeps its exact bytes and digest;
   privacy-policy wire 1.2.0 carries it, and 1.0.0/1.1.0 documents that name it are rejected.
-- `disabled` stops every disclosure path (external AI-powered review, local model, agent context)
-  from treating low-confidence assignment matches (`password = ...`, `*_token = ...`) as findings:
-  they are neither replaced, withheld nor counted by classification, minimization, the prepared
-  and rendered-body scans, or resume. The high-confidence class is untouched and always blocks or
+- **External reviewer only.** `disabled` affects only LLM-inference disclosure to an external
+  provider binding: low-confidence assignment matches (`password = ...`, `*_token = ...`) are
+  neither replaced, withheld nor counted by classification, minimization, the prepared and
+  rendered-body scans, or resume of that disclosure. Every local output — agent-context
+  projection, the local model sink, local and trusted human views — keeps the heuristic exactly as
+  when it is enabled. The high-confidence class is untouched everywhere and always blocks or
   redacts: known credential shapes, private-key markers, URI passwords, canaries, and scanner
-  saturation. The setting travels explicitly from the effective policy through the classified
-  context and the approved case to the gateway; there is no global switch.
-- Turning it off is a widening (`global` / `credential_heuristic` in the policy diff). It goes
-  through the ordinary repository-bound proposal and the separately reauthenticated
-  trusted-terminal decision; no MCP tool, hook or agent path can apply it. Turning it back on is a
-  tightening of the installation-wide ceiling that applies immediately. Composition keeps the
-  heuristic unless every composed scope turned it off, so re-enabling the ceiling re-enables it
-  everywhere. The CLI is `yoetz privacy credential-heuristic disable|enable`; desired-state TOML
-  and `privacy propose`/`tighten` carry the same field through the same gates.
-- Visibility: `yoetz privacy show`, `yoetz provider status`, and the terminal interface name the
-  setting when it is off. Every disclosure receipt prepared under it records
-  `secret_scan.credential_heuristic: disabled` (egress-receipt 1.1.0 and the local disclosure
-  receipt; omitted when enforced). Every check whose AI-powered review ran under it carries the
-  standing-limitation gap `semantic_review_credential_heuristic_disabled`, which the MCP status
-  coverage and every receipt rendering show. It is an owner disclosure choice, never agent work,
-  and it weakens neither proof class.
+  saturation. The applied setting travels explicitly from the effective policy through the
+  classified context and the approved case to the gateway; there is no global switch.
+- **Part of the repository grant.** Composition takes the setting from the current repository's
+  own grant: a repository is "off" only where its own grant says off. The installation-wide row
+  keeps a visible default that a new grant is drafted from; it is never a ceiling for this field,
+  and a repository-bound proposal never moves it. Narrower task or request rows can only keep the
+  filter on.
+- Turning it off is a widening (`global` / `credential_heuristic` in the policy diff) that applies
+  only through the separately reauthenticated trusted-terminal decision; no MCP tool, hook or
+  agent path can apply it. `yoetz privacy credential-heuristic disable` proposes it on the current
+  repository's grant; in a repository without a grant it walks the ordinary grant-creation
+  ceremony with the filter off and records the setting in the grant the owner approves. It never
+  creates a grant silently. `enable` is the symmetric reverse: a tightening of the current
+  repository's grant that applies at once and touches no other repository. `--machine-default`
+  changes the installation-wide default the same way (off needs the trusted decision, on applies
+  at once). Desired-state TOML and `privacy propose`/`tighten` carry the same field through the
+  same gates.
+- Visibility: the status result (status-result 1.4.0, additive) carries `credential_heuristic`
+  with the `repository` state and the `machine_default` (`enforced`, `disabled` or `unknown`),
+  shown by MCP `status` and `yoetz status` before any check runs; `yoetz privacy show`,
+  `yoetz provider status` and the terminal interface name it when it is off. Every external
+  disclosure receipt prepared under it records `secret_scan.credential_heuristic: disabled`
+  (egress-receipt 1.1.0; omitted when enforced). Every check whose external AI-powered review ran
+  under it carries the standing-limitation gap `semantic_review_credential_heuristic_disabled`. It
+  is an owner disclosure choice, never agent work, and it weakens neither proof class.
 - The behaviour is service-side and identical on Codex, Claude Code and Cursor.

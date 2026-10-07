@@ -4183,6 +4183,13 @@ class StatusBlockedObligationModel(_ClosedModel):
     decision_event_id: EventIdWire
 
 
+class StatusCredentialHeuristicModel(_ClosedModel):
+    """The possible-credential filter state for the external AI reviewer (issue #982)."""
+
+    repository: Literal["disabled", "enforced", "unknown"]
+    machine_default: Literal["disabled", "enforced", "unknown"]
+
+
 class StatusClosureReadinessModel(_ClosedModel):
     """What currently bounds a completion conclusion, before a check or receipt is spent.
 
@@ -5040,6 +5047,9 @@ class StatusSuccessModel(_ClosedModel):
     import_status: StatusImportStatusModel
     closure_readiness: StatusClosureReadinessModel
     privacy_projection: PrivacyProjectionModel
+    # Owner opt-out state, visible before any check runs (issue #982). Absent when the service
+    # did not compose it (for example a direct in-process application without privacy support).
+    credential_heuristic: StatusCredentialHeuristicModel | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -5828,6 +5838,8 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "blocked_obligations/*/decision_event_id",
         ),
     )
+    # Closed state tokens only (issue #982).
+    + _prefix_leaf_patterns("/credential_heuristic", ("machine_default", "repository"))
 )
 
 _STATUS_ADVICE_STRUCTURAL_POINTERS: Final = (
@@ -6572,7 +6584,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1427:
+    if len(result) != 1429:
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

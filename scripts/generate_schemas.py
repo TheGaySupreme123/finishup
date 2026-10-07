@@ -4270,10 +4270,35 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_status_closure_checklist(definitions)
     _add_status_finding_frontier(definitions)
     _add_review_input_continuation(definitions)
+    _add_status_credential_heuristic(definitions)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz status result {entry.schema_version}"
     return document
+
+
+def _add_status_credential_heuristic(definitions: dict[str, JsonValue]) -> None:
+    """Name the effective possible-credential filter state before any check runs (issue #982).
+
+    Optional and additive: ``repository`` is what the current repository's grant applies to the
+    external AI reviewer, ``machine_default`` what a repository without a grant inherits.
+    ``unknown`` when the service could not read the policy.
+    """
+
+    definitions["credential_heuristic_state"] = {
+        "enum": ["disabled", "enforced", "unknown"],
+        "type": "string",
+    }
+    success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["credential_heuristic"] = {
+        "additionalProperties": False,
+        "properties": {
+            "machine_default": {"$ref": "#/$defs/credential_heuristic_state"},
+            "repository": {"$ref": "#/$defs/credential_heuristic_state"},
+        },
+        "required": ["machine_default", "repository"],
+        "type": "object",
+    }
 
 
 def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:

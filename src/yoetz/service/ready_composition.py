@@ -4812,6 +4812,10 @@ def _privacy_gated_semantic_evaluator(
                 provider = provider if provider is not None else fallback_binding
                 assert provider is not None  # one of the two resolved above
                 operation_max_retries = max_retries
+            # The opt-out reaches only an external reviewer (owner decision, 2026-10-07).
+            credential_heuristic_disabled = (
+                credential_heuristic_disabled and provider.transport == "external"
+            )
             captured_content = ()
             captured_content_scope = None
             captured_content_gaps = ()

@@ -476,6 +476,22 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
     return tuple(lines)
 
 
+_FILTER_WORDS: Final = {"enforced": "on", "disabled": "off", "unknown": "unknown"}
+
+
+def _credential_heuristic_lines(result: StatusSuccessModel) -> tuple[str, ...]:
+    """The possible-credential filter for the external reviewer (issue #982)."""
+
+    state = result.credential_heuristic
+    if state is None:
+        return ()
+    return (
+        "Possible-credential filter (external reviewer): "
+        f"{_FILTER_WORDS[state.repository]} for this repository; "
+        f"installation default {_FILTER_WORDS[state.machine_default]}",
+    )
+
+
 def render_human_status(result: StatusSuccessModel) -> str:
     """Render current structural status without dumping the ledger."""
 
@@ -491,6 +507,7 @@ def render_human_status(result: StatusSuccessModel) -> str:
             f"{_count(result.closure_readiness.receipt_blocking_finding_count)}"
         ),
         *render_closure_readiness_lines(result.closure_readiness),
+        *_credential_heuristic_lines(result),
     ]
     if isinstance(result.page, StatusCompactPageModel):
         for item in result.page.items:

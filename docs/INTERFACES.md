@@ -1247,8 +1247,9 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`);
 - `semantic_review_credential_heuristic_disabled` — the owner's privacy policy had the
   low-confidence credential heuristic turned off (`credential_heuristic: disabled`, issue #982), so
-  values that only look like passwords or tokens were sent as written; high-confidence detectors
-  still applied. Emitted when the review succeeded or its packet was sent. A standing limitation
+  values that only look like passwords or tokens were sent as written to the external reviewer;
+  high-confidence detectors still applied. Emitted when an external review succeeded or its packet
+  was sent; never for a local-model review. A standing limitation
   and owner disclosure choice, never agent work; it weakens neither proof class;
 - `semantic_challenges_rejected` — the reviewer returned challenges and post-validation dropped at
   least one (no cited ref had content in the sent packet — reason `ref_not_carried` —, a citation
@@ -3709,18 +3710,25 @@ after the primary in the Destination group; adding or changing the fallback is a
 removing it a tightening. Intersection keeps a fallback only when both scopes name the
 identical one. The field is introduced in `privacy-policy-1.1.0` as optional and emitted only when
 present, so single-endpoint policy digests are unchanged. `credential_heuristic` (issue #982,
-owner opt-out) is `enforced` (default; absent means enforced) or `disabled`. `disabled` makes every
-disclosure path ignore low-confidence assignment matches — classification, minimization, the
-prepared, rendered-body and resume scans — while high-confidence findings (known credential
-shapes, private-key markers, URI passwords, canaries, scanner saturation) always block or redact.
-The value travels on `ClassifiedContext`, `ApprovedOutboundCase` and
-`ApprovedLocalDisclosureCase` (`PrivacyClassifierPort.scan_exact_bytes(...,
-credential_heuristic=...)`), and every receipt prepared under it records
-`secret_scan.credential_heuristic: "disabled"` (egress-receipt 1.1.0; absent when enforced). The
-policy diff vocabulary gains `("global", "credential_heuristic")`, a flag rendered
-"Possible-credential filter" in the Information disclosed group, ordered right after
-`provider_data_use_evidence`; turning it off is a widening, back on a tightening. Intersection
-keeps `enforced` unless both scopes are `disabled`. The field is written only when `disabled`
+owner opt-out) is `enforced` (default; absent means enforced) or `disabled`. `disabled` reaches only
+external AI-reviewer egress (an LLM-inference candidate with an external provider binding and no
+local sink; `external_review_credential_heuristic`): its classification, minimization and
+prepared, rendered-body and resume scans ignore low-confidence assignment matches. Every local
+output (agent context, local model, local and trusted human views) keeps the heuristic. High-
+confidence findings (known credential shapes, private-key markers, URI passwords, canaries,
+scanner saturation) always block or redact. The applied value travels on `ClassifiedContext` and
+`ApprovedOutboundCase` (`PrivacyClassifierPort.scan_exact_bytes(..., credential_heuristic=...)`),
+and every external receipt prepared under it records `secret_scan.credential_heuristic:
+"disabled"` (egress-receipt 1.1.0; absent when enforced). The policy diff vocabulary gains
+`("global", "credential_heuristic")`, a flag rendered "Possible-credential filter" in the
+Information disclosed group, ordered right after `provider_data_use_evidence`; turning it off is a
+widening, back on a tightening. The setting belongs to the repository grant: composing the
+installation row with a repository row takes the repository row's value, the installation value
+is only the default a new grant is drafted from (a repository-bound proposal never moves it), and
+any narrower composition keeps `enforced` unless both sides are `disabled`. Status-result 1.4.0
+carries the optional `credential_heuristic` object (`repository`, `machine_default`, each
+`enforced`/`disabled`/`unknown`; a repository without a grant reads `enforced`), composed by the
+service on every status. The field is written only when `disabled`
 (privacy-policy wire 1.2.0 minimum; 1.0.0/1.1.0 documents naming it are rejected), so every
 existing policy, meet and receipt digest is unchanged. `PrivacyProfile` governs the
 `llm_inference` row/content rules only; `ReviewContextProfile` can only narrow which case items are

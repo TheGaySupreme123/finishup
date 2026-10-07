@@ -52,6 +52,7 @@ from yoetz.domain.privacy import (
     ReceiptSecretScanStage,
     ReceiptTransformations,
     ReviewSelectionPolicy,
+    external_review_credential_heuristic,
 )
 from yoetz.domain.receipts import (
     SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES,
@@ -508,7 +509,6 @@ def _semantic_local_receipt(
             len(set(minimized.forbidden_findings) | set(minimized.heuristic_findings)),
             not (minimized.forbidden_findings or minimized.heuristic_findings),
             ReceiptSecretScanStage.RENDERED_BODY,
-            credential_heuristic=effective.policy.credential_heuristic,
         ),
         reason,
         1,
@@ -1386,7 +1386,11 @@ class PrivacyCoordinator:
                 redacted_values=redacted_values,
             )
         prepared_findings = _resume_scan_is_clean(
-            self._classifier, proposal.prepared_bytes, effective.policy.credential_heuristic
+            self._classifier,
+            proposal.prepared_bytes,
+            external_review_credential_heuristic(
+                effective.policy, proposal.provider_binding, local_sink=proposal.local_sink
+            ),
         )
         if prepared_findings is None:
             return SemanticEgressBlocked(
@@ -1996,7 +2000,6 @@ class PrivacyCoordinator:
                 proposal.prepared_case_digest,
                 minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
-                credential_heuristic=effective.policy.credential_heuristic,
             )
             if not await self._semantic_dispatch_is_current():
                 return SemanticEgressBlocked(
@@ -2112,7 +2115,7 @@ class PrivacyCoordinator:
             proposal.prepared_case_digest,
             minimized.withheld_item_ids,
             redacted_span_count=minimized.redacted_span_count,
-            credential_heuristic=effective.policy.credential_heuristic,
+            credential_heuristic=external_review_credential_heuristic(effective.policy, binding),
         )
         if not await self._semantic_dispatch_is_current():
             return SemanticEgressBlocked(
@@ -2439,7 +2442,7 @@ class PrivacyCoordinator:
                     if scan_stage is ReceiptSecretScanStage.NOT_RUN
                     else None
                 ),
-                effective.policy.credential_heuristic,
+                external_review_credential_heuristic(effective.policy, destination),
             ),
             reason,
             1,

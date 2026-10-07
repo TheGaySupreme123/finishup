@@ -1710,9 +1710,9 @@ def _effective_credential_heuristic_line(value: JsonValue) -> str | None:
         return None
     return (
         "Possible-credential filter: off. Values that only look like passwords or tokens may be "
-        "sent to AI-powered review as written; known credential shapes, private keys and URL "
-        "passwords are still withheld. Turn it back on with "
-        "'yoetz privacy credential-heuristic enable'."
+        "sent to the external AI reviewer as written; local outputs keep the filter, and known "
+        "credential shapes, private keys and URL passwords are still withheld. Turn it back on "
+        "with 'yoetz privacy credential-heuristic enable'."
     )
 
 
@@ -1828,7 +1828,9 @@ def privacy_setup() -> None:
     _finish(run_async(_run_privacy_setup_command))
 
 
-async def _run_credential_heuristic_command(action: str, json_output: bool) -> int:
+async def _run_credential_heuristic_command(
+    action: str, json_output: bool, machine_default: bool = False
+) -> int:
     from yoetz.cli.privacy_setup import run_credential_heuristic_change
     from yoetz.cli.provider_status import MachineScopeError
     from yoetz.cli.unlock import HumanCeremonyCliError
@@ -1836,7 +1838,7 @@ async def _run_credential_heuristic_command(action: str, json_output: bool) -> i
 
     setting = CredentialHeuristic.DISABLED if action == "disable" else CredentialHeuristic.ENFORCED
     try:
-        report = await run_credential_heuristic_change(setting)
+        report = await run_credential_heuristic_change(setting, machine_default=machine_default)
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
     except MachineScopeError as error:
@@ -1852,16 +1854,11 @@ async def _run_credential_heuristic_command(action: str, json_output: bool) -> i
         return 20
     if report.outcome == "failed":
         typer.echo(f"privacy_credential_heuristic_failed: {report.reason or 'invalid'}", err=True)
-        if report.reason == "repository_privacy_grant_missing":
-            typer.echo(
-                "External review is not granted for this repository; run 'yoetz privacy setup' "
-                "first.",
-                err=True,
-            )
         return 20
     _human_or_json(
         {
             "credential_heuristic": setting.value,
+            "scope": "machine_default" if machine_default else "repository",
             "outcome": report.outcome,
             **({"proposal_id": report.proposal_id} if report.proposal_id is not None else {}),
             **({"reason": report.reason} if report.reason is not None else {}),
@@ -1873,30 +1870,48 @@ async def _run_credential_heuristic_command(action: str, json_output: bool) -> i
 
 privacy_credential_heuristic_app = typer.Typer(
     help=(
-        "Turn the possible-credential filter for AI-powered review off or back on (owner "
-        "opt-out). Known credential shapes, private keys and URL passwords are always withheld."
+        "Turn the possible-credential filter for the external AI reviewer off or back on for "
+        "this repository (owner opt-out). Local outputs always keep it; known credential shapes, "
+        "private keys and URL passwords are always withheld."
     ),
     no_args_is_help=True,
 )
 privacy_app.add_typer(privacy_credential_heuristic_app, name="credential-heuristic")
+_MACHINE_DEFAULT = Annotated[
+    bool,
+    typer.Option(
+        "--machine-default",
+        help="Change the installation-wide default that repositories without a grant inherit.",
+    ),
+]
 
 
 @privacy_credential_heuristic_app.command("disable")
-def privacy_credential_heuristic_disable(json_output: _JSON = False) -> None:
-    """Stop withholding values that only look like passwords or tokens.
+def privacy_credential_heuristic_disable(
+    machine_default: _MACHINE_DEFAULT = False, json_output: _JSON = False
+) -> None:
+    """Stop withholding, from the external reviewer, values that only look like credentials.
 
-    A widening of what may leave this computer: it applies only after the trusted local
-    approval on this terminal.
+    Applies to this repository's privacy grant (or, without one, the grant you create now) only
+    after the trusted local approval on this terminal.
     """
 
-    _finish(run_async(lambda: _run_credential_heuristic_command("disable", json_output)))
+    _finish(
+        run_async(
+            lambda: _run_credential_heuristic_command("disable", json_output, machine_default)
+        )
+    )
 
 
 @privacy_credential_heuristic_app.command("enable")
-def privacy_credential_heuristic_enable(json_output: _JSON = False) -> None:
-    """Withhold values that look like passwords or tokens again (the default; applies now)."""
+def privacy_credential_heuristic_enable(
+    machine_default: _MACHINE_DEFAULT = False, json_output: _JSON = False
+) -> None:
+    """Withhold values that look like credentials again for this repository (applies now)."""
 
-    _finish(run_async(lambda: _run_credential_heuristic_command("enable", json_output)))
+    _finish(
+        run_async(lambda: _run_credential_heuristic_command("enable", json_output, machine_default))
+    )
 
 
 async def _service_call(method: str, json_output: bool) -> int:

@@ -20,10 +20,12 @@ from yoetz.domain.privacy import (
     CredentialHeuristic,
     DataClass,
     DisclosureProvenance,
+    EgressChannel,
     ForbiddenDataKind,
     LocalDisclosureSink,
     PrivacyDecision,
     ProjectionProvenanceContext,
+    external_review_credential_heuristic,
 )
 from yoetz.observability.privacy import (
     heuristic_value_lines,
@@ -489,7 +491,14 @@ class LocalPrivacyEnforcer:
         # The owner policy decides whether the low-confidence assignment heuristic participates
         # at all (issue #982). The setting travels on the classified context, so minimization
         # and every later scan of these bytes apply the same value.
-        credential_heuristic = policy.policy.credential_heuristic
+        # Only external AI-reviewer egress honours the opt-out; local sinks always enforce.
+        credential_heuristic = (
+            external_review_credential_heuristic(
+                policy.policy, candidate.provider_binding, local_sink=candidate.local_sink
+            )
+            if candidate.channel is EgressChannel.LLM_INFERENCE
+            else CredentialHeuristic.ENFORCED
+        )
         heuristic_enforced = credential_heuristic is CredentialHeuristic.ENFORCED
         classified: list[ClassifiedContextItem] = []
         for item in candidate.items:

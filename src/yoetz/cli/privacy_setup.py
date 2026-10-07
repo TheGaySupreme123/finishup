@@ -1363,8 +1363,13 @@ async def run_privacy_setup(
     credential_probe_authorized: bool = False,
     update_checks_override: bool | None = None,
     workspace_locator: Path | None = None,
+    credential_heuristic: CredentialHeuristic | None = None,
 ) -> PrivacySetupReport:
     """Run the trusted questionnaire and apply only an explicitly approved draft.
+
+    ``credential_heuristic`` makes the drafted grant carry that possible-credential filter
+    setting (issue #982): ``yoetz privacy credential-heuristic disable`` in a repository without a
+    grant walks this same grant-creation ceremony instead of creating a grant on its own.
 
     ``update_checks_override`` carries a setup answer into a recommended or named recipe before
     its exact review. ``None`` preserves the recipe default. Custom still owns its section-5
@@ -1387,7 +1392,9 @@ async def run_privacy_setup(
     external, local = _configured_bindings()
     try:
         candidate = _choose_candidate(
-            current,
+            current
+            if credential_heuristic is None
+            else replace(current, credential_heuristic=credential_heuristic),
             external,
             local,
             recipe_hint=recipe_hint,
@@ -1515,44 +1522,125 @@ async def _tighten_machine(candidate: PrivacyPolicy, expected_policy_digest: str
         raise ValueError("privacy_tightening_not_applied")
 
 
+async def _propose_machine(candidate: PrivacyPolicy, expected_policy_digest: str) -> str | None:
+    from yoetz.cli.app import build_service_client
+
+    client = await build_service_client()
+    try:
+        result = await client.privacy_propose_policy(
+            JsonObject(
+                {
+                    "schema_version": "1.0.0",
+                    "expected_policy_digest": expected_policy_digest,
+                    "candidate_policy": encode_privacy_policy_json(candidate),
+                }
+            )
+        )
+    finally:
+        await client.close()
+    proposal_id = result.get("proposal_id")
+    if result.get("outcome") == "decision_required" and type(proposal_id) is str:
+        return proposal_id
+    if result.get("outcome") == "tightening_applied":
+        return None
+    raise ValueError("privacy_setup_proposal_invalid")
+
+
+async def _decided_report(
+    proposal_id: str,
+    candidate: PrivacyPolicy,
+    current: PrivacyPolicy,
+    snapshot: PrivacySetupSnapshot | None,
+) -> PrivacySetupReport:
+    typer.echo("")
+    typer.echo("Final widening decision (trusted local ceremony)")
+    decision = await _decide(proposal_id)
+    status = getattr(decision, "status", None)
+    grant = None if snapshot is None else snapshot.grant_state
+    migration = None if snapshot is None else snapshot.migration_state
+    if status == "committed":
+        return PrivacySetupReport(
+            "configured", candidate.profile.value, proposal_id, None, "granted", migration
+        )
+    return PrivacySetupReport(
+        "cancelled",
+        current.profile.value,
+        proposal_id,
+        "privacy_decision_not_approved" if status != "stale" else "privacy_proposal_stale",
+        grant,
+        migration,
+    )
+
+
+_DISABLE_NOTICE: Final = (
+    "Turning off the possible-credential filter lets values that only look like passwords or "
+    "tokens (for example `password = ...` or `api_token = ...`) be sent to the external AI "
+    "reviewer as written. Local outputs keep the filter, and known credential shapes, private "
+    "keys and URL passwords are always withheld."
+)
+
+
 async def run_credential_heuristic_change(
     setting: CredentialHeuristic,
     *,
+    machine_default: bool = False,
     workspace_locator: Path | None = None,
 ) -> PrivacySetupReport:
-    """Turn the low-confidence credential heuristic off or back on (issue #982 owner opt-out).
+    """Turn the possible-credential filter off or back on (issue #982 owner opt-out).
 
-    Turning it **off** widens what may leave this computer, so it is proposed for this
-    repository and applied only through the separately reauthenticated trusted-terminal
-    decision, exactly like every other widening; an agent can never apply it. Turning it back
-    **on** narrows disclosure: it is a tightening of the installation-wide ceiling, applied
-    immediately, and it re-enables the heuristic for every repository because the effective
-    policy is the meet of the ceiling and the repository grant.
+    The setting belongs to the current repository's grant (owner decision, 2026-10-07): a
+    repository is "off" only where its own grant says off. Turning it **off** widens what the
+    external reviewer may see, so it is proposed for this repository and applies only after the
+    separately reauthenticated trusted-terminal decision; without a grant it walks the ordinary
+    grant-creation ceremony with the filter off, and never creates a grant silently. Turning it
+    back **on** narrows the grant and applies at once. ``machine_default`` changes the
+    installation-wide default that a repository without a grant inherits instead; turning that
+    off is likewise a widening that needs the trusted decision.
     """
 
     if type(setting) is not CredentialHeuristic:
         raise TypeError("privacy_credential_heuristic_invalid")
-    if setting is CredentialHeuristic.ENFORCED:
+    disabling = setting is CredentialHeuristic.DISABLED
+    if disabling and not _interactive_terminal():
+        return PrivacySetupReport("failed", "unknown", reason="local_terminal_required")
+    if machine_default:
         machine = await _machine_effective_policy()
-        if machine.credential_heuristic_enforced:
+        if machine.credential_heuristic is setting:
             return PrivacySetupReport("unchanged", machine.profile.value)
         candidate = credential_heuristic_candidate(machine, setting, now=datetime.now(UTC))
-        await _tighten_machine(candidate, machine.policy_digest)
-        return PrivacySetupReport("configured", candidate.profile.value)
-    if not _interactive_terminal():
-        return PrivacySetupReport("failed", "unknown", reason="local_terminal_required")
+        if not disabling:
+            await _tighten_machine(candidate, machine.policy_digest)
+            return PrivacySetupReport("configured", candidate.profile.value)
+        typer.echo(_DISABLE_NOTICE)
+        typer.echo("This changes the installation-wide default for repositories without a grant.")
+        proposal_id = await _propose_machine(candidate, machine.policy_digest)
+        if proposal_id is None:
+            return PrivacySetupReport("configured", candidate.profile.value)
+        return await _decided_report(proposal_id, candidate, machine, None)
     locator = Path.cwd() if workspace_locator is None else workspace_locator
     snapshot = await get_privacy_setup_snapshot(locator)
     current = snapshot.composed_policy
     if snapshot.grant_state != "granted":
-        # Without a repository grant nothing leaves this computer for this repository, and a
-        # proposal built here would also have to grant the repository. Setup owns that choice.
-        return PrivacySetupReport(
-            "failed",
-            current.profile.value,
-            reason="repository_privacy_grant_missing",
-            grant_state=snapshot.grant_state,
-            migration_state=snapshot.migration_state,
+        if not disabling:
+            # Nothing is granted, so nothing can leave for this repository; a later grant is
+            # drafted from the installation-wide default.
+            return PrivacySetupReport(
+                "unchanged",
+                current.profile.value,
+                reason="repository_privacy_grant_missing",
+                grant_state=snapshot.grant_state,
+                migration_state=snapshot.migration_state,
+            )
+        typer.echo(_DISABLE_NOTICE)
+        typer.echo(
+            "This repository has no privacy grant yet; the filter setting becomes part of the "
+            "grant you review and approve now."
+        )
+        return await run_privacy_setup(
+            recipe_hint="assisted_review",
+            offer_recommended=True,
+            workspace_locator=locator,
+            credential_heuristic=setting,
         )
     if current.credential_heuristic is setting:
         return PrivacySetupReport(
@@ -1562,37 +1650,14 @@ async def run_credential_heuristic_change(
             migration_state=snapshot.migration_state,
         )
     candidate = credential_heuristic_candidate(current, setting, now=datetime.now(UTC))
-    typer.echo(
-        "Turning off the possible-credential filter lets values that only look like passwords or "
-        "tokens (for example `password = ...` or `api_token = ...`) be sent to the reviewer as "
-        "written. Known credential shapes, private keys and URL passwords are always withheld."
-    )
+    if disabling:
+        typer.echo(_DISABLE_NOTICE)
     proposal_id = await _propose(candidate, snapshot.authority_digest, workspace_locator=locator)
     if proposal_id is None:
-        # Never expected for a widening; report what the service did rather than guess.
         return PrivacySetupReport(
             "configured",
             candidate.profile.value,
             grant_state=snapshot.grant_state,
             migration_state=snapshot.migration_state,
         )
-    typer.echo("")
-    typer.echo("Final widening decision (trusted local ceremony)")
-    decision = await _decide(proposal_id)
-    status = getattr(decision, "status", None)
-    if status == "committed":
-        return PrivacySetupReport(
-            "configured",
-            candidate.profile.value,
-            proposal_id,
-            grant_state=snapshot.grant_state,
-            migration_state=snapshot.migration_state,
-        )
-    return PrivacySetupReport(
-        "cancelled",
-        current.profile.value,
-        proposal_id,
-        "privacy_decision_not_approved" if status != "stale" else "privacy_proposal_stale",
-        snapshot.grant_state,
-        snapshot.migration_state,
-    )
+    return await _decided_report(proposal_id, candidate, current, snapshot)

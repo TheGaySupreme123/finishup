@@ -61,6 +61,7 @@ from yoetz.domain.privacy import (
     PrivacyOutcome,
     PrivacyPolicy,
     PrivacyProfile,
+    ProviderBinding,
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
@@ -68,6 +69,7 @@ from yoetz.domain.privacy import (
     ReceiptTransformations,
     ReviewContextProfile,
     ReviewSelectionPolicy,
+    external_review_credential_heuristic,
 )
 from yoetz.domain.receipts import SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP
 from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
@@ -231,29 +233,50 @@ def test_disabling_is_a_widening_and_reenabling_is_a_tightening() -> None:
     assert is_privacy_tightening(disabled, enforced)
 
 
-def test_meet_keeps_the_heuristic_unless_every_scope_turned_it_off() -> None:
-    enforced = _policy()
-    disabled = _policy(CredentialHeuristic.DISABLED)
-    assert enforced.meet(disabled).credential_heuristic is CredentialHeuristic.ENFORCED
-    assert disabled.meet(enforced).credential_heuristic is CredentialHeuristic.ENFORCED
-    both = disabled.meet(disabled)
-    assert both.credential_heuristic is CredentialHeuristic.DISABLED
-    # The meet digest of an all-default composition is unchanged by the field's existence.
-    assert enforced.meet(enforced).policy_digest != both.policy_digest
+def _workspace() -> AuthorizationScope:
+    return AuthorizationScope(AuthorizationScopeKind.WORKSPACE, _INSTALLATION, _WORKSPACE)
+
+
+def test_the_repository_grant_decides_and_the_machine_value_is_only_a_default() -> None:
+    """Owner decision 2026-10-07: a repository is off only where its own grant says off."""
+
+    off, on = CredentialHeuristic.DISABLED, CredentialHeuristic.ENFORCED
+    machine_on, machine_off = _policy(on), _policy(off)
+    grant_on, grant_off = _policy(on, scope=_workspace()), _policy(off, scope=_workspace())
+    assert machine_on.meet(grant_off).credential_heuristic is off
+    assert machine_off.meet(grant_on).credential_heuristic is on
+    assert machine_off.meet(grant_off).credential_heuristic is off
+    assert grant_off.meet(machine_on).credential_heuristic is off
+    # Narrower rows (task, request) can only keep the filter on.
+    task_on = _policy(on, scope=_task_scope())
+    assert machine_on.meet(grant_off).meet(task_on).credential_heuristic is on
+    assert machine_off.meet(machine_on).credential_heuristic is on
+    # An all-default composition keeps its pinned digest.
+    assert machine_on.meet(machine_on).policy_digest != machine_off.meet(machine_off).policy_digest
 
 
 # -- enforcement -----------------------------------------------------------------------------------
 
 
-def _candidate(*payloads: bytes) -> CandidateContext:
+_EXTERNAL = ProviderBinding("openai", "gpt-5", "openai-responses", "1.0.0", "external")
+_LOCAL_MODEL = ProviderBinding("ollama", "qwen", "local-model", "1.0.0", "local_af_unix")
+
+
+def _candidate(
+    *payloads: bytes,
+    sink: LocalDisclosureSink | None = None,
+    binding: ProviderBinding | None = _EXTERNAL,
+) -> CandidateContext:
+    """An external AI-reviewer disclosure by default; ``sink`` makes it a local output."""
+
     return CandidateContext(
         request_id=_REQUEST,
-        channel=None,
-        local_sink=LocalDisclosureSink.LOCAL_HUMAN_VIEW,
+        channel=None if sink is not None else EgressChannel.LLM_INFERENCE,
+        local_sink=sink,
         purpose="privacy-test",
         scope=_task_scope(),
         subject_digest=_DIGEST,
-        provider_binding=None,
+        provider_binding=None if sink is not None else binding,
         items=tuple(
             CandidateContextItem(
                 f"item-{index}",
@@ -301,6 +324,49 @@ def test_disabled_heuristic_sends_the_value_and_reports_no_heuristic_finding() -
     assert minimized.withheld_item_ids == ()
     assert minimized.redacted_span_count == 0
     assert minimized.included_item_ids == ("item-0",)
+
+
+@pytest.mark.parametrize(
+    "sink",
+    (
+        LocalDisclosureSink.AGENT_CONTEXT,
+        LocalDisclosureSink.LOCAL_HUMAN_VIEW,
+        LocalDisclosureSink.TRUSTED_HUMAN_CONTROL,
+    ),
+)
+def test_local_outputs_keep_the_heuristic_when_the_owner_disabled_it(
+    sink: LocalDisclosureSink,
+) -> None:
+    """Owner decision 2026-10-07: the opt-out reaches only the external AI reviewer."""
+
+    classified, minimized = _minimize(
+        _candidate(_HEURISTIC, sink=sink), CredentialHeuristic.DISABLED
+    )
+    assert classified.credential_heuristic is CredentialHeuristic.ENFORCED
+    assert classified.items[0].heuristic_findings == (ForbiddenDataKind.API_CREDENTIAL,)
+    assert minimized.redacted_span_count == 1
+    assert b"bounded-but-suspicious-value-9" not in minimized.prepared_bytes
+
+
+def test_local_model_review_keeps_the_heuristic_when_the_owner_disabled_it() -> None:
+    classified, minimized = _minimize(
+        _candidate(_HEURISTIC, binding=_LOCAL_MODEL), CredentialHeuristic.DISABLED
+    )
+    assert classified.credential_heuristic is CredentialHeuristic.ENFORCED
+    assert classified.items[0].heuristic_findings == (ForbiddenDataKind.API_CREDENTIAL,)
+    assert b"bounded-but-suspicious-value-9" not in minimized.prepared_bytes
+
+
+def test_the_disclosure_setting_follows_only_external_review() -> None:
+    disabled = _policy(CredentialHeuristic.DISABLED)
+    off = CredentialHeuristic.DISABLED
+    on = CredentialHeuristic.ENFORCED
+    assert external_review_credential_heuristic(disabled, _EXTERNAL) is off
+    assert external_review_credential_heuristic(disabled, _LOCAL_MODEL) is on
+    assert external_review_credential_heuristic(disabled, None) is on
+    sink = LocalDisclosureSink.AGENT_CONTEXT
+    assert external_review_credential_heuristic(disabled, _EXTERNAL, local_sink=sink) is on
+    assert external_review_credential_heuristic(_policy(), _EXTERNAL) is on
 
 
 @pytest.mark.parametrize("concrete", (_CONCRETE, _PRIVATE_KEY))

@@ -14,16 +14,20 @@ reverse-chronological released versions.
   values and it should verify the repair itself and respond `self_verified` rather than reshape its
   work (#982).
 
-- You can turn off the possible-credential filter for AI-powered review with
-  `yoetz privacy credential-heuristic disable`, and back on with `enable` (#982). Off, values that
-  only look like passwords or tokens are sent as written instead of as
-  `[withheld-by-yoetz:possible-credential]`; known credential shapes, private keys, URL passwords
-  and an unfinished scan still block or redact. Turning it off is a policy loosening that applies
-  only after the trusted approval on your terminal (no agent can apply it); turning it back on
-  applies at once. `privacy show`, `provider status`, `/privacy`, every privacy receipt
-  (`secret_scan.credential_heuristic`) and every check whose review ran under it
-  (`semantic_review_credential_heuristic_disabled`) say so. The field is part of the privacy
-  policy, written only when off, so existing policies keep their exact bytes and digests.
+- You can turn off the possible-credential filter for the external AI reviewer in one repository
+  with `yoetz privacy credential-heuristic disable`, and back on with `enable` (#982). Off, values
+  that only look like passwords or tokens are sent to the external reviewer as written instead of
+  as `[withheld-by-yoetz:possible-credential]`; local outputs (agent context, local model) keep the
+  filter, and known credential shapes, private keys, URL passwords and an unfinished scan still
+  block or redact. The setting is part of the repository's privacy grant: turning it off applies
+  only after the trusted approval on your terminal (in a repository without a grant, it walks the
+  normal grant approval), and no agent can apply it; turning it back on applies at once to that
+  repository. `--machine-default` changes the installation-wide default new grants start from.
+  `yoetz status` and MCP `status` show the repository state and the default before any check;
+  `privacy show`, `provider status`, `/privacy`, every external privacy receipt
+  (`secret_scan.credential_heuristic`) and every check whose external review ran under it
+  (`semantic_review_credential_heuristic_disabled`) say so. Existing policies keep their exact
+  bytes and digests.
 
 - Local checks now report facts about the task's own work, not only about the ledger (#977,
   ADR-033). Closure readiness, check results and receipts name a planned verification (an

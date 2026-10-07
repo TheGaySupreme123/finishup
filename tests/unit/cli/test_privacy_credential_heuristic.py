@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -136,24 +137,48 @@ def test_disable_declined_at_the_ceremony_changes_nothing(
     assert report.reason == "privacy_decision_not_approved"
 
 
-def test_disable_needs_a_local_terminal_and_a_repository_grant(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_disable_needs_a_local_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(setup, "_interactive_terminal", lambda: False)
     report = asyncio.run(setup.run_credential_heuristic_change(CredentialHeuristic.DISABLED))
     assert (report.outcome, report.reason) == ("failed", "local_terminal_required")
+
+
+def test_disable_without_a_grant_walks_the_grant_creation_ceremony(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner decision 2026-10-07: the opt-out becomes part of the grant the owner approves."""
+
+    calls: list[dict[str, object]] = []
 
     async def snapshot(_locator: object = None) -> setup.PrivacySetupSnapshot:
         return _snapshot(_policy(), grant="missing")
 
     async def never(*_: object, **__: object) -> str:
-        raise AssertionError("must not propose without a repository grant")
+        raise AssertionError("must not propose outside the grant-creation ceremony")
+
+    async def run_setup(**kwargs: object) -> setup.PrivacySetupReport:
+        calls.append(kwargs)
+        return setup.PrivacySetupReport("configured", "minimal_external", grant_state="granted")
 
     monkeypatch.setattr(setup, "_interactive_terminal", lambda: True)
     monkeypatch.setattr(setup, "get_privacy_setup_snapshot", snapshot)
     monkeypatch.setattr(setup, "_propose", never)
+    monkeypatch.setattr(setup, "run_privacy_setup", run_setup)
     report = asyncio.run(setup.run_credential_heuristic_change(CredentialHeuristic.DISABLED))
-    assert (report.outcome, report.reason) == ("failed", "repository_privacy_grant_missing")
+    assert report.outcome == "configured"
+    assert len(calls) == 1
+    assert calls[0]["credential_heuristic"] is CredentialHeuristic.DISABLED
+
+
+def test_setup_drafts_the_grant_with_the_requested_filter_setting() -> None:
+    current = _policy()
+    answers = setup.recipe_answers("private", current, None)
+    candidate = setup.build_candidate_policy(
+        replace(current, credential_heuristic=CredentialHeuristic.DISABLED),
+        answers,
+        now=_NOW,
+    )
+    assert candidate.credential_heuristic is CredentialHeuristic.DISABLED
 
 
 def test_disable_when_already_off_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -166,45 +191,100 @@ def test_disable_when_already_off_is_unchanged(monkeypatch: pytest.MonkeyPatch) 
     assert report.outcome == "unchanged"
 
 
-def test_enable_is_a_direct_machine_tightening_without_a_terminal(
+def test_enable_restores_the_filter_for_this_repository_without_a_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner decision 2026-10-07: enable is per repository, the reverse of disable."""
+
+    proposed: list[PrivacyPolicy] = []
+
+    async def snapshot(_locator: object = None) -> setup.PrivacySetupSnapshot:
+        return _snapshot(_policy(CredentialHeuristic.DISABLED))
+
+    async def propose(candidate: PrivacyPolicy, digest: str, **_: object) -> None:
+        assert digest == _AUTHORITY
+        proposed.append(candidate)
+        return None  # the service applied it as a tightening of this grant
+
+    async def no_machine(*_: object, **__: object) -> None:
+        raise AssertionError("a repository enable never touches the installation default")
+
+    monkeypatch.setattr(setup, "_interactive_terminal", lambda: False)
+    monkeypatch.setattr(setup, "get_privacy_setup_snapshot", snapshot)
+    monkeypatch.setattr(setup, "_propose", propose)
+    monkeypatch.setattr(setup, "_tighten_machine", no_machine)
+    report = asyncio.run(setup.run_credential_heuristic_change(CredentialHeuristic.ENFORCED))
+    assert report.outcome == "configured"
+    assert [policy.credential_heuristic for policy in proposed] == [CredentialHeuristic.ENFORCED]
+    assert not any(
+        change.widens
+        for change in privacy_policy_changes(_policy(CredentialHeuristic.DISABLED), proposed[0])
+    )
+
+
+def test_enable_without_a_grant_has_nothing_to_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def snapshot(_locator: object = None) -> setup.PrivacySetupSnapshot:
+        return _snapshot(_policy(), grant="missing")
+
+    monkeypatch.setattr(setup, "get_privacy_setup_snapshot", snapshot)
+    report = asyncio.run(setup.run_credential_heuristic_change(CredentialHeuristic.ENFORCED))
+    assert (report.outcome, report.reason) == ("unchanged", "repository_privacy_grant_missing")
+
+
+def test_machine_default_enable_tightens_and_disable_needs_the_ceremony(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tightened: list[tuple[PrivacyPolicy, str]] = []
+    proposed: list[PrivacyPolicy] = []
+    machine = {"policy": _policy(CredentialHeuristic.DISABLED)}
 
-    async def machine() -> PrivacyPolicy:
-        return _policy(CredentialHeuristic.DISABLED)
+    async def effective() -> PrivacyPolicy:
+        return machine["policy"]
 
     async def tighten(candidate: PrivacyPolicy, expected: str) -> None:
         tightened.append((candidate, expected))
 
+    async def propose(candidate: PrivacyPolicy, expected: str) -> str:
+        assert expected == _DIGEST
+        proposed.append(candidate)
+        return "ppr_10000000-0000-4000-8000-000000000009"
+
+    async def decide(_proposal_id: str) -> object:
+        return SimpleNamespace(status="committed")
+
     monkeypatch.setattr(setup, "_interactive_terminal", lambda: False)
-    monkeypatch.setattr(setup, "_machine_effective_policy", machine)
+    monkeypatch.setattr(setup, "_machine_effective_policy", effective)
     monkeypatch.setattr(setup, "_tighten_machine", tighten)
-    report = asyncio.run(setup.run_credential_heuristic_change(CredentialHeuristic.ENFORCED))
-    assert report.outcome == "configured"
-    assert len(tightened) == 1
-    candidate, expected = tightened[0]
-    assert expected == _DIGEST
-    assert candidate.credential_heuristic is CredentialHeuristic.ENFORCED
-    assert not any(
-        change.widens
-        for change in privacy_policy_changes(_policy(CredentialHeuristic.DISABLED), candidate)
+    monkeypatch.setattr(setup, "_propose_machine", propose)
+    monkeypatch.setattr(setup, "_decide", decide)
+    enabled = asyncio.run(
+        setup.run_credential_heuristic_change(CredentialHeuristic.ENFORCED, machine_default=True)
     )
+    assert enabled.outcome == "configured"
+    assert tightened[0][0].credential_heuristic is CredentialHeuristic.ENFORCED
 
-    async def already_on() -> PrivacyPolicy:
-        return _policy()
-
-    monkeypatch.setattr(setup, "_machine_effective_policy", already_on)
-    report = asyncio.run(setup.run_credential_heuristic_change(CredentialHeuristic.ENFORCED))
-    assert report.outcome == "unchanged"
-    assert len(tightened) == 1
+    machine["policy"] = _policy()
+    refused = asyncio.run(
+        setup.run_credential_heuristic_change(CredentialHeuristic.DISABLED, machine_default=True)
+    )
+    assert refused.reason == "local_terminal_required"
+    monkeypatch.setattr(setup, "_interactive_terminal", lambda: True)
+    disabled = asyncio.run(
+        setup.run_credential_heuristic_change(CredentialHeuristic.DISABLED, machine_default=True)
+    )
+    assert disabled.outcome == "configured"
+    assert [policy.credential_heuristic for policy in proposed] == [CredentialHeuristic.DISABLED]
 
 
 def test_cli_command_is_registered_with_both_directions(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[CredentialHeuristic] = []
+    scopes: list[bool] = []
 
-    async def change(setting: CredentialHeuristic, **_: object) -> setup.PrivacySetupReport:
+    async def change(
+        setting: CredentialHeuristic, *, machine_default: bool = False, **_: object
+    ) -> setup.PrivacySetupReport:
         seen.append(setting)
+        scopes.append(machine_default)
         return setup.PrivacySetupReport("configured", "local_only")
 
     monkeypatch.setattr(setup, "run_credential_heuristic_change", change)
@@ -213,6 +293,11 @@ def test_cli_command_is_registered_with_both_directions(monkeypatch: pytest.Monk
         result = runner.invoke(app, ["privacy", "credential-heuristic", action, "--json"])
         assert result.exit_code == 0, result.output
     assert seen == [CredentialHeuristic.DISABLED, CredentialHeuristic.ENFORCED]
+    result = runner.invoke(
+        app, ["privacy", "credential-heuristic", "enable", "--machine-default", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert scopes == [False, False, True]
     rejected = runner.invoke(app, ["privacy", "credential-heuristic", "off"])
     assert rejected.exit_code != 0
 

@@ -456,3 +456,45 @@ def test_v1_workspace_tightening_requires_trusted_repository_context() -> None:
                 _app(_policy()), TightenPrivacyPolicyRequest(_DIGEST, workspace_candidate)
             )
         )
+
+
+def test_heuristic_opt_out_is_proposed_on_the_grant_and_never_moves_the_machine_default() -> None:
+    """Owner decision 2026-10-07 (#982): the opt-out belongs to the repository grant."""
+
+    from dataclasses import replace as _replace
+
+    from yoetz.domain.privacy import CredentialHeuristic
+
+    state = MemoryPrivacyCatalogState()
+    store = MemoryPrivacyPolicyStore(state, _Clock())
+    repository_scope = AuthorizationScope(
+        AuthorizationScopeKind.WORKSPACE, _INSTALLATION, _REPOSITORY
+    )
+    app = PrivacyPolicyApplication(
+        store,
+        _Audit(),  # type: ignore[arg-type]
+        _Gateway([]),  # type: ignore[arg-type]
+        _Clock(),
+        _Ids(),
+        _scope(),
+    )
+    candidate = _replace(_external_policy(), credential_heuristic=CredentialHeuristic.DISABLED)
+
+    async def run() -> object:
+        await store.seed_if_absent(_external_policy())
+        authority = await store.repository_authority(repository_scope)
+        return await privacy_propose_policy(
+            app,
+            ProposePrivacyPolicyRequest(
+                authority.effective.effective_digest,
+                candidate,
+                authority.authority_digest,
+                repository_scope,
+            ),
+        )
+
+    result = asyncio.run(run())
+    assert type(result) is PolicyDecisionRequired
+    members = result.prepared.proposal.members
+    assert [member.scope.kind for member in members] == [AuthorizationScopeKind.WORKSPACE]
+    assert members[0].candidate_policy.credential_heuristic is CredentialHeuristic.DISABLED

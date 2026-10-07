@@ -103,28 +103,39 @@ your machine.
 
 ### Turning the possible-credential filter off
 
-The replacement of text that only *looks* like a credential is a filter you can turn off, for
-example when it keeps hiding values your review needs and you know they are not secrets:
+The replacement of text that only *looks* like a credential is a filter you can turn off for the
+external AI reviewer, for example when it keeps hiding values your review needs and you know they
+are not secrets. The setting belongs to the current repository:
 
 ```text
-yoetz privacy credential-heuristic disable   # stop replacing values that only look like credentials
-yoetz privacy credential-heuristic enable    # turn the filter back on (the default)
+yoetz privacy credential-heuristic disable   # this repository: stop replacing look-alike values
+yoetz privacy credential-heuristic enable    # this repository: turn the filter back on (default)
+yoetz privacy credential-heuristic disable --machine-default   # default for new repository grants
+yoetz privacy credential-heuristic enable --machine-default    # restore that default
 ```
 
 Turning it off means values assigned to names such as `password`, `secret`, `api_key` or
-`*_token` are sent to AI-powered review as written, instead of as
-`[withheld-by-yoetz:possible-credential]`. It never affects the never-send set: a known
-credential shape, a private key, a password inside a URL, or a scanner that cannot finish still
-blocks or redacts exactly as before. Because more may leave your machine, turning it off is a
-loosening of your policy: it is proposed for the current repository and applies only after you
-approve it in the trusted approval on this terminal, which shows it as **Possible-credential
-filter: On → Off**. No agent can turn it off for you. Turning it back on is a tightening and
-applies at once, for every repository.
+`*_token` are sent to the external AI reviewer as written, instead of as
+`[withheld-by-yoetz:possible-credential]`. Everything that stays on your machine keeps the
+filter: what Yoetz shows your agent and what a local model reviews are filtered exactly as before.
+It never affects the never-send set: a known credential shape, a private key, a password inside a
+URL, or a scanner that cannot finish still blocks or redacts exactly as before.
 
-While it is off, `yoetz privacy show`, `yoetz provider status` and `/privacy` say so, every
-privacy receipt for a disclosure made under it records it, and every check whose AI-powered review
-ran under it reports `semantic_review_credential_heuristic_disabled`. That code describes your
-choice, not a problem with the agent's work. The setting is part of your privacy policy, so
+Because more may leave your machine, turning it off is a loosening of this repository's privacy
+grant: it applies only after you approve it in the trusted approval on this terminal, which shows
+it as **Possible-credential filter: On → Off**. If the repository has no grant yet, the command
+walks you through the ordinary grant approval with the filter off, so the setting becomes part of
+the grant you approve; nothing is granted without you. No agent can turn it off for you. Turning
+it back on is a tightening of the same grant and applies at once, to this repository only. The
+installation-wide default (`--machine-default`) is what a new repository grant starts from;
+changing it does not change a repository that already has a grant.
+
+`yoetz status` and the agent's status show, before any check runs, whether the filter is on for
+this repository and what the installation default is. While it is off, `yoetz privacy show`,
+`yoetz provider status` and `/privacy` also say so, every privacy receipt for an external review
+made under it records it, and every check whose external AI-powered review ran under it reports
+`semantic_review_credential_heuristic_disabled`. That code describes your choice, not a problem
+with the agent's work. The setting is part of your privacy policy, so
 `yoetz privacy export-desired` and `apply-desired` carry it too, through the same approval.
 
 ## Commands
@@ -138,7 +149,7 @@ yoetz privacy propose           # propose a change for decision
 yoetz privacy decide-policy     # approve or deny one exact pending policy proposal on the terminal
 yoetz privacy export-desired    # effective nonsecret policy as desired-state TOML (never secrets)
 yoetz privacy apply-desired     # apply desired-state TOML; tighten may proceed, widen never silent
-yoetz privacy credential-heuristic disable|enable  # possible-credential filter off / back on
+yoetz privacy credential-heuristic disable|enable  # external reviewer's possible-credential filter, per repository
 yoetz privacy pending           # list disclosure decisions waiting for you
 yoetz privacy decide-disclosure # decide one exact pending disclosure by id (see below)
 yoetz privacy receipts          # inspect bounded structural egress receipts

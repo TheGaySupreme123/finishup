@@ -1242,6 +1242,20 @@ def _compact_test_edit_clause(source: Mapping[str, JsonValue], view: str) -> str
     )
 
 
+def _credential_heuristic_clause(source: Mapping[str, JsonValue]) -> str:
+    """Say when the owner turned the possible-credential filter off here (issue #982).
+
+    Silent for the default, so ordinary summaries are unchanged.
+    """
+
+    state = source.get("credential_heuristic")
+    if not isinstance(state, Mapping):
+        return ""
+    if cast(Mapping[str, JsonValue], state).get("repository") != "disabled":
+        return ""
+    return "possible-credential filter: off for this repository (owner choice); "
+
+
 def summary_for_status(envelope: object) -> str:
     source = _mapping(envelope)
     view = _safe_token(source.get("view"))
@@ -1266,6 +1280,7 @@ def summary_for_status(envelope: object) -> str:
         f"open obligations: {obligations}; "
     )
     prefix = _with_room(prefix, _compact_test_edit_clause(source, view))
+    prefix = _with_room(prefix, _credential_heuristic_clause(source))
     if view == "evidence":
         prefix += _evidence_channel_clause(source)
     if view == "operation":
