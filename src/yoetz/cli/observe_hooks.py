@@ -58,6 +58,8 @@ from yoetz.cli.closure_gate import (
     read_closure_gate,
     record_closure_gate_delivered,
     reset_closure_gate_turn,
+    set_standing_advice_withheld,
+    standing_advice_withheld,
 )
 from yoetz.cli.hook_diagnostics import (
     record_hook_diagnostic,
@@ -177,17 +179,20 @@ SUPPORTED_HOOK_EVENTS: Final = frozenset(
         "SubagentStop",
     }
 )
-# Events that can deliver advice on a Codex-valid output contract. SessionEnd
-# is excluded: the host discards its stdout, so a peek/commit there would
-# consume advice the agent never sees (#222).
+# Events that have a Codex-valid model-visible output contract. SessionEnd is
+# excluded: the host discards its stdout, so a peek/commit there would consume
+# advice the agent never sees (#222). Stop stays listed because its handler is
+# synchronous and carries the closure gate, but ordinary advice is never
+# delivered at Stop (#985): see `delivery_eligible` in `handle_observe`.
 ADVICE_SAFE_EVENTS: Final = frozenset({"PostToolUse", "SessionStart", "Stop"})
 # Standing machine conditions (connect_provider and kin) reach the agent at
-# session boundaries only. PostToolUse is deliberately excluded: it is the
+# SessionStart. Ordinary PostToolUse is deliberately excluded: it is the
 # per-tool-call channel that produced 29 byte-identical injections in one
-# session (#241). Codex fires Stop per assistant turn, so the achievable bound
-# is once per turn and only when a different advice text intervened. SessionEnd
+# session (#241). Stop no longer delivers advice (#985); instead, a Stop that
+# finds standing advice pending marks it, and only the first PostToolUse after
+# that Stop may carry it, which keeps the old once-per-turn bound. SessionEnd
 # is teardown-only and cannot continue the agent.
-STANDING_ADVICE_CADENCE_EVENTS: Final = frozenset({"SessionStart", "Stop"})
+STANDING_ADVICE_CADENCE_EVENTS: Final = frozenset({"SessionStart"})
 _MAX_ADVICE_CONTEXT: Final = 1_200
 _MAX_CONTENT_CHUNK: Final = 256 * 1024
 # Ingest rejections that are recoverable: keep the outbox entry pending for a
@@ -3642,10 +3647,7 @@ def _decide_closure_gate(
     reason = "closure_gate_unavailable"
     gate: ClosureGate | None = None
     try:
-        if not active_stop:
-            # A Stop the host did not continue starts a new turn for the per-turn cap.
-            reset_closure_gate_turn(mapping.yoetz_session_id, _state=_state)
-        elif (
+        if active_stop and (
             closure_gate_turn_blocks(mapping.yoetz_session_id, _state=_state)
             >= MAX_GATE_BLOCKS_PER_TURN
         ):
@@ -3715,6 +3717,46 @@ def _decide_closure_gate(
         if reason and not active_stop:
             with contextlib.suppress(Exception):
                 record_hook_diagnostic(reason, "Stop", _state=_state)
+
+
+def _standing_advice_carry(
+    store: LocalObservationStore,
+    *,
+    event: str,
+    native_host: bool,
+    stop_note: bool,
+    delivery_eligible: bool,
+    workspace_commitment: str,
+    yoetz_session_id: str | None,
+    session_commitment: str,
+    _state: Path | None,
+) -> bool:
+    """Bridge standing advice a Stop withheld to the next PostToolUse (#985). Never raises.
+
+    At a Codex or Claude Code Stop that finds standing advice pending, mark the session; the
+    first later advice-eligible PostToolUse may then carry standing advice (returns True). The
+    caller clears the mark once that advice is delivered or nothing is pending. Cursor never
+    delivered advice at stop, so its cadence is unchanged.
+    """
+
+    if not native_host:
+        return False
+    try:
+        if event == "Stop" and stop_note:
+            pending = store.peek_advice_for_delivery(
+                workspace_commitment,
+                yoetz_session_id=yoetz_session_id,
+                allow_standing=True,
+                session_commitment=session_commitment,
+            )
+            if pending is not None:
+                set_standing_advice_withheld(session_commitment, True, _state=_state)
+            return False
+        if event == "PostToolUse" and delivery_eligible:
+            return standing_advice_withheld(session_commitment, _state=_state)
+    except Exception:
+        return False
+    return False
 
 
 def handle_observe(
@@ -5128,6 +5170,10 @@ def handle_observe(
         # blocker published since the last gate is re-asked once, within the per-turn cap
         # (#985), and anything else records the loop guard.
         stop_already_active = payload.get("stop_hook_active") is True
+        if resolved_event == "Stop" and not stop_already_active and mapping is not None:
+            # A Stop the host did not continue starts a new turn for the gate's per-turn cap,
+            # whether or not the gate is evaluated below (#985). Never raises.
+            reset_closure_gate_turn(mapping.yoetz_session_id, _state=_state)
         if (
             resolved_event == "Stop"
             and not child_attribution_gap
@@ -5187,6 +5233,20 @@ def handle_observe(
                 )
             )
         )
+        # Codex and Claude Code: standing advice a Stop withheld rides the first later
+        # PostToolUse instead of waiting for the next SessionStart (#985). Cursor never
+        # delivered advice at stop, so its cadence is unchanged.
+        standing_carry = _standing_advice_carry(
+            store,
+            event=resolved_event,
+            native_host=source is not ObservationSource.CURSOR_HOOK,
+            stop_note=(not child_attribution_gap and closure_gate is None and not skip_advice_loop),
+            delivery_eligible=delivery_eligible,
+            workspace_commitment=workspace_commitment,
+            yoetz_session_id=None if mapping is None else mapping.yoetz_session_id,
+            session_commitment=session_commitment,
+            _state=_state,
+        )
         delivery_gate = (
             store.advice_delivery_lease(workspace_commitment)
             if delivery_eligible
@@ -5204,9 +5264,13 @@ def handle_observe(
                 delivery = store.peek_advice_for_delivery(
                     workspace_commitment,
                     yoetz_session_id=delivery_session_id,
-                    allow_standing=resolved_event in STANDING_ADVICE_CADENCE_EVENTS,
+                    allow_standing=(
+                        resolved_event in STANDING_ADVICE_CADENCE_EVENTS or standing_carry
+                    ),
                     session_commitment=session_commitment,
                 )
+                if delivery is None and standing_carry:
+                    set_standing_advice_withheld(session_commitment, False, _state=_state)
                 if delivery is not None:
                     additional = " ".join(part for part in (additional, delivery.text) if part)[
                         :_MAX_ADVICE_CONTEXT
@@ -5295,6 +5359,8 @@ def handle_observe(
                         yoetz_session_id=delivery_session_id,
                         session_commitment=session_commitment,
                     )
+                    if standing_carry or resolved_event == "SessionStart":
+                        set_standing_advice_withheld(session_commitment, False, _state=_state)
         # Advice selection, the lease, the stdout write itself and the delivery
         # commits sit past the 'drain' window; a blocked host pipe or a
         # contended commit was previously invisible (#310/#311).

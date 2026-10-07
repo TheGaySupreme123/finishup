@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from yoetz.cli import closure_gate as gate_module
 from yoetz.cli.closure_gate import closure_gate_from_readiness
 
 _DIGEST = "sha256:" + "e" * 64
@@ -133,14 +134,18 @@ def test_findings_only_gate_pushes_repair_and_self_verification(
 
 
 @pytest.mark.parametrize(("trial", "frontier", "remaining"), _WITH_OBLIGATIONS)
-def test_open_obligations_keep_the_blocker_sentence_and_its_confirmation(
+def test_open_obligations_keep_the_blocker_sentence_but_never_the_confirmation(
     trial: str, frontier: str, remaining: str
 ) -> None:
     text = _text(frontier, remaining)
     assert f"Remaining: {remaining}." in text, trial
     assert "yoetz-blocker:<authority|consent|credential|dependency_unavailable>" in text
     assert "Data the task says is recoverable is not such a blocker." in text
-    assert "confirm by publishing the same line again" in text
+    assert "Yoetz will ask you about it once." in text
+    # How to confirm a blocker is told only after the challenge (the re-check): publishing the
+    # line twice up front must never skip it (#985).
+    assert "same yoetz-blocker line again" not in text
+    assert "same line again" not in text
     assert "A Yoetz limit is never a `yoetz-blocker`" in text
     if "receipt-blocking" in remaining:
         assert "`self_verified`" in text
@@ -200,3 +205,54 @@ def test_every_item_and_a_blocker_recheck_fit_the_host_bound() -> None:
     assert gate is not None
     # Every host clips at 2,000 characters; the gate must never be clipped.
     assert len(gate.text) <= 2000, len(gate.text)
+
+
+def test_the_blocker_offer_never_carries_the_confirm_instruction() -> None:
+    offer = gate_module._BLOCKER_OFFER_TEXT  # pyright: ignore[reportPrivateUsage]
+    assert "again" not in offer
+    assert "confirm" not in offer
+
+
+def _worst_case(*, rows: int, pending: bool) -> Any:
+    return closure_gate_from_readiness(
+        SimpleNamespace(
+            state="action_required",
+            agent_actionable=(
+                "obligations_open",
+                "obligation_blocker_unconfirmed",
+                "receipt_findings_unresolved",
+                "closing_review_required",
+                "planned_verification_failed",
+                "planned_verification_not_observed",
+                "planned_verification_stale",
+                "requested_output_git_ignored",
+            ),
+            open_obligation_count="99",
+            receipt_blocking_finding_count="99",
+            blocked_obligations=tuple(
+                SimpleNamespace(
+                    obligation_id=f"obl_97700000-0000-4000-8000-{index:012d}",
+                    blocker_kind="dependency_unavailable",
+                )
+                for index in range(rows)
+            ),
+        ),
+        frontier_sequence="999999",
+        frontier_digest=_DIGEST,
+        observation_pending=pending,
+    )
+
+
+@pytest.mark.parametrize("pending", [False, True])
+@pytest.mark.parametrize("rows", [0, 1, 99])
+def test_worst_case_text_stays_within_the_host_bound_and_keeps_the_recheck(
+    rows: int, pending: bool
+) -> None:
+    gate = _worst_case(rows=rows, pending=pending)
+    assert gate is not None
+    assert len(gate.text) <= 2000, len(gate.text)
+    if rows:
+        assert "Blocker re-check (asked once)" in gate.text
+        assert "same yoetz-blocker line again" in gate.text
+        if rows > 3:
+            assert f"and {rows - 3} more" in gate.text

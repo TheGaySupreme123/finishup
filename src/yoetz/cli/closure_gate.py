@@ -73,11 +73,14 @@ __all__ = [
     "read_closure_gate",
     "record_closure_gate_delivered",
     "reset_closure_gate_turn",
+    "set_standing_advice_withheld",
+    "standing_advice_withheld",
 ]
 
 _FILE_NAME: Final = "closure-gate.json"
 _BLOCKER_FILE_NAME: Final = "closure-gate-blockers.json"
 _TURN_FILE_NAME: Final = "closure-gate-turns.json"
+_STANDING_FILE_NAME: Final = "stop-withheld-standing-advice.json"
 _LOCK_NAME: Final = "closure-gate.lock"
 _MAX_SESSIONS: Final = 128
 _MAX_BLOCKER_KEYS: Final = 64
@@ -129,8 +132,8 @@ _VERIFICATION_TEXT: Final = (
     "Run each planned verification after your last edit, or correct the requested command."
 )
 _FINDING_TEXT: Final = (
-    "For each receipt-blocking finding, repair what you can. If you repaired one and Yoetz still cannot prove it (its resolution names a Yoetz limit such as redaction,"
-    " observation loss or a review-packet limit), verify it yourself, record that evidence, and"
+    "For each receipt-blocking finding, repair what you can. If you repaired one and Yoetz still"
+    " cannot prove it (its resolution names a Yoetz limit such as redaction, observation loss or a review-packet limit), verify it yourself, record that evidence, and"
     " respond `self_verified` with how you verified it and the evidence ids. Do not reshape your"
     " work for Yoetz. Respond `acknowledged_not_done` only if you truly cannot or will not do it."
 )
@@ -140,8 +143,18 @@ _CLOSE_TEXT: Final = (
 _BLOCKER_OFFER_TEXT: Final = (
     "Leave an open obligation undone only for a blocker outside your control (authority,"
     " consent, credentials, a dependency you cannot obtain): publish decision_recorded with"
-    f" affected_obligation_ids and the line {_BLOCKER_LINE}; Yoetz asks once, and you confirm by"
-    " publishing the same line again. Data the task says is recoverable is not such a blocker."
+    f" affected_obligation_ids and the line {_BLOCKER_LINE}, and Yoetz will ask you about it once."
+    " Data the task says is recoverable is not such a blocker."
+)
+# How to confirm a blocker appears only AFTER the challenge (the re-check, or a later gate whose
+# blocker was already re-asked), so publishing a blocker twice up front never skips it (#985).
+_CONFIRM_TEXT: Final = (
+    "If it is genuine, confirm it by publishing the same yoetz-blocker line again in a later"
+    " decision, then stop."
+)
+_UNCONFIRMED_AFTER_RECHECK_TEXT: Final = (
+    "You were already asked about your recorded blocker: continue that work unless it is"
+    f" genuinely outside your control. {_CONFIRM_TEXT}"
 )
 _OBLIGATION_SHORT_TEXT: Final = (
     "Finish each open obligation (status view=obligations names the requested outputs)."
@@ -201,20 +214,19 @@ def _blocker_text(rows: tuple[tuple[str, str], ...], *, short: bool = False) -> 
     if len(rows) > _MAX_NAMED_BLOCKERS:
         named += f" and {len(rows) - _MAX_NAMED_BLOCKERS} more"
     if short:
-        # The blocker offer above already defines a blocker; only the re-check itself remains.
+        # The blocker offer already defines a blocker; the re-check and confirmation remain.
         return (
             f"Blocker re-check (asked once): you recorded {named} as blocked. Continue that work"
-            " unless it is genuinely blocked (a Yoetz limit never is); if it is, confirm it as"
-            " above, then stop."
+            " unless it is genuinely outside your control; a Yoetz limit never is: finish the"
+            f" obligation and disclose any limit in your final answer. {_CONFIRM_TEXT}"
         )
     return (
         f"Blocker re-check (asked once): you recorded {named} as blocked outside your control."
         " Repair first: missing or inconsistent data the task says is recoverable, a failing"
         " test or a result that looks infeasible is not a blocker, so continue the work on that"
-        " obligation. A Yoetz limit is never a blocker either: verify that work yourself and"
-        " respond `self_verified`. A blocker is only authority or consent you do not have, a"
-        " credential you lack, or a dependency you cannot obtain. If it is genuine, confirm it by"
-        " publishing the same yoetz-blocker line again in a later decision, then stop; Yoetz will"
+        " obligation. A Yoetz limit is never a blocker either: finish the obligation and disclose"
+        " any limit in your final answer. A blocker is only authority or consent you do not have,"
+        f" a credential you lack, or a dependency you cannot obtain. {_CONFIRM_TEXT} Yoetz will"
         " not ask again and the receipt discloses it as a standing limitation."
     )
 
@@ -272,29 +284,48 @@ def closure_gate_from_readiness(
     remaining = "; ".join(
         _ITEM_TEXT[token].format(open=open_count, blocking=blocking_count) for token in items
     )
-    guidance: list[str] = []
-    if "obligations_open" in items:
-        guidance.append(_OBLIGATION_TEXT)
-    if any(token in _OBSERVATION_DEPENDENT for token in items):
-        guidance.append(_VERIFICATION_TEXT)
-    if "receipt_findings_unresolved" in items:
-        guidance.append(_FINDING_TEXT)
-    guidance.append(_CLOSE_TEXT)
-    # The blocker exit is offered only for open obligations: findings, reviews and Yoetz limits
-    # are never excused by a blocker (F1, #984).
     offers_blocker = "obligations_open" in items or BLOCKER_UNCONFIRMED_TOKEN in items
-    if offers_blocker:
-        guidance.append(_BLOCKER_OFFER_TEXT)
-    tail = (" " + _blocker_text(rows, short=offers_blocker) if rows else "") + (
-        " " + _DRAIN_TEXT if drain_changed_decision else ""
-    )
-    text = (
+    head = (
         f"Yoetz closure gate (shown once for ledger frontier {frontier_sequence}): closure still"
-        f" requires action before you stop. Remaining: {remaining}. {' '.join(guidance)}{tail}"
+        f" requires action before you stop. Remaining: {remaining}."
     )
-    if len(text) > _MAX_TEXT_CHARS and _OBLIGATION_TEXT in text:
-        # Only when nearly every item is present: keep every instruction, shorten the longest.
-        text = text.replace(_OBLIGATION_TEXT, _OBLIGATION_SHORT_TEXT)
+    recheck = _blocker_text(rows, short=offers_blocker) if rows else ""
+
+    def compose(*, drain: bool, short_obligation: bool, verification: bool) -> str:
+        parts = [head]
+        if "obligations_open" in items:
+            parts.append(_OBLIGATION_SHORT_TEXT if short_obligation else _OBLIGATION_TEXT)
+        if verification and any(token in _OBSERVATION_DEPENDENT for token in items):
+            parts.append(_VERIFICATION_TEXT)
+        if "receipt_findings_unresolved" in items:
+            parts.append(_FINDING_TEXT)
+        parts.append(_CLOSE_TEXT)
+        # The blocker exit is offered only for open obligations: findings, reviews and Yoetz
+        # limits are never excused by a blocker (F1, #984).
+        if offers_blocker:
+            parts.append(_BLOCKER_OFFER_TEXT)
+        if BLOCKER_UNCONFIRMED_TOKEN in items and not rows:
+            parts.append(_UNCONFIRMED_AFTER_RECHECK_TEXT)
+        if recheck:
+            parts.append(recheck)
+        if drain and drain_changed_decision:
+            parts.append(_DRAIN_TEXT)
+        return " ".join(parts)
+
+    # Every host clips at 2,000 characters. Drop whole optional sentences, never the re-check:
+    # the drain note first, then the long obligation sentence, then the verification hint.
+    text = ""
+    for drain, short_obligation, verification in (
+        (True, False, True),
+        (False, False, True),
+        (False, True, True),
+        (False, True, False),
+    ):
+        text = compose(drain=drain, short_obligation=short_obligation, verification=verification)
+        if len(text) <= _MAX_TEXT_CHARS:
+            break
+    else:
+        text = " ".join(part for part in (head, recheck) if part)[:_MAX_TEXT_CHARS]
     return ClosureGate(identity, text, items + ((BLOCKER_RECHECK_ITEM,) if rows else ()), keys)
 
 
@@ -375,14 +406,22 @@ def _paths(_state: Path | None, name: str = _FILE_NAME) -> tuple[Path, Path, Pat
 
 
 def _load(path: Path) -> dict[str, str]:
+    return _load_checked(path) or {}
+
+
+def _load_checked(path: Path) -> dict[str, str] | None:
+    """The file's string entries; ``{}`` when absent, ``None`` when unreadable or corrupt."""
+
     try:
         if path.is_symlink():
-            return {}
+            return None
         raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
     except OSError, ValueError:
-        return {}
+        return None
     if not isinstance(raw, dict):
-        return {}
+        return None
     return {
         key: value
         for key, value in cast(dict[object, object], raw).items()
@@ -432,7 +471,11 @@ def closure_gate_turn_blocks(session_id: str, *, _state: Path | None = None) -> 
     """How many gate continuations this session's current host turn already received (#985)."""
 
     _directory, path, _lock = _paths(_state, _TURN_FILE_NAME)
-    value = _load(path).get(session_id, "0")
+    entries = _load_checked(path)
+    if entries is None:
+        # An unreadable count must never reopen the active-Stop path: it counts as the cap.
+        return MAX_GATE_BLOCKS_PER_TURN
+    value = entries.get(session_id, "0")
     return int(value) if value.isdecimal() and len(value) <= 3 else MAX_GATE_BLOCKS_PER_TURN
 
 
@@ -441,11 +484,15 @@ def reset_closure_gate_turn(session_id: str, *, _state: Path | None = None) -> N
 
     with contextlib.suppress(Exception):
         _directory, path, _lock = _paths(_state, _TURN_FILE_NAME)
-        if session_id not in _load(path):
+        current = _load_checked(path)
+        if current is not None and session_id not in current:
             return
         with _locked(_state) as directory:
-            entries = _load(path)
-            if entries.pop(session_id, None) is not None:
+            entries = _load_checked(path)
+            if entries is None:
+                # A corrupt count is replaced, so it caps one turn at most, not every later one.
+                _store(directory, path, _TURN_FILE_NAME, {})
+            elif entries.pop(session_id, None) is not None:
                 _store(directory, path, _TURN_FILE_NAME, entries)
 
 
@@ -486,3 +533,31 @@ def record_closure_gate_delivered(
         return True
     except Exception:
         return False
+
+
+def standing_advice_withheld(session_key: str, *, _state: Path | None = None) -> bool:
+    """Whether a Stop withheld standing advice this session has not received since (#985)."""
+
+    _directory, path, _lock = _paths(_state, _STANDING_FILE_NAME)
+    return _load(path).get(session_key) == "1"
+
+
+def set_standing_advice_withheld(
+    session_key: str, withheld: bool, *, _state: Path | None = None
+) -> None:
+    """Mark or clear the withheld-standing-advice flag for one opaque session key. Never raises.
+
+    Ordinary advice never rides a Stop; standing advice (provider repair) would otherwise wait
+    for the next SessionStart, so the first later PostToolUse may carry it instead.
+    """
+
+    with contextlib.suppress(Exception):
+        _directory, path, _lock = _paths(_state, _STANDING_FILE_NAME)
+        if (_load(path).get(session_key) == "1") is withheld:
+            return
+        with _locked(_state) as directory:
+            entries = _load(path)
+            entries.pop(session_key, None)
+            if withheld:
+                entries[session_key] = "1"
+            _store(directory, path, _STANDING_FILE_NAME, entries)

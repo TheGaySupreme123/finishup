@@ -561,7 +561,7 @@ def test_a_confirmed_blocker_row_is_not_reasked() -> None:
     assert gate.blocker_keys == (f"{_OBL}:consent",)
 
 
-def test_unconfirmed_blocker_token_gates_and_offers_the_confirmation() -> None:
+def test_unconfirmed_blocker_token_gates_and_confirms_only_in_the_recheck() -> None:
     gate = _gate(
         _blocked_readiness(
             state="action_required", actionable=(gate_module.BLOCKER_UNCONFIRMED_TOKEN,)
@@ -569,7 +569,67 @@ def test_unconfirmed_blocker_token_gates_and_offers_the_confirmation() -> None:
     )
     assert gate is not None
     assert gate.items == (gate_module.BLOCKER_UNCONFIRMED_TOKEN, gate_module.BLOCKER_RECHECK_ITEM)
-    assert "confirm by publishing the same line again" in gate.text
+    # The confirm instruction appears once, inside the re-check that challenges the blocker.
+    recheck = gate.text.index("Blocker re-check (asked once)")
+    assert gate.text.count("same yoetz-blocker line again") == 1
+    assert gate.text.index("same yoetz-blocker line again") > recheck
+    # An obligation is never `self_verified`: the re-check says to finish it and disclose.
+    assert "self_verified" not in gate.text[recheck:]
+    assert "finish the obligation and disclose any limit in your final answer" in gate.text
+
+
+def test_unconfirmed_blocker_already_rechecked_says_how_to_confirm() -> None:
+    gate = closure_gate_from_readiness(
+        _blocked_readiness(
+            state="action_required", actionable=(gate_module.BLOCKER_UNCONFIRMED_TOKEN,)
+        ),
+        frontier_sequence="9",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+        reasked_blockers=frozenset({f"{_OBL}:dependency_unavailable"}),
+    )
+    assert gate is not None
+    assert gate.items == (gate_module.BLOCKER_UNCONFIRMED_TOKEN,)
+    assert "You were already asked about your recorded blocker" in gate.text
+    assert "same yoetz-blocker line again" in gate.text
+
+
+def test_full_recheck_never_offers_self_verified_for_an_obligation() -> None:
+    gate = _gate(_blocked_readiness())
+    assert gate is not None
+    assert "self_verified" not in gate.text
+    assert "finish the obligation and disclose any limit in your final answer" in gate.text
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]", ""])
+def test_a_corrupt_turn_counter_counts_as_the_cap(tmp_path: Path, content: str) -> None:
+    directory = tmp_path / "observation"
+    directory.mkdir(mode=0o700)
+    (directory / "closure-gate-turns.json").write_text(content)
+    assert (
+        gate_module.closure_gate_turn_blocks("ses_a", _state=tmp_path)
+        == gate_module.MAX_GATE_BLOCKS_PER_TURN
+    )
+    # The next turn replaces the corrupt counter instead of capping every later turn.
+    gate_module.reset_closure_gate_turn("ses_a", _state=tmp_path)
+    assert gate_module.closure_gate_turn_blocks("ses_a", _state=tmp_path) == 0
+
+
+def test_a_non_active_stop_resets_the_turn_even_when_the_gate_is_not_evaluated(
+    tmp_path: Path, host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = "gate-reset"
+    h = _Harness(tmp_path, host.key(session))
+    assert record_closure_gate_delivered(h.session_id, "1:x", _state=tmp_path)
+    assert gate_module.closure_gate_turn_blocks(h.session_id, _state=tmp_path) == 1
+
+    def not_evaluated(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        return None
+
+    monkeypatch.setattr(observe_hooks, "_decide_closure_gate", not_evaluated)
+    _stop(h, host, session)
+    assert gate_module.closure_gate_turn_blocks(h.session_id, _state=tmp_path) == 0
 
 
 def test_active_stop_decision_ignores_ordinary_items() -> None:

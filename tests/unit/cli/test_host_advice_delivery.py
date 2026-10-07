@@ -17,6 +17,7 @@ import pytest
 
 from yoetz.adapters.integrations.observation_local import LocalObservationStore
 from yoetz.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
+from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
 from yoetz.kernel.policies.observation_advice import ObservationCompositionFact
 from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
@@ -147,6 +148,48 @@ def test_private_install_advice_reaches_no_host_as_a_provider_repair(
     assert "decision" not in claude_stop
 
 
+def _codex_tool(root: Path, session: str) -> Mapping[str, JsonValue]:
+    stdout = io.BytesIO()
+    assert (
+        handle_observe(
+            event_name="PostToolUse",
+            stdin_bytes=canonical_encode(
+                {"session_id": session, "hook_event_name": "PostToolUse", "tool_name": "Read"}
+            ),
+            stdout=stdout,
+            workspace=str(root),
+            _state=root,
+            skip_service=True,
+        )
+        == 0
+    )
+    return _parsed(stdout)
+
+
+def _claude_tool(root: Path, session: str, tool_use_id: str) -> Mapping[str, JsonValue]:
+    stdout = io.BytesIO()
+    assert (
+        handle_claude_observe(
+            event_name="PostToolUse",
+            stdin_bytes=canonical_encode(
+                {
+                    "session_id": session,
+                    "hook_event_name": "PostToolUse",
+                    "tool_name": "Read",
+                    "tool_use_id": tool_use_id,
+                }
+            ),
+            stdout=stdout,
+            workspace=str(root),
+            _state=root,
+            observation_profile=CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
+            skip_service=True,
+        )
+        == 0
+    )
+    return _parsed(stdout)
+
+
 def _host_root(tmp_path: Path, name: str) -> Path:
     root = tmp_path / name
     root.mkdir(mode=0o700)
@@ -158,7 +201,8 @@ def test_intended_unusable_provider_uses_each_hosts_advice_channel(
 ) -> None:
     """Effective intent with no usable factory still asks each host, on its own channel (#844).
 
-    Every host receives it at a session boundary that cannot continue the agent (#985).
+    No host receives it at Stop; Codex and Claude Code get it on the first tool event after the
+    Stop that withheld it, Cursor at sessionStart (#985).
     """
 
     facts = [_PRIVATE]
@@ -222,26 +266,31 @@ def test_intended_unusable_provider_uses_each_hosts_advice_channel(
 
     # Ordinary advice never rides a Stop on any host (#985): Codex would render it as
     # `decision: block` and Claude's Stop feedback also continues the turn, spending the
-    # continuation the closure gate needs. It stays pending for the next SessionStart.
+    # continuation the closure gate needs. Standing advice a Stop withheld rides the first
+    # later PostToolUse instead, once.
     codex_stop = _codex(codex_root, "Stop", "codex-intended")
     assert codex_stop == {}
     claude_stop = _claude(claude_root, "Stop", "claude-intended")
     assert claude_stop == {}
 
-    codex_start = _codex(codex_root, "SessionStart", "codex-intended")
+    codex_next = _codex_tool(codex_root, "codex-intended")
     codex_context = cast(
-        str, cast(Mapping[str, JsonValue], codex_start["hookSpecificOutput"])["additionalContext"]
+        str, cast(Mapping[str, JsonValue], codex_next["hookSpecificOutput"])["additionalContext"]
     )
     assert "connect_provider" in codex_context
     assert "semantic:not_ready" in codex_context
-    assert "decision" not in codex_start
+    assert "decision" not in codex_next
+    _assert_no_provider_repair(json.dumps(_codex_tool(codex_root, "codex-intended")))
 
-    claude_start = _claude(claude_root, "SessionStart", "claude-intended")
-    specific = cast(Mapping[str, JsonValue], claude_start["hookSpecificOutput"])
-    assert specific["hookEventName"] == "SessionStart"
+    claude_next = _claude_tool(claude_root, "claude-intended", "tool-claude-next")
+    specific = cast(Mapping[str, JsonValue], claude_next["hookSpecificOutput"])
+    assert specific["hookEventName"] == "PostToolUse"
     assert "connect_provider" in cast(str, specific["additionalContext"])
     assert "semantic:not_ready" in cast(str, specific["additionalContext"])
-    assert "decision" not in claude_start
+    assert "decision" not in claude_next
+    _assert_no_provider_repair(
+        json.dumps(_claude_tool(claude_root, "claude-intended", "tool-claude-after"))
+    )
 
     cursor_session_commitment = cursor_store.session_commitment(f"cursor:{cursor_session}")
     assert (
