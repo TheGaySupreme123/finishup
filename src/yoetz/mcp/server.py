@@ -2884,6 +2884,35 @@ async def dispatch_receipt(
     )
 
 
+def _guidance_page_size_message(raw: object) -> str:
+    """Say which way a rejected guidance ``page_size`` is wrong, never echoing the value.
+
+    tb4n1: five reads sent ``"32768"``, ``"20000"``, or ``"16000"`` (three in a row for one page
+    sequence); the range sentence alone did not say the value was too large. The class of the
+    mistake is computed from the value; only the frozen bounds are printed.
+    """
+
+    bounds = f"between 4 and {MAX_GUIDANCE_PAGE_SIZE} bytes inclusive"
+    if type(raw) is int:
+        problem = 'page_size is a decimal string such as "4096", not a JSON number'
+    elif type(raw) is str and raw.isascii() and raw.isdigit() and len(raw) <= 19:
+        value = int(raw)
+        if value > MAX_GUIDANCE_PAGE_SIZE:
+            problem = f"page_size exceeds the maximum of {MAX_GUIDANCE_PAGE_SIZE} bytes"
+        elif value < 4:
+            problem = "page_size is below the minimum of 4 bytes"
+        else:
+            problem = "page_size must be canonical, with no leading zeros"
+    else:
+        problem = 'page_size must be a canonical decimal string such as "4096"'
+    return (
+        f"Guidance {problem}; it must be a canonical UTF-8 byte count {bounds}. Retry with "
+        'page="0" and page_size="4096" or another value in that range, then advance page with '
+        "the same page_size, revision, and digest; page numbers depend on page_size, so restart "
+        "at page 0 whenever page_size changes."
+    )
+
+
 async def dispatch_read_guidance(
     arguments: Mapping[str, object], runtime: BridgeRuntime = BRIDGE_RUNTIME
 ) -> types.CallToolResult:
@@ -2914,11 +2943,7 @@ async def dispatch_read_guidance(
             None,
         )
         if page_size_reason == "guidance_page_size_invalid":
-            message = (
-                "Guidance page_size must be a canonical UTF-8 byte string between 4 and "
-                "16384 bytes inclusive; retry with page=0 and page_size=4096 or another "
-                "value in that range."
-            )
+            message = _guidance_page_size_message(arguments.get("page_size"))
         elif page_size_reason == "guidance_page_invalid":
             message = "Guidance page must be a canonical page number; restart at page 0."
         elif page_size_reason == "guidance_revision_digest_mismatch":

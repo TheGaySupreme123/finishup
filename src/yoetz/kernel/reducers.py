@@ -709,6 +709,7 @@ def _apply_obligation(
                 ("status",),
                 invariant="open_to_resolved_only",
                 event_id=event.event_id,
+                prior_status="resolved" if previous.status is ObligationStatus.RESOLVED else "open",
             )
     obligations[key] = ObligationProjectionRecord(
         payload=payload,
@@ -867,8 +868,10 @@ def _apply_claim(
             )
         )
         supplied = frozenset(payload.limitation_refs)
-        if any(
-            (record := results.get(result_ref)) is None
+        inadmissible = tuple(
+            result_ref
+            for result_ref in payload.limitation_refs
+            if (record := results.get(result_ref)) is None
             or record.payload is None
             or record.payload.outcome not in _DISCLOSABLE_LIMITING_OUTCOMES
             or not _limitation_scope_is_authorable(
@@ -877,12 +880,13 @@ def _apply_claim(
                 actions,
                 claim_frontier=event.ledger.ingestion_sequence,
             )
-            for result_ref in payload.limitation_refs
-        ):
+        )
+        if inadmissible:
             raise ClaimRevisionMismatch(
                 "limitation_refs",
                 "limitation_refs_must_be_relevant_non_success_results",
                 event.event_id,
+                offending_refs=inadmissible,
             )
         if payload.claim_kind is ClaimKind.COMPLETION and not required <= supplied:
             raise ClaimRevisionMismatch(

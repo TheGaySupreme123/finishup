@@ -1577,6 +1577,9 @@ def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
                             # admits it only when it byte-equals a catalogued payload property
                             # name, so MCP can name the field's one legal owner (issue #266).
                             "misplaced_field": exc.misplaced_field,
+                            # Schema-listed required names the instance lacks (frozen schema
+                            # vocabulary), so the hint names the absent key, not the whole list.
+                            "missing_fields": exc.missing_fields or None,
                         },
                     }
                 ],
@@ -1851,8 +1854,8 @@ class StatusRequestModel(PublicRequestModel):
         )
         if len(selectors) > 1:
             raise ValueError("selector_conflict")
-        if self.view in {"lineage", "project"} and self.filter is not None:
-            raise ValueError("status_filter_not_supported_for_view")
+        # A filter beside a view that admits none (lineage, project, results, ...) is refused by
+        # the schema's own ``not required`` rule below, which names /filter for the caller.
         if self.project_id is not None and self.view != "project":
             raise ValueError("selector_conflict")
         if self.correlation_id is not None and self.view != "lineage":

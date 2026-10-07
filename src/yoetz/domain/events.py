@@ -128,6 +128,7 @@ from yoetz.protocol.policy_packs import (
     WORK_INTEGRITY_POLICY_ID,
     is_recorded_policy_identity,
 )
+from yoetz.protocol.recovery import correction_for_invariant
 
 __all__ = [
     "EVENT_FAMILIES",
@@ -1586,9 +1587,15 @@ class ObligationResolutionMismatch(ValueError):
     differing_fields: tuple[str, ...]
     invariant: str
     event_id: EventId | None = None
+    # The ledger status of the obligation the draft tried to republish (``open`` or
+    # ``resolved``), a closed token. It lets ``open_to_resolved_only`` say whether the
+    # obligation is already resolved, which every tb4n1 occurrence was.
+    prior_status: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.differing_fields) is not tuple:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.prior_status is not None and self.prior_status not in {"open", "resolved"}:
             raise ProtocolValueError("invalid_event_value_type")
         ordered = tuple(sorted(self.differing_fields, key=str.encode))
         if len(ordered) != len(set(ordered)):
@@ -1664,6 +1671,10 @@ class ClaimRevisionMismatch(ValueError):
     # the rejection names exactly what to add (hook-observed runs the author never published were
     # otherwise invisible to it).
     missing_refs: tuple[ResultId, ...] = ()
+    # Structural result ids the draft listed in ``limitation_refs`` that are not admissible there
+    # (unknown, successful, or outside the claim's obligation scope). Carried only for
+    # ``limitation_refs_must_be_relevant_non_success_results`` so the rejection names what to drop.
+    offending_refs: tuple[ResultId, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.field) is not str or self.field not in _CLAIM_REVISION_FIELDS:
@@ -1680,6 +1691,18 @@ class ClaimRevisionMismatch(ValueError):
             self,
             "missing_refs",
             tuple(sorted({result_id(value) for value in self.missing_refs}, key=str.encode)),
+        )
+        if type(self.offending_refs) is not tuple:
+            raise ProtocolValueError("invalid_event_value_type")
+        if (
+            self.offending_refs
+            and self.invariant != "limitation_refs_must_be_relevant_non_success_results"
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        object.__setattr__(
+            self,
+            "offending_refs",
+            tuple(sorted({result_id(value) for value in self.offending_refs}, key=str.encode)),
         )
         ValueError.__init__(self, "claim_revision_mismatch")
 
@@ -1738,15 +1761,38 @@ def public_error_for_claim_revision_mismatch(
             False,
             safe_details=details,
         )
+    if mismatch.offending_refs:
+        details["count"] = len(mismatch.offending_refs)
+        named = mismatch.offending_refs[:_MAX_NAMED_MISSING_LIMITATIONS]
+        remainder = len(mismatch.offending_refs) - len(named)
+        more = f" and {remainder} more" if remainder > 0 else ""
+        return PublicOperationError(
+            PublicErrorCode.EVENT_INVALID,
+            (
+                "The event batch is invalid. claim_recorded/1.1.0 requires invariant "
+                "limitation_refs_must_be_relevant_non_success_results: limitation_refs may name "
+                "only failed, partial, or unknown results in this claim's obligation scope. Not "
+                f"admissible here: {', '.join(named)}{more} (each is unknown, successful, or "
+                "outside the claim's obligation_refs scope). Remove them from limitation_refs, "
+                "keep successful results in supporting_refs, and retry with a new request_id. "
+                "Read status view results before retrying."
+            ),
+            False,
+            safe_details=details,
+        )
+    # One invariant-specific correction first, from the same registry the CLI renders, then the
+    # shared revision rules (tb4n1: the rule recital alone did not say which one was broken).
+    correction = correction_for_invariant(mismatch.invariant)
+    specific = f": {correction}" if correction is not None else ""
     return PublicOperationError(
         PublicErrorCode.EVENT_INVALID,
         (
             "The event batch is invalid. claim_recorded/1.1.0 requires invariant "
-            f"{mismatch.invariant} at {mismatch.field}. Use supersedes_claim_refs only for exact "
-            "prior effective claim ids with overlapping obligation scope and a fresh, materially "
-            "changed claim. Keep partial or failed result ids in limitation_refs rather than "
-            "supporting_refs, and do not combine replacement with disputes_refs. Read status views "
-            "candidate_findings, history, and results before retrying."
+            f"{mismatch.invariant} at {mismatch.field}{specific}. Use supersedes_claim_refs only "
+            "for exact prior effective claim ids with overlapping obligation scope and a fresh, "
+            "materially changed claim. Keep partial or failed result ids in limitation_refs "
+            "rather than supporting_refs, and do not combine replacement with disputes_refs. Read "
+            "status views candidate_findings, history, and results before retrying."
         ),
         False,
         safe_details=details,
@@ -1791,14 +1837,34 @@ def public_error_for_obligation_resolution_mismatch(
     if type(mismatch) is not ObligationResolutionMismatch:
         raise TypeError("obligation_resolution_mismatch_wrong_type")
     fields = ", ".join(mismatch.differing_fields) if mismatch.differing_fields else "status"
-    message = (
-        "The event batch is invalid. Obligation resolution requires invariant "
-        f"{mismatch.invariant}; mismatched fields: {fields}. Repeat every meaning field "
-        "from the open obligation byte-for-byte; only status and resolution_evidence_refs "
-        "may change. See yoetz://guidance/publication-policy.md section obligation-resolution "
-        "and the publish_work examples entry for obligation_published resolution. "
-        "Correct the event payload before retrying."
+    guidance = (
+        "See yoetz://guidance/publication-policy.md section obligation-resolution and the "
+        "publish_work examples entry for obligation_published resolution."
     )
+    if mismatch.invariant == "open_to_resolved_only" and mismatch.prior_status == "resolved":
+        # tb4n1: all eight occurrences republished an obligation that was already resolved.
+        message = (
+            "The event batch is invalid. Obligation resolution requires invariant "
+            "open_to_resolved_only: this obligation is already resolved in the ledger, and a "
+            "resolution is recorded once. Remove this obligation_published draft from the batch "
+            "and retry the rest with a new request_id; status view obligations lists which "
+            f"obligations are still open. {guidance}"
+        )
+    elif mismatch.invariant == "open_to_resolved_only":
+        message = (
+            "The event batch is invalid. Obligation resolution requires invariant "
+            "open_to_resolved_only: an open obligation can be republished only with status "
+            "resolved and resolution_evidence_refs, repeating every meaning field byte-for-byte. "
+            f"Set status to resolved and retry with a new request_id. {guidance}"
+        )
+    else:
+        message = (
+            "The event batch is invalid. Obligation resolution requires invariant "
+            f"{mismatch.invariant}; mismatched fields: {fields}. Repeat every meaning field "
+            "from the open obligation byte-for-byte (status view obligations shows the recorded "
+            "values); only status and resolution_evidence_refs may change. "
+            f"{guidance} Correct the event payload before retrying."
+        )
     details: dict[str, str] = {"reason_code": "obligation_resolution_mismatch"}
     if type(event_index) is int and 0 <= event_index < _MAX_EVENTS_PER_BATCH_FOR_POINTER:
         details["field"] = f"/event_drafts/{event_index}/payload"

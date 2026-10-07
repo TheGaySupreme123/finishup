@@ -171,7 +171,19 @@ unknown or hostile property names are never echoed. Closed reason tokens are:
 
 These object-rule tokens are projected only from checked-in schema metadata and validator kind —
 never from caller-controlled keys or free-form exception text. Unrecognized object rules degrade
-to a bounded generic `INVALID_REQUEST` without inventing field pointers.
+to a bounded generic `INVALID_REQUEST` without inventing field pointers. A root `if`/`then`
+`not required` rule (for example `status` `filter` beside a `view` that admits none) is reported
+as `extra_forbidden` at the forbidden field, which is read from the schema rule and named only when
+the request carries it.
+
+Authoring hints are hint text only; they never add `safe_details` keys. For a value rejected inside
+a draft payload, the hint follows the draft's own catalogued family and version (several families
+share a field name with different admitted shapes), names the admitted shape of an array member
+(`each limitation_refs entry admits values matching ^res_…`), states a payload array item's own
+`allOf` peer rule (`each obligation_changes entry with change superseded or waived requires
+reason`), names the absent keys of a payload `required` list before reciting it, and lists enums of
+up to 16 members. Checked-in sentences in the MCP error module cover contract facts a pattern only
+implies (which id kind a reference list names, `status` `limit`, `at_frontier`, and `filter`).
 
 For an `extra_forbidden` payload rejection whose unknown key is a known field with exactly one
 legal owning event family among the ordinary `publish_work` families, `safe_details` additionally
