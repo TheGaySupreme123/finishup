@@ -2530,8 +2530,8 @@ def _prior_finding_candidates(
 
     Local findings are proven by the local packs that raised them and reach the reviewer as this
     check's assessments; resolved findings are history. Neither is a live question for the reviewer.
-    Nor is a terminal item (issue #905): ``acknowledged_not_done`` and ``rejection_accepted`` are
-    final and are never re-reviewed.
+    Nor is a terminal item (issue #905): ``acknowledged_not_done``, ``rejection_accepted`` and
+    ``self_verified`` (issue #984) are final and are never re-reviewed.
     """
 
     rows: list[tuple[str, FindingProjectionRecord]] = []
@@ -2756,7 +2756,11 @@ def _local_answer_candidates(
             or ref not in allowed
             or record.resolved_by_check_event_id is not None
             or finding_todo_state(projection, key)
-            in {FindingTodoState.VERIFIED_RESOLVED, FindingTodoState.REJECTION_ACCEPTED}
+            in {
+                FindingTodoState.VERIFIED_RESOLVED,
+                FindingTodoState.REJECTION_ACCEPTED,
+                FindingTodoState.SELF_VERIFIED,
+            }
         ):
             continue
         response = projection.responses.get(key)

@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Final, cast
 
 from yoetz.domain.check_totals import render_check_totals
+from yoetz.domain.findings import SELF_VERIFIED_GUIDANCE
 from yoetz.domain.receipts import check_time_change_gap_sentence
 from yoetz.domain.review_input_render import (
     has_agent_suppliable_missing,
@@ -184,12 +185,19 @@ _CHECKBOX: Final = {
     "verified_resolved": "[x]",
     "acknowledged_not_done": "[~]",
     "rejection_accepted": "[-]",
+    # Issue #984: final, disclosed, not resolved by Yoetz.
+    "self_verified": "[s]",
 }
 _CHECKLIST_NEXT_TEXT: Final = {
-    "work_open_findings": "Repair or answer the open findings, then check again.",
+    "work_open_findings": (
+        "Repair the open findings (or answer the reviewer's questions), then check again."
+    ),
     "decide_at_budget": (
-        "An open finding reached the review-round budget: repair it with new evidence, or "
-        "respond acknowledged_not_done with a reason. Checks are never throttled."
+        "An open finding reached the review-round budget: repair it with new evidence, then "
+        "check. "
+        + SELF_VERIFIED_GUIDANCE
+        + " Respond acknowledged_not_done with a reason only if you truly will not or cannot "
+        "do it. Checks are never throttled."
     ),
     "request_receipt": "No open findings remain on the list; request the receipt.",
 }
@@ -229,6 +237,7 @@ def _render_checklist(
         + (f" ({at_budget} at budget)" if at_budget else "")
         + f", verified {counts.verified_resolved}, not done {counts.acknowledged_not_done}, "
         f"rejection accepted {counts.rejection_accepted}"
+        + (f", self-verified {counts.self_verified}" if int(counts.self_verified) else "")
     )
     total = sum(
         int(value)
@@ -237,6 +246,7 @@ def _render_checklist(
             counts.verified_resolved,
             counts.acknowledged_not_done,
             counts.rejection_accepted,
+            counts.self_verified,
         )
     )
     if total > len(checklist.items):

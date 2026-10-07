@@ -107,6 +107,8 @@ evidence_strength_unsupported
 expected_frontier_required
 finding_actionable_mismatch
 finding_json_shape_invalid
+finding_not_proof_limited
+finding_not_rechecked
 finding_priority_mismatch
 finding_resolution_mismatch
 finding_terminal
@@ -502,7 +504,7 @@ def test_public_error_code_membership() -> None:
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
     source_values = cast(tuple[str, ...], getattr(errors_module, "_PROTOCOL_REASON_CODE_VALUES"))
     assert source_values == _EXPECTED_REASON_CODES
-    assert len(source_values) == 304
+    assert len(source_values) == 306
     assert source_values == tuple(sorted(source_values, key=str.encode))
     assert len(source_values) == len(set(source_values))
     assert PROTOCOL_REASON_CODES == frozenset(_EXPECTED_REASON_CODES)

@@ -1,0 +1,362 @@
+"""Which open findings the agent may close as ``self_verified`` (issue #984, ADR-034).
+
+The reason sets below are the ones tb4n1 agents met at closure: deterministic findings left
+unresolved by ``command_attempt_uncorroborated``, ``content_redacted`` and
+``observation_input_loss``, and AI-powered findings left unresolved by
+``semantic_packet_insufficient`` and ``semantic_reference_scope_reduced``. Every one was a Yoetz
+limit the agent could not repair, and the agents filed false ``yoetz-blocker`` claims instead.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from types import SimpleNamespace
+from typing import cast
+
+import pytest
+
+from builders.policy_cases import evd, evt, finding_record, fnd, obl, record
+from yoetz.domain.events import (
+    CheckMode,
+    CheckRecordedPayload,
+    LedgerRecord,
+    PolicyVersion,
+    ResponseRecordedPayload,
+)
+from yoetz.domain.findings import (
+    FINDING_KIND_TRAITS,
+    SELF_VERIFIED_GUIDANCE,
+    CheckVerdict,
+    Finding,
+    FindingKind,
+    FindingOrigin,
+    ResponseDisposition,
+)
+from yoetz.domain.values import Frontier
+from yoetz.kernel.closure_readiness import (
+    FINDING_SELF_VERIFIED_GAP,
+    GAP_CLASSIFICATION,
+    ClosureReadinessFacts,
+    GapClass,
+    derive_closure_readiness,
+)
+from yoetz.kernel.finding_resolution import (
+    UNRESOLVED_FINDING_NEXT_STEPS,
+    finding_resolution_explanation,
+)
+from yoetz.kernel.finding_todo import (
+    TERMINAL_TODO_STATES,
+    FindingTodoState,
+    finding_blocks_receipt,
+    finding_todo_state,
+    todo_counts,
+)
+from yoetz.kernel.projections import ProjectionState, empty_projection_state
+from yoetz.kernel.self_verification import (
+    FINDING_NOT_PROOF_LIMITED,
+    FINDING_NOT_RECHECKED,
+    finding_proof_limited,
+    reasons_proof_limited,
+    self_verification_refusal,
+)
+from yoetz.protocol.coverage import (
+    ArtifactObservation,
+    AuthorshipAssurance,
+    CheckType,
+    Coverage,
+    EvidenceImmutability,
+    LedgerFreshness,
+    PublicationChannel,
+)
+from yoetz.protocol.models import (
+    CheckPolicyExecutionModel,
+    CheckScopeModel,
+    SemanticReason,
+    SemanticStatus,
+)
+
+_DIGEST = "sha256:" + "4" * 64
+_DET = FindingOrigin.DETERMINISTIC
+_SEM = FindingOrigin.SEMANTIC_MODEL_DERIVED
+
+
+def _coverage(gaps: tuple[str, ...] = ()) -> Coverage:
+    return Coverage(
+        publication_channels=(PublicationChannel.ENGINE_DERIVED,),
+        authorship_assurance=AuthorshipAssurance.SERVICE_AUTHENTICATED,
+        artifact_observation=ArtifactObservation.PUBLISHED_ONLY,
+        evidence_immutability=EvidenceImmutability.METADATA_ONLY,
+        ledger_freshness=LedgerFreshness.PARTIAL if gaps else LedgerFreshness.CURRENT,
+        check_types=(CheckType.DETERMINISTIC,),
+        known_gaps=tuple(sorted(gaps, key=str.encode)),
+    )
+
+
+def _finding(
+    number: int = 1, kind: FindingKind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
+) -> Finding:
+    return Finding(
+        finding_id=fnd(number),
+        kind=kind,
+        origin=FindingOrigin.DETERMINISTIC,
+        priority=FINDING_KIND_TRAITS[kind][0],
+        summary="A completion claim covers an open obligation.",
+        detail="Resolve or revise the obligation before claiming completion.",
+        subject_refs=(obl(1),),
+        policy_id="work-integrity",
+        policy_version="0.1.0",
+        subject_frontier=Frontier(3, _DIGEST),
+        coverage=_coverage(),
+        provenance=None,
+    )
+
+
+def _check(
+    *, tested: int = 8, returned: tuple[object, ...] = (), gaps: tuple[str, ...] = ()
+) -> CheckRecordedPayload:
+    return CheckRecordedPayload(
+        mode=CheckMode.DETERMINISTIC_ONLY,
+        policies=(PolicyVersion("work-integrity", "0.1.0"),),
+        scope=CheckScopeModel(claim_ids=(), obligation_ids=()),
+        policy_executions=(
+            CheckPolicyExecutionModel(
+                policy_id="work-integrity",
+                policy_version="0.1.0",
+                outcome="run",
+                reason="completed",
+            ),
+        ),
+        subject_frontier=Frontier(tested, _DIGEST),
+        verdict=CheckVerdict.ACTION_REQUIRED if returned else CheckVerdict.NO_ISSUE_DETECTED,
+        returned_finding_ids=returned,  # type: ignore[arg-type]
+        suppressed_count=0,
+        coverage=_coverage(("semantic_review_not_requested", *gaps)),
+        semantic_status=SemanticStatus.NOT_REQUESTED,
+        semantic_reason=SemanticReason.DETERMINISTIC_MODE,
+        engine_version="0.1.0",
+        projection_version="yoetz/0.1.0",
+        semantic_provenance=None,
+    )
+
+
+def _row(sequence: int, check: CheckRecordedPayload) -> object:
+    return SimpleNamespace(
+        event_id=evt(sequence),
+        schema=SimpleNamespace(name="check_recorded"),
+        ledger=SimpleNamespace(ingestion_sequence=sequence),
+        payload=check,
+    )
+
+
+def _state(*findings: Finding, response: ResponseDisposition | None = None) -> ProjectionState:
+    responses = {}
+    if response is not None:
+        responses[fnd(1)] = record(
+            ResponseRecordedPayload(
+                fnd(1),
+                Frontier(4, _DIGEST),
+                response,
+                "Ran the suite myself; output recorded as evidence.",
+                evidence_refs=(evd(1),),
+            ),
+            9,
+        )
+    return replace(
+        empty_projection_state(),
+        frontier=20,
+        head_digest=_DIGEST,
+        findings={finding.finding_id: finding_record(finding, 4) for finding in findings},
+        responses=responses,
+    )
+
+
+def _records(*rows: object) -> tuple[LedgerRecord, ...]:
+    return cast(tuple[LedgerRecord, ...], rows)
+
+
+# -- The pure reason rule -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("origin", "reasons"),
+    [
+        # tb4n1 deterministic closures: every remaining reason is a standing Yoetz limit.
+        (_DET, ("coverage:command_attempt_uncorroborated",)),
+        (_DET, ("coverage:content_redacted",)),
+        (_DET, ("coverage:observation_input_loss",)),
+        (
+            _DET,
+            (
+                "command_relation_independence_unproven",
+                "freshness_or_original_proof_unreadable",
+                "coverage:command_attempt_uncorroborated",
+                "coverage:content_redacted",
+                "coverage:observation_input_loss",
+            ),
+        ),
+        # tb4n1 AI-powered closures: the review packet bounded what the reviewer could see.
+        (_SEM, ("semantic_packet_insufficient", "coverage:semantic_reference_scope_reduced")),
+        (_SEM, ("finding_material_outside_reduced_review_scope",)),
+        (_SEM, ("reviewer_verdict_unassessable", "coverage:content_redacted")),
+        # A reviewer that re-raised it from a limited packet does not positively see it.
+        (_SEM, ("issue_returned_again", "semantic_packet_insufficient")),
+        (_SEM, ("reviewer_verdict_still_present", "coverage:content_redacted")),
+        (_SEM, ("reviewer_verdict_answered_not_fixed", "reviewer_assessment_incomplete")),
+        (_SEM, ("semantic_review_not_completed", "coverage:semantic_relevance_review_not_run")),
+    ],
+)
+def test_only_yoetz_limits_are_self_verifiable(
+    origin: FindingOrigin, reasons: tuple[str, ...]
+) -> None:
+    assert reasons_proof_limited(reasons, origin) is True
+
+
+@pytest.mark.parametrize(
+    ("origin", "reasons"),
+    [
+        (_DET, ()),  # resolved, or no recorded limit at all
+        (_DET, ("issue_returned_again", "coverage:content_redacted")),  # the rule fired again
+        (_DET, ("coverage:command_attempt_mismatch",)),  # agent-actionable gap
+        (_DET, ("coverage:missing_ref",)),
+        (_DET, ("coverage:gap_from_a_newer_build",)),  # unknown codes stay agent work
+        (_DET, ("matching_policy_not_completed",)),
+        (_DET, ("subject_outside_checked_scope", "coverage:content_redacted")),
+        (_DET, ("finding_not_in_checked_frontier",)),
+        (_DET, ("check_unreadable",)),
+        (_DET, ("returned_findings_unreadable",)),
+        (_SEM, ("coverage:semantic_review_not_requested",)),  # route-dependent: run the review
+        (_SEM, ("issue_returned_again",)),
+        (_SEM, ("reviewer_verdict_still_present",)),
+        (_SEM, ("reviewer_verdict_answered_not_fixed",)),
+        (_SEM, ("no_material_change_since_finding", "coverage:content_redacted")),
+    ],
+)
+def test_yoetz_still_seeing_it_or_agent_work_is_refused(
+    origin: FindingOrigin, reasons: tuple[str, ...]
+) -> None:
+    assert reasons_proof_limited(reasons, origin) is False
+
+
+def test_a_new_standing_code_becomes_self_verifiable_through_the_classification_table() -> None:
+    standing = sorted(
+        code for code, kind in GAP_CLASSIFICATION.items() if kind is GapClass.STANDING_LIMITATION
+    )
+    actionable = sorted(
+        code for code, kind in GAP_CLASSIFICATION.items() if kind is GapClass.AGENT_ACTIONABLE
+    )
+    assert "observation_input_loss" in standing
+    for code in standing:
+        assert reasons_proof_limited(("coverage:" + code,), _DET), code
+    for code in actionable:
+        assert not reasons_proof_limited(("coverage:" + code,), _DET), code
+
+
+# -- The replay-derived predicate -----------------------------------------------------------
+
+
+def test_no_later_check_is_finding_not_rechecked() -> None:
+    state = _state(_finding())
+    assert self_verification_refusal(state, fnd(1), ()) == FINDING_NOT_RECHECKED
+    # The check that raised it tested a frontier before the finding's record.
+    raising = _records(_row(5, _check(tested=3, returned=(fnd(1),))))
+    assert self_verification_refusal(state, fnd(1), raising) == FINDING_NOT_RECHECKED
+    assert finding_proof_limited(state, fnd(1), raising) is False
+
+
+@pytest.mark.parametrize(
+    "gaps",
+    [
+        ("command_attempt_uncorroborated",),
+        ("content_redacted",),
+        # Lead request: case-wide observation loss is a standing Yoetz limit.
+        ("observation_input_loss",),
+        ("command_attempt_uncorroborated", "content_redacted", "observation_input_loss"),
+    ],
+)
+def test_a_repair_only_a_yoetz_limit_keeps_unproven_is_eligible(gaps: tuple[str, ...]) -> None:
+    # tb4n1's typical leftover: a requested-item finding raised before work started.
+    state = _state(_finding(kind=FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED))
+    records = _records(_row(10, _check(gaps=gaps)))
+    assert self_verification_refusal(state, fnd(1), records) is None
+    assert finding_proof_limited(state, fnd(1), records) is True
+
+
+def test_a_rule_that_fired_again_is_not_proof_limited() -> None:
+    again = replace(_finding(2), summary="The same issue, raised again.")
+    state = _state(_finding(), again)
+    records = _records(_row(10, _check(returned=(fnd(2),), gaps=("content_redacted",))))
+    assert self_verification_refusal(state, fnd(1), records) == FINDING_NOT_PROOF_LIMITED
+
+
+def test_an_agent_actionable_gap_or_a_clean_check_is_not_proof_limited() -> None:
+    state = _state(_finding())
+    actionable = _records(_row(10, _check(gaps=("missing_ref",))))
+    assert self_verification_refusal(state, fnd(1), actionable) == FINDING_NOT_PROOF_LIMITED
+    clean = _records(_row(10, _check()))
+    assert self_verification_refusal(state, fnd(1), clean) == FINDING_NOT_PROOF_LIMITED
+
+
+# -- To-do state, readiness and the explanation ---------------------------------------------
+
+
+def test_self_verified_is_terminal_disclosed_and_not_agent_work() -> None:
+    state = _state(_finding(), response=ResponseDisposition.SELF_VERIFIED)
+    assert finding_todo_state(state, fnd(1)) is FindingTodoState.SELF_VERIFIED
+    assert FindingTodoState.SELF_VERIFIED in TERMINAL_TODO_STATES
+    assert finding_blocks_receipt(state, fnd(1)) is False
+    counts = todo_counts(state, (fnd(1),))
+    assert (counts.self_verified, counts.open) == (1, 0)
+    explanation = finding_resolution_explanation(state, fnd(1), ())
+    assert explanation.startswith("Self-verified by the agent")
+    assert "cannot read clean" in explanation
+
+
+def test_readiness_discloses_self_verified_findings_as_a_standing_limitation() -> None:
+    facts = ClosureReadinessFacts(
+        check_applicability="applicable",
+        semantic_review_current=False,
+        receipt_blocking_finding_ids=(),
+        acknowledged_finding_ids=(),
+        acknowledged_obligation_ids=(),
+        self_verified_finding_ids=(fnd(1),),
+    )
+    split = derive_closure_readiness((), (), facts, semantic_review_required=False)
+    assert split.state == "ready_with_limitations"
+    assert split.agent_actionable == ()
+    assert split.standing_limitations == (FINDING_SELF_VERIFIED_GAP,)
+    assert GAP_CLASSIFICATION[FINDING_SELF_VERIFIED_GAP] is GapClass.STANDING_LIMITATION
+
+
+def test_receipt_findings_unresolved_drops_when_every_blocking_item_is_settled() -> None:
+    facts = ClosureReadinessFacts(
+        check_applicability="applicable",
+        semantic_review_current=False,
+        receipt_blocking_finding_ids=(fnd(1), fnd(2)),
+        acknowledged_finding_ids=(fnd(1),),
+        acknowledged_obligation_ids=(),
+        self_verified_finding_ids=(fnd(2),),
+    )
+    split = derive_closure_readiness(
+        ("receipt_findings_unresolved",), (), facts, semantic_review_required=False
+    )
+    assert "receipt_findings_unresolved" not in split.agent_actionable
+    assert split.state == "ready_with_limitations"
+    open_one = replace(facts, self_verified_finding_ids=())
+    split = derive_closure_readiness(
+        ("receipt_findings_unresolved",), (), open_one, semantic_review_required=False
+    )
+    assert split.agent_actionable == ("receipt_findings_unresolved",)
+
+
+def test_unresolved_explanation_orders_repair_then_self_verification_then_acknowledgement() -> None:
+    state = _state(_finding())
+    records = _records(_row(10, _check(gaps=("content_redacted",))))
+    explanation = finding_resolution_explanation(state, fnd(1), records)
+    assert "coverage:content_redacted" in explanation
+    assert explanation.endswith(UNRESOLVED_FINDING_NEXT_STEPS)
+    assert SELF_VERIFIED_GUIDANCE in explanation
+    repair = explanation.index("repair it, then check")
+    verify = explanation.index("respond `self_verified`")
+    acknowledge = explanation.index("acknowledged_not_done only if you truly will not")
+    assert repair < verify < acknowledge
+    assert "never a `yoetz-blocker`" in explanation

@@ -1684,7 +1684,12 @@ class RespondRequestModel(PublicRequestModel):
     finding_id: FindingIdWire
     finding_frontier: FrontierModel
     disposition: Literal[
-        "acknowledged", "acknowledged_not_done", "provenance_disputed", "rejected", "waived"
+        "acknowledged",
+        "acknowledged_not_done",
+        "provenance_disputed",
+        "rejected",
+        "self_verified",
+        "waived",
     ]
     reason: String1To4096 | None = None
     waiver_scope: Literal["finding_only"] | None = None
@@ -1743,6 +1748,7 @@ class StatusFindingsFilterModel(_ClosedModel):
             "none",
             "provenance_disputed",
             "rejected",
+            "self_verified",
             "waived",
         ]
         | None
@@ -2091,6 +2097,7 @@ class ClosureSelectionModel(_ClosedModel):
             "acknowledged_not_done",
             "provenance_disputed",
             "rejected",
+            "self_verified",
             "waived",
         ]
         | None
@@ -3303,6 +3310,7 @@ class CheckChecklistCountsModel(_ClosedModel):
     open: CanonicalUInt64Wire
     open_at_budget: CanonicalUInt64Wire
     rejection_accepted: CanonicalUInt64Wire
+    self_verified: CanonicalUInt64Wire
     verified_resolved: CanonicalUInt64Wire
 
 
@@ -3565,7 +3573,12 @@ class RespondResponseModel(_ClosedModel):
     finding_id: FindingIdWire
     finding_frontier: FrontierModel
     disposition: Literal[
-        "acknowledged", "acknowledged_not_done", "provenance_disputed", "rejected", "waived"
+        "acknowledged",
+        "acknowledged_not_done",
+        "provenance_disputed",
+        "rejected",
+        "self_verified",
+        "waived",
     ]
     evidence: tuple[RespondEvidenceSummaryModel, ...]
     reason: String1To4096 | OmittedContentModel | None = None
@@ -3584,11 +3597,17 @@ class RespondResponseModel(_ClosedModel):
         if self.disposition == "acknowledged":
             if self.waiver_scope is not None or self.waiver_expiry is not None:
                 raise ValueError("response_fields_invalid")
-        elif self.disposition in {"acknowledged_not_done", "provenance_disputed", "rejected"}:
+        elif self.disposition in {
+            "acknowledged_not_done",
+            "provenance_disputed",
+            "rejected",
+            "self_verified",
+        }:
             if (
                 self.reason is None
                 or self.waiver_scope is not None
                 or self.waiver_expiry is not None
+                or (self.disposition == "self_verified" and not self.evidence)
             ):
                 raise ValueError("response_fields_invalid")
         elif self.reason is None or self.waiver_scope != "finding_only":
@@ -3937,7 +3956,7 @@ class StatusEvidencePageModel(_ClosedModel):
 
 
 FindingTodoStateLiteral = Literal[
-    "acknowledged_not_done", "open", "rejection_accepted", "verified_resolved"
+    "acknowledged_not_done", "open", "rejection_accepted", "self_verified", "verified_resolved"
 ]
 
 
@@ -3965,6 +3984,7 @@ class StatusFindingItemModel(_ClosedModel):
         "none",
         "provenance_disputed",
         "rejected",
+        "self_verified",
         "waived",
     ]
     resolved: bool
@@ -4005,6 +4025,13 @@ class StatusFindingItemModel(_ClosedModel):
             or self.waiver_expiry is not None
         ):
             raise ValueError("acknowledged_not_done_finding_state_invalid")
+        if self.disposition == "self_verified" and (
+            self.reason is None
+            or self.resolved
+            or self.waiver_scope is not None
+            or self.waiver_expiry is not None
+        ):
+            raise ValueError("self_verified_finding_state_invalid")
         return self
 
 
@@ -4183,7 +4210,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     # on the unreleased 1.4.0 wire so a result shaped by an earlier 0.3 build still validates; it
     # is then absent as a whole, never partially present and never null.
     state: Literal["action_required", "ready", "ready_with_limitations", "unknown"] | None = None
-    gap_classification_version: Literal["1", "2"] | None = None
+    gap_classification_version: Literal["1", "2", "3"] | None = None
     agent_actionable: tuple[ReadinessItemWire, ...] | None = None
     standing_limitations: tuple[CodeWire, ...] | None = None
     acknowledged_not_done: tuple[AcknowledgedItemIdWire, ...] | None = None
@@ -5589,6 +5616,7 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         "/finding_checklist/counts/open",
         "/finding_checklist/counts/open_at_budget",
         "/finding_checklist/counts/rejection_accepted",
+        "/finding_checklist/counts/self_verified",
         "/finding_checklist/counts/verified_resolved",
         "/finding_checklist/items/*/finding_id",
         "/finding_checklist/items/*/review_rounds",
@@ -6209,6 +6237,7 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
             "receipt_id",
             "rejection_accepted_finding_ids/*",
             "schema_version",
+            "self_verified_finding_ids/*",
             "session_id",
             "suppressed_finding_count",
             "task_id",
@@ -6509,7 +6538,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1415:
+    if len(result) != 1417:
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

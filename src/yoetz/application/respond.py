@@ -19,6 +19,7 @@ from yoetz.domain.events import (
     media_type_for,
 )
 from yoetz.domain.findings import (
+    TERMINAL_RESPONSE_DISPOSITIONS,
     Finding,
     FindingKind,
     FindingOrigin,
@@ -40,6 +41,7 @@ from yoetz.domain.values import (
 )
 from yoetz.kernel.finding_todo import TERMINAL_TODO_STATES, finding_todo_state
 from yoetz.kernel.projections import FindingProjectionRecord, ProjectionState
+from yoetz.kernel.self_verification import FINDING_NOT_RECHECKED, self_verification_refusal
 from yoetz.ports.clock import ClockPort
 from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.ids import IdPort
@@ -337,6 +339,64 @@ def _process_finding_answered_by_completed_review(
     )
 
 
+def _admit_self_verification(
+    request: RespondRequest,
+    projection: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+) -> None:
+    """Admit a ``self_verified`` answer only for a rechecked, proof-limited finding (issue #984).
+
+    The agent says how it verified the repair (``reason``) and cites its own recorded evidence
+    (``evidence_refs``, checked as recorded ids by the caller). Eligibility is
+    ``kernel/self_verification.py``'s replay-derived predicate over recorded checks; this never
+    reads response prose and never resolves the finding.
+    """
+
+    if request.reason is None or not request.reason.strip():
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            "self_verified requires a non-empty reason: say how you verified the repair.",
+            reason_code="response_fields_invalid",
+            field="/reason",
+        )
+    if not request.evidence_refs:
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "self_verified requires at least one evidence_refs id: record the evidence of "
+                "your own verification with publish_work first, then cite its evd_ or res_ id."
+            ),
+            reason_code="response_fields_invalid",
+            field="/evidence_refs",
+        )
+    refusal = self_verification_refusal(projection, finding_id(request.finding_id), records)
+    if refusal == FINDING_NOT_RECHECKED:
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "No check has tested this finding since it was recorded. Repair it first, then "
+                "run check; respond self_verified only if that check still cannot prove the "
+                "repair because of a Yoetz limit."
+            ),
+            reason_code=FINDING_NOT_RECHECKED,
+            field="/finding_id",
+        )
+    if refusal is not None:
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "Yoetz's newest check of this finding still sees it or names work you can do "
+                "(the rule fired again, a review without a packet limit ruled it still present, "
+                "nothing changed since the finding, or the check did not cover it), so this is "
+                "not a Yoetz limit. Repair it and check again; respond rejected with a reason if "
+                "the finding is wrong; respond acknowledged_not_done only if you truly will not "
+                "or cannot do it. status view=findings shows the unmet requirements."
+            ),
+            reason_code=refusal,
+            field="/finding_id",
+        )
+
+
 async def _records_through(
     runtime: TaskRuntime, frontier: Frontier
 ) -> tuple[tuple[LedgerRecord, ...], ProjectionState]:
@@ -550,6 +610,8 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                     reason_code="response_fields_invalid",
                     field="/reason",
                 )
+            if request.disposition == "self_verified":
+                _admit_self_verification(request, current_projection, current_records)
             reviewer_finding = finding_record.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
             reasoned = request.reason is not None and bool(request.reason.strip())
             if request.disposition == "acknowledged" and reviewer_finding and not reasoned:
@@ -631,7 +693,7 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                 EventSchema(
                     "response_recorded",
                     RESPONSE_EVENT_SCHEMA_VERSION
-                    if payload.disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE
+                    if payload.disposition in TERMINAL_RESPONSE_DISPOSITIONS
                     else "1.0.0",
                 ),
                 timestamp_from_datetime(now),

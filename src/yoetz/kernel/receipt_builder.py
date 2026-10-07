@@ -185,9 +185,11 @@ class ReceiptFindingState:
     resolved: bool
     # Issue #905 terminal states. ``acknowledged_not_done`` stays unresolved and blocking;
     # ``rejection_accepted`` stays unresolved but no longer blocks a clean conclusion. Both are
-    # disclosed by id in their own receipt sections.
+    # disclosed by id in their own receipt sections. ``self_verified`` (issue #984) stays
+    # unresolved, is not agent work, and caps the conclusion at ``insufficient_coverage``.
     acknowledged_not_done: bool = False
     rejection_accepted: bool = False
+    self_verified: bool = False
 
     def __post_init__(self) -> None:
         try:
@@ -198,7 +200,12 @@ class ReceiptFindingState:
             type(self.resolved) is not bool
             or type(self.acknowledged_not_done) is not bool
             or type(self.rejection_accepted) is not bool
-            or self.resolved + self.acknowledged_not_done + self.rejection_accepted > 1
+            or type(self.self_verified) is not bool
+            or self.resolved
+            + self.acknowledged_not_done
+            + self.rejection_accepted
+            + self.self_verified
+            > 1
         ):
             raise ValueError(_CONTEXT_INVALID)
 
@@ -810,6 +817,7 @@ def _apply_profile(
                 ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
                 ResponseDisposition.PROVENANCE_DISPUTED,
                 ResponseDisposition.REJECTED,
+                ResponseDisposition.SELF_VERIFIED,
                 ResponseDisposition.WAIVED,
             }:
                 counts[
@@ -897,6 +905,8 @@ def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
 def _conclusion(
     context: ReceiptBuildContext,
     unresolved_actionable: tuple[Finding, ...],
+    *,
+    self_verified: bool = False,
 ) -> ReceiptConclusion:
     advisory_gaps = (
         PLAN_DRIFT_ADVISORY_GAPS | PREEXISTING_TEST_INFORMATIONAL_GAPS | STANDING_TASK_FACT_GAPS
@@ -909,6 +919,10 @@ def _conclusion(
         context.lineage is not None and context.lineage.actionable_finding_ids
     ):
         return ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN
+    if self_verified:
+        # Issue #984 (ADR-034): only the agent verified these repairs; Yoetz could not prove
+        # them, so the receipt is at best ``insufficient_coverage``, never clean.
+        return ReceiptConclusion.INSUFFICIENT_COVERAGE
     if context.lineage is not None and context.lineage.blocks_clean_completion:
         return ReceiptConclusion.INSUFFICIENT_COVERAGE
     check = context.applicable_check
@@ -1758,14 +1772,21 @@ def build_receipt(
     # A ``rejection_accepted`` row stops blocking only on an artifact that also discloses it in its
     # own section (issue #905); an older artifact has no such section, so there it still blocks.
     settles_rejections = receipt_document_carries_terminal_sections(versions)
+    # A ``self_verified`` row (issue #984) likewise stops counting as agent work only where its
+    # own section discloses it; it still keeps the conclusion from reading clean.
     unresolved_actionable = tuple(
         finding
         for finding in findings
         if not states_by_id[finding.finding_id].resolved
         and not (settles_rejections and states_by_id[finding.finding_id].rejection_accepted)
+        and not (settles_rejections and states_by_id[finding.finding_id].self_verified)
         and FINDING_KIND_TRAITS[finding.kind][1]
     )
-    conclusion = _conclusion(context, unresolved_actionable)
+    conclusion = _conclusion(
+        context,
+        unresolved_actionable,
+        self_verified=any(states_by_id[finding.finding_id].self_verified for finding in findings),
+    )
     obligations = _select_obligations(context, findings)
     responses = _select_responses(context, frozenset(finding.finding_id for finding in findings))
     claim_refs = _select_claim_refs(context, findings)
@@ -1912,6 +1933,18 @@ def build_receipt(
         if terminal_sections
         else ()
     )
+    self_verified_ids = tuple(
+        sorted(
+            (
+                state.finding_id
+                for state in context.finding_states
+                if state.self_verified and state.finding_id in retained_ids
+            ),
+            key=_ascii_key,
+        )
+        if terminal_sections
+        else ()
+    )
     return ReceiptDocument(
         receipt_id=receipt_id,
         task_id=task_id,
@@ -1938,6 +1971,7 @@ def build_receipt(
         ),
         acknowledged_not_done_finding_ids=acknowledged_not_done_ids,
         rejection_accepted_finding_ids=rejection_accepted_ids,
+        self_verified_finding_ids=self_verified_ids,
         semantic_withheld_items=tuple(
             ReceiptSemanticWithheldItem(item_id=item_id)
             for item_id in (

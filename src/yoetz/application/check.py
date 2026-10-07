@@ -648,6 +648,7 @@ def _checklist_json(checklist: CheckFindingChecklist) -> JsonValue:
             "open": str(counts.open),
             "open_at_budget": str(counts.budget_reached),
             "rejection_accepted": str(counts.rejection_accepted),
+            "self_verified": str(counts.self_verified),
             "verified_resolved": str(counts.verified_resolved),
         },
         "items": tuple(
@@ -2819,7 +2820,8 @@ def _admit_prior_verdicts(
     Returns the admitted rulings, the count of unsupported ones (malformed, unknown or outside
     the fence, unshown, trimmed, reduced or repeated; disclosed as
     ``semantic_prior_verdicts_unsupported``), and the count set aside because their target is
-    already final (``verified_resolved``, ``acknowledged_not_done``, ``rejection_accepted``).
+    already final (``verified_resolved``, ``acknowledged_not_done``, ``rejection_accepted``,
+    ``self_verified``).
     A final item is never re-reviewed, so a ruling on it says nothing about the review's other
     findings and must not raise the gap that blocks every unruled open finding; it is only
     counted as a diagnostic.
@@ -3216,8 +3218,8 @@ def _record_restatement(
     reviewer still finds it (``still_present``, citing what the challenge cited), so the check
     cannot resolve it by silence. A restatement contradicts an explicit ``fixed`` or
     ``withdrawn`` ruling on the same item, which becomes ``unassessable``. An
-    ``acknowledged_not_done`` or ``rejection_accepted`` item is final, stays disclosed on the
-    receipt, and needs nothing recorded. (A ``verified_resolved`` item is never a restatement
+    ``acknowledged_not_done``, ``rejection_accepted`` or ``self_verified`` (issue #984) item is
+    final, stays disclosed on the receipt, and needs nothing recorded. (A ``verified_resolved`` item is never a restatement
     target: see ``_restated_finding``.) When no ruling can be recorded (the check's ruling bound
     is full) the restatement is not suppressed and is minted as before.
     """
@@ -3225,6 +3227,7 @@ def _record_restatement(
     if finding_todo_state(case.projection, restated) in {
         FindingTodoState.ACKNOWLEDGED_NOT_DONE,
         FindingTodoState.REJECTION_ACCEPTED,
+        FindingTodoState.SELF_VERIFIED,
     }:
         return True, False
     key = str(restated)

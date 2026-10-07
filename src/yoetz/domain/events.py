@@ -25,6 +25,7 @@ from yoetz.domain.coordination import (
 from yoetz.domain.findings import (
     FINDING_KIND_TRAITS,
     MAX_RECORDED_VERDICTS,
+    TERMINAL_RESPONSE_DISPOSITIONS,
     CheckVerdict,
     Finding,
     FindingKind,
@@ -280,8 +281,9 @@ SEMANTIC_EVENT_SCHEMA_VERSIONS: Final = ("1.1.0", SEMANTIC_EVENT_SCHEMA_VERSION)
 FINDING_EVENT_SCHEMA_VERSION: Final = "1.3.0"
 FINDING_SNIPPET_EVENT_SCHEMA_VERSION: Final = "1.4.0"
 # ``response_recorded`` 1.0.0 is released and frozen. 1.1.0 exists only to admit the terminal
-# ``acknowledged_not_done`` disposition (issue #905); every other disposition keeps 1.0.0 bytes,
-# so the version is a pure function of the payload and old ledgers replay unchanged.
+# ``acknowledged_not_done`` (issue #905) and ``self_verified`` (issue #984) dispositions; every
+# other disposition keeps 1.0.0 bytes, so the version is a pure function of the payload and old
+# ledgers replay unchanged.
 RESPONSE_EVENT_SCHEMA_VERSION: Final = "1.1.0"
 COORDINATION_EVENT_SCHEMA_VERSION: Final = "1.0.0"
 SESSION_EVENT_SCHEMA_VERSION: Final = "1.1.0"
@@ -2319,10 +2321,14 @@ class ResponseRecordedPayload:
             ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
             ResponseDisposition.PROVENANCE_DISPUTED,
             ResponseDisposition.REJECTED,
+            ResponseDisposition.SELF_VERIFIED,
             ResponseDisposition.WAIVED,
         }:
             if self.reason is None:
                 raise ProtocolValueError("response_fields_invalid")
+        # Issue #984: a self-verification names the agent's own recorded evidence.
+        if disposition is ResponseDisposition.SELF_VERIFIED and not self.evidence_refs:
+            raise ProtocolValueError("response_fields_invalid")
         if disposition is ResponseDisposition.WAIVED:
             if self.waiver_scope is None:
                 raise ProtocolValueError("response_fields_invalid")
@@ -4930,7 +4936,7 @@ def _validate_event_schema_payload(
             # of those readable; 1.4.0 is reserved for snippets and the new semantic kinds.
             raise ProtocolValueError("invalid_event_schema")
     if type(payload) is ResponseRecordedPayload:
-        if (payload.disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE) != (
+        if (payload.disposition in TERMINAL_RESPONSE_DISPOSITIONS) != (
             schema.version == RESPONSE_EVENT_SCHEMA_VERSION
         ):
             raise ProtocolValueError("invalid_event_schema")

@@ -449,6 +449,7 @@ def _finding_states(projection: object) -> tuple[ReceiptFindingState, ...]:
                 todo is FindingTodoState.VERIFIED_RESOLVED,
                 acknowledged_not_done=todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE,
                 rejection_accepted=todo is FindingTodoState.REJECTION_ACCEPTED,
+                self_verified=todo is FindingTodoState.SELF_VERIFIED,
             )
         )
     return tuple(states)

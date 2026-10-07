@@ -243,7 +243,13 @@ async def test_lineage_view_reuses_cli_renderer_and_preserves_child_facts(
     assert status_request.cursor is None
 
 
-_FINDING_STATES = ("open", "verified_resolved", "acknowledged_not_done", "rejection_accepted")
+_FINDING_STATES = (
+    "open",
+    "verified_resolved",
+    "acknowledged_not_done",
+    "rejection_accepted",
+    "self_verified",
+)
 
 
 def _finding_row(number: int, todo_state: str) -> dict[str, object]:
@@ -251,6 +257,7 @@ def _finding_row(number: int, todo_state: str) -> dict[str, object]:
     responded = {
         "acknowledged_not_done": "acknowledged_not_done",
         "rejection_accepted": "rejected",
+        "self_verified": "self_verified",
     }.get(todo_state)
     return {
         "finding_id": f"fnd_52000000-0000-4000-8000-00000000002{number}",
@@ -314,6 +321,8 @@ async def test_findings_view_shows_each_items_final_state_through_the_cli_render
         f"[x] F-2 {rows[1]['finding_id']} verified_resolved",
         f"[~] F-3 {rows[2]['finding_id']} acknowledged_not_done",
         f"[-] F-4 {rows[3]['finding_id']} rejection_accepted",
+        # Issue #984: final, disclosed, never rendered as resolved.
+        f"[s] F-5 {rows[4]['finding_id']} self_verified",
     )
     for line in expected:
         assert line in rendered.lines

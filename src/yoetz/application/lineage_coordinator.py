@@ -855,8 +855,9 @@ class LineageManifestCoordinator:
             if type(finding) is not Finding:
                 raise _invalid()
             priority, actionable = FINDING_KIND_TRAITS[finding.kind]
-            # Deliberately strict (issue #905): a child's ``rejection_accepted`` or
-            # ``acknowledged_not_done`` row stays actionable and unresolved here. This frozen
+            # Deliberately strict (issue #905): a child's ``rejection_accepted``,
+            # ``acknowledged_not_done`` or ``self_verified`` (issue #984) row stays actionable and
+            # unresolved here. This frozen
             # snapshot carries only ``actionable`` and ``resolved``, and neither may be bent to
             # mean "withdrawn"; the child's own receipt discloses the terminal state.
             resolved = finding_is_resolved(projection, finding_key)

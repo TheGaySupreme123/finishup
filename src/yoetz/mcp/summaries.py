@@ -167,7 +167,13 @@ def _identity_clause(envelope: Mapping[str, JsonValue]) -> str:
     return "; ".join(parts) + "; "
 
 
-_TODO_STATES: Final = ("open", "verified_resolved", "acknowledged_not_done", "rejection_accepted")
+_TODO_STATES: Final = (
+    "open",
+    "verified_resolved",
+    "acknowledged_not_done",
+    "rejection_accepted",
+    "self_verified",
+)
 _CHECKLIST_NEXT: Final = frozenset({"decide_at_budget", "request_receipt", "work_open_findings"})
 _BUDGET: Final = re.compile(r"^(?:[1-9]|[1-4][0-9]|50)$", re.ASCII)
 _ROUNDS: Final = re.compile(r"^(?:0|[1-9][0-9]{0,17})$", re.ASCII)
@@ -224,11 +230,19 @@ def _checklist_clause(rows: object, budget: object, next_step: object | None) ->
         + (f" ({at_budget} at budget {budget_value})" if at_budget else "")
         + f", verified {counts['verified_resolved']}"
         + f", not done {counts['acknowledged_not_done']}"
-        + f", rejection accepted {counts['rejection_accepted']}; "
+        + f", rejection accepted {counts['rejection_accepted']}"
+        + _self_verified_part(counts["self_verified"])
+        + "; "
     )
     if type(next_step) is str and next_step in _CHECKLIST_NEXT:
         clause += f"next: {next_step}; "
     return clause
+
+
+def _self_verified_part(count: int) -> str:
+    """Issue #984: named only when present, so every earlier summary keeps its exact bytes."""
+
+    return f", self-verified {count}" if count else ""
 
 
 def _checklist_budget_cue(budget: object, next_step: object) -> str:
@@ -265,6 +279,13 @@ def _checklist_counts_clause(
         if type(raw) is not str or _ROUNDS.fullmatch(raw) is None:
             return ""
         values[key] = int(raw)
+    # Absent on a result an earlier build shaped (issue #984).
+    raw_self_verified = source.get("self_verified", "0")
+    self_verified = (
+        int(raw_self_verified)
+        if type(raw_self_verified) is str and _ROUNDS.fullmatch(raw_self_verified)
+        else 0
+    )
     budget_text = budget if type(budget) is str and _BUDGET.fullmatch(budget) else None
     clause = (
         f"to-do: open {values['open']}"
@@ -275,7 +296,9 @@ def _checklist_counts_clause(
         )
         + f", verified {values['verified_resolved']}"
         + f", not done {values['acknowledged_not_done']}"
-        + f", rejection accepted {values['rejection_accepted']}; "
+        + f", rejection accepted {values['rejection_accepted']}"
+        + _self_verified_part(self_verified)
+        + "; "
     )
     if type(next_step) is str and next_step in _CHECKLIST_NEXT:
         label = "finding checklist next" if input_action_required else "next"

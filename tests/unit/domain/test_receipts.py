@@ -28,6 +28,7 @@ from yoetz.domain.receipts import (
     receipt_weakest_coverage,
     render_receipt_compact,
     render_receipt_human,
+    unresolved_findings_for_render,
 )
 from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from yoetz.protocol.errors import ProtocolValueError
@@ -151,6 +152,7 @@ def test_receipt_document_is_frozen_and_exactly_shaped() -> None:
         "semantic_provenance",
         "acknowledged_not_done_finding_ids",
         "rejection_accepted_finding_ids",
+        "self_verified_finding_ids",
         "semantic_withheld_items",
     )
     assert is_dataclass(document)
@@ -197,6 +199,42 @@ def test_children_use_receipt_document_1_3_artifact_and_keep_inner_version() -> 
     document = receipt_document_from_json(wire)
     assert document.schema_version == "1.0.0"
     assert receipt_document_to_json(document) == wire
+
+
+def _terminal_artifact(conclusion: str) -> dict[str, Any]:
+    wire = _variant("unresolved-findings.case.json", "mixed_open_responses")
+    versions = cast(dict[str, Any], wire["versions"])
+    for entry in cast(list[dict[str, str]], versions["schema_versions"]):
+        if entry["schema_id"] == "receipts/receipt-document":
+            entry["schema_version"] = "1.3.0"
+    wire["children"] = {"children": []}
+    wire["conclusion"] = conclusion
+    return wire
+
+
+def test_self_verified_ids_get_their_own_section_and_never_read_clean() -> None:
+    """Issue #984 (ADR-034): the agent's own verification is disclosed, never a clean receipt."""
+
+    wire = _terminal_artifact("insufficient_coverage")
+    findings = cast(list[dict[str, Any]], wire["findings"])
+    finding = cast(str, findings[0]["finding_id"])
+    wire["self_verified_finding_ids"] = [finding]
+    document = receipt_document_from_json(wire)
+    assert document.self_verified_finding_ids == (finding,)
+    encoded = receipt_document_to_json(document)
+    assert encoded["self_verified_finding_ids"] == [finding]
+    assert receipt_document_from_json(encoded) == document
+    for markdown in (True, False):
+        rendered = render_receipt_human(document, markdown=markdown)
+        assert "Self-verified by the agent; Yoetz could not prove the repair" in rendered
+        assert f"- {finding}" in rendered
+    assert finding not in {item.finding_id for item in unresolved_findings_for_render(document)}
+
+    clean = _terminal_artifact("no_unresolved_deterministic_findings")
+    clean["self_verified_finding_ids"] = [finding]
+    with pytest.raises(ProtocolValueError) as exc_info:
+        receipt_document_from_json(clean)
+    _assert_reason(exc_info, "invalid_receipt_conclusion")
 
 
 def test_children_are_rejected_under_the_legacy_receipt_artifact() -> None:

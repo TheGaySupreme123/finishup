@@ -1377,8 +1377,11 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
             disposition["description"] = (
                 "Acknowledged accepts no waiver fields and, on an AI-powered review finding, "
                 "requires a reason the next review reads (for answer_question, the answer). "
-                "Acknowledged_not_done means you will "
-                "not do it and is final. Provenance_disputed contests the finding's authorship "
+                "Self_verified means you repaired it, Yoetz's later check still cannot confirm it "
+                "because of a Yoetz limit, and you checked it yourself: reason says how, and "
+                "evidence_refs (at least one) cite your recorded evidence; it is final. "
+                "Acknowledged_not_done means you will not or cannot do it, is final, and is the "
+                "last resort. Provenance_disputed contests the finding's authorship "
                 "or provenance premise rather than its conclusion. It, rejected and "
                 "acknowledged_not_done require reason and accept no waiver fields. Waived "
                 "requires reason and waiver_scope."
@@ -1891,16 +1894,23 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
     _descriptor(
         "respond",
         "Respond to a finding",
-        "Records an acknowledgement, provenance dispute, or rejection for one finding at any "
-        "frontier at or after its record, such as the current status frontier, not its "
-        "subject_frontier. This appends one "
+        "Records an acknowledgement, self-verification, provenance dispute, or rejection for one "
+        "finding at any frontier at or after its record, such as the current status frontier, "
+        "not its subject_frontier. For an unresolved finding: repair it and check first. "
+        "If you repaired it and Yoetz still cannot confirm it (a Yoetz limit), verify it yourself, "
+        "record that evidence, and respond self_verified saying how you checked it, with the "
+        "evidence ids; it is refused (finding_not_rechecked, finding_not_proof_limited) while "
+        "no later check ran or Yoetz still sees the issue. A Yoetz limit is never a "
+        "yoetz-blocker. Use acknowledged_not_done only if you truly will not or cannot do it. "
+        "This appends one "
         "finding-response record to the local Yoetz ledger; it does not publish to GitHub or run an "
         "AI-powered evaluation. It does not resolve other findings or establish that underlying work "
         "changed. A provenance_disputed response contests the finding's authorship or provenance "
         "premise rather than its conclusion, requires a reason, and never resolves the finding. "
         "Bounded waiver is reserved for an authorized local-CLI human and is not an agent option. "
         "A readable response removes that finding from unanswered_finding_count without reducing "
-        "receipt_blocking_finding_count, erasing its historical record, or closing an independent "
+        "receipt_blocking_finding_count (except self_verified, which is disclosed and keeps the "
+        "receipt from reading clean), erasing its historical record, or closing an independent "
         "coverage gap; only a later qualifying check of the repaired record resolves a finding. "
         "Disposition older findings before the final check. Call once per finding: a readable "
         "response to a finding returned by that check, or acknowledging a non-actionable "
@@ -2048,7 +2058,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:f4e91ea5ae6138ca381d3a990340067b6e28a545340eec9c0ca4737a18f06166",
-                "respond": "sha256:191f69e1592bd6bb23f7173725645dc339441b12eaa91c08cc3da4e9feaf0b85",
+                "respond": "sha256:9bf4608611397ad8f093fa8ec1a2650953254ce6ed993dc6d59abe06448029ac",
                 "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:2d99f8dce9f7dca0f92d51550d2cf8585baed276f13f638103cba61a122bba23",
@@ -2060,7 +2070,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:3cd2326917a550c0a24f3e94c6141f41b1549107030154c3e5b29f46bfaef78b",
-                "respond": "sha256:191f69e1592bd6bb23f7173725645dc339441b12eaa91c08cc3da4e9feaf0b85",
+                "respond": "sha256:9bf4608611397ad8f093fa8ec1a2650953254ce6ed993dc6d59abe06448029ac",
                 "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:2d99f8dce9f7dca0f92d51550d2cf8585baed276f13f638103cba61a122bba23",
@@ -2071,8 +2081,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:73505630e519e9578e1c1167921f17a20941a8cc555e1b8dbccf5af5cb8b236f",
-        "strict": "sha256:f880217802aafc98b76e93c3cdbb125bea0531c5430e3b88e62b9c8d0925c39f",
+        "policy": "sha256:1215dffdc9c195752d67ca25b3d8852f2497f65480708cd2e9debbda16a8a295",
+        "strict": "sha256:0eb3f62d725adb7060c16d9e9308970129ce6e12b961276575aba2903e13f2a9",
     }
 )
 

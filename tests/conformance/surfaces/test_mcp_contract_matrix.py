@@ -302,8 +302,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:73505630e519e9578e1c1167921f17a20941a8cc555e1b8dbccf5af5cb8b236f",
-        "strict": "sha256:f880217802aafc98b76e93c3cdbb125bea0531c5430e3b88e62b9c8d0925c39f",
+        "policy": "sha256:1215dffdc9c195752d67ca25b3d8852f2497f65480708cd2e9debbda16a8a295",
+        "strict": "sha256:0eb3f62d725adb7060c16d9e9308970129ce6e12b961276575aba2903e13f2a9",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -793,6 +793,7 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
         "acknowledged_not_done",
         "provenance_disputed",
         "rejected",
+        "self_verified",
         "waived",
     )
     assert "allOf" not in schema
@@ -803,6 +804,11 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     # The tool description is the first text a caller reads, and it is digest-pinned.
     assert "provenance dispute" in descriptor.description
     assert "provenance_disputed" in descriptor.description
+    # Issue #984: repair first, self-verify a Yoetz limit, acknowledge only as the last resort.
+    text = descriptor.description
+    assert text.index("repair it and check first") < text.index("respond self_verified")
+    assert text.index("respond self_verified") < text.index("acknowledged_not_done only if")
+    assert "never a yoetz-blocker" in text
 
 
 def test_guidance_resources_are_exact_and_static() -> None:

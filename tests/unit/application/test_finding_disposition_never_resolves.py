@@ -30,6 +30,7 @@ from yoetz.domain.findings import (
 from yoetz.domain.values import (
     Frontier,
     event_id,
+    evidence_id,
     finding_id,
     obligation_id,
     timestamp_from_string,
@@ -103,7 +104,12 @@ def _response(disposition: ResponseDisposition) -> ResponseRecordedPayload:
         finding_id=_FINDING_ID,
         finding_frontier=Frontier(1, _DIGEST),
         disposition=disposition,
-        evidence_refs=(),
+        # Issue #984: a self-verification always cites the agent's own recorded evidence.
+        evidence_refs=(
+            (evidence_id("evd_00000000-0000-4000-8000-000000000984"),)
+            if disposition is ResponseDisposition.SELF_VERIFIED
+            else ()
+        ),
         reason=reason,
         waiver_scope=waiver_scope,
         waiver_expiry=waiver_expiry,
@@ -154,7 +160,10 @@ def test_no_disposition_marks_a_finding_resolved(disposition: ResponseDispositio
         f"{disposition.value} resolved the finding; the agent guidance promises it does not"
     )
     assert unanswered_finding_count(projection, ()) == 0
-    assert receipt_blocking_finding_count(projection) == 1
+    # ``self_verified`` (issue #984) is never resolved, but it is not agent work: it leaves the
+    # receipt-blocking count and keeps the conclusion from reading clean instead.
+    expected = 0 if disposition is ResponseDisposition.SELF_VERIFIED else 1
+    assert receipt_blocking_finding_count(projection) == expected
 
 
 def test_an_unanswered_finding_is_also_unresolved() -> None:

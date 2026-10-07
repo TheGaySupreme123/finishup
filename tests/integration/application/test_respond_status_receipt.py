@@ -9,7 +9,7 @@ import hashlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import apsw
 import pydantic
@@ -2626,6 +2626,11 @@ async def _drain_host_observation_gaps(
     *,
     seed: int,
     expected_frontier: int,
+    known_gaps: tuple[str, ...] = (
+        "content_unselected",
+        "host_outcome_unavailable",
+        "unpaired_event",
+    ),
 ):
     """Append an observation whose structured event is readable but captured bytes are absent."""
 
@@ -2650,11 +2655,7 @@ async def _drain_host_observation_gaps(
     coverage = replace(
         coverage_for_channel(PublicationChannel.HOOK_OBSERVED),
         ledger_freshness=LedgerFreshness.REDACTED_GAP,
-        known_gaps=(
-            "content_unselected",
-            "host_outcome_unavailable",
-            "unpaired_event",
-        ),
+        known_gaps=known_gaps,
     )
     return await ledger.append_batch(
         AppendCommand(
@@ -8496,3 +8497,98 @@ async def test_requested_output_facts_reach_the_evaluator_as_task_fact_gaps(
     )
 
     assert seen == [(REQUESTED_OUTPUT_ABSENT_FACT, REQUESTED_OUTPUT_GIT_IGNORED_GAP)]
+
+
+async def _compact_readiness(app: Application, started: StartInternalResult, seed: int) -> Any:
+    status = await app.status(
+        StatusRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "view": "compact",
+                "limit": "1",
+            }
+        )
+    )
+    return status.closure_readiness
+
+
+async def test_self_verified_answers_a_local_finding_only_observation_loss_keeps_unproven() -> None:
+    """Issue #984, tb4n1 B3/C1: one lost hook input marked later observations
+    ``observation_input_loss``; the repaired local finding could never be proven absent and the
+    agent filed a false ``yoetz-blocker``. It now verifies the repair itself and says so."""
+
+    app, runtime, _ = _build_app(seed_offset=41)
+    started, checked, obligation = await _bootstrap_finding(app, seed=9800)
+    finding = checked.findings[0]
+    repaired = await _repair_open_obligation(
+        app, started, obligation, checked.result_frontier, seed=9820
+    )
+    evidence = protocol_id("evd_", 9820)
+    drained = await _drain_host_observation_gaps(
+        app,
+        runtime,
+        started,
+        seed=9840,
+        expected_frontier=repaired.result_frontier.sequence,
+        known_gaps=("observation_input_loss",),
+    )
+    rechecked = await app.check(
+        CheckRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 9850)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(drained.result_frontier),
+                "mode": "deterministic_only",
+                "max_findings": "3",
+            }
+        )
+    )
+    assert type(rechecked) is CheckCommitResult
+    assert "observation_input_loss" in rechecked.coverage.known_gaps
+    page = await _findings_view(app, started, 9855, include_resolved=True)
+    row = next(item for item in page.items if item.finding_id == finding.finding_id)
+    assert row.resolved is False
+    assert "coverage:observation_input_loss" in cast(str, row.detail)
+    assert "respond `self_verified`" in cast(str, row.detail)
+    blocking_before = int(
+        cast(str, (await _compact_readiness(app, started, 9857)).receipt_blocking_finding_count)
+    )
+
+    answered = await app.respond(
+        RespondRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 9860)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(rechecked.result_frontier),
+                "finding_id": finding.finding_id,
+                "finding_frontier": _frontier(rechecked.result_frontier),
+                "disposition": "self_verified",
+                "reason": "The obligation's result is recorded; I re-read the ledger row myself.",
+                "evidence_refs": (evidence,),
+            }
+        )
+    )
+    assert answered.response.disposition == "self_verified"
+    page = await _findings_view(app, started, 9865, include_resolved=True)
+    row = next(item for item in page.items if item.finding_id == finding.finding_id)
+    assert (row.todo_state, row.resolved) == ("self_verified", False)
+    readiness = await _compact_readiness(app, started, 9870)
+    # The self-verified item stops counting as agent work; the other findings still do.
+    assert int(cast(str, readiness.receipt_blocking_finding_count)) == blocking_before - 1
+    assert "finding_self_verified" in (readiness.standing_limitations or ())
+    receipt = await app.receipt(
+        ReceiptRequest.model_validate(
+            _receipt_wire(
+                9880,
+                task_id=started.task_id,
+                session=started.session_id,
+                writer=started.writer_id,
+                frontier=answered.result_frontier,
+            )
+        )
+    )
+    assert receipt.conclusion != "no_unresolved_deterministic_findings"

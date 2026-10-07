@@ -2982,7 +2982,13 @@ def _todo_state_schema() -> dict[str, JsonValue]:
     """The closed finding to-do states of issue #905."""
 
     return {
-        "enum": ["acknowledged_not_done", "open", "rejection_accepted", "verified_resolved"],
+        "enum": [
+            "acknowledged_not_done",
+            "open",
+            "rejection_accepted",
+            "self_verified",
+            "verified_resolved",
+        ],
         "type": "string",
     }
 
@@ -3214,6 +3220,7 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                         "open",
                         "open_at_budget",
                         "rejection_accepted",
+                        "self_verified",
                         "verified_resolved",
                     )
                 },
@@ -3222,6 +3229,7 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                     "open",
                     "open_at_budget",
                     "rejection_accepted",
+                    "self_verified",
                     "verified_resolved",
                 ],
                 "type": "object",
@@ -3616,7 +3624,7 @@ def _status_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             values.append(value)
     findings_filter = cast(dict[str, JsonValue], definitions["findings_filter"])
     filter_properties = cast(dict[str, JsonValue], findings_filter["properties"])
-    _admit_acknowledged_not_done(cast(dict[str, JsonValue], filter_properties["disposition"]))
+    _admit_terminal_dispositions(cast(dict[str, JsonValue], filter_properties["disposition"]))
     rules = cast(list[JsonValue], document["allOf"])
     # The no-filter branch in v1.1 also contains the previously-added results view.  Keep the
     # selector views explicitly filter-free in this successor.
@@ -3804,7 +3812,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "type": "object",
     }
     finding_item_properties["challenge"] = {"$ref": "#/$defs/finding_challenge"}
-    _admit_acknowledged_not_done(cast(dict[str, JsonValue], finding_item_properties["disposition"]))
+    _admit_terminal_dispositions(cast(dict[str, JsonValue], finding_item_properties["disposition"]))
     # Issue #905 to-do facts on each row, and the budget they read against on the page.
     definitions["todo_state"] = _todo_state_schema()
     finding_item_properties["todo_state"] = {"$ref": "#/$defs/todo_state"}
@@ -3813,22 +3821,23 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     cast(dict[str, JsonValue], findings_page["properties"])["attempt_budget"] = (
         _attempt_budget_schema()
     )
-    cast(list[JsonValue], finding_item["allOf"]).append(
-        {
-            "if": {
-                "properties": {"disposition": {"const": _ACKNOWLEDGED_NOT_DONE}},
-                "required": ["disposition"],
-            },
-            "then": {
-                "properties": {
-                    "reason": {"not": {"type": "null"}},
-                    "resolved": {"const": False},
-                    "waiver_expiry": {"type": "null"},
-                    "waiver_scope": {"type": "null"},
-                }
-            },
-        }
-    )
+    for terminal in (_ACKNOWLEDGED_NOT_DONE, _SELF_VERIFIED):
+        cast(list[JsonValue], finding_item["allOf"]).append(
+            {
+                "if": {
+                    "properties": {"disposition": {"const": terminal}},
+                    "required": ["disposition"],
+                },
+                "then": {
+                    "properties": {
+                        "reason": {"not": {"type": "null"}},
+                        "resolved": {"const": False},
+                        "waiver_expiry": {"type": "null"},
+                        "waiver_scope": {"type": "null"},
+                    }
+                },
+            }
+        )
     for definition_name in ("candidate_finding_item", "finding_item"):
         finding_definition = cast(dict[str, JsonValue], definitions[definition_name])
         finding_properties = cast(dict[str, JsonValue], finding_definition["properties"])
@@ -4255,8 +4264,9 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
                 "type": "array",
                 "uniqueItems": True,
             },
-            # "2" is the current table; "1" stays admitted for a result an earlier 0.3 build shaped.
-            "gap_classification_version": {"enum": ["1", "2"], "type": "string"},
+            # "3" is the current table (#984 ``finding_self_verified``); "1" and "2" stay admitted
+            # for a result an earlier 0.3 build shaped.
+            "gap_classification_version": {"enum": ["1", "2", "3"], "type": "string"},
             "standing_limitations": {
                 "items": {"$ref": "#/$defs/code"},
                 "maxItems": 128,
@@ -4622,14 +4632,22 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     }
     receipt_response = cast(dict[str, JsonValue], definitions["receipt_response"])
     response_properties = cast(dict[str, JsonValue], receipt_response["properties"])
-    _admit_acknowledged_not_done(cast(dict[str, JsonValue], response_properties["disposition"]))
+    _admit_terminal_dispositions(cast(dict[str, JsonValue], response_properties["disposition"]))
     cast(list[JsonValue], receipt_response["allOf"]).insert(1, _acknowledged_not_done_condition())
+    _insert_before_waived(
+        cast(list[JsonValue], receipt_response["allOf"]), _self_verified_condition()
+    )
     properties = cast(dict[str, JsonValue], document["properties"])
     findings = cast(dict[str, JsonValue], properties["findings"])
     findings["items"] = {"$ref": SCHEMA_NAMESPACE + "findings/finding-1.4.0.schema.json"}
     properties["children"] = {"$ref": "#/$defs/receipt_children"}
     # Issue #905 terminal states, disclosed by id; present only when non-empty.
-    for name in ("acknowledged_not_done_finding_ids", "rejection_accepted_finding_ids"):
+    # Issue #984: self-verified items (the agent verified a repair Yoetz could not prove).
+    for name in (
+        "acknowledged_not_done_finding_ids",
+        "rejection_accepted_finding_ids",
+        "self_verified_finding_ids",
+    ):
         properties[name] = {
             "items": {"$ref": "#/$defs/finding_id"},
             "maxItems": 100,
@@ -4637,6 +4655,17 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
             "type": "array",
             "uniqueItems": True,
         }
+    # A repair only the agent verified never reads as clean (issue #984, ADR-034).
+    cast(list[JsonValue], document.setdefault("allOf", [])).append(
+        {
+            "if": {"required": ["self_verified_finding_ids"]},
+            "then": {
+                "properties": {
+                    "conclusion": {"not": {"const": "no_unresolved_deterministic_findings"}}
+                }
+            },
+        }
+    )
     # Issue #920: preserve only bounded opaque identities and the fixed heuristic reason in
     # receipt JSON. Empty arrays are omitted by the domain codec for historical byte stability.
     definitions["semantic_withheld_item"] = {
@@ -7158,13 +7187,47 @@ def _no_waiver_fields() -> dict[str, JsonValue]:
     return {"not": {"anyOf": [{"required": ["waiver_scope"]}, {"required": ["waiver_expiry"]}]}}
 
 
-def _admit_acknowledged_not_done(disposition: dict[str, JsonValue]) -> None:
-    """Add the terminal not-done disposition to one disposition enum (issue #905)."""
+_SELF_VERIFIED: Final = "self_verified"
+
+
+def _admit_terminal_dispositions(disposition: dict[str, JsonValue]) -> None:
+    """Add the terminal not-done (#905) and self-verified (#984) dispositions to one enum."""
 
     values = cast(list[JsonValue], disposition["enum"])
-    if _ACKNOWLEDGED_NOT_DONE not in values:
-        values.append(_ACKNOWLEDGED_NOT_DONE)
-        values.sort(key=lambda item: str(item).encode("ascii"))
+    for value in (_ACKNOWLEDGED_NOT_DONE, _SELF_VERIFIED):
+        if value not in values:
+            values.append(value)
+    values.sort(key=lambda item: str(item).encode("ascii"))
+
+
+def _insert_before_waived(rules: list[JsonValue], rule: dict[str, JsonValue]) -> None:
+    """Insert one per-disposition rule in disposition order, before the ``waived`` rule."""
+
+    for index, existing in enumerate(rules):
+        current = cast(dict[str, JsonValue], existing)
+        guard = cast(dict[str, JsonValue], current.get("if", current))
+        properties = cast(dict[str, JsonValue], guard.get("properties", {}))
+        disposition = cast(dict[str, JsonValue], properties.get("disposition", {}))
+        if disposition.get("const") == "waived":
+            rules.insert(index, rule)
+            return
+    rules.append(rule)
+
+
+def _self_verified_condition(evidence_field: str = "evidence_refs") -> dict[str, JsonValue]:
+    """``self_verified`` needs a reason and at least one evidence reference, never a waiver."""
+
+    return {
+        "if": {
+            "properties": {"disposition": {"const": _SELF_VERIFIED}},
+            "required": ["disposition"],
+        },
+        "then": {
+            **_no_waiver_fields(),
+            "properties": {evidence_field: {"minItems": 1}},
+            "required": ["reason", evidence_field],
+        },
+    }
 
 
 def _acknowledged_not_done_condition() -> dict[str, JsonValue]:
@@ -7191,13 +7254,24 @@ def _response_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue
         raise SchemaGenerationError(
             "response_recorded_schema_template_invalid", entries=(entry.relative_path,)
         ) from exc
-    _admit_acknowledged_not_done(disposition)
+    _admit_terminal_dispositions(disposition)
     rules.insert(
         1,
         {
             **_no_waiver_fields(),
             "properties": {"disposition": {"const": _ACKNOWLEDGED_NOT_DONE}},
             "required": ["reason"],
+        },
+    )
+    _insert_before_waived(
+        rules,
+        {
+            **_no_waiver_fields(),
+            "properties": {
+                "disposition": {"const": _SELF_VERIFIED},
+                "evidence_refs": {"minItems": 1},
+            },
+            "required": ["reason", "evidence_refs"],
         },
     )
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
@@ -7216,8 +7290,9 @@ def _respond_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         raise SchemaGenerationError(
             "respond_request_schema_template_invalid", entries=(entry.relative_path,)
         ) from exc
-    _admit_acknowledged_not_done(disposition)
+    _admit_terminal_dispositions(disposition)
     rules.insert(1, _acknowledged_not_done_condition())
+    _insert_before_waived(rules, _self_verified_condition())
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     if "title" in document:
         document["title"] = f"Yoetz respond request {entry.schema_version}"
@@ -7238,8 +7313,9 @@ def _respond_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         raise SchemaGenerationError(
             "respond_result_schema_template_invalid", entries=(entry.relative_path,)
         ) from exc
-    _admit_acknowledged_not_done(disposition)
+    _admit_terminal_dispositions(disposition)
     rules.insert(1, _acknowledged_not_done_condition())
+    _insert_before_waived(rules, _self_verified_condition("evidence"))
     _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     if "title" in document:

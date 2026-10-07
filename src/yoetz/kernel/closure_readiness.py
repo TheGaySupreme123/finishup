@@ -41,7 +41,7 @@ from yoetz.domain.receipts import CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS
 from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel.claims import completion_claim_present
 from yoetz.kernel.finding_resolution import finding_is_resolved
-from yoetz.kernel.finding_todo import finding_blocks_receipt
+from yoetz.kernel.finding_todo import FindingTodoState, finding_blocks_receipt, finding_todo_state
 from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS, PLAN_DRIFT_GAPS
 from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
 from yoetz.kernel.receipt_capacity import current_receipt_findings
@@ -58,6 +58,7 @@ from yoetz.protocol.models import SemanticStatus
 __all__ = [
     "ACKNOWLEDGED_NOT_DONE",
     "AGENT_READINESS_CONDITIONS",
+    "FINDING_SELF_VERIFIED_GAP",
     "GAP_CLASSIFICATION",
     "GAP_CLASSIFICATION_VERSION",
     "MAX_ACKNOWLEDGED_READINESS_ITEMS",
@@ -80,8 +81,12 @@ __all__ = [
 # Bump when any assignment below changes meaning. Status responses carry the version so a reader
 # can tell which table classified a recorded readiness answer. "2": the task-statement gap
 # ``instruction_requirement_unmapped`` became agent-actionable and the previously unclassified
-# ``compound_outcome_unavailable`` became a standing limitation.
-GAP_CLASSIFICATION_VERSION: Final = "2"
+# ``compound_outcome_unavailable`` became a standing limitation. "3": the standing readiness code
+# ``finding_self_verified`` (issue #984, ADR-034) was added.
+GAP_CLASSIFICATION_VERSION: Final = "3"
+# Issue #984 (ADR-034): a current finding the agent answered ``self_verified``. Yoetz could not
+# prove the repair; the agent verified it itself. Disclosed, never agent work.
+FINDING_SELF_VERIFIED_GAP: Final = "finding_self_verified"
 UNCLASSIFIED_GAP_PREFIX: Final = "unclassified_gap:"
 
 _CODE_RE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
@@ -265,6 +270,9 @@ GAP_CLASSIFICATION: Final[Mapping[str, GapClass]] = MappingProxyType(
         # assertion.
         "command_attempt_uncorroborated": _S,
         "command_attempt_mismatch": _A,
+        # -- Findings the agent self-verified because a Yoetz limit kept the repair unproven
+        # (issue #984). Final and disclosed; no agent action removes it.
+        FINDING_SELF_VERIFIED_GAP: _S,
         # -- Lineage (ADR-027). Child work, child verification and a check that has not covered
         # the latest manifest are actionable; unreadable, restricted or terminal child facts are
         # disclosures. A manifest that trails the catalog is refreshed by the service, so, like
@@ -492,6 +500,9 @@ class ClosureReadinessFacts:
     # hand-built fact set at its pre-#976 answer.
     closing_review_current: bool = True
     semantic_review_used: bool = False
+    # Issue #984: current findings in the terminal ``self_verified`` state. Not agent work (they
+    # never count as receipt-blocking); readiness discloses them as ``finding_self_verified``.
+    self_verified_finding_ids: tuple[FindingId, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -510,6 +521,7 @@ class ClosureReadinessFacts:
         for values in (
             self.receipt_blocking_finding_ids,
             self.acknowledged_finding_ids,
+            self.self_verified_finding_ids,
             self.acknowledged_obligation_ids,
             self.open_obligation_ids,
             self.blocked_obligation_ids,
@@ -726,6 +738,11 @@ def closure_readiness_facts(
         for finding in current
         if finding_acknowledged_not_done(state, finding.finding_id)
     }
+    self_verified = {
+        finding.finding_id
+        for finding in current
+        if finding_todo_state(state, finding.finding_id) is FindingTodoState.SELF_VERIFIED
+    }
     # The receipt's applicability rule reads the same observation-limitation set (issue #911).
     limitations = observation_limitation_finding_ids(state, records)
     open_obligations = open_effective_obligations(state)
@@ -747,6 +764,7 @@ def closure_readiness_facts(
         ),
         closing_review_current=closing_current,
         semantic_review_used=review_used,
+        self_verified_finding_ids=tuple(sorted(self_verified, key=str.encode)),
     )
 
 
@@ -790,7 +808,10 @@ def derive_closure_readiness(
             continue
         if condition == "receipt_findings_unresolved" and facts is not None:
             blocking = set(facts.receipt_blocking_finding_ids)
-            if blocking and blocking <= set(facts.acknowledged_finding_ids):
+            # Acknowledged-not-done (#905) and self-verified (#984) items are final answers,
+            # not agent work.
+            settled = {*facts.acknowledged_finding_ids, *facts.self_verified_finding_ids}
+            if blocking and blocking <= settled:
                 continue
         if (
             condition == "obligations_open"
@@ -835,6 +856,8 @@ def derive_closure_readiness(
         if item not in actionable:
             actionable.append(item)
     standing.update(split.standing_limitations)
+    if facts is not None and facts.self_verified_finding_ids:
+        standing.add(FINDING_SELF_VERIFIED_GAP)
     acknowledged: tuple[str, ...] = ()
     if facts is not None:
         acknowledged = tuple(

@@ -225,6 +225,7 @@ def test_nominal_public_enums_are_closed() -> None:
         "acknowledged_not_done",
         "provenance_disputed",
         "rejected",
+        "self_verified",
         "waived",
     }
     assert "pass" not in {member.value for member in CheckVerdict}

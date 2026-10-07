@@ -66,6 +66,7 @@ from yoetz.protocol.models import (
 from yoetz.protocol.recovery import continuation_for_semantic_outcome, directive_for
 
 __all__ = [
+    "SELF_VERIFIED_SECTION_TITLE",
     "receipt_document_carries_terminal_sections",
     "CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP",
     "CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP",
@@ -470,6 +471,16 @@ class ReceiptConclusion(str, Enum):  # noqa: UP042 - exact wire enum base
     INSUFFICIENT_COVERAGE = "insufficient_coverage"
 
 
+# The receipt fields that disclose terminal finding states by id (issues #905, #984); a finding
+# is in at most one of them.
+_TERMINAL_ID_FIELDS: Final = (
+    "acknowledged_not_done_finding_ids",
+    "rejection_accepted_finding_ids",
+    "self_verified_finding_ids",
+)
+SELF_VERIFIED_SECTION_TITLE: Final = "Self-verified by the agent; Yoetz could not prove the repair"
+
+
 class ReceiptObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
     OPEN = "open"
     RESOLVED = "resolved"
@@ -863,11 +874,13 @@ class ReceiptResponse:
             ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
             ResponseDisposition.PROVENANCE_DISPUTED,
             ResponseDisposition.REJECTED,
+            ResponseDisposition.SELF_VERIFIED,
         }:
             if (
                 self.reason is None
                 or self.waiver_scope is not None
                 or self.waiver_expiry is not None
+                or (self.disposition is ResponseDisposition.SELF_VERIFIED and not refs)
             ):
                 raise ProtocolValueError(invalid)
         elif self.disposition is ResponseDisposition.WAIVED:
@@ -1059,6 +1072,9 @@ class ReceiptDocument:
     # Absent (empty) keeps every earlier receipt's exact bytes.
     acknowledged_not_done_finding_ids: tuple[FindingId, ...] = ()
     rejection_accepted_finding_ids: tuple[FindingId, ...] = ()
+    # Issue #984 (ADR-034): the agent repaired these and verified the repair itself because Yoetz
+    # could not prove it. Disclosed by id in their own section; the conclusion is never clean.
+    self_verified_finding_ids: tuple[FindingId, ...] = ()
     # Opaque review item identities withheld by the never-send heuristic.  The field is omitted
     # when empty so historical receipt objects retain their exact bytes.
     semantic_withheld_items: tuple[ReceiptSemanticWithheldItem, ...] = ()
@@ -1120,15 +1136,26 @@ class ReceiptDocument:
         carried_ids = frozenset(
             finding.finding_id for finding in cast(tuple[Finding, ...], findings)
         )
-        for name in ("acknowledged_not_done_finding_ids", "rejection_accepted_finding_ids"):
+        for name in _TERMINAL_ID_FIELDS:
             raw_ids = _validate_tuple(getattr(self, name), 0, 100, invalid)
             ids = tuple(finding_id(value) for value in raw_ids)
             _validate_sorted_unique_strings(cast(tuple[str, ...], ids))
             if ids and (receipt_schema_version != "1.3.0" or not carried_ids.issuperset(ids)):
                 raise ProtocolValueError(invalid)
             object.__setattr__(self, name, ids)
-        if set(self.acknowledged_not_done_finding_ids) & set(self.rejection_accepted_finding_ids):
+        terminal_ids = [
+            str(item)
+            for name in _TERMINAL_ID_FIELDS
+            for item in cast(tuple[FindingId, ...], getattr(self, name))
+        ]
+        if len(terminal_ids) != len(set(terminal_ids)):
             raise ProtocolValueError(invalid)
+        if (
+            self.self_verified_finding_ids
+            and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+        ):
+            # A repair only the agent verified never reads as clean (issue #984).
+            raise ProtocolValueError("invalid_receipt_conclusion")
         withheld = _validate_tuple(self.semantic_withheld_items, 0, 64, invalid)
         if any(type(value) is not ReceiptSemanticWithheldItem for value in withheld):
             raise ProtocolValueError(invalid)
@@ -1489,6 +1516,7 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
                 "acknowledged_not_done_finding_ids",
                 "children",
                 "rejection_accepted_finding_ids",
+                "self_verified_finding_ids",
                 "semantic_withheld_items",
                 "semantic_provenance",
             }
@@ -1530,7 +1558,7 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         raise ProtocolValueError("invalid_receipt_document")
     if not has_children and artifact_version == "1.3.0":
         raise ProtocolValueError("invalid_receipt_document")
-    for name in ("acknowledged_not_done_finding_ids", "rejection_accepted_finding_ids"):
+    for name in _TERMINAL_ID_FIELDS:
         if name in source and not _array(source[name], invalid):
             raise ProtocolValueError(invalid)
     semantic_provenance_value = (
@@ -1581,6 +1609,10 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         rejection_accepted_finding_ids=tuple(
             finding_id(item)
             for item in _array(source.get("rejection_accepted_finding_ids", ()), invalid)
+        ),
+        self_verified_finding_ids=tuple(
+            finding_id(item)
+            for item in _array(source.get("self_verified_finding_ids", ()), invalid)
         ),
         semantic_withheld_items=semantic_withheld_items,
     )
@@ -1734,6 +1766,8 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
         )
     if document.rejection_accepted_finding_ids:
         result["rejection_accepted_finding_ids"] = list(document.rejection_accepted_finding_ids)
+    if document.self_verified_finding_ids:
+        result["self_verified_finding_ids"] = list(document.self_verified_finding_ids)
     if document.semantic_withheld_items:
         result["semantic_withheld_items"] = [
             {"item_id": item.item_id, "reason": item.reason}
@@ -1786,12 +1820,14 @@ def resolved_finding_ids_for_render(document: ReceiptDocument) -> frozenset[str]
 def unresolved_findings_for_render(document: ReceiptDocument) -> tuple[Finding, ...]:
     """Current (not resolved) finding rows, in document order.
 
-    A ``rejection_accepted`` row is unresolved but settled (issue #905): it has its own section
-    and does not count here.
+    A ``rejection_accepted`` row (issue #905) or a ``self_verified`` row (issue #984) is
+    unresolved but settled: it has its own section and does not count here.
     """
 
     resolved = resolved_finding_ids_for_render(document)
-    settled = frozenset(document.rejection_accepted_finding_ids)
+    settled = frozenset(
+        (*document.rejection_accepted_finding_ids, *document.self_verified_finding_ids)
+    )
     return tuple(
         finding
         for finding in document.findings
@@ -1904,6 +1940,19 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                     "The agent rejected these AI-powered findings with a reason and a later "
                     "review withdrew them. They are not resolved and stay on the record.",
                     *(f"- {item}" for item in document.rejection_accepted_finding_ids),
+                )
+            )
+        )
+    if document.self_verified_finding_ids:
+        heading = f"## {SELF_VERIFIED_SECTION_TITLE}" if markdown else SELF_VERIFIED_SECTION_TITLE
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent repaired these findings and verified each repair itself, citing "
+                    "its own recorded evidence, because Yoetz could not prove the repair. They "
+                    "are not resolved by Yoetz and keep this receipt from reading clean.",
+                    *(f"- {item}" for item in document.self_verified_finding_ids),
                 )
             )
         )
@@ -2065,6 +2114,13 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
         verb = "remains" if count == 1 else "remain"
         return prefix + f"{count} unresolved {noun} {verb}."
     if document.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE:
+        if document.self_verified_finding_ids:
+            count = len(document.self_verified_finding_ids)
+            noun = "finding was" if count == 1 else "findings were"
+            return (
+                prefix + f"coverage is insufficient. {count} {noun} self-verified by the agent; "
+                "Yoetz could not prove the repair."
+            )
         return prefix + "coverage is insufficient. Declared gaps bound this receipt's conclusion."
 
     outstanding_work = next(

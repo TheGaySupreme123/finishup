@@ -76,6 +76,8 @@ __all__ = [
     "ResponseDisposition",
     "RUNTIME_FAILURE_STAGES",
     "RuntimeAttemptEvidence",
+    "SELF_VERIFIED_GUIDANCE",
+    "TERMINAL_RESPONSE_DISPOSITIONS",
     "RuntimeTokenUsage",
     "SamplingParams",
     "SemanticDispatchKind",
@@ -192,7 +194,27 @@ class ResponseDisposition(str, Enum):  # noqa: UP042 - exact wire enum base
     ACKNOWLEDGED_NOT_DONE = "acknowledged_not_done"
     PROVENANCE_DISPUTED = "provenance_disputed"
     REJECTED = "rejected"
+    # Issue #984 (ADR-034): the agent repaired the finding, Yoetz cannot prove the repair because
+    # of its own limits (a "Yoetz limit"), and the agent verified it itself. Requires a reason
+    # (how it verified) and at least one recorded evidence or result id. Terminal: never resolved,
+    # never clean, never re-reviewed, and not agent work. Recorded only on
+    # ``response_recorded`` 1.1.0.
+    SELF_VERIFIED = "self_verified"
     WAIVED = "waived"
+
+
+# The dispositions that make a finding's to-do state final when recorded (issues #905, #984).
+TERMINAL_RESPONSE_DISPOSITIONS: Final = frozenset(
+    {ResponseDisposition.ACKNOWLEDGED_NOT_DONE, ResponseDisposition.SELF_VERIFIED}
+)
+
+# The one sentence every agent-facing text reuses when it tells the agent what to do with a
+# finding Yoetz cannot prove repaired (issue #984, COORD contract wording; tests pin it).
+SELF_VERIFIED_GUIDANCE: Final = (
+    "If you repaired this and Yoetz cannot prove it (a Yoetz limit), verify it yourself, record "
+    "that evidence, and respond `self_verified` with how you verified it and the evidence ids. "
+    "Do not reshape your work for Yoetz, and a Yoetz limit is never a `yoetz-blocker`."
+)
 
 
 class SemanticDispatchKind(str, Enum):  # noqa: UP042 - exact wire enum base
