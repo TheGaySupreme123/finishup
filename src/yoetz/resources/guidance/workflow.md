@@ -594,14 +594,17 @@ permission to claim the work is verified. Existing findings and coverage limitat
 
 The check result lists what the reviewer needed in `missing_for_assessment`: each item's kind, case
 refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_host`, or a Yoetz limit
-(gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`). A Yoetz
-limit is content the review packet cannot show: `yoetz_limit_unsupported_data_type` (an image,
-PDF, CAD, archive or other binary file), `yoetz_limit_packet_room` (content clipped or left out for
-packet room) or `yoetz_limit_repeated_request` (the reviewer asked again for something it already
-asked for once). A Yoetz limit is never work for you and never a blocker: verify that content
+(gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`,
+`semantic_missing_yoetz_limit`). A Yoetz limit is content the review packet cannot show:
+`yoetz_limit_unsupported_data_type` (an image, PDF, CAD, archive or other binary file) or
+`yoetz_limit_packet_room` (content clipped or left out for packet room). A Yoetz limit is never work for you and never a blocker: verify that content
 yourself, record how you verified it, and continue; the receipt discloses the limit. For a finding
 you repaired that Yoetz cannot prove, respond `self_verified` with how you verified it and your
-evidence ids.
+evidence ids. For an image or other binary deliverable you may record a text rendering of it (for
+example `pdftotext` output or a CAD property dump) as evidence whose `reference` is the file's path;
+the reviewer sees it labelled as your rendering, and the file itself is never sent. After two
+`insufficient_packet` reviews in a row with no edit since, checks skip the AI-powered review
+(`semantic_review_skipped_insufficient_packet`); your next edit re-arms it.
 
 **Never reshape your deliverable for the reviewer.** Never split, move, shrink, rename, stash,
 delete, `git add` (including `git add -N`), git-ignore or exclude deliverables or workspace files to

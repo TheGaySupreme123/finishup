@@ -7696,10 +7696,11 @@ only when non-empty so other cases keep their bytes; and a result answers `verif
 when it carries output (linked evidence or a summary). Yoetz classifies each kept item as
 `agent_suppliable`, `structurally_unavailable_on_this_host` (a kind the effective review selection
 or channel can never carry, or a redacted target) or a Yoetz limit (`yoetz_limit_unsupported_data_type`,
-`yoetz_limit_packet_room`, `yoetz_limit_repeated_request`; ADR-006, issue #983), adding
-`semantic_missing_agent_suppliable` or `semantic_missing_structurally_unavailable`. Only
-`agent_suppliable` is ever agent work. After a repeated request, later checks skip the AI-powered
-review and disclose the standing gap `semantic_review_skipped_insufficient_packet`. These are check limitations, never findings, and weigh
+`yoetz_limit_packet_room`; ADR-006, issue #983), adding `semantic_missing_agent_suppliable`,
+`semantic_missing_structurally_unavailable` or `semantic_missing_yoetz_limit`. Only
+`agent_suppliable` is ever agent work. After two `insufficient_packet` reviews in a row with no edit
+since, checks skip the AI-powered review and disclose the standing gap
+`semantic_review_skipped_insufficient_packet` (`kernel/review_round.py`). These are check limitations, never findings, and weigh
 on finding resolution exactly like the `semantic_packet_insufficient` they ride beside: a local
 issue is still proven absent, and a `fixed` ruling (#905) still resolves its own finding.
 

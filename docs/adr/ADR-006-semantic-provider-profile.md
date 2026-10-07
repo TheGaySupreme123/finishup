@@ -1364,21 +1364,25 @@ reshaped deliverables to fit the packet; interleaved-vigenere moved its data tab
 delivered `cracker.py` and failed. Decision (owner, 2026-10-07): content the packet cannot show is
 Yoetz's own limit, marked as such for the agent, never a blocker; the agent verifies it itself.
 
-- The missing-item `availability` vocabulary gains three Yoetz-limit classes, all disclosed through
-  the existing standing gap `semantic_missing_structurally_unavailable` and never actionable:
-  `yoetz_limit_unsupported_data_type` (a target whose recorded file is an image, document, archive,
-  CAD or other binary format, matched lexically on its file name), `yoetz_limit_packet_room` (a
-  target the packet named but whose own content it could not carry, or a diff request while the
-  check-time change was clipped or redacted) and `yoetz_limit_repeated_request` (a repeat of an
-  earlier request that nothing directly tied to it answered). The enum is extended in place on the
-  unreleased `check_recorded` 1.3.0/1.4.0 and `check-result` 1.3.0/1.4.0.
-- One retry: the first request is the one retry; when the latest assessed review concluded
-  `insufficient_packet` naming only Yoetz limits and at least one repeat, later checks of the task
-  run without the AI-powered review (`not_requested`/`deterministic_mode`) and disclose the standing
-  gap `semantic_review_skipped_insufficient_packet`. Such a check counts as the current and closing
-  review for closure readiness, and it never weakens local proof. Semantic review helps only with
-  good data. A later review that concludes anything else clears the request and the skip; a skip
-  holds for the rest of the task otherwise (accepted cost: a late repair gets no AI-powered review).
+- The missing-item `availability` vocabulary gains two Yoetz-limit classes, disclosed through the
+  new standing gap `semantic_missing_yoetz_limit` and never actionable:
+  `yoetz_limit_unsupported_data_type` (a target whose recorded file, a hook-observed image, or for
+  an `other` item a file the plan, task statement or obligation names, is an image, document,
+  archive, CAD or other binary format, matched lexically on its file name) and
+  `yoetz_limit_packet_room` (a target an omission row of the exact sent packet withheld for room,
+  selection or policy, never `not_recorded` and never this check's own local finding, or a diff
+  request while the check-time change was clipped or redacted). `evt_` targets resolve to the row
+  their event recorded. The enum is extended in place on the unreleased `check_recorded`
+  1.3.0/1.4.0 and `check-result` 1.3.0/1.4.0. An unanswered repeat stays `agent_suppliable` with
+  `semantic_missing_non_convergent`: a run never recorded is still owed.
+- One retry (`kernel/review_round.py`): when the last two completed reviews both concluded
+  `insufficient_packet` (named items or not) and no edit action was recorded after the older one,
+  the check skips the AI-powered review (`not_requested`/`deterministic_mode`) and discloses the
+  standing gap `semantic_review_skipped_insufficient_packet`; CLI, MCP summary and receipt say the
+  review was skipped, not that it was not requested. Such a check counts as the current and
+  closing review for closure readiness and never weakens local proof. Publishing evidence does not
+  re-arm it (feeding the reviewer is the loop this ends); a recorded edit does, and a completed
+  review with another conclusion resets the count.
 - Agent-facing text on every surface (CLI, MCP summary, receipt coverage note, guidance) says a
   Yoetz limit is not work and never a blocker, and that the agent must never split, move, shrink,
   stash, delete, `git add` (including `-N`) or git-ignore its work to fit the reviewer. The diff

@@ -630,9 +630,9 @@ permission to claim the work is verified. Existing findings and coverage limitat
 
 The check result lists what the reviewer needed in `missing_for_assessment`: each item's kind, case
 refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_host`, or a Yoetz limit
-(gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`). A
-`yoetz_limit_*` item is content the packet cannot show (unsupported data type, packet room, a
-repeated request): never your work and never a blocker; verify it yourself (see
+(gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`,
+`semantic_missing_yoetz_limit`). A `yoetz_limit_*` item is content the packet cannot show
+(unsupported data type, packet room): never your work and never a blocker; verify it yourself (see
 [workflow](workflow.md#missing-review-content-and-concrete-repair-attempts)). Never reshape a
 deliverable to fit the reviewer. Recheck only
 after supplying a named `agent_suppliable` item with new records tied directly to the named ref;
