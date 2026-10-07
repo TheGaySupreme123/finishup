@@ -8153,7 +8153,8 @@ plan. Names and contracts:
   corroboration but never triggers the rule) or captured output such a result links, at that
   result's frontier. Standalone captures, an edit's output and exploration or VCS output never
   corroborate. Self-generated evidence stays admissible (#977 item 5, ADR-033; tb4n1 E7, #987):
-  the agent's own admissible `command` result (a disclosed failing one included) or
+  the agent's own admissible `command` result outside the `exploration`/`vcs` runner classes (a
+  disclosed failing one included) or
   `test_result`/`command_output` evidence published after the latest hook-observed edit also
   satisfies the rule.
 - The unreleased local control 2.9.0 carries the fields in place and admits either
@@ -8442,8 +8443,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   action_kind=ActionKind.EDIT)`), since a `file` item may name a read-only input. `work_integrity_findings(case, *, absent_outputs=)`
   raises `requested_item_never_attempted` with the fact `requested_output_absent`
   (`REQUESTED_OUTPUT_ABSENT_FACT`) for each absent pair that
-  `reportable_absent_outputs(case, absent)` keeps: work on its obligation has begun (an `edit`,
-  `command` or `other` action attributed to it) or a completion claim stands. A requested
+  `reportable_absent_outputs(case, absent)` keeps: an effective completion claim covers its
+  obligation (names it or names none), or `acting_started` and one of the agent's own (cooperative)
+  `edit`, `command` or `other` actions is attributed to it. A requested
   directory is `changed` when any changed path lies beneath it; the root probes as `relative`
   `.`, inside, and is changed by any change.
 - **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the

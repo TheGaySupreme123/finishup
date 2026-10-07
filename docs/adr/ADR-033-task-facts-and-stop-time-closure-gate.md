@@ -105,9 +105,11 @@ agent must not be able to stop silently with known work left.
    change (tb4n1: `/app/src` with four new files was reported unchanged and `/app` outside; #987).
    A file that does not exist, and is not a tracked file the change deletes, raises
    `requested_item_never_attempted` with the fact `requested_output_absent`, whatever was
-   published: naming a file in `attempted_items` does not create it. It is raised only once work
-   on that obligation has begun — an `edit`, `command` or `other` action attributed to it (an
-   action with no `obligation_refs` is global) — or a completion claim stands; before then it is
+   published: naming a file in `attempted_items` does not create it. It is raised only once a
+   completion claim covers that obligation (it names it, or names no obligation), or acting has
+   started and one of the agent's own `edit`, `command` or `other` actions is attributed to it
+   (an action with no `obligation_refs` is global; hook-observed actions name no obligation and
+   never count); before then it is
    the plan, and the guided pre-work check found every output absent (tb4n1: 48 of 68 first
    findings; #989). The review packet's `requested_output_absent` task fact follows the same
    rule (`reportable_absent_outputs`). An output excluded by
@@ -221,6 +223,12 @@ agent must not be able to stop silently with known work left.
    evidence decision above. The agent's own admissible `command` result or
    `test_result`/`command_output` evidence published after the latest hook-observed edit now
    satisfies it; the rule reports only a claim whose every cited verification predates that edit.
+   A self-published command counts only outside the `exploration` and `vcs` runner classes, as for
+   observed runs (`git status` or `ls` verifies nothing). Ordering uses ledger position, so an
+   observed edit still draining when the check runs is not yet "the latest edit": the check can
+   admit a claim that a later-drained edit makes stale. The Stop-time drain narrows that window,
+   and the next check after the edit lands reports it; the rule never claims more than the
+   recorded order.
 
 ## Consequences
 

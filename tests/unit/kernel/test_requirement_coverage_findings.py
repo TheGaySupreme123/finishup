@@ -40,6 +40,8 @@ from yoetz.domain.events import (
     ObligationPublishedPayload,
     ObligationStatus,
     PlanPublishedPayload,
+    RequestedItem,
+    RequestedItemKind,
     ResultOutcome,
     ResultRecordedPayload,
     encode_payload,
@@ -62,7 +64,10 @@ from yoetz.kernel.plan_drift import (
     PLAN_DRIFT_ADVISORY_GAPS,
     PLAN_UNREFINED_BEFORE_FIRST_EDIT_GAP,
 )
-from yoetz.kernel.policies.work_integrity import work_integrity_findings
+from yoetz.kernel.policies.work_integrity import (
+    reportable_absent_outputs,
+    work_integrity_findings,
+)
 from yoetz.kernel.projections import DecisionProjectionRecord, ProjectionRecord
 from yoetz.protocol.canonical import canonical_digest
 from yoetz.protocol.coverage import Coverage, EvidenceImmutability, PublicationChannel
@@ -619,3 +624,77 @@ def test_hook_captured_evidence_alone_keeps_the_rule_silent() -> None:
     )
 
     assert _uncorroborated(case) == []
+
+
+def test_self_published_exploration_or_vcs_command_does_not_verify() -> None:
+    """Adversarial review of E7: `git status` or `ls` published after the edit verifies nothing."""
+
+    def case_with(command: str) -> DeterministicCase:
+        base = _corroboration_case(edits=(20,), claim=_claim(res(60)))
+        actions = dict(base.projection.actions)
+        results = dict(base.projection.results)
+        actions[act(60)] = record(
+            ActionRecordedPayload(act(60), ActionKind.COMMAND, "Ran it", command=command), 60
+        )
+        results[res(60)] = record(_result(60), 61)
+        return make_case(
+            plans=dict(base.projection.plans),
+            actions=actions,
+            results=results,
+            claims=dict(base.projection.claims),
+            coverage_overrides={evt(20): _HOOK},
+        )
+
+    assert len(_uncorroborated(case_with("git status"))) == 1
+    assert len(_uncorroborated(case_with("ls -la"))) == 1
+    assert _uncorroborated(case_with("pytest -q")) == []
+
+
+def test_observed_commands_never_mark_an_obligation_acted_on() -> None:
+    """Adversarial review of E4: hook-observed actions carry no obligation_refs, so reading them
+    as global made any observed `ls` mark every obligation acted on. Only the agent's own
+    actions, or a completion claim covering the obligation, make an absent output reportable."""
+
+    report = ObligationPublishedPayload(
+        obligation_id=obl(1),
+        description="Write the report",
+        evidence_expectation="The file",
+        status=ObligationStatus.OPEN,
+        requested_items=(RequestedItem(RequestedItemKind.FILE, "out/report.json"),),
+    )
+    other = ObligationPublishedPayload(
+        obligation_id=obl(2),
+        description="Fix the parser",
+        evidence_expectation="Tests",
+        status=ObligationStatus.OPEN,
+    )
+    plan = PlanPublishedPayload(1, "Plan", (obl(1), obl(2)))
+    absent = frozenset({(obl(1), 0)})
+    observed_edit = _observed_edit(30)
+    observed_ls = _observed_command(31, "exploration")
+
+    def case_with(claims: dict[object, object]) -> DeterministicCase:
+        return make_case(
+            plans={1: plan_record(plan, 2)},
+            obligations={obl(1): obligation_record(report, 3), obl(2): obligation_record(other, 4)},
+            actions={act(30): record(observed_edit, 30), act(31): record(observed_ls, 31)},
+            claims=claims,  # pyright: ignore[reportArgumentType]
+            coverage_overrides={evt(30): _HOOK, evt(31): _HOOK},
+        )
+
+    assert reportable_absent_outputs(case_with({}), absent) == frozenset()
+    # A completion claim scoped to the other obligation does not cover the report.
+    scoped = ClaimRecordedPayloadV1_1(
+        claim_id=clm(1),
+        claim_kind=ClaimKind.COMPLETION,
+        statement="Parser fixed.",
+        supporting_refs=(),
+        obligation_refs=(obl(2),),
+        limitation_refs=(),
+        supersedes_claim_refs=(),
+    )
+    assert reportable_absent_outputs(case_with({clm(1): claim_record(scoped, 90)}), absent) == (
+        frozenset()
+    )
+    whole = replace(scoped, obligation_refs=())
+    assert reportable_absent_outputs(case_with({clm(1): claim_record(whole, 90)}), absent) == absent

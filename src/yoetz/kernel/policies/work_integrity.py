@@ -17,6 +17,7 @@ from yoetz.domain.events import (
     ResultOutcome,
 )
 from yoetz.domain.findings import FindingKind, FindingOrigin
+from yoetz.domain.observation_selection import command_runner_class
 from yoetz.domain.values import (
     EventId,
     EvidenceId,
@@ -28,7 +29,6 @@ from yoetz.domain.values import (
 )
 from yoetz.kernel.claims import (
     claim_discloses_result,
-    completion_claim_present,
     effective_claim_ids,
     effective_claim_items,
     result_is_relevant_to_claim,
@@ -299,7 +299,6 @@ def _requested_item_findings(
         cooperative_event_ids_from_coverage(case.coverage_by_ref),
     )
     blocked = blocked_obligations(case.projection)
-    claimed = completion_claim_present(case.projection)
     for obligation_ref in sorted(_active_requested_obligations(case), key=_ascii):
         record = case.projection.obligations[obligation_ref]
         payload = record.payload
@@ -310,7 +309,9 @@ def _requested_item_findings(
         # (48 of 68 first findings), because the file obviously does not exist yet. An absent
         # output is reported once acting on that obligation has started, or once a completion
         # claim stands; before then it is the plan, exactly like an unattempted item.
-        reportable = claimed or (started and _obligation_acted_on(case, obligation_ref))
+        reportable = _completion_claim_covers(case, obligation_ref) or (
+            started and _obligation_acted_on(case, obligation_ref)
+        )
         unattempted = started and any(
             item.value not in attempted for item in payload.requested_items
         )
@@ -346,32 +347,57 @@ def reportable_absent_outputs(
     """The absent requested outputs this case reports: those whose obligation work has begun.
 
     The same rule ``requested_item_never_attempted`` applies (tb4n1 E4), shared so the AI-powered
-    review packet's ``requested_output_absent`` task fact never runs ahead of the finding.
+    review packet's ``requested_output_absent`` task fact never runs ahead of the finding: a
+    completion claim covering the obligation, or acting started and a cooperative action works on
+    that obligation.
     """
 
-    if not absent_outputs or completion_claim_present(case.projection):
+    if not absent_outputs:
         return absent_outputs
-    if not acting_started(
+    started = acting_started(
         case.projection,
         observed_event_ids_from_coverage(case.coverage_by_ref),
         cooperative_event_ids_from_coverage(case.coverage_by_ref),
-    ):
-        return frozenset()
-    return frozenset(pair for pair in absent_outputs if _obligation_acted_on(case, pair[0]))
+    )
+    return frozenset(
+        pair
+        for pair in absent_outputs
+        if _completion_claim_covers(case, pair[0])
+        or (started and _obligation_acted_on(case, pair[0]))
+    )
+
+
+def _completion_claim_covers(case: DeterministicCase, obligation_ref: ObligationId) -> bool:
+    """Whether an effective completion claim names this obligation, or claims the whole task."""
+
+    return any(
+        record.payload is not None
+        and record.payload.claim_kind is ClaimKind.COMPLETION
+        and (not record.payload.obligation_refs or obligation_ref in record.payload.obligation_refs)
+        for _, record in effective_claim_items(case.projection)
+    )
 
 
 def _obligation_acted_on(case: DeterministicCase, obligation_ref: ObligationId) -> bool:
     """Whether a recorded action works on this obligation, not merely investigates it.
 
+    Only the agent's own (cooperative) actions count; hook-observed actions name no obligation.
     Attribution follows ``attempted_items_for_obligation``: an action with no ``obligation_refs``
     is global and covers every obligation; one that names obligations covers only those. Only an
     ``edit``, ``command`` or ``other`` action counts. Research and review actions read; they never
     create a requested file.
     """
 
+    cooperative = cooperative_event_ids_from_coverage(case.coverage_by_ref)
     for record in case.projection.actions.values():
         action = record.payload
-        if action is None or action.action_kind in _NON_PRODUCING_ACTIONS:
+        if (
+            action is None
+            or action.action_kind in _NON_PRODUCING_ACTIONS
+            or record.source_event_id not in cooperative
+        ):
+            # A hook-observed action carries no obligation_refs, so it would read as global and
+            # mark every obligation acted on after any `ls` (adversarial review of E4).
             continue
         if not action.obligation_refs or obligation_ref in action.obligation_refs:
             return True
@@ -619,10 +645,15 @@ def _self_published_verification_after(
         ):
             return False
         action = case.projection.actions.get(result.payload.action_id)
+        if action is None or action.payload is None:
+            return False
+        command = action.payload.command
+        # The same verification-class rule as for observed runs: a published exploration or VCS
+        # command (`ls`, `git status`) verifies nothing (adversarial review of E7).
         return (
-            action is not None
-            and action.payload is not None
-            and action.payload.action_kind is ActionKind.COMMAND
+            action.payload.action_kind is ActionKind.COMMAND
+            and command is not None
+            and command_runner_class({"command": command}) not in _NON_VERIFICATION_RUNNERS
         )
     return False
 
