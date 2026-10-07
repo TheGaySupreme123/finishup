@@ -278,7 +278,8 @@ class RequestedPathProbe:
     """One requested file path located against the checked repository root (#977).
 
     ``location`` is ``inside`` or ``outside``. For an inside path, ``relative`` is its
-    root-relative form (compared with the check-time change entries, never stored), ``exists`` is
+    root-relative form (``.`` for the root itself; compared with the check-time change entries,
+    never stored), ``exists`` is
     ``None`` when a link or non-directory blocked the walk, and ``ignored`` is Git's answer.
     """
 

@@ -592,7 +592,7 @@ async def requested_output_states(
         if result.location == "outside" or result.relative is None:
             states[(obligation, index)] = RequestedOutputState("outside")
             continue
-        listed = result.relative in changed
+        listed = _changed_at_or_under(result.relative, changed)
         states[(obligation, index)] = RequestedOutputState(
             "inside",
             exists=result.exists,
@@ -608,6 +608,24 @@ async def requested_output_states(
             ),
             # A truncated listing cannot prove a path unchanged.
             changed=True if listed else (None if capture.truncated else False),
-            deleted=result.relative in deleted,
+            # A requested directory whose files the change deleted was deleted, not left absent.
+            deleted=result.relative != "." and _changed_at_or_under(result.relative, deleted),
         )
     return states
+
+
+def _changed_at_or_under(relative: str, changed: set[str]) -> bool:
+    """Whether the change touches ``relative`` itself or any path beneath it.
+
+    The capture lists files, never directories (untracked entries come from ``git ls-files
+    --others``), so a requested directory such as ``src`` is changed when a file under it is
+    (tb4n1 E1: four new ``src/*.sv`` files left ``/app/src`` reported unchanged). The root
+    (``.``) is changed by any change.
+    """
+
+    if relative == ".":
+        return bool(changed)
+    if relative in changed:
+        return True
+    prefix = relative.rstrip("/") + "/"
+    return any(path.startswith(prefix) for path in changed)

@@ -274,13 +274,15 @@ def _nul_fields(payload: bytes) -> list[bytes]:
 
 
 _MAX_REQUESTED_PATH_PROBES: Final = 64
+_ROOT_RELATIVE: Final = b"."
 
 
 def _requested_relative_path(root: Path, value: str) -> bytes | None:
     """The root-relative form of one requested path, or ``None`` when it is not under the root.
 
     Lexical only: ``.``/``..`` segments are resolved textually and a result that leaves the root
-    is outside. Links are never followed here; ``_path_identity`` refuses them on the way down.
+    is outside. The root itself is ``.``. Links are never followed here; ``_path_identity``
+    refuses them on the way down.
     """
 
     if type(value) is not str or not value or "\x00" in value:
@@ -293,7 +295,11 @@ def _requested_relative_path(root: Path, value: str) -> bytes | None:
             return None
     normalized = os.path.normpath(os.fspath(candidate))
     encoded = os.fsencode(normalized)
-    if encoded in {b".", b""} or not _safe_relative(encoded) or encoded.startswith(b".git/"):
+    if encoded == _ROOT_RELATIVE:
+        # The repository root itself (``/app`` for a checkout at ``/app``) is inside: it is the
+        # whole workspace, not a path beyond it (tb4n1 E7).
+        return _ROOT_RELATIVE
+    if encoded == b"" or not _safe_relative(encoded) or encoded.startswith(b".git/"):
         return None
     return encoded
 
@@ -487,7 +493,10 @@ class GitChangeCaptureAdapter:
         ignored: set[bytes] = set()
         unknown: set[bytes] = set()
         sources: dict[bytes, bytes] = {}
-        queried = [path for path in inside if identities[path] != _BLOCKED]
+        # The root is never ignored by Git, so it is not queried.
+        queried = [
+            path for path in inside if identities[path] != _BLOCKED and path != _ROOT_RELATIVE
+        ]
         unknown.update(path for path in inside if identities[path] == _BLOCKED)
         if queried:
             excludes = self._repository_excludes_file(pinned, deadline)

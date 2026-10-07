@@ -241,3 +241,92 @@ def test_without_a_capture_every_requested_file_is_unverified() -> None:
         )
     )
     assert {state.location for state in states.values()} == {"unverified"}
+
+
+def test_a_requested_directory_is_changed_by_new_files_under_it(tmp_path: Path) -> None:
+    """tb4n1 E1/E7: retro-console-soc (/app/src), risk-scorer (/app/parityctl), nextjs (/app).
+
+    The agents named their output directory, and the workspace root itself, in edit actions and
+    wrote new files under it. The capture lists files only, so an exact path match reported each
+    directory unchanged and the root outside the workspace.
+    """
+
+    repository = _repository(tmp_path)
+    for relative in ("parityctl/cli.py", "untouched/a.txt", "sr/keep.txt"):
+        (repository / relative).parent.mkdir(exist_ok=True)
+        (repository / relative).write_text("old\n", encoding="utf-8")
+    _git(repository, "add", "--", "parityctl/cli.py", "untouched/a.txt", "sr/keep.txt")
+    _git(
+        repository,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "inputs",
+    )
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    root = os.fspath(repository)
+    values = (
+        root + "/src",  # new untracked files only
+        root + "/parityctl/",  # a tracked file modified; trailing slash
+        root,  # the workspace root
+        root + "/untouched",  # nothing under it changed
+        root + "/sr",  # a sibling prefix of src/ is not src/
+    )
+    projection = _projection(*values, edited=values)
+    source = CheckWorkspaceSource(root, "hmac-sha256:" + "0" * 64)
+
+    before = asyncio.run(
+        requested_output_states(
+            projection=projection,
+            capture=adapter.capture_metadata(root, base),
+            source=source,
+            port=adapter,
+            request_id="req_00000000-0000-4000-8000-000000000003",
+        )
+    )
+    assert before[(_OBLIGATION, 2)].location == "inside"
+    assert before[(_OBLIGATION, 2)].changed is False
+
+    (repository / "src").mkdir()
+    for name in ("apu2a03.sv", "console_system.sv", "cpu6502.sv", "ppu2c02.sv"):
+        (repository / "src" / name).write_text("module m; endmodule\n", encoding="utf-8")
+    (repository / "parityctl" / "cli.py").write_text("new\n", encoding="utf-8")
+    capture = adapter.capture_metadata(root, base)
+    states = asyncio.run(
+        requested_output_states(
+            projection=projection,
+            capture=capture,
+            source=source,
+            port=adapter,
+            request_id="req_00000000-0000-4000-8000-000000000004",
+        )
+    )
+
+    assert [states[(_OBLIGATION, index)].changed for index in range(5)] == [
+        True,
+        True,
+        True,
+        False,
+        False,
+    ]
+    _, markers = requested_output_facts(projection, states)
+    # Only the genuinely untouched directories stay unchanged; nothing is "outside".
+    assert {code for code, _ in markers} == {REQUESTED_OUTPUT_UNCHANGED_GAP}
+
+
+def test_the_workspace_root_probe_is_inside_and_existing(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    (probe,) = GitChangeCaptureAdapter().probe_requested_paths(
+        os.fspath(repository), (os.fspath(repository),)
+    )
+    assert (probe.location, probe.relative, probe.exists, probe.ignored) == (
+        "inside",
+        ".",
+        True,
+        False,
+    )
