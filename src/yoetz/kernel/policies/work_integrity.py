@@ -310,7 +310,7 @@ def _requested_item_findings(
         # (48 of 68 first findings), because the file obviously does not exist yet. An absent
         # output is reported once acting on that obligation has started, or once a completion
         # claim stands; before then it is the plan, exactly like an unattempted item.
-        reportable = started and (claimed or _obligation_acted_on(case, obligation_ref))
+        reportable = claimed or (started and _obligation_acted_on(case, obligation_ref))
         unattempted = started and any(
             item.value not in attempted for item in payload.requested_items
         )
@@ -349,14 +349,14 @@ def reportable_absent_outputs(
     review packet's ``requested_output_absent`` task fact never runs ahead of the finding.
     """
 
-    if not absent_outputs or not acting_started(
+    if not absent_outputs or completion_claim_present(case.projection):
+        return absent_outputs
+    if not acting_started(
         case.projection,
         observed_event_ids_from_coverage(case.coverage_by_ref),
         cooperative_event_ids_from_coverage(case.coverage_by_ref),
     ):
         return frozenset()
-    if completion_claim_present(case.projection):
-        return absent_outputs
     return frozenset(pair for pair in absent_outputs if _obligation_acted_on(case, pair[0]))
 
 
