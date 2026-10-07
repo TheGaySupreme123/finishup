@@ -627,6 +627,65 @@ async def test_ready_handler_preserves_check_route_default(
     assert seen == [expected]
 
 
+def _route_call(
+    method: ControlMethod, body: object, route_profile: McpRouteProfile | None
+) -> ControlCallRequest:
+    return ControlCallRequest(
+        kind="call",
+        protocol_version="1.0",
+        rpc_id=new_id(IdKind.CONTROL_RPC),
+        service_instance_id=_INSTANCE_ID,
+        service_generation="7",
+        method=method,
+        body=cast(Any, body),
+        route_profile=route_profile,
+    )
+
+
+def test_route_less_status_reads_the_route_the_sessions_bridge_serves() -> None:
+    """tb4n1 C8 (#985): the Stop gate and the CLI read the agent's MCP route, not policy.
+
+    37 of 37 deterministic-arm exports listed ``semantic_review_not_requested`` as work while
+    the agent's strict MCP view never did, because route-less reads used the policy route.
+    """
+
+    daemon = cast(Any, SimpleNamespace(_session_routes={}))
+    remember = ServiceDaemon._with_session_route  # pyright: ignore[reportPrivateUsage]
+    status = _status_body()
+    # Nothing remembered: a route-less status keeps the policy default (None reaches the handler).
+    assert remember(daemon, _route_call(ControlMethod.STATUS, status, None)).route_profile is None
+    # The session's strict bridge reads status: the route is remembered for that session.
+    assert (
+        remember(daemon, _route_call(ControlMethod.STATUS, status, "strict")).route_profile
+        == "strict"
+    )
+    assert remember(daemon, _route_call(ControlMethod.STATUS, status, None)).route_profile == (
+        "strict"
+    )
+    # Another session is unaffected.
+    other = status.model_copy(update={"session_id": "ses_00000000-0000-4000-8000-000000000049"})
+    assert remember(daemon, _route_call(ControlMethod.STATUS, other, None)).route_profile is None
+    # A route-less check never inherits: the route decides what a check may dispatch.
+    check = _check_body().model_copy(update={"session_id": status.session_id})
+    assert remember(daemon, _route_call(ControlMethod.CHECK, check, None)).route_profile is None
+    # A policy bridge check for the session replaces the remembered route.
+    remember(daemon, _route_call(ControlMethod.CHECK, check, "policy"))
+    assert remember(daemon, _route_call(ControlMethod.STATUS, status, None)).route_profile == (
+        "policy"
+    )
+
+
+def test_session_route_memory_is_bounded() -> None:
+    daemon = cast(Any, SimpleNamespace(_session_routes={}))
+    remember = ServiceDaemon._with_session_route  # pyright: ignore[reportPrivateUsage]
+    for index in range(300):
+        body = _status_body().model_copy(
+            update={"session_id": f"ses_00000000-0000-4000-8000-{index:012d}"}
+        )
+        remember(daemon, _route_call(ControlMethod.STATUS, body, "strict"))
+    assert len(daemon._session_routes) == 256
+
+
 @pytest.mark.anyio
 async def test_ready_handler_forwards_serving_host_identity_to_check() -> None:
     seen: list[object] = []

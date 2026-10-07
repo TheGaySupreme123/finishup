@@ -12,7 +12,7 @@ import stat
 import struct
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -99,6 +99,7 @@ from yoetz.ports.control import (
     ControlError,
     ControlMethod,
     ControlResult,
+    McpRouteProfile,
     RepositoryPrivacyContext,
     ServiceState,
     ServiceStatus,
@@ -226,6 +227,8 @@ _CONTROL_INACTIVE_SESSION_DEADLINE_SECONDS: Final = 300.0
 # not the session has calls in flight; a stalled partial frame closes the stream (issue #921).
 _CONTROL_FRAME_READ_DEADLINE_SECONDS: Final = CONTROL_FRAME_READ_DEADLINE_SECONDS
 _OBSERVATION_SWEEP_INTERVAL_SECONDS: Final = 60.0
+# Sessions whose MCP serving route the service remembers for route-less status reads (#985).
+_MAX_REMEMBERED_SESSION_ROUTES: Final = 256
 # Hard stop for one sweep. The sweeper yields on its own budget
 # (``DEFAULT_OBSERVATION_SWEEP_BUDGET_SECONDS``, composed in ready_composition) well
 # under this, returning its partial summary so progress licenses the immediate
@@ -718,6 +721,8 @@ class ServiceDaemon:
         self._closed = False
         self._stopping = False
         self._state_reason = "none"
+        # The serving route each session's MCP bridge last named on a status or check (#985).
+        self._session_routes: dict[str, McpRouteProfile] = {}
         # Composition is frozen; keep the live auto-unlock reason on the daemon so soft-lock
         # re-ready can update it without replacing the composition object.
         self._auto_unlock_reason = _composition.auto_unlock_reason
@@ -1316,6 +1321,7 @@ class ServiceDaemon:
             handler = getattr(application, request.method.value, None)
             if not callable(handler):
                 raise ControlError("method_forbidden")
+            request = self._with_session_route(request)
             try:
                 if request.deadline_ms is None or detached_check:
                     internal = await self._invoke_ready_handler(
@@ -1359,6 +1365,35 @@ class ServiceDaemon:
         finally:
             if admission is not None:
                 await self._composition.lifecycle.release(admission)
+
+    def _with_session_route(self, request: ControlCallRequest) -> ControlCallRequest:
+        """Give a route-less ``status`` the route the session's own MCP bridge serves (#985).
+
+        The MCP bridge names its serving route (``policy`` or ``strict``) on every ``status`` and
+        ``check``; the Stop-hook closure gate and the CLI carry none, so they used to read the
+        policy route and could list ``semantic_review_not_requested`` as work the agent's strict
+        view never shows. The route a session's bridge last named since this service started is
+        remembered in memory (bounded, ids and the closed route only) and applied to a later
+        route-less ``status`` for the same session, so every reader sees the agent's view. A
+        route-less ``check`` is never changed: the route still decides what a check may
+        dispatch. With nothing remembered the read keeps the policy route.
+        """
+
+        if request.method not in {ControlMethod.CHECK, ControlMethod.STATUS}:
+            return request
+        session_id = getattr(request.body, "session_id", None)
+        if type(session_id) is not str:
+            return request
+        if request.route_profile is not None:
+            self._session_routes.pop(session_id, None)
+            self._session_routes[session_id] = request.route_profile
+            while len(self._session_routes) > _MAX_REMEMBERED_SESSION_ROUTES:
+                self._session_routes.pop(next(iter(self._session_routes)))
+            return request
+        remembered = self._session_routes.get(session_id)
+        if request.method is ControlMethod.STATUS and remembered is not None:
+            return replace(request, route_profile=remembered)
+        return request
 
     @staticmethod
     async def _invoke_ready_handler(
