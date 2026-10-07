@@ -227,8 +227,9 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 If you stop while `agent_actionable` still names open obligations, an unrepaired receipt-blocking
 finding, a planned verification that was not observed, failed, or ran before your last edit, or a
 git-ignored requested output, or a declared deliverable you deleted or renamed away
-(`declared_output_removed`: a requested `file` item that is not an input), the Stop hook continues
-you once with that list; restore that delivered file where the task needs it. Finish the work, or
+(`declared_output_removed`: a requested `file` item marked as an output), the Stop hook continues
+you once with that list; restore that delivered file where the task needs it, or correct the
+requested item if the task asked for the deletion. Finish the work, or
 record a blocker outside your control as above; then stop. The first Stop after you record a
 blocker also asks you once to confirm it: if the task says the data or dependency is recoverable,
 continue the work; if it is genuinely outside your control, stop again and Yoetz honours it.
@@ -603,8 +604,9 @@ you repaired that Yoetz cannot prove, respond `self_verified` with how you verif
 evidence ids. For an image or other binary deliverable you may record a text rendering of it (for
 example `pdftotext` output or a CAD property dump) as evidence whose `reference` is the file's path;
 the reviewer sees it labelled as your rendering, and the file itself is never sent. After two
-`insufficient_packet` reviews in a row with no edit since, checks skip the AI-powered review
-(`semantic_review_skipped_insufficient_packet`); your next edit re-arms it.
+`insufficient_packet` reviews in a row with no edit since, or four in the task, checks skip the
+AI-powered review (`semantic_review_skipped_insufficient_packet`); a real repair re-arms it until
+that cap. Never edit only to get another review.
 
 **Never reshape your deliverable for the reviewer.** Never split, move, shrink, rename, stash,
 delete, `git add` (including `git add -N`), git-ignore or exclude deliverables or workspace files to
