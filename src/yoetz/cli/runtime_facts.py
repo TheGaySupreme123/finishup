@@ -44,7 +44,6 @@ import re
 import shlex
 import shutil
 import sys
-import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from typing import Final, cast
 
@@ -318,35 +317,34 @@ def _write_targets(command: str) -> list[str]:
     return [target for target in targets if target.startswith("/")]
 
 
-def _process_temp_roots() -> tuple[str, ...]:
-    """This process's own temporary directory, lexically and as the OS resolves it.
+def _process_temp_roots(workspace: str | None) -> tuple[str, ...]:
+    """This process's own temporary directory roots, from the environment only.
 
-    ``TMPDIR`` is host environment, so a root that is the filesystem root or contains the home
-    directory is never trusted as scratch space.
+    ``TMPDIR``, ``TEMP`` and ``TMP`` are read lexically and never probed: ``tempfile.gettempdir``
+    touches the filesystem, can fall back to the working directory and raises when no directory
+    is usable, and an exception here would drop every runtime fact for the event. These values
+    are host environment, so a root that is the filesystem root, contains the home directory, or
+    is or contains the workspace is never trusted as scratch space.
     """
 
-    candidates: set[str] = set()
-    for raw in (os.environ.get("TMPDIR"), tempfile.gettempdir()):
-        if not raw or not raw.startswith("/"):
-            continue
-        lexical = posixpath.normpath(raw)
-        candidates.add(lexical)
-        try:
-            candidates.add(os.path.realpath(lexical))
-        except OSError, ValueError:
-            pass
     home = os.environ.get("HOME")
-    guarded = posixpath.normpath(home) if home and home.startswith("/") else None
+    guarded = [posixpath.normpath(home)] if home and home.startswith("/") else []
+    if workspace is not None and workspace.startswith("/"):
+        guarded.append(posixpath.normpath(workspace))
+    candidates: set[str] = set()
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        raw = os.environ.get(name)
+        if not raw or not raw.startswith("/") or "\x00" in raw:
+            continue
+        candidates.add(posixpath.normpath(raw))
     return tuple(
         root
         for root in sorted(candidates)
-        if root.startswith("/")
-        and root != "/"
-        and not (guarded is not None and _under(guarded, root))
+        if root != "/" and not any(_under(path, root) for path in guarded)
     )
 
 
-def _scratch_path(path: str) -> bool:
+def _scratch_path(path: str, workspace: str | None = None) -> bool:
     """Whether an absolute path lands in a temporary or device directory.
 
     Normalized lexically first (never through the filesystem), so ``..`` cannot climb out of a
@@ -360,12 +358,15 @@ def _scratch_path(path: str) -> bool:
         return True
     if _MACOS_USER_TEMP.match(normalized):
         return True
-    return any(_under(normalized, root) for root in (*_TEMP_ROOTS, *_process_temp_roots()))
+    return any(_under(normalized, root) for root in (*_TEMP_ROOTS, *_process_temp_roots(workspace)))
 
 
-def _shell_writes_outside(command: str, inside: Callable[[str], bool]) -> bool:
+def _shell_writes_outside(
+    command: str, inside: Callable[[str], bool], workspace: str | None = None
+) -> bool:
     return any(
-        not _scratch_path(target) and not inside(target) for target in _write_targets(command)
+        not _scratch_path(target, workspace) and not inside(target)
+        for target in _write_targets(command)
     )
 
 
@@ -417,7 +418,7 @@ def runtime_structural_facts(
     )
     if tool_name in _PATCH_TOOLS or tool_name in _EDIT_TOOLS:
         if workspace_locator is not None and any(
-            path.startswith("/") and not _scratch_path(path) and not inside(path)
+            path.startswith("/") and not _scratch_path(path, workspace_locator) and not inside(path)
             for path in _edit_paths(tool_name, tool_input, payload)
         ):
             facts["write_scope"] = "outside_workspace"
@@ -430,7 +431,7 @@ def runtime_structural_facts(
     target = install_target_class(command, workspace_locator)
     if target is not None:
         facts["install_target"] = target
-    if workspace_locator is not None and _shell_writes_outside(command, inside):
+    if workspace_locator is not None and _shell_writes_outside(command, inside, workspace_locator):
         facts["write_scope"] = "outside_workspace"
     geteuid = getattr(os, "geteuid", None)
     if callable(geteuid):

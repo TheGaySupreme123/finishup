@@ -388,7 +388,6 @@ def test_process_temp_dir_is_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
     # A host TMPDIR outside every fixed temporary root (a cluster scratch volume, say).
     scratch = "/srv/scratch-tmp"
     monkeypatch.setenv("TMPDIR", scratch + "/")
-    monkeypatch.setattr(runtime_facts.tempfile, "gettempdir", lambda: str(scratch))
     monkeypatch.setenv("HOME", "/home/someone")
     workspace = Path("/srv/work")
     assert "write_scope" not in _facts(
@@ -404,9 +403,38 @@ def test_a_temp_dir_that_contains_home_is_never_trusted(
     tmpdir: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TMPDIR", tmpdir)
-    monkeypatch.setattr(runtime_facts.tempfile, "gettempdir", lambda: tmpdir)
     monkeypatch.setenv("HOME", "/home/someone")
     workspace = Path("/srv/work")
     assert _facts("Write", {"file_path": "/home/someone/notes.txt"}, workspace) == {
+        "write_scope": "outside_workspace"
+    }
+
+
+def test_temp_roots_never_probe_the_filesystem(monkeypatch: pytest.MonkeyPatch) -> None:
+    """L3 review: gettempdir probes, can fall back to cwd and raises when no dir is usable."""
+
+    import tempfile
+
+    def unusable() -> str:
+        raise FileNotFoundError("No usable temporary directory found")
+
+    monkeypatch.setattr(tempfile, "gettempdir", unusable)
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", "/home/someone")
+    workspace = Path("/srv/work")
+    facts = _facts("Bash", {"command": "make > /srv/elsewhere/build.log"}, workspace)
+    assert facts["write_scope"] == "outside_workspace"
+    assert "write_scope" not in _facts("Bash", {"command": "make > /tmp/build.log"}, workspace)
+
+
+@pytest.mark.parametrize("tmpdir", ["/srv/work", "/srv", "/srv/work/"])
+def test_a_temp_dir_that_is_or_contains_the_workspace_is_never_trusted(
+    tmpdir: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TMPDIR", tmpdir)
+    monkeypatch.setenv("HOME", "/home/someone")
+    workspace = Path("/srv/work")
+    assert _facts("Write", {"file_path": "/srv/other/out.txt"}, workspace) == {
         "write_scope": "outside_workspace"
     }
