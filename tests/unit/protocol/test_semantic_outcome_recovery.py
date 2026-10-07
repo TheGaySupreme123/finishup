@@ -284,7 +284,7 @@ def test_human_check_names_redacted_value_lines_and_the_fixed_agent_line() -> No
     )
     rendered = render_human_check(result)
     assert (
-        "- evd_10000000-0000-4000-8000-000000000021 (item excerpt-a): value replaced, lines 3, 7"
+        "- evd_10000000-0000-4000-8000-000000000021 (item excerpt-a): value replaced, lines 3, 7 of the captured item"
     ) in rendered
     assert rendered.count(SEMANTIC_REDACTED_VALUES_AGENT_LINE) == 1
     plain = CheckSuccessModel.model_construct(
@@ -368,7 +368,7 @@ def test_receipt_and_status_render_redacted_values_from_wire_and_skip_malformed(
             {"disposition": "value_replaced", "item_id": "x", "lines": [1], "value": "s3cr3t"},
         )
     )
-    assert lines[1] == "- excerpt-b: item withheld, line 2"
+    assert lines[1] == "- excerpt-b: item withheld, line 2 of the captured item"
     assert lines.count(SEMANTIC_REDACTED_VALUES_AGENT_LINE) == 1
     assert "s3cr3t" not in "\n".join(lines)
     assert _semantic_redacted_value_lines(()) == []

@@ -107,9 +107,12 @@ _UNQUOTED_VALUE_CHAR = rb"[^\s,'\";}{]"
 # (three backslashes and a quote) and an encoded backslash (two) are part of the value.
 _ESCAPED_QUOTED_VALUE = rb'\\"(?:\\\\\\"|\\\\\\\\|(?!\\")[^\r\n]){1,512}\\"'
 _TRAILING_ENCODED_SPACE: Final = re.compile(rb"(?:\\[nrt])+$")
+# Python/JS string-literal prefixes (``b"..."``, ``r'...'``, ``f"..."``) belong to the quoted value.
+_STRING_PREFIX_RE: Final = rb"(?:[bBrRuUfF]{1,2}(?=[\"']))?"
+_STRING_PREFIX: Final = re.compile(rb"[bBrRuUfF]{1,2}(?=[\"'])")
 _ASSIGNMENT_VALUE = (
-    rb"(?:\"(?:\\.|[^\"\\\r\n]){1,512}\""
-    rb"|'(?:\\.|[^'\\\r\n]){1,512}'"
+    rb"(?:" + _STRING_PREFIX_RE + rb"\"(?:\\.|[^\"\\\r\n]){1,512}\""
+    rb"|" + _STRING_PREFIX_RE + rb"'(?:\\.|[^'\\\r\n]){1,512}'"
     rb"|" + _ESCAPED_QUOTED_VALUE + rb"|" + _UNQUOTED_VALUE_CHAR + rb"{1,512})"
 )
 # Compound names such as AWS_SECRET_ACCESS_KEY and AZURE_CLIENT_SECRET keep the
@@ -128,8 +131,8 @@ _TOKEN_ASSIGNMENT = re.compile(
     rb"(?i)(?:^|[^A-Za-z0-9_])['\"]?"
     rb"(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*token"
     rb"(?:\\?['\"])?\s*[:=]" + _ENCODED_SPACE + rb"*(?="
-    rb"(?:\"(?:\\.|[^\"\\\r\n]){1,512}\""
-    rb"|'(?:\\.|[^'\\\r\n]){1,512}'"
+    rb"(?:" + _STRING_PREFIX_RE + rb"\"(?:\\.|[^\"\\\r\n]){1,512}\""
+    rb"|" + _STRING_PREFIX_RE + rb"'(?:\\.|[^'\\\r\n]){1,512}'"
     rb"|"
     + _ESCAPED_QUOTED_VALUE
     + rb"|"
@@ -142,12 +145,16 @@ _TOKEN_ASSIGNMENT = re.compile(
 # Only a quoted value is considered, and the finding span is the quoted value alone, so redaction
 # keeps the name, the annotation and the ``=``.
 _ANNOTATED_ASSIGNMENT = re.compile(
-    rb"(?i)(?:^|[^A-Za-z0-9_.])"
+    rb"(?i)(?:^|[^A-Za-z0-9_])"
     rb"(?P<name>(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*"
     rb"(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret|token)"
     rb"(?:[_-][A-Za-z][A-Za-z0-9]{0,63})*)"
     rb"[ \t]*:[ \t]*[A-Za-z_][A-Za-z0-9_.\[\], |]{0,64}?[ \t]*"
-    rb"(?P<assign>=[ \t]*(?P<value>\"(?:\\.|[^\"\\\r\n]){1,512}\"|'(?:\\.|[^'\\\r\n]){1,512}'))"
+    rb"(?P<assign>=[ \t]*(?P<value>"
+    + _STRING_PREFIX_RE
+    + rb"\"(?:\\.|[^\"\\\r\n]){1,512}\"|"
+    + _STRING_PREFIX_RE
+    + rb"'(?:\\.|[^'\\\r\n]){1,512}'))"
 )
 # Assignment heuristics remain conservative: ordinary parser/member/call expressions should not
 # turn a whole review into a credential refusal, but a bare dotted value is ambiguous without
@@ -202,6 +209,8 @@ _NON_CREDENTIAL_WORDS: Final = frozenset(
         b"boolean",
         b"Optional",
         b"SecretStr",
+        b"Final",
+        b"ClassVar",
     }
 )
 # ``self.bos_id``, ``this.token`` and ``cls.prefix`` name an attribute; they are never a value.
@@ -215,9 +224,14 @@ _PLACEHOLDER_VALUE: Final = re.compile(
     rb"^(?:<[^<>]{1,256}>|\$\{[^{}]{1,256}\}|\{\{[^{}]{1,256}\}\}|.{0,256}(?:\.\.\.|\xe2\x80\xa6))$",
     re.DOTALL,
 )
+# Each shape needs a placeholder cue so an all-letter password (``"<Password>"``, ``"Secret..."``)
+# keeps matching: a ``-``/``_``-joined or all-caps name or the word ``your`` inside ``<>``, a
+# ``${NAME}`` reference, a ``{{ name }}`` template, or a vendor prefix ending in ``_``/``-``
+# before an ellipsis (``gw_...``).
 _SECRET_PLACEHOLDER_VALUE: Final = re.compile(
-    rb"^(?:<[A-Za-z_ -]{1,64}>|\$\{[A-Za-z_]{1,64}\}|\{\{[ A-Za-z_.]{1,64}\}\}"
-    rb"|[A-Za-z_-]{0,6}(?:\.\.\.|\xe2\x80\xa6))$"
+    rb"^(?:<(?:[A-Za-z]{1,32}[_-][A-Za-z_ -]{1,64}|[A-Z_]{2,64}|(?i:your)[A-Za-z_ -]{0,60})>"
+    rb"|\$\{[A-Za-z_]{1,64}\}|\{\{[ A-Za-z_.]{1,64}\}\}"
+    rb"|(?:[A-Za-z]{1,6}[_-])?(?:\.\.\.|\xe2\x80\xa6))$"
 )
 _LINE_BREAK_SEPARATOR: Final = re.compile(rb"[\r\n]|\\[nr]")
 # After a line break, ``NEXT_KEY=`` or ``nested:`` is the next key, not this key's value.
@@ -567,6 +581,13 @@ _ASSIGNMENT_SEPARATOR: Final = re.compile(rb"[:=]" + _ENCODED_SPACE + rb"*")
 _ASSIGNMENT_NAME_START: Final = re.compile(rb"[A-Za-z]")
 
 
+def _without_string_prefix(value: bytes) -> bytes:
+    """Drop a string-literal prefix (``b``, ``r``, ``f``, ``rb``...) that opens a quoted value."""
+
+    prefix = _STRING_PREFIX.match(value)
+    return value if prefix is None else value[prefix.end() :]
+
+
 def _assignment_separator(raw: bytes) -> re.Match[bytes] | None:
     """The ``:``/``=`` that separates an assignment match's name from its value.
 
@@ -593,7 +614,7 @@ def _assignment_value_is_code(
     separator = _assignment_separator(raw)
     if separator is None:
         return False
-    value = raw[separator.end() :]
+    value = _without_string_prefix(raw[separator.end() :])
     # These are Yoetz's own bounded replacement markers. They carry no secret bytes, so allowing
     # the scanner to classify a marker as a fresh assignment would make every structured redaction
     # fail its final scan. Only the exact markers are exempt; any suffix remains heuristic.
@@ -660,7 +681,7 @@ def _assignment_value_cannot_be_credential(match: re.Match[bytes], *, token_fami
     separator = _assignment_separator(raw)
     if separator is None:
         return False
-    value = raw[separator.end() :]
+    value = _without_string_prefix(raw[separator.end() :])
     if not value or value.startswith(b"="):
         # ``token == other``, ``token := next(it)``: a comparison or walrus, not an assignment.
         return True
@@ -896,6 +917,9 @@ def _replace_sensitive_spans(
             or re.search(rb"(?:token|secret|password|passwd|api|key|auth)", prefix)
         ):
             value = raw[separator.end() :]
+            literal_prefix = _STRING_PREFIX.match(value)
+            string_prefix = b"" if literal_prefix is None else literal_prefix.group(0)
+            value = value[len(string_prefix) :]
             opening_quote = (
                 value[:2]
                 if value.startswith(b'\\"')
@@ -906,7 +930,9 @@ def _replace_sensitive_spans(
             closing_quote = (
                 opening_quote if opening_quote and value.endswith(opening_quote) else b""
             )
-            pieces.append(raw[: separator.end()] + opening_quote + marker + closing_quote)
+            pieces.append(
+                raw[: separator.end()] + string_prefix + opening_quote + marker + closing_quote
+            )
         else:
             pieces.append(marker)
         cursor = finding.end_offset

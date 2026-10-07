@@ -562,7 +562,10 @@ def semantic_redacted_value_text(item: SemanticRedactedValue) -> str:
         else "lines not located"
     )
     what = "value replaced" if item.disposition == "value_replaced" else "item withheld"
-    return f"{ref}: {what}, {lines}"
+    # Line numbers count lines of the captured item (an excerpt or one of its parts), not of the
+    # file it came from; say so, so an agent never reads them as file line numbers.
+    located = f"{lines} of the captured item" if item.lines else lines
+    return f"{ref}: {what}, {located}"
 
 
 @dataclass(frozen=True, slots=True)

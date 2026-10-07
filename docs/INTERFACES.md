@@ -1240,7 +1240,8 @@ Five further codes describe a review that did run but could not deliver everythi
   that item alone was left out (listed in `semantic_withheld_items`). It bounds only the AI-powered
   review. Either gap comes with `semantic_redacted_values` (owner-approved PL2-1, ADR-009): at most
   64 `{item_id, source_ref?, disposition: value_replaced|item_withheld, lines}` entries sorted by
-  `item_id`, with up to 32 sorted 1-based line numbers in the item's own text and `source_ref` only
+  `item_id`, with up to 32 sorted 1-based line numbers in the captured item's own text (an excerpt or one of
+its `-part-NN` parts, not the source file; renderings say "of the captured item") and `source_ref` only
   when the catalogued ref is an opaque token. Never a value, offset or path. Carried, when present,
   by the check event (1.4.0), check result, `status view=operation` page and receipt document; every
   rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`);

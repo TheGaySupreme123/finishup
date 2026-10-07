@@ -638,6 +638,13 @@ def test_high_confidence_detectors_are_unchanged_by_narrowing(source: bytes) -> 
         b'password: str = "hunter2"',
         b'api_token: Final = "a8F3kL9qZ2xV7mN4"',
         b'{\\"password\\": \\"hunter2\\"}',
+        b'password = b"hunter2x"',
+        b'password = r"hunter2x"',
+        b'PASSWORD: Final = b"hunter2x"',
+        b'password: str = f"hunter2x"',
+        b'self.password: str = "hunter2x"',
+        b'password = "<Password>"',
+        b'password = "Secret..."',
     ),
 )
 def test_narrowing_never_skips_human_chosen_secret_values(data: bytes) -> None:
@@ -652,7 +659,8 @@ def test_narrowing_never_skips_human_chosen_secret_values(data: bytes) -> None:
     assert all(scan_finding_is_heuristic(finding) for finding in findings)
     redacted, count = redact_heuristic_spans(data)
     assert count >= 1
-    assert b"hunter2" not in redacted and b"s3cr" not in redacted and b"realsecret" not in redacted
+    for secret in (b"hunter2", b"s3cr", b"realsecret", b"Summer2024", b"Password", b"Secret"):
+        assert secret not in redacted, data
     assert scan_for_sensitive_content(redacted) == ()
 
 

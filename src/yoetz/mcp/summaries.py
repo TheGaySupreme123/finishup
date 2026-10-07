@@ -1312,9 +1312,12 @@ def summary_for_status(envelope: object) -> str:
         if redacted_line:
             # PL2-1: the fixed agent line outranks the optional id lists.
             suffix += redacted_line
-            clause = _semantic_redacted_values_clause(
+            # Keep the earlier id lists when they still fit beside the line; drop them otherwise.
+            if len((prefix + clause + suffix).encode("ascii")) > _MAX_SUMMARY_BYTES:
+                clause = ""
+            clause += _semantic_redacted_values_clause(
                 typed_page,
-                byte_budget=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii")),
+                byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
             )
         clause += _semantic_withheld_items_clause(
             typed_page,
