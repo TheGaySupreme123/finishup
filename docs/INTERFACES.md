@@ -7818,6 +7818,22 @@ A cited `fnd_` in a challenge resolves to that finding's subjects when it is a l
 the same check or a readable recorded finding inside the frozen fence; only already-recorded
 findings are kept as `relates_to`, so a link never names a finding that was ranked away.
 
+A provider challenge may name the finding it restates (`restates`, provider-judgment `1.2.0`,
+optional; issue #980). When it is one of the packet's `prior_finding_refs` and a readable open
+AI-powered finding, the challenge mints nothing: the check records `answered_not_fixed` (the agent
+had answered) or `still_present` on that finding, citing the challenge's refs, and appends the
+challenge's summary and message to `review_summary` under a fixed header naming the id. A rejected
+`restates` is counted in `semantic_review_refs_reduced`.
+
+Dialogue projection facts (TB4 tb4n1 D7): a finding row counts the agent's `rejected` responses
+(`rebuttal_count`) and keeps the newest admitted ruling (`last_reviewer_verdict`); both are
+replay-derived, emitted in projection snapshots only when set, and carried with `review_rounds` on
+the `yoetz.prior-finding/1` row when set. `kernel.finding_todo.standing_premise_disputes(state)`
+lists `acknowledged_not_done` AI-powered findings of kind `task_requirement_unmet` or
+`requested_item_never_attempted` whose challenge asked the agent to `act` (`FindingTodo
+.premise_disputed`): the acknowledgement stays final, but the reviewer's premise challenge is a
+standing dispute for readiness or Stop surfaces.
+
 The review packet (`outbound-case` `1.2.0`) adds the `prior_finding` section,
 `review_packet.prior_finding_item_ids` (every row of the section, at most 56) and
 `review_packet.prior_finding_refs` (the ruling unit: each carried finding's `finding_ref` exactly
@@ -8369,7 +8385,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `requested_output_outside_workspace`, `requested_output_unverified`. Each code is classified
   once in `GAP_CLASSIFICATION`; standing ones are advisory for the check verdict, the receipt
   conclusion and `DETERMINISTIC_SCOPED_STANDING_GAPS`, and every task-fact code is tolerated by a
-  local absence proof. `build_deterministic_case` and the compact status gaps add them beside the
+  local absence proof; `write_outside_workspace` and `obligation_blocked_outside_agent_control`
+  are also tolerated by an AI-powered absence proof (issue #1000). `build_deterministic_case` and the compact status gaps add them beside the
   plan-drift signals.
 - **Planned-verification identity.** `register_command_identity_key(key)` (the service calls it at
   composition with the local observation store key) lets `requested_command_identity(value)`
