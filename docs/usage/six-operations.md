@@ -238,8 +238,8 @@ Yoetz cannot show or prove) is never a blocker: verify the work yourself and res
 `self_verified` instead. Yoetz cannot verify a blocker either, so the first one is only claimed:
 the `publish_work` result challenges it (data the task says is recoverable, a failing test, or a
 result that only looks infeasible is not a blocker, so continue the work instead), and the
-obligation stays open work (`obligation_blocker_unconfirmed`) until you publish the same line for
-it again in a later `publish_work` call. It then reads as a disclosed limitation. A blocker that
+obligation stays open work (`obligation_blocker_unconfirmed`) until you answer that challenge
+as it describes; a confirmed blocker then reads as a disclosed limitation. A blocker that
 names only finished obligations has no effect. The next stop may ask you once to confirm a
 blocker, and the closing review checks it against the task once and challenges it when the
 blocked obligation is the task's main deliverable.

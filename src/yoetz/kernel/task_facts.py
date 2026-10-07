@@ -297,9 +297,11 @@ def blocker_declarations(
     is necessarily the agent's answer to it. A repeat in the same batch (or a second line in the
     same decision) never confirms, and a dry run records nothing. ``batches`` maps decision event
     ids to their batch (``decision_batches`` of the accepted prefix); a decision whose batch is
-    unknown confirms nothing. Yoetz still cannot verify the claim; the closing review checks it
-    against the task (#978). Ledger order and batch are recorded facts, so the answer is
-    replay-stable.
+    unknown confirms nothing. A later decision naming the obligation with a different kind starts
+    a new claim of that kind, even over a confirmed one; a superseded decision does not count, so
+    superseding the claim makes the next unsuperseded blocker decision the claim. Yoetz still
+    cannot verify the claim; the closing review checks it against the task (#978). Ledger order and
+    batch are recorded facts, so the answer is replay-stable.
     """
 
     rows = sorted(
@@ -319,14 +321,15 @@ def blocker_declarations(
         kind = next(item for item in BLOCKER_KINDS if item in kinds)
         for obligation in payload.affected_obligation_ids:
             current = blocked.get(obligation)
-            if current is None:
+            if current is None or current.kind not in kinds:
+                # A first claim, or a different kind: the new kind is a new claim that must face
+                # its own challenge, so a confirmed blocker of another kind does not carry over.
                 blocked[obligation] = BlockerDeclaration(kind, event_id)
                 continue
             claimed_batch = batches.get(current.decision_event_id)
             this_batch = batches.get(event_id)
             if (
                 not current.confirmed
-                and current.kind in kinds
                 and claimed_batch is not None
                 and this_batch is not None
                 and this_batch != claimed_batch
@@ -411,8 +414,8 @@ def blocker_publication_notices(
     self_verified``, a refusal ``acknowledged_not_done``), ``blocker_confirmed`` when the
     obligation's blocker of that kind was claimed in an earlier batch (this batch confirms it, or
     it already was), and ``blocker_claimed`` otherwise (the challenge: repair first; confirm only
-    by repeating the line in a later publish). An obligation id the projection does not know gets
-    no notice (admission reports it).
+    by repeating the line in a later publish). An obligation id the projection does not know is
+    not open either, so it gets ``blocker_without_effect`` too (admission also reports it).
     """
 
     batch = tuple(decisions)
@@ -435,7 +438,7 @@ def blocker_publication_notices(
         kind = next(item for item in BLOCKER_KINDS if item in kinds)
         for obligation in payload.affected_obligation_ids:
             key = (obligation, kind)
-            if key in notices or obligation not in projection.obligations:
+            if key in notices:
                 continue
             if obligation not in open_now:
                 notices[key] = BLOCKER_NOTICE_WITHOUT_EFFECT

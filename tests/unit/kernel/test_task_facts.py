@@ -381,25 +381,137 @@ def test_blocker_decision_is_honoured_only_for_closed_kinds() -> None:
     assert not any(code.startswith("planned_verification") for code, _ in markers)
 
 
-def test_a_different_kind_or_an_unrelated_obligation_does_not_confirm_a_blocker() -> None:
+def test_a_kind_change_starts_a_new_claim_and_an_unrelated_obligation_confirms_nothing() -> None:
     ledger = ObservedLedger()
     _planned(ledger, obligation=_OBLIGATION)
     _planned(ledger, obligation=_OTHER)
     _plan(ledger, _OBLIGATION, _OTHER)
     _decision(ledger, "yoetz-blocker:authority", _OBLIGATION)
-    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
     _decision(ledger, "yoetz-blocker:authority", _OTHER)
+    _decision(ledger, "yoetz-blocker:authority", _OBLIGATION)
     projection = replay(ledger.prefix)
     declarations = blocker_declarations(projection, _batches(ledger))
-    assert declarations[_OBLIGATION].kind == "authority"
-    assert not declarations[_OBLIGATION].confirmed
+    assert declarations[_OBLIGATION].confirmed
+    # _OTHER's own claim was never repeated; _OBLIGATION's confirmation does not reach it.
     assert not declarations[_OTHER].confirmed
-    # One decision naming both obligations confirms both claims of that kind.
-    _decision(ledger, "yoetz-blocker:authority", _OBLIGATION, _OTHER)
+
+    # A different kind resets the claim, even over a confirmed blocker: it must face its own
+    # challenge.
+    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
     projection = replay(ledger.prefix)
-    assert all(
-        item.confirmed for item in blocker_declarations(projection, _batches(ledger)).values()
+    declaration = blocker_declarations(projection, _batches(ledger))[_OBLIGATION]
+    assert (declaration.kind, declaration.confirmed) == ("consent", False)
+    assert dict(blocked_obligations(projection, _batches(ledger))) == {}
+    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    projection = replay(ledger.prefix)
+    declaration = blocker_declarations(projection, _batches(ledger))[_OBLIGATION]
+    assert (declaration.kind, declaration.confirmed) == ("consent", True)
+
+
+def _supersede(ledger: ObservedLedger, statement: str, superseded: EventId) -> EventId:
+    _BATCHES[0] += 1
+    return ledger.append(
+        _DECISION_SCHEMA,
+        DecisionRecordedPayload(
+            statement=statement,
+            rationale="Revised after the challenge.",
+            authority=actor_id("agt_codex"),
+            affected_obligation_ids=(_OBLIGATION,),
+            supersedes_event_id=superseded,
+        ),
+        observed=False,
+        operation=f"req_98500000-0000-4000-8000-{_BATCHES[0]:012d}",
     )
+
+
+def _last_event(ledger: ObservedLedger) -> EventId:
+    return ledger.prefix[-1].event_id
+
+
+def test_superseding_the_claim_or_the_confirmation_resets_what_counts() -> None:
+    """#985: a superseded blocker decision no longer counts, whichever role it had."""
+
+    ledger = ObservedLedger()
+    _planned(ledger, obligation=_OBLIGATION)
+    _plan(ledger, _OBLIGATION)
+    _decision(ledger, "yoetz-blocker:credential", _OBLIGATION)
+    claim = _last_event(ledger)
+    # Superseding the claim with the same line makes the replacement the (unconfirmed) claim.
+    replacement = _supersede(ledger, "yoetz-blocker:credential", claim)
+    declaration = blocker_declarations(replay(ledger.prefix), _batches(ledger))[_OBLIGATION]
+    assert (declaration.decision_event_id, declaration.confirmed) == (replacement, False)
+
+    _decision(ledger, "yoetz-blocker:credential", _OBLIGATION)
+    confirmation = _last_event(ledger)
+    declaration = blocker_declarations(replay(ledger.prefix), _batches(ledger))[_OBLIGATION]
+    assert declaration.confirmation_event_id == confirmation
+
+    # Superseding the confirmation with a plain decision withdraws it: claimed again.
+    _supersede(ledger, "The credential arrived; the work continues.", confirmation)
+    projection = replay(ledger.prefix)
+    declaration = blocker_declarations(projection, _batches(ledger))[_OBLIGATION]
+    assert (declaration.decision_event_id, declaration.confirmed) == (replacement, False)
+    assert dict(blocked_obligations(projection, _batches(ledger))) == {}
+
+
+def test_two_back_to_back_publishes_confirm_because_the_first_result_carried_the_challenge() -> (
+    None
+):
+    """#985 (lead decision): later-batch semantics. The claimed notice in the first publish
+    result is the challenge, and no pre-claim text tells the agent how to confirm, so a second
+    publish right after it is the agent's answer to that challenge."""
+
+    from yoetz.kernel.task_facts import (
+        BLOCKER_NOTICE_CLAIMED,
+        BLOCKER_NOTICE_CONFIRMED,
+        blocker_publication_notices,
+    )
+
+    ledger = ObservedLedger()
+    _planned(ledger, obligation=_OBLIGATION)
+    _plan(ledger, _OBLIGATION)
+    payload = DecisionRecordedPayload(
+        statement="yoetz-blocker:authority",
+        rationale="Production deploy rights belong to the operator.",
+        authority=actor_id("agt_codex"),
+        affected_obligation_ids=(_OBLIGATION,),
+    )
+    first = ledger.append(
+        _DECISION_SCHEMA,
+        payload,
+        observed=False,
+        operation="req_98500000-0000-4000-8000-0000000009c1",
+    )
+    [notice] = blocker_publication_notices(replay(ledger.prefix), ((first, payload),))
+    assert notice.notice == BLOCKER_NOTICE_CLAIMED
+    second = ledger.append(
+        _DECISION_SCHEMA,
+        payload,
+        observed=False,
+        operation="req_98500000-0000-4000-8000-0000000009c2",
+    )
+    projection = replay(ledger.prefix)
+    [notice] = blocker_publication_notices(projection, ((second, payload),))
+    assert notice.notice == BLOCKER_NOTICE_CONFIRMED
+    assert blocker_declarations(projection, _batches(ledger))[_OBLIGATION].confirmed
+
+
+def test_a_blocker_naming_an_unknown_obligation_has_no_effect() -> None:
+    from yoetz.kernel.task_facts import BLOCKER_NOTICE_WITHOUT_EFFECT, blocker_publication_notices
+
+    ledger = ObservedLedger()
+    _planned(ledger, obligation=_OBLIGATION)
+    _plan(ledger, _OBLIGATION)
+    unknown = obligation_id("obl_00000000-0000-4000-8000-0000000009ff")
+    payload = DecisionRecordedPayload(
+        statement="yoetz-blocker:consent",
+        rationale="Named the wrong id.",
+        authority=actor_id("agt_codex"),
+        affected_obligation_ids=(unknown,),
+    )
+    event = ledger.append(_DECISION_SCHEMA, payload, observed=False)
+    [notice] = blocker_publication_notices(replay(ledger.prefix), ((event, payload),))
+    assert (notice.obligation_id, notice.notice) == (unknown, BLOCKER_NOTICE_WITHOUT_EFFECT)
 
 
 def test_readiness_turns_fully_blocked_open_obligations_into_a_disclosure() -> None:

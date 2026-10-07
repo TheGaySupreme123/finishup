@@ -25,4 +25,4 @@ not just recheck. At `ready_with_limitations`, nothing further is to do: request
 `standing_limitations` are disclosed, never tasks. A `respond` does not clear a finding.
 Repair first; if Yoetz cannot prove a repair (a Yoetz limit), verify it yourself and respond
 `self_verified`. A Yoetz limit is never a `yoetz-blocker`; block only an open obligation outside
-your control, and confirm it in a later `publish_work`.
+your control; its publish result challenges it.

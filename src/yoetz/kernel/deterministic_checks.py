@@ -471,8 +471,7 @@ DETERMINISTIC_FINDING_TEMPLATES: Final[
             " dependency you cannot obtain) prevents this open obligation, and the task does not"
             " say the outcome is recoverable, record a decision_recorded naming it in"
             " affected_obligation_ids with the statement line yoetz-blocker:<authority|consent|"
-            "credential|dependency_unavailable>; Yoetz challenges it, and it counts only once you"
-            " publish the same line again in a later decision.",
+            "credential|dependency_unavailable>; the publish result then challenges it.",
         ),
         FindingKind.FAILED_WORK_OMITTED: DeterministicFindingTemplate(
             "Recorded failed work is omitted from the published account.",

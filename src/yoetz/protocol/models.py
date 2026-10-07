@@ -2679,10 +2679,10 @@ PUBLISH_BLOCKER_NOTICE_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
             " blocker: verify that work yourself and respond self_verified on the finding. Data"
             " or an outcome the task says is recoverable or achievable is not a blocker. Keep a"
             " blocker only for an open obligation genuinely blocked outside your control"
-            " (authority, consent, a credential, a dependency you cannot obtain). Until you"
-            " confirm it, the obligation stays your work (obligation_blocker_unconfirmed); to"
-            " confirm, publish the same yoetz-blocker line for it again in a later"
-            " decision_recorded."
+            " (authority, consent, a credential, a dependency you cannot obtain). Until then the"
+            " obligation stays your work (obligation_blocker_unconfirmed). If it is still genuine"
+            " after you re-read the task and tried the obvious prerequisite, confirm it: publish"
+            " the same yoetz-blocker line for it again in a later publish_work call."
         ),
         "blocker_confirmed": (
             "This yoetz-blocker is confirmed: the obligation is disclosed as blocked outside your"

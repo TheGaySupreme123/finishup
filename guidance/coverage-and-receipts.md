@@ -137,7 +137,7 @@ each status read and never cached across frontiers:
   A finding answered `self_verified` is not listed here: it reads as the standing
   `finding_self_verified` and is never agent work.
   An obligation cannot be recorded as not done. One that a confirmed blocker decision names
-  (`yoetz-blocker:<kind>` repeated in a later `publish_work` call, see below) reads as the
+  (`yoetz-blocker:<kind>`, confirmed after its challenge, see below) reads as the
   standing `obligation_blocked_outside_agent_control`; a blocker you only claimed reads as the
   agent-actionable `obligation_blocker_unconfirmed`; any other unfinished obligation stays in
   `agent_actionable`, and you disclose it in your final answer.
@@ -677,12 +677,11 @@ or inconsistent data the task says is recoverable, a failing test, or a result t
 infeasible is not a blocker: deliver a best-effort result in the requested form and disclose the
 assumption. A Yoetz limit (something Yoetz cannot show or prove) is never a blocker: verify the
 work yourself and respond `self_verified` on the finding. Yoetz cannot verify a blocker, so the
-first one is only claimed: the `publish_work` result challenges it (`blocker_notices`), and the
-obligation stays agent work (`obligation_blocker_unconfirmed`) until you publish the same line for
-it again in a later `publish_work` call; a repeat in the same call never confirms it. A blocker
-naming only finished obligations has no effect. A Stop asks you once to re-confirm it, and the
-closing review checks it against the task and challenges it when the blocked obligation is the
-main deliverable or the task says the outcome is achievable. Only then report the remaining limitation or narrow the claim. `respond` rejects an `acknowledged` answer to an
+first one is only claimed: the `publish_work` result challenges it (`blocker_notices`), the
+obligation stays agent work (`obligation_blocker_unconfirmed`), and that challenge (or a Stop
+re-check) tells you how to keep a blocker that is still genuine. A blocker naming no open
+obligation has no effect. The closing review checks it against the task and challenges it when the
+task says the outcome is achievable or recoverable, or the obvious prerequisite was not attempted. Only then report the remaining limitation or narrow the claim. `respond` rejects an `acknowledged` answer to an
 AI-powered review finding unless `evidence_refs` cites evidence or a result recorded after the
 finding (`resolution_attempt_required`); the result of the blocked attempt counts (outcome
 `failure` or `partial`: there is no `blocked` outcome). An acknowledgement or

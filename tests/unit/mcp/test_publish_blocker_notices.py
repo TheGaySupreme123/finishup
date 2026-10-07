@@ -68,3 +68,31 @@ def test_an_unrecognized_row_renders_nothing() -> None:
     assert render_publish_blocker_notices(_wire(altered)) == ""
     assert render_publish_blocker_notices(_wire(_row("not-an-id", "blocker_claimed"))) == ""
     assert render_publish_blocker_notices({"ok": True}) == ""
+
+
+def test_no_pre_claim_text_tells_the_agent_how_to_confirm_a_blocker() -> None:
+    """#985: only the claimed notice (and the Stop re-check) may say how to confirm, so a blocker
+    published twice up front cannot skip the challenge."""
+
+    from pathlib import Path
+
+    from yoetz.domain.findings import FindingKind
+    from yoetz.kernel.deterministic_checks import DETERMINISTIC_FINDING_TEMPLATES
+
+    recipes = ("same yoetz-blocker line", "same line for it again", "again in a later")
+    root = Path(__file__).resolve().parents[3]
+    texts = {
+        "requested_item_never_attempted": DETERMINISTIC_FINDING_TEMPLATES[
+            FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
+        ].next_action,
+        **{
+            str(path.relative_to(root)): path.read_text(encoding="utf-8")
+            for path in (
+                *sorted((root / "guidance").glob("*.md")),
+                *sorted((root / "skills").glob("*/yoetz/SKILL.md")),
+            )
+        },
+    }
+    for name, text in texts.items():
+        assert not any(recipe in text for recipe in recipes), name
+    assert "again in a later publish_work call" in PUBLISH_BLOCKER_NOTICE_TEXTS["blocker_claimed"]
