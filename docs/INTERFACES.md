@@ -8402,7 +8402,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   composition with the local observation store key) lets `requested_command_identity(value)`
   compute `hmac-sha256:` over `normalize_observed_command(value)`, the identity a hook records as
   `omitted:<commitment>`. Without a registered key no planned-verification code is produced.
-  `requested_command_identities(value) -> (whole, segment identities) | None` adds the planned
+  `requested_command_identities(value) -> (whole, segment identities, composition) | None` adds the planned
   value's own segment commitments. An agent link (ADR-033 decision 1, #1003) also matches: a
   cooperative `command` action whose `attempted_items` holds the exact value and whose
   `causal_parents` names a hook-observed command action, attributed per obligation; the observed

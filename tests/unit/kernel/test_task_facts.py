@@ -683,6 +683,19 @@ def test_pretrain_redirected_run_matches_and_keeps_its_outcome() -> None:
     assert _planned_codes(observed, (planned, ResultOutcome.SUCCESS)) == set()
 
 
+@pytest.mark.parametrize("planned", ["! pytest -q", "pytest -q &"])
+def test_a_negated_or_backgrounded_plan_does_not_take_the_runs_outcome(planned: str) -> None:
+    """Adversarial review of E3: a planned `! X` or `X &` is not X's outcome."""
+
+    unknown = {PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP}
+    assert _planned_codes(planned, ("pytest -q", ResultOutcome.FAILURE)) == unknown
+    assert _planned_codes(planned, ("pytest -q", ResultOutcome.SUCCESS)) == unknown
+    # A redirected plan is still that command: its run's failure is the plan's failure.
+    assert _planned_codes("pytest -q > log", ("pytest -q", ResultOutcome.FAILURE)) == {
+        PLANNED_VERIFICATION_FAILED_GAP
+    }
+
+
 def test_a_failed_chain_names_no_failing_segment() -> None:
     assert _planned_codes("npm test", ("npm test && npm run build", ResultOutcome.FAILURE)) == {
         PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP

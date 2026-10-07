@@ -237,11 +237,13 @@ def requested_command_identity(value: str) -> str | None:
         return None
 
 
-def requested_command_identities(value: str) -> tuple[str, frozenset[str]] | None:
-    """The whole keyed identity of a requested command and its segment identities, or ``None``.
+def requested_command_identities(value: str) -> tuple[str, frozenset[str], str | None] | None:
+    """The whole keyed identity of a requested command, its segment identities and composition.
 
     The segments are what ``domain.command_segments`` would commit for the same text, so a
-    planned ``X > log`` or ``cd /app && X`` also matches a run that shares those parts.
+    planned ``X > log`` or ``cd /app && X`` also matches a run that shares those parts. The
+    composition (``single``, ``and_chain``, ``masked``; ``None`` for a simple command) says
+    whether the planned command's own outcome is its one segment's (``! X`` or ``X &`` is not).
     """
 
     key = _COMMAND_IDENTITY_KEY[0]
@@ -255,7 +257,9 @@ def requested_command_identities(value: str) -> tuple[str, frozenset[str]] | Non
         segments = command_segment_commitments(key, normalized)
     except ValueError:
         return None
-    return whole, frozenset(() if segments is None else segments[0])
+    if segments is None:
+        return whole, frozenset(), None
+    return whole, frozenset(segments[0]), segments[1]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -394,7 +398,7 @@ def _segment_fields(command: str | None) -> tuple[frozenset[str], str | None]:
 
 
 def _planned_outcome(
-    run: _ObservedRun, whole: str, segments: frozenset[str]
+    run: _ObservedRun, whole: str, segments: frozenset[str], composition: str | None = None
 ) -> ResultOutcome | None:
     """The outcome ``run`` establishes for one planned command, or ``None`` when unmatched.
 
@@ -408,7 +412,11 @@ def _planned_outcome(
 
     if run.identity is None:
         return None
-    if run.identity == whole or (len(segments) == 1 and run.identity in segments):
+    if run.identity == whole or (
+        # ``X > log`` planned, ``X`` run: the planned outcome is its one segment's, but only for a
+        # ``single`` composition; a planned ``! X`` or ``X &`` inverts or detaches it.
+        len(segments) == 1 and composition == "single" and run.identity in segments
+    ):
         return run.outcome
     if whole not in run.segments and not (segments and segments <= run.segments | {run.identity}):
         return None
