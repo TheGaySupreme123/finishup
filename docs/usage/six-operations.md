@@ -120,6 +120,14 @@ work; an attempt or a linked evidence item does not establish that a requirement
 scope or capture stays explicit. Test-edit counters distinguish changes to existing tests from new
 tests, and disclose when the task-start baseline was unavailable.
 
+Commands you just ran reach the record through your host's hooks a moment later. To check them
+without polling `status`, add `"await_observations": true` to the check request (or run
+`yoetz check --await-observations`). Yoetz then waits up to about three seconds for this task's
+observations that are still being delivered before it checks, and the result's
+`observations_awaited` says whether they all arrived (`complete`), some were still on their way
+(`bounded_timeout`, with how many), or the wait could not see them (`unavailable`). The wait never
+fails the check; without the option nothing changes.
+
 A local-only check can report “no issue detected within deterministic coverage” while preserving
 the limitation that AI-powered review did not run. Open obligations, missing requested attempts,
 live failures and actionable findings prevent that result. Follow the overall next step: supply

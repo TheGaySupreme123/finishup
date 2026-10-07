@@ -779,16 +779,25 @@ async def _call_workflow(
     deadline_ms: int | None,
     *,
     task_statement_file: str | None = None,
+    await_observations: bool = False,
 ) -> int:
     try:
-        request = cast(
-            WorkflowRequest,
-            (
-                _start_request_model(input_path, inline, task_statement_file)
-                if method == "start"
-                else _request_model(request_type, input_path, inline)
-            ),
-        )
+        if method == "start":
+            request = cast(
+                WorkflowRequest, _start_request_model(input_path, inline, task_statement_file)
+            )
+        elif await_observations:
+            # ``yoetz check --await-observations`` sets the optional request field (issue #1012);
+            # a request that already carries it keeps its own value.
+            parsed = _bounded_input(input_path, inline)
+            if not isinstance(parsed, Mapping):
+                raise ProtocolValueError("unsupported_json_type")
+            request = cast(
+                WorkflowRequest,
+                request_type.model_validate({"await_observations": True, **parsed}),
+            )
+        else:
+            request = cast(WorkflowRequest, _request_model(request_type, input_path, inline))
         client = await build_service_client()
         try:
             call = getattr(client, method)
@@ -1522,7 +1531,40 @@ def start_command(
 
 
 app.command("publish-work")(_workflow_command("publish_work", PublishWorkRequest))
-app.command("check")(_workflow_command("check", CheckRequest))
+
+
+@app.command("check")
+def check_command(
+    input_path: _INPUT = None,
+    request: _INLINE = None,
+    json_output: _JSON = False,
+    deadline_ms: _DEADLINE = None,
+    await_observations: Annotated[
+        bool,
+        typer.Option(
+            "--await-observations",
+            help=(
+                "Before checking, wait up to about 3 seconds for this task's hook observations "
+                "that are still being delivered; the result reports whether they all arrived."
+            ),
+        ),
+    ] = False,
+) -> None:
+    _finish(
+        run_async(
+            lambda: _call_workflow(
+                "check",
+                CheckRequest,
+                input_path,
+                request,
+                json_output,
+                deadline_ms,
+                await_observations=await_observations,
+            )
+        )
+    )
+
+
 app.command("respond")(_workflow_command("respond", RespondRequest))
 app.command("status")(_workflow_command("status", StatusRequest))
 app.command("receipt")(_workflow_command("receipt", ReceiptRequest))

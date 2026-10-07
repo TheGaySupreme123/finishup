@@ -92,6 +92,7 @@ __all__ = [
     "CheckChildPreviewItem",
     "CheckChildrenPreview",
     "CheckCommitResult",
+    "CheckObservationsAwaited",
     "CheckPhase",
     "CheckPolicyExecution",
     "CheckVersionSlice",
@@ -865,6 +866,32 @@ class CheckOverallNext:
             raise _invalid()
 
 
+CHECK_OBSERVATIONS_AWAITED_STATES: Final = frozenset({"bounded_timeout", "complete", "unavailable"})
+
+
+@dataclass(frozen=True, slots=True)
+class CheckObservationsAwaited:
+    """Outcome of the optional bounded pre-check wait for this task's hook rows (issue #1012).
+
+    ``pending_count`` is how many of the task's local outbox rows that were pending when the
+    check arrived were still pending when the wait ended; ``unavailable`` means the wait could
+    not observe the local outbox and reports ``0``. Never recorded in the ledger: it describes
+    the call that asked for it.
+    """
+
+    state: Literal["complete", "bounded_timeout", "unavailable"]
+    pending_count: int
+
+    def __post_init__(self) -> None:
+        if type(self.state) is not str or self.state not in CHECK_OBSERVATIONS_AWAITED_STATES:
+            raise _invalid()
+        _uint(self.pending_count)
+        if self.state != "bounded_timeout" and self.pending_count != 0:
+            raise _invalid()
+        if self.state == "bounded_timeout" and self.pending_count == 0:
+            raise _invalid()
+
+
 @dataclass(frozen=True, slots=True)
 class CheckCommitResult:
     outcome: Literal["committed", "replayed"]
@@ -899,6 +926,8 @@ class CheckCommitResult:
     semantic_withheld_item_ids: tuple[str, ...] = ()
     review_input_manifest: JsonObject | None = None
     totals: JsonObject | None = None
+    # Present only when the check request set ``await_observations`` (issue #1012).
+    observations_awaited: CheckObservationsAwaited | None = None
 
     def __post_init__(self) -> None:
         if type(self.outcome) is not str or self.outcome not in {"committed", "replayed"}:
@@ -993,6 +1022,11 @@ class CheckCommitResult:
             raise _invalid()
         if type(self.missing_for_assessment) is not tuple or any(
             type(item) is not MissingForAssessmentItem for item in self.missing_for_assessment
+        ):
+            raise _invalid()
+        if (
+            self.observations_awaited is not None
+            and type(self.observations_awaited) is not CheckObservationsAwaited
         ):
             raise _invalid()
 

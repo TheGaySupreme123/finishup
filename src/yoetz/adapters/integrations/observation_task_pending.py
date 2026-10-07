@@ -1,0 +1,102 @@
+"""Task-scoped view of the local hook outbox (tb4n1 B4/C6, issue #1012).
+
+A hook outbox row belongs to a task when its host session is the caller's own host session or
+any other host session whose lifecycle mapping names the same Yoetz session (a delegated child
+lane). Rows of other tasks sharing the workspace, and rows of unmapped host sessions (which
+cannot reach any task ledger until mapped), are never counted.
+
+The Stop hook's closure gate and the service's optional pre-check wait
+(``check`` with ``await_observations``) share these helpers so both read the same rows.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from yoetz.adapters.integrations.codex_lifecycle import load_mapping
+from yoetz.adapters.integrations.observation_local import (
+    LocalObservationStore,
+    ObservationOutboxRow,
+)
+
+__all__ = [
+    "session_pending_row_identities",
+    "task_pending_outbox_count",
+    "task_pending_outbox_rows",
+]
+
+
+def task_pending_outbox_rows(
+    store: LocalObservationStore,
+    *,
+    workspace_commitment: str,
+    yoetz_session_id: str,
+    codex_session_id: str | None = None,
+    _state: Path | None = None,
+) -> tuple[ObservationOutboxRow, ...]:
+    """Return one workspace's pending outbox rows that can still change this task's facts.
+
+    ``codex_session_id`` names the caller's own host session, counted without a mapping read;
+    ``None`` counts only host sessions whose mapping names ``yoetz_session_id``.
+    """
+
+    same_task: dict[str, bool] = {}
+    rows: list[ObservationOutboxRow] = []
+    for row in store.list_pending_outbox_rows(workspace_commitment):
+        host_session = row.codex_session_id
+        if host_session not in same_task:
+            if codex_session_id is not None and host_session == codex_session_id:
+                same_task[host_session] = True
+            else:
+                other = load_mapping(host_session, _state=_state)
+                same_task[host_session] = (
+                    other is not None and other.yoetz_session_id == yoetz_session_id
+                )
+        if same_task[host_session]:
+            rows.append(row)
+    return tuple(rows)
+
+
+def task_pending_outbox_count(
+    store: LocalObservationStore,
+    *,
+    workspace_commitment: str,
+    yoetz_session_id: str,
+    codex_session_id: str | None = None,
+    _state: Path | None = None,
+) -> int:
+    """Count one workspace's pending outbox rows that can still change this task's facts."""
+
+    return len(
+        task_pending_outbox_rows(
+            store,
+            workspace_commitment=workspace_commitment,
+            yoetz_session_id=yoetz_session_id,
+            codex_session_id=codex_session_id,
+            _state=_state,
+        )
+    )
+
+
+def session_pending_row_identities(
+    store: LocalObservationStore,
+    *,
+    yoetz_session_id: str,
+    _state: Path | None = None,
+) -> frozenset[str]:
+    """Return the opaque identities of every pending outbox row mapped to one Yoetz session.
+
+    Reads every workspace that still holds local delivery work; the identities are digests
+    of the structural row, never its content, and are compared only inside the service.
+    """
+
+    identities: set[str] = set()
+    for workspace in store.pending_workspaces():
+        for row in task_pending_outbox_rows(
+            store,
+            workspace_commitment=workspace,
+            yoetz_session_id=yoetz_session_id,
+            _state=_state,
+        ):
+            identities.add(row.row_identity)
+    return frozenset(identities)

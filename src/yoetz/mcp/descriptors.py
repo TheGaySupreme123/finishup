@@ -1371,6 +1371,14 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
                 "reviewer judges each stated requirement and requested output against the task, "
                 "with or without a completion claim. Omit for in-progress checks."
             )
+        await_observations = properties.get("await_observations")
+        if isinstance(await_observations, dict):
+            await_observations["description"] = (
+                "Set true to wait up to about 3 seconds for this task's hook observations still "
+                "being delivered before the check, instead of polling status. The result's "
+                "observations_awaited reports complete or bounded_timeout; the check never fails "
+                "because of the wait."
+            )
     elif name == "respond-request":
         disposition = properties.get("disposition")
         if isinstance(disposition, dict):

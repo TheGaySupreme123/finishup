@@ -573,3 +573,47 @@ longer copied into Codex, Claude Code, or Cursor hook context. Codex `PreToolUse
 synchronous so its pairing identity is committed before the matching `PostToolUse`; the other
 pure-ingress hooks retain their asynchronous behavior. This is a timing and presentation change,
 not a new capture grant or a claim that every native call is observable.
+
+## Amendment — optional bounded wait for the caller's hook observations before a check (2026-10-07, #1012)
+
+The maintainer approved this protocol change on #1012 (TB4 run tb4n1 follow-up P3-1). In tb4n1, 39
+of 40 Stop-gate texts said hook observations were still draining, checks carried
+`check_current_as_of_earlier_frontier`, and agents polled `status` (790 calls in the 30 blocker
+attempts) hoping the record would catch up. The Stop drain (#994) settles a task's rows at Stop;
+a mid-session `check` still froze whatever the ledger held.
+
+### Decision
+
+- `check` accepts an optional boolean `await_observations` (check-request 1.1.0, unreleased,
+  additive in place; MCP `check` and `yoetz check --await-observations`). Omitted or `false`
+  keeps today's behaviour and bytes.
+- When `true`, the service, before it takes either dispatch gate and before the case freezes,
+  snapshots the local hook outbox rows that belong to the check's task: rows of every host session
+  whose lifecycle mapping names the check's Yoetz session, across all workspaces with pending
+  delivery work. This is the same task rule the Stop gate uses (`observation_task_pending`),
+  minus the Stop hook's own unmapped host session, which the service cannot name. The service
+  wakes its observation sweeper and polls that real local state until none of the snapshot rows is
+  still pending, re-waking the sweeper about once a second. Rows that arrive after the snapshot
+  are not waited for.
+- The wait is bounded by about 3 s and by a tenth of the request's deadline, whichever is
+  smaller. It runs inside a detached semantic check's own operation, so an MCP call's bridge
+  deadline (#886) still covers it.
+- The check result carries the closed `observations_awaited` member (check-result 1.4.0,
+  unreleased, additive in place) only when the request set the flag:
+  `{"state": "complete" | "bounded_timeout" | "unavailable", "pending_count": "<decimal>"}`.
+  `pending_count` is how many snapshot rows were still pending when the wait ended; `complete`
+  and `unavailable` (the local outbox could not be read) carry `"0"`. The CLI human rendering
+  and the MCP check summary show one short line.
+- The wait never fails, refuses, or reorders a check. A `bounded_timeout` means the check used the
+  record as it stood; the existing freshness gaps still say so.
+- The flag is outside the operation identity: the check request digest and the detached-check
+  identity drop it, so a same-request recovery may set or omit it, and requests without it keep
+  their digest. `observations_awaited` is not recorded in the ledger or in `check_recorded`; it
+  describes only the call that asked for it, and a replayed request runs and reports its own wait.
+
+### Surfaces
+
+MCP `check` (all three hosts: Codex, Claude Code and Cursor reach the same tool) and the CLI.
+The terminal interface does not set the flag: its checks are operator-initiated and not tied to
+an agent host session's outbox; it still renders the line if a result carries it. Receipts do not
+carry the member.

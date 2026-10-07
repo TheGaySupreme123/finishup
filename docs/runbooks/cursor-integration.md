@@ -1005,6 +1005,8 @@ resolved workspace root as `workspace_ref` with `cursor-session:<session_id>` as
 Before automatic new-pair admission, it checks private persisted mappings from eligible ended Cursor
 sessions. Eligibility requires a received `sessionEnd`, every other bound session ended, and a
 candidate bound only to this consented workspace. A unique eligible mapping is selected first: the
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Cursor: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
+
 hook holds the workspace and lifecycle locks, revalidates ownership and state, and sends one
 `mode=attach` request carrying that selector plus the new pair. The catalog requires the selected
 root task to be active and non-quarantined, its canonical workspace and repository-privacy binding

@@ -2233,6 +2233,9 @@ def _check_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # without a completion claim. Absent requests keep their exact shape.
     properties = cast(dict[str, JsonValue], document["properties"])
     properties["final_review"] = {"type": "boolean"}
+    # Issue #1012, unreleased in-place addition: wait, bounded, for the caller's pending hook
+    # observations before the case freezes. Absent requests keep their exact shape.
+    properties["await_observations"] = {"type": "boolean"}
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz check request {entry.schema_version}"
     return document
@@ -3432,6 +3435,37 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "type": "object",
     }
     properties["overall_next"] = {"$ref": "#/$defs/overall_next"}
+    # Issue #1012: additive on the unreleased 1.4.0 contract, present only when the request set
+    # ``await_observations``. ``complete`` and ``unavailable`` carry a zero count.
+    definitions["observations_awaited"] = {
+        "additionalProperties": False,
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"state": {"enum": ["complete", "unavailable"]}},
+                    "required": ["state"],
+                },
+                "then": {"properties": {"pending_count": {"const": "0"}}},
+            },
+            {
+                "if": {
+                    "properties": {"state": {"const": "bounded_timeout"}},
+                    "required": ["state"],
+                },
+                "then": {"properties": {"pending_count": {"not": {"const": "0"}}}},
+            },
+        ],
+        "properties": {
+            "pending_count": {"$ref": "#/$defs/canonical_uint"},
+            "state": {
+                "enum": ["bounded_timeout", "complete", "unavailable"],
+                "type": "string",
+            },
+        },
+        "required": ["pending_count", "state"],
+        "type": "object",
+    }
+    properties["observations_awaited"] = {"$ref": "#/$defs/observations_awaited"}
     properties["verified"] = {
         "items": {"$ref": "#/$defs/verified_item"},
         "maxItems": 64,
@@ -6243,6 +6277,49 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         }
         fields["write_scope"] = {"enum": ["outside_workspace"], "type": "string"}
         fields["effective_user"] = {"enum": ["non_root", "root"], "type": "string"}
+        # Digest-only facts for image tool results the hook saw (P3-2, issue #1013): the
+        # decoded image's SHA-256 and byte count, a sniffed media type, and header dimensions.
+        # No pixel crosses the wire; the domain envelope admits exactly this shape.
+        dimension: dict[str, JsonValue] = {
+            "maximum": 2_147_483_647,
+            "minimum": 1,
+            "type": "integer",
+        }
+        fields["observed_images"] = {
+            "items": {
+                "additionalProperties": False,
+                "properties": {
+                    "byte_count": {
+                        "maximum": 9_007_199_254_740_991,
+                        "minimum": 1,
+                        "type": "integer",
+                    },
+                    "content_digest": {
+                        "maxLength": 71,
+                        "minLength": 71,
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string",
+                    },
+                    "height": dimension,
+                    "media_type": {
+                        "enum": [
+                            "image/gif",
+                            "image/jpeg",
+                            "image/png",
+                            "image/unknown",
+                            "image/webp",
+                        ],
+                        "type": "string",
+                    },
+                    "width": dimension,
+                },
+                "required": ["byte_count", "content_digest", "media_type"],
+                "type": "object",
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array",
+        }
     if entry.schema_name == "control-result":
         definitions = cast(dict[str, JsonValue], document["$defs"])
         runtime = definitions.get("observation_selection_runtime")

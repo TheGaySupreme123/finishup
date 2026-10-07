@@ -133,6 +133,7 @@ _SAFE_LOCATION_SEGMENTS: Final = frozenset(
         "limitation_refs",
         "max_findings",
         "final_review",
+        "await_observations",
         "mode",
         "name",
         "no_obligations_reason",

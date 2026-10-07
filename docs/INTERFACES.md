@@ -7972,6 +7972,22 @@ Wire (the earlier checklist fields remain available in their original versions):
   next}`. `attempt_budget` is a canonical string `1`–`50`; each item is `{finding_id, todo_state,
   review_rounds}` (at most 100: the current actionable items, newest row per issue, open items
   first and otherwise in rank order, final rows included; coverage limitations are not to-dos);
+**Optional pre-check observation wait (#1012).** `check-request` 1.1.0 accepts the optional boolean
+`await_observations` (MCP `check`, `yoetz check --await-observations`). When `true`, the daemon,
+before either dispatch gate, reads the pending local hook outbox rows of every host session whose
+lifecycle mapping names the request's Yoetz session
+(`adapters/integrations/observation_task_pending.session_pending_row_identities`, the same task
+rule as the Stop gate's `observe_hooks._task_pending_outbox_count`), wakes the observation sweeper
+and polls real local state (`application/observation_await.await_task_observations`) until none of
+those snapshot rows is pending or `min(3 s, deadline / 10)` passes. The result then carries the
+closed `observations_awaited` member of `check-result` 1.4.0 — `state` `complete`,
+`bounded_timeout` or `unavailable`, and `pending_count` (canonical unsigned string, `"0"` unless
+`bounded_timeout`) — and only when the request set the flag. The flag is excluded from the check
+request digest and the detached-check identity; the member is never recorded in the ledger or
+`check_recorded`. The wait never fails a check. Golden vectors: CAN-016
+(`fixtures/canonical/check-observations-awaited-1.4.0.case.json`). ADR-029 amendment of
+2026-10-07 owns the decision.
+
   `next` is `decide_at_budget` (an open item reached the budget: repair with new evidence or
   respond `acknowledged_not_done`), `work_open_findings`, or `request_receipt`. It is current
   projection context attached after the commit, like advisory notes, and is omitted when that read

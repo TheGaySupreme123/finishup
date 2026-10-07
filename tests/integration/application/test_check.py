@@ -2244,3 +2244,76 @@ async def test_a_fresh_diff_answers_a_captured_edit_only_for_the_path_it_records
     else:
         assert [item.target_refs for item in checked.missing_for_assessment] == [(str(evd(1)),)]
         assert "semantic_missing_already_supplied" not in gaps
+
+
+# --- issue #1012: optional bounded wait for this task's hook observations ---------------------
+
+
+@pytest.mark.anyio
+async def test_await_observations_absent_keeps_digest_and_result_bytes() -> None:
+    from yoetz.application.check import _request_digest  # pyright: ignore[reportPrivateUsage]
+    from yoetz.ports.ledger import CheckObservationsAwaited
+    from yoetz.protocol.canonical import canonical_digest, canonical_encode
+
+    plain = _request()
+    flagged = CheckRequest.model_validate(
+        {**plain.model_dump(mode="json", exclude_none=True), "await_observations": True}
+    )
+    scope = check_module.normalize_check_scope(plain)
+    packs = check_module._selected_packs(plain)  # pyright: ignore[reportPrivateUsage]
+    digest = _request_digest(plain, scope, packs, route_profile="policy")
+    # The pre-field digest: the request dump with no await_observations member at all.
+    legacy: dict[str, Any] = plain.model_dump(mode="json", by_alias=True)
+    legacy.pop("await_observations")
+    legacy["scope"] = {"claim_ids": scope.claim_ids, "obligation_ids": scope.obligation_ids}
+    legacy["policy_packs"] = packs
+    legacy["route_profile"] = "policy"
+    assert digest == canonical_digest(legacy)
+    # The flag is outside the operation identity: a recovery may set or omit it.
+    assert _request_digest(flagged, scope, packs, route_profile="policy") == digest
+
+    result = await execute_check(_App(), plain)
+    body = check_internal_json(result)
+    assert "observations_awaited" not in body
+    assert result.observations_awaited is None
+
+    awaited = replace(result, observations_awaited=CheckObservationsAwaited("bounded_timeout", 2))
+    awaited_body = check_internal_json(awaited)
+    assert awaited_body["observations_awaited"] == {
+        "state": "bounded_timeout",
+        "pending_count": "2",
+    }
+    without = dict(awaited_body)
+    del without["observations_awaited"]
+    assert canonical_encode(without) == canonical_encode(body)
+
+
+@pytest.mark.anyio
+async def test_application_check_attaches_only_a_supplied_wait_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yoetz.application.service import Application
+    from yoetz.ports.ledger import CheckObservationsAwaited
+
+    canned = await execute_check(_App(), _request())
+
+    async def fake_execute_check(*_args: object, **_kwargs: object) -> CheckCommitResult:
+        return canned
+
+    async def noop(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(check_module, "execute_check", fake_execute_check)
+    host = SimpleNamespace(
+        _require_repository_route=noop,
+        _renew_activity_session=noop,
+        verification_policy=VerificationPolicy(),
+        change_capture=None,
+    )
+    plain = await Application.check(cast(Any, host), _request())
+    assert plain is canned
+    complete = CheckObservationsAwaited("complete", 0)
+    attached = await Application.check(cast(Any, host), _request(), observations_awaited=complete)
+    assert isinstance(attached, CheckCommitResult)
+    assert attached.observations_awaited == complete
+    assert replace(attached, observations_awaited=None) == canned

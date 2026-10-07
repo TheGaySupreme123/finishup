@@ -167,6 +167,7 @@ def _check(repo_root: Path) -> bool:
         _run(repo_root, "generate_project_policy_fixture.py", "--check")
         and _run(repo_root, "generate_check_conclusion_fixture.py", "--check")
         and _run(repo_root, "generate_check_totals_fixture.py", "--check")
+        and _run(repo_root, "generate_check_observations_awaited_fixture.py", "--check")
         and _run(repo_root, "generate_review_dialogue_fixture.py", "--check")
         and _run(repo_root, "generate_task_statement_fixture.py", "--check")
         and _run(repo_root, "generate_schemas.py", "--check")
@@ -187,6 +188,7 @@ def _write_pass(repo_root: Path) -> bool:
         ("generate_project_policy_fixture.py", "--write"),
         ("generate_check_conclusion_fixture.py", "--write"),
         ("generate_check_totals_fixture.py", "--write"),
+        ("generate_check_observations_awaited_fixture.py", "--write"),
         ("generate_review_dialogue_fixture.py", "--write"),
         ("generate_task_statement_fixture.py", "--write"),
         (
