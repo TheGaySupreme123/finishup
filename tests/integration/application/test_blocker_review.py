@@ -810,7 +810,8 @@ async def test_pretrain_blocker_question_requires_a_challenge_on_the_main_delive
     )
     assert question.endswith(BLOCKER_REVIEW_INSTRUCTION)
     assert "You must challenge it" in question
-    assert "the blocked obligation is the task's main deliverable" in question
+    # The statement says the data is recoverable: that, not "main deliverable", forces it.
+    assert "the task statement says the outcome is achievable or the data recoverable" in question
     assert "the data recoverable" in question
     # The obligation's own text and the statement reach the reviewer as their packet items, the
     # question names the obligation item it must quote, and the blocker is listed even though the

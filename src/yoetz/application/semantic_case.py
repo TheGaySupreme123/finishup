@@ -308,23 +308,25 @@ _MAX_BLOCKER_LISTING_BYTES: Final = 1_536
 # ``dependency_unavailable`` blocker on the task's main deliverable although the statement said
 # "The final state should recover the intended training examples". The question therefore makes
 # the reviewer read the blocked obligation's own text first and lists the cases in which a
-# challenge is required, not optional. The obligation text itself stays in its privacy-gated
-# packet item (``obligation-<id>``); this fixed text never carries agent or user content.
+# challenge is required, not optional. Being the main deliverable calls for scrutiny only: a
+# genuine credential or authority blocker may stand there. The obligation text stays in its
+# privacy-gated packet item (``obligation-<id>``); this fixed text never carries agent or user
+# content.
 BLOCKER_REVIEW_INSTRUCTION: Final = (
     "For each blocker, first quote the blocked obligation's own description and evidence"
     " expectation from its packet item obligation-<obligation id> (say so if the packet does not"
-    " carry it),"
-    " then verify the blocker once against the task statement and the work. You must challenge it"
-    " (one finding citing whichever of its decision and obligation ids citable_refs lists, naming"
-    " the work the agent can still do) when any of these holds: the blocked obligation is the"
-    " task's main deliverable; the task statement says the outcome is achievable or the data"
-    " recoverable (for example that the final state should recover the intended data); the"
-    " readable material contradicts it (the dependency is present, the authority was granted);"
-    " the agent has not attempted the obvious prerequisite (inspecting the inputs it has, deriving"
-    " or reconstructing what is missing); or it names something Yoetz or this review could not"
-    " show or prove, which is never a blocker. Only a genuine blocker outside the agent's control"
-    " (authority, consent, a credential, a dependency it cannot obtain) that none of these"
-    " contradicts stands as a disclosed limitation: do not challenge that one."
+    " carry it), then verify the blocker once against the task statement and the work. You must"
+    " challenge it (one finding citing whichever of its decision and obligation ids citable_refs"
+    " lists, naming the work the agent can still do) when any of these holds: the task statement"
+    " says the outcome is achievable or the data recoverable (for example that the final state"
+    " should recover the intended data); the agent has not attempted the obvious prerequisite"
+    " (inspecting the inputs it has, deriving or reconstructing what is missing); the readable"
+    " material contradicts it (the dependency is present, the authority was granted); or it names"
+    " something Yoetz or this review could not show or prove, which is never a blocker. When the"
+    " blocked obligation is the task's main deliverable, scrutinise the blocker closely, but a"
+    " genuine blocker outside the agent's control (authority, consent, a credential, a dependency"
+    " it cannot obtain) that none of these contradicts stands as a disclosed limitation even then:"
+    " do not challenge that one."
 )
 
 

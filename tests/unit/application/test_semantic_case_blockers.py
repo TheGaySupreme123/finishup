@@ -38,3 +38,28 @@ def test_the_blocker_question_stays_within_the_review_text_bound() -> None:
     assert "(+56 more)" in question
     assert "more blocker decisions)" in question
     assert question.count("declares yoetz-blocker:") <= MAX_REVIEWED_BLOCKERS
+
+
+def test_a_genuine_credential_blocker_on_the_main_deliverable_may_stand() -> None:
+    """#978: the main deliverable calls for scrutiny, not an automatic challenge. A recoverable
+    outcome or an unattempted prerequisite forces one; a genuine credential blocker may stand."""
+
+    from yoetz.adapters.providers.openai_responses import SEMANTIC_REVIEW_INSTRUCTION
+    from yoetz.application.semantic_case import BLOCKER_REVIEW_INSTRUCTION
+
+    blockers = (("evt_97800000-0000-4000-8000-000000000001", "credential", _ids("obl", 1)),)
+    question = review_question_set("final", blockers)[-1]
+    assert question.endswith(BLOCKER_REVIEW_INSTRUCTION)
+    forced, _, rest = BLOCKER_REVIEW_INSTRUCTION.partition("When the blocked obligation is")
+    assert "main deliverable" not in forced
+    assert "the data recoverable" in forced
+    assert "has not attempted the obvious prerequisite" in forced
+    assert "scrutinise the blocker closely" in rest
+    assert "(authority, consent, a credential" in rest
+    assert "stands as a disclosed limitation even then" in rest
+    # The provider instruction says the same and never forces a challenge on the deliverable.
+    assert (
+        "required, not optional, when the blocked obligation is" not in SEMANTIC_REVIEW_INSTRUCTION
+    )
+    assert "main deliverable deserves close scrutiny" in SEMANTIC_REVIEW_INSTRUCTION
+    assert "stays a disclosed limitation even there" in SEMANTIC_REVIEW_INSTRUCTION

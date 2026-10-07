@@ -305,18 +305,19 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = (
         "(authority, credentials, an unavailable external resource); a limitation the agent could "
         "reduce with available work is a discrepancy. "
         # Issues #976/#977: recorded blockers are verified once in the closing review; #978: the
-        # challenge is required on the main deliverable or a statement that says it is achievable.
+        # challenge is required when the statement says the outcome is achievable or the obvious
+        # prerequisite was not attempted; the main deliverable only calls for scrutiny.
         "A decision whose statement holds the line yoetz-blocker:<kind> is the agent's claim that "
         "its affected obligations are blocked outside its control; the final question_set lists "
         "them. Read the blocked obligation's own text, then verify each once against the task "
         "statement and the work. A challenge citing that decision or obligation is required, not "
-        "optional, when the blocked obligation is the task's main deliverable, when the task says "
-        "the outcome is achievable or the data recoverable, when the work or packet contradicts "
-        "it (a failing test, a result that only looks infeasible, a dependency the packet shows "
-        "is available), when the agent has not attempted the obvious prerequisite, or when it "
-        "names something Yoetz or this review could not show, which is never a blocker. Only "
-        "a genuine blocker (authority, consent, credentials, a dependency the agent cannot "
-        "obtain) that none of these contradicts stays a disclosed limitation: do not challenge "
+        "optional, when the task says the outcome is achievable or the data recoverable, when the "
+        "work or packet contradicts it (a failing test, a result that only looks infeasible, a "
+        "dependency the packet shows is available), when the agent has not attempted the obvious "
+        "prerequisite, or when it names something Yoetz or this review could not show, which is "
+        "never a blocker. A blocker on the task's main deliverable deserves close scrutiny, but a "
+        "genuine blocker (authority, consent, credentials, a dependency the agent cannot obtain) "
+        "that none of these contradicts stays a disclosed limitation even there: do not challenge "
         "it. "
         "Do not invent repository facts, fetch more context, overrule deterministic results, waive "
         "findings, or claim stronger coverage than the packet. "
