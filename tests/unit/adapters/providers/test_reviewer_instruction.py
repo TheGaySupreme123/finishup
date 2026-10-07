@@ -372,3 +372,10 @@ def test_the_reviewer_never_advises_delivering_less() -> None:
     assert (
         "never treat a packet limit as a reason to ask the agent to restructure its work" in _TEXT
     )
+
+
+def test_a_re_raise_names_the_finding_it_restates() -> None:
+    """Issue #980: re-raises were minted under new ids beside the open original."""
+
+    assert "set its restates to that finding_ref, whatever the agent answered" in _TEXT
+    assert "restates" in CHALLENGE_FIELD_GLOSSARY

@@ -284,6 +284,10 @@ def test_request_schema_root_is_an_object_never_a_union() -> None:
                 # Conditional snippet requirements are expressed with allOf on the active
                 # verified-item contract; the base property is intentionally optional.
                 optional: set[str] = {"snippet"} if path.endswith("ProviderVerifiedItem") else set()
+                # ``restates`` (issue #980) is an optional link; strict output still sends it as
+                # a required nullable field (``strict_output_schema``).
+                if path.endswith("ProviderChallenge"):
+                    optional.add("restates")
                 assert set(properties) - optional == set(required), path
             for key, value in source.items():
                 if key in {"properties", "$defs"}:

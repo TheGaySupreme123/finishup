@@ -367,6 +367,11 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = (
         "again a finding the main agent has answered, or request an action the packet shows was "
         "already done, unless material newer than that response shows the problem remains; then cite "
         "that newer material and the earlier finding's fnd_ id from citable_refs. "
+        # Issue #980: a re-raise names the finding it restates, so it stays one item.
+        "Whenever a challenge raises again the problem of a finding listed in "
+        "review_packet.prior_finding_refs, set its restates to that finding_ref, whatever the "
+        "agent answered; the challenge is then recorded on that finding instead of becoming a "
+        "new one. Leave restates null for a new problem. "
         "review_packet.prior_finding_refs lists each earlier finding once; its rows in "
         "prior_finding_item_ids (one structural row, and prose rows under the same finding_ref) all "
         "describe that one finding. For each finding_ref in review_packet.prior_finding_refs, return "
