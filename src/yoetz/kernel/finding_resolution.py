@@ -94,7 +94,11 @@ from yoetz.kernel.projections import (
     is_observation_limitation_kind,
     observation_finding_event_ids,
 )
-from yoetz.kernel.task_facts import TASK_FACT_GAPS
+from yoetz.kernel.task_facts import (
+    OBLIGATION_BLOCKED_GAP,
+    TASK_FACT_GAPS,
+    WRITE_OUTSIDE_WORKSPACE_GAP,
+)
 from yoetz.protocol.coverage import LedgerFreshness
 from yoetz.protocol.models import SemanticReason, SemanticStatus
 from yoetz.protocol.policy_packs import (
@@ -1092,6 +1096,11 @@ def resolution_blockers(
         # The agent's explicit empty-scope declaration is a recorded decision the review packet
         # shows as the plan itself, never a limit on what the reviewer could see.
         tolerated = tolerated | {COMPLETION_SCOPE_DECLARED_NONE_GAP}
+        # Task facts about where the agent wrote and which obligations it declared blocked
+        # describe the work, never what the reviewer was shown, so they cannot bound an AI-powered
+        # absence proof either; they stay on the receipt (issue #1000; tb4n1 interleaved-vigenere
+        # kept a finding the reviewer ruled fixed open on write_outside_workspace).
+        tolerated = tolerated | {WRITE_OUTSIDE_WORKSPACE_GAP, OBLIGATION_BLOCKED_GAP}
         if gaps & _COMMAND_GAPS and _semantic_command_independent(finding, proof_state):
             tolerated = tolerated | _COMMAND_GAPS
         if OBLIGATION_EVIDENCE_STALE_AFTER_SCOPE_EDIT_GAP in gaps and _stale_obligations_unrelated(
