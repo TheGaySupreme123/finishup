@@ -744,6 +744,11 @@ CHALLENGE_FIELD_GLOSSARY: Final[dict[str, str]] = {
         "One exact short quote copied verbatim from a provider-bound packet item that supports "
         "this challenge; never invent or paraphrase it."
     ),
+    "restates": (
+        "When this challenge raises again the problem of an earlier finding, that finding's "
+        "finding_ref from review_packet.prior_finding_refs; otherwise null. The challenge is then "
+        "recorded on that earlier finding, which stays open, instead of becoming a new finding."
+    ),
 }
 
 VERIFIED_FIELD_GLOSSARY: Final[dict[str, str]] = {
@@ -1317,6 +1322,7 @@ def _challenge_from_model(challenge: ProviderChallengeModel) -> ReviewerChalleng
         challenge.requested_next_step,
         challenge.uncertainty,
         challenge.snippet,
+        challenge.restates,
     )
 
 

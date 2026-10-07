@@ -1565,10 +1565,21 @@ class ReviewerChallenge:
     # keeps it separate from the structural challenge fields so older persisted findings can
     # still decode without one.
     snippet: str | None = None
+    # The earlier finding this challenge restates (issue #980): one ``fnd_`` id from the packet's
+    # prior findings. The check fences it like any citation; when it holds, the challenge is
+    # recorded on that finding instead of minting an unrelated new one.
+    restates: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.finding_kind) is not FindingKind:
             raise _invalid_judgment()
+        if self.restates is not None:
+            if type(self.restates) is not str or not self.restates.startswith("fnd_"):
+                raise _invalid_judgment()
+            try:
+                validate_id(IdKind.FINDING, self.restates)
+            except ValueError as exc:
+                raise _invalid_judgment() from exc
         for field_name in (
             "summary",
             "discrepancy",

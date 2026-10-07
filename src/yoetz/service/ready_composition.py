@@ -3666,6 +3666,9 @@ def _judgment_to_response_json(judgment: object) -> dict[str, CanonicalJsonValue
         }
         if item.snippet is not None:
             challenge["snippet"] = item.snippet
+        # Emitted only when present, so earlier stored judgments keep their bytes (issue #980).
+        if item.restates is not None:
+            challenge["restates"] = item.restates
         challenges.append(challenge)
     body: dict[str, CanonicalJsonValue] = {
         "conclusion": judgment.conclusion,
@@ -3754,6 +3757,9 @@ def _judgment_from_response_json(value: object) -> object:
             snippet = row.get("snippet")
             if snippet is not None and type(snippet) is not str:
                 raise ValueError("semantic_response_judgment_invalid")
+            restates = row.get("restates")
+            if restates is not None and type(restates) is not str:
+                raise ValueError("semantic_response_judgment_invalid")
             challenges.append(
                 ReviewerChallenge(
                     kind,
@@ -3765,6 +3771,7 @@ def _judgment_from_response_json(value: object) -> object:
                     cast(ReviewerNextStep, next_step),
                     cast(str, row["uncertainty"]),
                     snippet,
+                    cast(str | None, restates),
                 )
             )
         except (KeyError, TypeError, ValueError) as exc:

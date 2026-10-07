@@ -27,6 +27,7 @@ from builders.policy_cases import (
 from builders.privacy_policies import local_only_policy, minimal_external_policy
 from yoetz.application.missing_for_assessment import (
     review_missing_for_assessment,
+    semantic_round_exhausted,
     supplied_since,
     unsuppliable_missing_kinds,
 )
@@ -369,10 +370,13 @@ def test_material_for_another_target_never_answers_a_named_request() -> None:
     review = review_missing_for_assessment(
         case, (), _repeat("verification_output", str(act(1))), unsuppliable_kinds=frozenset()
     )
+    # Still named (never dropped as supplied), but an unanswered repeat is the one retry: it is
+    # Yoetz's limit now, not agent work (tb4n1 D1/D3, #983).
     assert [(item.kind, item.target_refs, item.availability) for item in review.items] == [
-        ("verification_output", (str(act(1)),), "agent_suppliable")
+        ("verification_output", (str(act(1)),), "yoetz_limit_repeated_request")
     ]
     assert "semantic_missing_already_supplied" not in review.gaps
+    assert "semantic_missing_non_convergent" in review.gaps
 
     # The output of the named action, or of a rerun of its exact command, does answer it.
     for action, command in ((1, "pytest tests/a"), (64, "pytest tests/a")):
@@ -1053,3 +1057,99 @@ async def test_the_review_reads_the_workspace_root_the_session_opened_with() -> 
         runtime = SimpleNamespace(ledger=_OpenedLedger(workspace_ref), session_id="ses")
         assert await root_of(cast(TaskRuntime, runtime)) == expected
     assert await root_of(None) is None
+
+
+def _first_request(kind: str, target: str) -> SemanticJudgment:
+    return _repeat(cast(MissingForAssessmentKind, kind), target)
+
+
+def test_an_image_or_binary_target_is_an_unsupported_data_type_never_agent_work() -> None:
+    """tb4n1 D1 (cad-model, medical, freecad S): a PNG or CAD deliverable is never carried."""
+
+    for name in ("out/schematic.PNG", "/app/english_model.bin", "model.FCStd", "drawing.pdf"):
+        case = make_case(
+            evidence={evd(5): evidence_record(_diff(5, name), 5)},
+            extra_refs=(evd(5),),
+        )
+        review = review_missing_for_assessment(
+            case, (), _first_request("other", str(evd(5))), unsuppliable_kinds=frozenset()
+        )
+        assert [item.availability for item in review.items] == [
+            "yoetz_limit_unsupported_data_type"
+        ], name
+        assert "semantic_missing_agent_suppliable" not in review.gaps
+        assert "semantic_missing_structurally_unavailable" in review.gaps
+
+
+def test_content_the_packet_named_but_could_not_carry_is_packet_room_not_agent_work() -> None:
+    """tb4n1 D1 (interleaved-vigenere S): a clipped deliverable diff is Yoetz's limit.
+
+    The reviewer said "current cracker.py implementation is not available for review" while
+    the check-time change was clipped; Yoetz asked the agent to supply it, and the agent moved
+    the deliverable's data table into an undelivered file. The same request is now Yoetz's
+    packet-room limit, so no ``supply_missing_input`` follows.
+    """
+
+    case = make_case(
+        evidence={evd(5): evidence_record(_diff(5, "cracker.py"), 5)},
+        extra_refs=(evd(5),),
+    )
+    clipped = review_missing_for_assessment(
+        case,
+        (),
+        _first_request("current_diff_for_path", str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+        change_clipped=True,
+    )
+    assert [item.availability for item in clipped.items] == ["yoetz_limit_packet_room"]
+    unselected = review_missing_for_assessment(
+        case,
+        (),
+        _first_request("verification_output", str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+        packet_limited_refs=frozenset({str(evd(5))}),
+    )
+    assert [item.availability for item in unselected.items] == ["yoetz_limit_packet_room"]
+    # A diff the packet carried whole, of a text file, stays a request the agent can answer.
+    shown = review_missing_for_assessment(
+        case,
+        (),
+        _first_request("current_diff_for_path", str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+    )
+    assert [item.availability for item in shown.items] == ["agent_suppliable"]
+
+
+def test_a_repeated_unshowable_request_stops_the_review_round() -> None:
+    """tb4n1 D3 (retro-console-soc S, 12 of 13 closing reviews ``insufficient_packet``).
+
+    The first request for a clipped diff is a packet-room limit; the reviewer asking again for the
+    same target is the one retry, after which the task's checks skip the AI-powered review.
+    """
+
+    base = make_case(
+        evidence={evd(5): evidence_record(_diff(5, "rtl/top.sv"), 5)},
+        extra_refs=(evd(5),),
+    )
+    first = review_missing_for_assessment(
+        base,
+        (),
+        _first_request("current_diff_for_path", str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+        change_clipped=True,
+    )
+    assert [item.availability for item in first.items] == ["yoetz_limit_packet_room"]
+    once = _pending(base, *first.items)
+    assert not semantic_round_exhausted(once.projection)
+    repeat = review_missing_for_assessment(
+        once,
+        (),
+        _first_request("current_diff_for_path", str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+        change_clipped=True,
+    )
+    assert [item.availability for item in repeat.items] == ["yoetz_limit_repeated_request"]
+    assert semantic_round_exhausted(_pending(base, *repeat.items).projection)
+    # An item the agent can still supply never stops the round.
+    suppliable = MissingForAssessmentItem("verification_output", (str(evd(5)),), "agent_suppliable")
+    assert not semantic_round_exhausted(_pending(base, *repeat.items, suppliable).projection)

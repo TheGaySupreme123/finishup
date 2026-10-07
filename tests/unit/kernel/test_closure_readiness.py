@@ -490,3 +490,54 @@ def test_a_deterministic_only_route_never_asks_for_a_closing_review() -> None:
     assert "closing_review_required" not in split.agent_actionable
     required = derive_closure_readiness((), (), facts, semantic_review_required=True)
     assert "closing_review_required" in required.agent_actionable
+
+
+def test_a_review_round_stopped_for_an_insufficient_packet_is_not_asked_for_again() -> None:
+    """tb4n1 D3: retro-console-soc ran 13 closing reviews, 12 of them ``insufficient_packet``.
+
+    Once the reviewer twice could not assess the same content, the check skips the review and
+    records ``semantic_review_skipped_insufficient_packet``; neither a current review nor a
+    closing review is demanded again, and the gap stays a standing limit.
+    """
+
+    prefix = _prefix_through_check()
+    payload = cast(CheckRecordedPayload, cast(AcceptedEvent, prefix[-1]).payload)
+    stopped = _with_check_payload(
+        prefix,
+        mode=CheckMode.SEMANTIC_REQUIRED,
+        semantic_status=SemanticStatus.NOT_REQUESTED,
+        semantic_reason=SemanticReason.DETERMINISTIC_MODE,
+        coverage=replace(
+            payload.coverage,
+            known_gaps=tuple(
+                sorted(
+                    {
+                        *payload.coverage.known_gaps,
+                        "semantic_review_not_requested",
+                        "semantic_review_skipped_insufficient_packet",
+                    }
+                )
+            ),
+        ),
+    )
+    facts = closure_readiness_facts(replay(stopped), stopped)
+    assert facts.closing_review_current is True
+    assert facts.semantic_review_current is True
+    split = derive_closure_readiness(
+        (),
+        ("semantic_review_not_requested", "semantic_review_skipped_insufficient_packet"),
+        facts,
+        semantic_review_required=True,
+    )
+    assert "closing_review_required" not in split.agent_actionable
+    assert "semantic_review_not_requested" not in split.agent_actionable
+    assert "semantic_review_skipped_insufficient_packet" in split.standing_limitations
+
+    # A plain deterministic-only check carries no such marker and does not stop the round.
+    plain = _with_check_payload(
+        prefix,
+        mode=CheckMode.SEMANTIC_REQUIRED,
+        semantic_status=SemanticStatus.NOT_REQUESTED,
+        semantic_reason=SemanticReason.DETERMINISTIC_MODE,
+    )
+    assert closure_readiness_facts(replay(plain), plain).closing_review_current is False

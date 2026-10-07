@@ -248,7 +248,10 @@ def _render_checklist(
 
 def _render_overall_next(next_step: CheckOverallNextModel) -> str:
     if next_step.action == "supply_missing_input":
-        action = "Supply or repair the named review input"
+        action = (
+            "Supply the named review input as new records tied to the named refs "
+            "(never change your work to fit the reviewer)"
+        )
     elif next_step.action == "work_open_findings":
         action = "Repair or answer the named open findings"
     elif next_step.action == "review_recorded_work":

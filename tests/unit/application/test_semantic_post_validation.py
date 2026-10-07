@@ -1376,3 +1376,132 @@ def test_mixed_fence_outcomes_reconcile() -> None:
     assert review.snippets_rejected == 0
     assert "Unanchored" in review.review_summary
     assert "Outside" not in review.review_summary
+
+
+# --- Re-raises named by ``restates`` link to the earlier finding (issue #980, TB4 tb4n1 D5) ----
+
+
+def _cargo_case(*, resolved: bool = False) -> DeterministicCase:
+    """cargo-flight-dispatch shape: one concern raised at 5, answered at 6, then new work.
+
+    The reviewer re-raised "the dispatchable single-tour plan is not delivered" on 7 closing
+    checks, each time citing the agent's newest result, and each re-raise was minted under a new
+    id beside the still-open original.
+    """
+
+    from builders.policy_cases import obligation_record
+    from yoetz.domain.events import ObligationPublishedPayload, ObligationStatus
+
+    obligation = obligation_record(
+        ObligationPublishedPayload(
+            obl(1), "Deliver the dispatch plan", "one dispatchable tour", ObligationStatus.OPEN
+        ),
+        2,
+    )
+    results = {
+        res(number): record(
+            ResultRecordedPayload(
+                res(number), act(number), ResultOutcome.SUCCESS, summary=f"attempt {number}"
+            ),
+            6 + number,
+        )
+        for number in range(1, 8)
+    }
+    rejected = ResponseRecordedPayload(
+        finding_id=fnd(1),
+        finding_frontier=FRONTIER,
+        disposition=ResponseDisposition.REJECTED,
+        reason="No single tour satisfies the MTOW limit, so the plan cannot be delivered.",
+    )
+    return make_case(
+        obligations={obl(1): obligation},
+        results=results,
+        findings={
+            fnd(1): finding_record(
+                replace(
+                    _recorded_semantic_finding(1, str(obl(1))),
+                    summary="The required dispatchable single-tour plan is not delivered.",
+                ),
+                5,
+                resolved_by_check_event_id=evt(8) if resolved else None,
+            )
+        },
+        responses={fnd(1): record(rejected, 6)},
+    )
+
+
+def _re_raise(number: int, *, restates: str | None) -> ReviewerChallenge:
+    return replace(
+        _challenge(str(res(number)), summary="The dispatchable single-tour plan is not delivered"),
+        finding_kind=FindingKind.TASK_REQUIREMENT_UNMET,
+        requested_next_step="act",
+        restates=restates,
+    )
+
+
+def test_cargo_re_raises_named_by_restates_stay_one_open_finding() -> None:
+    """Seven closing checks re-raising one concern record seven rounds on one item, not 7 ids."""
+
+    case = _cargo_case()
+    for number in range(1, 8):
+        review = validate_semantic_judgment(
+            case,
+            (),
+            SemanticJudgment("challenges_returned", (_re_raise(number, restates=str(fnd(1))),)),
+            _provenance(),
+            expected_frontier=case.frontier,
+            prior_finding_refs=frozenset({str(fnd(1))}),
+        )
+        assert review.candidates == ()
+        assert review.restatements_suppressed == 1
+        # The agent answered (rejected), so the ruling is the reviewer's verdict on that answer;
+        # it advances the item's review round, so the per-finding budget counts this concern.
+        rulings = _rulings(review)
+        assert [(ref, verdict) for ref, verdict, _cited in rulings] == [
+            (str(fnd(1)), "answered_not_fixed")
+        ]
+        assert rulings[0][2]  # cites what the re-raise cited
+        assert f"- {fnd(1)}: The dispatchable single-tour plan is not delivered" in (
+            review.review_summary
+        )
+        assert "Reviewer re-raised earlier findings" in review.review_summary
+
+
+def test_restates_outside_the_packet_prior_findings_is_dropped_and_disclosed() -> None:
+    case = _cargo_case()
+    review = validate_semantic_judgment(
+        case,
+        (),
+        SemanticJudgment("challenges_returned", (_re_raise(1, restates=str(fnd(1))),)),
+        _provenance(),
+        expected_frontier=case.frontier,
+        prior_finding_refs=frozenset(),  # the packet did not carry it
+    )
+    assert len(review.candidates) == 1
+    assert review.restatements_suppressed == 0
+    assert review.refs_reduced == 1
+    unknown = validate_semantic_judgment(
+        case,
+        (),
+        SemanticJudgment("challenges_returned", (_re_raise(1, restates=str(fnd(9))),)),
+        _provenance(),
+        expected_frontier=case.frontier,
+    )
+    assert len(unknown.candidates) == 1 and unknown.refs_reduced == 1
+
+
+def test_restates_of_a_resolved_finding_mints_a_linked_successor() -> None:
+    """Done stays done: a re-raise after verified resolution is a #458 successor, linked."""
+
+    case = _cargo_case(resolved=True)
+    review = validate_semantic_judgment(
+        case,
+        (),
+        SemanticJudgment("challenges_returned", (_re_raise(1, restates=str(fnd(1))),)),
+        _provenance(),
+        expected_frontier=case.frontier,
+    )
+    assert len(review.candidates) == 1
+    assert review.candidates[0].related_finding_ids == ()
+    assert review.restatements_suppressed == 0
+    assert review.refs_reduced == 1

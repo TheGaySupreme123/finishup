@@ -406,7 +406,13 @@ _MISSING_KINDS: Final = frozenset(
     }
 )
 _MISSING_AVAILABILITIES: Final = frozenset(
-    {"agent_suppliable", "structurally_unavailable_on_this_host"}
+    {
+        "agent_suppliable",
+        "structurally_unavailable_on_this_host",
+        "yoetz_limit_packet_room",
+        "yoetz_limit_repeated_request",
+        "yoetz_limit_unsupported_data_type",
+    }
 )
 
 
@@ -422,6 +428,7 @@ def _missing_items_clause(source: Mapping[str, JsonValue], *, byte_budget: int) 
         return ""
     tokens: list[str] = []
     suppliable = 0
+    yoetz_limit = 0
     for item in cast(Sequence[JsonValue], raw):
         if not isinstance(item, Mapping):
             continue
@@ -431,6 +438,7 @@ def _missing_items_clause(source: Mapping[str, JsonValue], *, byte_budget: int) 
         if kind not in _MISSING_KINDS or availability not in _MISSING_AVAILABILITIES:
             continue
         suppliable += availability == "agent_suppliable"
+        yoetz_limit += type(availability) is str and availability.startswith("yoetz_limit_")
         refs = item_source.get("target_refs")
         safe_refs = (
             tuple(
@@ -445,8 +453,13 @@ def _missing_items_clause(source: Mapping[str, JsonValue], *, byte_budget: int) 
         tokens.append(f"{kind}={availability}{target}")
     if not tokens:
         return ""
+    limit_note = (
+        f", yoetz-limit: {yoetz_limit}, self-verify, not a blocker, never reshape the work"
+        if yoetz_limit
+        else ""
+    )
     return _bounded_list_clause(
-        f"missing for assessment: {len(tokens)} (agent-suppliable: {suppliable}): ",
+        f"missing for assessment: {len(tokens)} (agent-suppliable: {suppliable}{limit_note}): ",
         tokens,
         byte_budget=byte_budget,
     )
@@ -1042,7 +1055,11 @@ def summary_for_check(envelope: object) -> str:
         # Keep the input continuation ahead of the optional checklist and manifest clauses. A
         # large finding list must never consume the bounded summary budget and leave only the
         # finding-only ``request_receipt`` token (#963).
-        prefix = _with_room(prefix, "overall next: supply_missing_input before ordinary receipt; ")
+        prefix = _with_room(
+            prefix,
+            "overall next: supply_missing_input before ordinary receipt "
+            "(new records only; never change the work to fit the reviewer); ",
+        )
     if checklist_source is not None:
         with_checklist = _with_room(
             prefix,

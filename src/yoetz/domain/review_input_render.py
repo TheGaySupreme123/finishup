@@ -13,7 +13,9 @@ from collections.abc import Mapping, Sequence
 from typing import Final, cast
 
 __all__ = [
+    "YOETZ_LIMIT_MISSING_TEXT",
     "has_agent_suppliable_missing",
+    "has_yoetz_limit_missing",
     "render_missing_for_assessment_lines",
     "render_missing_for_assessment_next",
     "render_review_input_manifest_compat_line",
@@ -59,7 +61,13 @@ _MISSING_KINDS: Final = frozenset(
     }
 )
 _MISSING_AVAILABILITIES: Final = frozenset(
-    {"agent_suppliable", "structurally_unavailable_on_this_host"}
+    {
+        "agent_suppliable",
+        "structurally_unavailable_on_this_host",
+        "yoetz_limit_packet_room",
+        "yoetz_limit_repeated_request",
+        "yoetz_limit_unsupported_data_type",
+    }
 )
 _MISSING_STATUSES: Final = frozenset({"pending", "supplied", "unavailable", "repeated"})
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$", re.ASCII)
@@ -264,9 +272,29 @@ def render_missing_for_assessment_next(items: object) -> str:
     if not has_agent_suppliable_missing(items):
         return ""
     return (
-        "Overall next: supply or repair the named agent-suppliable review input "
-        "before requesting an ordinary receipt."
+        "Overall next: supply the named agent-suppliable review input as new records tied to "
+        "the named ref before requesting an ordinary receipt. Never change your work to fit "
+        "the reviewer."
     )
+
+
+def has_yoetz_limit_missing(items: object) -> bool:
+    """Whether the reviewer named content Yoetz's own packet could not show (tb4n1 D1, #983)."""
+
+    return any(
+        availability.startswith("yoetz_limit_") for _, availability, _ in _missing_rows(items)
+    )
+
+
+# One fixed sentence for every Yoetz-limit item. It names the limit as Yoetz's, says it is not a
+# blocker, and forbids reshaping the deliverable for the reviewer (tb4n1 D1/F2, #983).
+YOETZ_LIMIT_MISSING_TEXT: Final = (
+    "Yoetz limit: the review packet cannot show the yoetz_limit_* items (an unsupported data "
+    "type such as an image or binary file, content clipped for packet room, or a request "
+    "already asked once). This is not work for you and never a blocker: verify that content "
+    "yourself and record how you verified it; the receipt discloses the limit. Never split, "
+    "move, shrink, stash, delete, git-add or git-ignore your work to fit the reviewer."
+)
 
 
 def render_missing_for_assessment_lines(
@@ -289,6 +317,8 @@ def render_missing_for_assessment_lines(
             else (f"{len(refs)} target refs" if refs else "no packet ref")
         )
         lines.append(f"- {kind} ({target}): {availability}")
+    if has_yoetz_limit_missing(items):
+        lines.append(YOETZ_LIMIT_MISSING_TEXT)
     next_step = render_missing_for_assessment_next(items)
     if next_step:
         lines.append(next_step)

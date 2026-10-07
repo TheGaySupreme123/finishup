@@ -3131,13 +3131,16 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "type": "array",
         "uniqueItems": True,
     }
+    from yoetz.protocol.models import MISSING_ITEM_AVAILABILITIES
+
     # Issue #907: what an insufficient_packet review named as missing, as a check limitation.
     # Additive and optional on this unreleased version, like advisory_notes above.
     definitions["missing_item"] = {
         "additionalProperties": False,
         "properties": {
             "availability": {
-                "enum": ["agent_suppliable", "structurally_unavailable_on_this_host"],
+                # tb4n1 D1 (#983): Yoetz-limit classes join the closed vocabulary.
+                "enum": sorted(MISSING_ITEM_AVAILABILITIES, key=str.encode),
                 "type": "string",
             },
             "kind": {

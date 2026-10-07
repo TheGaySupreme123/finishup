@@ -7,12 +7,13 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Final, Literal, Protocol, cast
+from typing import Any, Final, Literal, Protocol, TypedDict, cast
 
 from yoetz.application.ledger_snapshot import projection_for_records, trusted_projection_at
 from yoetz.application.missing_for_assessment import (
     MissingItemsReview,
     review_missing_for_assessment,
+    semantic_round_exhausted,
 )
 from yoetz.domain.coordination import CoordinationError, CoordinationErrorCode
 from yoetz.domain.events import (
@@ -43,6 +44,8 @@ from yoetz.domain.findings import (
 )
 from yoetz.domain.receipts import (
     CHECK_TIME_CHANGE_GAPS,
+    CHECK_TIME_CHANGE_REDACTED_GAP,
+    CHECK_TIME_CHANGE_TRUNCATED_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
@@ -63,6 +66,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_REFS_REDUCED_GAP,
+    SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
     check_time_change_unavailable_reason_gap,
     semantic_coverage_gap_code,
@@ -1268,6 +1272,48 @@ def build_overall_next(
             acknowledged_incomplete_endpoint="receipt",
         )
     return CheckOverallNext(status="ready", action="request_receipt")
+
+
+class _PacketLimits(TypedDict):
+    packet_limited_refs: frozenset[str]
+    change_clipped: bool
+
+
+def _packet_limits(semantic_result: FinalSemanticEvaluation) -> _PacketLimits:
+    """What the sent packet could not show, for classifying named missing items (tb4n1 D1).
+
+    ``packet_limited_refs`` are refs the packet named but whose own content item it could not
+    carry; known only when the evaluator reported both the citable refs and the refs whose
+    content reached the exact sent packet, otherwise nothing is inferred. ``change_clipped`` says
+    the check-time change was clipped for room or redacted.
+    """
+
+    citable = semantic_result.case_citable_refs
+    included = semantic_result.case_included_refs
+    return {
+        "packet_limited_refs": (
+            frozenset() if citable is None or included is None else frozenset(citable - included)
+        ),
+        "change_clipped": bool(
+            {CHECK_TIME_CHANGE_TRUNCATED_GAP, CHECK_TIME_CHANGE_REDACTED_GAP}
+            & set(semantic_result.case_content_gaps)
+        ),
+    }
+
+
+def _round_stopped_gaps(
+    request: CheckRequest, case: DeterministicCase, status: SemanticStatus
+) -> set[str]:
+    """Disclose a review this check skipped because the packet twice could not show the content
+    the reviewer needed (tb4n1 D3); a caller-chosen local-only check discloses nothing extra."""
+
+    if (
+        status is SemanticStatus.NOT_REQUESTED
+        and request.mode != "deterministic_only"
+        and semantic_round_exhausted(case.projection)
+    ):
+        return {SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP}
+    return set()
 
 
 def _bounded_overall_refs(values: Iterable[object]) -> tuple[str, ...]:
@@ -2708,6 +2754,70 @@ _UNANCHORED_CONCERNS_HEADER: Final = (
 )
 
 
+_RE_RAISED_HEADER: Final = (
+    "Reviewer re-raised earlier findings (recorded on that finding, which stays open; answer it "
+    "there):"
+)
+
+
+def _bounded_review_text(text: str) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= MAX_REVIEW_TEXT_BYTES:
+        return text
+    marker = " [truncated]"
+    budget = MAX_REVIEW_TEXT_BYTES - len(marker.encode("utf-8"))
+    return encoded[:budget].decode("utf-8", errors="ignore") + marker
+
+
+def _summary_with_re_raised(
+    summary: str, re_raised: tuple[tuple[FindingId, ReviewerChallenge], ...]
+) -> str:
+    """Append the reviewer's words on each restated finding to the review summary (issue #980).
+
+    A challenge that names the earlier finding it restates is recorded on that finding as a
+    ruling, so no new finding carries its text; the summary does, under a header naming the item.
+    """
+
+    if not re_raised:
+        return summary
+    lines = [summary, "", _RE_RAISED_HEADER]
+    for restated, challenge in re_raised:
+        lines.append(f"- {restated}: {challenge.summary} {challenge.message_to_main_agent}")
+    return _bounded_review_text("\n".join(lines))
+
+
+def _admitted_restates(
+    case: DeterministicCase,
+    challenge: ReviewerChallenge,
+    prior_finding_refs: frozenset[str] | None,
+) -> FindingId | None:
+    """The earlier finding a challenge's ``restates`` names, when the fence admits it (#980).
+
+    It must be one of the packet's prior findings (``prior_finding_refs``, when the composing
+    evaluator reported the packet) and a readable, open AI-powered finding inside the frozen fence.
+    A resolved or final item is never a target: done stays done (a re-raise after verified
+    resolution is a #458 successor) and a final answer is never re-reviewed.
+    """
+
+    target = challenge.restates
+    if target is None or target not in case.allowed_ids:
+        return None
+    if prior_finding_refs is not None and target not in prior_finding_refs:
+        return None
+    key = finding_id(target)
+    record = case.projection.findings.get(key)
+    if (
+        record is None
+        or record.payload is None
+        or record.redacted
+        or record.resolved_by_check_event_id is not None
+        or record.payload.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
+        or finding_todo_state(case.projection, key) is not FindingTodoState.OPEN
+    ):
+        return None
+    return key
+
+
 def _summary_with_unanchored_concerns(summary: str, concerns: tuple[ReviewerChallenge, ...]) -> str:
     """Append concerns that could not be anchored to the review summary, within its byte bound.
 
@@ -3040,6 +3150,8 @@ def validate_semantic_judgment(
         )
     candidates: list[CandidateFinding] = []
     restatements = 0
+    restates_dropped = 0
+    re_raised: list[tuple[FindingId, ReviewerChallenge]] = []
     for challenge in judgment.challenges:
         resolution = _resolve_challenge_refs(case, deterministic, challenge)
         if resolution is None:
@@ -3058,11 +3170,31 @@ def validate_semantic_judgment(
                 rejections.get(SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM, 0) + 1
             )
             continue
-        restated = _restated_finding(
-            case, challenge.finding_kind, refs, replies_to=resolution.related_finding_ids
+        named = _admitted_restates(case, challenge, prior_finding_refs)
+        if challenge.restates is not None and named is None:
+            # A ``restates`` outside the packet's prior findings is a citation of something the
+            # reviewer was not shown as a live item: dropped and disclosed like any reduced ref,
+            # and the challenge stands on its own (issue #980).
+            restates_dropped += 1
+        restated = (
+            named
+            if named is not None
+            else _restated_finding(
+                case, challenge.finding_kind, refs, replies_to=resolution.related_finding_ids
+            )
         )
         if restated is not None:
-            suppressed, reduced = _record_restatement(case, admitted, restated, refs)
+            suppressed, reduced = _record_restatement(
+                case,
+                admitted,
+                restated,
+                refs,
+                verdict=(
+                    "answered_not_fixed"
+                    if named is not None and _answered(case.projection, restated)
+                    else "still_present"
+                ),
+            )
             # A ruling the same review's restatement contradicts is recorded as unassessable on
             # that item; it is not an unsupported ruling about the review's other findings.
             verdicts_set_aside += reduced
@@ -3071,6 +3203,10 @@ def validate_semantic_judgment(
                 # problem and its state; a second row would only restart it. Disclosed on the
                 # check, and recorded on the open item so it can never close by silence.
                 restatements += 1
+                if named is not None:
+                    # The reviewer's renewed words reach the agent in the review summary, named
+                    # by the item they were recorded on (issue #980).
+                    re_raised.append((named, challenge))
                 continue
         policy_id, policy_version = _policy_identity(challenge.finding_kind)
         priority, _actionable = FINDING_KIND_TRAITS[challenge.finding_kind]
@@ -3103,7 +3239,11 @@ def validate_semantic_judgment(
                     uncertainty=challenge.uncertainty,
                     snippet=challenge.snippet,
                 ),
-                resolution.related_finding_ids,
+                (
+                    tuple(sorted({*resolution.related_finding_ids, named}, key=str.encode))
+                    if named is not None
+                    else resolution.related_finding_ids
+                ),
             )
         )
     # A ruling of ``fixed`` on a finding an admitted challenge of the same review re-raises
@@ -3121,10 +3261,10 @@ def validate_semantic_judgment(
         verdicts_unsupported,
         restatements,
         verdicts_set_aside,
-        review_summary,
+        _summary_with_re_raised(review_summary, tuple(re_raised)),
         judgment.verified,
         snippets_rejected,
-        fence.refs_reduced,
+        fence.refs_reduced + restates_dropped,
     )
 
 
@@ -3207,14 +3347,17 @@ def _record_restatement(
     admitted: dict[str, PriorFindingVerdictRecord],
     restated: FindingId,
     refs: tuple[str, ...],
+    *,
+    verdict: Literal["still_present", "answered_not_fixed"] = "still_present",
 ) -> tuple[bool, bool]:
     """Carry a suppressed restatement onto the earlier item it restates (issue #905).
 
     Returns whether the restatement is suppressed and whether an explicit ruling was reduced.
 
     Suppression must never read as absence: a restatement of an open item records that the
-    reviewer still finds it (``still_present``, citing what the challenge cited), so the check
-    cannot resolve it by silence. A restatement contradicts an explicit ``fixed`` or
+    reviewer still finds it (``still_present``, citing what the challenge cited; a challenge that
+    names an answered item in ``restates`` records ``answered_not_fixed``, issue #980), so the
+    check cannot resolve it by silence and the item's review round advances once per concern. A restatement contradicts an explicit ``fixed`` or
     ``withdrawn`` ruling on the same item, which becomes ``unassessable``. An
     ``acknowledged_not_done`` or ``rejection_accepted`` item is final, stays disclosed on the
     receipt, and needs nothing recorded. (A ``verified_resolved`` item is never a restatement
@@ -3233,7 +3376,7 @@ def _record_restatement(
         if len(admitted) >= MAX_RECORDED_VERDICTS:
             return False, False
         cited = tuple(sorted(refs, key=str.encode))[:_MAX_RULING_CITED_REFS]
-        admitted[key] = PriorFindingVerdictRecord(restated, "still_present", cited)
+        admitted[key] = PriorFindingVerdictRecord(restated, verdict, cited)
         return True, False
     if earlier.verdict in {"fixed", "withdrawn"}:
         admitted[key] = PriorFindingVerdictRecord(restated, "unassessable", ())
@@ -3335,7 +3478,9 @@ async def _semantic_evaluation(
     require_complete_specification: bool = False,
     task_fact_gaps: tuple[str, ...] = (),
 ) -> FinalSemanticEvaluation:
-    if request.mode == "deterministic_only":
+    if request.mode == "deterministic_only" or semantic_round_exhausted(frozen.case.projection):
+        # tb4n1 D3: after the reviewer twice could not assess the same content, the round stops;
+        # the check runs its local checks only and discloses why (see the commit path).
         return FinalSemanticEvaluation(
             SemanticStatus.NOT_REQUESTED,
             SemanticReason.DETERMINISTIC_MODE,
@@ -4052,6 +4197,7 @@ async def execute_check_commit(
                 citable_refs=semantic_result.case_citable_refs,
                 captured_edit_paths=semantic_result.case_captured_edit_paths,
                 workspace_root=semantic_result.case_workspace_root,
+                **_packet_limits(semantic_result),
             )
             declared_gaps |= missing.gaps
         if (
@@ -4065,7 +4211,9 @@ async def execute_check_commit(
             # serving strict — and the receipt names the recovery; a genuinely applied
             # strict route keeps today's terminal wording exactly.
             declared_gaps.add(OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP)
-        declared_gaps |= carried_semantic_attempt_gaps(frozen.case, semantic_result.status)
+        declared_gaps |= carried_semantic_attempt_gaps(
+            frozen.case, semantic_result.status
+        ) | _round_stopped_gaps(request, frozen.case, semantic_result.status)
         # A review that ran without material its own profile selected is not full coverage, even
         # though it reports succeeded. Saying so here is what stops a hollow review from reading
         # as a clean one in the check result and the receipt derived from it.

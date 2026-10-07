@@ -251,7 +251,13 @@ MISSING_FOR_ASSESSMENT_KINDS: Final = frozenset(
     }
 )
 MISSING_ITEM_AVAILABILITIES: Final = frozenset(
-    {"agent_suppliable", "structurally_unavailable_on_this_host"}
+    {
+        "agent_suppliable",
+        "structurally_unavailable_on_this_host",
+        "yoetz_limit_packet_room",
+        "yoetz_limit_repeated_request",
+        "yoetz_limit_unsupported_data_type",
+    }
 )
 GENESIS_PREDECESSOR_DIGEST: Final = "genesis"
 MAX_PROJECTION_CONTENT_LEAVES: Final = 512
@@ -2193,7 +2199,11 @@ type MissingForAssessmentKindWire = Literal[
     "verification_output",
 ]
 type MissingItemAvailabilityWire = Literal[
-    "agent_suppliable", "structurally_unavailable_on_this_host"
+    "agent_suppliable",
+    "structurally_unavailable_on_this_host",
+    "yoetz_limit_packet_room",
+    "yoetz_limit_repeated_request",
+    "yoetz_limit_unsupported_data_type",
 ]
 
 ProviderReviewTextWire = Annotated[
@@ -2219,6 +2229,8 @@ class ProviderChallengeModel(_ClosedModel):
     # One verbatim quote supporting the challenge. The check fence validates that it is an
     # exact substring of a packet item linked to one of cited_refs (issue #906 Part 2).
     snippet: ProviderReviewTextWire | None = None
+    # The earlier finding this challenge restates (issue #980), from prior_finding_refs.
+    restates: ProviderFindingIdWire | None = None
 
     @model_validator(mode="after")
     def _validate_challenge_invariants(self) -> ProviderChallengeModel:

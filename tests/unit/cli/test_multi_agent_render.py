@@ -112,10 +112,11 @@ def test_check_lists_named_missing_items_as_a_limitation_not_a_finding() -> None
     assert "Missing for assessment (the reviewer could not assess the packet):" in rendered
     assert f"- verification_output ({claim}): agent_suppliable" in rendered
     assert "- command_identity (no packet ref): structurally_unavailable_on_this_host" in rendered
-    assert "Overall next: supply or repair the named agent-suppliable review input" in rendered
+    assert "Overall next: supply the named agent-suppliable review input" in rendered
     assert (
-        f"Overall next [action_required]: Supply or repair the named review input (targets: {claim})."
-        in rendered
+        "Overall next [action_required]: Supply the named review input as new records tied to the "
+        "named refs (never change your work to fit the reviewer) "
+        f"(targets: {claim})." in rendered
     )
 
 
@@ -165,7 +166,7 @@ def test_check_labels_finding_only_next_when_input_repair_is_required() -> None:
         "Finding checklist next: No open findings remain on the list; request the receipt."
         in rendered
     )
-    assert "Overall next: supply or repair the named agent-suppliable review input" in rendered
+    assert "Overall next: supply the named agent-suppliable review input" in rendered
 
 
 def test_check_labels_structural_limitations_as_disclosure_at_receipt() -> None:

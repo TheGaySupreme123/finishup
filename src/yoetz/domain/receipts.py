@@ -120,6 +120,7 @@ __all__ = [
     "SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP",
     "SEMANTIC_MISSING_ITEMS_REJECTED_GAP",
     "SEMANTIC_MISSING_NON_CONVERGENT_GAP",
+    "SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP",
     "SEMANTIC_MISSING_UNAVAILABLE_GAP",
     "SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES",
     "SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP",
@@ -219,6 +220,12 @@ SEMANTIC_MISSING_ITEMS_REJECTED_GAP: Final = "semantic_missing_items_rejected"
 # is a bounded non-convergence disclosure, not proof that a new target was supplied or that the
 # reviewer was wrong; the next step is to publish the named relationship or stop rechecking.
 SEMANTIC_MISSING_NON_CONVERGENT_GAP: Final = "semantic_missing_non_convergent"
+# tb4n1 D3: the reviewer twice could not assess the same named content (the request and its one
+# retry), so later checks of the task run without the AI-powered review instead of looping on a
+# packet that cannot show the work. A Yoetz limit, never agent work; the receipt discloses it.
+SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
+    "semantic_review_skipped_insufficient_packet"
+)
 # A successful provider call can still lose the exact post-admission input manifest.  Keep the
 # failure reason closed and coverage-bounded so a composed manifest is never presented as what the
 # provider received.  These are internal provenance facts surfaced as ordinary receipt gaps.

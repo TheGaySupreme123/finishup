@@ -215,6 +215,8 @@ GAP_CLASSIFICATION: Final[Mapping[str, GapClass]] = MappingProxyType(
         "semantic_missing_already_supplied": _S,
         "semantic_missing_items_rejected": _S,
         "semantic_missing_non_convergent": _S,
+        # tb4n1 D3: the reviewer twice could not assess the same content; the round stopped.
+        "semantic_review_skipped_insufficient_packet": _S,
         "semantic_provider_input_manifest_missing": _S,
         "semantic_provider_input_manifest_invalid": _S,
         "semantic_provider_input_manifest_parse_failed": _S,
@@ -591,6 +593,17 @@ def _check_applicability(
     return "applicable"
 
 
+def _review_round_stopped(payload: CheckRecordedPayload) -> bool:
+    """A check that skipped the AI-powered review because the packet twice could not show the
+    content the reviewer needed (tb4n1 D3). Another review cannot assess more, so neither a
+    current review nor a closing review is demanded again; the gap discloses the limit."""
+
+    return (
+        payload.semantic_status is SemanticStatus.NOT_REQUESTED
+        and "semantic_review_skipped_insufficient_packet" in payload.coverage.known_gaps
+    )
+
+
 def _semantic_review_current(
     records: tuple[LedgerRecord, ...], limitations: frozenset[FindingId]
 ) -> bool:
@@ -602,11 +615,11 @@ def _semantic_review_current(
 
     for record in reversed(records):
         payload = record.payload
-        if (
-            record.schema.name != "check_recorded"
-            or type(payload) is not CheckRecordedPayload
-            or payload.semantic_status is not SemanticStatus.SUCCEEDED
-        ):
+        if record.schema.name != "check_recorded" or type(payload) is not CheckRecordedPayload:
+            continue
+        if _review_round_stopped(payload):
+            return True
+        if payload.semantic_status is not SemanticStatus.SUCCEEDED:
             continue
         return not any(
             invalidates_recorded_check(
@@ -674,7 +687,7 @@ def _closing_review_facts(
         ):
             return False, used
         status = payload.semantic_status
-        if status in _UNDELIVERABLE_SEMANTIC_STATUSES:
+        if status in _UNDELIVERABLE_SEMANTIC_STATUSES or _review_round_stopped(payload):
             return True, used
         if status is not SemanticStatus.SUCCEEDED:
             continue
