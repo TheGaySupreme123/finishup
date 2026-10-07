@@ -1053,3 +1053,28 @@ async def test_the_review_reads_the_workspace_root_the_session_opened_with() -> 
         runtime = SimpleNamespace(ledger=_OpenedLedger(workspace_ref), session_id="ses")
         assert await root_of(cast(TaskRuntime, runtime)) == expected
     assert await root_of(None) is None
+
+
+def test_a_composed_run_keys_on_its_leading_identity() -> None:
+    """Adversarial review of E3 (#988): the segment suffix must not split one command in two."""
+
+    from yoetz.application import missing_for_assessment
+    from yoetz.domain.events import ActionRecordedPayload as _Action
+    from yoetz.domain.values import action_id as _action_id
+
+    identity = "hmac-sha256:" + "a" * 64
+    segment = "hmac-sha256:" + "b" * 64
+    run_key = getattr(missing_for_assessment, "_run_key")
+    before = _Action(
+        _action_id("act_00000000-0000-4000-8000-000000000001"),
+        ActionKind.COMMAND,
+        "Observed command",
+        command=f"omitted:{identity}",
+    )
+    after = _Action(
+        _action_id("act_00000000-0000-4000-8000-000000000002"),
+        ActionKind.COMMAND,
+        "Observed command",
+        command=f"omitted:{identity} and_chain {segment}",
+    )
+    assert run_key(before) == run_key(after) == ("digest", identity)

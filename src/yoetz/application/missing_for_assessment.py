@@ -621,14 +621,17 @@ def _run_key(payload: ActionRecordedPayload | None) -> _RunKey | None:
     """What makes two runs the same command: its text with whitespace collapsed.
 
     A hook records ``omitted:<digest>`` instead of the text; the same digest is the same command
-    text, so it matches only that digest. ``omitted:structural`` identifies nothing.
+    text, so it matches only that digest. ``omitted:structural`` identifies nothing. A composed
+    run also carries a segment suffix (``omitted:<identity> <composition> <segment>...``, #988);
+    only the leading identity keys it, so one command recorded before and after that suffix
+    existed is one run.
     """
 
     if payload is None or payload.command is None:
         return None
     command = " ".join(payload.command.split())
     if command.startswith("omitted:"):
-        digest = command.removeprefix("omitted:")
+        digest = command.removeprefix("omitted:").split(" ", 1)[0]
         return None if digest in {"", "structural"} else ("digest", digest)
     return ("command", command) if command else None
 
