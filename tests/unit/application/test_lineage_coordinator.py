@@ -94,3 +94,77 @@ async def test_inventory_failure_does_not_replace_a_recorded_manifest_with_empty
     assert result.append_result is None
     assert result.manifest.source_event_id is None
     assert result.manifest.children == ()
+
+
+@pytest.mark.parametrize(
+    ("disposition", "flagged"),
+    (
+        (None, False),
+        ("acknowledged_not_done", False),
+        ("self_verified", True),
+    ),
+)
+def test_child_snapshot_carries_self_verified_only_for_a_self_verified_finding(
+    disposition: str | None, flagged: bool
+) -> None:
+    """Issue #984 (ADR-034): the frozen child row says "self-verified", never "resolved"."""
+
+    from dataclasses import replace
+
+    from builders.policy_cases import evd, finding_record, fnd, obl, record
+    from yoetz.application.lineage_coordinator import (
+        _child_finding_snapshot,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.domain.events import ResponseRecordedPayload
+    from yoetz.domain.findings import (
+        FINDING_KIND_TRAITS,
+        Finding,
+        FindingKind,
+        FindingOrigin,
+        ResponseDisposition,
+    )
+    from yoetz.domain.values import Frontier
+    from yoetz.kernel.projections import empty_projection_state
+    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
+
+    digest = "sha256:" + "4" * 64
+    kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
+    finding = Finding(
+        finding_id=fnd(1),
+        kind=kind,
+        origin=FindingOrigin.DETERMINISTIC,
+        priority=FINDING_KIND_TRAITS[kind][0],
+        summary="A completion claim covers an open obligation.",
+        detail="Resolve or revise the obligation before claiming completion.",
+        subject_refs=(obl(1),),
+        policy_id="work-integrity",
+        policy_version="0.1.0",
+        subject_frontier=Frontier(3, digest),
+        coverage=coverage_for_channel(PublicationChannel.ENGINE_DERIVED),
+        provenance=None,
+    )
+    responses = {}
+    if disposition is not None:
+        responses[fnd(1)] = record(
+            ResponseRecordedPayload(
+                fnd(1),
+                Frontier(4, digest),
+                ResponseDisposition(disposition),
+                "Ran the suite myself; output recorded as evidence.",
+                evidence_refs=(evd(1),),
+            ),
+            9,
+        )
+    projection = replace(
+        empty_projection_state(),
+        frontier=20,
+        head_digest=digest,
+        findings={fnd(1): finding_record(finding, 4)},
+        responses=responses,
+    )
+    snapshot = _child_finding_snapshot(projection, fnd(1), finding)
+    assert (snapshot.self_verified, snapshot.resolved, snapshot.actionable) == (
+        flagged,
+        False,
+        True,
+    )

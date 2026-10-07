@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -1994,3 +1994,104 @@ def test_a_standing_gap_a_local_proof_does_not_tolerate_still_bounds_the_receipt
         )
     )
     assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+
+
+def test_child_self_verified_finding_reads_self_verified_on_the_parent_receipt() -> None:
+    """Issue #984 (ADR-034): a child's self-verified repair is not parent work and never clean."""
+
+    from yoetz.domain.coordination import (
+        LineageAcceptance,
+        LineageOrigin,
+        SessionHealth,
+        WorkState,
+    )
+    from yoetz.domain.receipts import CHILD_SELF_VERIFIED_NOTE
+    from yoetz.kernel.lineage import (
+        CHILD_SELF_VERIFIED_GAP,
+        ChildDependencySnapshot,
+        ChildFindingSnapshot,
+        LineageManifest,
+        evaluate_lineage,
+    )
+    from yoetz.protocol.canonical import JsonValue
+    from yoetz.protocol.errors import ProtocolValueError
+    from yoetz.protocol.schemas import validate_schema_instance
+
+    child_task = task_id("tsk_00000000-0000-4000-8000-000000000077")
+    child_finding = finding_id("fnd_00000000-0000-4000-8000-000000000077")
+    kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
+    snapshot = ChildDependencySnapshot(
+        child_task_id=child_task,
+        origin=LineageOrigin.PARENT_MINTED,
+        acceptance=LineageAcceptance.ACCEPTED,
+        work_state=WorkState.CLOSED,
+        session_health=SessionHealth.ENDED,
+        child_frontier=_FRONTIER,
+        child_check_id=_CHECK_EVENT_ID,
+        child_receipt_id=receipt_id("rcp_00000000-0000-4000-8000-000000000077"),
+        coverage=_coverage(),
+        findings=(
+            ChildFindingSnapshot(
+                finding_id=child_finding,
+                kind=kind,
+                origin=FindingOrigin.DETERMINISTIC,
+                priority=FINDING_KIND_TRAITS[kind][0],
+                resolved=False,
+                actionable=True,
+                self_verified=True,
+            ),
+        ),
+        lineage_authority_revision="rev-1",
+        child_check_subject_frontier=_FRONTIER,
+        manifest_event_id=_SOURCE_EVENT_ID,
+    )
+    lineage = evaluate_lineage(LineageManifest((snapshot,)), base_coverage=_coverage())
+    assert lineage.actionable_finding_ids == ()
+    check = _check(CheckVerdict.NO_ISSUE_DETECTED, lineage.coverage)
+    marker = f"lineage:{CHILD_SELF_VERIFIED_GAP}:{child_task}:{_SOURCE_EVENT_ID}"
+    context = replace(
+        _context(
+            check=check,
+            coverage=lineage.coverage,
+            gaps=(CaseGap(marker, CHILD_SELF_VERIFIED_GAP, (_SOURCE_EVENT_ID,)),),
+        ),
+        lineage=lineage,
+    )
+    versions = replace(
+        _versions(),
+        schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+    )
+    receipt = build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        versions,
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+    # Never clean and never "unresolved findings remain": the parent has nothing to do.
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    assert CHILD_SELF_VERIFIED_GAP in receipt.coverage.known_gaps
+    (child,) = receipt.children.children
+    assert child.outcome == "annotated"
+    (row,) = child.findings
+    assert (row.self_verified, row.resolved, row.actionable) == (True, False, True)
+
+    wire = receipt_document_to_json(receipt)
+    wire_row = cast(dict[str, Any], wire["children"])["children"][0]["findings"][0]
+    assert wire_row["self_verified"] is True
+    validate_schema_instance("receipt-document", "1.3.0", cast(JsonValue, wire))
+    assert receipt_document_from_json(wire) == receipt
+
+    note = f"{child_finding}: {CHILD_SELF_VERIFIED_NOTE}"
+    assert CHILD_SELF_VERIFIED_NOTE == "self-verified by the child agent; Yoetz could not prove it"
+    assert note in render_receipt_human(receipt, markdown=True)
+    assert note in render_receipt_human(receipt, markdown=False)
+    assert "1 child finding was self-verified by the child agent" in render_receipt_compact(receipt)
+
+    # An explicit false is not a recorded spelling.
+    wire_row["self_verified"] = False
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(wire)

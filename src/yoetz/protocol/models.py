@@ -1331,7 +1331,7 @@ _CHILD_FINDING_TRAITS: Final[Mapping[str, tuple[int, bool]]] = MappingProxyType(
 
 
 class ChildFindingSnapshotModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"resolution_event_id"})
+    optional_non_null_fields = frozenset({"resolution_event_id", "self_verified"})
 
     finding_id: FindingIdWire
     kind: Literal[
@@ -1358,6 +1358,8 @@ class ChildFindingSnapshotModel(_ClosedModel):
     actionable: bool
     resolved: bool
     resolution_event_id: EventIdWire | None = None
+    # Issue #984: present (and true) only for a repair the child agent self-verified.
+    self_verified: Literal[True] | None = None
 
     @model_validator(mode="after")
     def _validate_child_finding_snapshot(self) -> ChildFindingSnapshotModel:
@@ -1367,6 +1369,8 @@ class ChildFindingSnapshotModel(_ClosedModel):
         if self.actionable != expected_actionable:
             raise ValueError("child_finding_actionable_mismatch")
         if self.resolved != (self.resolution_event_id is not None):
+            raise ValueError("child_finding_resolution_mismatch")
+        if self.self_verified and (self.resolved or not self.actionable):
             raise ValueError("child_finding_resolution_mismatch")
         return self
 
@@ -6409,6 +6413,7 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
             "actionable",
             "resolved",
             "resolution_event_id",
+            "self_verified",
         ),
     )
 )
@@ -6649,7 +6654,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1425:
+    if len(result) != 1426:
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

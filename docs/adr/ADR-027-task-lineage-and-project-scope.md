@@ -278,6 +278,10 @@ than implementation notes.
    and does not block parent clean-completion wording or parent coverage. The same read gap
    on an accepted child remains unavailable and does block. A rejected snapshot that still
    carries actionable findings is an impossible acceptance transition and stays blocking.
+   A child finding the child agent self-verified (ADR-034, `self_verified` on the snapshot row)
+   is not parent work and never blocks; on an accepted child it reads "self-verified by the
+   child agent; Yoetz could not prove it" and holds the parent at best at
+   `insufficient_coverage`.
    An accepted live child is an open gap and an accepted abandoned child is an incomplete gap.
    Lifecycle state is evaluated before informational annotation, so an informational finding
    cannot hide an open or incomplete child. The only informational kind,

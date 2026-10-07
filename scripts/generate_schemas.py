@@ -2328,6 +2328,17 @@ def _lineage_child_finding_schema() -> dict[str, JsonValue]:
                 "if": {"required": ["resolution_event_id"]},
                 "then": {"properties": {"resolved": {"const": True}}},
             },
+            # Issue #984: a child repair only the child agent verified stays unresolved and
+            # actionable by kind; the field is present only when true.
+            {
+                "if": {"required": ["self_verified"]},
+                "then": {
+                    "properties": {
+                        "actionable": {"const": True},
+                        "resolved": {"const": False},
+                    }
+                },
+            },
         ],
         "properties": {
             "actionable": {"type": "boolean"},
@@ -2355,6 +2366,7 @@ def _lineage_child_finding_schema() -> dict[str, JsonValue]:
             "priority": {"maximum": 3, "minimum": 1, "type": "integer"},
             "resolution_event_id": {"oneOf": [_lineage_id_schema("event_id"), {"type": "null"}]},
             "resolved": {"type": "boolean"},
+            "self_verified": {"const": True},
         },
         "required": [
             "actionable",

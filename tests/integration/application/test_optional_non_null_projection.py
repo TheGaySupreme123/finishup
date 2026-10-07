@@ -220,7 +220,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
             }
         ),
     ),
-    (ChildFindingSnapshotModel, frozenset({"resolution_event_id"})),
+    (ChildFindingSnapshotModel, frozenset({"resolution_event_id", "self_verified"})),
     (ProjectTextRefModel, frozenset({"envelope_digest"})),
     (PublishWorkAcceptedEventModel, frozenset({"summary"})),
     (PublicErrorModel, frozenset({"safe_details"})),
@@ -1156,7 +1156,7 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
                 "actionable": True,
                 "resolved": False,
             },
-            ("resolution_event_id",),
+            ("resolution_event_id", "self_verified"),
         ),
         (
             ChildDependencySnapshotModel,
@@ -1517,7 +1517,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "test_nested_multi_agent_results_omit_unset_fields"
     )
     for model, fields in (
-        ("ChildFindingSnapshotModel", ("resolution_event_id",)),
+        ("ChildFindingSnapshotModel", ("resolution_event_id", "self_verified")),
         (
             "ChildDependencySnapshotModel",
             ("child_frontier", "child_check_id", "child_receipt_id", "membership_generation"),

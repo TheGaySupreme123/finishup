@@ -152,9 +152,18 @@ budget hint and the `respond` descriptor. The shared sentence is
   self-verified id and stays at best `insufficient_coverage`.
 - **Older artifacts.** A receipt artifact older than 1.3.0 has no terminal sections. There a
   self-verified item still counts as unresolved, as `rejection_accepted` does.
-- **Lineage.** A child task's self-verified finding still reads as actionable and unresolved in
-  the frozen lineage snapshot, as the #905 terminal states do. The child's own receipt discloses
-  it.
+- **Lineage (owner decision, 2026-10-07: "carry it as self-verified").** A child task's
+  self-verified finding rolls up to the parent as "self-verified by the child agent; Yoetz could
+  not prove it". The frozen `child-dependencies-recorded` row keeps `actionable` and `resolved`
+  honest (actionable by kind, never resolved) and adds `self_verified: true`, emitted only when
+  true so every other manifest keeps its bytes. The parent evaluator keeps such a row out of its
+  actionable set, so the parent never reads `unresolved_findings_remain` for work it cannot do,
+  and names the same standing code `finding_self_verified` on an accepted child, which keeps the
+  parent from reading clean: the parent receipt is at best `insufficient_coverage`. The
+  receipt-document `1.3.0` child row carries `self_verified` and markdown/text render it, so the
+  parent and child receipts agree. A pending or rejected child stays an annotation. The #905
+  states `rejection_accepted` and `acknowledged_not_done` still read as actionable and
+  unresolved in the snapshot.
 - **Agent misuse.** An agent can still call a repair verified when it is not. The answer is
   attributable, carries the agent's own evidence ids, and is listed by id. The eligibility rule
   limits it to cases where Yoetz's newest check no longer positively sees the issue.

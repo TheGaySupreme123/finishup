@@ -67,6 +67,7 @@ from yoetz.protocol.recovery import continuation_for_semantic_outcome, directive
 
 __all__ = [
     "SELF_VERIFIED_SECTION_TITLE",
+    "CHILD_SELF_VERIFIED_NOTE",
     "receipt_document_carries_terminal_sections",
     "CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP",
     "CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP",
@@ -483,6 +484,8 @@ _TERMINAL_ID_FIELDS: Final = (
     "self_verified_finding_ids",
 )
 SELF_VERIFIED_SECTION_TITLE: Final = "Self-verified by the agent; Yoetz could not prove the repair"
+# Issue #984 (ADR-034): how a child's self-verified finding reads on the parent receipt.
+CHILD_SELF_VERIFIED_NOTE: Final = "self-verified by the child agent; Yoetz could not prove it"
 
 
 class ReceiptObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
@@ -923,6 +926,8 @@ class ReceiptChildFinding:
     actionable: bool
     resolved: bool
     resolution_event_id: EventId | None = None
+    # Issue #984 (ADR-034): self-verified by the child agent; Yoetz could not prove it.
+    self_verified: bool = False
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_child_finding"
@@ -942,6 +947,10 @@ class ReceiptChildFinding:
         if self.resolved is not (resolution is not None):
             raise ProtocolValueError(invalid)
         object.__setattr__(self, "resolution_event_id", resolution)
+        if type(self.self_verified) is not bool or (
+            self.self_verified and (self.resolved or not self.actionable)
+        ):
+            raise ProtocolValueError(invalid)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1347,9 +1356,12 @@ def _child_finding_from_json(value: object) -> ReceiptChildFinding:
     source = _closed_object(
         value,
         frozenset({"finding_id", "kind", "origin", "priority", "actionable", "resolved"}),
-        frozenset({"resolution_event_id"}),
+        frozenset({"resolution_event_id", "self_verified"}),
         invalid,
     )
+    # Present only when true (issue #984).
+    if "self_verified" in source and _field(source, "self_verified", invalid) is not True:
+        raise ProtocolValueError(invalid)
     keys = frozenset(cast(tuple[str, ...], tuple(source)))
     return ReceiptChildFinding(
         finding_id=finding_id(_field(source, "finding_id", invalid)),
@@ -1462,6 +1474,7 @@ def _section_from_json(value: object) -> ReceiptSection:
         coverage_note=(
             cast(str, _field(source, "coverage_note", invalid)) if "coverage_note" in keys else None
         ),
+        self_verified="self_verified" in keys,
     )
 
 
@@ -1714,6 +1727,8 @@ def _child_finding_to_json(value: ReceiptChildFinding) -> dict[str, object]:
     }
     if value.resolution_event_id is not None:
         result["resolution_event_id"] = value.resolution_event_id
+    if value.self_verified:
+        result["self_verified"] = True
     return result
 
 
@@ -1922,6 +1937,11 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                     f"freshness={child.freshness}; tested_manifest={tested}; "
                     f"later_manifest={later}; findings={findings}"
                 )
+                child_parts.extend(
+                    f"  - {item.finding_id}: {CHILD_SELF_VERIFIED_NOTE}"
+                    for item in child.findings
+                    if item.self_verified
+                )
         parts.append("\n".join(child_parts))
     if document.acknowledged_not_done_finding_ids:
         heading = "## Acknowledged, not done" if markdown else "Acknowledged, not done"
@@ -2124,6 +2144,15 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
             return (
                 prefix + f"coverage is insufficient. {count} {noun} self-verified by the agent; "
                 "Yoetz could not prove the repair."
+            )
+        child_self_verified = sum(
+            item.self_verified for child in document.children.children for item in child.findings
+        )
+        if child_self_verified:
+            noun = "child finding was" if child_self_verified == 1 else "child findings were"
+            return (
+                prefix + f"coverage is insufficient. {child_self_verified} {noun} self-verified "
+                "by the child agent; Yoetz could not prove the repair."
             )
         return prefix + "coverage is insufficient. Declared gaps bound this receipt's conclusion."
 

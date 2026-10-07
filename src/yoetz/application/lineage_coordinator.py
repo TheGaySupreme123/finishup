@@ -57,12 +57,14 @@ from yoetz.domain.values import (
     Actor,
     ActorType,
     EventId,
+    FindingId,
     Frontier,
     actor_id,
     task_id,
     timestamp_from_datetime,
 )
 from yoetz.kernel.finding_resolution import finding_is_resolved
+from yoetz.kernel.finding_todo import FindingTodoState, finding_todo_state
 from yoetz.kernel.lineage import (
     LineageEvaluation,
     LineageManifest,
@@ -179,6 +181,36 @@ def _coverage_with_gaps(coverage: Coverage, gaps: Iterable[str]) -> Coverage:
         freshness,
         coverage.check_types,
         tuple(sorted((*coverage.known_gaps, *additions), key=str.encode)),
+    )
+
+
+def _child_finding_snapshot(
+    projection: ProjectionState, finding_key: FindingId, finding: Finding
+) -> WireChildFindingSnapshot:
+    """Freeze one child finding for the parent's dependency manifest."""
+
+    priority, actionable = FINDING_KIND_TRAITS[finding.kind]
+    # Deliberately strict (issue #905): a child's ``rejection_accepted`` or
+    # ``acknowledged_not_done`` row stays actionable and unresolved here; neither ``actionable``
+    # nor ``resolved`` may be bent to mean "withdrawn", and the child's own receipt discloses
+    # the terminal state. A ``self_verified`` row (issue #984, ADR-034) also stays actionable and
+    # unresolved, and carries ``self_verified`` so the parent rolls it up as "self-verified by
+    # the child agent; Yoetz could not prove it": never clean, never parent work.
+    resolved = finding_is_resolved(projection, finding_key)
+    record = projection.findings[finding_key]
+    return WireChildFindingSnapshot(
+        finding_id=finding.finding_id,
+        kind=finding.kind,
+        origin=finding.origin,
+        priority=priority,
+        actionable=actionable,
+        resolved=resolved,
+        resolution_event_id=record.resolved_by_check_event_id if resolved else None,
+        self_verified=(
+            not resolved
+            and actionable
+            and finding_todo_state(projection, finding_key) is FindingTodoState.SELF_VERIFIED
+        ),
     )
 
 
@@ -854,26 +886,7 @@ class LineageManifestCoordinator:
             finding = finding_record.payload
             if type(finding) is not Finding:
                 raise _invalid()
-            priority, actionable = FINDING_KIND_TRAITS[finding.kind]
-            # Deliberately strict (issue #905): a child's ``rejection_accepted``,
-            # ``acknowledged_not_done`` or ``self_verified`` (issue #984) row stays actionable and
-            # unresolved here. This frozen
-            # snapshot carries only ``actionable`` and ``resolved``, and neither may be bent to
-            # mean "withdrawn"; the child's own receipt discloses the terminal state.
-            resolved = finding_is_resolved(projection, finding_key)
-            findings.append(
-                WireChildFindingSnapshot(
-                    finding_id=finding.finding_id,
-                    kind=finding.kind,
-                    origin=finding.origin,
-                    priority=priority,
-                    actionable=actionable,
-                    resolved=resolved,
-                    resolution_event_id=(
-                        finding_record.resolved_by_check_event_id if resolved else None
-                    ),
-                )
-            )
+            findings.append(_child_finding_snapshot(projection, finding_key, finding))
             coverage = _coverage_with_gaps(coverage, finding.coverage.known_gaps)
 
         receipt_id_value = None

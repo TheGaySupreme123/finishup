@@ -871,6 +871,7 @@ def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
                     actionable=bool(finding.actionable),
                     resolved=finding.resolved,
                     resolution_event_id=finding.resolution_event_id,
+                    self_verified=finding.self_verified,
                 )
                 for finding in snapshot.findings
             )

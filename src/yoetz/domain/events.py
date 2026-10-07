@@ -1100,6 +1100,9 @@ class ChildFindingSnapshot:
     resolved: bool
     resolution_event_id: EventId | None = None
     actionable: bool | None = None
+    # Issue #984 (ADR-034): the child agent self-verified this repair and Yoetz could not prove
+    # it. Recorded only when true, so every other snapshot keeps its bytes.
+    self_verified: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "finding_id", finding_id(self.finding_id))
@@ -1122,6 +1125,10 @@ class ChildFindingSnapshot:
         if type(actionable) is not bool or actionable is not expected_actionable:
             raise ProtocolValueError("finding_actionable_mismatch")
         object.__setattr__(self, "actionable", actionable)
+        if type(self.self_verified) is not bool:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.self_verified and (self.resolved or not actionable):
+            raise ProtocolValueError("finding_resolution_mismatch")
 
 
 @dataclass(frozen=True, slots=True)
@@ -3384,9 +3391,13 @@ def _decode_child_finding(value: object) -> ChildFindingSnapshot:
     source = _closed_object(
         value,
         required=frozenset({"finding_id", "kind", "origin", "priority", "resolved"}),
-        optional=frozenset({"resolution_event_id", "actionable"}),
+        optional=frozenset({"resolution_event_id", "actionable", "self_verified"}),
     )
     actionable = _nullable(source, "actionable")
+    # Emitted only when true (issue #984); an explicit false is not a recorded spelling.
+    self_verified = _field(source, "self_verified") if "self_verified" in source else False
+    if "self_verified" in source and self_verified is not True:
+        raise ProtocolValueError("invalid_event_value_type")
     return ChildFindingSnapshot(
         finding_id=finding_id(_field(source, "finding_id")),
         kind=_enum_from_json(_field(source, "kind"), FindingKind),
@@ -3399,6 +3410,7 @@ def _decode_child_finding(value: object) -> ChildFindingSnapshot:
             else event_id(_field(source, "resolution_event_id"))
         ),
         actionable=(None if actionable is None else cast(bool, actionable)),
+        self_verified=cast(bool, self_verified),
     )
 
 
@@ -4351,6 +4363,8 @@ def _encode_child_finding(value: ChildFindingSnapshot) -> JsonObject:
         "resolved": value.resolved,
     }
     _optional_value(result, "resolution_event_id", value.resolution_event_id)
+    if value.self_verified:
+        result["self_verified"] = True
     return _json_object(result)
 
 

@@ -2307,6 +2307,13 @@ check/receipt identity, coverage, findings state, `lineage_authority_revision`, 
 only reuses recorded manifests and never records or refreshes one (#500). The parent receipt
 projects direct children one level: current actionable findings on accepted children block
 clean-completion wording, while the receipt is still produced and names the child and finding.
+A child finding the child agent self-verified (issue #984, ADR-034) carries `self_verified: true`
+on its manifest row (emitted only when true; it requires `resolved: false` and the kind's
+`actionable: true`). The evaluator keeps it out of the parent's actionable findings and, on an
+accepted child, records the standing gap `finding_self_verified` with its finding ids, so the
+parent reads at best `insufficient_coverage`, never `unresolved_findings_remain`. The
+`receipt-document` `1.3.0` child finding row carries the same optional `self_verified`, and
+markdown/text render "self-verified by the child agent; Yoetz could not prove it" under it.
 Pending-acceptance children and informational findings annotate only; accepted live children are
 open gaps and accepted abandoned children are incomplete gaps. An unresolved informational
 finding stays on the child row and does not replace an accepted lifecycle gap or a coverage or
