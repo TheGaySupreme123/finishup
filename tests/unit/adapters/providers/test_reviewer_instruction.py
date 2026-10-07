@@ -345,3 +345,30 @@ def test_account_codes_are_not_dismissed_as_packet_limits() -> None:
         "to when readable material shows it in the work or the claim." in _TEXT
     )
     assert "packet limit codes are not this" in FINDING_KIND_GLOSSARY["ledger_stale_or_incomplete"]
+
+
+def test_image_and_binary_content_is_not_assessable_never_missing() -> None:
+    """TB4 tb4n1 D6 (issue #983): cad, medical, freecad looped on content never carried."""
+
+    assert "The packet never carries image or binary content" in _TEXT
+    assert "is not assessable from the packet: mark its verified row not_assessable" in _TEXT
+    assert "never list it in missing_for_assessment and never conclude insufficient_packet" in _TEXT
+    # Every provider path sends the same bytes (Chat Completions appends only its shape suffix).
+    assert CHAT_COMPLETIONS_INSTRUCTION.startswith(SEMANTIC_REVIEW_INSTRUCTION)
+
+
+def test_the_credential_placeholder_is_never_asked_for() -> None:
+    """L2 seam: the exact egress placeholder marks a withheld value, never a missing item."""
+
+    assert "The exact token [withheld-by-yoetz:possible-credential] marks a value" in _TEXT
+    assert "Never raise a finding or a missing_for_assessment item asking for that value." in _TEXT
+
+
+def test_the_reviewer_never_advises_delivering_less() -> None:
+    """TB4 tb4n1 D7 (formal-crypto): the agent emptied a working solver after an "unmet"."""
+
+    assert "Never advise delivering less as a remedy" in _TEXT
+    assert "emptying, deleting, moving, splitting, shrinking" in _TEXT
+    assert (
+        "never treat a packet limit as a reason to ask the agent to restructure its work" in _TEXT
+    )

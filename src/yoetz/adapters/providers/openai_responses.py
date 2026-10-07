@@ -327,6 +327,23 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = (
         "authority or environment blocker. Do not offer accepting a limitation as an equivalent "
         "alternative to performing available verification. Disclosure does not repair a defect or "
         "prove completion. "
+        # Issue #983 / TB4 tb4n1 D6: content the packet can never carry is not assessable, and
+        # asking for it only loops. The packet is text: images and binaries never travel.
+        "The packet never carries image or binary content (PNG or other images, PDF, CAD models, "
+        "drawings, compiled or other binary data), whatever the agent records. A requirement that "
+        "can be judged only from such content is not assessable from the packet: mark its "
+        "verified row not_assessable and say so; never list it in missing_for_assessment and never "
+        "conclude insufficient_packet because of it. Judge what the readable material shows about "
+        "it (the code or script that produces it, recorded checks of it). "
+        # L2 seam (TB4 tb4n1): Yoetz's egress placeholder for a credential-like value.
+        "The exact token [withheld-by-yoetz:possible-credential] marks a value Yoetz withheld "
+        "because it may be a credential; the rest of the line is the agent's real content. Never "
+        "raise a finding or a missing_for_assessment item asking for that value. "
+        # TB4 tb4n1 D7 (formal-crypto): a verdict must never push the agent to deliver less.
+        "Never advise delivering less as a remedy: never suggest emptying, deleting, moving, "
+        "splitting, shrinking or otherwise reshaping the deliverable or workspace files, and never "
+        "treat a packet limit as a reason to ask the agent to restructure its work. When a "
+        "deliverable is partial or wrong, ask for the repair, never for its removal. "
         # Gap glossaries (issue #906): packet limits apart from codes about the agent's own record.
         "Packet limit codes and omission reasons name limits of what this packet could carry, never "
         "defects in the agent's work; an item they hide is not assessable. "

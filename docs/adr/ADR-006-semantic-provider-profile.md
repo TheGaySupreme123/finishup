@@ -1484,5 +1484,14 @@ claiming completion was never judged for completeness. Decisions:
   outside the requested location, files another runtime user cannot read or write) while still never
   requesting installs; to test impossible/infeasible conclusions against the task premise; and to
   accept a disclosed limitation as support only when it lies outside the agent's control.
+- **TB4 tb4n1 reviewer cues (issues #976, #983).** The instruction also says the packet never
+  carries image or binary content (images, PDF, CAD, compiled data), so a requirement judged only
+  from such content is `not_assessable` and never a `missing_for_assessment` item or the reason for
+  `insufficient_packet`; that the exact token `[withheld-by-yoetz:possible-credential]` marks a
+  value Yoetz withheld at egress and is never asked for; and that the reviewer never advises
+  delivering less (emptying, deleting, moving, splitting or reshaping the deliverable) and never
+  treats a packet limit as a reason for the agent to restructure its work. An admitted `fixed`
+  ruling on a finding tolerates `semantic_review_refs_reduced` on that check; without one the gap
+  still blocks AI-powered absence proof.
 - Out of scope, recorded for later: reviewer visibility (diff and test-output truncation, vendored
   trees) and reviewer-run commands.
