@@ -1264,7 +1264,8 @@ def _composed_credential_heuristic(
     The opt-out belongs to the repository grant: between the installation-wide row and a
     repository row, the repository row decides, so a repository is "off" only where its own grant
     says off. The installation-wide value is only the default a repository without a grant
-    inherits. Any narrower composition (task or request rows) can only keep the filter on.
+    inherits. Any other composition (two installation rows, or a task or request row) keeps
+    ``enforced`` unless both sides are ``disabled``.
     """
 
     kinds = {first.effective_scope.kind, second.effective_scope.kind}

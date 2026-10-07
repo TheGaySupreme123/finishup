@@ -53,6 +53,8 @@ from yoetz.protocol.ids import IdKind, validate_id
 
 __all__ = [
     "AllowedBlockedExample",
+    "CredentialHeuristicState",
+    "credential_heuristic_state",
     "ChannelSetupChoice",
     "DecidePrivacyPolicyRequest",
     "GetPrivacyEffectiveRequest",
@@ -270,6 +272,53 @@ class PrivacyPolicyApplication:
             raise TypeError("privacy_setup_scope_invalid")
         if type(self.proposal_ttl_seconds) is not int or not 1 <= self.proposal_ttl_seconds <= 3600:
             raise ValueError("privacy_proposal_ttl_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class CredentialHeuristicState:
+    """The possible-credential filter for the external reviewer, as every surface shows it.
+
+    ``repository`` is what the current repository applies (its own grant decides, owner decision
+    2026-10-07); ``machine_default`` is what a new grant is drafted from (issue #982).
+    """
+
+    repository: Literal["enforced", "disabled", "unknown"]
+    machine_default: Literal["enforced", "disabled", "unknown"]
+
+
+def _heuristic_token(value: CredentialHeuristic) -> Literal["enforced", "disabled"]:
+    return "disabled" if value is CredentialHeuristic.DISABLED else "enforced"
+
+
+def credential_heuristic_state(
+    authority: RepositoryPrivacyAuthority,
+) -> CredentialHeuristicState:
+    """One derivation of the filter state from a repository authority snapshot (issue #982).
+
+    A granted repository applies its own grant. A repository without a grant sends nothing to the
+    external reviewer; when a migration is pending, report the grant the first check will create
+    (the meet of the migration frontier and the installation row), and otherwise ``enforced``.
+    """
+
+    machine = authority.machine_policy
+    machine_default: Literal["enforced", "disabled", "unknown"] = (
+        "unknown" if machine is None else _heuristic_token(machine.credential_heuristic)
+    )
+    if authority.grant_state == "granted":
+        return CredentialHeuristicState(
+            _heuristic_token(authority.effective.policy.credential_heuristic), machine_default
+        )
+    if authority.migration_frontiers and machine is not None:
+        outcomes = {
+            frontier.meet(machine).credential_heuristic
+            for frontier in authority.migration_frontiers
+        }
+        if outcomes == {CredentialHeuristic.DISABLED}:
+            return CredentialHeuristicState("disabled", machine_default)
+        if CredentialHeuristic.DISABLED in outcomes:
+            # Which frontier carries forward depends on the task that checks first.
+            return CredentialHeuristicState("unknown", machine_default)
+    return CredentialHeuristicState("enforced", machine_default)
 
 
 async def privacy_get_effective(

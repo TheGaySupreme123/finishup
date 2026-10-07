@@ -1708,11 +1708,22 @@ def _effective_credential_heuristic_line(value: JsonValue) -> str | None:
         return None
     if policy.get("credential_heuristic") != "disabled":
         return None
+    scope = policy.get("effective_scope")
+    kind = cast(Mapping[str, JsonValue], scope).get("kind") if isinstance(scope, Mapping) else None
+    if kind == "machine":
+        # The default ``privacy show`` reads the installation row: it is the default a new
+        # repository grant starts from, not what any granted repository applies (owner decision).
+        return (
+            "Possible-credential filter, installation default: off. New repository grants start "
+            "with the external reviewer's filter off; a repository with a grant follows its own "
+            "grant ('yoetz status' shows it). Restore the default with "
+            "'yoetz privacy credential-heuristic enable --machine-default'."
+        )
     return (
-        "Possible-credential filter: off. Values that only look like passwords or tokens may be "
-        "sent to the external AI reviewer as written; local outputs keep the filter, and known "
-        "credential shapes, private keys and URL passwords are still withheld. Turn it back on "
-        "with 'yoetz privacy credential-heuristic enable'."
+        "Possible-credential filter for this repository: off. Values that only look like "
+        "passwords or tokens may be sent to the external AI reviewer as written; local outputs "
+        "keep the filter, and known credential shapes, private keys and URL passwords are still "
+        "withheld. Turn it back on with 'yoetz privacy credential-heuristic enable'."
     )
 
 
@@ -1855,6 +1866,14 @@ async def _run_credential_heuristic_command(
     if report.outcome == "failed":
         typer.echo(f"privacy_credential_heuristic_failed: {report.reason or 'invalid'}", err=True)
         return 20
+    if report.reason == "repository_privacy_grant_missing" and not json_output:
+        typer.echo(
+            "This repository has no privacy grant, so nothing reaches the external reviewer "
+            "here and there is no repository setting to turn back on. A new grant starts from "
+            "the installation default; to turn that default back on, run "
+            "'yoetz privacy credential-heuristic enable --machine-default'.",
+            err=True,
+        )
     _human_or_json(
         {
             "credential_heuristic": setting.value,

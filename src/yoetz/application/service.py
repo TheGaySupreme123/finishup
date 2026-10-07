@@ -2485,6 +2485,11 @@ class Application:
         ):
             return None
 
+        def token(value: object) -> str:
+            if value == "enforced" or value == "disabled" or value == "unknown":
+                return cast(str, value)
+            return "unknown"
+
         def state_of(policy: object) -> str:
             if not isinstance(policy, Mapping):
                 return "unknown"
@@ -2493,21 +2498,21 @@ class Application:
                 return cast(str, value)
             return "unknown"
 
-        repository = "unknown"
         if repository_privacy_context is not None:
+            # The setup read carries the one derivation every surface shows (repository grant,
+            # pending migration outcome, installation default).
             try:
                 setup = await self._support(
                     ControlMethod.PRIVACY_GET_SETUP,
                     JsonObject({"schema_version": "2.0.0"}),
                     repository_privacy_context=repository_privacy_context,
                 )
-                grant = setup.get("grant_state")
-                if grant == "missing":
-                    repository = "enforced"
-                elif grant == "granted":
-                    repository = state_of(setup.get("composed_policy"))
+                pair = setup.get("credential_heuristic")
+                if isinstance(pair, Mapping):
+                    typed = cast(Mapping[str, object], pair)
+                    return token(typed.get("repository")), token(typed.get("machine_default"))
             except Exception:  # noqa: BLE001 - status stays readable; the state is unknown
-                repository = "unknown"
+                pass
         try:
             effective = await self._support(
                 ControlMethod.PRIVACY_GET_EFFECTIVE, JsonObject({"schema_version": "1.0.0"})
@@ -2515,7 +2520,7 @@ class Application:
             machine_default = state_of(effective.get("policy"))
         except Exception:  # noqa: BLE001 - status stays readable; the state is unknown
             machine_default = "unknown"
-        return repository, machine_default
+        return "unknown", machine_default
 
     async def receipt(
         self,

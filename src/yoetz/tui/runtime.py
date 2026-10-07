@@ -168,6 +168,23 @@ def _mapping(value: object) -> Mapping[str, object]:
     return {}
 
 
+def _credential_heuristic_pair(value: object) -> tuple[str, str] | None:
+    """The setup read's filter pair (issue #982); ``None`` when absent or malformed."""
+
+    pair = _mapping(value)
+    if not pair:
+        return None
+    allowed = {"enforced", "disabled", "unknown"}
+    repository = pair.get("repository")
+    machine_default = pair.get("machine_default")
+    return (
+        repository if type(repository) is str and repository in allowed else "unknown",
+        machine_default
+        if type(machine_default) is str and machine_default in allowed
+        else "unknown",
+    )
+
+
 def _task_statement_posture(policy_map: Mapping[str, object]) -> tuple[bool | None, str | None]:
     """Whether the composed policy sends the task statement, in ``privacy show`` words (#908).
 
@@ -1110,7 +1127,7 @@ class YoetzRuntime:
         task_statement_sent, task_statement_disclosure = _task_statement_posture(policy_map)
         return PrivacyPosture(
             recipe_outdated=_review_recipe_outdated(policy_map),
-            credential_heuristic_disabled=policy_map.get("credential_heuristic") == "disabled",
+            credential_heuristic=_credential_heuristic_pair(response.get("credential_heuristic")),
             profile=profile if isinstance(profile, str) else None,
             llm_inference_enabled=llm_enabled,
             readable=True,

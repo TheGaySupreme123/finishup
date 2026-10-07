@@ -131,8 +131,10 @@ installation-wide default (`--machine-default`) is what a new repository grant s
 changing it does not change a repository that already has a grant.
 
 `yoetz status` and the agent's status show, before any check runs, whether the filter is on for
-this repository and what the installation default is. While it is off, `yoetz privacy show`,
-`yoetz provider status` and `/privacy` also say so, every privacy receipt for an external review
+this repository and what the installation default is; `yoetz provider status` and `/privacy`
+show the same pair, and `yoetz privacy show` names the installation default when it is off. A
+repository without a grant has nothing to turn back on; `enable` then tells you to use
+`--machine-default`. While it is off, every privacy receipt for an external review
 made under it records it, and every check whose external AI-powered review ran under it reports
 `semantic_review_credential_heuristic_disabled`. That code describes your choice, not a problem
 with the agent's work. The setting is part of your privacy policy, so

@@ -1243,17 +1243,25 @@ def _compact_test_edit_clause(source: Mapping[str, JsonValue], view: str) -> str
 
 
 def _credential_heuristic_clause(source: Mapping[str, JsonValue]) -> str:
-    """Say when the owner turned the possible-credential filter off here (issue #982).
+    """Name the external reviewer's possible-credential filter when it is not plainly on (#982).
 
-    Silent for the default, so ordinary summaries are unchanged.
+    Silent when both the repository and the installation default are on, so ordinary summaries
+    are unchanged. Off and unknown are owner/service facts, never agent work.
     """
 
     state = source.get("credential_heuristic")
     if not isinstance(state, Mapping):
         return ""
-    if cast(Mapping[str, JsonValue], state).get("repository") != "disabled":
+    typed = cast(Mapping[str, JsonValue], state)
+    words = {"enforced": "on", "disabled": "off", "unknown": "unknown"}
+    repository = words.get(str(typed.get("repository")), "unknown")
+    machine_default = words.get(str(typed.get("machine_default")), "unknown")
+    if repository == "on" and machine_default == "on":
         return ""
-    return "possible-credential filter: off for this repository (owner choice); "
+    return (
+        f"possible-credential filter: {repository} for this repository, "
+        f"installation default {machine_default} (owner setting); "
+    )
 
 
 def summary_for_status(envelope: object) -> str:

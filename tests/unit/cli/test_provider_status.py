@@ -1272,15 +1272,22 @@ async def test_background_advice_reports_the_effective_switch_and_its_reason(
     assert module.background_advice_human_line({"reason": "owner-authored text"}) is None
 
 
-async def test_credential_heuristic_opt_out_is_named_only_when_the_owner_turned_it_off(
+async def test_provider_status_shows_the_same_filter_pair_as_status(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Issue #982: the owner opt-out is visible in the readiness snapshot; the default is silent."""
+    """Issue #982 review: one derivation, read from the repository setup, on every surface."""
 
     client = _install(monkeypatch, tmp_path, provider=_provider())
     report = await module.provider_status_report()
-    assert "credential_heuristic" not in report
-    composed = cast(dict[str, object], client._policy["composed_policy"])  # pyright: ignore[reportPrivateUsage]
-    composed["credential_heuristic"] = "disabled"
+    assert "credential_heuristic" not in report  # the setup read carried no pair
+    client._policy["credential_heuristic"] = {  # pyright: ignore[reportPrivateUsage]
+        "repository": "enforced",
+        "machine_default": "disabled",
+    }
     report = await module.provider_status_report()
-    assert report["credential_heuristic"] == "disabled"
+    pair = cast(dict[str, str], report["credential_heuristic"])
+    assert (pair["repository"], pair["machine_default"]) == ("enforced", "disabled")
+    assert "enable --machine-default" in pair["summary"]
+    # A no-grant repository whose composed (installation) policy is off is not told to run the
+    # repository `enable`: that would only answer `repository_privacy_grant_missing`.
+    assert "Turn it back on here" not in pair["summary"]

@@ -1117,7 +1117,30 @@ class CatalogPrivacyPolicyStore:
             None if exact is None else exact[1],
             None if exact is None else exact[0].policy_digest,
             None if exact is None else exact[0],
+            machine_policy,
+            self._migration_frontiers(migration_state, migration_policy),
         )
+
+    def _migration_frontiers(
+        self, migration_state: str, first_repository_frontier: PrivacyPolicy
+    ) -> tuple[PrivacyPolicy, ...]:
+        """Every frontier the pending migration could carry into the first grant (#982)."""
+
+        if migration_state == "first_repository_available":
+            return (first_repository_frontier,)
+        if migration_state != "legacy_route_available":
+            return ()
+        rows = self._db.execute(
+            "SELECT migration_policy_canonical, migration_policy_digest "
+            "FROM privacy_legacy_route_entitlements WHERE entitlement_state = 'available'"
+        ).fetchall()
+        frontiers: list[PrivacyPolicy] = []
+        for canonical, digest in rows:
+            frontier = _policy_from_bytes(cast(bytes, canonical))
+            if frontier.policy_digest != digest:
+                raise ValueError("privacy_authority_state_corrupt")
+            frontiers.append(frontier)
+        return tuple(frontiers)
 
     async def carry_forward_repository_authority(
         self,

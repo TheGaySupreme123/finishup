@@ -20,6 +20,7 @@ from yoetz.application.privacy_policy import (
     PrivacyPolicyResult,
     ProposePrivacyPolicyRequest,
     TightenPrivacyPolicyRequest,
+    credential_heuristic_state,
     privacy_get_effective,
     privacy_get_setup,
     privacy_pending_list,
@@ -500,6 +501,7 @@ def build_privacy_support_handlers(
         authority = view.authority
         if authority is None:
             raise _policy_rejection()
+        heuristic = credential_heuristic_state(authority)
         return JsonObject(
             {
                 "schema_version": "2.0.0",
@@ -515,6 +517,15 @@ def build_privacy_support_handlers(
                 "authority_digest": authority.authority_digest,
                 "grant_state": authority.grant_state,
                 "migration_state": authority.migration_state,
+                # The external reviewer's possible-credential filter, derived once for every
+                # surface (status, provider status, the terminal interface; issue #982).
+                "credential_heuristic": cast(
+                    JsonValue,
+                    {
+                        "repository": heuristic.repository,
+                        "machine_default": heuristic.machine_default,
+                    },
+                ),
                 "channel_choices": cast(
                     JsonValue,
                     [

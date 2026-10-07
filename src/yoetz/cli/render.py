@@ -63,6 +63,7 @@ __all__ = [
     "error_recovery_json",
     "local_recovery_json",
     "recovery_directive_json",
+    "credential_heuristic_line",
     "render_closure_readiness_lines",
     "render_error_recovery_lines",
     "render_hook_recovery_suffix",
@@ -479,17 +480,41 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
 _FILTER_WORDS: Final = {"enforced": "on", "disabled": "off", "unknown": "unknown"}
 
 
+def credential_heuristic_line(repository: object, machine_default: object) -> str:
+    """One sentence for the external reviewer's possible-credential filter (issue #982).
+
+    Every human surface (``yoetz status``, provider status, the terminal interface) uses this
+    text for the same ``repository``/``machine_default`` pair, so they cannot disagree, and each
+    names the command that changes what it reports.
+    """
+
+    repo = repository if type(repository) is str and repository in _FILTER_WORDS else "unknown"
+    default = (
+        machine_default
+        if type(machine_default) is str and machine_default in _FILTER_WORDS
+        else "unknown"
+    )
+    line = (
+        "Possible-credential filter (external reviewer): "
+        f"{_FILTER_WORDS[repo]} for this repository; installation default {_FILTER_WORDS[default]}"
+    )
+    if repo == "disabled":
+        line += ". Turn it back on here with 'yoetz privacy credential-heuristic enable'"
+    if default == "disabled":
+        line += (
+            ". New repository grants start with it off; restore the default with "
+            "'yoetz privacy credential-heuristic enable --machine-default'"
+        )
+    return line
+
+
 def _credential_heuristic_lines(result: StatusSuccessModel) -> tuple[str, ...]:
     """The possible-credential filter for the external reviewer (issue #982)."""
 
     state = result.credential_heuristic
     if state is None:
         return ()
-    return (
-        "Possible-credential filter (external reviewer): "
-        f"{_FILTER_WORDS[state.repository]} for this repository; "
-        f"installation default {_FILTER_WORDS[state.machine_default]}",
-    )
+    return (credential_heuristic_line(state.repository, state.machine_default),)
 
 
 def render_human_status(result: StatusSuccessModel) -> str:

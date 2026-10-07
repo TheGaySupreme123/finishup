@@ -289,6 +289,17 @@ class MemoryPrivacyPolicyStore:
             None if exact is None else exact.generation,
             None if exact is None else exact.policy.policy_digest,
             None if exact is None else exact.policy,
+            machine_policy,
+            (
+                tuple(self._state.legacy_route_entitlements.values())
+                if migration_state == "legacy_route_available"
+                else (
+                    (self._state.migration_frontier_policy,)
+                    if migration_state == "first_repository_available"
+                    and self._state.migration_frontier_policy is not None
+                    else ()
+                )
+            ),
         )
 
     async def carry_forward_repository_authority(

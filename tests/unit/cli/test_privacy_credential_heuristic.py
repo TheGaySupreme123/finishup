@@ -302,35 +302,87 @@ def test_cli_command_is_registered_with_both_directions(monkeypatch: pytest.Monk
     assert rejected.exit_code != 0
 
 
-def test_privacy_show_and_the_terminal_interface_say_when_the_filter_is_off(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from contextlib import asynccontextmanager
-
+def test_privacy_show_labels_the_installation_default() -> None:
     from yoetz.adapters.privacy.catalog import encode_privacy_policy_json
     from yoetz.cli.app import (
         _effective_credential_heuristic_line,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.tui.runtime import YoetzRuntime
 
-    disabled = encode_privacy_policy_json(_policy(CredentialHeuristic.DISABLED))
+    machine = encode_privacy_policy_json(_policy(CredentialHeuristic.DISABLED))
+    line = _effective_credential_heuristic_line({"policy": machine})
+    assert line is not None
+    assert line.startswith("Possible-credential filter, installation default: off")
+    assert "enable --machine-default" in line
+    repository = dict(machine)
+    repository["effective_scope"] = {
+        "kind": "workspace",
+        "installation_id": _INSTALLATION,
+        "workspace_ref_commitment": "hmac-sha256:" + "1" * 64,
+    }
+    repo_line = _effective_credential_heuristic_line({"policy": repository})
+    assert repo_line is not None and repo_line.startswith(
+        "Possible-credential filter for this repository: off"
+    )
     enforced = encode_privacy_policy_json(_policy())
-    line = _effective_credential_heuristic_line({"policy": disabled})
-    assert line is not None and line.startswith("Possible-credential filter: off")
     assert _effective_credential_heuristic_line({"policy": enforced}) is None
     assert _effective_credential_heuristic_line({}) is None
 
-    async def posture(composed: object) -> bool:
+
+def test_the_terminal_interface_shows_the_shared_pair(monkeypatch: pytest.MonkeyPatch) -> None:
+    from contextlib import asynccontextmanager
+
+    from yoetz.tui.runtime import YoetzRuntime
+
+    async def posture(response: object) -> object:
         class _Client:
             async def privacy_get_setup(self, _body: object) -> object:
-                return {"composed_policy": composed}
+                return response
 
         @asynccontextmanager
         async def connect(_self: YoetzRuntime):  # noqa: ANN202
             yield _Client()
 
         monkeypatch.setattr(YoetzRuntime, "_client", connect)
-        return (await YoetzRuntime().privacy_posture()).credential_heuristic_disabled
+        return await YoetzRuntime().privacy_posture()
 
-    assert asyncio.run(posture(disabled)) is True
-    assert asyncio.run(posture(enforced)) is False
+    from yoetz.adapters.privacy.catalog import encode_privacy_policy_json
+
+    composed = encode_privacy_policy_json(_policy(CredentialHeuristic.DISABLED))
+    current = asyncio.run(
+        posture(
+            {
+                "composed_policy": composed,
+                "grant_state": "missing",
+                "credential_heuristic": {"repository": "enforced", "machine_default": "disabled"},
+            }
+        )
+    )
+    assert getattr(current, "credential_heuristic") == ("enforced", "disabled")
+    assert getattr(current, "credential_heuristic_disabled") is False
+    summary = getattr(current, "credential_heuristic_summary")
+    assert "enable --machine-default" in summary and "Turn it back on here" not in summary
+    plain = asyncio.run(
+        posture(
+            {
+                "composed_policy": encode_privacy_policy_json(_policy()),
+                "credential_heuristic": {"repository": "enforced", "machine_default": "enforced"},
+            }
+        )
+    )
+    assert getattr(plain, "credential_heuristic_summary") is None
+
+
+def test_enable_without_a_grant_explains_the_machine_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def change(setting: CredentialHeuristic, **_: object) -> setup.PrivacySetupReport:
+        del setting
+        return setup.PrivacySetupReport(
+            "unchanged", "local_only", reason="repository_privacy_grant_missing"
+        )
+
+    monkeypatch.setattr(setup, "run_credential_heuristic_change", change)
+    result = CliRunner().invoke(app, ["privacy", "credential-heuristic", "enable"])
+    assert result.exit_code == 0, result.output
+    assert "enable --machine-default" in result.output
+    assert "no privacy grant" in result.output

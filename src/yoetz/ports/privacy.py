@@ -235,8 +235,20 @@ class RepositoryPrivacyAuthority:
     grant_generation: int | None = None
     grant_policy_digest: str | None = None
     grant_policy: PrivacyPolicy | None = None
+    # The installation policy and every frontier a pending migration could carry forward into
+    # the first grant (issue #982), so readers can state the outcome the first check will create.
+    # Empty unless ``migration_state`` is ``legacy_route_available`` or
+    # ``first_repository_available``.
+    machine_policy: PrivacyPolicy | None = None
+    migration_frontiers: tuple[PrivacyPolicy, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.machine_policy is not None and type(self.machine_policy) is not PrivacyPolicy:
+            raise _invalid()
+        if type(self.migration_frontiers) is not tuple or any(
+            type(item) is not PrivacyPolicy for item in self.migration_frontiers
+        ):
+            raise _invalid()
         if (
             type(self.scope) is not AuthorizationScope
             or self.scope.kind is AuthorizationScopeKind.MACHINE

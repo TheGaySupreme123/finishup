@@ -840,8 +840,13 @@ reviewer only, and status shows it before any check. Decisions:
 - **Part of the repository grant.** Composition takes the setting from the current repository's
   own grant: a repository is "off" only where its own grant says off. The installation-wide row
   keeps a visible default that a new grant is drafted from; it is never a ceiling for this field,
-  and a repository-bound proposal never moves it. Narrower task or request rows can only keep the
-  filter on.
+  and a repository-bound proposal never moves it. Any other composition (two installation rows,
+  or a narrower task or request row) keeps `enforced` unless both sides are `disabled`, so a
+  narrower row can turn the filter back on but never off. Status, provider status and the
+  terminal interface read one server-side derivation of the `repository`/`machine_default` pair;
+  a repository without a grant reads `enforced` unless a pending migration would carry forward a
+  disabled frontier, in which case it reports that outcome (or `unknown` when it depends on which
+  task checks first).
 - Turning it off is a widening (`global` / `credential_heuristic` in the policy diff) that applies
   only through the separately reauthenticated trusted-terminal decision; no MCP tool, hook or
   agent path can apply it. `yoetz privacy credential-heuristic disable` proposes it on the current

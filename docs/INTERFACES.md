@@ -3727,8 +3727,13 @@ installation row with a repository row takes the repository row's value, the ins
 is only the default a new grant is drafted from (a repository-bound proposal never moves it), and
 any narrower composition keeps `enforced` unless both sides are `disabled`. Status-result 1.4.0
 carries the optional `credential_heuristic` object (`repository`, `machine_default`, each
-`enforced`/`disabled`/`unknown`; a repository without a grant reads `enforced`), composed by the
-service on every status. The field is written only when `disabled`
+`enforced`/`disabled`/`unknown`), composed by the service on every status from the repository
+setup read, which carries the same pair (control-result 2.9.0 `privacy_get_setup_body`, optional;
+`credential_heuristic_state` over `RepositoryPrivacyAuthority.machine_policy` and
+`migration_frontiers`). A repository without a grant reads `enforced`, except under a pending
+migration (`legacy_route_available`, `first_repository_available`), where it reports the meet of
+the frontier and the installation row the first check will create, or `unknown` when frontiers
+disagree. The field is written only when `disabled`
 (privacy-policy wire 1.2.0 minimum; 1.0.0/1.1.0 documents naming it are rejected), so every
 existing policy, meet and receipt digest is unchanged. `PrivacyProfile` governs the
 `llm_inference` row/content rules only; `ReviewContextProfile` can only narrow which case items are

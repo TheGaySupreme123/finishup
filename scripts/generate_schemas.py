@@ -4277,6 +4277,30 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _credential_heuristic_pair_schema() -> dict[str, JsonValue]:
+    state: dict[str, JsonValue] = {"enum": ["disabled", "enforced", "unknown"], "type": "string"}
+    return {
+        "additionalProperties": False,
+        "properties": {"machine_default": dict(state), "repository": dict(state)},
+        "required": ["machine_default", "repository"],
+        "type": "object",
+    }
+
+
+def _add_setup_credential_heuristic(definitions: dict[str, JsonValue]) -> None:
+    """Carry the derived possible-credential filter pair on the repository setup read (#982).
+
+    Optional on the unreleased 2.9.0 control result, so every CLI surface shows the same
+    ``repository``/``machine_default`` pair as the status result.
+    """
+
+    body = cast(dict[str, JsonValue], definitions["privacy_get_setup_body"])
+    for branch in cast(list[JsonValue], body["oneOf"]):
+        properties = cast(dict[str, JsonValue], cast(dict[str, JsonValue], branch)["properties"])
+        if "grant_state" in properties:
+            properties["credential_heuristic"] = _credential_heuristic_pair_schema()
+
+
 def _add_status_credential_heuristic(definitions: dict[str, JsonValue]) -> None:
     """Name the effective possible-credential filter state before any check runs (issue #982).
 
@@ -6296,6 +6320,7 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             reason_schema=reason_schema,
             definitions=definitions,
         )
+        _add_setup_credential_heuristic(definitions)
     if entry.schema_name == "control-request":
         definitions = cast(dict[str, JsonValue], document["$defs"])
         envelope = _individual_observation_envelope(definitions)
