@@ -629,6 +629,7 @@ async def requested_output_states(
             # A requested directory whose files the change deleted was deleted, not left absent.
             deleted=result.relative != "." and _changed_at_or_under(result.relative, deleted),
             size_bytes=result.size_bytes if exists is True else None,
+            relative=result.relative,
         )
     return await _with_declared_line_counts(
         projection=projection,

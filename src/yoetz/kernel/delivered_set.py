@@ -247,6 +247,27 @@ def _delivered_obligations(projection: ProjectionState) -> frozenset[ObligationI
     return frozenset(delivered)
 
 
+def _overlaps(left: str, right: str) -> bool:
+    if left in {".", ""} or right in {".", ""}:
+        return True
+    left, right = left.rstrip("/"), right.rstrip("/")
+    return left == right or left.startswith(right + "/") or right.startswith(left + "/")
+
+
+def _distinct_paths(
+    state: RequestedOutputState, value: str, other: RequestedOutputState, other_value: str
+) -> bool:
+    """Whether another declared item names a different path than *state*'s file.
+
+    The same file declared twice (absolute and relative) or a declared directory holding it is
+    the same deliverable, never "another declared output changed" (Codex review 2).
+    """
+
+    if state.relative is not None and other.relative is not None:
+        return not _overlaps(state.relative, other.relative)
+    return not _overlaps(value, other_value)
+
+
 def emptied_declared_items(
     projection: ProjectionState,
     states: Mapping[tuple[ObligationId, int], RequestedOutputState],
@@ -285,9 +306,9 @@ def emptied_declared_items(
                 emptied.append((obligation, index))
             continue
         other_declared_changed = any(
-            other_value != value
-            and (other := states.get((other_obligation, other_index))) is not None
+            (other := states.get((other_obligation, other_index))) is not None
             and other.changed is not False
+            and _distinct_paths(state, value, other, other_value)
             for other_obligation, other_index, _other_kind, other_value in rows
         )
         if (

@@ -1067,6 +1067,39 @@ def _claim_revision_clause(error: Mapping[str, JsonValue]) -> str:
     return f" Invariant: {gated['invariant']}. Correction: {correction}."
 
 
+_MAX_SUMMARY_BLOCKING_REASONS: Final = 4
+
+
+def _blocking_reasons_clause(error: Mapping[str, JsonValue]) -> str:
+    """Name what refused a ``self_verified`` answer and its exit (tb4n2 R5, issue #1023).
+
+    The tokens are re-gated through the protocol normalizer (recorded resolution-reason tokens
+    only, never prose); the exit sentence is checked-in text.
+    """
+
+    details = error.get("safe_details")
+    if not isinstance(details, Mapping):
+        return ""
+    typed = cast(Mapping[str, JsonValue], details)
+    reasons = typed.get("blocking_reasons")
+    gated = normalize_safe_details(
+        {
+            "reason_code": typed.get("reason_code"),
+            "blocking_reasons": tuple(reasons) if isinstance(reasons, list | tuple) else None,
+        }
+    )
+    blocking = gated.get("blocking_reasons")
+    if gated.get("reason_code") != "finding_not_proof_limited" or type(blocking) is not tuple:
+        return ""
+    named = ", ".join(blocking[:_MAX_SUMMARY_BLOCKING_REASONS])
+    if len(blocking) > _MAX_SUMMARY_BLOCKING_REASONS:
+        named += f" (+{len(blocking) - _MAX_SUMMARY_BLOCKING_REASONS})"
+    return (
+        f" Not a Yoetz limit; still listed: {named}. Repair and check, or disclose a check you"
+        " cannot run with yoetz-verification-limit:<obligation id>."
+    )
+
+
 def summary_for_public_error(envelope: object) -> str:
     """Render only the stable public error identity, never message or rejected input.
 
@@ -1095,7 +1128,7 @@ def summary_for_public_error(envelope: object) -> str:
     extra = (
         f"{_repair_clause(error)}{_reason_location_clause(error)}"
         f"{_validation_location_clause(error)}{_result_outcome_clause(error)}"
-        f"{_claim_revision_clause(error)}"
+        f"{_claim_revision_clause(error)}{_blocking_reasons_clause(error)}"
     )
     # Priority order (issue #739): identity, then what was wrong, then what to do about it. The
     # continuation is budgeted against what the identity and location clauses already spent, so a

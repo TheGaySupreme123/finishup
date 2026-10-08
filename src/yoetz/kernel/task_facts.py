@@ -1065,6 +1065,9 @@ class RequestedOutputState:
     # The size of an existing regular file inside the root, from the metadata-only probe
     # (tb4n2 R2: ``declared_output_emptied``); ``None`` when unknown or not a regular file.
     size_bytes: int | None = None
+    # The root-relative path of an ``inside`` item (``.`` for the root), compared only in memory
+    # to tell overlapping declarations of one path apart (tb4n2 R2); never stored or rendered.
+    relative: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.location not in {"inside", "outside", "unverified"}:

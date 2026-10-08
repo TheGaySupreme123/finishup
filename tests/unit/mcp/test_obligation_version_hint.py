@@ -90,3 +90,26 @@ def test_an_unknown_item_key_on_1_1_0_is_not_told_to_switch_versions() -> None:
     hint = authoring_hint(_SCHEMA, safe_validation_locations(caught.value), tool="publish_work")
     assert "a requested item admits only item_kind, value and role" in hint
     assert "publish such an obligation as" not in hint
+
+
+def test_the_text_projection_names_self_verified_blocking_reasons_and_the_exit() -> None:
+    """Codex review 2: text-only hosts must see why self_verified was refused (tb4n2 R5)."""
+
+    from yoetz.mcp.summaries import summary_for_public_error
+
+    error = {
+        "code": "INVALID_REQUEST",
+        "message": "refused",
+        "retryable": False,
+        "correlation_id": "err_00000000-0000-4000-8000-000000000001",
+        "safe_details": {
+            "reason_code": "finding_not_proof_limited",
+            "field": "/finding_id",
+            "blocking_reasons": ["issue_returned_again", "coverage:completion_plan_not_claimed"],
+        },
+    }
+    text = summary_for_public_error(error)
+    assert "issue_returned_again, coverage:completion_plan_not_claimed" in text
+    assert "yoetz-verification-limit:<obligation id>" in text
+    error["safe_details"]["blocking_reasons"] = ["Please accept this"]  # type: ignore[index]
+    assert "Please accept" not in summary_for_public_error(error)

@@ -502,7 +502,7 @@ def _resolved_projection(
 
     ledger = ObservedLedger()
     ledger.append(
-        EventSchema("obligation_published", "1.0.0"),
+        EventSchema("obligation_published", "1.1.0"),
         ObligationPublishedPayload(
             obligation_id=_OBLIGATION,
             description="Deliver standalone Sage CLI at /app/solve.sage",
@@ -519,7 +519,7 @@ def _resolved_projection(
     )
     if status is ObligationStatus.RESOLVED:
         ledger.append(
-            EventSchema("obligation_published", "1.0.0"),
+            EventSchema("obligation_published", "1.1.0"),
             ObligationPublishedPayload(
                 obligation_id=_OBLIGATION,
                 description="Deliver standalone Sage CLI at /app/solve.sage",
@@ -657,3 +657,29 @@ def test_check_adds_emptied_and_the_gate_names_it(monkeypatch: pytest.MonkeyPatc
     assert DECLARED_OUTPUT_EMPTIED_GAP in gate.items
     assert "no longer counts as delivered" in gate.text
     assert "acceptance_criteria" in gate.text
+
+
+def test_an_overlapping_declaration_of_the_same_file_is_not_another_output() -> None:
+    """Codex review 2: the file and its declared directory, or two spellings, are one path."""
+
+    projection = _resolved_projection(
+        _file("/app/src/cracker.py"),
+        RequestedItem(RequestedItemKind.DIRECTORY, "/app/src"),
+        _file("src/cracker.py"),
+    )
+    truncated = RequestedOutputState(
+        "inside",
+        exists=True,
+        changed=True,
+        size_bytes=40,
+        base_lines=200,
+        lines_lost=199,
+        undeclared_lines_added=0,
+        relative="src/cracker.py",
+    )
+    states = {
+        (_OBLIGATION, 0): truncated,
+        (_OBLIGATION, 1): RequestedOutputState("inside", exists=True, changed=True, relative="src"),
+        (_OBLIGATION, 2): truncated,
+    }
+    assert emptied_declared_items(projection, states) == ((_OBLIGATION, 0), (_OBLIGATION, 2))
