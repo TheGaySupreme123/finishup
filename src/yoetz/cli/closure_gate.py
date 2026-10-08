@@ -546,6 +546,8 @@ def closure_gate_from_readiness(
     # the drain note first, then the long obligation sentence, then the verification hint, then
     # the required limitation ids (F3).
     text = ""
+    delivered_rows = bool(rows)
+    delivered_ack = bool(ack_keys)
     for drain, short_obligation, verification, limits, premise_text in (
         (True, False, True, True, True),
         (False, False, True, True, True),
@@ -566,16 +568,26 @@ def closure_gate_from_readiness(
             asked_premise = premise and premise_text
             break
     else:
-        text = " ".join(part for part in (head, recheck, ack_text) if part)[:_MAX_TEXT_CHARS]
+        # Only a re-check whose whole sentence fits is reported as asked: a clipped one keeps its
+        # keys out of the delivered set, so the next Stop asks it again (tb4n2 integration).
+        text = head[:_MAX_TEXT_CHARS]
+        delivered_rows = bool(recheck) and len(text) + 1 + len(recheck) <= _MAX_TEXT_CHARS
+        if delivered_rows:
+            text = f"{text} {recheck}"
+        delivered_ack = bool(ack_text) and len(text) + 1 + len(ack_text) <= _MAX_TEXT_CHARS
+        if delivered_ack:
+            text = f"{text} {ack_text}"
         asked_premise = False
     return ClosureGate(
         identity,
         text,
         items
-        + ((BLOCKER_RECHECK_ITEM,) if rows else ())
+        + ((BLOCKER_RECHECK_ITEM,) if delivered_rows else ())
         + ((PREMISE_RECHECK_ITEM,) if asked_premise else ())
-        + ack_items,
-        keys + (premise_keys if asked_premise else ()) + ack_keys,
+        + (ack_items if delivered_ack else ()),
+        (keys if delivered_rows else ())
+        + (premise_keys if asked_premise else ())
+        + (ack_keys if delivered_ack else ()),
     )
 
 

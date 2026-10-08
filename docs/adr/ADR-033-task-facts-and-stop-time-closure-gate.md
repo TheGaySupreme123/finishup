@@ -558,7 +558,9 @@ Owner-approved 2026-10-07 (issue #995; L5 request D7a under #984).
    continued, the gate asks once (closed item `premise_recheck`, remembered as
    `premise:<acknowledged count>` beside the blocker keys, so a new acknowledgement asks again);
    in a combined gate the sentence is dropped before the blocker re-check under the 2,000-character
-   bound.
+   bound. If even the shortest composition exceeds the bound, a blocker or acknowledgement re-check
+   whose whole sentence no longer fits is left out and its keys are not remembered as asked, so the
+   next Stop asks it again (tb4n2 integration).
 
 ## Amendment (2026-10-08): record the route; a local-only check on a non-requiring route does not block (#986, E2)
 

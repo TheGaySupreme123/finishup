@@ -296,3 +296,50 @@ def test_required_limitation_ids_follow_the_finding_guidance_and_are_bounded() -
     assert "and 65 more (status lists them)" in text
     assert "names only those whose action names a claimed obligation (or none)" in text
     assert "you publish in the same batch as the claim too" in text
+
+
+@pytest.mark.parametrize("rows", [0, 3])
+@pytest.mark.parametrize("acknowledged", [0, 3])
+def test_every_stop_gate_token_with_rechecks_never_reports_a_clipped_recheck_as_asked(
+    rows: int, acknowledged: int
+) -> None:
+    """tb4n2 integration: with every lane's Stop-gate token (LB ``declared_output_emptied``, LC
+    ``edited_after_last_verification``) a re-check sentence the host bound clips is not reported
+    as delivered, so the hook asks it again on the next Stop instead of remembering it."""
+
+    gate = closure_gate_from_readiness(
+        SimpleNamespace(
+            state="action_required",
+            agent_actionable=tuple(gate_module._GATE_TOKENS),  # pyright: ignore[reportPrivateUsage]
+            open_obligation_count="18446744073709551615",
+            receipt_blocking_finding_count="18446744073709551615",
+            blocked_obligations=tuple(
+                SimpleNamespace(
+                    obligation_id=f"obl_97700000-0000-4000-8000-{index:012d}",
+                    blocker_kind="dependency_unavailable",
+                )
+                for index in range(rows)
+            ),
+            acknowledged_not_done=tuple(
+                f"obl_97700000-0000-4000-8000-{100 + index:012d}" for index in range(acknowledged)
+            ),
+            acknowledged_obligation_count=str(acknowledged),
+            limitation_refs_required=tuple(
+                f"res_97700000-0000-4000-8000-{index:012d}" for index in range(64)
+            ),
+            limitation_refs_required_count="9999",
+            standing_limitations=("declared_output_content_moved",),
+        ),
+        frontier_sequence="18446744073709551615",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+    )
+    assert gate is not None
+    assert len(gate.text) <= 2000, len(gate.text)
+    ack_keys = tuple(key for key in gate.blocker_keys if key.startswith("ack:"))
+    if ack_keys:
+        whole = gate_module._acknowledgement_text(ack_keys)  # pyright: ignore[reportPrivateUsage]
+        assert whole in gate.text
+    blocker_keys = [key for key in gate.blocker_keys if key.endswith(":dependency_unavailable")]
+    if blocker_keys:
+        assert "same yoetz-blocker line again" in gate.text
