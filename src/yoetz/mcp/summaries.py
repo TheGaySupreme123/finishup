@@ -1207,6 +1207,20 @@ def _status_freshness(
     return "unavailable"
 
 
+def _acknowledged_obligations_clause(source: Mapping[str, JsonValue]) -> str:
+    """#997: obligations acknowledged as not done, never part of the open count."""
+
+    readiness = source.get("closure_readiness")
+    if not isinstance(readiness, Mapping):
+        return ""
+    count = _safe_count(
+        cast(Mapping[str, JsonValue], readiness).get("acknowledged_obligation_count")
+    )
+    if count in {"unavailable", "0"}:
+        return ""
+    return f"acknowledged not done (not open): {count}; "
+
+
 def _compact_status_fields(source: Mapping[str, JsonValue], view: str) -> tuple[str, str, str, str]:
     item = _first_page_item(source)
     readiness = source.get("closure_readiness")
@@ -1270,7 +1284,7 @@ def summary_for_status(envelope: object) -> str:
     gaps = _item_count(source.get("gaps"))
     prefix = (
         f"Status view: {view}; {_frontier_clause(source)}; freshness: {freshness}; "
-        f"open obligations: {obligations}; "
+        f"open obligations: {obligations}; " + _acknowledged_obligations_clause(source)
     )
     prefix = _with_room(prefix, _compact_test_edit_clause(source, view))
     if view == "evidence":

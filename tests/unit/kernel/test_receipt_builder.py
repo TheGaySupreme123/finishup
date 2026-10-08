@@ -2172,5 +2172,12 @@ def test_acknowledged_obligation_is_disclosed_and_never_clean() -> None:
     wire = receipt_document_to_json(current)
     validate_schema_instance("receipt-document", "1.3.0", cast(JsonValue, wire))
     assert "Obligations acknowledged as not done" in render_receipt_human(current, markdown=True)
+    # Counted once (review item 2): not open in the outstanding-work section.
+    outstanding = next(
+        section for section in current.sections if section.key is ReceiptSectionKey.OUTSTANDING_WORK
+    )
+    assert "remains open" not in outstanding.body
+    assert "1 obligation is acknowledged as not done (not counted as open)." in outstanding.body
+    assert obligation.obligation_id not in outstanding.items
     # The reason stays on the obligation; the receipt carries ids only.
     assert "task owner's decision" not in str(wire.get("acknowledged_not_done_obligation_ids"))

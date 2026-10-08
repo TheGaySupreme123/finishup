@@ -1367,6 +1367,7 @@ async def _closure_readiness(
         standing_limitations=checklist.standing_limitations,
         acknowledged_not_done=checklist.acknowledged_not_done,
         acknowledged_not_done_count=str(checklist.acknowledged_not_done_count),
+        acknowledged_obligation_count=str(len(facts.acknowledged_obligation_ids)),
         blocked_obligations=tuple(
             StatusBlockedObligationModel(
                 obligation_id=obligation,

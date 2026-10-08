@@ -807,7 +807,16 @@ def premise_disputed_finding_ids(state: ProjectionState) -> tuple[FindingId, ...
         return ()
     try:
         values: tuple[object, ...] = tuple(predicate(state))
-    except Exception:
+    except (AttributeError, KeyError, LookupError, TypeError, ValueError) as exc:
+        # A predicate defect must not break status; it is recorded, never silently hidden, and
+        # nothing is reported as disputed.
+        from yoetz.observability.logging import record_unexpected_exception_without_raising
+
+        record_unexpected_exception_without_raising(
+            exc,
+            component="kernel.closure_readiness",
+            operation="premise_dispute_predicate_failed",
+        )
         return ()
     disputed = {
         FindingId(value) for value in values if type(value) is str and value.startswith("fnd_")

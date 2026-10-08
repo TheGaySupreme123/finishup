@@ -475,7 +475,18 @@ _REF_MIRROR_CORRECTIONS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyTy
                     "mirrors. Correct the event payload before retrying."
                 ),
             }
-        )
+        ),
+        # #997: the obligation version is a pure function of the payload.
+        "invalid_event_schema": MappingProxyType(
+            {
+                "obligation_published": (
+                    "The event batch is invalid. obligation_published/1.1.0 is only for status "
+                    "acknowledged_not_done with an acknowledged_not_done_reason; publish an open "
+                    "or resolved obligation, including reopening an acknowledged one, on "
+                    "obligation_published/1.0.0 with the same meaning fields."
+                ),
+            }
+        ),
     }
 )
 

@@ -1503,6 +1503,7 @@ def _sections(
     review_input_manifest: object | None = None,
     missing_for_assessment: object = (),
     check_totals_text: str = "",
+    acknowledged_obligations: frozenset[str] = frozenset(),
 ) -> tuple[ReceiptSection, ...]:
     gap_codes = coverage.known_gaps
     gap_texts = check_change_gap_texts or {}
@@ -1541,6 +1542,8 @@ def _sections(
         obligation
         for obligation in current_obligations
         if obligation.status is ReceiptObligationStatus.OPEN
+        # #997: an obligation acknowledged as not done is not open work; it is counted apart.
+        and obligation.obligation_id not in acknowledged_obligations
     )
     open_count = len(open_current)
     if not plan_scope.has_plan:
@@ -1591,6 +1594,14 @@ def _sections(
         bodies[ReceiptSectionKey.OUTSTANDING_WORK] = "One obligation remains open."
     else:
         bodies[ReceiptSectionKey.OUTSTANDING_WORK] = f"{open_count} obligations remain open."
+    acknowledged_current = sum(
+        obligation.obligation_id in acknowledged_obligations for obligation in current_obligations
+    )
+    if acknowledged_current and ReceiptSectionKey.OUTSTANDING_WORK in bodies:
+        noun = "obligation is" if acknowledged_current == 1 else "obligations are"
+        bodies[ReceiptSectionKey.OUTSTANDING_WORK] += (
+            f" {acknowledged_current} {noun} acknowledged as not done (not counted as open)."
+        )
     items[ReceiptSectionKey.OUTSTANDING_WORK] = tuple(
         obligation.obligation_id for obligation in open_current
     )
@@ -1926,6 +1937,7 @@ def build_receipt(
         engine_derived_suffix=engine_derived_suffix,
         host_observation_suffix=host_observation_suffix,
         observed_failure_sentence=_observed_failure_history_sentence(context),
+        acknowledged_obligations=frozenset(acknowledged_obligation_ids(context.projection)),
         caller_digest_counts=_caller_digest_counts(context),
         limitation_response_suffix=limitation_response_suffix,
         review_input_manifest=(

@@ -4302,6 +4302,8 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
                 "uniqueItems": True,
             },
             "acknowledged_not_done_count": {"$ref": "#/$defs/canonical_uint"},
+            # #997: obligations acknowledged as not done, never in open_obligation_count.
+            "acknowledged_obligation_count": {"$ref": "#/$defs/canonical_uint"},
             "agent_actionable": {
                 "items": {
                     "maxLength": 145,

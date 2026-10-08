@@ -498,6 +498,15 @@ def render_human_status(result: StatusSuccessModel) -> str:
         f"Frontier: {result.head_frontier.sequence}",
         f"Freshness: {_token(result.coverage.ledger_freshness)}",
         f"Open obligations: {_count(result.closure_readiness.open_obligation_count)}",
+        *(
+            # #997: counted apart, never in the open count.
+            (
+                "Obligations acknowledged as not done: "
+                f"{_count(result.closure_readiness.acknowledged_obligation_count)}",
+            )
+            if result.closure_readiness.acknowledged_obligation_count not in {None, "0"}
+            else ()
+        ),
         f"Unanswered findings: {_count(result.closure_readiness.unanswered_finding_count)}",
         (
             "Receipt-blocking findings: "

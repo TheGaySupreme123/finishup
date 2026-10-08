@@ -113,7 +113,11 @@ from yoetz.kernel.projections import (
     FindingProjectionRecord,
     ProjectionState,
 )
-from yoetz.kernel.task_facts import blocker_declarations, open_effective_obligations
+from yoetz.kernel.task_facts import (
+    acknowledged_obligation_ids,
+    blocker_declarations,
+    open_effective_obligations,
+)
 from yoetz.ports.change_capture import CHECK_CHANGE_MEDIA_TYPE, CheckChangeCapture
 from yoetz.ports.objects import ObjectKind, ObjectRef
 from yoetz.ports.semantic import (
@@ -183,6 +187,7 @@ __all__ = [
     "assemble_filtered_review_packet",
     "build_semantic_case",
     "recorded_blockers",
+    "acknowledged_obligation_rows",
     "BLOCKER_REVIEW_INSTRUCTION",
     "review_question_set",
     "captured_edit_paths",
@@ -334,7 +339,45 @@ BLOCKER_REVIEW_INSTRUCTION: Final = (
 )
 
 
-def _blocker_question(blockers: tuple[tuple[str, str, tuple[str, ...]], ...]) -> str:
+def acknowledged_obligation_rows(projection: ProjectionState) -> tuple[str, ...]:
+    """Effective obligations acknowledged as not done (#997), ids only, sorted.
+
+    The closing review tests them against the task statement the way it tests blockers: an
+    acknowledgement is the agent's own position and Yoetz cannot verify that the work is
+    genuinely impossible.
+    """
+
+    return tuple(sorted(acknowledged_obligation_ids(projection), key=str.encode))
+
+
+# Fixed text appended when the agent acknowledged obligations as not done (#997).
+ACKNOWLEDGED_REVIEW_INSTRUCTION: Final = (
+    "For each obligation acknowledged as not done, quote its own description from its packet"
+    " item obligation-<obligation id>, then verify the acknowledgement against the task statement"
+    " and the work: challenge it (one finding citing the obligation id, naming the work the agent"
+    " can still do) when the task statement requires that work and nothing readable shows it is"
+    " genuinely impossible, or when the agent did not attempt the obvious prerequisite."
+)
+_MAX_ACKNOWLEDGED_LISTED: Final = 8
+
+
+def _acknowledged_question(acknowledged: tuple[str, ...]) -> str:
+    listed = ", ".join(acknowledged[:_MAX_ACKNOWLEDGED_LISTED])
+    hidden = len(acknowledged) - _MAX_ACKNOWLEDGED_LISTED
+    return (
+        f"Obligations acknowledged as not done: {listed}"
+        + (f" (+{hidden} more)" if hidden > 0 else "")
+        + ". "
+        + ACKNOWLEDGED_REVIEW_INSTRUCTION
+    )
+
+
+def _blocker_question(
+    blockers: tuple[tuple[str, str, tuple[str, ...]], ...],
+    acknowledged: tuple[str, ...] = (),
+) -> str:
+    if not blockers:
+        return _acknowledged_question(acknowledged)
     rows: list[str] = []
     used = 0
     for decision, kind, obligations in blockers[:MAX_REVIEWED_BLOCKERS]:
@@ -353,12 +396,14 @@ def _blocker_question(blockers: tuple[tuple[str, str, tuple[str, ...]], ...]) ->
         + (f" (+{more} more blocker decisions)" if more > 0 else "")
         + ". "
         + BLOCKER_REVIEW_INSTRUCTION
+        + (" " + _acknowledged_question(acknowledged) if acknowledged else "")
     )
 
 
 def review_question_set(
     phase: SemanticBudgetProfile,
     blockers: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
+    acknowledged: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Return the closed question set for one review phase.
 
@@ -367,7 +412,11 @@ def review_question_set(
     """
 
     parsed = parse_semantic_budget_profile(phase)
-    extra = (_blocker_question(blockers),) if parsed == "final" and blockers else ()
+    extra = (
+        (_blocker_question(blockers, acknowledged),)
+        if parsed == "final" and (blockers or acknowledged)
+        else ()
+    )
     return (REVIEW_PHASE_QUESTIONS[parsed], *_REVIEW_QUESTIONS, *extra)
 
 
@@ -4306,7 +4355,11 @@ def _build_semantic_case_once(
             ),
         }
     # A pure function of the frozen projection, so recovery rebuilds the same phase and digest.
-    question_set = review_question_set(review_phase, recorded_blockers(frozen_case.projection))
+    question_set = review_question_set(
+        review_phase,
+        recorded_blockers(frozen_case.projection),
+        acknowledged_obligation_rows(frozen_case.projection),
+    )
     # Bind assessments/omissions/packet lists into the digest so provenance covers the full case.
     case_digest = canonical_digest(
         cast(

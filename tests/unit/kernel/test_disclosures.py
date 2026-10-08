@@ -83,6 +83,7 @@ def test_only_exact_lines_with_a_well_formed_obligation_id_count() -> None:
             f"  yoetz-verification-limit:{_OBLIGATION}  ",
             f"yoetz-assumption:{_OBLIGATION}",
             f"yoetz-assumption: {_OTHER} because",
+            f"yoetz-assumption : {_OTHER}",
             "yoetz-assumption:obl_not-an-id",
             f"I assume yoetz-assumption:{_OTHER}",
             f"yoetz-verification-limit:{_OTHER}",
@@ -91,6 +92,7 @@ def test_only_exact_lines_with_a_well_formed_obligation_id_count() -> None:
     assert disclosure_line_obligations(statement) == (
         ("assumption", _OBLIGATION),
         ("verification_limit", _OBLIGATION),
+        ("assumption", _OTHER),
         ("verification_limit", _OTHER),
     )
 

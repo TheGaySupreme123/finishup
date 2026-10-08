@@ -495,9 +495,9 @@ class DisclosureDeclaration:
 def disclosure_line_obligations(statement: str) -> tuple[tuple[str, ObligationId], ...]:
     """The ``(kind, obligation id)`` pairs a decision statement's disclosure lines name.
 
-    Only an exact line ``yoetz-assumption:<obligation id>`` or
-    ``yoetz-verification-limit:<obligation id>`` (surrounding whitespace ignored) with a
-    well-formed obligation id counts; anything else on the line makes it ordinary prose. Pairs are
+    Only a line ``yoetz-assumption:<obligation id>`` or ``yoetz-verification-limit:<obligation
+    id>`` with a well-formed obligation id counts; whitespace around the line and around the
+    colon is ignored, and anything else on the line makes it ordinary prose. Pairs are
     unique, in first-seen order. The reducer reads the same pairs to report an id that names no
     recorded obligation as ``missing_ref``.
     """
@@ -505,11 +505,11 @@ def disclosure_line_obligations(statement: str) -> tuple[tuple[str, ObligationId
     pairs: dict[tuple[str, ObligationId], None] = {}
     for line in statement.splitlines():
         marker, separator, value = line.strip().partition(":")
-        kind = DISCLOSURE_MARKERS.get(marker)
+        kind = DISCLOSURE_MARKERS.get(marker.strip())
         if kind is None or not separator:
             continue
         try:
-            obligation = obligation_id(value)
+            obligation = obligation_id(value.strip())
         except ValueError:
             continue
         pairs.setdefault((kind, obligation), None)

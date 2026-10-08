@@ -69,6 +69,7 @@ __all__ = [
     "BLOCKER_RECHECK_ITEM",
     "BLOCKER_UNCONFIRMED_TOKEN",
     "PREMISE_RECHECK_ITEM",
+    "ACKNOWLEDGEMENT_RECHECK_ITEM",
     "MAX_GATE_BLOCKS_PER_TURN",
     "closure_gate_already_delivered",
     "closure_gate_from_readiness",
@@ -124,9 +125,16 @@ _DISCLOSE_TEXT: Final = (
     "An inherent verification limit (a hidden verifier, a private trace) or a best-effort choice"
     " is not a blocker: finish the work and disclose it with a decision line"
     " `yoetz-assumption:<obligation id>` or `yoetz-verification-limit:<obligation id>`."
-    " If you truly will not do an open obligation, after repair, republish it with status"
-    " `acknowledged_not_done` and an `acknowledged_not_done_reason`: the honest last resort, never a blocker."
 )
+# Issue #997 (owner rule): the obligation-level acknowledgement is the honest last resort after
+# repair, offered only once a blocker was challenged, never on an ordinary Stop.
+_ACK_LAST_RESORT_TEXT: Final = (
+    "If after repair you truly will not do it, republish the obligation with status"
+    " `acknowledged_not_done` and an `acknowledged_not_done_reason` instead of a blocker."
+)
+# The closed item an acknowledged-obligation re-check adds, asked once per obligation (#997).
+ACKNOWLEDGEMENT_RECHECK_ITEM: Final = "acknowledgement_recheck"
+_MAX_NAMED_ACKNOWLEDGED: Final = 3
 _ITEM_TEXT: Final[Mapping[str, str]] = {
     "obligations_open": "{open} open obligation(s)",
     BLOCKER_UNCONFIRMED_TOKEN: "a recorded blocker you have not confirmed",
@@ -231,6 +239,49 @@ def _premise_key(readiness: object) -> str | None:
     return f"premise:{count}"
 
 
+def _acknowledged_obligations(readiness: object) -> tuple[str, ...]:
+    """Obligation ids readiness lists as acknowledged not done (#997); malformed entries drop."""
+
+    raw = getattr(readiness, "acknowledged_not_done", None)
+    if not isinstance(raw, (tuple, list)):
+        return ()
+    return tuple(
+        item
+        for item in tuple(cast(tuple[object, ...], raw))
+        if type(item) is str and item.startswith("obl_") and len(item) <= 64
+    )
+
+
+def _acknowledgement_keys(readiness: object) -> tuple[str, ...]:
+    """``ack:<obligation id>`` per listed acknowledged obligation, plus ``ack-count:<n>`` when the
+    untruncated count exceeds the listed ids (the list keeps 64 ids, findings first)."""
+
+    listed = _acknowledged_obligations(readiness)
+    keys = [f"ack:{item}" for item in listed]
+    count = getattr(readiness, "acknowledged_obligation_count", None)
+    if type(count) is str and count.isdigit() and len(count) <= 8 and int(count) > len(listed):
+        keys.append(f"ack-count:{count}")
+    return tuple(keys)
+
+
+def _acknowledgement_text(keys: tuple[str, ...]) -> str:
+    named_ids = [key.removeprefix("ack:") for key in keys if key.startswith("ack:")]
+    named = ", ".join(named_ids[:_MAX_NAMED_ACKNOWLEDGED])
+    hidden = len(named_ids) - _MAX_NAMED_ACKNOWLEDGED
+    if hidden > 0:
+        named += f" and {hidden} more"
+    subject = (
+        f"you recorded {named} as not done" if named else "you recorded obligations as not done"
+    )
+    return (
+        f"Acknowledgement re-check (asked once): {subject}. Repair first: do that work unless it"
+        " is genuinely impossible; missing data the task says is recoverable, a hard result or a"
+        " Yoetz limit is not a reason. If it truly stays undone, you may stop: the receipt"
+        " discloses it as not done. To take it back, republish it as `open` on"
+        " obligation_published 1.0.0."
+    )
+
+
 class ClosureGateUnavailable(Exception):
     """The status read the gate needs did not answer; the agent is allowed to stop."""
 
@@ -284,6 +335,7 @@ def _blocker_text(rows: tuple[tuple[str, str], ...], *, short: bool = False) -> 
             f"Blocker re-check (asked once): you recorded {named} as blocked. Continue that work"
             " unless it is genuinely outside your control; a Yoetz limit never is: finish the"
             f" obligation and disclose any limit in your final answer. {_CONFIRM_TEXT}"
+            f" {_ACK_LAST_RESORT_TEXT}"
         )
     return (
         f"Blocker re-check (asked once): you recorded {named} as blocked outside your control."
@@ -294,6 +346,7 @@ def _blocker_text(rows: tuple[tuple[str, str], ...], *, short: bool = False) -> 
         " you do not have,"
         f" a credential you lack, or a dependency you cannot obtain. {_CONFIRM_TEXT} Yoetz will"
         " not ask again and the receipt discloses it as a standing limitation."
+        f" {_ACK_LAST_RESORT_TEXT}"
     )
 
 
@@ -329,6 +382,11 @@ def closure_gate_from_readiness(
     # only on a Stop the host has not already continued this turn.
     premise_key = _premise_key(readiness)
     premise = not active_stop and premise_key is not None and premise_key not in reasked_blockers
+    # #997: an obligation acknowledged as not done is challenged once, like a blocker (also on
+    # an active Stop, since acknowledgements usually follow the first gate).
+    ack_keys = tuple(key for key in _acknowledgement_keys(readiness) if key not in reasked_blockers)
+    ack_text = _acknowledgement_text(ack_keys) if ack_keys else ""
+    ack_items = (ACKNOWLEDGEMENT_RECHECK_ITEM,) if ack_keys else ()
     items: tuple[str, ...] = ()
     drain_changed_decision = False
     if state == "action_required" and not active_stop:
@@ -347,7 +405,7 @@ def closure_gate_from_readiness(
     premise_items = (PREMISE_RECHECK_ITEM,) if premise else ()
     premise_keys = (cast(str, premise_key),) if premise else ()
     if not items:
-        if not rows and not premise:
+        if not rows and not premise and not ack_keys:
             return None
         parts = [
             "Yoetz closure gate (shown once for these blockers):"
@@ -358,19 +416,19 @@ def closure_gate_from_readiness(
             parts.append(_PREMISE_TEXT)
         if rows:
             parts.append(_blocker_text(rows))
+        if ack_text:
+            parts.append(ack_text)
         return ClosureGate(
             identity,
             " ".join(parts)[:_MAX_TEXT_CHARS],
-            premise_items + ((BLOCKER_RECHECK_ITEM,) if rows else ()),
-            keys + premise_keys,
+            premise_items + ((BLOCKER_RECHECK_ITEM,) if rows else ()) + ack_items,
+            keys + premise_keys + ack_keys,
         )
     open_count = str(getattr(readiness, "open_obligation_count", "?"))
-    acknowledged = getattr(readiness, "acknowledged_not_done", None)
-    if isinstance(acknowledged, (tuple, list)) and any(
-        type(item) is str and item.startswith("obl_")
-        for item in tuple(cast(tuple[object, ...], acknowledged))
-    ):
-        # #997: a projection may count acknowledged obligations as open; name no number then.
+    if getattr(
+        readiness, "acknowledged_obligation_count", None
+    ) is None and _acknowledged_obligations(readiness):
+        # #997: an earlier 0.3 build may count acknowledged obligations as open; name no number.
         open_count = "some"
     blocking_count = str(getattr(readiness, "receipt_blocking_finding_count", "?"))
     remaining = "; ".join(
@@ -412,6 +470,8 @@ def closure_gate_from_readiness(
             parts.append(_UNCONFIRMED_AFTER_RECHECK_TEXT)
         if recheck:
             parts.append(recheck)
+        if ack_text:
+            parts.append(ack_text)
         if drain and drain_changed_decision:
             parts.append(_DRAIN_TEXT)
         return " ".join(parts)
@@ -440,15 +500,16 @@ def closure_gate_from_readiness(
             asked_premise = premise and premise_text
             break
     else:
-        text = " ".join(part for part in (head, recheck) if part)[:_MAX_TEXT_CHARS]
+        text = " ".join(part for part in (head, recheck, ack_text) if part)[:_MAX_TEXT_CHARS]
         asked_premise = False
     return ClosureGate(
         identity,
         text,
         items
         + ((BLOCKER_RECHECK_ITEM,) if rows else ())
-        + ((PREMISE_RECHECK_ITEM,) if asked_premise else ()),
-        keys + (premise_keys if asked_premise else ()),
+        + ((PREMISE_RECHECK_ITEM,) if asked_premise else ())
+        + ack_items,
+        keys + (premise_keys if asked_premise else ()) + ack_keys,
     )
 
 

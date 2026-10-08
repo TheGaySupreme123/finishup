@@ -4337,9 +4337,14 @@ class StatusClosureReadinessModel(_ClosedModel):
     # 1.4.0 wire, present together; absence never means "nothing is required".
     limitation_refs_required: tuple[ResultIdWire, ...] | None = None
     limitation_refs_required_count: CanonicalUInt64Wire | None = None
+    # #997: how many obligations are acknowledged as not done (not truncated, unlike
+    # ``acknowledged_not_done``). ``open_obligation_count`` never includes them. Optional on
+    # the unreleased 1.4.0 wire; absent from an earlier 0.3 build.
+    acknowledged_obligation_count: CanonicalUInt64Wire | None = None
 
     optional_non_null_fields = frozenset(
         {
+            "acknowledged_obligation_count",
             "state",
             "gap_classification_version",
             "agent_actionable",
@@ -4470,7 +4475,13 @@ class StatusClosureReadinessModel(_ClosedModel):
         if "obligations_open" in self.blocking_conditions and "obligations_open" not in actionable:
             # Replaced by a confirmed blocker (standing) or a claimed one still to confirm (#985),
             # or the open count includes obligations acknowledged as not done (#997).
-            acknowledged_obligations = any(item.startswith("obl_") for item in acknowledged_ids)
+            # #997: the untruncated count when present; the id list (64, findings sort first)
+            # only as a fallback for an earlier 0.3 build.
+            acknowledged_obligations = (
+                int(self.acknowledged_obligation_count) > 0
+                if self.acknowledged_obligation_count is not None
+                else any(item.startswith("obl_") for item in acknowledged_ids)
+            )
             if (
                 "obligation_blocked_outside_agent_control" not in standing
                 and "obligation_blocker_unconfirmed" not in actionable
@@ -5960,6 +5971,8 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             # F3: service-minted result ids and their count only.
             "limitation_refs_required/*",
             "limitation_refs_required_count",
+            # #997: a count only.
+            "acknowledged_obligation_count",
         ),
     )
 )
@@ -6710,7 +6723,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1437:
+    if len(result) != 1438:
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

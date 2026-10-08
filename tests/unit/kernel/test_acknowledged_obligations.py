@@ -270,3 +270,109 @@ def test_l6_counting_regime_lists_an_acknowledged_obligation_once(
     )
     assert gate is not None
     assert "Remaining: some open obligation(s)" in gate.text
+
+
+def _gate_view(**fields: object) -> object:
+    from types import SimpleNamespace
+
+    base: dict[str, object] = {
+        "state": "ready_with_limitations",
+        "agent_actionable": (),
+        "standing_limitations": (),
+        "acknowledged_not_done": (_OBLIGATION,),
+        "acknowledged_obligation_count": "1",
+        "open_obligation_count": "0",
+        "receipt_blocking_finding_count": "0",
+        "blocked_obligations": (),
+    }
+    base.update(fields)
+    return SimpleNamespace(**base)
+
+
+def test_the_gate_challenges_each_acknowledged_obligation_once() -> None:
+    """Review item 1: one acknowledgement must not end the work silently (mirrors blockers)."""
+
+    from yoetz.cli.closure_gate import (
+        ACKNOWLEDGEMENT_RECHECK_ITEM,
+        ClosureGate,
+        closure_gate_from_readiness,
+    )
+
+    def gate(
+        view: object, *, reasked_blockers: frozenset[str] = frozenset(), active_stop: bool = False
+    ) -> ClosureGate | None:
+        return closure_gate_from_readiness(
+            view,
+            frontier_sequence="9",
+            frontier_digest="d",
+            observation_pending=False,
+            reasked_blockers=reasked_blockers,
+            active_stop=active_stop,
+        )
+
+    first = gate(_gate_view())
+    assert first is not None
+    assert first.items == (ACKNOWLEDGEMENT_RECHECK_ITEM,)
+    assert first.blocker_keys == (f"ack:{_OBLIGATION}",)
+    text = first.text
+    assert "Repair first" in text and _OBLIGATION in text and len(text) <= 2_000
+    # Asked once; also on an active Stop, like a blocker re-check.
+    assert gate(_gate_view(), reasked_blockers=frozenset({f"ack:{_OBLIGATION}"})) is None
+    assert gate(_gate_view(), active_stop=True) is not None
+    # A count beyond the listed ids (the list keeps 64, findings first) still asks once.
+    many = gate(_gate_view(acknowledged_not_done=(), acknowledged_obligation_count="70"))
+    assert many is not None
+    assert many.blocker_keys == ("ack-count:70",)
+
+
+def test_an_ordinary_gate_never_offers_acknowledgement_as_an_exit() -> None:
+    """Review item 4: the last resort appears only once a blocker was challenged."""
+
+    from yoetz.cli.closure_gate import closure_gate_from_readiness
+
+    view = _gate_view(
+        state="action_required",
+        agent_actionable=("obligations_open",),
+        acknowledged_not_done=(),
+        acknowledged_obligation_count="0",
+        open_obligation_count="2",
+    )
+    gate = closure_gate_from_readiness(
+        view, frontier_sequence="9", frontier_digest="d", observation_pending=False
+    )
+    assert gate is not None
+    assert "acknowledged_not_done" not in gate.text
+    assert "Remaining: 2 open obligation(s)" in gate.text
+
+
+def test_check_totals_count_an_acknowledged_obligation_once() -> None:
+    from yoetz.domain.check_totals import render_check_totals
+
+    totals = {
+        "obligations": {
+            "declared": "3",
+            "resolved": "1",
+            "open": "1",
+            "unreadable": "0",
+            "with_evidence": "1",
+            "scope_known": "1",
+        },
+        "requested_items": {"attempted": "0", "unattempted": "0"},
+        "commands": {
+            key: "0"
+            for key in (
+                "observed",
+                "failed",
+                "unknown",
+                "live_failed",
+                "retired_by_rerun",
+                "disclosed_not_rerun_green",
+            )
+        },
+    }
+    from yoetz.domain.check_totals import CHECK_TOTAL_KEYS
+
+    for group in ("evidence", "findings", "test_edits"):
+        totals[group] = dict.fromkeys(CHECK_TOTAL_KEYS[group], "0")
+    rendered = render_check_totals(totals)
+    assert "1 open, 1 acknowledged not done, 0 unreadable" in rendered

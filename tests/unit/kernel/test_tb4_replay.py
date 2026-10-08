@@ -288,7 +288,8 @@ def test_pretrain_shard_corruption_det_would_have_been_continued_at_stop() -> No
     # inherent verification limit or a best-effort choice is disclosed, never blocked (#984, #995).
     assert gate.text.index("Finish each open obligation") < gate.text.index("yoetz-blocker:")
     assert "yoetz-assumption:<obligation id>" in gate.text
-    assert "`acknowledged_not_done`" in gate.text
+    # #997 review: the acknowledgement is offered only after a blocker challenge, not here.
+    assert "acknowledged_not_done" not in gate.text
     assert len(gate.text) <= 2_000
 
 

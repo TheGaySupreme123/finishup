@@ -71,13 +71,16 @@ from yoetz.protocol.models import (
     ProjectTextRefModel,
     PublicErrorModel,
     PublishWorkAcceptedEventModel,
+    PublishWorkDryRunModel,
     PublishWorkRequest,
+    PublishWorkSuccessModel,
     ReadGuidanceSuccessModel,
     RespondEvidenceSummaryModel,
     RespondResponseModel,
     ReviewInputManifestModel,
     StartSuccessModel,
     StatusAdviceItemModel,
+    StatusBlockedObligationModel,
     StatusClosureReadinessModel,
     StatusCompactItemModel,
     StatusCompactObligationModel,
@@ -225,6 +228,10 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (StatusLineageChildModel, frozenset({"self_verified_finding_count"})),
     (ProjectTextRefModel, frozenset({"envelope_digest"})),
     (PublishWorkAcceptedEventModel, frozenset({"summary"})),
+    # #985 publish notices and blocker confirmation, absent when nothing applies.
+    (PublishWorkSuccessModel, frozenset({"blocker_notices"})),
+    (PublishWorkDryRunModel, frozenset({"blocker_notices"})),
+    (StatusBlockedObligationModel, frozenset({"confirmation", "confirmation_event_id"})),
     (PublicErrorModel, frozenset({"safe_details"})),
     (
         ReadGuidanceSuccessModel,
@@ -266,6 +273,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "blocked_obligations",
                 "limitation_refs_required",
                 "limitation_refs_required_count",
+                "acknowledged_obligation_count",
             }
         ),
     ),
@@ -751,6 +759,11 @@ async def test_publish_accepted_events_omit_unset_summary() -> None:
             )
         ],
     }
+    # #985: a dry run of a batch without yoetz-blocker lines carries no blocker_notices.
+    dry_body = {**body, "request_id": protocol_id("req_", 2411), "dry_run": True}
+    dry = await app.publish_work(PublishWorkRequest.model_validate(dry_body))
+    dumped_dry = cast(object, getattr(dry, "model_dump")(mode="json", exclude_unset=True))
+    assert "blocker_notices" not in cast(Mapping[str, JsonValue], dumped_dry)
     internal = await app.publish_work(PublishWorkRequest.model_validate(body))
     assert type(internal) is PublishWorkInternalResult
     projected = await project_case(
@@ -763,6 +776,22 @@ async def test_publish_accepted_events_omit_unset_summary() -> None:
     assert events
     for event in events:
         assert "summary" not in event
+    # #985: a batch without yoetz-blocker lines carries no blocker_notices at all.
+    assert "blocker_notices" not in projected
+
+
+def test_blocked_obligation_omits_an_unset_confirmation() -> None:
+    """A blocked row an earlier 0.3 build shaped carries no confirmation fields (#985)."""
+
+    parsed = StatusBlockedObligationModel.model_validate(
+        {
+            "obligation_id": "obl_00000000-0000-4000-8000-000000000001",
+            "blocker_kind": "authority",
+            "decision_event_id": "evt_00000000-0000-4000-8000-000000000001",
+        }
+    )
+    dumped = parsed.model_dump(mode="json", exclude_unset=True)
+    assert not StatusBlockedObligationModel.optional_non_null_fields & dumped.keys()
 
 
 async def test_respond_omits_unset_optional_response_fields() -> None:
@@ -1502,10 +1531,18 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         # F3: absent from a readiness an earlier 0.3 build shaped.
         "limitation_refs_required",
         "limitation_refs_required_count",
+        # #997: absent from a readiness an earlier 0.3 build shaped.
+        "acknowledged_obligation_count",
     ):
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (
             "test_status_closure_readiness_omits_an_unset_checklist"
+        )
+    for model in ("PublishWorkSuccessModel", "PublishWorkDryRunModel"):
+        covered[model, "blocker_notices"] = "test_publish_accepted_events_omit_unset_summary"
+    for field in ("confirmation", "confirmation_event_id"):
+        covered["StatusBlockedObligationModel", field] = (
+            "test_blocked_obligation_omits_an_unset_confirmation"
         )
     for field in ("remaining_ms", "terminal_outcome", "terminal_reason"):
         # The sampling case omits the terminal pair; the terminal case omits remaining_ms.

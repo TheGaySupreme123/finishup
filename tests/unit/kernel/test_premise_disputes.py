@@ -45,10 +45,21 @@ def test_a_build_without_the_predicate_reports_nothing(monkeypatch: pytest.Monke
     assert closure_readiness.premise_disputed_finding_ids(replay(())) == ()
 
     def broken(state: object) -> tuple[str, ...]:
-        raise RuntimeError("predicate failed")
+        raise ValueError("predicate failed")
 
+    recorded: list[str] = []
+
+    def record(exc: BaseException, **fields: object) -> str:
+        recorded.append(str(fields.get("operation")))
+        return "cor_test"
+
+    import yoetz.observability.logging as logging_module
+
+    monkeypatch.setattr(logging_module, "record_unexpected_exception_without_raising", record)
     monkeypatch.setattr(closure_readiness, "_standing_premise_disputes", broken)
     assert closure_readiness.premise_disputed_finding_ids(replay(())) == ()
+    # A predicate defect is recorded as a diagnostic, never silently hidden.
+    assert recorded == ["premise_dispute_predicate_failed"]
 
 
 def test_a_premise_dispute_is_standing_never_work(monkeypatch: pytest.MonkeyPatch) -> None:
