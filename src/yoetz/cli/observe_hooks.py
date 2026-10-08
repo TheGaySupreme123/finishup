@@ -132,6 +132,9 @@ from yoetz.domain.values import (
 from yoetz.domain.values import (
     JsonValue as DomainJsonValue,
 )
+from yoetz.kernel.policies.observation_advice import (
+    STANDING_MACHINE_ACTIONS as _STANDING_MACHINE_ACTIONS,
+)
 from yoetz.ports.integrations import (
     YOETZ_WORKFLOW_TOOL_NAMES,
     observation_pairing_contract,
@@ -5359,7 +5362,17 @@ def handle_observe(
                         yoetz_session_id=delivery_session_id,
                         session_commitment=session_commitment,
                     )
-                    if standing_carry or resolved_event == "SessionStart":
+                    if resolved_event == "SessionStart":
+                        set_standing_advice_withheld(session_commitment, False, _state=_state)
+                    elif (
+                        standing_carry
+                        and pending_delivery.item is not None
+                        and pending_delivery.item.recommended_next_action
+                        in _STANDING_MACHINE_ACTIONS
+                    ):
+                        # Clear the carry only when the standing advice itself went out: when
+                        # ordinary advice outranked it on this PostToolUse, the next one carries
+                        # it (a single-turn Codex exec has no later SessionStart).
                         set_standing_advice_withheld(session_commitment, False, _state=_state)
         # Advice selection, the lease, the stdout write itself and the delivery
         # commits sit past the 'drain' window; a blocked host pipe or a

@@ -830,3 +830,36 @@ def test_delivery_in_task_a_does_not_suppress_same_condition_in_task_b(
         correlation_id="b1",
     )
     assert "resolve_failed_command" in second
+
+
+def test_withheld_standing_advice_survives_being_outranked_on_the_first_tool_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Stop carry is cleared only once the standing advice is actually delivered (#985).
+
+    When ordinary advice outranks it on the first later PostToolUse, the carry survives to the
+    next one; a single-turn Codex exec has no later SessionStart to fall back on.
+    """
+
+    _consented(tmp_path)
+    _compose(monkeypatch, _STANDING)
+
+    assert "connect_provider" in _run(tmp_path, "SessionStart", "outranked", source="startup")
+    failed = _run(
+        tmp_path, "PostToolUse", "outranked", tool_name="shell", exit_status=1, correlation_id="c1"
+    )
+    assert "resolve_failed_command" in failed
+    _run(
+        tmp_path, "PostToolUse", "outranked", tool_name="shell", exit_status=0, correlation_id="c1"
+    )
+    assert _run(tmp_path, "Stop", "outranked") == ""
+    outranking = _run(
+        tmp_path, "PostToolUse", "outranked", tool_name="shell", exit_status=1, correlation_id="c2"
+    )
+    assert "connect_provider" not in outranking
+    later = _run(
+        tmp_path, "PostToolUse", "outranked", tool_name="shell", exit_status=0, correlation_id="c2"
+    )
+    assert "connect_provider" in later
+    # Delivered once: the carry clears, so the next tool call is quiet again.
+    assert "connect_provider" not in _post(tmp_path, "outranked")
