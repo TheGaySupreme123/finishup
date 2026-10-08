@@ -173,7 +173,8 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_conditional_nodes": 0,
                 "max_defs_count": 24,
                 "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 54_000,
+                # obligation_published 1.1.0 (#1002, #997) and blocker notices (#985).
+                "max_encoded_bytes": 55_000,
             }
         ),
         "check-request": MappingProxyType(

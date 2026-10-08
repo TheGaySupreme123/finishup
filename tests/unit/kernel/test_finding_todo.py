@@ -561,6 +561,12 @@ def test_an_acknowledged_premise_challenge_is_a_dispute_only_with_a_recorded_anc
     # Acknowledged with no blocker cited and never re-raised: the reviewer never disputed it.
     assert premise_dispute_basis(state, fnd(5)) is None
     assert standing_premise_disputes(state) == (fnd(1), fnd(6))
+    # Cross-lane (L4 D7a, #984): closure readiness binds this predicate and names the same ids,
+    # which the Stop gate asks about once (``finding_premise_disputed``).
+    from yoetz.kernel import closure_readiness
+
+    assert closure_readiness._standing_premise_disputes is standing_premise_disputes  # pyright: ignore[reportPrivateUsage]
+    assert closure_readiness.premise_disputed_finding_ids(state) == (fnd(1), fnd(6))
     todo = finding_todo(state, fnd(1))
     assert todo.state is FindingTodoState.ACKNOWLEDGED_NOT_DONE and todo.premise_disputed
     assert finding_todo(state, fnd(3)).premise_disputed is False  # still open: no dispute yet
