@@ -2226,13 +2226,16 @@ def historical_receipt_gaps(document: ReceiptDocument) -> tuple[ReceiptGap, ...]
 
 
 def historical_gap_line(gap: ReceiptGap, *, markdown: bool) -> str:
-    """One fixed line for a historical gap: code, clearing frontier, and its fixed sentence."""
+    """One fixed line for a historical gap: its code and the frontier that cleared it.
+
+    The live gap sentence is deliberately not repeated: several carry repair instructions ("run
+    it as recorded", "link that run") that would steer an agent to redo work the latest check
+    already cleared (Codex review round 3).
+    """
 
     assert gap.cleared_at_frontier is not None
     code = f"`{gap.code}`" if markdown else gap.code
-    line = f"- {code}: cleared at frontier {gap.cleared_at_frontier.sequence}."
-    sentence = check_time_change_gap_sentence(gap.code)
-    return line if sentence is None else f"{line} {sentence}"
+    return f"- {code}: cleared at frontier {gap.cleared_at_frontier.sequence}; no action needed."
 
 
 _WIRE_SEQUENCE_RE: Final = re.compile(r"^(?:0|[1-9][0-9]{0,18})$", re.ASCII)
@@ -2335,21 +2338,21 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
             section_parts.append(section.coverage_note)
         parts.append("\n".join(section_parts))
     historical = historical_receipt_gaps(document)
+    history_block: str | None = None
     if historical:
         heading = (
             f"## {HISTORICAL_GAPS_SECTION_TITLE}" if markdown else HISTORICAL_GAPS_SECTION_TITLE
         )
-        parts.append(
-            "\n".join(
-                (
-                    heading,
-                    "An earlier check carried these gaps and a later check no longer did. They "
-                    "stay on the record but are not current limitations and do not bound this "
-                    "receipt's conclusion.",
-                    *(historical_gap_line(gap, markdown=markdown) for gap in historical),
-                )
+        history_block = "\n".join(
+            (
+                heading,
+                "An earlier check carried these gaps and a later check no longer did. They "
+                "stay on the record but are not current limitations and do not bound this "
+                "receipt's conclusion.",
+                *(historical_gap_line(gap, markdown=markdown) for gap in historical),
             )
         )
+        parts.append(history_block)
     if _receipt_document_artifact_version(document.versions) == "1.3.0":
         heading = "## Children" if markdown else "Children"
         child_parts = [heading]
@@ -2536,8 +2539,16 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
         parts.append("\n".join((heading, *recovery)))
     text = "\n\n".join(parts) if parts else render_receipt_compact(document)
     if len(text) > _HUMAN_TEXT_MAX:
-        text = text[: _HUMAN_TEXT_MAX - len(_HUMAN_TEXT_TRUNCATION_MARKER)]
-        text += _HUMAN_TEXT_TRUNCATION_MARKER
+        # The historical section is bounded (one short line per gap) and must survive the cut,
+        # or a long receipt would silently drop what an earlier check carried (issue #1017).
+        tail = (
+            ""
+            if history_block is None
+            or history_block in text[: _HUMAN_TEXT_MAX - len(_HUMAN_TEXT_TRUNCATION_MARKER)]
+            else "\n\n" + history_block
+        )
+        text = text[: _HUMAN_TEXT_MAX - len(_HUMAN_TEXT_TRUNCATION_MARKER) - len(tail)]
+        text += _HUMAN_TEXT_TRUNCATION_MARKER + tail
     if not text:
         raise ProtocolValueError("invalid_receipt_document")
     return text

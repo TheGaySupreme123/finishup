@@ -2450,9 +2450,11 @@ def test_cleared_gap_is_historical_and_never_lowers_the_conclusion() -> None:
     markdown = render_receipt_human(receipt, markdown=True)
     text = render_receipt_human(receipt, markdown=False)
     assert f"## {HISTORICAL_GAPS_SECTION_TITLE}" in markdown
-    assert f"- `{_CLEARED_GAP}`: cleared at frontier 1. A planned verification" in markdown
+    assert f"- `{_CLEARED_GAP}`: cleared at frontier 1; no action needed." in markdown
     assert f"\n{HISTORICAL_GAPS_SECTION_TITLE}\n" in text
-    assert f"- {_CLEARED_GAP}: cleared at frontier 1. A planned verification" in text
+    assert f"- {_CLEARED_GAP}: cleared at frontier 1; no action needed." in text
+    # The live repair sentence is never repeated for a cleared gap (Codex review round 3).
+    assert "causal_parents" not in markdown.split(HISTORICAL_GAPS_SECTION_TITLE, 1)[1]
     assert "not current limitations" in text
     compact = render_receipt_compact(receipt)
     assert "no unresolved local findings were recorded" in compact
