@@ -61,12 +61,14 @@ did not stop the agent:
    Deliverables take precedence, per class (`task_facts.non_counting_edits_exempt`): no scratch
    edit is exempt when a requested non-input file or directory lies under or contains a fixed
    temporary root (a deliverable under `/tmp`), and no Yoetz-owned edit is exempt when a requested
-   non-input file has a receipt or export name or any requested non-input directory exists (a
+   non-input file has a receipt or export name or lies in a packaged Yoetz tree, or any requested
+   non-input directory exists (a
    receipt saved into a declared output directory changes that delivery).
 2. **The hook names the class, the kernel reads a closed token.** The control-request 2.9.0
    structural fact `write_scope` (unreleased; edited in place) admits `outside_workspace`, `scratch`
    and `yoetz_owned`. An edit tool reports `scratch` or `yoetz_owned` only when every path it names is
-   in that class (Yoetz-owned wins over scratch); any workspace path makes it an ordinary edit;
+   in that class; any workspace path, or a mix of scratch and Yoetz-owned paths, makes it an
+   ordinary edit;
    `outside_workspace` wins over everything. A Codex session-stream `FileChange` item is classified
    from its own change paths; the stream knows no workspace root, so it names only `yoetz_owned`
    (never `scratch` or `outside_workspace`). A patch's `Delete File` paths are classified too, so a
@@ -86,7 +88,8 @@ did not stop the agent:
    `--collect-only`, `--collectonly`, `--co`, `--fixtures`, `--funcargs`, `--fixtures-per-test`,
    `--markers`, `--setup-only`, `--setup-plan`) is `other`. A project runner's `run` (`uv run`,
    `poetry run`, `pipenv run`, `pdm run`, `hatch run`, `rye run`) is classified by the command it
-   runs (options and their operands skipped); `uv run --script` runs the agent's script (`other`). A script an interpreter runs is never a `build` because its file name contains
+   runs (global and run options and their operands skipped); `uv run --script` runs the agent's
+   script (`other`). Any verifier invoked only with `--help`, `-h`, `--version` or `-V` is `other`. A script an interpreter runs is never a `build` because its file name contains
    "build"; only an explicit `build` argument (`python setup.py build`) is.
 6. **Task facts are scoped per finding for self-verification.** `kernel.task_fact_scope` decides
    whether a task fact bears on one finding: an obligation-scoped fact only when the finding is

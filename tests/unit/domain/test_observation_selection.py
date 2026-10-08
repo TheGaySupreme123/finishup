@@ -196,6 +196,13 @@ def test_command_runner_class_is_closed_and_conservative(command: str, expected:
         ("uv run --script build_model.py", "other"),
         ("pytest --collectonly", "other"),
         ("python -m pytest --fixtures-per-test", "other"),
+        # Codex review round 3: information-only invocations and uv global options.
+        ("python -m unittest --help", "other"),
+        ("python -m ruff --version", "other"),
+        ("ruff --version", "other"),
+        ("uv -q run python -m pytest --collectonly", "other"),
+        ("uv -q run --script build_model.py", "other"),
+        ("uv --directory /app run python -m pytest", "test"),
     ],
 )
 def test_python_module_runs_and_build_named_scripts(command: str, runner: str) -> None:

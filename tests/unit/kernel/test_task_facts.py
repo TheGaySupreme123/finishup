@@ -305,6 +305,22 @@ def test_a_declared_output_directory_keeps_a_saved_receipt_counting() -> None:
     assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(other)
 
 
+def test_a_declared_file_in_a_yoetz_tree_keeps_yoetz_owned_edits_counting() -> None:
+    """Codex review round 3: a requested output the rule could call Yoetz-owned wins."""
+
+    ledger = ObservedLedger()
+    _planned(
+        ledger,
+        RequestedItem(
+            RequestedItemKind.FILE, "/app/.agents/skills/yoetz/SKILL.md", RequestedItemRole.OUTPUT
+        ),
+    )
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.edit(write_scope="yoetz_owned")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
 def test_non_executing_pytest_never_clears_staleness() -> None:
     ledger = ObservedLedger()
     ledger.passes("pytest -q")
@@ -313,6 +329,8 @@ def test_non_executing_pytest_never_clears_staleness() -> None:
     ledger.passes("pytest --collectonly")
     ledger.passes("python -m pytest --fixtures-per-test")
     ledger.passes("uv run --script build_model.py")
+    ledger.passes("python -m unittest --help")
+    ledger.passes("uv -q run python -m pytest --collectonly")
     ledger.passes("uv run python /app/dev/build_model.py")
     assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
 

@@ -124,12 +124,10 @@ def scratch_path(path: str, workspace: str | None = None, *, environment: bool =
 
 
 def yoetz_artifact_name(path: str) -> bool:
-    """Whether a path's file name is a Yoetz receipt or export name (pure)."""
+    """Whether a declared path could be classified Yoetz-owned: a receipt or export name, or a
+    path in a packaged Yoetz tree (pure; the state and isolation roots are not consulted)."""
 
-    return (
-        type(path) is str
-        and _YOETZ_ARTIFACT_NAME.match(posixpath.basename(_normalize(path))) is not None
-    )
+    return type(path) is str and bool(path) and _yoetz_owned(_normalize(path), ())
 
 
 def scratch_overlap(path: str) -> bool:
@@ -194,9 +192,9 @@ def classify_write_path(
 def edit_write_scope(classes: Iterable[WriteClass]) -> str | None:
     """The closed ``write_scope`` fact for one edit naming *classes*, or ``None`` (workspace).
 
-    ``outside_workspace`` wins over everything; any workspace path makes the edit an ordinary
-    workspace edit; only an edit whose every path is scratch or Yoetz-owned is named so, and
-    Yoetz-owned wins over scratch when both occur. An edit naming no path is a workspace edit.
+    ``outside_workspace`` wins over everything; any workspace path, or a mix of scratch and
+    Yoetz-owned paths, makes the edit an ordinary workspace edit; only an edit whose every path is
+    scratch, or every path Yoetz-owned, is named so. An edit naming no path is a workspace edit.
     """
 
     seen = frozenset(classes)
@@ -204,6 +202,8 @@ def edit_write_scope(classes: Iterable[WriteClass]) -> str | None:
         return None
     if "outside_workspace" in seen:
         return "outside_workspace"
-    if "workspace" in seen:
+    if "workspace" in seen or len(seen) > 1:
+        # A mixed scratch + Yoetz-owned edit keeps counting: one token could not carry both, and
+        # the kernel's deliverable precedence is per class (Codex review round 3).
         return None
     return "yoetz_owned" if "yoetz_owned" in seen else "scratch"

@@ -507,7 +507,27 @@ def _routine_shell_facts(payload: Mapping[str, CanonicalJsonValue]) -> _RoutineF
     return _RoutineFacts(True, "routine_shell")
 
 
+# Flags that make a verifier report on itself instead of verifying anything.
+_INFORMATION_FLAGS: Final = frozenset({"--help", "-h", "--version", "-V"})
+_VERIFYING_CLASSES: Final = frozenset({"test", "lint", "typecheck", "build"})
+
+
 def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
+    """``_classify_argv`` with information-only invocations demoted (Codex review round 3).
+
+    ``python -m unittest --help`` or ``ruff --version`` verifies nothing, so it never counts as a
+    verification run.
+    """
+
+    runner = _classify_argv(argv)
+    if runner in _VERIFYING_CLASSES and any(
+        argument in _INFORMATION_FLAGS for argument in argv[1:]
+    ):
+        return "other"
+    return runner
+
+
+def _classify_argv(argv: list[str]) -> RunnerClass | None:
     if not argv:
         return None
     if "/" in argv[0] or "\\" in argv[0]:
@@ -674,6 +694,7 @@ _RUN_OPTIONS_WITH_VALUE: Final = frozenset(
         "--link-mode",
         "--cache-dir",
         "--color",
+        "--config-file",
         "-e",
         "--env",
     }
@@ -687,9 +708,15 @@ def _non_executing_test_run(arguments: list[str]) -> bool:
 def _run_wrapper_target(command: str, argv: list[str]) -> list[str] | None:
     """The command a ``uv run``/``poetry run`` style wrapper executes, or ``None``."""
 
-    if command not in _RUN_WRAPPERS or len(argv) < 3 or argv[1] != "run":
+    if command not in _RUN_WRAPPERS:
         return None
-    index = 2
+    # Global options may precede ``run`` (``uv -q run ...``, ``uv --directory x run ...``).
+    index = 1
+    while index < len(argv) and argv[index].startswith("-"):
+        index += 2 if argv[index] in _RUN_OPTIONS_WITH_VALUE else 1
+    if index >= len(argv) or argv[index] != "run":
+        return None
+    index += 1
     while index < len(argv):
         argument = argv[index]
         if argument == "--":

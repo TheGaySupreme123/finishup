@@ -62,7 +62,8 @@ def test_a_workspace_under_a_temporary_root_is_still_the_workspace() -> None:
         ((), None),
         (("workspace",), None),
         (("scratch",), "scratch"),
-        (("scratch", "yoetz_owned"), "yoetz_owned"),
+        # Codex review round 3: a mix keeps counting (precedence is per class).
+        (("scratch", "yoetz_owned"), None),
         (("scratch", "workspace"), None),
         (("scratch", "outside_workspace"), "outside_workspace"),
         (("workspace", "outside_workspace"), "outside_workspace"),
