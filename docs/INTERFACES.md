@@ -8879,26 +8879,47 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   credential-named or binary file), base line counts for the named paths; numbers only, nothing
   stored. A declared `directory` covers the files beneath it.
 - **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the
-  absent-output fact, and skips blocked obligations. `RecordedPolicyVersionWire`,
+  absent-output fact, and skips blocked obligations. Since ADR-042 an item is reported only once a
+  completion claim names its obligation or a published producing action names that obligation (or
+  none), never for a `role: input` item; a published research or review action is not acting.
+- **Task-fact scope (`kernel/task_fact_scope.py`, ADR-042).**
+  `finding_obligation_scope(state, finding_id) -> frozenset[ObligationId]`,
+  `task_fact_bears_on_finding(code, *, state, finding_id, markers) -> bool` and
+  `scoped_resolution_reasons(reasons, *, state, finding_id, records) -> tuple[str, ...]` (drops the
+  `coverage:<task fact>` reasons that do not bear on the finding; never empties the list).
+  `self_verification_refusal` applies it; readiness, the Stop gate and resolution stay task-wide.
+- **Runner class.** `domain/observation_selection.command_runner_class` classifies
+  `python -m <module>` by module (pytest/unittest/nose2/tox/nox/doctest `test`, mypy/pyright
+  `typecheck`, ruff/flake8/pylint/pyflakes/pycodestyle `lint`, build/compileall `build`) and never
+  counts an interpreter-run script as `build` by its name (ADR-042). `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
   `work-integrity/0.3.0`; `POLICY_PACK_GENERATIONS` gains the `research-evidence/0.2.0` +
   `work-integrity/0.2.0` generation.
 - **Runtime structural fields.** The observation envelope and control-request 2.9.0
   `structural_payload` admit `install_target` (`yoetz_runtime|workspace_env|private_env|system|
-  unresolved`), `write_scope` (`outside_workspace`) and `effective_user` (`root|non_root`),
+  unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned`; ADR-042: `scratch` and
+  `yoetz_owned` name an edit whose every path is a temp root/`*.log` or Yoetz's own material) and
+  `effective_user` (`root|non_root`),
   produced only by `cli/runtime_facts.runtime_structural_facts`, which judges `install_target`
   against the task interpreter (the agent's `python3`/`python` on the hook's `PATH`; ADR-033
   item 7). `observed_action_description(...,
-  install_target=, write_outside_workspace=, effective_user=)` appends ` (install <class>)`,
-  ` (write outside_workspace)`, ` (user <root|non_root>)` after the tool and runner suffixes;
-  `observed_action_runtime_tokens(description)` reads them back. Observation advice 0.1.8 adds the
+  install_target=, write_outside_workspace=, effective_user=, write_scope=)` appends
+  ` (install <class>)`, ` (write outside_workspace|scratch|yoetz_owned)`, ` (user <root|non_root>)`
+  after the tool and runner suffixes; `observed_action_runtime_tokens(description)` reads them
+  back and `observed_edit_counts(description)` is `False` only for a `scratch`/`yoetz_owned` edit,
+  which never advances the latest edit or counts as acting (ADR-042). The Codex session stream
+  names a `FileChange` item's `write_scope` from its own paths (never `outside_workspace`). A Yoetz
+  MCP tool (`mcp__yoetz__*`, `mcp__plugin_yoetz_*__*`) always materializes as action kind `other`.
+  `domain/write_scope.py`: `classify_write_path(path, *, workspace, inside, owned_roots) ->
+  workspace|outside_workspace|scratch|yoetz_owned`, `edit_write_scope(classes) -> str | None`. Observation advice 0.1.8 adds the
   advice-only rule codes `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`.
 - **Closure gate (`cli/closure_gate.py`).** `STOP_GATE_TOKENS` (in `kernel/task_facts.py`) are
   `obligations_open`, `receipt_findings_unresolved`, `closing_review_required`,
   `planned_verification_failed`,
   `planned_verification_not_observed`, `planned_verification_stale`,
-  `requested_output_git_ignored`, `declared_output_removed`. `closure_gate_from_readiness(readiness, frontier_sequence=,
+  `edited_after_last_verification` (ADR-042; observation-dependent like the planned-verification
+  tokens), `requested_output_git_ignored`, `declared_output_removed`. `closure_gate_from_readiness(readiness, frontier_sequence=,
   frontier_digest=, observation_pending=, reasked_blockers=) -> ClosureGate(identity, text, items,
   blocker_keys) | None` also fires, in `action_required` or `ready_with_limitations`, for a
   `blocked_obligations` pair whose `<obligation id>:<kind>` key is not in `reasked_blockers`. It adds

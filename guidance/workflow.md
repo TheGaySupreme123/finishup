@@ -227,8 +227,9 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 - `unknown`: read `status` again once the projection is readable.
 
 If you stop while `agent_actionable` still names open obligations, an unrepaired receipt-blocking
-finding, a planned verification that was not observed, failed, or ran before your last edit, or a
-git-ignored requested output, or a declared deliverable you deleted or renamed away
+finding, a planned verification that was not observed, failed, or ran before your last edit, an
+edit to the work after your last test, lint, typecheck or build run (`edited_after_last_verification`;
+scratch, log and Yoetz receipt files never count), a git-ignored requested output, or a declared deliverable you deleted or renamed away
 (`declared_output_removed`: a requested `file` item marked as an output), the Stop hook continues
 you once with that list; restore that delivered file where the task needs it, or correct the
 requested item if the task asked for the deletion. A delivered file that lost most of its lines
