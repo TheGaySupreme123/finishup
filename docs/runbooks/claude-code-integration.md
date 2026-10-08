@@ -708,7 +708,7 @@ feedback rather than an error. Yoetz never emits `decision: block` to Claude Cod
 closure gate (host decision: supported).** When a mapped session stops while closure still requires
 agent action, `Stop` carries the gate text in that same `additionalContext` channel, which continues
 the conversation; `stop_hook_active` is honoured first, so the gate continues Claude Code at most
-once per turn. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`); it fires when `agent_actionable` holds open obligations, an unacknowledged receipt-blocking finding, a planned verification that was not observed, failed, or ran before the latest edit, or a git-ignored requested output, at most once per ledger frontier and session (owner-only `observation/closure-gate.json`), and never while observed-run facts are still draining. An open obligation named by a `yoetz-blocker:<kind>` decision is not listed as work, but the first Stop after it is recorded is re-asked once. That gate names each blocked obligation and the claimed kind from `closure_readiness.blocked_obligations`, asks the agent to confirm the blocker is outside its control, says that data the task calls recoverable, a failing test or an infeasible-looking result is not a blocker, and tells the agent to continue otherwise. A second Stop is the re-confirmation: the hook remembers `<obligation id>:<kind>` for the session (owner-only `observation/closure-gate-blockers.json`, at most 64 keys per session) and honours the blocker from then on, so it never loops; a changed kind is a new claim and is asked once. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_loop_guard`, `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `yoetz observe status`. See ADR-033 and issue #977. `SessionEnd`
+once per turn. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`); it fires when `agent_actionable` holds open obligations, an unacknowledged receipt-blocking finding, a planned verification that was not observed, failed, or ran before the latest edit, or a git-ignored requested output, at most once per ledger frontier and session (owner-only `observation/closure-gate.json`), and never while observed-run facts are still draining. Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). An open obligation named by a `yoetz-blocker:<kind>` decision is not listed as work, but the first Stop after it is recorded is re-asked once. That gate names each blocked obligation and the claimed kind from `closure_readiness.blocked_obligations`, asks the agent to confirm the blocker is outside its control, says that data the task calls recoverable, a failing test or an infeasible-looking result is not a blocker, and tells the agent to continue otherwise. A second Stop is the re-confirmation: the hook remembers `<obligation id>:<kind>` for the session (owner-only `observation/closure-gate-blockers.json`, at most 64 keys per session) and honours the blocker from then on, so it never loops; a changed kind is a new claim and is asked once. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_loop_guard`, `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `yoetz observe status`. See ADR-033 and issue #977. `SessionEnd`
 emits `{}`. Provider-repair advice is standing advice (#844). Claude Code delivers it only on
 `SessionStart` and `Stop`, still as `additionalContext` and never as `decision: block`.
 `PostToolUse` does not carry it. A private or no-egress install, an install with no provider
@@ -716,6 +716,8 @@ endpoint, and an install whose verification is disabled do not emit `connect_pro
 provider-repair request. The service emits it only when verification is not disabled, a provider
 endpoint is bound, network egress is permitted, and an LLM inference channel is enabled, and the
 provider is still structurally unusable, including when no factory id is available.
+
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Claude Code: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
 
 Observation-health advice follows the same boundary: `refresh_observation` for source lag, a stale
 cursor, a drain backlog, service unavailability, or a locked vault stays in operator status and
@@ -875,22 +877,53 @@ measurements are not recorded yet; the gap is owned by issue #915. The frontier-
 change applies here unchanged: an ordinary-profile `PostToolUse` with no pending advice returns
 `{}`.
 
-### Oversized hook payloads (issue #667)
+### Oversized hook payloads (issue #667, tb4n1 B5)
 
-A Claude Code hook body over the 256 KiB ingress cap (`MAX_HOOK_STDIN_BYTES`) is refused at
-stdin, before any parse. Claude Code does not use Cursor's 1 MiB identity skim, so the oversized
-event stays an unparsed gap. The hook stays fail-open and the host continues. Yoetz records the
-bounded `claude_payload_too_large` reason against that event in `yoetz observe status` hook
-diagnostics, and notes the `payload_too_large` coverage gap on the consented workspace, where
+The Claude Code hook ingress cap is 1 MiB (`MAX_HOOK_STDIN_BYTES`, shared by every host); a body
+at or under it is parsed in full and its captured content stays bounded by the content budget. It
+was 256 KiB until tb4n1 (B5), when Yoetz's own `closure_prepare` replies, image reads, and large
+outputs outgrew it and lost their PostToolUse rows, leaving the pre-events unpaired.
+
+`yoetz hooks claude-observe` now skims a complete body up to 8 MiB (`MAX_HOOK_SKIM_BYTES`) with the
+same safety rules as the full parse:
+
+- Image, audio, and video bytes (a `Read` of an image returns `type: image` with base64 under
+  `file`; MCP tools return `image` blocks) are replaced with a fixed placeholder. If the body then
+  fits the 1 MiB cap it is admitted whole and records no gap.
+- A Yoetz MCP tool (`mcp__plugin_yoetz_yoetz__*` or `mcp__yoetz__*`, `closure_prepare` included)
+  keeps a closed identity row: session, tool, call id, lineage ids, and outcome flags. Its content
+  is never captured in any case, so the row is complete, pairs with its pre-event, and records no
+  gap.
+- Any other body still over the cap keeps the same identity row with the
+  `payload_content_omitted` gap and the `claude_payload_content_omitted` hook diagnostic. Command
+  text, file contents, and output are not retained.
+
+A body over the skim cap, or a complete oversized body that fails the parse, is still refused
+before any row exists. The hook stays fail-open and the host continues. Yoetz records the bounded
+`claude_payload_too_large` reason against that event in `yoetz observe status` hook diagnostics,
+and notes the `payload_too_large` coverage gap on the consented workspace, where
 `yoetz observe status` shows it. That workspace gap does not yet reach task receipts: no row
-exists, so a receipt simply has no evidence for the dropped event rather than naming the loss. This host ingress previously swallowed every
-refusal into a bare `{}` with no record at all, so a dropped large edit left no trace.
-The cap is fixed and shared by every host; raising it is not an operator control. Each reader
-consumes at most cap-plus-one bytes, so the true size of a refused body is never measured and
-never recorded — the bound itself is the whole fact. Nothing about the event is parsed, so the
-hook name the host supplied on the command line is the only identity the record can carry: no
-tool name, session, or path. The refusal costs exactly that one event; the next ordinary event
-still ingests.
+exists, so a receipt simply has no evidence for the dropped event rather than naming the loss.
+The caps are fixed; raising them is not an operator control. A reader consumes at most
+cap-plus-one bytes, so the true size of a refused body is never measured and never recorded. The
+refusal costs exactly that one event; the next ordinary event still ingests.
+
+Matcher decision (tb4n1 B5): the ordinary profile keeps its `.*` tool matchers, and the structural
+profile keeps its Yoetz-scoped matcher. Excluding Yoetz tools from PostToolUse alone would leave
+their pre-events unpaired, excluding them from both would drop the delivered record of Yoetz
+mutations and failures, and the structural profile exists only to observe Yoetz's own tools. The
+size problem is fixed in the reader instead.
+
+Observed images (P3-2, issue #1013): A Claude Code `Read` of an image returns `type: image` with base64 under `file`, and MCP tools
+return `image` blocks. Before the bytes are
+dropped, the hook records up to 8 images per call as digest-only facts: SHA-256 and byte count of
+the decoded image, a media type sniffed from its bytes (PNG, JPEG, GIF, WebP, else
+`image/unknown`), and pixel width and height read from the header only. The service records one
+`evidence_recorded` row per image (`artifact`, `content_digest`, `digest_only`), listed in the
+call's result `evidence_refs`, with the description `Observed image tool result <type> <w>x<h>
+(<n> bytes); pixels were not captured or sent`. No pixel is captured, stored, or sent; the agent
+can cite the evidence id as its own inspection of the output. This holds at every body size up to
+the 8 MiB skim cap.
 
 ### Smart observation selection (issue #687)
 
@@ -949,7 +982,10 @@ the shared store path with no Claude-specific behavior. Lowering, revoking, expi
 larger selection can leave more accepted rows than the new target holds. Those rows still drain,
 and the store keeps finite room, tied only to them, for refused-input loss, delivery attempts, and
 session ends. A refused hook reports `hook_observe_degraded: outbox_overflow; loss accounted`
-only after the loss is durable. If a `SessionEnd` hook cannot persist its local end, it stays
+only after the loss is durable. The notice ends with `cause=<cause>`, the closed admission
+dimension that refused, and the same cause is recorded as the `admission_loss_<cause>` reason in
+`hook_diagnostics.reasons` (ADR-029, tb4n1 B3). Only later inputs of the lost host call, or calls it
+spawned, carry `observation_input_loss`; the shared store path applies this to every host. If a `SessionEnd` hook cannot persist its local end, it stays
 fail-open within its three-second budget. It prints
 `hook_observe_degraded: session_end_unrecorded` and records that reason in
 `hook_diagnostics.reasons`.

@@ -560,3 +560,38 @@ def test_canonical_fixture_vectors_match_independent_accounting_cases() -> None:
             3,
         )
         assert ranked.verdict.value == payload["verdict"]
+
+
+def test_codex_unknown_hook_result_enriched_by_the_stream_counts_once() -> None:
+    """#1001 (tb4n1 B6): retro-console-soc D recorded 43 Codex calls as unknown + corrected.
+
+    Codex reports a shell outcome only on its session stream, so the PostToolUse hook result is
+    unknown and the stream appends a corrected result for the same action. One host call is one
+    command, and the recorded outcome supersedes the unknown and its host-outcome gap.
+    """
+
+    ledger = ObservedLedger()
+    unknown = ledger.run("pytest -q tests/test_soc.py", ResultOutcome.UNKNOWN)
+    ledger.correct_outcome(unknown, ResultOutcome.SUCCESS, exit_status=0)
+    failed = ledger.run("make lint", ResultOutcome.UNKNOWN)
+    ledger.correct_outcome(failed, ResultOutcome.FAILURE, exit_status=2)
+
+    case = _observed_case(ledger)
+    commands = _totals_group(build_check_totals(case), "commands")
+    assert commands["observed"] == "2"
+    assert commands["unknown"] == "0"
+    assert commands["failed"] == "1"
+    assert "host_outcome_unavailable" not in case_coverage(case).known_gaps
+
+
+def test_an_unknown_hook_result_without_a_correction_stays_unknown() -> None:
+    ledger = ObservedLedger()
+    ledger.run("pytest -q tests/test_soc.py", ResultOutcome.UNKNOWN)
+    corrected = ledger.run("make lint", ResultOutcome.UNKNOWN)
+    ledger.correct_outcome(corrected, ResultOutcome.SUCCESS, exit_status=0)
+
+    case = _observed_case(ledger)
+    commands = _totals_group(build_check_totals(case), "commands")
+    assert commands["observed"] == "2"
+    assert commands["unknown"] == "1"
+    assert "host_outcome_unavailable" in case_coverage(case).known_gaps

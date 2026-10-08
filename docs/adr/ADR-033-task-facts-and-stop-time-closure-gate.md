@@ -130,13 +130,17 @@ agent must not be able to stop silently with known work left.
    - an owner-only memory (`observation/closure-gate.json`, opaque session and frontier ids)
      suppresses a second gate at the same session and frontier;
    - planned-verification items are ignored while the session's observation outbox is still
-     draining, because a run the service has not ingested would read as never observed;
+     draining, because a run the service has not ingested would read as never observed. Since
+     #994 the Stop pass first drains the task's rows toward the current frontier (ADR-022
+     amendment of 2026-10-07), so this applies only to rows that remain after that bounded
+     drain, and only to rows that can change this task's facts;
    - any read failure, or less than five seconds of the Stop budget left, lets the agent stop.
 
    Every outcome is a bounded hook diagnostic (`closure_gate_continued`,
    `closure_gate_blocker_rechecked`, `closure_gate_memory_unwritten` (amendment),
    `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_loop_guard`,
-   `closure_gate_budget_exhausted`, `closure_gate_unavailable`) visible in `yoetz observe status`.
+   `closure_gate_budget_exhausted`, `closure_gate_unavailable`) visible in `yoetz observe status`,
+   beside the Stop drain's own `stop_drain_complete` / `stop_drain_incomplete` (#994).
 6. **Per-host delivery.** Codex: `decision: block` with `reason` (its only model-visible Stop
    channel). Claude Code: `hookSpecificOutput.additionalContext` at Stop, the documented non-error
    feedback that continues the conversation under the same `stop_hook_active` guard. Cursor:
@@ -146,6 +150,11 @@ agent must not be able to stop silently with known work left.
    `install_target` (`yoetz_runtime`, `workspace_env`, `private_env`, `system`, `unresolved`),
    `write_scope` (`outside_workspace`) and `effective_user` (`root`, `non_root`) to the structural
    payload; the control-request 2.9.0 schema and the domain envelope admit exactly these values.
+   `write_scope` is not claimed for a scratch write into a temporary directory (`/tmp`,
+   `/var/tmp`, `/dev/shm`, their macOS `/private` aliases, the per-user macOS
+   `/var/folders/<a>/<b>/T`, or the hook process's own temporary directory unless that is `/` or
+   contains the home directory); paths are normalized lexically first, so `/tmp/../etc/x` still
+   counts (tb4n1 E6: 28 of 33 flagged attempts were `/tmp` logs only).
    Interpreter resolution uses the hook process's `PATH` and never follows links; an interpreter
    under the hook's own `sys.prefix` is Yoetz's runtime. Materialization appends them to the
    observed action description in a fixed closed suffix order, which is how the ledger carries

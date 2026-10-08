@@ -1657,7 +1657,7 @@ class PublishWorkRequestModel(PublicRequestModel):
 
 class CheckRequestModel(PublicRequestModel):
     optional_non_null_fields = frozenset(
-        {"mode", "scope", "max_findings", "policy_packs", "final_review"}
+        {"mode", "scope", "max_findings", "policy_packs", "final_review", "await_observations"}
     )
 
     session_id: SessionIdWire
@@ -1671,6 +1671,9 @@ class CheckRequestModel(PublicRequestModel):
     # Issue #976: the closing review. True runs the final review phase with or without a
     # completion claim; omitted keeps the claim-driven selection.
     final_review: bool | None = None
+    # Issue #1012: wait, bounded, for this task's pending hook rows before the case freezes.
+    # Omitted keeps today's behaviour and request bytes.
+    await_observations: bool | None = None
 
     @model_validator(mode="after")
     def _validate_check_request(self) -> CheckRequestModel:
@@ -3453,9 +3456,17 @@ class CheckTotalsModel(_ClosedModel):
     test_edits: CheckTestEditTotalsModel
 
 
+class CheckObservationsAwaitedModel(_ClosedModel):
+    """Outcome of the optional pre-check wait for this task's hook rows (issue #1012)."""
+
+    state: Literal["bounded_timeout", "complete", "unavailable"]
+    pending_count: CanonicalUInt64Wire
+
+
 class CheckSuccessModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
+            "observations_awaited",
             "children",
             "advisory_notes",
             "missing_for_assessment",
@@ -3508,6 +3519,7 @@ class CheckSuccessModel(_ClosedModel):
     semantic_redacted_values: tuple[SemanticRedactedValueModel, ...] = ()
     review_input_manifest: ReviewInputManifestModel | None = None
     totals: CheckTotalsModel | None = None
+    observations_awaited: CheckObservationsAwaitedModel | None = None
     coverage: CoverageModel
     versions: CheckVersionSliceModel
     privacy_projection: PrivacyProjectionModel
@@ -5763,6 +5775,8 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
             "test_edits/unknown",
         ),
     )
+    # Issue #1012: closed state and count of the optional pre-check hook-row wait.
+    + _prefix_leaf_patterns("/observations_awaited", ("pending_count", "state"))
 )
 
 _RESPOND_STRUCTURAL_POINTERS: Final = (
@@ -6584,7 +6598,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1429:
+    if len(result) != 1431:  # +2: /observations_awaited (issue #1012)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

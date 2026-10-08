@@ -837,3 +837,45 @@ reads, beside `Bash` and `shell`. A delivered stream `command_execution` row sta
 advice, so the advice never names one run twice. The shapes are
 pinned by the OUT-001 fixture, which is derived from recorded 0.157.1 rollouts; a raw hook stdin
 capture is still owed on #910.
+
+## Amendment (2026-10-07, issue #994): the drain clock, content under a contended lease, and the Stop drain
+
+tb4n1 measured `drain_budget_exhausted` on 94% of Codex hooks, `content_capture_unavailable` in
+every attempt, and a Stop gate that almost always read "observations were still draining". The
+owner decided: start the clock after connecting, spool durably, and finish the drain at Stop.
+
+1. **The delivery clock starts after the connection opens.** The connect keeps its own
+   preflight bound (one second, cold handshake included). Loading the local snapshot and the
+   handshake no longer spend the delivery budget, which now covers content staging, lifecycle
+   reconciliation, the ingest RPCs and the local commit after each. An optional absolute pass
+   deadline clamps both stages. The ordinary per-hook slice is 0.20 s and at most eight rows; a
+   content-bearing pass keeps 1.0 s and sixteen rows. Decision 13's rule is unchanged:
+   `drain_budget_exhausted` is recorded only when a pass moved nothing.
+2. **Transient content is staged even when another owner holds the drain lease.** A hook that
+   loses the nonblocking lease still opens its own connection and sends its content chunks as
+   `capture_only`. The service commits the encrypted manifests and the retry ticket before it
+   answers the capture-pending reason, so the bytes are durable in the vault; the owner or the
+   sweeper that later delivers the structural row consumes the ticket. `capture_only` never
+   advances the ingest cursor or the ledger, so it needs no lease, and a row the owner already
+   delivered is refused as before (#836). This service-side encrypted handoff is the durable
+   spool: plaintext is never written to the local outbox. Content that still could not be
+   staged keeps the explicit `content_capture_unavailable` gap.
+3. **Stop finishes the drain.** Stop is a turn boundary: it flushes buffered routine admission
+   accounts, then drains toward the current frontier with a larger slice (2.5 s, 64 rows),
+   clamped so the closure gate keeps its five-second status-read reserve inside the ten-second
+   Stop window on every host (the drain's deadline sits 0.75 s above that reserve for the local
+   commit after the last ingest). While another owner holds the lease the Stop pass waits for that
+   owner's progress, and gives up once this task's pending count has not moved for 0.75 s; when it
+   holds the lease itself and a retryable refusal delivers nothing,
+   it stops at once and leaves the rows to the sweeper. Only rows that can still change this
+   task's facts count: the host session's own rows and those of other host sessions mapped to
+   the same Yoetz session. Rows of other tasks in the workspace, and of unmapped sessions, do
+   not hold the decision. The outcome is a bounded diagnostic, `stop_drain_complete` or
+   `stop_drain_incomplete`, and the closure gate receives `observation_pending` only when this
+   task's rows remain (ADR-033 decision 5). Claude Code and Cursor ordinary profiles drain at
+   Stop too; they no longer defer a contentless Stop pass. SessionEnd keeps its 0.15 s teardown
+   slice under the three-second host clamp.
+
+Not changed: `check` does not wait for hook rows (a mid-session check can still be current as
+of an earlier frontier); local content cannot be spooled when the service is unreachable,
+because the hook holds no vault key.

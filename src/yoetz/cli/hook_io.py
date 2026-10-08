@@ -8,9 +8,14 @@ jsonschema just to write one JSON object to stdout (#242).
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
+import re
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import BinaryIO, Final, cast
 
@@ -28,28 +33,62 @@ __all__ = [
     "CLAUDE_ADDITIONAL_CONTEXT_EVENTS",
     "MAX_HOOK_SKIM_BYTES",
     "MAX_HOOK_STDIN_BYTES",
+    "MAX_OBSERVED_IMAGES",
+    "OBSERVED_IMAGES_KEY",
+    "OBSERVED_IMAGE_MEDIA_TYPES",
     "STOP_CONTROL_EVENTS",
     "CursorOversizedPayloadError",
+    "OversizedHookPayloadError",
     "claude_context_output",
     "claude_permission_denied_output",
     "context_output",
+    "image_header_facts",
+    "observed_image_facts",
     "cursor_context_output",
     "read_cursor_hook_ingress",
     "read_cursor_hook_payload",
+    "read_hook_ingress",
     "read_hook_payload",
     "stderr_line",
+    "strip_hook_media",
     "stdout_json",
 ]
 
 # The one hook ingress bound, shared by every host reader here and by
 # ``yoetz.cli.hooks``. A second copy of this number drifted from this one
-# silently, and both sides must move together for the documented 256 KiB cap to
-# stay a single fact (issue #667).
-MAX_HOOK_STDIN_BYTES: Final = 262_144
-# Complete-document skim for one Cursor hook body that outgrew the trusted parse.
-# Same byte cap as an ordinary local-control frame. A larger body is refused
-# unread; a complete body inside this cap is parsed and reduced to identity.
-MAX_HOOK_SKIM_BYTES: Final = 1_048_576
+# silently, and both sides must move together for the documented 1 MiB cap to
+# stay a single fact (issue #667). It was 256 KiB until tb4n1 (B5): Yoetz's own
+# ``closure_prepare`` replies (300 KB-1 MB), image views, and large command
+# outputs outgrew it, so their PostToolUse rows were lost and the matching
+# pre-events were left unpaired. Captured content stays separately bounded by
+# the content budget in ``observe_hooks``; a large output is truncated content,
+# not a dropped event.
+MAX_HOOK_STDIN_BYTES: Final = 1_048_576
+# Complete-document skim for one hook body that outgrew the trusted parse, on
+# every host. A larger body is refused unread; a complete body inside this cap is
+# parsed with the same safety rules, its image bytes are dropped, and it is kept
+# whole when that brings it under the trusted cap. Otherwise it is reduced to a
+# closed structural identity with no content.
+MAX_HOOK_SKIM_BYTES: Final = 8_388_608
+# An inline media string shorter than this is not worth replacing (a tiny icon
+# keeps its bytes; it can never move an event across the ingress cap).
+_MIN_MEDIA_STRING_CHARS: Final = 256
+_MEDIA_BLOCK_TYPES: Final = frozenset(
+    {"image", "input_image", "output_image", "image_url", "audio", "input_audio"}
+)
+_MEDIA_MIME_KEYS: Final = ("mimeType", "mime_type", "media_type", "mediaType")
+_MEDIA_MIME_PREFIXES: Final = ("image/", "audio/", "video/")
+_MEDIA_PLACEHOLDER: Final = "[media bytes omitted by Yoetz]"
+# Parse cost of the skim grows with the number of JSON containers and elements, not
+# with bytes: an 8 MiB body of ``[{},{},...]`` took 12.6 s and 418 MB to skim, while a
+# real ``closure_prepare`` reply carries about 30 structural tokens per KB (tb4n1: at
+# most 30,228 in a 1 MB reply) and a base64 image almost none. A body whose
+# ``{``, ``[`` and ``,`` count outside strings exceeds this budget is refused before
+# the parse as ``payload_too_large``; the count itself is two C-speed passes.
+_MAX_SKIM_STRUCTURE_TOKENS: Final = 262_144
+# An unterminated string consumes to the end of input, so a malformed body cannot make
+# the match restart at every quote (quadratic time; found in review of #999).
+_JSON_STRING_TOKEN: Final = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*(?:"|\\?\Z)')
 _MAX_CONTEXT_CHARS: Final = 2_000
 _MAX_CURSOR_IDENTITY_STRING_BYTES: Final = 8_192
 _MAX_CURSOR_IDENTITY_DEPTH: Final = 6
@@ -125,6 +164,55 @@ _CURSOR_IDENTITY_OBJECTS: Final = frozenset(
         "tool_output",
         "tool_response",
     }
+)
+# Codex and Claude Code name their session, lineage, and outcome fields with
+# keys Cursor does not use. Every addition is an identifier, a locator, or a
+# closed flag the full-size path already reads; command text, prompts, file
+# bodies, and tool results stay out.
+_HOOK_IDENTITY_STRINGS: Final = _CURSOR_IDENTITY_STRINGS | frozenset(
+    {
+        "agent_id",
+        "agent_thread_id",
+        "agent_transcript_path",
+        "agent_type",
+        "claude_code_version",
+        "cwd",
+        "mcp_server_name",
+        "parent_tool_call_id",
+        "permission_mode",
+        "session_file",
+        "subagent_id",
+        "transcript_path",
+        "turn_id",
+    }
+)
+_HOOK_IDENTITY_BOOLS: Final = _CURSOR_IDENTITY_BOOLS | frozenset(
+    {"isImage", "run_in_background", "stop_hook_active"}
+)
+_HOOK_IDENTITY_INTS: Final = _CURSOR_IDENTITY_INTS | frozenset({"duration_ms"})
+
+
+@dataclass(frozen=True, slots=True)
+class _IdentityAllowlist:
+    """The closed key sets one host's oversized-body identity view may keep."""
+
+    strings: frozenset[str]
+    bools: frozenset[str]
+    ints: frozenset[str]
+    objects: frozenset[str]
+
+
+_CURSOR_IDENTITY: Final = _IdentityAllowlist(
+    _CURSOR_IDENTITY_STRINGS,
+    _CURSOR_IDENTITY_BOOLS,
+    _CURSOR_IDENTITY_INTS,
+    _CURSOR_IDENTITY_OBJECTS,
+)
+_HOOK_IDENTITY: Final = _IdentityAllowlist(
+    _HOOK_IDENTITY_STRINGS,
+    _HOOK_IDENTITY_BOOLS,
+    _HOOK_IDENTITY_INTS,
+    _CURSOR_IDENTITY_OBJECTS,
 )
 _MAX_STDERR_CHARS: Final = 200
 _MAX_SAFE_INTEGER: Final = 2**53 - 1
@@ -458,7 +546,9 @@ def _bounded_identity_string(value: object) -> str | None:
     return value
 
 
-def _cursor_identity_field(key: str, value: object, *, depth: int) -> JsonValue | _IdentityDrop:
+def _cursor_identity_field(
+    key: str, value: object, *, depth: int, allow: _IdentityAllowlist = _CURSOR_IDENTITY
+) -> JsonValue | _IdentityDrop:
     """Copy one allowlisted identity field, dropping every other host value."""
 
     if key == "workspace_roots":
@@ -491,22 +581,26 @@ def _cursor_identity_field(key: str, value: object, *, depth: int) -> JsonValue 
         for item in items:
             if type(item) is not dict or depth >= _MAX_CURSOR_IDENTITY_DEPTH:
                 continue
-            reduced = _cursor_identity_object(cast(dict[str, JsonValue], item), depth=depth + 1)
+            reduced = _cursor_identity_object(
+                cast(dict[str, JsonValue], item), depth=depth + 1, allow=allow
+            )
             if reduced:
                 kept_items.append(reduced)
         return kept_items
-    if key in _CURSOR_IDENTITY_OBJECTS and type(value) is dict:
+    if key in allow.objects and type(value) is dict:
         if depth >= _MAX_CURSOR_IDENTITY_DEPTH:
             return _IDENTITY_DROP
-        reduced = _cursor_identity_object(cast(dict[str, JsonValue], value), depth=depth + 1)
+        reduced = _cursor_identity_object(
+            cast(dict[str, JsonValue], value), depth=depth + 1, allow=allow
+        )
         if not reduced:
             return _IDENTITY_DROP
         return reduced
-    if key in _CURSOR_IDENTITY_BOOLS and type(value) is bool:
+    if key in allow.bools and type(value) is bool:
         return value
-    if key in _CURSOR_IDENTITY_INTS and type(value) is int and not isinstance(value, bool):
+    if key in allow.ints and type(value) is int and not isinstance(value, bool):
         return value
-    if key in _CURSOR_IDENTITY_STRINGS:
+    if key in allow.strings:
         text = _bounded_identity_string(value)
         if text is None:
             return _IDENTITY_DROP
@@ -514,28 +608,18 @@ def _cursor_identity_field(key: str, value: object, *, depth: int) -> JsonValue 
     return _IDENTITY_DROP
 
 
-def _cursor_identity_object(value: Mapping[str, JsonValue], *, depth: int) -> dict[str, JsonValue]:
+def _cursor_identity_object(
+    value: Mapping[str, JsonValue], *, depth: int, allow: _IdentityAllowlist = _CURSOR_IDENTITY
+) -> dict[str, JsonValue]:
     kept: dict[str, JsonValue] = {}
     for key, item in value.items():
         if type(key) is not str:
             continue
-        copied = _cursor_identity_field(key, item, depth=depth)
+        copied = _cursor_identity_field(key, item, depth=depth, allow=allow)
         if isinstance(copied, _IdentityDrop):
             continue
         kept[key] = copied
     return kept
-
-
-def _cursor_identity_payload(parsed: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
-    """Return the closed identity view of one oversized Cursor document.
-
-    File contents, edits, prompts, command text, and any other non-identity
-    value are absent from the result. A string over the locator bound is
-    omitted rather than clipped, so a path cannot be rewritten into a different
-    path.
-    """
-
-    return _cursor_identity_object(parsed, depth=0)
 
 
 def read_cursor_hook_payload(raw: bytes | None = None) -> Mapping[str, JsonValue]:
@@ -576,9 +660,336 @@ def read_cursor_hook_ingress(raw: bytes | None = None) -> tuple[Mapping[str, Jso
     if len(data) > MAX_HOOK_SKIM_BYTES:
         raise ProtocolValueError("payload_too_large")
     if len(data) > MAX_HOOK_STDIN_BYTES:
+        if not _skim_structure_within_budget(data):
+            raise ProtocolValueError("payload_too_large")
         try:
             parsed = _parse_cursor_hook_document(data)
         except ProtocolValueError as exc:
             raise CursorOversizedPayloadError(exc.reason_code) from exc
-        return _cursor_identity_payload(parsed), True
-    return _parse_cursor_hook_document(data), False
+        return _reduce_oversized_document(parsed, _CURSOR_IDENTITY)
+    return _with_observed_images(_parse_cursor_hook_document(data)), False
+
+
+class OversizedHookPayloadError(Exception):
+    """A Codex or Claude Code body above the trusted cap failed the skim's safety checks.
+
+    The Cursor sibling is ``CursorOversizedPayloadError``; the meaning is the same. The body fit
+    the skim cap and was complete, yet the parse refused it, so it yields no payload at all.
+    """
+
+    def __init__(self, reason_code: str) -> None:
+        if type(reason_code) is not str or not reason_code:
+            raise ValueError("unregistered_protocol_reason_code")
+        self.reason_code = reason_code
+        super().__init__(reason_code)
+
+
+def _skim_structure_within_budget(data: bytes) -> bool:
+    """Whether one oversized body's structure is cheap enough to parse in a hook.
+
+    String bodies are removed first (an unterminated string runs to the end of the body,
+    which the parse then refuses), so text and base64 never spend the budget and the
+    count stays linear in the body size.
+    """
+
+    structural = _JSON_STRING_TOKEN.sub(b'""', data)
+    tokens = structural.count(b"{") + structural.count(b"[") + structural.count(b",")
+    return tokens <= _MAX_SKIM_STRUCTURE_TOKENS
+
+
+def _media_block(value: Mapping[str, JsonValue]) -> bool:
+    kind = value.get("type")
+    if type(kind) is str and kind in _MEDIA_BLOCK_TYPES:
+        return True
+    for key in _MEDIA_MIME_KEYS:
+        mime = value.get(key)
+        if type(mime) is str and mime.lower().startswith(_MEDIA_MIME_PREFIXES):
+            return True
+    return False
+
+
+def _inline_media_string(value: str) -> bool:
+    if len(value) < _MIN_MEDIA_STRING_CHARS or not value.startswith("data:"):
+        return False
+    header = value[:200].lower()
+    return ";base64," in header and header[5:].startswith(_MEDIA_MIME_PREFIXES)
+
+
+def _strip_media(value: JsonValue, *, in_media: bool) -> tuple[JsonValue, int]:
+    if type(value) is str:
+        if (in_media and len(value) >= _MIN_MEDIA_STRING_CHARS) or _inline_media_string(value):
+            return _MEDIA_PLACEHOLDER, 1
+        return value, 0
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[str, JsonValue], value)
+        nested = in_media or _media_block(mapping)
+        result: dict[str, JsonValue] = {}
+        total = 0
+        for key, item in mapping.items():
+            result[key], count = _strip_media(item, in_media=nested)
+            total += count
+        return (result, total) if total else (value, 0)
+    if isinstance(value, list):
+        items: list[JsonValue] = []
+        total = 0
+        for item in cast(list[JsonValue], value):
+            stripped, count = _strip_media(item, in_media=in_media)
+            items.append(stripped)
+            total += count
+        return (items, total) if total else (value, 0)
+    return value, 0
+
+
+def strip_hook_media(payload: Mapping[str, JsonValue]) -> tuple[Mapping[str, JsonValue], int]:
+    """Replace inline image, audio, and video bytes with a fixed placeholder.
+
+    Returns ``(payload, omitted)``. Media is an image-typed content block (MCP ``image``,
+    Responses ``input_image``, Claude ``image`` with its ``source`` or ``file``), any object that
+    declares an ``image/``, ``audio/`` or ``video/`` media type, or a ``data:`` URL of one of those
+    types anywhere. Inside a media block every long string is bytes, not text; outside one only a
+    media ``data:`` URL is. The payload is returned unchanged (same object) when nothing matched.
+    Text, numbers, and structure are never altered, and the placeholder names no host value.
+    """
+
+    stripped, omitted = _strip_media(cast(JsonValue, payload), in_media=False)
+    return cast(Mapping[str, JsonValue], stripped), omitted
+
+
+# --- Image tool results as digest-only facts (P3-2, issue #1013) ---------------------------------
+# A hook that sees an image tool result records what the agent looked at, never the pixels: the
+# SHA-256 of the decoded image bytes, their count, a closed media type sniffed from the bytes, and
+# pixel dimensions read from the header alone. The service materializes each as digest-only
+# evidence linked to the call. The key is reserved: a host value under it is always discarded.
+OBSERVED_IMAGES_KEY: Final = "observed_images"
+MAX_OBSERVED_IMAGES: Final = 8
+OBSERVED_IMAGE_MEDIA_TYPES: Final = (
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/unknown",
+    "image/webp",
+)
+MAX_OBSERVED_IMAGE_DIMENSION: Final = 2_147_483_647
+_IMAGE_BLOCK_TYPES: Final = frozenset({"image", "input_image", "output_image", "image_url"})
+_PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
+# JPEG start-of-frame markers that carry the frame size (DHT C4, JPG C8, DAC CC excluded).
+_JPEG_SOF_MARKERS: Final = frozenset(
+    {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+)
+_MAX_JPEG_SEGMENTS: Final = 4_096
+
+
+def _image_block(value: Mapping[str, JsonValue]) -> bool:
+    kind = value.get("type")
+    if type(kind) is str and kind in _IMAGE_BLOCK_TYPES:
+        return True
+    for key in _MEDIA_MIME_KEYS:
+        mime = value.get(key)
+        if type(mime) is str and mime.lower().startswith("image/"):
+            return True
+    return False
+
+
+# A base64 image string inside an image block. Shorter strings are labels ("high", "png"), and
+# even the smallest real image encodes to more than this.
+_MIN_IMAGE_STRING_CHARS: Final = 32
+
+
+def _inline_image_string(value: str) -> bool:
+    header = value[:200].lower()
+    return header.startswith("data:image/") and ";base64," in header
+
+
+def _image_strings(value: JsonValue, *, in_image: bool, found: list[str]) -> None:
+    if len(found) >= MAX_OBSERVED_IMAGES:
+        return
+    if type(value) is str:
+        if (in_image and len(value) >= _MIN_IMAGE_STRING_CHARS) or _inline_image_string(value):
+            found.append(value)
+        return
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[str, JsonValue], value)
+        nested = in_image or _image_block(mapping)
+        for key, item in mapping.items():
+            if key == OBSERVED_IMAGES_KEY:
+                continue
+            _image_strings(item, in_image=nested, found=found)
+        return
+    if isinstance(value, list):
+        for item in cast(list[JsonValue], value):
+            _image_strings(item, in_image=in_image, found=found)
+
+
+def _decode_image_string(value: str) -> bytes | None:
+    body = value
+    if value.startswith("data:"):
+        header, separator, body = value.partition(",")
+        if not separator or ";base64" not in header.lower():
+            return None
+    compact = "".join(body.split())
+    try:
+        decoded = base64.b64decode(compact, validate=True)
+    except binascii.Error, ValueError:
+        return None
+    return decoded or None
+
+
+def _be16(data: bytes, offset: int) -> int:
+    return int.from_bytes(data[offset : offset + 2], "big")
+
+
+def _le(data: bytes, offset: int, width: int) -> int:
+    return int.from_bytes(data[offset : offset + width], "little")
+
+
+def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+    index = 2
+    for _ in range(_MAX_JPEG_SEGMENTS):
+        if index + 4 > len(data) or data[index] != 0xFF:
+            return None
+        marker = data[index + 1]
+        if marker == 0xFF:
+            index += 1
+            continue
+        if marker in {0x01, 0xD8} or 0xD0 <= marker <= 0xD7:
+            index += 2
+            continue
+        if marker in {0xD9, 0xDA}:
+            return None
+        length = _be16(data, index + 2)
+        if length < 2:
+            return None
+        if marker in _JPEG_SOF_MARKERS:
+            if index + 9 > len(data):
+                return None
+            return _be16(data, index + 7), _be16(data, index + 5)
+        index += 2 + length
+    return None
+
+
+def image_header_facts(data: bytes) -> tuple[str, int | None, int | None]:
+    """Return ``(media_type, width, height)`` read from an image header only.
+
+    The media type is sniffed from the bytes, never taken from the host's label. PNG ``IHDR``,
+    JPEG ``SOFn`` (bounded segment walk), GIF logical screen, and WebP ``VP8``/``VP8L``/``VP8X``
+    are read; anything else, or a header too short or naming a zero size, is ``image/unknown``
+    with no dimensions. No pixel data is decoded.
+    """
+
+    size: tuple[int, int] | None = None
+    media = "image/unknown"
+    if data[:8] == _PNG_SIGNATURE and data[12:16] == b"IHDR" and len(data) >= 24:
+        media = "image/png"
+        size = (int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big"))
+    elif data[:3] == b"\xff\xd8\xff":
+        media, size = "image/jpeg", _jpeg_dimensions(data)
+    elif data[:6] in {b"GIF87a", b"GIF89a"} and len(data) >= 10:
+        media, size = "image/gif", (_le(data, 6, 2), _le(data, 8, 2))
+    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        media = "image/webp"
+        chunk = data[12:16]
+        if chunk == b"VP8 " and len(data) >= 30 and data[23:26] == b"\x9d\x01\x2a":
+            size = (_le(data, 26, 2) & 0x3FFF, _le(data, 28, 2) & 0x3FFF)
+        elif chunk == b"VP8L" and len(data) >= 25 and data[20] == 0x2F:
+            bits = _le(data, 21, 4)
+            size = ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+        elif chunk == b"VP8X" and len(data) >= 30:
+            size = (_le(data, 24, 3) + 1, _le(data, 27, 3) + 1)
+    if size is None or not all(1 <= side <= MAX_OBSERVED_IMAGE_DIMENSION for side in size):
+        return "image/unknown", None, None
+    return media, size[0], size[1]
+
+
+def observed_image_facts(payload: Mapping[str, JsonValue]) -> list[JsonValue]:
+    """Digest-only facts for at most ``MAX_OBSERVED_IMAGES`` images in one hook payload.
+
+    An image is a decodable base64 string inside an image block (MCP and Claude ``image``,
+    Responses ``input_image``, an object declaring an ``image/`` media type) or an image ``data:``
+    URL anywhere. A string that does not decode is not an image Yoetz can attest and is skipped.
+    """
+
+    found: list[str] = []
+    _image_strings(cast(JsonValue, payload), in_image=False, found=found)
+    facts: list[JsonValue] = []
+    for text in found:
+        decoded = _decode_image_string(text)
+        if decoded is None:
+            continue
+        media, width, height = image_header_facts(decoded)
+        fact: dict[str, JsonValue] = {
+            "byte_count": len(decoded),
+            "content_digest": "sha256:" + hashlib.sha256(decoded).hexdigest(),
+            "media_type": media,
+        }
+        if width is not None and height is not None:
+            fact["width"] = width
+            fact["height"] = height
+        facts.append(fact)
+    return facts
+
+
+def _with_observed_images(
+    payload: Mapping[str, JsonValue], source: Mapping[str, JsonValue] | None = None
+) -> Mapping[str, JsonValue]:
+    """Replace any host value under the reserved key with facts computed here."""
+
+    facts = observed_image_facts(payload if source is None else source)
+    if OBSERVED_IMAGES_KEY not in payload and not facts:
+        return payload
+    result = {key: value for key, value in payload.items() if key != OBSERVED_IMAGES_KEY}
+    if facts:
+        result[OBSERVED_IMAGES_KEY] = facts
+    return result
+
+
+def _reduce_oversized_document(
+    parsed: Mapping[str, JsonValue], allow: _IdentityAllowlist
+) -> tuple[Mapping[str, JsonValue], bool]:
+    """Keep an oversized body whole once its media is gone, else reduce it to identity.
+
+    An image view or a screenshot is almost all base64. Without its media bytes it usually fits
+    the trusted cap, and then it is exactly the event a smaller body would have been: structure,
+    outcome, and text content all kept. Anything still over the cap keeps only the closed
+    identity view, and the caller records that its content was omitted.
+    """
+
+    stripped, omitted = strip_hook_media(parsed)
+    if omitted:
+        try:
+            if len(canonical_encode(cast(JsonValue, stripped))) <= MAX_HOOK_STDIN_BYTES:
+                return _with_observed_images(stripped, parsed), False
+        except ProtocolValueError, TypeError, ValueError:
+            pass
+    identity = _cursor_identity_object(parsed, depth=0, allow=allow)
+    return _with_observed_images(identity, parsed), True
+
+
+def read_hook_ingress(raw: bytes | None = None) -> tuple[Mapping[str, JsonValue], bool]:
+    """Read one Codex or Claude Code hook for observation, skimming an oversized body.
+
+    Returns ``(payload, content_omitted)``, with the same contract as the Cursor reader. A body at
+    or under ``MAX_HOOK_STDIN_BYTES`` is exactly :func:`read_hook_payload`. A complete body above
+    it and at or under ``MAX_HOOK_SKIM_BYTES`` is parsed with the vendor-number rules (a nested
+    fractional number becomes ``null``; nothing else is relaxed). Its media bytes are dropped; if
+    that brings it under the trusted cap it is returned whole with ``content_omitted`` false,
+    otherwise as the closed identity view with ``content_omitted`` true: file contents, edits,
+    prompts, command text, and every other non-identity value are absent, and a string over the
+    locator bound is omitted rather than clipped. A body over the skim cap
+    raises ``payload_too_large`` unread, and so does one whose JSON structure (``{``, ``[`` and
+    ``,`` outside strings) exceeds the skim budget, before any parse. A complete oversized body
+    that fails the parse raises
+    ``OversizedHookPayloadError`` and yields no payload.
+    """
+
+    data = _read_cursor_bytes(raw, MAX_HOOK_SKIM_BYTES + 1)
+    if len(data) > MAX_HOOK_SKIM_BYTES:
+        raise ProtocolValueError("payload_too_large")
+    if len(data) <= MAX_HOOK_STDIN_BYTES:
+        return _with_observed_images(read_hook_payload(data)), False
+    if not _skim_structure_within_budget(data):
+        raise ProtocolValueError("payload_too_large")
+    try:
+        parsed = _parse_cursor_hook_document(data)
+    except ProtocolValueError as exc:
+        raise OversizedHookPayloadError(exc.reason_code) from exc
+    return _reduce_oversized_document(parsed, _HOOK_IDENTITY)

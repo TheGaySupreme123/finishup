@@ -1027,6 +1027,23 @@ def summary_for_public_error(envelope: object) -> str:
         return _bounded(prefix)
 
 
+def _observations_awaited_clause(source: Mapping[str, JsonValue]) -> str:
+    """One short clause for the optional pre-check hook-row wait (issue #1012)."""
+
+    awaited = source.get("observations_awaited")
+    if not isinstance(awaited, Mapping):
+        return ""
+    state = awaited.get("state")
+    if state == "complete":
+        return "hook observations awaited: complete; "
+    if state == "bounded_timeout":
+        pending = _safe_count(awaited.get("pending_count"))
+        return f"hook observations awaited: bounded_timeout, {pending} still pending; "
+    if state == "unavailable":
+        return "hook observations awaited: unavailable; "
+    return ""
+
+
 def summary_for_check(envelope: object) -> str:
     source = _mapping(envelope)
     verdict = _safe_token(source.get("verdict"))
@@ -1053,6 +1070,7 @@ def summary_for_check(envelope: object) -> str:
         prefix = (
             f"Check verdict: {verdict}; findings returned: {findings}; suppressed: {suppressed}; "
         )
+    prefix += _observations_awaited_clause(source)
     children = source.get("children")
     if (
         isinstance(children, Mapping)

@@ -35,9 +35,11 @@ from yoetz.adapters.integrations.hook_spool import (
 from yoetz.adapters.integrations.observation_local import (
     LocalObservationStore,
     ObservationStoreLockEvent,
+    observation_store_lock_deadline,
     set_observation_store_lock_reporter,
     set_observation_store_lock_role,
 )
+from yoetz.adapters.integrations.observation_task_pending import session_pending_row_identities
 from yoetz.adapters.objects.encrypted_files import EncryptedFilesObjectStore
 from yoetz.adapters.privacy.catalog import CatalogPrivacyAudit, CatalogPrivacyPolicyStore
 from yoetz.adapters.privacy.gateway import PolicyEnforcingOutboundGateway
@@ -588,9 +590,26 @@ class _ReadyObservationSweep:
     row_gate_bound: bool
     # Lock-free read-only probe the idle sweeper polls for undelivered rows (#887).
     backlog_probe: Callable[[], bool] | None = None
+    # Blocking read of one Yoetz session's pending hook row identities, store-lock waits bounded
+    # by a ``time.monotonic`` deadline: the optional pre-check wait reads it (issue #1012).
+    task_pending_probe: Callable[[str, float], frozenset[str]] | None = None
 
     async def __call__(self) -> ObservationDrainSummary:
         return await self.callback()
+
+
+def _task_pending_probe(
+    local: LocalObservationStore, state: Path
+) -> Callable[[str, float], frozenset[str]]:
+    """Read one Yoetz session's pending hook rows across workspaces (issue #1012)."""
+
+    def probe(yoetz_session_id: str, deadline: float) -> frozenset[str]:
+        with observation_store_lock_deadline(deadline):
+            return session_pending_row_identities(
+                local, yoetz_session_id=yoetz_session_id, _state=state
+            )
+
+    return probe
 
 
 def _record_observation_store_lock_event(event: ObservationStoreLockEvent) -> None:
@@ -7254,6 +7273,7 @@ async def provide_service_ready_context(
             sweep_observation,
             row_gate_bound=observation_gate is not None,
             backlog_probe=local_observation.has_unattempted_outbox_rows,
+            task_pending_probe=_task_pending_probe(local_observation, paths.state),
         ),
         coordination_sweep=sweep_coordination,
         observation_sweep_close=close_observation_maintenance,

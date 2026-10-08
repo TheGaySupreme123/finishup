@@ -581,20 +581,47 @@ free text from input. CLI exit classes (0/2/10/11/20/30/40/70/130) map from code
   on either refusal without a reply and records an owner-only diagnostic
   (`service.daemon`/`control_frame_read`); a client whose response frame stalls reports the
   retryable `service_unavailable`. Neither reason is a new wire token.
-- Host hook ingress (`cli/hook_io.py`): `MAX_HOOK_STDIN_BYTES = 262_144` (256 KiB) is the trusted
-  full-parse cap for every host's hook stdin body and is shared by `cli/hooks.py`. A body at or
-  under that cap is parsed in full. Codex, Claude Code, and Cursor's pure
-  `read_cursor_hook_payload` replay raise `payload_too_large` before the NUL scan, the UTF-8
-  decode, and the JSON parse when the body is over that cap; an empty body still raises
-  `invalid_event_value_type`. Cursor observation (`read_cursor_hook_ingress`) may read a complete
-  body up to `MAX_HOOK_SKIM_BYTES = 1_048_576` (1 MiB), the ordinary local-control frame cap. Inside
-  that skim cap the same safety rules parse the document and the handler keeps a closed identity
-  view: session, tool, call id, bounded path text used only for a path commitment, scalar
-  outcome fields, and whether an `error` value was set (never its text). A `workspace_roots`
-  value the view cannot keep becomes `null`, so the workspace resolver refuses it exactly as it
-  does at full size. File contents, edits, prompts, and command text are not retained. A body over
-  the skim cap raises `payload_too_large` before any parse. A complete oversized body that fails
-  the NUL, UTF-8, duplicate-key, or JSON checks yields no identity view (issue #667).
+- Host hook ingress (`cli/hook_io.py`): `MAX_HOOK_STDIN_BYTES = 1_048_576` (1 MiB) is the trusted
+  full-parse cap for every host's hook stdin body and is shared by `cli/hooks.py`. It was 256 KiB
+  until tb4n1 (B5), when Yoetz's own `closure_prepare` replies, image views, and large command
+  outputs outgrew it and lost their PostToolUse rows. A body at or under that cap is parsed in
+  full; captured content stays bounded by the separate content budget, so a large output becomes
+  truncated content (`truncated_payload`), not a dropped event. The pure readers
+  (`read_hook_payload`, used by the start-correlation, session-start and prompt entry points, and
+  Cursor's `read_cursor_hook_payload` replay) raise `payload_too_large` before the NUL scan, the
+  UTF-8 decode, and the JSON parse when the body is over that cap; an empty body still raises
+  `invalid_event_value_type`. The observation readers for all three hosts (`read_hook_ingress`
+  for Codex and Claude Code, `read_cursor_hook_ingress` for Cursor) read a complete body up to
+  `MAX_HOOK_SKIM_BYTES = 8_388_608` (8 MiB). Inside that skim cap the same safety rules parse the
+  document (a nested fractional number becomes `null`; nothing else is relaxed), and inline image,
+  audio, and video bytes are replaced with a fixed placeholder (`strip_hook_media`: MCP and Claude
+  `image` blocks, Responses `input_image`, any object declaring an `image/`, `audio/` or `video/`
+  media type, and any such `data:` URL). If that brings the body under the trusted cap it is
+  admitted whole, with no gap. Otherwise the handler keeps a closed identity view: session, turn,
+  transcript and lineage locators, tool, call id, bounded path text used only for a path
+  commitment, scalar outcome fields, and whether an `error` value was set (never its text). A
+  `workspace_roots` value the view cannot keep becomes `null`, so the workspace resolver refuses it
+  exactly as it does at full size. File contents, edits, prompts, and command text are not
+  retained. That row records `payload_content_omitted` and `<host>_payload_content_omitted`,
+  except for Yoetz's own MCP tools in any host spelling (`closure_prepare` included), whose
+  content is never captured, so the identity row is complete and records no gap. A body over the
+  skim cap raises `payload_too_large` before any parse, and so does one whose JSON structure
+  (`{`, `[` and `,` outside strings) exceeds 262,144 tokens, which bounds the skim's parse time
+  and memory (a real 1 MB `closure_prepare` reply carries about 30,000). A complete oversized body that fails the
+  NUL, UTF-8, duplicate-key, or JSON checks yields no identity view (issue #667).
+- Observed images (`cli/hook_io.py` `observed_image_facts`, P3-2, issue #1013): before media
+  bytes are dropped, every host ingress records at most `MAX_OBSERVED_IMAGES = 8` images per
+  event as the reserved structural member `observed_images` of a `PostToolUse` envelope (any host
+  value under that name is discarded). Each item is exactly `content_digest` (`sha256:` of the
+  decoded bytes), `byte_count`, `media_type` (sniffed from the bytes: `image/png`, `image/jpeg`,
+  `image/gif`, `image/webp`, or `image/unknown`), and optionally both `width` and `height` from
+  the header alone (never for `image/unknown`). Control-request 2.9.0 (unreleased, additive in
+  place) and `domain/observation.validate_observed_images` admit exactly that shape. The service
+  materializes one `evidence_recorded` 1.2.0 per item (`artifact`, `content_digest`,
+  `digest_binding {artifact_bytes, digest_only, byte_count, observation_captured}`, stable id from
+  source identity and image index, description `Observed image tool result <media_type> <w>x<h>
+  (<n> bytes); pixels were not captured or sent`) and lists it in the call's
+  `result_recorded.evidence_refs`. No pixel is captured, stored, or sent.
 - Digests render as `sha256:<64 lowercase hex>`; commitments as `hmac-sha256:<64 lowercase hex>`.
 - Writer/ledger sequences and frontier sequences cross the wire as canonical base-10 integer
   strings (`"0" | [1-9][0-9]*`, with writer/ledger sequences positive). This is not a blanket
@@ -807,7 +834,10 @@ Key payload fields (minimum; full shapes in `src/yoetz/domain/events.py`):
   `observation_captured`. Ordinary publication can assert only `caller_asserted`; approved-check,
   import, and observation provenance are reserved to their authenticated authors/channels.
   `observation_captured` requires the observation coordinator (`harness_observed` on
-  `hook_observed`) and never means verified or independently reproduced. Schemas `1.0.0` and
+  `hook_observed`) and never means verified or independently reproduced. It has exactly two
+  shapes: captured bytes (`immutable_snapshot`, `captured`, content-captured coverage) and, since
+  #1013, an observed image digest (`content_digest`, `digest_only`, subject `artifact_bytes`, no
+  captured object), which can never pose as captured content. Schemas `1.0.0` and
   `1.1.0` remain exact-readable; an untyped legacy digest remains unknown rather than inheriting a
   subject from prose.
 - `claim_recorded/1.0.0`: frozen `claim_id`, `claim_kind` (`completion`|`material`),
@@ -4346,18 +4376,19 @@ Shared closed types:
   tree first and then redacts decoded string keys and values, preserving structural punctuation;
   any redaction-created duplicate key is rejected instead of silently merging fields.
 - `ObservationGapCode` — closed coverage tokens. `payload_too_large` is one host hook event whose
-  body exceeded `MAX_HOOK_STDIN_BYTES` and was not admitted as a structural row. Codex and Claude
-  Code always stop there. Cursor stops there when the body does not fit `MAX_HOOK_SKIM_BYTES` or
-  the skim cannot validate a complete document. It is not `truncated_payload`, which is an
+  body exceeded `MAX_HOOK_STDIN_BYTES` and was not admitted as a structural row. Every host stops
+  there when the body does not fit `MAX_HOOK_SKIM_BYTES` or the skim cannot validate a complete
+  document (Codex and Claude Code skim too since tb4n1 B5). It is not `truncated_payload`, which is an
   admitted payload clipped after parsing. Nothing about such an event is retained beyond the host
   that ran it and the hook name that host named on its own command line, so it mints no structural
   row and binds to the workspace through the command-line locator alone. A Cursor body parsed
   inside the skim cap that still yields no row (no session, no resolvable workspace, an ambiguous
   session, or an unknown event) records the same gap; the ordinary profile's deliberate
   `afterMCPExecution` skip does not, because its paired `postToolUse` owns the call.
-  `payload_content_omitted` is the Cursor case that did validate: the structural row keeps the
-  closed identity and an empty content-reference list, and coverage must not treat the omitted
-  native bytes as captured. `session_superseded` is a mapped host session
+  `payload_content_omitted` is the case that did validate on any host but still did not fit the
+  trusted cap without its image bytes: the structural row keeps the closed identity and an empty
+  content-reference list, and coverage must not treat the omitted native bytes as captured. A
+  Yoetz-owned MCP tool's identity row records neither gap, because its content is never captured. `session_superseded` is a mapped host session
   whose Yoetz route was retired and whose successor binding could not be followed; it is never
   `ledger_rejected` and never `mapping_missing` (issue #577). `unsupported_event` is an admitted profile with
   an unrecognized wrapper or nested item, or a known wrapper with an incompatible payload shape
@@ -4883,6 +4914,14 @@ the evidence payload and selection route fields. One task-wide operation per lan
 commit-before-ack recovery idempotent; source/authority generations and original session/writer
 remain part of lane identity. Unrouted and overflow-only history remains local. A successful
 inventory does not clear loss identity/count history or bypass a real hard capacity limit.
+`LocalObservationStore.selection_history_gaps` attaches `observation_input_loss` to a later
+input only when that input's call (or the call that spawned it) matches a bounded pairing
+commitment of a lost input in the same lane; legacy, overflowed (more than 16 lost calls) or
+older-writer-advanced lanes stay route-wide (ADR-029, tb4n1 B3). `record_admission_loss(...,
+cause=AdmissionLossCause)` records the closed refusal cause in that private per-lane detail;
+`selection_loss_causes(workspace)` and `admission_loss_cause(workspace, envelope)` read it. The
+wire loss-range shape is unchanged; hooks surface the cause as the `admission_loss_<cause>`
+diagnostic reason.
 
 Outcome semantics and back-pressure vocabulary (ADR-022 decisions 12–13):
 
@@ -4908,7 +4947,11 @@ Outcome semantics and back-pressure vocabulary (ADR-022 decisions 12–13):
   `material_limitation_omitted` candidate per such record. Observed work facts (durable per-call
   action/result records), the acquisition limitation (`host_outcome_unavailable` coverage gap),
   actionable findings (explicit `FAILURE`/`PARTIAL`, cooperative `UNKNOWN`), and receipt gaps stay
-  distinct surfaces.
+  distinct surfaces. When the session stream later appends the corrected outcome for the same
+  action (`materialize_observation_outcome_correction`), the unknown hook result is superseded for
+  readers (`kernel/outcome_corrections.superseded_unknown_results`): check totals count that call
+  once with the recorded outcome, and the frozen case drops that record's
+  `host_outcome_unavailable` gap. Both ledger rows stay immutable (#1001).
 - `operation_pending` is the retryable ingest-rejection reason for designed observation
   back-pressure (check-acquisition/frozen-case barriers and adjacent transient bundle/frontier
   contention). It keeps the outbox row pending and annotated, but is never a current observation
@@ -5275,11 +5318,13 @@ discarded or reported only as `observe`.
 A host body refused at stdin ingress for its size is accounted the same way, per host:
 `codex_payload_too_large`, `claude_payload_too_large`, and `cursor_payload_too_large` are the
 bounded hook reasons, recorded against the hook event name the host supplied on the command line.
-Codex and Claude Code never parse that body, so the hook name is their only identity, and each
-notes the `payload_too_large` coverage gap on the consented workspace. Cursor notes that same
-no-row gap when the body exceeds `MAX_HOOK_SKIM_BYTES` or fails validation inside it. When Cursor
-does validate a complete body inside the skim cap, the reason is `cursor_payload_content_omitted`
-and the structural row carries `payload_content_omitted` instead of `payload_too_large`. Before
+Each host notes the no-row `payload_too_large` coverage gap on the consented workspace when the
+body exceeds `MAX_HOOK_SKIM_BYTES` or fails validation inside it; such a body is never parsed, so
+the hook name is its only identity. When a host does validate a complete body inside the skim cap
+and it still exceeds the trusted cap once its image bytes are dropped, the reason is
+`codex_payload_content_omitted`, `claude_payload_content_omitted`, or
+`cursor_payload_content_omitted`, and the structural row carries `payload_content_omitted` instead
+of `payload_too_large`; a Yoetz-owned MCP tool records neither (tb4n1 B5). Before
 these, an oversized Cursor write recorded the generic `cursor_payload_invalid`, an oversized Codex
 event degraded to the bare `observe` token, and an oversized Claude Code event recorded nothing at
 all (issue #667).
@@ -6337,9 +6382,11 @@ duration, capability profile, and an installation-keyed HMAC changed-path commit
 boundary and truncated to the canonical integer `duration_ms`; the canonical parser remains
 float-free. Discarded vendor-field floats are replaced transiently, and malformed or unsafe Cursor
 envelopes remain fail-open while recording the payload-free `cursor_payload_invalid` diagnostic; a
-body over the shared 256 KiB hook ingress cap is separated from that vendor-shape refusal. A
-complete body that also fits the 1 MiB skim cap is admitted as a structural row with
-`payload_content_omitted` and `cursor_payload_content_omitted`. A larger body, or a complete
+body over the shared 1 MiB hook ingress cap is separated from that vendor-shape refusal. A
+complete body that also fits the 8 MiB skim cap is admitted whole when dropping its image bytes
+brings it under the ingress cap; otherwise it is admitted as a structural row with
+`payload_content_omitted` and `cursor_payload_content_omitted` (no gap for a scoped Yoetz tool
+spelling; the generic `MCP:<tool>` spelling names no server and keeps the gap). A larger body, or a complete
 oversized body that fails validation, records `cursor_payload_too_large` with the
 `payload_too_large` coverage gap and no structural row.
 The `model` spelling from execution/file-edit events normalizes to `model_id`; a valid `model_id`
@@ -8013,6 +8060,22 @@ zeroes, the receipt says so, and the scoped deterministic verdict is ineligible.
 `test_edits.baseline_known` totals are the same binary availability shape; all other totals remain
 canonical unsigned counters.
 
+**Optional pre-check observation wait (#1012).** `check-request` 1.1.0 accepts the optional boolean
+`await_observations` (MCP `check`, `yoetz check --await-observations`). When `true`, the daemon,
+before either dispatch gate, reads the pending local hook outbox rows of every host session whose
+lifecycle mapping names the request's Yoetz session
+(`adapters/integrations/observation_task_pending.session_pending_row_identities`, the same task
+rule as the Stop gate's `observe_hooks._task_pending_outbox_count`), wakes the observation sweeper
+and polls real local state (`application/observation_await.await_task_observations`) until none of
+those snapshot rows is pending or `min(3 s, deadline / 10)` passes. The result then carries the
+closed `observations_awaited` member of `check-result` 1.4.0 — `state` `complete`,
+`bounded_timeout` or `unavailable`, and `pending_count` (canonical unsigned string, `"0"` unless
+`bounded_timeout`) — and only when the request set the flag. The flag is excluded from the check
+request digest and the detached-check identity; the member is never recorded in the ledger or
+`check_recorded`. The wait never fails a check. Golden vectors: CAN-016
+(`fixtures/canonical/check-observations-awaited-1.4.0.case.json`). ADR-029 amendment of
+2026-10-07 owns the decision.
+
 A check whose effective mode is deterministic-only can say **no issue detected within
 deterministic coverage** when its complete candidate set, active obligations, requested items and
 relevant observed failures permit it. An omitted mode resolves through the configured verification
@@ -8486,7 +8549,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
 - **Runtime structural fields.** The observation envelope and control-request 2.9.0
   `structural_payload` admit `install_target` (`yoetz_runtime|workspace_env|private_env|system|
   unresolved`), `write_scope` (`outside_workspace`) and `effective_user` (`root|non_root`),
-  produced only by `cli/runtime_facts.runtime_structural_facts`. `observed_action_description(...,
+  produced only by `cli/runtime_facts.runtime_structural_facts`; `write_scope` excludes lexically
+  normalized targets under a temporary directory (`/tmp`, `/var/tmp`, `/dev/shm`, their `/private`
+  aliases, macOS `/var/folders/<a>/<b>/T`, the hook's own temp dir; tb4n1 E6).
+  `observed_action_description(...,
   install_target=, write_outside_workspace=, effective_user=)` appends ` (install <class>)`,
   ` (write outside_workspace)`, ` (user <root|non_root>)` after the tool and runner suffixes;
   `observed_action_runtime_tokens(description)` reads them back. Observation advice 0.1.8 adds the
@@ -8508,7 +8574,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `observation/closure-gate-blockers.json` (at most 64 per session). Hook diagnostic reasons:
   `closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_not_required`,
   `closure_gate_repeat_suppressed`, `closure_gate_loop_guard`, `closure_gate_budget_exhausted`,
-  `closure_gate_unavailable`.
+  `closure_gate_unavailable`. Before the gate reads status, the Stop pass drains the task's hook
+  rows toward the current frontier and records `stop_drain_complete` or `stop_drain_incomplete`;
+  `observation_pending` is true only when rows that can change this task's facts remain (#994).
 - **Text surfaces.** `domain/receipts.TASK_FACT_GAP_SENTENCES` holds one fixed sentence per task-fact
   code; `check_time_change_gap_sentence(code)` returns it, so receipt gap details and limitations,
   `render_human_check`/`render_human_status` and the MCP check summary show it. A publish rejection

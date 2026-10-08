@@ -749,16 +749,19 @@ form, so the lever, if the measurements call for one, is a minimal-import fast p
 async split. That is decided from the aggregate of a Cursor dogfood run in both profiles on macOS,
 Linux and WSL 2; those measurements are not recorded yet, and the gap is owned by issue #915.
 
-### Oversized hook payloads (issue #667)
+### Oversized hook payloads (issue #667, tb4n1 B5)
 
-A Cursor hook body over the 256 KiB trusted parse cap (`MAX_HOOK_STDIN_BYTES`) is not admitted as
-a full event. An ordinary write to a large file reaches this bound: Cursor's native tool input
-carries the whole file content, and the dogfood writes that opened this issue were roughly
-389,000 bytes each. The hook stays fail-open and Cursor continues.
+A Cursor hook body over the 1 MiB trusted parse cap (`MAX_HOOK_STDIN_BYTES`, shared by every host;
+256 KiB until tb4n1 B5) is not admitted as a full event. An ordinary write to a large file can
+reach this bound: Cursor's native tool input carries the whole file content (the dogfood writes
+that opened issue #667 were roughly 389,000 bytes each, which now fit). The hook stays fail-open
+and Cursor continues.
 
-When that body is a complete document at or under the 1 MiB skim cap (`MAX_HOOK_SKIM_BYTES`),
-Yoetz parses it with the same NUL, UTF-8, duplicate-key, and JSON checks as a normal event, then
-keeps a closed identity view. The structural row records the session, tool name, and tool-call id
+When that body is a complete document at or under the 8 MiB skim cap (`MAX_HOOK_SKIM_BYTES`),
+Yoetz parses it with the same NUL, UTF-8, duplicate-key, and JSON checks as a normal event. Image,
+audio, and video bytes (an MCP `image` block, a `data:` URL) are first replaced with a fixed
+placeholder; if the body then fits the trusted cap it is admitted whole and records no gap.
+Otherwise Yoetz keeps a closed identity view. The structural row records the session, tool name, and tool-call id
 when those values are bounded tokens. A path commitment is kept only for `afterFileEdit` and for a
 `postToolUse` edit tool that did not fail or get denied; a read, a pending `preToolUse`, or a
 failed edit commits no changed path. Whether an `error` value was set is kept as a bit, never its
@@ -766,19 +769,38 @@ text, and an unkeepable `workspace_roots` is refused as it is at full size. File
 prompts, and command text are omitted. The row's content references stay empty,
 including when native content capture is authorized. Coverage on that row is
 `payload_content_omitted`, and hook diagnostics record `cursor_payload_content_omitted`. A receipt
-can name the edit and must not treat the omitted bytes as captured.
+can name the edit and must not treat the omitted bytes as captured. A Yoetz MCP tool in a scoped
+spelling (`yoetz:<tool>`, `plugin-yoetz-yoetz:<tool>`, `closure_prepare` included) records
+neither: its content is never captured, so the identity row is complete. Cursor's ordinary
+`postToolUse` spells MCP calls as the generic `MCP:<tool>`, which names no server, so such a call
+cannot be attributed to Yoetz and keeps the gap.
 
 A body over the skim cap is refused before any parse. A complete oversized body that fails
 validation is also refused, and it records `cursor_payload_invalid` as well as the size gap. Both
 of those outcomes record `cursor_payload_too_large` and the workspace `payload_too_large` gap, and
 they mint no structural row. A parsed oversized body that finds no session or no resolvable
 workspace records the same gap. The ordinary profile's `afterMCPExecution` skip is deliberate at
-every size and records no gap. The pure `read_cursor_hook_payload` replay still refuses at 256 KiB,
-so a captured oversized body cannot be reparsed as a trusted full event.
+every size and records no gap. The pure `read_cursor_hook_payload` replay still refuses above the
+trusted cap, so a captured oversized body cannot be reparsed as a trusted full event.
 
-The caps are fixed; raising them is not an operator control. Codex and Claude Code do not skim:
-an oversized body on those hosts stays the no-row `payload_too_large` gap. The refusal or the
-omission costs exactly that one event; the next ordinary event still ingests.
+The caps are fixed; raising them is not an operator control. Codex and Claude Code apply the same
+skim since tb4n1 B5. The refusal or the omission costs exactly that one event; the next ordinary
+event still ingests.
+
+Matcher decision (tb4n1 B5): Cursor's generated hooks carry no per-tool matcher, and its ordinary
+`postToolUse` names MCP tools only as `MCP:<tool>`, so no matcher could exclude Yoetz's own tools
+without also excluding another server's tool of the same name. Excluding them would also leave
+their `preToolUse` unpaired. The size problem is fixed in the reader instead.
+
+Observed images (P3-2, issue #1013): Cursor image results arrive as MCP `image` blocks in `tool_output`. Before the bytes are
+dropped, the hook records up to 8 images per call as digest-only facts: SHA-256 and byte count of
+the decoded image, a media type sniffed from its bytes (PNG, JPEG, GIF, WebP, else
+`image/unknown`), and pixel width and height read from the header only. The service records one
+`evidence_recorded` row per image (`artifact`, `content_digest`, `digest_only`), listed in the
+call's result `evidence_refs`, with the description `Observed image tool result <type> <w>x<h>
+(<n> bytes); pixels were not captured or sent`. No pixel is captured, stored, or sent; the agent
+can cite the evidence id as its own inspection of the output. This holds at every body size up to
+the 8 MiB skim cap.
 
 ### Smart observation selection (issue #687)
 
@@ -837,7 +859,10 @@ store path with no Cursor-specific behavior. Lowering, revoking, expiring, or en
 selection can leave more accepted rows than the new target holds. Those rows still drain, and the
 store keeps finite room, tied only to them, for refused-input loss, delivery attempts, and session
 ends. A refused hook reports `hook_observe_degraded: outbox_overflow; loss accounted` only after
-the loss is durable. If a `sessionEnd` hook cannot persist its local end, it stays fail-open within
+the loss is durable. The notice ends with `cause=<cause>`, the closed admission
+dimension that refused, and the same cause is recorded as the `admission_loss_<cause>` reason in
+`hook_diagnostics.reasons` (ADR-029, tb4n1 B3). Only later inputs of the lost host call, or calls it
+spawned, carry `observation_input_loss`; the shared store path applies this to every host. If a `sessionEnd` hook cannot persist its local end, it stays fail-open within
 its three-second budget. It prints `hook_observe_degraded: session_end_unrecorded` and records
 that reason in `hook_diagnostics.reasons`. Cloud agents do not run `sessionEnd`, so for them the
 override ends by revoke or expiry.
@@ -977,7 +1002,7 @@ advice because Cursor would auto-submit it as a new user message. **Stop-time cl
 decision: supported).** The one exception is the closure gate: when a mapped session stops while
 closure still requires agent action, `stop` emits `followup_message` naming what remains, so Cursor
 continues the agent once. Cursor's `loop_count` is the loop guard: a `stop` with `loop_count > 0`
-never carries the gate. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`); it fires when `agent_actionable` holds open obligations, an unacknowledged receipt-blocking finding, a planned verification that was not observed, failed, or ran before the latest edit, or a git-ignored requested output, at most once per ledger frontier and session (owner-only `observation/closure-gate.json`), and never while observed-run facts are still draining. An open obligation named by a `yoetz-blocker:<kind>` decision is not listed as work, but the first Stop after it is recorded is re-asked once. That gate names each blocked obligation and the claimed kind from `closure_readiness.blocked_obligations`, asks the agent to confirm the blocker is outside its control, says that data the task calls recoverable, a failing test or an infeasible-looking result is not a blocker, and tells the agent to continue otherwise. A second Stop is the re-confirmation: the hook remembers `<obligation id>:<kind>` for the session (owner-only `observation/closure-gate-blockers.json`, at most 64 keys per session) and honours the blocker from then on, so it never loops; a changed kind is a new claim and is asked once. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_loop_guard`, `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `yoetz observe status`. See ADR-033 and issue #977. `afterFileEdit`, `afterMCPExecution`, and `sessionEnd`
+never carries the gate. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`); it fires when `agent_actionable` holds open obligations, an unacknowledged receipt-blocking finding, a planned verification that was not observed, failed, or ran before the latest edit, or a git-ignored requested output, at most once per ledger frontier and session (owner-only `observation/closure-gate.json`), and never while observed-run facts are still draining. Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). An open obligation named by a `yoetz-blocker:<kind>` decision is not listed as work, but the first Stop after it is recorded is re-asked once. That gate names each blocked obligation and the claimed kind from `closure_readiness.blocked_obligations`, asks the agent to confirm the blocker is outside its control, says that data the task calls recoverable, a failing test or an infeasible-looking result is not a blocker, and tells the agent to continue otherwise. A second Stop is the re-confirmation: the hook remembers `<obligation id>:<kind>` for the session (owner-only `observation/closure-gate-blockers.json`, at most 64 keys per session) and honours the blocker from then on, so it never loops; a changed kind is a new claim and is asked once. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_loop_guard`, `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `yoetz observe status`. See ADR-033 and issue #977. `afterFileEdit`, `afterMCPExecution`, and `sessionEnd`
 have no advice output channel and emit `{}`. Only a successfully written, nonempty `sessionStart`
 object commits advice delivery; output-less events do not acquire the delivery lease. No hook
 delivers a frontier-motion notice (issue #915), including the ordinary-profile `postToolUse`: every
@@ -989,6 +1014,8 @@ verification is disabled do not put `connect_provider` or another provider-repai
 endpoint is bound, network egress is permitted, and an LLM inference channel is enabled, and the
 provider is still structurally unusable, including when no factory id is available. `stop` still
 emits `{}` and leaves that delivery pending.
+
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Cursor: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
 
 Workspace binding does not trust plugin-hook CWD. It selects a single `workspace_roots` entry first,
 then `CURSOR_PROJECT_DIR`, then the explicit `--workspace` value. A multiroot workspace selects the

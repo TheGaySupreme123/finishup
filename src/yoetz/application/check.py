@@ -652,6 +652,17 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             else {"review_input_manifest": dict(result.review_input_manifest.items())}
         ),
         **({} if result.totals is None else {"totals": result.totals}),
+        # Issue #1012: present only when the request set ``await_observations``.
+        **(
+            {}
+            if result.observations_awaited is None
+            else {
+                "observations_awaited": {
+                    "state": result.observations_awaited.state,
+                    "pending_count": str(result.observations_awaited.pending_count),
+                }
+            }
+        ),
     }
 
 
@@ -3343,6 +3354,10 @@ def _request_digest(
     route_profile: Literal["policy", "strict"],
 ) -> str:
     source = cast(dict[str, JsonValue], request.model_dump(mode="json", by_alias=True))
+    # Issue #1012: the optional pre-check wait shapes only the call that asked for it and records
+    # nothing, so it stays outside the operation identity. Requests without it keep their digest,
+    # and a same-request recovery may set or omit it.
+    source.pop("await_observations", None)
     source["scope"] = {"claim_ids": scope.claim_ids, "obligation_ids": scope.obligation_ids}
     source["policy_packs"] = packs
     source["route_profile"] = route_profile

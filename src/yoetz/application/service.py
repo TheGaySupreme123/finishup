@@ -106,7 +106,12 @@ from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.host_lineage import HostLineageRegistryPort
 from yoetz.ports.ids import IdPort
 from yoetz.ports.importer import ImportAllocation
-from yoetz.ports.ledger import CheckAwaitingHuman, CheckCommitResult, FrozenCase
+from yoetz.ports.ledger import (
+    CheckAwaitingHuman,
+    CheckCommitResult,
+    CheckObservationsAwaited,
+    FrozenCase,
+)
 from yoetz.ports.publish_response_catalog import (
     PublishResponseCatalogPort,
     PublishResponseKey,
@@ -2410,7 +2415,10 @@ class Application:
         route_profile: Literal["policy", "strict"] = "policy",
         host_profile: McpHostProfile = "generic",
         repository_privacy_context: RepositoryPrivacyContext | None = None,
+        observations_awaited: CheckObservationsAwaited | None = None,
     ) -> CheckCommitResult | CheckAwaitingHuman:
+        """Run one check; ``observations_awaited`` is the daemon's pre-gate wait (issue #1012)."""
+
         from yoetz.application.check import execute_check
 
         await self._require_repository_route(request, repository_privacy_context)
@@ -2433,12 +2441,16 @@ class Application:
             else CheckWorkspaceSource(locator.path, repository_privacy_context.commitment)
         )
         with check_workspace_source_scope(source):
-            return await execute_check(
+            result = await execute_check(
                 self,  # pyright: ignore[reportArgumentType]
                 request,
                 route_profile=route_profile,
                 host_profile=host_profile,
             )
+        if observations_awaited is not None and type(result) is CheckCommitResult:
+            # Describes this call's wait only; nothing about it is recorded in the ledger.
+            result = replace(result, observations_awaited=observations_awaited)
+        return result
 
     async def respond(
         self,

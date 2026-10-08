@@ -24,6 +24,7 @@ from yoetz.domain.observation import (
     ObservationIngestResult,
     ObservationSource,
 )
+from yoetz.domain.observation_budget import AdmissionLossCause
 from yoetz.domain.values import JsonObject, JsonValue, validate_commitment
 from yoetz.ports.control_reasons import CONTROL_ERROR_REASONS
 from yoetz.protocol.ids import IdKind, validate_id
@@ -74,6 +75,10 @@ _REASONS: Final = frozenset(
         "invalid_session",
         "observe",
         "outbox_overflow",
+        # The closed admission dimension that refused a non-replayable input,
+        # recorded beside `outbox_overflow` so a loss range is diagnosable
+        # without input content (tb4n1 B3).
+        *("admission_loss_" + item.value for item in AdmissionLossCause),
         "service_unavailable",
         "service_incompatible",
         "vault_locked",
@@ -95,7 +100,8 @@ _REASONS: Final = frozenset(
         # temporary selection override are still active (issue #843).
         "session_end_unrecorded",
         # One host event refused at stdin ingress for exceeding
-        # ``MAX_HOOK_STDIN_BYTES``, named per host because the reading process
+        # ``MAX_HOOK_SKIM_BYTES`` (or a complete oversized body that failed the
+        # skim's safety checks), named per host because the reading process
         # is the only thing that still knows which host it was: the body was
         # never parsed, so hook payload identity (tool name, session, paths) is
         # unavailable. Before these, an oversized Cursor write was recorded as
@@ -105,10 +111,13 @@ _REASONS: Final = frozenset(
         "codex_payload_too_large",
         "claude_payload_too_large",
         "cursor_payload_too_large",
-        # Cursor retained a structural identity for one hook body over the
-        # trusted cap and inside the skim cap. Content was not captured. Codex
-        # and Claude Code do not skim, so they have no sibling of this reason
-        # (issue #667).
+        # A host retained a structural identity for one hook body over the
+        # trusted cap and inside the skim cap. Content was not captured (issue
+        # #667). Codex and Claude Code skim too since tb4n1 (B5); a body that
+        # fits again once its image bytes are dropped, or a Yoetz-owned tool
+        # whose content is never captured, records none of these.
+        "codex_payload_content_omitted",
+        "claude_payload_content_omitted",
         "cursor_payload_content_omitted",
         "auto_attach_retry_failed",
         # Why a consented SessionStart (or its turn-boundary retry) produced no
@@ -189,6 +198,10 @@ _REASONS: Final = frozenset(
         # once-per-frontier/once-per-blocker memory could not be written.
         "closure_gate_blocker_rechecked",
         "closure_gate_memory_unwritten",
+        # The Stop pass drained this task's hook rows to the current frontier before the
+        # closure gate read status, or the bounded Stop drain left some pending (tb4n1 B4/C6).
+        "stop_drain_complete",
+        "stop_drain_incomplete",
         "hook_slo_breached",
         # A host's automatic tool-call reviewer (Claude Code auto mode) denied a
         # scoped AI-powered ``check`` before Yoetz received it, or a permission

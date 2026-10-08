@@ -43,6 +43,7 @@ from yoetz.kernel.observed_failures import (
     observed_event_ids_from_coverage,
     observed_failure_states,
 )
+from yoetz.kernel.outcome_corrections import superseded_unknown_results
 from yoetz.kernel.policies.response_support import (
     BASE_RESPONSE_INADMISSIBLE_GAPS,
     RESEARCH_REJECTION_PRESENT_FACT,
@@ -282,7 +283,12 @@ def _limiting_refs(
         observed,
         through=claim_record.source_frontier,
     )
+    # An unknown hook result whose outcome the host's stream later recorded for the same action
+    # is not a separate limitation: the corrected result stands for the call (#1001).
+    superseded = superseded_unknown_results(case.projection.results, include=observed.__contains__)
     for result_id, record in case.projection.results.items():
+        if result_id in superseded:
+            continue
         action = (
             None
             if record.payload is None

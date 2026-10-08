@@ -297,6 +297,20 @@ def render_human_check(result: CheckSuccessModel) -> str:
     ]
     if result.totals is not None:
         lines.insert(2, render_check_totals(result.totals.model_dump(mode="json")))
+    if result.observations_awaited is not None:
+        # Issue #1012: the optional pre-check wait for this task's hook rows.
+        awaited = result.observations_awaited
+        lines.insert(
+            2,
+            "Hook observations awaited: complete"
+            if awaited.state == "complete"
+            else (
+                f"Hook observations awaited: bounded_timeout ({int(awaited.pending_count)} "
+                "still pending; the check used the record as it stood)"
+                if awaited.state == "bounded_timeout"
+                else "Hook observations awaited: unavailable (local outbox not readable)"
+            ),
+        )
     if result.review_input_manifest is not None:
         compat_line = render_review_input_manifest_compat_line(
             result.review_input_manifest.model_dump(mode="json", by_alias=True)

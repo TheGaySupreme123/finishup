@@ -123,7 +123,7 @@ def command_identity_for(command: str) -> str:
 
 
 def _logical_key(payload: EventPayload, identifier: EventId) -> str:
-    for name in ("result_id", "action_id", "claim_id", "obligation_id"):
+    for name in ("result_id", "action_id", "claim_id", "obligation_id", "evidence_id"):
         value = getattr(payload, name, None)
         if value is not None:
             return str(value)
@@ -318,6 +318,37 @@ class ObservedLedger:
         )
         return result
 
+    def correct_outcome(
+        self, unknown: ResultId, outcome: ResultOutcome, *, exit_status: int | None
+    ) -> ResultId:
+        """Append the host stream's corrected result for the action of one unknown hook result.
+
+        Mirrors ``materialize_observation_outcome_correction``: a second, immutable result
+        linked to the same action, with no gap (#1001).
+        """
+
+        action = next(
+            record.payload.action_id
+            for record in self.records
+            if isinstance(record, AcceptedEvent)
+            and isinstance(record.payload, ResultRecordedPayload)
+            and record.payload.result_id == unknown
+        )
+        self.runs += 1
+        result = result_id(f"res_00000000-0000-4000-8000-{self.runs:012d}")
+        self._append(
+            _RESULT,
+            ResultRecordedPayload(
+                result,
+                action,
+                outcome,
+                exit_status=exit_status,
+                summary=f"Observed corrected result status={outcome.value}",
+            ),
+            observed=True,
+        )
+        return result
+
     def fail(self, command: str | None, *, exit_status: int = 1) -> ResultId:
         return self.run(command, ResultOutcome.FAILURE, exit_status=exit_status)
 
@@ -404,7 +435,9 @@ def omitted_results(ledger: ObservedLedger) -> tuple[str, ...]:
     return tuple(refs)
 
 
-def receipt_limitations(ledger: ObservedLedger) -> str:
+def receipt_limitations(
+    ledger: ObservedLedger, *, extra_gaps: tuple[str, ...] = ()
+) -> str:
     records = ledger.prefix
     projection = replay(records)
     coverage = Coverage(
@@ -414,14 +447,16 @@ def receipt_limitations(ledger: ObservedLedger) -> str:
         evidence_immutability=EvidenceImmutability.METADATA_ONLY,
         ledger_freshness=LedgerFreshness.PARTIAL,
         check_types=(CheckType.NONE,),
-        known_gaps=("check_not_recorded",),
+        known_gaps=tuple(sorted({"check_not_recorded", *extra_gaps})),
     )
     context = ReceiptBuildContext(
         projection=projection,
         subject_frontier=Frontier(projection.frontier, projection.head_digest),
         availability=CaseAvailabilityFacts(),
         coverage=coverage,
-        gaps=(CaseGap("check_not_recorded", "check_not_recorded", ()),),
+        gaps=tuple(
+            CaseGap(code, code, ()) for code in sorted({"check_not_recorded", *extra_gaps})
+        ),
         finding_states=(),
         applicable_check=None,
         records=records,

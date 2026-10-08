@@ -42,6 +42,11 @@ from yoetz.adapters.keys.secret_memory import LocalSecretMemory
 from yoetz.adapters.keys.vault_passphrase import VaultRootEnvelope
 from yoetz.adapters.repository_identity import resolve_repository_privacy_context
 from yoetz.adapters.session_events import SessionEventMonitor
+from yoetz.application.observation_await import (
+    TaskPendingProbe,
+    await_observations_bound,
+    await_task_observations,
+)
 from yoetz.application.observation_drain import (
     ObservationDrainSummary,
 )
@@ -107,7 +112,11 @@ from yoetz.ports.control import (
 )
 from yoetz.ports.diagnostics import StartupCheckResult
 from yoetz.ports.keys import KeyStorePort, MacKeyPurpose
-from yoetz.ports.ledger import CheckAdmissionStage, check_admission_stage
+from yoetz.ports.ledger import (
+    CheckAdmissionStage,
+    CheckObservationsAwaited,
+    check_admission_stage,
+)
 from yoetz.ports.observation import ObservationStoreLockTimeout
 from yoetz.ports.secret_memory import (
     HumanAuthorizationProof,
@@ -1135,25 +1144,53 @@ class ServiceDaemon:
             # Set before dispatch: a busy hook ingest can time out client-side, and the rows it
             # could not drain are exactly the ones the sweep should pick up promptly.
             self._observation_ingest_wake.set()
+        awaits_observations = (
+            request.method is ControlMethod.CHECK
+            and type(body) is CheckRequest
+            and body.await_observations is True
+        )
         try:
             if (
                 request.method is ControlMethod.CHECK
                 and type(body) is CheckRequest
                 and body.mode != "deterministic_only"
             ):
-                return await self._check_waits.run(
-                    (body.writer_id, body.request_id),
-                    hashlib.sha256(canonical_encode(body.model_dump(mode="json"))).hexdigest(),
-                    lambda: self._dispatch_ready_once(
+                check_body = body
+
+                async def detached() -> object:
+                    # The wait runs inside the detached operation, before either dispatch gate
+                    # is taken, so the sweeper can deliver rows while this check waits.
+                    awaited = (
+                        await self._await_check_observations(check_body, request.deadline_ms)
+                        if awaits_observations
+                        else None
+                    )
+                    return await self._dispatch_ready_once(
                         projection_context,
                         request,
                         repository_privacy_context,
                         detached_check=True,
-                    ),
+                        observations_awaited=awaited,
+                    )
+
+                # The pre-check wait is outside the operation identity, as in the ledger digest.
+                identity = body.model_dump(mode="json", exclude={"await_observations"})
+                return await self._check_waits.run(
+                    (body.writer_id, body.request_id),
+                    hashlib.sha256(canonical_encode(identity)).hexdigest(),
+                    detached,
                     request.deadline_ms,
                 )
+            awaited = (
+                await self._await_check_observations(cast(CheckRequest, body), request.deadline_ms)
+                if awaits_observations
+                else None
+            )
             return await self._dispatch_ready_once(
-                projection_context, request, repository_privacy_context
+                projection_context,
+                request,
+                repository_privacy_context,
+                observations_awaited=awaited,
             )
         except PublicOperationError as exc:
             if (
@@ -1165,6 +1202,25 @@ class ServiceDaemon:
                 self._observation_sweep_wake.set()
             raise
 
+    async def _await_check_observations(
+        self, body: CheckRequest, deadline_ms: int | None
+    ) -> CheckObservationsAwaited:
+        """Run the optional bounded wait for this task's pending hook rows (issue #1012).
+
+        Runs before the dispatch gates: the sweeper takes the observation gate per row, so a
+        wait under the gates could only ever time out. Never raises for the wait itself.
+        """
+
+        application = self._application
+        sweep = None if application is None else getattr(application, "observation_sweep", None)
+        probe = getattr(sweep, "task_pending_probe", None)
+        return await await_task_observations(
+            cast(TaskPendingProbe, probe) if callable(probe) else None,
+            body.session_id,
+            wake=self._observation_sweep_wake.set,
+            bound_seconds=await_observations_bound(deadline_ms),
+        )
+
     async def _dispatch_ready_once(
         self,
         projection_context: ClientProjectionContext,
@@ -1172,6 +1228,7 @@ class ServiceDaemon:
         repository_privacy_context: RepositoryPrivacyContext | None,
         *,
         detached_check: bool = False,
+        observations_awaited: CheckObservationsAwaited | None = None,
     ) -> object:
         # A recovery ceremony holds this same lock across an unbounded human wait, so an
         # unbounded acquire would hang every ordinary call for as long as someone stares at a
@@ -1214,6 +1271,7 @@ class ServiceDaemon:
                 request,
                 repository_privacy_context,
                 detached_check=detached_check,
+                observations_awaited=observations_awaited,
             )
         finally:
             try:
@@ -1296,6 +1354,7 @@ class ServiceDaemon:
         repository_privacy_context: RepositoryPrivacyContext | None,
         *,
         detached_check: bool = False,
+        observations_awaited: CheckObservationsAwaited | None = None,
     ) -> object:
         application = self._application
         if application is None:
@@ -1319,12 +1378,18 @@ class ServiceDaemon:
             try:
                 if request.deadline_ms is None or detached_check:
                     internal = await self._invoke_ready_handler(
-                        handler, request, repository_privacy_context
+                        handler,
+                        request,
+                        repository_privacy_context,
+                        observations_awaited=observations_awaited,
                     )
                 else:
                     async with asyncio.timeout(request.deadline_ms / 1_000):
                         internal = await self._invoke_ready_handler(
-                            handler, request, repository_privacy_context
+                            handler,
+                            request,
+                            repository_privacy_context,
+                            observations_awaited=observations_awaited,
                         )
             except TimeoutError as exc:
                 # Includes local observation-store contention inside the handler: the wire
@@ -1365,6 +1430,8 @@ class ServiceDaemon:
         handler: object,
         request: ControlCallRequest,
         repository_privacy_context: RepositoryPrivacyContext | None = None,
+        *,
+        observations_awaited: CheckObservationsAwaited | None = None,
     ) -> object:
         operation = cast(Callable[..., Awaitable[object]], handler)
         kwargs: dict[str, object] = {}
@@ -1373,6 +1440,9 @@ class ServiceDaemon:
                 kwargs["route_profile"] = request.route_profile
         if request.method is ControlMethod.CHECK and request.host_profile is not None:
             kwargs["host_profile"] = request.host_profile
+        if request.method is ControlMethod.CHECK and observations_awaited is not None:
+            # Only a request that set ``await_observations`` passes this (issue #1012).
+            kwargs["observations_awaited"] = observations_awaited
         if request.method in {
             ControlMethod.START,
             ControlMethod.PUBLISH_WORK,

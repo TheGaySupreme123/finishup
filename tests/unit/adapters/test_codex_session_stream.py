@@ -51,7 +51,7 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.observation_budget import ObservationMode
+from yoetz.domain.observation_budget import AdmissionLossCause, ObservationMode
 from yoetz.domain.values import JsonObject, Timestamp
 
 
@@ -555,11 +555,11 @@ def test_oversized_continuation_survives_final_envelope_backpressure(
                 state: object,
                 plan: object,
                 incoming: object,
-            ) -> bool:
+            ) -> AdmissionLossCause:
                 del workspace_commitment, state, plan, incoming
-                return False
+                return AdmissionLossCause.QUEUE_COUNT
 
-            blocked.setattr(LocalObservationStore, "_selected_admission_plan_allowed", overflow)
+            blocked.setattr(LocalObservationStore, "_selected_admission_plan_refusal", overflow)
         failed = reconcile_session_stream(
             store,
             workspace_commitment=workspace,
@@ -947,11 +947,11 @@ def test_rotated_identity_retries_from_header_when_first_envelope_is_blocked(
                 state: object,
                 plan: object,
                 incoming: object,
-            ) -> bool:
+            ) -> AdmissionLossCause:
                 del workspace_commitment, state, plan, incoming
-                return False
+                return AdmissionLossCause.QUEUE_COUNT
 
-            blocked.setattr(LocalObservationStore, "_selected_admission_plan_allowed", overflow)
+            blocked.setattr(LocalObservationStore, "_selected_admission_plan_refusal", overflow)
         failed = reconcile_session_stream(
             LocalObservationStore(_state=tmp_path),
             workspace_commitment=workspace,

@@ -671,7 +671,9 @@ section digests and byte counts when describing what the reviewer actually recei
 
 Before the receipt, add the optional boolean `final_review: true` to a whole-case check. It judges
 each stated requirement and requested output against the task, with or without a completion claim.
-The other fields are unchanged.
+The other fields are unchanged. Any check may also set `await_observations: true` instead of
+polling `status` for commands you just ran: Yoetz waits up to about 3 s for this task's hook
+observations still being delivered, and `observations_awaited` reports whether they all arrived.
 
 ```json
 {

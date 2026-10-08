@@ -68,6 +68,10 @@ from yoetz.domain.values import (
 )
 from yoetz.kernel.claims import effective_claim_items
 from yoetz.kernel.completion_scope import completion_scope_codes
+from yoetz.kernel.outcome_corrections import (
+    HOST_OUTCOME_UNAVAILABLE_GAP,
+    superseded_unknown_results,
+)
 from yoetz.kernel.plan_drift import plan_drift_signals
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import (
@@ -2065,8 +2069,25 @@ def build_deterministic_case(
             (item.source_event_id,),
         )
 
+    # A hook result whose unknown outcome the host's stream later supplied for the same action
+    # no longer leaves `host_outcome_unavailable` in the case: the outcome is recorded (#1001).
+    # Only service-derived hook observations take part on either side (ADR-022 decision 2 keeps
+    # `hook_observed` unselectable by cooperative requests), so an agent-published result can
+    # neither be superseded nor supersede.
+    def _hook_observed(source_event: EventId) -> bool:
+        record = records_by_event.get(source_event)
+        return record is not None and PublicationChannel.HOOK_OBSERVED in set(
+            record.coverage.publication_channels
+        )
+
+    superseded_sources = {
+        projection.results[result].source_event_id
+        for result in superseded_unknown_results(projection.results, include=_hook_observed)
+    }
     for record in accepted_prefix:
         for known_gap in record.coverage.known_gaps:
+            if known_gap == HOST_OUTCOME_UNAVAILABLE_GAP and record.event_id in superseded_sources:
+                continue
             if known_gap not in gaps:
                 _add_gap(gaps, known_gap, known_gap, ())
 
@@ -2219,6 +2240,21 @@ def build_deterministic_case(
                 }
             ),
         )
+
+    if superseded_sources:
+        for ref, source_event in source_by_ref.items():
+            coverage = coverage_by_ref.get(ref)
+            if (
+                source_event in superseded_sources
+                and coverage is not None
+                and HOST_OUTCOME_UNAVAILABLE_GAP in coverage.known_gaps
+            ):
+                coverage_by_ref[ref] = replace(
+                    coverage,
+                    known_gaps=tuple(
+                        gap for gap in coverage.known_gaps if gap != HOST_OUTCOME_UNAVAILABLE_GAP
+                    ),
+                )
 
     return DeterministicCase(
         projection=projection,

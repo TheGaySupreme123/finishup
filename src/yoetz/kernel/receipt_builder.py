@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -10,6 +11,7 @@ from typing import Final, Literal, cast
 
 from yoetz.domain.check_totals import render_check_totals
 from yoetz.domain.events import (
+    AcceptedEvent,
     CheckRecordedPayload,
     ClaimKind,
     ClaimRecordedPayloadV1_1,
@@ -119,7 +121,7 @@ from yoetz.kernel.plan_scope import CurrentPlanScope, current_plan_scope
 from yoetz.kernel.projections import ObligationProjectionRecord, ProjectionRecord, ProjectionState
 from yoetz.kernel.reducers import is_material_event_family
 from yoetz.kernel.task_facts import STANDING_TASK_FACT_GAPS
-from yoetz.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, weakest
+from yoetz.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, PublicationChannel, weakest
 from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile, SemanticStatus
 
 __all__ = [
@@ -1423,6 +1425,43 @@ def _semantic_usage_sentence(provenance: SemanticProvenance | None) -> str:
     )
 
 
+_INPUT_LOSS_CAUSE = re.compile(r"Refusal cause: ([a-z_]+(?:, [a-z_]+)*)\. ")
+
+
+def _input_loss_causes(context: ReceiptBuildContext) -> tuple[str, ...]:
+    """Closed refusal causes the service-authored loss-lane markers disclosed (#998).
+
+    Only ``hook_observed`` evidence written by the observation coordinator carries the fixed
+    marker sentence; every token is checked against the closed cause vocabulary.
+    """
+
+    from yoetz.domain.observation_budget import AdmissionLossCause
+
+    if "observation_input_loss" not in context.coverage.known_gaps:
+        return ()
+    allowed = {item.value for item in AdmissionLossCause}
+    hook_observed = {
+        record.event_id
+        for record in context.records
+        if isinstance(record, AcceptedEvent)
+        and PublicationChannel.HOOK_OBSERVED in record.coverage.publication_channels
+    }
+    causes: set[str] = set()
+    for record in context.projection.evidence.values():
+        if record.source_event_id not in hook_observed:
+            continue
+        payload = record.payload
+        description = None if payload is None else payload.description
+        if description is None or not description.startswith(
+            "At least one non-replayable observation was lost."
+        ):
+            continue
+        match = _INPUT_LOSS_CAUSE.search(description)
+        if match is not None:
+            causes.update(token for token in match.group(1).split(", ") if token in allowed)
+    return tuple(sorted(causes))
+
+
 def _sections(
     *,
     include: ReceiptInclude,
@@ -1448,6 +1487,7 @@ def _sections(
     check_suffix: CheckSuffixClass | None = None,
     engine_derived_suffix: str | None = None,
     host_observation_suffix: bool = False,
+    input_loss_causes: tuple[str, ...] = (),
     observed_failure_sentence: str = "",
     caller_digest_counts: _CallerDigestCounts = _NO_CALLER_DIGESTS,
     limitation_response_suffix: bool = False,
@@ -1671,6 +1711,8 @@ def _sections(
                 "loss remains a limitation after queue recovery; rerunning a read supplies "
                 "evidence for its new time and state only."
             )
+            if input_loss_causes:
+                gap_body += " Recorded refusal cause: " + ", ".join(input_loss_causes) + "."
         if CALLER_DIGEST_PROVENANCE_GAPS & set(gap_codes):
             gap_body += " " + _caller_digest_sentence(caller_digest_counts)
         # What the AI-powered reviewer knew of the user's request (issue #908), in fixed words.
@@ -1865,6 +1907,7 @@ def build_receipt(
         check_suffix=context.check_suffix,
         engine_derived_suffix=engine_derived_suffix,
         host_observation_suffix=host_observation_suffix,
+        input_loss_causes=_input_loss_causes(context),
         observed_failure_sentence=_observed_failure_history_sentence(context),
         caller_digest_counts=_caller_digest_counts(context),
         limitation_response_suffix=limitation_response_suffix,
