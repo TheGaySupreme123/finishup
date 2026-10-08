@@ -280,6 +280,9 @@ def _finding_row(number: int, todo_state: str) -> dict[str, object]:
 
 def _findings_status_result() -> StatusResultModel:
     wire = _lineage_status_result().model_dump(mode="json")
+    # An unset optional field dumps as null here; the public wire omits it (issue #982).
+    if wire.get("credential_heuristic") is None:
+        wire.pop("credential_heuristic", None)
     wire["view"] = "findings"
     wire["page"] = {
         "items": [_finding_row(index, state) for index, state in enumerate(_FINDING_STATES)],

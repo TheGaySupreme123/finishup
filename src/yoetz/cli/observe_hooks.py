@@ -4254,11 +4254,11 @@ def handle_observe(
             # Above the trusted cap the event keeps its structural row (and so
             # its pairing) instead of being lost; only its content is gone
             # (tb4n1 B5). The gap also keeps content capture off for this row.
+            oversized_event = (
+                event_name or _token_or_none(payload.get("hook_event_name")) or "observe"
+            )
             _ingress_gap = _oversized_ingress_gap(
-                payload,
-                source=source,
-                event=event_name or _token_or_none(payload.get("hook_event_name")) or "observe",
-                _state=_state,
+                payload, source=source, event=oversized_event, _state=_state
             )
         harness_id: Literal["claude", "codex", "cursor"] = (
             "claude"

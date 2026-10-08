@@ -435,9 +435,7 @@ def omitted_results(ledger: ObservedLedger) -> tuple[str, ...]:
     return tuple(refs)
 
 
-def receipt_limitations(
-    ledger: ObservedLedger, *, extra_gaps: tuple[str, ...] = ()
-) -> str:
+def receipt_limitations(ledger: ObservedLedger, *, extra_gaps: tuple[str, ...] = ()) -> str:
     records = ledger.prefix
     projection = replay(records)
     coverage = Coverage(
@@ -454,9 +452,7 @@ def receipt_limitations(
         subject_frontier=Frontier(projection.frontier, projection.head_digest),
         availability=CaseAvailabilityFacts(),
         coverage=coverage,
-        gaps=tuple(
-            CaseGap(code, code, ()) for code in sorted({"check_not_recorded", *extra_gaps})
-        ),
+        gaps=tuple(CaseGap(code, code, ()) for code in sorted({"check_not_recorded", *extra_gaps})),
         finding_states=(),
         applicable_check=None,
         records=records,

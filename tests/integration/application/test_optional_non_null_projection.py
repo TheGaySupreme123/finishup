@@ -76,6 +76,7 @@ from yoetz.protocol.models import (
     RespondEvidenceSummaryModel,
     RespondResponseModel,
     ReviewInputManifestModel,
+    SemanticRedactedValueModel,
     StartSuccessModel,
     StatusAdviceItemModel,
     StatusClosureReadinessModel,
@@ -205,6 +206,9 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "verified",
                 "totals",
                 "overall_next",
+                # Issue #982 PL2-1 and issue #1012.
+                "semantic_redacted_values",
+                "observations_awaited",
             }
         ),
     ),
@@ -291,8 +295,16 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (StatusProjectDetectionModel, frozenset({"resource_paths"})),
     (
         StatusOperationPageModel,
-        frozenset({"semantic_progress", "admission", "semantic_withheld_items"}),
+        frozenset(
+            {
+                "semantic_progress",
+                "admission",
+                "semantic_withheld_items",
+                "semantic_redacted_values",
+            }
+        ),
     ),
+    (SemanticRedactedValueModel, frozenset({"source_ref"})),
     (
         StatusSemanticProgressModel,
         frozenset({"remaining_ms", "terminal_outcome", "terminal_reason"}),
@@ -1109,6 +1121,8 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
         # Issue #907: only an insufficient_packet review that named items emits the list.
         assert "missing_for_assessment" not in projected_check
         assert "semantic_withheld_items" not in projected_check
+        assert "semantic_redacted_values" not in projected_check
+        assert "observations_awaited" not in projected_check
         assert "review_input_manifest" not in projected_check
         # Issue #961: reviewer output is absent on a deterministic check; frozen-work totals and
         # the overall continuation are filled on every new check but stay optional for legacy rows.
@@ -1126,6 +1140,8 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
             "verified",
             "totals",
             "overall_next",
+            "semantic_redacted_values",
+            "observations_awaited",
         ):
             unset = {key: value for key, value in projected_check.items() if key != field}
             model = CheckSuccessModel.model_validate(unset)
@@ -1315,7 +1331,12 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
                 "state": "complete",
                 "operation_kind": "check",
             },
-            ("semantic_withheld_items",),
+            ("semantic_withheld_items", "semantic_redacted_values"),
+        ),
+        (
+            SemanticRedactedValueModel,
+            {"item_id": "item-1", "disposition": "value_replaced", "lines": [3]},
+            ("source_ref",),
         ),
         (
             StatusHistoryItemV14Model,
@@ -1491,6 +1512,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
                 "verified",
                 "totals",
                 "overall_next",
+                "semantic_redacted_values",
+                "observations_awaited",
             ),
         ),
     ):
@@ -1509,6 +1532,12 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "test_review_input_manifest_omits_unset_review_phase"
     )
     covered["StatusOperationPageModel", "semantic_withheld_items"] = (
+        "test_nested_multi_agent_results_omit_unset_fields"
+    )
+    covered["StatusOperationPageModel", "semantic_redacted_values"] = (
+        "test_nested_multi_agent_results_omit_unset_fields"
+    )
+    covered["SemanticRedactedValueModel", "source_ref"] = (
         "test_nested_multi_agent_results_omit_unset_fields"
     )
     for model, fields in (

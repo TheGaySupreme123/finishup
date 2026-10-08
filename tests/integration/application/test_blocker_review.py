@@ -424,7 +424,10 @@ async def test_closing_review_challenges_a_contradicted_blocker_and_the_agent_an
     content = str(decision_rows[0].get("content"))
     assert "yoetz-blocker:dependency_unavailable" in content
     assert "No original snapshot was found" in content
-    assert "[REDACTED]" in content
+    # Egress replaces only the credential-like value, in place (issue #982).
+    from yoetz.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
+
+    assert EGRESS_CREDENTIAL_PLACEHOLDER.decode() in content
     assert any(
         "Recorded blockers: " in str(question)
         for question in cast(list[JsonValue], document["question_set"])
