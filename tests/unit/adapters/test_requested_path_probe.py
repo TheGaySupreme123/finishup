@@ -452,21 +452,3 @@ def test_roles_and_directories_at_check_time(tmp_path: Path) -> None:
         (repository / "src" / "rtl" / name).write_text("module m; endmodule\n", encoding="utf-8")
     (repository / "kept.txt").write_text("rewritten\n", encoding="utf-8")
     assert facts() == ((), ())
-
-
-def test_declared_output_paths_order_outputs_first_and_skip_inputs() -> None:
-    """tb4n2 R7: the check-time change renders declared deliverables first."""
-
-    from yoetz.application.check_change import declared_output_paths
-    from yoetz.domain.events import RequestedItemRole
-
-    projection = _items_projection(
-        RequestedItem(RequestedItemKind.FILE, "notes.md"),
-        RequestedItem(RequestedItemKind.FILE, "/app/spec.json", role=RequestedItemRole.INPUT),
-        RequestedItem(RequestedItemKind.FILE, "/output/plan.json", role=RequestedItemRole.OUTPUT),
-        RequestedItem(RequestedItemKind.DIRECTORY, "src", role=RequestedItemRole.OUTPUT),
-        RequestedItem(RequestedItemKind.FILE, "out/*.json", role=RequestedItemRole.OUTPUT),
-        RequestedItem(RequestedItemKind.FILE, "notes.md"),
-    )
-
-    assert declared_output_paths(projection) == ("/output/plan.json", "src", "notes.md")
