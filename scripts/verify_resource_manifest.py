@@ -155,6 +155,12 @@ _CODEX_SKILL_MEMBERS: Final = (
 # is deliberately listed here; nothing is discovered by scanning the repository.
 _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     (
+        "fixtures/canonical/check-observations-awaited-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/check-totals-1.4.0.case.json",
         "canonical_vector",
         "application/json",
