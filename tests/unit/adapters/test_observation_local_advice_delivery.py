@@ -146,6 +146,12 @@ def _run(tmp_path: Path, event: str, session: str, **payload: object) -> str:
     return ""
 
 
+def _post(tmp_path: Path, session: str) -> str:
+    """One ordinary successful tool call: the hook that carries standing advice a Stop withheld."""
+
+    return _run(tmp_path, "PostToolUse", session, tool_name="shell", exit_status=0)
+
+
 def _consented(tmp_path: Path) -> tuple[LocalObservationStore, str]:
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -254,11 +260,13 @@ def test_standing_advice_never_masks_actionable_advice(
 def test_standing_advice_reaches_the_agent_only_at_session_boundaries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """SessionStart and Stop may carry it; the per-tool-call channel never does.
+    """SessionStart carries it; a Stop withholds it for exactly one later PostToolUse (#985).
 
-    The honest bound: Codex fires Stop per assistant turn, so standing advice
-    can reappear at most once per turn, and only when a different text was
-    delivered in between.
+    The per-tool-call channel never carries it on its own. Advice never rides a
+    Stop (the Stop channel continues the agent), so a Stop that finds standing
+    advice pending marks it, and only the first later PostToolUse carries it.
+    That keeps the honest bound: at most once per turn, and only when a
+    different text was delivered in between.
     """
 
     _consented(tmp_path)
@@ -279,7 +287,10 @@ def test_standing_advice_reaches_the_agent_only_at_session_boundaries(
     )
     assert "resolve_failed_command" in failed
     _run(tmp_path, "PostToolUse", "cadence", tool_name="shell", exit_status=0, correlation_id="c1")
-    assert "connect_provider" in _run(tmp_path, "Stop", "cadence")
+    assert _run(tmp_path, "Stop", "cadence") == ""
+    assert "connect_provider" in _post(tmp_path, "cadence")
+    # Carried once: the marker clears on delivery, so the next tool call is quiet again.
+    assert "connect_provider" not in _post(tmp_path, "cadence")
 
 
 def test_usable_provider_receives_no_connect_provider_at_stop(
@@ -319,7 +330,8 @@ def test_credential_revocation_resurfaces_connect_provider_from_current_facts(
     assert _run(tmp_path, "Stop", "revoked") == ""
 
     _compose(monkeypatch, _STANDING)
-    assert "connect_provider" in _run(tmp_path, "Stop", "revoked")
+    assert _run(tmp_path, "Stop", "revoked") == ""
+    assert "connect_provider" in _post(tmp_path, "revoked")
 
 
 def test_delivered_then_retired_condition_resurfaces_at_the_documented_cadence(
@@ -331,18 +343,22 @@ def test_delivered_then_retired_condition_resurfaces_at_the_documented_cadence(
     returned renders byte-identical text, so within the same session scope it
     stays suppressed exactly like any repeat (#241). The current evidence is
     still in the workspace snapshot, and the next session boundary delivers it.
+    A Stop never delivers it (#985); it reaches the first later PostToolUse.
     """
 
     store, workspace = _consented(tmp_path)
     _compose(monkeypatch, _STANDING)
-    assert "connect_provider" in _run(tmp_path, "Stop", "flap")
+    assert _run(tmp_path, "Stop", "flap") == ""
+    assert "connect_provider" in _post(tmp_path, "flap")
 
     _compose(monkeypatch, _USABLE)
     assert _run(tmp_path, "Stop", "flap") == ""
+    assert _post(tmp_path, "flap") == ""
 
     _compose(monkeypatch, _STANDING)
     # Same scope, identical text: the #241 dedup holds even across the retire.
     assert _run(tmp_path, "Stop", "flap") == ""
+    assert _post(tmp_path, "flap") == ""
     snapshot = store.advice_snapshot_for(workspace)
     assert snapshot is not None
     assert any(item.rule_code == "provider_not_ready" for item in snapshot.ranked_items), (
@@ -433,7 +449,10 @@ def test_failed_stdout_write_redelivers_the_advice_on_the_next_hook(
     assert (state.session_advice_suppression or {}).get(scope) is None, (
         "a delivery that never reached stdout was recorded as delivered"
     )
-    assert "connect_provider" in _run(tmp_path, "Stop", "broken")
+    # The undelivered advice is still pending: the Stop withholds it and the next tool call
+    # carries it (#985).
+    assert _run(tmp_path, "Stop", "broken") == ""
+    assert "connect_provider" in _post(tmp_path, "broken")
 
 
 def test_successful_emit_records_the_delivery_identity(
@@ -452,10 +471,15 @@ def test_successful_emit_records_the_delivery_identity(
     assert "connect_provider" not in _run(tmp_path, "Stop", "recorded")
 
 
-def test_stop_advice_uses_block_decision_not_hook_specific_output(
+def test_stop_emits_no_advice_and_carries_standing_advice_to_the_next_tool_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#222: Codex Stop rejects hookSpecificOutput as invalid JSON."""
+    """A Codex Stop never emits advice (#985), and never hookSpecificOutput (#222).
+
+    Codex Stop rejects hookSpecificOutput as invalid JSON, and a ``decision: block``
+    would spend the turn's continuation the closure gate needs. The pending standing
+    advice is not consumed: the first later PostToolUse carries it.
+    """
 
     _consented(tmp_path)
     _compose(monkeypatch, _STANDING)
@@ -488,10 +512,10 @@ def test_stop_advice_uses_block_decision_not_hook_specific_output(
         skip_service=True,
     )
     assert code == 0
-    emitted = json.loads(out.getvalue().decode())
+    emitted = json.loads(out.getvalue().decode() or "{}")
     assert "hookSpecificOutput" not in emitted
-    assert emitted["decision"] == "block"
-    assert "connect_provider" in str(emitted["reason"])
+    assert emitted == {}
+    assert "connect_provider" in _post(tmp_path, "stop-shape")
 
 
 def test_stop_hook_active_does_not_block_or_consume_advice(
@@ -522,7 +546,8 @@ def test_stop_hook_active_does_not_block_or_consume_advice(
 
     guarded = _run(tmp_path, "Stop", "loop-guard", stop_hook_active=True)
     assert guarded == ""
-    assert "connect_provider" in _run(tmp_path, "Stop", "loop-guard")
+    assert _run(tmp_path, "Stop", "loop-guard") == ""
+    assert "connect_provider" in _post(tmp_path, "loop-guard")
 
 
 def test_claude_stop_loop_guard_does_not_consume_advice(
@@ -567,7 +592,8 @@ def test_claude_stop_loop_guard_does_not_consume_advice(
 
     assert code == 0
     assert json.loads(out.getvalue().decode() or "{}") == {}
-    assert "connect_provider" in _run(tmp_path, "Stop", session)
+    assert _run(tmp_path, "Stop", session) == ""
+    assert "connect_provider" in _post(tmp_path, session)
 
 
 def test_session_end_does_not_consume_undeliverable_advice(
@@ -598,7 +624,8 @@ def test_session_end_does_not_consume_undeliverable_advice(
 
     teardown = _run(tmp_path, "SessionEnd", "teardown")
     assert teardown == ""
-    assert "connect_provider" in _run(tmp_path, "Stop", "teardown")
+    assert _run(tmp_path, "Stop", "teardown") == ""
+    assert "connect_provider" in _post(tmp_path, "teardown")
 
 
 def test_a_then_b_then_a_redelivers_a(tmp_path: Path) -> None:
