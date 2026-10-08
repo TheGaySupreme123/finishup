@@ -390,5 +390,8 @@ Everything else stays `live`, including a code no recorded check ever carried. T
 only recorded checks, so replay is stable. A historical gap never lowers the conclusion, is never
 listed as a current limitation or counted in the result's coverage, and is rendered in its own
 "Cleared earlier (historical)" section; only the unreleased `receipt-document` 1.3.0 artifact writes
-it, and earlier artifacts keep every gap live exactly as issued. Classification and
-`GAP_CLASSIFICATION_VERSION` are unchanged. Field names: `docs/INTERFACES.md`.
+it, and earlier artifacts keep every gap live exactly as issued. A parent's lineage snapshot of a
+child applies the same rule: a retained-only code the child's latest tested check cleared is left
+out of the child's snapshot coverage, so a cleared child gap never bounds the parent as
+`lineage_child_coverage_gap`. Classification and `GAP_CLASSIFICATION_VERSION` are unchanged. Field
+names: `docs/INTERFACES.md`.

@@ -33,6 +33,7 @@ from yoetz.domain.coordination import (
 )
 from yoetz.domain.events import (
     AcceptedEvent,
+    CheckRecordedPayload,
     ChildDependenciesRecordedPayload,
     EventDraft,
     EventSchema,
@@ -150,6 +151,35 @@ def _stable_id(kind: IdKind, digest: str) -> str:
         IdKind.REQUEST: "req_",
     }[kind]
     return prefix + str(uuid.UUID(bytes=bytes(raw)))
+
+
+def _cleared_retained_gaps(
+    records: Iterable[LedgerRecord], latest_check_event: object, candidates: set[str]
+) -> frozenset[str]:
+    """Retained-only gap codes a later check cleared: the rule the child's receipt applies.
+
+    Mirrors ``application.receipt._historical_gaps`` (issue #1017): among the checks recorded up
+    to the latest tested one, a code an earlier check carried and the latest no longer carries.
+    """
+
+    if not candidates or latest_check_event is None:
+        return frozenset()
+    checks: list[CheckRecordedPayload] = []
+    for record in records:
+        if type(record.payload) is CheckRecordedPayload:
+            checks.append(record.payload)
+        if record.event_id == latest_check_event:
+            break
+    else:
+        return frozenset()
+    if not checks:
+        return frozenset()
+    return frozenset(
+        code
+        for code in candidates
+        if code not in checks[-1].coverage.known_gaps
+        and any(code in check.coverage.known_gaps for check in checks[:-1])
+    )
 
 
 def _coverage_with_gaps(coverage: Coverage, gaps: Iterable[str]) -> Coverage:
@@ -901,13 +931,26 @@ class LineageManifestCoordinator:
             else coverage_for_channel(PublicationChannel.ENGINE_DERIVED)
         )
         coverage = _coverage_with_gaps(coverage, projection.coverage_gaps)
+        live_codes = set(coverage.known_gaps)
+        retained: set[str] = set()
         for _finding_key, finding_record in sorted(
             projection.findings.items(), key=lambda item: str(item[0]).encode("ascii")
         ):
             finding = finding_record.payload
             if type(finding) is not Finding:
                 raise _invalid()
-            coverage = _coverage_with_gaps(coverage, finding.coverage.known_gaps)
+            retained.update(finding.coverage.known_gaps)
+        # Issue #1017: a gap only a retained finding still carries, that an earlier check carried
+        # and the child's latest tested check no longer does, is history in the child's receipt;
+        # it must not bound the parent either.
+        cleared = _cleared_retained_gaps(
+            records,
+            None
+            if projection.latest_tested_state is None
+            else projection.latest_tested_state.source_check_event_id,
+            retained - live_codes,
+        )
+        coverage = _coverage_with_gaps(coverage, sorted(retained - cleared, key=str.encode))
         findings = list(_child_finding_snapshots(projection))
 
         receipt_id_value = None
