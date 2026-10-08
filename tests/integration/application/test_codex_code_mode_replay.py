@@ -1648,3 +1648,87 @@ async def test_concurrent_pre_and_post_deliveries_record_one_action(
     # its own read then saw the action the first delivery committed.
     assert lock.contended.is_set()
     assert len(lookups) == 2 and lookups[0] is None and lookups[1] is not None
+
+
+def _compact(cell: _Replay) -> None:
+    """A Codex context compaction: ``PreCompact`` then a ``SessionStart`` with source compact.
+
+    The hook generation advances at the compact start; the rollout file is not rotated, so the
+    session stream stays in its first generation.
+    """
+
+    cell.hook("PreCompact", trigger="auto")
+    cell.hook("SessionStart", source="compact")
+
+
+@pytest.mark.anyio
+async def test_compaction_keeps_folding_stream_outcomes_into_hook_calls(
+    replay: _Replay,
+) -> None:
+    """#1019 (tb4n2 N-1, pretrain D): a post-compaction outcome still corrects its hook call.
+
+    Before the fix every shell call after the compact start became two actions: the hook's
+    ``Bash`` row with an unknown outcome and a separate stream ``CommandExecution`` action.
+    """
+
+    _session_start(replay)
+    _running_run(replay, "call_before")
+    replay.append(_command_execution("call_before", "cargo test", 101, "2026-09-29T18:00:10.000Z"))
+    await _sweep_all(replay)
+    _compact(replay)
+    hook_generation = replay.store.current_session_generation(replay.commitment, replay.session)
+    assert hook_generation == 2
+    _running_run(replay, "call_after")
+    replay.append(_command_execution("call_after", "cargo test", 0, "2026-09-29T18:05:10.000Z"))
+    replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
+    await _sweep_all(replay)
+    actions = [cast(ActionRecordedPayload, row.payload) for row in replay.rows("action_recorded")]
+    results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
+    assert len(actions) == 2
+    assert all(item.action_kind is ActionKind.COMMAND for item in actions)
+    by_action: dict[str, list[tuple[ResultOutcome, int | None]]] = {}
+    for item in results:
+        by_action.setdefault(str(item.action_id), []).append((item.outcome, item.exit_status))
+    assert sorted(by_action.values(), key=repr) == sorted(
+        [
+            [(ResultOutcome.UNKNOWN, None), (ResultOutcome.FAILURE, 101)],
+            [(ResultOutcome.UNKNOWN, None), (ResultOutcome.SUCCESS, 0)],
+        ],
+        key=repr,
+    )
+    # Every unknown hook row is superseded by its stream outcome: none stays unknown alone.
+    assert all(
+        any(outcome is not ResultOutcome.UNKNOWN for outcome, _ in facts)
+        for facts in by_action.values()
+    )
+    # A replay of the whole outbox is idempotent: no second action, no second correction.
+    await _sweep_all(replay)
+    assert len(replay.rows("action_recorded")) == 2
+    assert len(replay.rows("result_recorded")) == 4
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mismatch", ["call_id", "command"])
+async def test_compaction_alias_never_folds_a_different_call_or_command(
+    replay: _Replay, mismatch: str
+) -> None:
+    """#1019 guard: a different call id or command commitment never corrects the hook call."""
+
+    _session_start(replay)
+    _compact(replay)
+    _running_run(replay, "call_after")
+    item = "call_other" if mismatch == "call_id" else "call_after"
+    command = "cargo test" if mismatch == "call_id" else "cargo build"
+    replay.append(_command_execution(item, command, 0, "2026-09-29T18:05:10.000Z"))
+    replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
+    await _sweep_all(replay)
+    actions = [cast(ActionRecordedPayload, row.payload) for row in replay.rows("action_recorded")]
+    results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
+    hook_action = next(item.action_id for item in actions if "Codex hook" in item.description)
+    hook_facts = [
+        (item.outcome, item.exit_status) for item in results if item.action_id == hook_action
+    ]
+    # The hook call keeps its unknown outcome; the success belongs to another action.
+    assert hook_facts == [(ResultOutcome.UNKNOWN, None)]
+    assert len(actions) == 2
+    assert (ResultOutcome.SUCCESS, 0) in [(item.outcome, item.exit_status) for item in results]

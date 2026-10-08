@@ -1922,6 +1922,85 @@ def paired_action_linked_roles(draft_roles: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(role for role in draft_roles if role != PAIRED_ACTION_ROLE)
 
 
+@dataclass(frozen=True, slots=True)
+class CodexCallGenerationLink:
+    """The paired action one Codex stream command completion names in one generation.
+
+    ``command_identity`` is the base ``omitted:<commitment>`` command identity the
+    completion carries; an aliasing caller compares it with the committed action.
+    """
+
+    generation: int
+    action_id: str
+    action_event_id: str
+    command_identity: str
+
+
+def codex_stream_call_generation_links(
+    envelope: ObservationEnvelope,
+    *,
+    task_id: str,
+    generations: tuple[int, ...],
+) -> tuple[CodexCallGenerationLink, ...]:
+    """Return the paired-call action identities a stream completion would name per generation.
+
+    A Codex hook advances its session generation at every ``SessionStart``, including the
+    ``compact`` start after a context compaction, while the session stream's generation follows
+    the rollout file, which compaction does not rotate. The pair's action identity includes the
+    generation, so after a compaction a stream completion no longer names its hook call (#1019).
+    This returns the candidate identities for the given generations so the coordinator can find
+    the hook call. Only a completed, paired Codex stream command with a host call id and a keyed
+    command commitment qualifies; every other envelope returns ``()``.
+    """
+
+    if type(envelope) is not ObservationEnvelope:
+        return ()
+    structural = cast(Mapping[str, JsonValue], envelope.structural_payload)
+    if (
+        envelope.source is not ObservationSource.CODEX_SESSION_STREAM
+        or not stream_event_is_completed_tool(envelope.event_kind, structural)
+        or ObservationGapCode.UNPAIRED_EVENT.value in envelope.gap_codes
+    ):
+        return ()
+    pairing_mode, correlation_kind = _pairing_contract(envelope, structural)
+    if pairing_mode != "paired":
+        return ()
+    correlation = _correlation(structural, correlation_kind=correlation_kind)
+    commitment = structural.get("command_commitment")
+    family = _action_kind(_tool_name(structural))
+    if correlation is None or type(commitment) is not str or family is not ActionKind.COMMAND:
+        return ()
+    links: list[CodexCallGenerationLink] = []
+    for generation in generations:
+        if type(generation) is not int or isinstance(generation, bool) or generation < 1:
+            continue
+        aliased = replace(envelope, cursor=replace(envelope.cursor, source_generation=generation))
+        source = _materialization_call_source(
+            aliased, phase="pre", correlation=correlation, family=family.value
+        )
+        links.append(
+            CodexCallGenerationLink(
+                generation,
+                stable_observation_id(
+                    kind=IdKind.ACTION,
+                    task_id=task_id,
+                    source_identity=source,
+                    mapping_version=MATERIALIZATION_MAPPING_VERSION,
+                    role="action",
+                ),
+                stable_observation_id(
+                    kind=IdKind.EVENT,
+                    task_id=task_id,
+                    source_identity=source,
+                    mapping_version=MATERIALIZATION_MAPPING_VERSION,
+                    role="action_event",
+                ),
+                observed_command_field(commitment),
+            )
+        )
+    return tuple(links)
+
+
 def _logical_identity_digest(components: tuple[str, ...]) -> str:
     """Hash domain-separated components into a nul-free ``sha256:`` identity.
 

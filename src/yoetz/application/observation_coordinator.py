@@ -63,6 +63,7 @@ from yoetz.application.observation_materialize import (
     PairedActionLink,
     approved_check_author,
     canonical_logical_identity,
+    codex_stream_call_generation_links,
     materialize_observation_envelope,
     materialize_observation_inspection_snapshot,
     materialize_observation_outcome_correction,
@@ -222,6 +223,9 @@ _ADVICE_FINDING_KIND_BY_RULE: Final = MappingProxyType(
 )
 
 _LEGACY_UNPAIRED_REPLAY_PROFILE: Final = "legacy-paired-replay"
+# How many recent hook generations a post-compaction stream completion may search for its
+# hook call (#1019). Each Codex SessionStart (compact, resume, clear) is one generation.
+_CODEX_GENERATION_ALIAS_WINDOW: Final = 16
 _CAPTURED_CONTENT_MEDIA_TYPE: Final = "application/vnd.yoetz.observation-content+json"
 # This is the coordinator-side upper-bound guard for the central local-store
 # reservation. Keep it equal to the local capture fence: the reservation is
@@ -3008,6 +3012,12 @@ class ObservationCoordinator:
                 # failed, so re-run the idempotent materialize/append to repair it.
                 # If any step raises, the broad guard below turns it into a
                 # retryable rejection so the outbox keeps the entry pending.
+                # A post-compaction stream completion materializes under its hook call's
+                # generation so the pair folds into one action (#1019). The ingested
+                # envelope is restored before verification and advice.
+                ingested_envelope = envelope
+                stage = "generation_align"
+                envelope = await self._align_codex_stream_generation(runtime, workspace, envelope)
                 batch = materialize_observation_envelope(
                     envelope,
                     task_id=runtime.task_id,
@@ -3398,6 +3408,7 @@ class ObservationCoordinator:
                                             correction_result,
                                         )
 
+                envelope = ingested_envelope
                 stage = "verification"
                 await self._enqueue_verification(
                     runtime,
@@ -4145,6 +4156,110 @@ class ObservationCoordinator:
                 lineage_frontier=lineage_frontier,
             )
         )
+
+    async def _align_codex_stream_generation(
+        self,
+        runtime: TaskRuntime,
+        workspace: str,
+        envelope: ObservationEnvelope,
+    ) -> ObservationEnvelope:
+        """Bind a post-compaction stream completion to its hook call's generation (#1019).
+
+        The hook generation advances at every Codex ``SessionStart`` (including the
+        ``compact`` start); the stream generation follows the rollout file. After a
+        compaction the two differ, so the completion would mint a second command action
+        beside the hook call's UNKNOWN one. Rebind only when every guard holds: the same
+        task ledger (the ids are task-scoped), the same workspace lane and host session,
+        the same host call id, exactly one other-generation hook action in this task, the
+        same keyed command identity on that action, and no explicit outcome on it except
+        one this completion itself recorded (an idempotent retry). Anything else keeps the
+        stream's own generation, which is the pre-fix behavior.
+        """
+
+        own_generation = envelope.cursor.source_generation
+        own = codex_stream_call_generation_links(
+            envelope, task_id=runtime.task_id, generations=(own_generation,)
+        )
+        if len(own) != 1:
+            return envelope
+        lookup = getattr(getattr(runtime, "ledger", None), "projected_action_event", None)
+        current = getattr(self.local, "current_session_generation", None)
+        if not callable(lookup) or not callable(current):
+            return envelope
+        projected = cast(Callable[[str], Awaitable[str | None]], lookup)
+        if await projected(own[0].action_id) == own[0].action_event_id:
+            return envelope
+        hook_generation = await self._local(
+            partial(
+                cast(Callable[[str, str], int], current),
+                workspace,
+                envelope.session_commitment,
+            )
+        )
+        if type(hook_generation) is not int or isinstance(hook_generation, bool):
+            return envelope
+        top = max(hook_generation, own_generation)
+        candidates = tuple(
+            generation
+            for generation in range(top, max(0, top - _CODEX_GENERATION_ALIAS_WINDOW), -1)
+            if generation != own_generation
+        )
+        matches = [
+            link
+            for link in codex_stream_call_generation_links(
+                envelope, task_id=runtime.task_id, generations=candidates
+            )
+            if await projected(link.action_id) == link.action_event_id
+        ]
+        if len(matches) != 1:
+            return envelope
+        match = matches[0]
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        if (
+            projection is None
+            or type(projection.state) is not ProjectionState
+            or projection.lag != 0
+            or projection.rebuild_required
+        ):
+            return envelope
+        action_record = projection.state.actions.get(action_id(match.action_id))
+        action_payload = action_record.payload if action_record is not None else None
+        if (
+            action_payload is None
+            or action_payload.action_kind is not ActionKind.COMMAND
+            or action_payload.command is None
+            or action_payload.command.split(" ", 1)[0] != match.command_identity
+        ):
+            return envelope
+        aligned = replace(
+            envelope, cursor=replace(envelope.cursor, source_generation=match.generation)
+        )
+        # Results this completion itself mints under the aligned identity: its core result
+        # (when it lands before the hook's post) and its outcome correction. A retry finds
+        # them already recorded; any other explicit outcome on the hook call fails closed.
+        own_results = {
+            str(item.draft.payload.result_id)
+            for item in materialize_observation_envelope(aligned, task_id=runtime.task_id).drafts
+            if type(item.draft.payload) is ResultRecordedPayload
+        } | {
+            str(item.draft.payload.result_id)
+            for item in materialize_observation_outcome_correction(
+                aligned, task_id=runtime.task_id
+            ).drafts
+            if type(item.draft.payload) is ResultRecordedPayload
+        }
+        for result_key, record in projection.state.results.items():
+            payload = record.payload
+            if (
+                payload is not None
+                and str(payload.action_id) == match.action_id
+                and payload.outcome is not ResultOutcome.UNKNOWN
+                and str(result_key) not in own_results
+            ):
+                return envelope
+        return aligned
 
     async def _plan_action_link(
         self,
