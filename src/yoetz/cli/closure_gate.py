@@ -460,26 +460,54 @@ def closure_gate_from_readiness(
     if not items:
         if not rows and not premise and not ack_keys:
             return None
-        parts = [
+        opener = (
             "Yoetz closure gate (shown once for these blockers):"
             if rows
             else "Yoetz closure gate (shown once):"
-        ]
-        if premise:
-            parts.append(_PREMISE_TEXT)
-        if rows:
-            parts.append(_blocker_text(rows))
-        if ack_text:
-            parts.append(ack_text)
+        )
+        blocker = _blocker_text(rows) if rows else ""
         # ADR-035: the standing content-moved disclosure rides gate text that fires anyway.
         moved = _content_moved_note(readiness).strip()
-        if moved:
-            parts.append(moved)
+        # Keep only whole sentences under the host bound, choosing by priority (blocker re-check,
+        # acknowledgement re-check, premise ask, then the note) but keeping the reading order. A
+        # re-check that does not fit is not reported as asked, so its keys are not remembered and
+        # the next Stop asks it again.
+        used = len(opener)
+        chosen: set[str] = set()
+        for name, sentence in (
+            ("rows", blocker),
+            ("ack", ack_text),
+            ("premise", _PREMISE_TEXT if premise else ""),
+            ("moved", moved),
+        ):
+            if sentence and used + 1 + len(sentence) <= _MAX_TEXT_CHARS:
+                chosen.add(name)
+                used += 1 + len(sentence)
+        asked_rows = "rows" in chosen
+        asked_ack = "ack" in chosen
+        asked_premise_only = "premise" in chosen
+        if not (asked_rows or asked_ack or asked_premise_only):
+            return None
+        short_text = " ".join(
+            sentence
+            for name, sentence in (
+                ("opener", opener),
+                ("premise", _PREMISE_TEXT),
+                ("rows", blocker),
+                ("ack", ack_text),
+                ("moved", moved),
+            )
+            if name == "opener" or name in chosen
+        )
         return ClosureGate(
             identity,
-            " ".join(parts)[:_MAX_TEXT_CHARS],
-            premise_items + ((BLOCKER_RECHECK_ITEM,) if rows else ()) + ack_items,
-            keys + premise_keys + ack_keys,
+            short_text,
+            (premise_items if asked_premise_only else ())
+            + ((BLOCKER_RECHECK_ITEM,) if asked_rows else ())
+            + (ack_items if asked_ack else ()),
+            (keys if asked_rows else ())
+            + (premise_keys if asked_premise_only else ())
+            + (ack_keys if asked_ack else ()),
         )
     open_count = str(getattr(readiness, "open_obligation_count", "?"))
     if getattr(

@@ -343,3 +343,45 @@ def test_every_stop_gate_token_with_rechecks_never_reports_a_clipped_recheck_as_
     blocker_keys = [key for key in gate.blocker_keys if key.endswith(":dependency_unavailable")]
     if blocker_keys:
         assert "same yoetz-blocker line again" in gate.text
+
+
+def test_the_recheck_only_gate_never_reports_a_clipped_acknowledgement_as_asked() -> None:
+    """tb4n2 integration (Codex round 2): ``ready_with_limitations`` with three claimed blocker
+    rows, a premise dispute and three acknowledged obligations exceeds the host bound. Only whole
+    re-check sentences are kept, and only their keys are reported as asked."""
+
+    readiness = SimpleNamespace(
+        state="ready_with_limitations",
+        agent_actionable=(),
+        blocked_obligations=tuple(
+            SimpleNamespace(
+                obligation_id=f"obl_97700000-0000-4000-8000-{index:012d}",
+                blocker_kind="dependency_unavailable",
+            )
+            for index in range(3)
+        ),
+        standing_limitations=("finding_premise_disputed", "declared_output_content_moved"),
+        acknowledged_not_done_count="3",
+        acknowledged_not_done=tuple(
+            f"obl_97700000-0000-4000-8000-{100 + index:012d}" for index in range(3)
+        ),
+        acknowledged_obligation_count="3",
+    )
+    gate = closure_gate_from_readiness(
+        readiness,
+        frontier_sequence="18446744073709551615",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+    )
+    assert gate is not None
+    assert len(gate.text) <= 2000, len(gate.text)
+    ack_keys = tuple(key for key in gate.blocker_keys if key.startswith("ack:"))
+    if ack_keys:
+        whole = gate_module._acknowledgement_text(ack_keys)  # pyright: ignore[reportPrivateUsage]
+        assert whole in gate.text
+    else:
+        assert "Acknowledgement re-check" not in gate.text
+    if any(key.endswith(":dependency_unavailable") for key in gate.blocker_keys):
+        assert "same yoetz-blocker line again" in gate.text
+    # The blocker re-check has priority and always fits on its own.
+    assert "Blocker re-check (asked once)" in gate.text
