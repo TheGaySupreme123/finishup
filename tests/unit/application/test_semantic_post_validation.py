@@ -2001,3 +2001,46 @@ def test_a_newer_restatement_outranks_a_stale_ruling_in_the_same_review() -> Non
         (str(fnd(1)), "answered_not_fixed")
     ]
     assert "answer it there" in review.review_summary
+
+
+def test_citing_the_event_of_a_republished_claim_is_not_new_material() -> None:
+    """Codex review round 2: a claim's own event id is the claim, not new evidence."""
+
+    from builders.policy_cases import claim_record
+    from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
+
+    base = _formal_crypto_case()
+    republished = claim_record(
+        ClaimRecordedPayload(clm(2), ClaimKind.COMPLETION, "solve.sage works", ()), 11
+    )
+    case = replace(
+        base,
+        projection=replace(base.projection, claims={**base.projection.claims, clm(2): republished}),
+        allowed_ids=base.allowed_ids | {clm(2), evt(11)},
+        coverage_by_ref={**base.coverage_by_ref, clm(2): BASE_COVERAGE, evt(11): BASE_COVERAGE},
+    )
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "no_material_discrepancy", (), (_verdict(1, "still_present", str(evt(11))),)
+        ),
+        case,
+    )
+    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+        (str(fnd(1)), "disputed_after_rebuttal")
+    ]
+
+
+def test_a_withdrawn_contradicted_by_a_stale_restatement_is_the_dispute() -> None:
+    """Codex review round 2: contradictory output never restores pressure on a rebutted item."""
+
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "challenges_returned",
+            (_formal_crypto_reraise(str(clm(1)), str(obl(1)), restates=str(fnd(1))),),
+            (_verdict(1, "withdrawn"),),
+        )
+    )
+    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+        (str(fnd(1)), "disputed_after_rebuttal")
+    ]
+    assert "answer it there" not in review.review_summary

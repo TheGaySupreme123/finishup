@@ -48,7 +48,7 @@ A reviewer ruling that keeps an AI-powered finding open (`still_present`, `answe
 - the agent's latest readable response is `rejected` with a non-blank reason;
 - the ruling cites no recorded material (`evd_`, `res_`, `act_`, `evt_`) with a ledger sequence
   after that response. Citing an earlier finding, a re-published claim or a re-stated obligation
-  is not material: the agent restating its position is not evidence that the problem remains.
+  (or the event that recorded either) is not material: the agent restating its position is not evidence that the problem remains.
 
 The same rule applies to a challenge that restates the rejected finding (by `restates`, by the
 matching restatement key, or by replying to it), using the challenge's cited refs. The reviewer

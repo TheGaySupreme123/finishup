@@ -154,7 +154,7 @@ from yoetz.kernel.policies.work_integrity import (
     reportable_absent_outputs,
     work_integrity_findings,
 )
-from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
+from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionRecord, ProjectionState
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.review_round import review_round_stopped
@@ -3127,9 +3127,30 @@ def _cites_material_after(case: DeterministicCase, refs: Iterable[str], frontier
     return any(
         not ref.startswith("fnd_")
         and ref[:4] not in _BOOKKEEPING_PREFIXES
+        and not _bookkeeping_event(case, ref)
         and (sequence := _material_sequence(case, ref)) is not None
         and sequence > frontier
         for ref in refs
+    )
+
+
+def _bookkeeping_event(case: DeterministicCase, ref: str) -> bool:
+    """Whether an ``evt_`` ref is the event that recorded a claim or an obligation (#1020).
+
+    Citing that event is citing the claim or obligation itself, which is bookkeeping, not
+    material about the problem.
+    """
+
+    if not ref.startswith("evt_"):
+        return False
+    projection = case.projection
+    return any(
+        str(row.source_event_id) == ref
+        for rows in (
+            cast(Mapping[object, ProjectionRecord[object]], projection.claims),
+            cast(Mapping[object, ProjectionRecord[object]], projection.obligations),
+        )
+        for row in rows.values()
     )
 
 
@@ -3747,7 +3768,14 @@ def _record_restatement(
         admitted[key] = PriorFindingVerdictRecord(restated, recorded, kept)
         return True, False
     if earlier.verdict in {"fixed", "withdrawn"}:
-        admitted[key] = PriorFindingVerdictRecord(restated, "unassessable", ())
+        # A contradicted explicit ruling; when the restatement itself only repeats the concern
+        # over the agent's reasoned rejection, the item is the standing disagreement (#1020).
+        contradicted = (
+            DISPUTED_AFTER_REBUTTAL_VERDICT
+            if _disputed_after_rebuttal(case, restated, verdict, (*refs, *cited))
+            else "unassessable"
+        )
+        admitted[key] = PriorFindingVerdictRecord(restated, contradicted, ())
         return True, True
     if earlier.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT and not _disputed_after_rebuttal(
         case, restated, verdict, (*refs, *cited)
