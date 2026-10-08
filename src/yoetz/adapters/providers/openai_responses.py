@@ -299,6 +299,17 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = (
         "problem, and never spend a challenge on process state. For each problem, address the main "
         "agent directly, explain the discrepancy and the strongest plausible alternative, cite only "
         "supplied refs, and state the repair or the exact missing artifact that would resolve it. "
+        # Remedy feasibility (issue #1020): an impossible demand steered an agent into emptying a
+        # working deliverable. Ask only for what the agent can produce.
+        "Ask only for repairs or artifacts the main agent can produce from the task statement, the "
+        "workspace, and the tools shown in the packet. Never demand a hidden grader, benchmark "
+        "generator, private specification, user answer, or any other artifact the packet shows the "
+        "agent cannot obtain. When only such an artifact would settle a concern, do not request "
+        "act or provide_evidence: request state_unresolved_limitation, and rule an earlier finding "
+        "unassessable. If your own uncertainty names something the agent cannot obtain, your "
+        "ruling on that finding is unassessable, never still_present. Never recommend delivering "
+        "less, emptying a file, or withdrawing working code as a remedy. A reasoned fallback the "
+        "agent chose and disclosed, such as a documented limit, may be approved. "
         "Every value in cited_refs must come from the packet's citable_refs array and nothing else: "
         "an item_id from items[] is not citable. A cited value outside citable_refs is dropped, "
         "and a challenge left with no citable ref cannot become a finding. "
@@ -396,13 +407,17 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = (
         "rows with schema yoetz.local-finding-answer/1 are the agent's answers to Yoetz's own local "
         "findings: judge their substance like any claim, but return no prior_finding_verdicts "
         "entry for them. Rows with schema yoetz.settled-finding/1 are earlier findings the agent "
-        "settled (it will not do them, or verified a repair Yoetz could not prove): return no "
+        "settled (it will not do them, or verified a repair Yoetz could not prove), or rejected "
+        "with a reason that you repeated without newer material, recorded as "
+        "disputed_after_rebuttal: return no "
         "prior_finding_verdicts entry for them either. When you "
         "need the agent's answer before you can judge, ask it as a challenge with "
         "requested_next_step answer_question. Do not raise "
         "again a finding the main agent has answered, or request an action the packet shows was "
         "already done, unless material newer than that response shows the problem remains; then cite "
-        "that newer material and the earlier finding's fnd_ id from citable_refs. "
+        "that newer material by its ref and the earlier finding's fnd_ id from citable_refs. Yoetz "
+        "records a re-raise of a rejected finding that cites nothing newer than the rejection as "
+        "disputed_after_rebuttal: a standing disagreement that does not block the agent. "
         # Issue #980: a re-raise names the finding it restates, so it stays one item.
         "Whenever a challenge raises again the same problem, of the same finding_kind, as a "
         "finding listed in review_packet.prior_finding_refs or in a yoetz.settled-finding/1 row, "
@@ -765,7 +780,9 @@ CHALLENGE_FIELD_GLOSSARY: Final[dict[str, str]] = {
     ),
     "message_to_main_agent": (
         "What you are telling the agent, addressed to it directly: what you checked, what does "
-        "not hold, and the repair or the exact missing artifact that would resolve it."
+        "not hold, and the repair or the exact missing artifact that would resolve it. Ask only "
+        "for what the agent can produce from the task, the workspace, and the tools in the packet; "
+        "never for a hidden grader, private specification, or less delivered work."
     ),
     "requested_next_step": (
         "The single kind of response you are asking the agent for. act: do the missing work; "
@@ -774,13 +791,15 @@ CHALLENGE_FIELD_GLOSSARY: Final[dict[str, str]] = {
         "correct or withdraw what was claimed; dispute_with_evidence: rebut this challenge if you "
         "believe it is wrong; state_unresolved_limitation: disclose what remains after a recorded "
         "concrete resolution attempt, or name the specific authority or environment blocker "
-        "preventing that attempt; answer_question: you need the agent's answer before you can "
-        "judge (an interpretation it chose, a check it may have run); put the question in "
+        "preventing that attempt, or the artifact the agent cannot obtain that alone would settle "
+        "it (never request act or provide_evidence for such an artifact); answer_question: you "
+        "need the agent's answer before you can judge (an interpretation it chose, a check it may have run); put the question in "
         "discrepancy, and the next review reads the answer."
     ),
     "uncertainty": (
         "What you could not determine from the packet and what would settle it. Say so plainly "
-        "rather than hedging the challenge itself."
+        "rather than hedging the challenge itself. If only an artifact the agent cannot obtain "
+        "would settle it, the next step is state_unresolved_limitation."
     ),
     "snippet": (
         "One exact short quote copied verbatim from a provider-bound packet item that supports "
@@ -822,7 +841,8 @@ VERDICT_FIELD_GLOSSARY: Final[dict[str, str]] = {
         "Your ruling on that finding alone. fixed: cited material recorded after the finding "
         "shows the problem is gone; still_present: newer material shows it remains; "
         "answered_not_fixed: the main agent answered but the problem remains; withdrawn: you "
-        "accept the main agent's rejection; unassessable: the packet cannot settle it."
+        "accept the main agent's rejection; unassessable: the packet cannot settle it, including "
+        "when only an artifact the agent cannot obtain would settle it (never still_present then)."
     ),
     "cited_refs": (
         "The refs the ruling rests on, from citable_refs. fixed must cite evidence or a result "
