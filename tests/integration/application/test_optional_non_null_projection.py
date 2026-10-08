@@ -71,7 +71,9 @@ from yoetz.protocol.models import (
     ProjectTextRefModel,
     PublicErrorModel,
     PublishWorkAcceptedEventModel,
+    PublishWorkDryRunModel,
     PublishWorkRequest,
+    PublishWorkSuccessModel,
     ReadGuidanceSuccessModel,
     RespondEvidenceSummaryModel,
     RespondResponseModel,
@@ -79,6 +81,7 @@ from yoetz.protocol.models import (
     SemanticRedactedValueModel,
     StartSuccessModel,
     StatusAdviceItemModel,
+    StatusBlockedObligationModel,
     StatusClosureReadinessModel,
     StatusCompactItemModel,
     StatusCompactObligationModel,
@@ -86,6 +89,7 @@ from yoetz.protocol.models import (
     StatusFindingItemModel,
     StatusFindingsPageModel,
     StatusHistoryItemV14Model,
+    StatusLineageChildModel,
     StatusObligationItemModel,
     StatusObservedRunModel,
     StatusOperationPageModel,
@@ -225,9 +229,14 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
             }
         ),
     ),
-    (ChildFindingSnapshotModel, frozenset({"resolution_event_id"})),
+    (ChildFindingSnapshotModel, frozenset({"resolution_event_id", "self_verified"})),
+    (StatusLineageChildModel, frozenset({"self_verified_finding_count"})),
     (ProjectTextRefModel, frozenset({"envelope_digest"})),
     (PublishWorkAcceptedEventModel, frozenset({"summary"})),
+    # #985 publish notices and blocker confirmation, absent when nothing applies.
+    (PublishWorkSuccessModel, frozenset({"blocker_notices"})),
+    (PublishWorkDryRunModel, frozenset({"blocker_notices"})),
+    (StatusBlockedObligationModel, frozenset({"confirmation", "confirmation_event_id"})),
     (PublicErrorModel, frozenset({"safe_details"})),
     (
         ReadGuidanceSuccessModel,
@@ -248,7 +257,10 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
         ),
     ),
     (RespondEvidenceSummaryModel, frozenset({"description"})),
-    (RespondResponseModel, frozenset({"reason", "waiver_scope", "waiver_expiry"})),
+    (
+        RespondResponseModel,
+        frozenset({"reason", "waiver_scope", "waiver_expiry", "duplicate_of_finding_id"}),
+    ),
     (
         StartSuccessModel,
         frozenset({"attach_handle", "parent_task_id", "depth", "origin", "acceptance"}),
@@ -264,13 +276,24 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "acknowledged_not_done",
                 "acknowledged_not_done_count",
                 "blocked_obligations",
+                "limitation_refs_required",
+                "limitation_refs_required_count",
+                "acknowledged_obligation_count",
             }
         ),
     ),
     (StatusCompactObligationModel, frozenset({"acceptance_criteria"})),
     (
         StatusFindingItemModel,
-        frozenset({"todo_state", "review_rounds", "finding_frontier", "challenge"}),
+        frozenset(
+            {
+                "todo_state",
+                "review_rounds",
+                "finding_frontier",
+                "challenge",
+                "duplicate_of_finding_id",
+            }
+        ),
     ),
     (CheckProjectedFindingModel, frozenset({"challenge"})),
     (CheckVerifiedItemModel, frozenset({"requirement_or_claim", "snippet"})),
@@ -752,6 +775,11 @@ async def test_publish_accepted_events_omit_unset_summary() -> None:
             )
         ],
     }
+    # #985: a dry run of a batch without yoetz-blocker lines carries no blocker_notices.
+    dry_body = {**body, "request_id": protocol_id("req_", 2411), "dry_run": True}
+    dry = await app.publish_work(PublishWorkRequest.model_validate(dry_body))
+    dumped_dry = cast(object, getattr(dry, "model_dump")(mode="json", exclude_unset=True))
+    assert "blocker_notices" not in cast(Mapping[str, JsonValue], dumped_dry)
     internal = await app.publish_work(PublishWorkRequest.model_validate(body))
     assert type(internal) is PublishWorkInternalResult
     projected = await project_case(
@@ -764,6 +792,22 @@ async def test_publish_accepted_events_omit_unset_summary() -> None:
     assert events
     for event in events:
         assert "summary" not in event
+    # #985: a batch without yoetz-blocker lines carries no blocker_notices at all.
+    assert "blocker_notices" not in projected
+
+
+def test_blocked_obligation_omits_an_unset_confirmation() -> None:
+    """A blocked row an earlier 0.3 build shaped carries no confirmation fields (#985)."""
+
+    parsed = StatusBlockedObligationModel.model_validate(
+        {
+            "obligation_id": "obl_00000000-0000-4000-8000-000000000001",
+            "blocker_kind": "authority",
+            "decision_event_id": "evt_00000000-0000-4000-8000-000000000001",
+        }
+    )
+    dumped = parsed.model_dump(mode="json", exclude_unset=True)
+    assert not StatusBlockedObligationModel.optional_non_null_fields & dumped.keys()
 
 
 async def test_respond_omits_unset_optional_response_fields() -> None:
@@ -1179,7 +1223,22 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
                 "actionable": True,
                 "resolved": False,
             },
-            ("resolution_event_id",),
+            ("resolution_event_id", "self_verified"),
+        ),
+        (
+            StatusLineageChildModel,
+            {
+                "task_id": protocol_id("tsk_", 2912),
+                "parent_task_id": protocol_id("tsk_", 2913),
+                "origin": "self_registered",
+                "acceptance": "accepted",
+                "work_state": "closed",
+                "session_health": "ended",
+                "depth": "1",
+                "rollup_state": "clean",
+                "blocking_conditions": (),
+            },
+            ("self_verified_finding_count",),
         ),
         (
             ChildDependencySnapshotModel,
@@ -1459,6 +1518,10 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         ("RespondResponseModel", "waiver_expiry"): (
             "test_respond_omits_unset_optional_response_fields"
         ),
+        # Issue #996: set only on a duplicate_of answer.
+        ("RespondResponseModel", "duplicate_of_finding_id"): (
+            "test_respond_omits_unset_optional_response_fields"
+        ),
         ("StatusCompactObligationModel", "acceptance_criteria"): (
             "test_obligation_without_acceptance_criteria_projects"
         ),
@@ -1500,10 +1563,21 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "acknowledged_not_done_count",
         # Issue #977: absent from a readiness an earlier 0.3 build shaped.
         "blocked_obligations",
+        # F3: absent from a readiness an earlier 0.3 build shaped.
+        "limitation_refs_required",
+        "limitation_refs_required_count",
+        # #997: absent from a readiness an earlier 0.3 build shaped.
+        "acknowledged_obligation_count",
     ):
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (
             "test_status_closure_readiness_omits_an_unset_checklist"
+        )
+    for model in ("PublishWorkSuccessModel", "PublishWorkDryRunModel"):
+        covered[model, "blocker_notices"] = "test_publish_accepted_events_omit_unset_summary"
+    for field in ("confirmation", "confirmation_event_id"):
+        covered["StatusBlockedObligationModel", field] = (
+            "test_blocked_obligation_omits_an_unset_confirmation"
         )
     for field in ("remaining_ms", "terminal_outcome", "terminal_reason"):
         # The sampling case omits the terminal pair; the terminal case omits remaining_ms.
@@ -1558,7 +1632,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "test_nested_multi_agent_results_omit_unset_fields"
     )
     for model, fields in (
-        ("ChildFindingSnapshotModel", ("resolution_event_id",)),
+        ("ChildFindingSnapshotModel", ("resolution_event_id", "self_verified")),
+        ("StatusLineageChildModel", ("self_verified_finding_count",)),
         (
             "ChildDependencySnapshotModel",
             ("child_frontier", "child_check_id", "child_receipt_id", "membership_generation"),
@@ -1566,7 +1641,13 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         ("ProjectTextRefModel", ("envelope_digest",)),
         (
             "StatusFindingItemModel",
-            ("todo_state", "review_rounds", "finding_frontier", "challenge"),
+            (
+                "todo_state",
+                "review_rounds",
+                "finding_frontier",
+                "challenge",
+                "duplicate_of_finding_id",
+            ),
         ),
         ("CheckProjectedFindingModel", ("challenge",)),
         ("CheckVerifiedItemModel", ("snippet",)),

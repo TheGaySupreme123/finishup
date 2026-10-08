@@ -50,7 +50,11 @@ from yoetz.kernel.deterministic_checks import CaseGap, build_deterministic_case,
 from yoetz.kernel.finding_resolution import (
     unverified_resolution_finding_ids,
 )
-from yoetz.kernel.finding_todo import FindingTodoState, finding_todo_state
+from yoetz.kernel.finding_todo import (
+    FindingTodoState,
+    duplicate_link_target,
+    finding_todo_state,
+)
 from yoetz.kernel.lineage import evaluate_recorded_lineage
 from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
 from yoetz.kernel.receipt_builder import (
@@ -449,6 +453,9 @@ def _finding_states(projection: object) -> tuple[ReceiptFindingState, ...]:
                 todo is FindingTodoState.VERIFIED_RESOLVED,
                 acknowledged_not_done=todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE,
                 rejection_accepted=todo is FindingTodoState.REJECTION_ACCEPTED,
+                self_verified=todo is FindingTodoState.SELF_VERIFIED,
+                # Issue #996: the flags above are derived from the linked earlier finding.
+                duplicate_of_finding_id=duplicate_link_target(projection, item.finding_id),
             )
         )
     return tuple(states)

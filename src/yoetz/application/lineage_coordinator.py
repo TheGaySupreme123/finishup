@@ -57,12 +57,17 @@ from yoetz.domain.values import (
     Actor,
     ActorType,
     EventId,
+    FindingId,
     Frontier,
     actor_id,
     task_id,
     timestamp_from_datetime,
 )
-from yoetz.kernel.finding_resolution import finding_is_resolved
+from yoetz.kernel.finding_todo import (
+    FindingTodoState,
+    duplicate_counting_id,
+    finding_todo_state,
+)
 from yoetz.kernel.lineage import (
     LineageEvaluation,
     LineageManifest,
@@ -180,6 +185,55 @@ def _coverage_with_gaps(coverage: Coverage, gaps: Iterable[str]) -> Coverage:
         coverage.check_types,
         tuple(sorted((*coverage.known_gaps, *additions), key=str.encode)),
     )
+
+
+def _child_finding_snapshot(
+    projection: ProjectionState, finding_key: FindingId, finding: Finding
+) -> WireChildFindingSnapshot:
+    """Freeze one child finding for the parent's dependency manifest."""
+
+    priority, actionable = FINDING_KIND_TRAITS[finding.kind]
+    # Deliberately strict (issue #905): a child's ``rejection_accepted`` or
+    # ``acknowledged_not_done`` row stays actionable and unresolved here; neither ``actionable``
+    # nor ``resolved`` may be bent to mean "withdrawn", and the child's own receipt discloses
+    # the terminal state. A ``self_verified`` row (issue #984, ADR-034) also stays actionable and
+    # unresolved, and carries ``self_verified`` so the parent rolls it up as "self-verified by
+    # the child agent; Yoetz could not prove it": never clean, never parent work. ``resolved``
+    # reads the same to-do predicate as the child's own receipt (``receipt._finding_states``).
+    todo = finding_todo_state(projection, finding_key)
+    resolved = todo is FindingTodoState.VERIFIED_RESOLVED
+    record = projection.findings[finding_key]
+    return WireChildFindingSnapshot(
+        finding_id=finding.finding_id,
+        kind=finding.kind,
+        origin=finding.origin,
+        priority=priority,
+        actionable=actionable,
+        resolved=resolved,
+        resolution_event_id=record.resolved_by_check_event_id if resolved else None,
+        self_verified=(not resolved and actionable and todo is FindingTodoState.SELF_VERIFIED),
+    )
+
+
+def _child_finding_snapshots(projection: ProjectionState) -> tuple[WireChildFindingSnapshot, ...]:
+    """Freeze every readable child finding in id order, a linked pair once (issue #996).
+
+    A linked duplicate the child's readiness counts with its earlier finding
+    (``finding_todo.duplicate_counting_id``) is that finding's row, so a self-verified or
+    acknowledged pair rolls up to the parent once, as the child's own readiness counts it.
+    """
+
+    rows: list[WireChildFindingSnapshot] = []
+    for finding_key, finding_record in sorted(
+        projection.findings.items(), key=lambda item: str(item[0]).encode("ascii")
+    ):
+        finding = finding_record.payload
+        if type(finding) is not Finding:
+            raise _invalid()
+        if duplicate_counting_id(projection, finding_key) != finding_key:
+            continue
+        rows.append(_child_finding_snapshot(projection, finding_key, finding))
+    return tuple(rows)
 
 
 @dataclass(frozen=True, slots=True)
@@ -847,33 +901,14 @@ class LineageManifestCoordinator:
             else coverage_for_channel(PublicationChannel.ENGINE_DERIVED)
         )
         coverage = _coverage_with_gaps(coverage, projection.coverage_gaps)
-        findings: list[WireChildFindingSnapshot] = []
-        for finding_key, finding_record in sorted(
+        for _finding_key, finding_record in sorted(
             projection.findings.items(), key=lambda item: str(item[0]).encode("ascii")
         ):
             finding = finding_record.payload
             if type(finding) is not Finding:
                 raise _invalid()
-            priority, actionable = FINDING_KIND_TRAITS[finding.kind]
-            # Deliberately strict (issue #905): a child's ``rejection_accepted`` or
-            # ``acknowledged_not_done`` row stays actionable and unresolved here. This frozen
-            # snapshot carries only ``actionable`` and ``resolved``, and neither may be bent to
-            # mean "withdrawn"; the child's own receipt discloses the terminal state.
-            resolved = finding_is_resolved(projection, finding_key)
-            findings.append(
-                WireChildFindingSnapshot(
-                    finding_id=finding.finding_id,
-                    kind=finding.kind,
-                    origin=finding.origin,
-                    priority=priority,
-                    actionable=actionable,
-                    resolved=resolved,
-                    resolution_event_id=(
-                        finding_record.resolved_by_check_event_id if resolved else None
-                    ),
-                )
-            )
             coverage = _coverage_with_gaps(coverage, finding.coverage.known_gaps)
+        findings = list(_child_finding_snapshots(projection))
 
         receipt_id_value = None
         for record in records:

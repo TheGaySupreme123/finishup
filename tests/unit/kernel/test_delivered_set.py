@@ -147,8 +147,12 @@ def test_undeclared_file_is_ignored() -> None:
 
 def test_blocked_obligation_is_skipped() -> None:
     projection = _projection(_file("report.json"), blocker=True)
-    assert declared_delivered_items(projection) == ()
-    assert declared_output_removed(projection, {(_OBLIGATION, 0): _GONE}) == ()
+    # L4 #985: a blocker the agent only claimed suppresses nothing; a confirmed one (the check
+    # passes the case's confirmed set) skips the obligation.
+    assert declared_delivered_items(projection) != ()
+    confirmed = {_OBLIGATION}
+    assert declared_delivered_items(projection, blocked=confirmed) == ()
+    assert declared_output_removed(projection, {(_OBLIGATION, 0): _GONE}, blocked=confirmed) == ()
 
 
 @dataclass(frozen=True)
@@ -176,7 +180,7 @@ def test_input_role_is_ignored_and_directory_counts(monkeypatch: pytest.MonkeyPa
     def effective(_projection: object) -> tuple[ObligationId, ...]:
         return (obligation,)
 
-    def blocked(_projection: object) -> MappingProxyType[ObligationId, str]:
+    def blocked(_projection: object, _batches: object) -> MappingProxyType[ObligationId, str]:
         return MappingProxyType({})
 
     monkeypatch.setattr(delivered_set, "effective_obligations", effective)
@@ -209,7 +213,7 @@ def test_check_reports_the_gap_beside_requested_output_facts(
     monkeypatch.setattr(check_change, "requested_output_states", states)
     _evaluator, gaps, absent = asyncio.run(
         check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
-            SimpleNamespace(projection=projection, coverage_by_ref={}),  # type: ignore[arg-type]
+            SimpleNamespace(projection=projection, coverage_by_ref={}, gaps=()),  # type: ignore[arg-type]
             None,
             None,
             None,
@@ -270,7 +274,7 @@ def test_a_new_deliverable_written_in_the_session_and_now_gone_is_removed() -> N
         patch.setattr(check_change, "requested_output_states", states)
         _evaluator, gaps, absent = asyncio.run(
             check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
-                SimpleNamespace(projection=projection),  # type: ignore[arg-type]
+                SimpleNamespace(projection=projection, coverage_by_ref={}, gaps=()),  # type: ignore[arg-type]
                 None,
                 None,
                 None,
@@ -339,7 +343,7 @@ def test_content_moved_rule(state: RequestedOutputState, moved: bool) -> None:
 def test_content_moved_skips_role_less_and_blocked_items(monkeypatch: pytest.MonkeyPatch) -> None:
     state = {(_OBLIGATION, 0): _shrunk(201, 200, 200)}
     blocked = _projection(_file("/app/cracker.py"), blocker=True)
-    assert content_moved_declared_items(blocked, state) == ()
+    assert content_moved_declared_items(blocked, state, blocked={_OBLIGATION}) == ()
 
     def no_role(item: object) -> object:
         del item
@@ -360,7 +364,7 @@ def test_check_adds_content_moved_as_a_disclosure(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(check_change, "requested_output_states", states)
     _evaluator, gaps, absent = asyncio.run(
         check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
-            SimpleNamespace(projection=projection),  # type: ignore[arg-type]
+            SimpleNamespace(projection=projection, coverage_by_ref={}, gaps=()),  # type: ignore[arg-type]
             None,
             None,
             None,

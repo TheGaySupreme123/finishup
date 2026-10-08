@@ -63,17 +63,17 @@ from yoetz.domain.values import (
     result_id,
     validate_sha256_digest,
 )
+from yoetz.kernel.claim_limitations import (
+    DISCLOSABLE_LIMITING_OUTCOMES,
+    required_limitation_result_ids,
+    result_is_relevant_to_claim_scope,
+)
 from yoetz.kernel.finding_resolution import (
     apply_check_resolution,
     apply_check_rulings,
     reopen_findings_resolved_by,
 )
-from yoetz.kernel.observed_failures import (
-    ObservedFailureState,
-    is_observed_run_record,
-    observed_action_is_exploratory,
-    observed_failure_states_from_records,
-)
+from yoetz.kernel.observed_failures import is_observed_run_record
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import (
     ClaimProjectionRecord,
@@ -92,6 +92,7 @@ from yoetz.kernel.projections import (
     empty_projection_state,
     is_observation_limitation,
 )
+from yoetz.kernel.task_facts import disclosure_line_obligations
 from yoetz.protocol.canonical import canonical_digest
 from yoetz.protocol.coverage import LedgerFreshness
 
@@ -119,12 +120,8 @@ _MAX_SQLITE_SIGNED_INTEGER: Final = 2**63 - 1
 _REBUTTAL_DISPOSITION_VALUES: Final = frozenset(
     {ResponseDisposition.REJECTED.value, "self_verified"}
 )
-# A v1.1 completion claim must disclose every relevant typed non-success result. An `unknown`
-# outcome is not upgraded into a typed partial or failure (ADR-025 decision 3), so it is never
-# required -- but it is limiting to the local limitation policy, so `limitation_refs` also
-# accepts it as the disclosure channel a v1.1 claim would otherwise have none of.
-_TYPED_LIMITING_OUTCOMES: Final = frozenset({ResultOutcome.FAILURE, ResultOutcome.PARTIAL})
-_DISCLOSABLE_LIMITING_OUTCOMES: Final = _TYPED_LIMITING_OUTCOMES | {ResultOutcome.UNKNOWN}
+# The v1.1 completion-claim limitation rule lives in ``yoetz.kernel.claim_limitations`` so a
+# surface can name the required ids before the claim (F3); the reducer reads the same rule.
 _MATERIAL_FAMILIES: Final = frozenset(
     {
         "action_recorded",
@@ -679,6 +676,16 @@ def _locator_id[T](event: AcceptedEvent, constructor: Callable[[object], T]) -> 
         raise _corrupt() from exc
 
 
+_OBLIGATION_TRANSITIONS: Final = frozenset(
+    {
+        (ObligationStatus.OPEN, ObligationStatus.RESOLVED),
+        (ObligationStatus.OPEN, ObligationStatus.ACKNOWLEDGED_NOT_DONE),
+        (ObligationStatus.ACKNOWLEDGED_NOT_DONE, ObligationStatus.OPEN),
+        (ObligationStatus.ACKNOWLEDGED_NOT_DONE, ObligationStatus.RESOLVED),
+    }
+)
+
+
 def _apply_obligation(
     obligations: dict[ObligationId, ObligationProjectionRecord],
     event: AcceptedEvent,
@@ -700,14 +707,13 @@ def _apply_obligation(
         # Resolution is open→resolved only. Meaning fields must repeat; only status and
         # resolution_evidence_refs may change. The comparison deliberately clears evidence
         # refs for meaning equality — that is not free mutation of resolved history.
+        # Issue #997 (ADR-032 slice C): an open obligation may be acknowledged as not done, and
+        # an acknowledged one reopened or resolved by a later publication (the reverse path).
         meaning_diffs = obligation_meaning_field_diffs(previous, payload)
-        # ``acknowledged_not_done`` (obligation_published 1.1.0, #1002) is not resolved: the last
-        # effective status wins among open, acknowledged_not_done and resolved, and resolved stays
-        # terminal. Readiness and receipt meaning belong to their owners.
-        valid_transition = (
-            previous.status is not ObligationStatus.RESOLVED
-            and payload.status is not previous.status
-        )
+        # ``acknowledged_not_done`` (obligation_published 1.1.0, #997/#1002) is not resolved; the
+        # last effective status wins among open, acknowledged_not_done and resolved, and resolved
+        # stays terminal.
+        valid_transition = (previous.status, payload.status) in _OBLIGATION_TRANSITIONS
         if not valid_transition or meaning_diffs:
             if meaning_diffs:
                 raise ObligationResolutionMismatch(
@@ -748,14 +754,12 @@ def _result_is_relevant_to_claim(
     *,
     claim_frontier: int,
 ) -> bool:
-    if result_record.payload is None or result_record.source_frontier > claim_frontier:
-        return False
-    action = actions.get(result_record.payload.action_id)
-    if action is None or action.payload is None:
-        return True
-    claim_scope = _claim_scope(payload)
-    action_scope = frozenset(action.payload.obligation_refs)
-    return not claim_scope or not action_scope or not claim_scope.isdisjoint(action_scope)
+    return result_is_relevant_to_claim_scope(
+        _claim_scope(payload),
+        result_record,
+        actions,
+        claim_frontier=claim_frontier,
+    )
 
 
 def _claim_effective_meaning(
@@ -848,34 +852,14 @@ def _apply_claim(
                 "supporting_refs_must_exclude_limitations",
                 event.event_id,
             )
-        # A hook-observed failure that a later run of the same command superseded is no longer
-        # required (#909). An edit alone changes the state under test without proving a covering
-        # rerun, so it remains live and nameable below.
-        observed_states = observed_failure_states_from_records(
+        # Superseded observed failures (#909) and observed explorations are not required; the
+        # rule is shared with the surfaces that list the required ids before a claim (F3).
+        required = required_limitation_result_ids(
             results,
             actions,
             observed_event_ids,
-            through=event.ledger.ingestion_sequence,
-        )
-        required = frozenset(
-            result_id_value
-            for result_id_value, record in results.items()
-            if record.payload is not None
-            and record.payload.outcome in _TYPED_LIMITING_OUTCOMES
-            and observed_states.get(result_id_value, ObservedFailureState.LIVE)
-            is ObservedFailureState.LIVE
-            and not (
-                (action := actions.get(record.payload.action_id)) is not None
-                and action.payload is not None
-                and action.source_event_id in observed_event_ids
-                and observed_action_is_exploratory(action.payload)
-            )
-            and _result_is_relevant_to_claim(
-                payload,
-                record,
-                actions,
-                claim_frontier=event.ledger.ingestion_sequence,
-            )
+            claim_scope=_claim_scope(payload),
+            claim_frontier=event.ledger.ingestion_sequence,
         )
         supplied = frozenset(payload.limitation_refs)
         inadmissible = tuple(
@@ -883,7 +867,7 @@ def _apply_claim(
             for result_ref in payload.limitation_refs
             if (record := results.get(result_ref)) is None
             or record.payload is None
-            or record.payload.outcome not in _DISCLOSABLE_LIMITING_OUTCOMES
+            or record.payload.outcome not in DISCLOSABLE_LIMITING_OUTCOMES
             or not _limitation_scope_is_authorable(
                 payload,
                 record,
@@ -1171,6 +1155,9 @@ def _recompute_missing_gaps(
     for record in decisions.values():
         if record.payload is not None:
             for target in record.payload.affected_obligation_ids:
+                require(record.source_event_id, target)
+            # A disclosure line names its obligation in the statement (#995).
+            for _kind, target in disclosure_line_obligations(record.payload.statement):
                 require(record.source_event_id, target)
     for record in assignments.values():
         if record.payload is not None:

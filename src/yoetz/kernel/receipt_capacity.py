@@ -16,7 +16,7 @@ from yoetz.kernel.deterministic_checks import (
     healthy_storage_availability,
 )
 from yoetz.kernel.finding_resolution import finding_is_resolved, issue_key
-from yoetz.kernel.finding_todo import finding_blocks_receipt
+from yoetz.kernel.finding_todo import duplicate_counting_id, finding_blocks_receipt
 from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
 from yoetz.kernel.reducers import (
     ReplayIndex,
@@ -76,12 +76,18 @@ def receipt_blocking_finding_count(projection: ProjectionState) -> int:
     history without counting here. Non-actionable findings remain visible and can contribute
     coverage gaps, but they do not by themselves select ``unresolved_findings_remain``. A
     terminal ``rejection_accepted`` row stops counting but stays disclosed; an
-    ``acknowledged_not_done`` row keeps counting (issue #905, ``kernel/finding_todo.py``).
+    ``acknowledged_not_done`` row keeps counting (issue #905, ``kernel/finding_todo.py``). A
+    ``self_verified`` row (issue #984) stops counting as agent work but stays disclosed and keeps
+    the receipt from reading clean (``receipt_builder._conclusion``). A linked ``duplicate_of``
+    row (issue #996) counts once with the finding it duplicates (``finding_todo.duplicate_counting_id``).
     """
 
-    return sum(
-        finding_blocks_receipt(projection, finding.finding_id)
-        for finding in current_receipt_findings(projection)
+    return len(
+        {
+            duplicate_counting_id(projection, finding.finding_id)
+            for finding in current_receipt_findings(projection)
+            if finding_blocks_receipt(projection, finding.finding_id)
+        }
     )
 
 

@@ -844,6 +844,36 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
                 "actor": dict(_EXAMPLE_ACTOR),
                 "client": dict(_EXAMPLE_CLIENT),
             },
+            # Issue #997 (ADR-032 slice C): the honest last resort for an obligation the agent
+            # will not do, after repair: repeat the meaning fields, status acknowledged_not_done
+            # with a reason, on obligation_published 1.1.0. A later open or resolved
+            # publication of the same obligation takes it back.
+            {
+                "protocol_version": "0.1",
+                "schema_version": "1.0.0",
+                "request_id": _example_id("request", 13),
+                "session_id": _example_id("session", 1),
+                "writer_id": _example_id("writer", 1),
+                "expected_frontier": {"sequence": "2", "head_digest": _EXAMPLE_HEAD_DIGEST},
+                "event_drafts": [
+                    _example_draft(
+                        13,
+                        "obligation_published",
+                        {
+                            "obligation_id": _example_id("obligation", 2),
+                            "description": "State the outcome this work owes.",
+                            "acceptance_criteria": "A focused test slice passes at the claimed state.",
+                            "evidence_expectation": "A named test run or reviewed diff.",
+                            "status": "acknowledged_not_done",
+                            "requested_items": [{"item_kind": "command", "value": "pytest -q"}],
+                            "acknowledged_not_done_reason": "Out of scope for this change; reported to the user.",
+                        },
+                        version="1.1.0",
+                    ),
+                ],
+                "actor": dict(_EXAMPLE_ACTOR),
+                "client": dict(_EXAMPLE_CLIENT),
+            },
             *(
                 _lifecycle_example(40 + index, family)
                 for index, family in enumerate(
@@ -1389,11 +1419,24 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
             disposition["description"] = (
                 "Acknowledged accepts no waiver fields and, on an AI-powered review finding, "
                 "requires a reason the next review reads (for answer_question, the answer). "
-                "Acknowledged_not_done means you will "
-                "not do it and is final. Provenance_disputed contests the finding's authorship "
+                "Self_verified means you repaired it, Yoetz's later check still cannot confirm it "
+                "because of a Yoetz limit, and you checked it yourself: reason says how, and "
+                "evidence_refs (at least one) cite your recorded evidence; it is final. "
+                "Acknowledged_not_done means you will not or cannot do it, is final, and is the "
+                "last resort. Duplicate_of is only for a restatement of the SAME issue (same origin "
+                "and kind) as an earlier finding you answered: name it in duplicate_of_finding_id; "
+                "reason and evidence are optional and it is not final. Linking never resolves the "
+                "new finding (its own check must); a later check that raises its issue again "
+                "breaks the link. Provenance_disputed contests the finding's authorship "
                 "or provenance premise rather than its conclusion. It, rejected and "
                 "acknowledged_not_done require reason and accept no waiver fields. Waived "
                 "requires reason and waiver_scope."
+            )
+        duplicate_of = properties.get("duplicate_of_finding_id")
+        if isinstance(duplicate_of, dict):
+            duplicate_of["description"] = (
+                "Only with duplicate_of: an earlier, readable finding of this task with the same "
+                "origin and kind that names the same issue and is not itself linked."
             )
         finding_frontier = properties.get("finding_frontier")
         if isinstance(finding_frontier, dict):
@@ -1903,16 +1946,25 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
     _descriptor(
         "respond",
         "Respond to a finding",
-        "Records an acknowledgement, provenance dispute, or rejection for one finding at any "
-        "frontier at or after its record, such as the current status frontier, not its "
-        "subject_frontier. This appends one "
+        "Records an acknowledgement, self-verification, provenance dispute, or rejection for one "
+        "finding at any frontier at or after its record, such as the current status frontier, "
+        "not its subject_frontier. For an unresolved finding: repair it and check first. "
+        "If you repaired it and Yoetz still cannot confirm it (a Yoetz limit), verify it yourself, "
+        "record that evidence, and respond self_verified saying how you checked it, with the "
+        "evidence ids; it is refused (finding_not_rechecked, finding_not_proof_limited) while "
+        "no later check ran or Yoetz still sees the issue. A Yoetz limit is never a "
+        "yoetz-blocker. Use acknowledged_not_done only if you truly will not or cannot do it. "
+        "Only if a new finding restates the SAME issue as an earlier one you answered, respond "
+        "duplicate_of with duplicate_of_finding_id; linking never resolves the new finding. "
+        "This appends one "
         "finding-response record to the local Yoetz ledger; it does not publish to GitHub or run an "
         "AI-powered evaluation. It does not resolve other findings or establish that underlying work "
         "changed. A provenance_disputed response contests the finding's authorship or provenance "
         "premise rather than its conclusion, requires a reason, and never resolves the finding. "
         "Bounded waiver is reserved for an authorized local-CLI human and is not an agent option. "
         "A readable response removes that finding from unanswered_finding_count without reducing "
-        "receipt_blocking_finding_count, erasing its historical record, or closing an independent "
+        "receipt_blocking_finding_count (except self_verified, which is disclosed and keeps the "
+        "receipt from reading clean), erasing its historical record, or closing an independent "
         "coverage gap; only a later qualifying check of the repaired record resolves a finding. "
         "Disposition older findings before the final check. Call once per finding: a readable "
         "response to a finding returned by that check, or acknowledging a non-actionable "
@@ -2060,7 +2112,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:f4e91ea5ae6138ca381d3a990340067b6e28a545340eec9c0ca4737a18f06166",
-                "respond": "sha256:191f69e1592bd6bb23f7173725645dc339441b12eaa91c08cc3da4e9feaf0b85",
+                "respond": "sha256:cdac44bae4de573707ba1f1f5f5b12bb8391c7193c7260efc93c8181411ab71f",
                 "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:2d99f8dce9f7dca0f92d51550d2cf8585baed276f13f638103cba61a122bba23",
@@ -2072,7 +2124,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:3cd2326917a550c0a24f3e94c6141f41b1549107030154c3e5b29f46bfaef78b",
-                "respond": "sha256:191f69e1592bd6bb23f7173725645dc339441b12eaa91c08cc3da4e9feaf0b85",
+                "respond": "sha256:cdac44bae4de573707ba1f1f5f5b12bb8391c7193c7260efc93c8181411ab71f",
                 "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:2d99f8dce9f7dca0f92d51550d2cf8585baed276f13f638103cba61a122bba23",
@@ -2083,8 +2135,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:73505630e519e9578e1c1167921f17a20941a8cc555e1b8dbccf5af5cb8b236f",
-        "strict": "sha256:f880217802aafc98b76e93c3cdbb125bea0531c5430e3b88e62b9c8d0925c39f",
+        "policy": "sha256:c811a933834e191ee76af6ab3a247478a316708738edcc9918376fb2bd14f62e",
+        "strict": "sha256:f47260c21c70157639d58aece98006a873f4f92f824663fdce93cf88aaf197f6",
     }
 )
 

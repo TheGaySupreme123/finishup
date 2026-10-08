@@ -73,7 +73,7 @@ def _projection(*, block_second: bool = False) -> ProjectionState:
 
 
 def _l6_rows(projection: ProjectionState) -> set[tuple[object, int, str, str]]:
-    blocked = blocked_obligations(projection)
+    blocked = blocked_obligations(projection, {})
     return {
         (obligation, index, kind.value, value)
         for obligation, index, kind, value in declared_output_items(projection)
@@ -87,7 +87,10 @@ def test_declared_set_reads_l6_output_roles_and_agrees_with_its_helper() -> None
         rows = declared_delivered_items(projection)
         assert set(rows) == _l6_rows(projection)
         assert {(index, kind) for _o, index, kind, _v in rows} == {(1, "file"), (2, "directory")}
-        assert (_SECOND in {row[0] for row in rows}) is not block_second
+        # #985: a blocker the agent only claimed suppresses nothing; a confirmed one does.
+        assert _SECOND in {row[0] for row in rows}
+        confirmed = declared_delivered_items(projection, blocked={_SECOND})
+        assert _SECOND not in {row[0] for row in confirmed}
 
 
 def test_removed_output_fires_and_input_or_roleless_never_does() -> None:

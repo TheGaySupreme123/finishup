@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -1948,3 +1948,317 @@ def test_check_time_change_unavailable_reason_is_a_plain_sentence_in_every_forma
     ):
         assert "The check-time change was unavailable: " in rendered
         assert phrase in rendered
+
+
+def _single_agent_check(
+    coverage: Coverage, *, research_reason: str = "completed"
+) -> CheckRecordedPayload:
+    """A deterministic-only check of a single-agent run: no coordination records exist."""
+
+    research_outcome = "run" if research_reason == "completed" else "skipped"
+    return replace(
+        _check(CheckVerdict.NO_ISSUE_DETECTED, coverage),
+        policies=(
+            PolicyVersion("coordination", "0.1.0"),
+            PolicyVersion("research-evidence", "0.1.0"),
+            PolicyVersion("work-integrity", "0.1.0"),
+        ),
+        policy_executions=(
+            CheckPolicyExecutionModel(
+                policy_id="coordination",
+                policy_version="0.1.0",
+                outcome="skipped",
+                reason="not_applicable",
+            ),
+            CheckPolicyExecutionModel(
+                policy_id="research-evidence",
+                policy_version="0.1.0",
+                outcome=research_outcome,  # pyright: ignore[reportArgumentType]
+                reason=research_reason,  # pyright: ignore[reportArgumentType]
+            ),
+            CheckPolicyExecutionModel(
+                policy_id="work-integrity",
+                policy_version="0.1.0",
+                outcome="run",
+                reason="completed",
+            ),
+        ),
+    )
+
+
+def test_single_agent_deterministic_run_with_standing_host_gaps_reaches_a_clean_receipt() -> None:
+    """#986 (E2): no tb4n1 deterministic receipt could read clean. The coordination pack is
+    always ``skipped/not_applicable`` on a single-agent run, and standing host-observation gaps
+    a local absence proof tolerates were missing from the receipt's advisory list."""
+
+    from yoetz.kernel.deterministic_scope import (
+        CLEAN_COMPATIBLE_GAPS,
+        DETERMINISTIC_SCOPED_STANDING_GAPS,
+    )
+
+    gaps = ("host_outcome_unavailable", "unpaired_event")
+    coverage = _coverage(gaps=gaps)
+    case_gaps = tuple(CaseGap(code, code, ()) for code in gaps)
+    receipt = _build(
+        _context(coverage=coverage, gaps=case_gaps, check=_single_agent_check(coverage))
+    )
+    assert receipt.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    # The gaps stay disclosed; they only no longer bound the conclusion.
+    assert {item.code for item in receipt.gaps} == set(gaps)
+
+    # One list: the receipt and the scoped local verdict read the same clean-compatible gaps.
+    assert set(gaps) <= CLEAN_COMPATIBLE_GAPS
+    assert DETERMINISTIC_SCOPED_STANDING_GAPS == CLEAN_COMPATIBLE_GAPS | {
+        "semantic_review_not_requested"
+    }
+
+
+def test_a_host_gap_the_applicable_check_never_carried_still_bounds_the_receipt() -> None:
+    """#986: a host-observation gap is advisory only where the check's counters guarded it."""
+
+    gaps = ("host_outcome_unavailable",)
+    receipt_coverage = _coverage(gaps=gaps)
+    unguarded = _build(
+        _context(
+            coverage=receipt_coverage,
+            gaps=(CaseGap(gaps[0], gaps[0], ()),),
+            check=_single_agent_check(_coverage()),
+        )
+    )
+    assert unguarded.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    guarded = _build(
+        _context(
+            coverage=receipt_coverage,
+            gaps=(CaseGap(gaps[0], gaps[0], ()),),
+            check=_single_agent_check(receipt_coverage),
+        )
+    )
+    assert guarded.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+
+
+def test_full_check_completeness_reads_the_same_clean_list() -> None:
+    """#986: a policy- or semantic-route check is ``complete`` under the same list, and a
+    host-observation gap counts only when the command counters show no unknown outcome."""
+
+    from yoetz.application.check import full_check_gaps_clean
+    from yoetz.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
+
+    clean = {"commands": {"unknown": "0", "live_failed": "0"}}
+    unknown = {"commands": {"unknown": "1", "live_failed": "0"}}
+    assert full_check_gaps_clean(("unpaired_event", "plan_unrefined_before_first_edit"), clean)
+    assert not full_check_gaps_clean(("host_outcome_unavailable",), unknown)
+    assert full_check_gaps_clean(("content_unselected",), unknown)
+    assert not full_check_gaps_clean(("observation_input_loss",), clean)
+    assert not full_check_gaps_clean(("semantic_review_not_requested",), clean)
+    assert all(full_check_gaps_clean((code,), clean) for code in sorted(CLEAN_COMPATIBLE_GAPS))
+
+
+@pytest.mark.parametrize("reason", ("scope_excluded", "material_unavailable"))
+def test_a_pack_that_left_roots_unexamined_keeps_the_receipt_bounded(reason: str) -> None:
+    """``not_applicable`` means nothing to judge; a scoped or unreadable pack is real loss."""
+
+    coverage = _coverage()
+    receipt = _build(
+        _context(coverage=coverage, check=_single_agent_check(coverage, research_reason=reason))
+    )
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+
+
+def test_a_standing_gap_a_local_proof_does_not_tolerate_still_bounds_the_receipt() -> None:
+    code = "observation_input_loss"
+    coverage = _coverage(gaps=(code,))
+    receipt = _build(
+        _context(
+            coverage=coverage,
+            gaps=(CaseGap(code, code, ()),),
+            check=_single_agent_check(coverage),
+        )
+    )
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+
+
+def test_child_self_verified_finding_reads_self_verified_on_the_parent_receipt() -> None:
+    """Issue #984 (ADR-034): a child's self-verified repair is not parent work and never clean."""
+
+    from yoetz.domain.coordination import (
+        LineageAcceptance,
+        LineageOrigin,
+        SessionHealth,
+        WorkState,
+    )
+    from yoetz.domain.receipts import CHILD_SELF_VERIFIED_NOTE
+    from yoetz.kernel.lineage import (
+        CHILD_SELF_VERIFIED_GAP,
+        ChildDependencySnapshot,
+        ChildFindingSnapshot,
+        LineageManifest,
+        evaluate_lineage,
+    )
+    from yoetz.protocol.canonical import JsonValue
+    from yoetz.protocol.errors import ProtocolValueError
+    from yoetz.protocol.schemas import validate_schema_instance
+
+    child_task = task_id("tsk_00000000-0000-4000-8000-000000000077")
+    child_finding = finding_id("fnd_00000000-0000-4000-8000-000000000077")
+    kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
+    snapshot = ChildDependencySnapshot(
+        child_task_id=child_task,
+        origin=LineageOrigin.PARENT_MINTED,
+        acceptance=LineageAcceptance.ACCEPTED,
+        work_state=WorkState.CLOSED,
+        session_health=SessionHealth.ENDED,
+        child_frontier=_FRONTIER,
+        child_check_id=_CHECK_EVENT_ID,
+        child_receipt_id=receipt_id("rcp_00000000-0000-4000-8000-000000000077"),
+        coverage=_coverage(),
+        findings=(
+            ChildFindingSnapshot(
+                finding_id=child_finding,
+                kind=kind,
+                origin=FindingOrigin.DETERMINISTIC,
+                priority=FINDING_KIND_TRAITS[kind][0],
+                resolved=False,
+                actionable=True,
+                self_verified=True,
+            ),
+        ),
+        lineage_authority_revision="rev-1",
+        child_check_subject_frontier=_FRONTIER,
+        manifest_event_id=_SOURCE_EVENT_ID,
+    )
+    lineage = evaluate_lineage(LineageManifest((snapshot,)), base_coverage=_coverage())
+    assert lineage.actionable_finding_ids == ()
+    check = _check(CheckVerdict.NO_ISSUE_DETECTED, lineage.coverage)
+    marker = f"lineage:{CHILD_SELF_VERIFIED_GAP}:{child_task}:{_SOURCE_EVENT_ID}"
+    context = replace(
+        _context(
+            check=check,
+            coverage=lineage.coverage,
+            gaps=(CaseGap(marker, CHILD_SELF_VERIFIED_GAP, (_SOURCE_EVENT_ID,)),),
+        ),
+        lineage=lineage,
+    )
+    versions = replace(
+        _versions(),
+        schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+    )
+    receipt = build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        versions,
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+    # Never clean and never "unresolved findings remain": the parent has nothing to do.
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    assert CHILD_SELF_VERIFIED_GAP in receipt.coverage.known_gaps
+    (child,) = receipt.children.children
+    assert child.outcome == "annotated"
+    (row,) = child.findings
+    assert (row.self_verified, row.resolved, row.actionable) == (True, False, True)
+
+    wire = receipt_document_to_json(receipt)
+    wire_row = cast(dict[str, Any], wire["children"])["children"][0]["findings"][0]
+    assert wire_row["self_verified"] is True
+    validate_schema_instance("receipt-document", "1.3.0", cast(JsonValue, wire))
+    assert receipt_document_from_json(wire) == receipt
+
+    note = f"{child_finding}: {CHILD_SELF_VERIFIED_NOTE}"
+    assert CHILD_SELF_VERIFIED_NOTE == "self-verified by the child agent; Yoetz could not prove it"
+    assert note in render_receipt_human(receipt, markdown=True)
+    assert note in render_receipt_human(receipt, markdown=False)
+    assert "1 child finding was self-verified by the child agent" in render_receipt_compact(receipt)
+
+    # An explicit false is not a recorded spelling.
+    wire_row["self_verified"] = False
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(wire)
+
+
+def test_a_linked_duplicate_is_disclosed_by_ids_and_never_reads_cleaner() -> None:
+    """Issue #996: the duplicate's flags are its earlier finding's; the link is ids only."""
+
+    finding = _finding()
+    earlier = finding_id("fnd_00000000-0000-4000-8000-000000000996")
+    base = _context(finding=finding, check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()))
+    context = replace(
+        base,
+        finding_states=(
+            ReceiptFindingState(
+                finding.finding_id, resolved=False, duplicate_of_finding_id=earlier
+            ),
+        ),
+    )
+    legacy = _build(context)
+    assert legacy.duplicate_finding_links == ()
+    current = build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        replace(
+            _versions(),
+            schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+        ),
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+    assert [
+        (item.finding_id, item.duplicate_of_finding_id) for item in current.duplicate_finding_links
+    ] == [(finding.finding_id, earlier)]
+    # The earlier finding is open, so the duplicate is too: never a clean conclusion.
+    assert current.conclusion is ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN
+    with pytest.raises(ValueError):
+        ReceiptFindingState(
+            finding.finding_id, resolved=False, duplicate_of_finding_id=finding.finding_id
+        )
+
+
+def test_acknowledged_obligation_is_disclosed_and_never_clean() -> None:
+    """Issue #997 (ADR-032 slice C): an obligation the agent will not do caps the conclusion."""
+
+    from yoetz.protocol.canonical import JsonValue
+    from yoetz.protocol.schemas import validate_schema_instance
+
+    obligation = ObligationPublishedPayload(
+        obligation_id("obl_00000000-0000-4000-8000-000000000020"),
+        "Run focused verification",
+        "Recorded successful result",
+        ObligationStatus.ACKNOWLEDGED_NOT_DONE,
+        acknowledged_not_done_reason="The deployment policy is the task owner's decision.",
+    )
+    plan = PlanPublishedPayload(1, "Verified task", (obligation.obligation_id,), ())
+    context = _context(
+        check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()), plan=plan, obligation=obligation
+    )
+    current = build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        replace(
+            _versions(),
+            schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+        ),
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+    assert current.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    assert current.acknowledged_not_done_obligation_ids == (obligation.obligation_id,)
+    wire = receipt_document_to_json(current)
+    validate_schema_instance("receipt-document", "1.3.0", cast(JsonValue, wire))
+    assert "Obligations acknowledged as not done" in render_receipt_human(current, markdown=True)
+    # Counted once (review item 2): not open in the outstanding-work section.
+    outstanding = next(
+        section for section in current.sections if section.key is ReceiptSectionKey.OUTSTANDING_WORK
+    )
+    assert "remains open" not in outstanding.body
+    assert "1 obligation is acknowledged as not done (not counted as open)." in outstanding.body
+    assert obligation.obligation_id not in outstanding.items
+    # The reason stays on the obligation; the receipt carries ids only.
+    assert "task owner's decision" not in str(wire.get("acknowledged_not_done_obligation_ids"))

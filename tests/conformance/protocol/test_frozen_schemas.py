@@ -319,6 +319,7 @@ def test_schema_registry_is_complete() -> None:
                     "privacy/outbound-case-1.1.0.schema.json",
                     "findings/provider-judgment-1.1.0.schema.json",
                     "events/response-recorded-1.1.0.schema.json",
+                    "events/obligation-published-1.1.0.schema.json",
                     "operations/respond-request-1.1.0.schema.json",
                     "operations/respond-result-1.1.0.schema.json",
                     "operations/publish-work-result-1.1.0.schema.json",

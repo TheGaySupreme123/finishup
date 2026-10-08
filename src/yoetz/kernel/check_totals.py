@@ -65,7 +65,12 @@ def build_check_totals(
         if payload is None:
             obligations["unreadable"] += 1
             continue
-        obligations["resolved" if payload.status is ObligationStatus.RESOLVED else "open"] += 1
+        if payload.status is ObligationStatus.RESOLVED:
+            obligations["resolved"] += 1
+        elif payload.status is not ObligationStatus.ACKNOWLEDGED_NOT_DONE:
+            # #997: an acknowledged obligation is neither open nor resolved; the rendering
+            # names the remainder of ``declared`` as acknowledged, so it is counted once.
+            obligations["open"] += 1
         attempted = attempted_items_for_obligation(state, obligation)
         for item in payload.requested_items:
             requested["attempted" if item.value in attempted else "unattempted"] += 1

@@ -1226,6 +1226,13 @@ otherwise to `insufficient_coverage`. Ordinarily an `insufficient_coverage` chec
 actionable finding. The two closed completion-scope gaps are the narrow exception: selected findings
 remain visible, but the gap dominates both the check verdict and receipt conclusion because empty
 completion scope cannot support an action-required completion verdict.
+A clean conclusion also needs every policy execution complete: `run/completed`, or
+`skipped/not_applicable` on the whole case (no root of that pack's kind exists; #986), never
+`scope_excluded`, `material_unavailable` or `failed`; and only gaps in
+`kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS` (ADR-033 amendment of 2026-10-07), where a
+member of `HOST_OBSERVATION_GUARDED_GAPS` counts only if the applicable check's own coverage
+carried it. A full check's `complete` completeness uses the same list
+(`full_check_gaps_clean`), with those host members only when `commands_complete(totals)`.
 
 `domain/receipts.py` owns the exact schema-shaped `ReceiptDocument`, `ReceiptVersionSlice`,
 policy/schema version entries, obligation/response/gap/redaction records, and canonical sections. It
@@ -2383,6 +2390,13 @@ check/receipt identity, coverage, findings state, `lineage_authority_revision`, 
 only reuses recorded manifests and never records or refreshes one (#500). The parent receipt
 projects direct children one level: current actionable findings on accepted children block
 clean-completion wording, while the receipt is still produced and names the child and finding.
+A child finding the child agent self-verified (issue #984, ADR-034) carries `self_verified: true`
+on its manifest row (emitted only when true; it requires `resolved: false` and the kind's
+`actionable: true`). The evaluator keeps it out of the parent's actionable findings and, on an
+accepted child, records the standing gap `finding_self_verified` with its finding ids, so the
+parent reads at best `insufficient_coverage`, never `unresolved_findings_remain`. The
+`receipt-document` `1.3.0` child finding row carries the same optional `self_verified`, and
+markdown/text render "self-verified by the child agent; Yoetz could not prove it" under it.
 Pending-acceptance children and informational findings annotate only; accepted live children are
 open gaps and accepted abandoned children are incomplete gaps. An unresolved informational
 finding stays on the child row and does not replace an accepted lifecycle gap or a coverage or
@@ -6704,10 +6718,14 @@ project views keep their own documented coverage.
 status success; on the unreleased status-result 1.4.0 wire the six checklist fields are optional
 as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null). Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
-`gap_classification_version` (`"2"`; the wire still admits `"1"` from an earlier 0.3 build),
+`gap_classification_version` (`"4"` since issues #995 and #984 added the standing codes
+`assumption_disclosed`, `verification_limit_disclosed` and `finding_premise_disputed`; `"3"` added
+`finding_self_verified`; the wire still admits `"1"`–`"3"` from an earlier 0.3 build),
 and three groups. `agent_actionable` lists, in order, the
 agent conditions present (`obligations_open`, `findings_unanswered`, `receipt_findings_unresolved`
-unless every receipt-blocking finding's latest response is `acknowledged_not_done`,
+unless every receipt-blocking finding's latest response is `acknowledged_not_done`; a
+`self_verified` finding never counts as receipt-blocking and is disclosed as the standing code
+`finding_self_verified` instead,
 `no_plan_published`, `no_obligations_declared`, `projection_stale`), then `check_in_progress`
 while a check holds the session frontier (read at the head through the ledger's
 `has_active_frozen_case`; an unanswerable probe counts as in flight), then `check_not_recorded` or
@@ -6718,7 +6736,19 @@ then every actionable gap code and
 `unclassified_gap:<code>` for a base code the running build does not know.
 `standing_limitations` lists the classified standing base codes (plus
 `check_payload_unavailable`). `acknowledged_not_done` lists up to 64 obligation and finding ids
-recorded as not done, and `acknowledged_not_done_count` counts them all. Every recorded page gap
+recorded as not done, and `acknowledged_not_done_count` counts them all. An obligation is recorded as not done
+by `obligation_published` 1.1.0 with `status: "acknowledged_not_done"` and a required
+`acknowledged_not_done_reason` (1..4096 UTF-8 bytes; 1.1.0 is used if and only if a 1.1.0-only
+feature is; issue #997, ADR-032 slice C); it is then not open and not resolved, a later
+publication of it with `open` or `resolved` takes it back, and the obligations view shows it as
+`open`. A `decision_recorded` statement line `yoetz-assumption:<obligation id>` or
+`yoetz-verification-limit:<obligation id>` (issue #995, ADR-033) adds the standing code
+`assumption_disclosed` or `verification_limit_disclosed`; it never blocks or resolves anything,
+and superseding the decision withdraws it. `finding_premise_disputed` (D7a) discloses
+acknowledged findings the review says the task requires; the Stop gate asks about them once. The
+optional `acknowledged_obligation_count` counts acknowledged obligations without truncation;
+`open_obligation_count` never includes them. The Stop gate challenges each acknowledged obligation
+once (`acknowledgement_recheck`), and the closing review lists them in its blocker question. Every recorded page gap
 is classified by its base code through `yoetz.kernel.closure_readiness.GAP_CLASSIFICATION`. A live
 lineage token from the catalog comparison is disclosed only when a recorded evaluation already
 carries its code (`live_lineage_blockers`; `lineage_child_read_gap` is recorded as
@@ -8121,6 +8151,62 @@ latch. Terminal items are left out of the prior-findings section and rulings on 
 admitted. `receipt_blocking_finding_count` counts `acknowledged_not_done` rows and no longer counts
 `rejection_accepted` rows.
 
+#### `self_verified`: proof-limited findings (issue #984, ADR-034)
+
+`self_verified` is a terminal `respond` disposition for a finding the agent repaired that Yoetz
+cannot prove repaired because of its own limits (a *Yoetz limit*: capture, redaction or observation
+loss, review-packet limits). It requires `reason` (non-blank, at most 4096 bytes: how the agent
+verified the repair) and 1–64 `evidence_refs` naming recorded `evd_`/`res_` ids of this task (any
+evidence version, strength or content availability); it accepts no waiver fields. It rides the same
+`respond-request`/`respond-result` `1.1.0` and `response_recorded` `1.1.0` versions as
+`acknowledged_not_done`. Typed `INVALID_REQUEST` refusals: `response_fields_invalid` (`/reason`
+blank, `/evidence_refs` empty), `finding_terminal`, `finding_not_rechecked` (no later check tested
+the finding: repair, then `check`), `finding_not_proof_limited` (the newest check that could resolve
+it still sees it or names agent work); the last two continue as `input_correction_new_identity`.
+Eligibility is `kernel/self_verification.self_verification_refusal(state, finding_id, records)`
+over the resolution reasons of that check (ADR-034): any `coverage:<code>` classified standing in
+`GAP_CLASSIFICATION` is a Yoetz limit. The to-do state `self_verified` is terminal and never
+resolved (`finding_is_resolved` is false for it, like `acknowledged_not_done`), is not counted by
+`receipt_blocking_finding_count`, is left out of the next review, and is disclosed: closure
+readiness lists the standing code `finding_self_verified`; `receipt-document` `1.3.0` carries
+`self_verified_finding_ids` (1–100, a `no_unresolved_deterministic_findings` conclusion beside it is
+invalid) and markdown/text render a "Self-verified by the agent; Yoetz could not prove the repair"
+section; the conclusion is at best `insufficient_coverage`. `check-result` `finding_checklist.counts`
+and the status findings view carry `self_verified` as a count and a `todo_state`.
+
+#### `duplicate_of`: a re-raised finding linked to an earlier one (issue #996, ADR-034 amendment)
+
+`duplicate_of` is a non-terminal `respond` disposition for a genuine restatement: a finding that
+names the same issue as an earlier finding the agent already answered or is answering (a re-raise
+minted as a new finding that automatic `restates` linking missed). It requires
+`duplicate_of_finding_id` (a `fnd_` id, admitted only with this disposition); `reason` and
+`evidence_refs` are optional; waiver fields are refused. It rides `respond-request`/`respond-result`
+`1.1.0` and `response_recorded` `1.1.0` (the result and event echo `duplicate_of_finding_id`).
+Typed `INVALID_REQUEST` refusals, each continuing as `input_correction_new_identity`:
+`duplicate_target_same_finding`, `duplicate_target_unknown` (not a readable finding of this task),
+`duplicate_target_not_earlier`, `duplicate_target_different_issue` (a different origin or kind),
+`duplicate_target_is_duplicate` (the target is itself linked; the message names the finding to link
+to), `duplicate_has_duplicates` (other findings link to this one) and `duplicate_link_broken`. A
+link holds (`kernel/projections.duplicate_link_holds`) while both findings are readable, the target
+is earlier with the same origin and kind, and no remaining readable check broke it. While it holds
+the duplicate inherits only `self_verified` and `acknowledged_not_done`; it never inherits
+`verified_resolved` or `rejection_accepted` and otherwise stays `open` but answered: linking never
+resolves a finding, only its own qualifying check does. Readiness names an open or inherited pair
+once by the earlier finding (`finding_todo.duplicate_counting_id`); an open duplicate of a settled
+or non-actionable earlier finding counts on its own. The link breaks while any later readable check
+returned the duplicate again, returned a local finding with its issue key, or ruled it
+`still_present` or `answered_not_fixed`: the projection records
+`duplicate_link_broken_by_check_event_ids` (emitted in snapshots only when non-empty; redacting a
+check removes only its id). A broken link or an unreadable earlier finding leaves the duplicate
+unanswered. A linked duplicate stays in the next review's prior findings (with `duplicate_of_ref`)
+and rulings on it are admitted. The status findings row carries `duplicate_of_finding_id` exactly
+while the link holds; `receipt-document` `1.3.0` carries `duplicate_finding_links` (1–100
+`{finding_id, duplicate_of_finding_id}`, ids only, each `finding_id` a carried finding) and
+markdown/text render a "Linked duplicates" section. A child's frozen finding rows read `resolved`
+from the child receipt's to-do predicate and roll a counted-once pair up as one row. Status
+`view=lineage` children carry `self_verified_finding_count` (present only when positive), and
+status readiness lists the standing code `finding_self_verified` when an accepted child has one.
+
 `review_rounds` counts later recorded checks that assessed a finding and left it open: a check that
 returned a local finding again over a later subject, or a recorded `still_present`,
 `answered_not_fixed` or `unassessable` ruling. Projection snapshots emit `review_rounds` and
@@ -8194,6 +8280,12 @@ Wire (the earlier checklist fields remain available in their original versions):
   is unavailable; it is never part of the check event.
 - `status-result` `1.4.0` findings view: each row carries `todo_state` and `review_rounds`
   (canonical uint string); the page carries `attempt_budget`.
+- `receipt-document` `1.3.0` (issues #995, #997, #984 D7a): optional `disclosed_assumptions`
+  rows `{obligation_id, kind: assumption|verification_limit, decision_event_id}` (conclusion
+  unchanged), `acknowledged_not_done_obligation_ids` (conclusion never
+  `no_unresolved_deterministic_findings`) and `premise_disputed_finding_ids` (a subset of
+  `acknowledged_not_done_finding_ids`), each present only when non-empty, ids and closed tokens
+  only, each with its own markdown/text section.
 - `receipt-document` `1.3.0`: optional `acknowledged_not_done_finding_ids` and
   `rejection_accepted_finding_ids` (sorted, 1–100, each a carried finding; absent when empty). The
   markdown and text renderings add "Acknowledged, not done" and "Rejection accepted" sections that
@@ -8603,8 +8695,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `requested_output_unchanged`,
   `requested_output_outside_workspace`, `requested_output_unverified`. Each code is classified
   once in `GAP_CLASSIFICATION`; standing ones are advisory for the check verdict, the receipt
-  conclusion and `DETERMINISTIC_SCOPED_STANDING_GAPS`, and every task-fact code is tolerated by a
-  local absence proof; `write_outside_workspace` and `obligation_blocked_outside_agent_control`
+  conclusion and `DETERMINISTIC_SCOPED_STANDING_GAPS` (all through
+  `kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`, #986), and every task-fact code is tolerated
+  by a local absence proof; `write_outside_workspace` and `obligation_blocked_outside_agent_control`
   are also tolerated by an AI-powered absence proof under an explicit, admitted `fixed` ruling on
   that finding, never when the review is silent on it (issue #1000). `build_deterministic_case` and the compact status gaps add them beside the
   plan-drift signals.
@@ -8639,29 +8732,67 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   run whose runner class is `test`, `lint`, `typecheck` or `build`, or any cooperative (MCP or local
   CLI) action. `cooperative_event_ids_from_records(records)` and `observed_event_ids_from_records`
   supply the two sets.
-- **Blocker decisions.** `blocked_obligations(projection) -> Mapping[ObligationId, kind]` reads
-  readable, unsuperseded `decision_recorded` events whose statement holds the exact line
-  `yoetz-blocker:<kind>` (`BLOCKER_MARKER`; `BLOCKER_KINDS` = `authority`, `consent`,
-  `credential`, `dependency_unavailable`) for their `affected_obligation_ids`.
-  `blocker_declarations(projection) -> Mapping[ObligationId, BlockerDeclaration(kind,
-  decision_event_id)]` is the same read with the declaring decision (the earliest in ledger order
-  wins). `ClosureReadinessFacts` gains `open_obligation_ids`, `blocked_obligation_ids` and
-  `blocked_obligation_details` (`(obligation, kind, decision event id)` per blocked open
-  obligation); `derive_closure_readiness` replaces `obligations_open` with the standing
-  `obligation_blocked_outside_agent_control` when every open effective obligation is blocked, and
-  `StatusClosureReadinessModel` admits exactly that shape. Status `closure_readiness` carries the
-  optional `blocked_obligations` list (`obligation_id`, `blocker_kind`, `decision_event_id`; at most
-  64, ids and the closed kind only, absent from an earlier 0.3 build), and the CLI/terminal status
-  renders it as "Recorded blockers (agent-declared, unverified)". Standing task facts never become
+- **Blocker decisions (claimed, then confirmed; #985).** `blocker_declarations(projection,
+  batches) -> Mapping[ObligationId, BlockerDeclaration(kind, decision_event_id,
+  confirmation_event_id)]` reads readable, unsuperseded `decision_recorded` events whose statement
+  holds the exact line `yoetz-blocker:<kind>` (`BLOCKER_MARKER`; `BLOCKER_KINDS` = `authority`,
+  `consent`, `credential`, `dependency_unavailable`) for their `affected_obligation_ids`. The
+  earliest decision in ledger order *claims* the obligation; the earliest later decision repeating
+  the same kind for it in a different publish batch (`decision_batches(records)`: decision event id
+  to its `operation_id`) *confirms* it. A repeat in the same batch, two lines in one decision, or a
+  dry run never confirms; without batches nothing confirms. A later decision of another kind
+  starts a new claim of that kind; superseded decisions count in neither role.
+  `blocked_obligations(projection,
+  batches)` returns confirmed blockers only; case-only readers (work-integrity,
+  the check-time output read) use `confirmed_blocked_obligation_ids(case gaps)`, which reads the
+  frozen `obligation_blocked_outside_agent_control:<obligation>` markers. Only a confirmed blocker
+  suppresses planned-verification facts, requested-output facts and `requested_item_never_attempted`.
+  Task facts emit `obligation_blocked_outside_agent_control` (standing) for a confirmed open
+  obligation and the agent-actionable Stop-gate token `obligation_blocker_unconfirmed`
+  (`OBLIGATION_BLOCKER_UNCONFIRMED_GAP`) for a claimed one. `ClosureReadinessFacts` carries
+  `open_obligation_ids`, `blocked_obligation_ids`, `blocked_obligation_details` (`(obligation,
+  kind, decision event id)`) and `blocked_obligation_confirmations` (`(obligation, confirming
+  event id)`). When every open effective obligation is blocked, `derive_closure_readiness`
+  replaces `obligations_open` with `obligation_blocker_unconfirmed` (agent-actionable) while any is
+  only claimed, and adds the standing `obligation_blocked_outside_agent_control` for confirmed
+  ones; when all are confirmed, `completion_plan_not_claimed` also moves to standing.
+  `StatusClosureReadinessModel` admits exactly those shapes. Status `closure_readiness` carries
+  the optional `blocked_obligations` list (`obligation_id`, `blocker_kind`, `decision_event_id`,
+  `confirmation` `claimed|confirmed`, and `confirmation_event_id` exactly when confirmed; at most
+  64, ids and closed tokens only, absent from an earlier 0.3 build), and the CLI/terminal status
+  renders it as "Recorded blockers (agent-declared, unverified)". F3 (ADR-025 decision 8):
+  `ClosureReadinessFacts.limitation_refs_required` is
+  `kernel.claim_limitations.required_limitation_ids_for_projection` (the reducer's own rule for a
+  whole-task claim). Status `closure_readiness` carries the optional pair
+  `limitation_refs_required` (sorted `res_` ids, at most 64) and `limitation_refs_required_count`,
+  which are present together. The MCP status summary, the CLI/terminal status and the Stop gate
+  name them; the gate names at most 5. Standing task facts never become
   `ledger_stale_or_incomplete` findings.
-- **Closing review of blockers (#976).** `semantic_case.recorded_blockers(projection)` returns
-  `(decision event id, kind, open obligation ids)` per blocker decision, and
-  `review_question_set(phase, blockers)` adds one final-phase question that lists them (at most
-  16, ids and closed kinds) and asks the reviewer to verify each once against the task statement
-  and the work. The reviewer should challenge a contradicted blocker by citing the decision or
-  obligation; that challenge becomes an ordinary AI-powered finding. Blocker decisions lead the
-  decision section, and their statement and rationale travel only as the privacy-gated decision
-  excerpt.
+- **Publish-time blocker notices (#985 C2b/C3).** `publish_work` success and dry-run results
+  (publish-work-result 1.1.0) carry optional `blocker_notices` (1..64 rows: `obligation_id`,
+  `blocker_kind`, `notice` `blocker_claimed|blocker_confirmed|blocker_without_effect`, and `text`,
+  the fixed `PUBLISH_BLOCKER_NOTICE_TEXTS[notice]`), one per `(obligation, kind)` of the batch's
+  blocker lines, from `task_facts.blocker_publication_notices(projection_with_batch,
+  ((event_id, payload), ...))`. `blocker_claimed` is the challenge (repair first; a Yoetz limit is
+  never a blocker, respond `self_verified`; recoverable data is not a blocker; only if still
+  genuine, confirm by repeating the line in a later publish) and, with the Stop re-check, the
+  only text that says how to confirm. `blocker_without_effect` marks a blocker naming no open
+  obligation, including an id the task does not know: it changes no readiness, gap or finding (use `self_verified`, or
+  `acknowledged_not_done` as a last resort). `mcp.summaries.render_publish_blocker_notices`
+  renders the rows on the MCP text channel; structural pointers admit the four leaves.
+- **Closing review of blockers (#976, #978).** `semantic_case.recorded_blockers(projection)`
+  returns `(decision event id, kind, open obligation ids)` per blocker decision on open
+  obligations, claimed or confirmed, and `review_question_set(phase, blockers)` adds one
+  final-phase question that lists them (at most 16, ids and closed kinds) followed by
+  `BLOCKER_REVIEW_INSTRUCTION`: quote the blocked obligation's description and evidence expectation
+  from its packet item `obligation-<id>`, then challenge (required) when the statement says the
+  outcome is achievable or the data recoverable, the obvious prerequisite was not attempted, the
+  material contradicts it, or it names a Yoetz/review limit; the main deliverable calls for
+  scrutiny only, and a genuine credential or authority blocker on it may stand.
+  That challenge becomes an ordinary AI-powered finding. Blocker decisions lead the decision
+  section, and their statement and rationale, like the obligation text, travel only as
+  privacy-gated packet items. Golden question:
+  `tests/fixtures/tb4_replay/pretrain_blocker_review_question.json`.
 - **Requested outputs.** `ChangeCapturePort` implementations may offer
   `probe_requested_paths(workspace, values) -> tuple[RequestedPathProbe, ...]`
   (`ports/change_capture.py`; `location` `inside|outside`, root-relative `relative`, `exists`,
@@ -8735,12 +8866,26 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `closure_gate_already_delivered` / `record_closure_gate_delivered(..., blocker_keys=)` keep the
   owner-only `observation/closure-gate.json` once-per-frontier memory, and
   `closure_gate_reasked_blockers(session_id)` reads the per-session re-asked keys in
-  `observation/closure-gate-blockers.json` (at most 64 per session). Hook diagnostic reasons:
-  `closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_not_required`,
-  `closure_gate_repeat_suppressed`, `closure_gate_loop_guard`, `closure_gate_budget_exhausted`,
-  `closure_gate_unavailable`. Before the gate reads status, the Stop pass drains the task's hook
-  rows toward the current frontier and records `stop_drain_complete` or `stop_drain_incomplete`;
-  `observation_pending` is true only when rows that can change this task's facts remain (#994).
+  `observation/closure-gate-blockers.json` (at most 64 per session). Both decision functions take
+  `active_stop=` (#985): on a Stop the host already continued, only a not-yet-asked blocker key
+  can continue the agent. `closure_gate_turn_blocks(session_id)` / `reset_closure_gate_turn` keep
+  the per-turn count in `observation/closure-gate-turns.json`, capped at
+  `MAX_GATE_BLOCKS_PER_TURN` (2); `record_closure_gate_delivered(..., active_stop=)` counts.
+  A `blocked_obligations` row with `confirmation: confirmed` is not re-asked, and
+  `BLOCKER_UNCONFIRMED_TOKEN` (`obligation_blocker_unconfirmed`) is a gate item. Hook diagnostic
+  reasons: `closure_gate_continued`, `closure_gate_blocker_rechecked`,
+  `closure_gate_active_stop_rechecked`, `closure_gate_not_required`,
+  `closure_gate_repeat_suppressed`, `closure_gate_loop_guard` (an active Stop that emitted
+  nothing), `closure_gate_budget_exhausted`, `closure_gate_unavailable`. A route-less `status`
+  control call uses the route the same session's MCP bridge named on its last successful
+  `status` or `check` (`service/session_routes.SessionRouteMemory`, owner-only
+  `session-routes.json` in the service state directory, 256 sessions, last writer wins), else
+  the policy route; a route-less `check` is unchanged (ADR-033 amendment 2026-10-07).
+  `set_standing_advice_withheld` / `standing_advice_withheld` carry standing advice a Codex or
+  Claude Code Stop withheld to the first later `PostToolUse`.
+  Before the gate reads status, the Stop pass drains the task's hook rows toward the current
+  frontier and records `stop_drain_complete` or `stop_drain_incomplete`; `observation_pending` is
+  true only when rows that can change this task's facts remain (#994).
 - **Text surfaces.** `domain/receipts.TASK_FACT_GAP_SENTENCES` holds one fixed sentence per task-fact
   code; `check_time_change_gap_sentence(code)` returns it, so receipt gap details and limitations,
   `render_human_check`/`render_human_status` and the MCP check summary show it. A publish rejection

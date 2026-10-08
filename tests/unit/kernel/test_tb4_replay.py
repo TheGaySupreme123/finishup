@@ -54,6 +54,7 @@ from yoetz.kernel.task_facts import (
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     WRITE_OUTSIDE_WORKSPACE_GAP,
     RequestedOutputState,
+    confirmed_blocked_obligation_ids,
     open_effective_obligations,
     register_command_identity_key,
     requested_output_facts,
@@ -211,8 +212,12 @@ def _stop_gate(
     records = replayed.ledger.prefix
     projection = replay(records)
     signals = task_fact_signals(projection, records)
-    absent, markers = requested_output_facts(projection, output_states)
     case = build_deterministic_case(projection, records, CaseAvailabilityFacts())
+    absent, markers = requested_output_facts(
+        projection,
+        output_states,
+        blocked=confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps),
+    )
     findings = work_integrity_findings(case, absent_outputs=frozenset(absent))
     blocking_findings = [
         item
@@ -279,7 +284,13 @@ def test_pretrain_shard_corruption_det_would_have_been_continued_at_stop() -> No
     assert gate.items == ("obligations_open", PLANNED_VERIFICATION_NOT_OBSERVED_GAP)
     # The export recorded open_obligation_count 3 at session end.
     assert "Remaining: 3 open obligation(s)" in gate.text
-    assert "yoetz-blocker:" in gate.text
+    # Repair first; the blocker exit is offered only because obligations are open, and an
+    # inherent verification limit or a best-effort choice is disclosed, never blocked (#984, #995).
+    assert gate.text.index("Finish each open obligation") < gate.text.index("yoetz-blocker:")
+    assert "yoetz-assumption:<obligation id>" in gate.text
+    # #997 review: the acknowledgement is offered only after a blocker challenge, not here.
+    assert "acknowledged_not_done" not in gate.text
+    assert len(gate.text) <= 2_000
 
 
 def test_atrx_vep_crispr_det_missing_report_blocks_the_receipt_and_continues_the_agent() -> None:
@@ -301,12 +312,42 @@ def test_atrx_vep_crispr_det_missing_report_blocks_the_receipt_and_continues_the
     assert gate.items == ("obligations_open", "receipt_findings_unresolved")
     # The export recorded open_obligation_count 5 at session end.
     assert "Remaining: 5 open obligation(s); 1 receipt-blocking finding(s)" in gate.text
+    # #984: findings are repaired first, then self-verified when only a Yoetz limit remains.
+    assert "repair what you can" in gate.text
+    assert "respond `self_verified`" in gate.text
+    assert gate.text.index("repair what you can") < gate.text.index("`acknowledged_not_done`")
+
+
+def test_atrx_findings_without_open_obligations_offer_no_blocker() -> None:
+    """With only a receipt-blocking finding left, the gate never offers a yoetz-blocker (#984)."""
+
+    view = SimpleNamespace(
+        state="action_required",
+        agent_actionable=("receipt_findings_unresolved",),
+        open_obligation_count="0",
+        receipt_blocking_finding_count="1",
+        blocked_obligations=(),
+    )
+    gate = closure_gate_from_readiness(
+        view, frontier_sequence="40", frontier_digest="d", observation_pending=False
+    )
+    assert gate is not None
+    assert gate.items == ("receipt_findings_unresolved",)
+    assert "respond `self_verified`" in gate.text
+    assert "yoetz-blocker:<" not in gate.text
+    assert "publish decision_recorded" not in gate.text
+
+
+_BLOCKER_BATCHES = [0]
 
 
 def _declare_blocker(replayed: _Replay, rationale: str) -> tuple[ObligationId, ...]:
+    """Publish the blocker decision in its own publish batch, as an agent's publish_work does."""
+
     from yoetz.domain.events import DecisionRecordedPayload
     from yoetz.domain.values import actor_id
 
+    _BLOCKER_BATCHES[0] += 1
     projection = replay(replayed.ledger.prefix)
     open_obligations = tuple(sorted(open_effective_obligations(projection)))
     replayed.ledger.append(
@@ -318,6 +359,7 @@ def _declare_blocker(replayed: _Replay, rationale: str) -> tuple[ObligationId, .
             affected_obligation_ids=open_obligations,
         ),
         observed=False,
+        operation=f"req_98500000-0000-4000-8000-{_BLOCKER_BATCHES[0]:012d}",
     )
     return open_obligations
 
@@ -332,11 +374,16 @@ def test_tb4v1_pretrain_blocker_for_a_missing_snapshot_is_rechecked_once() -> No
     gate, _signals = _stop_gate(replayed, {})
 
     assert gate is not None
-    assert gate.items == (BLOCKER_RECHECK_ITEM,)
+    # #985: a first blocker is only claimed, so it is still agent work beside the re-ask.
+    assert gate.items[-1] == BLOCKER_RECHECK_ITEM
+    assert "obligation_blocker_unconfirmed" in gate.items
     for obligation in blocked:
         assert f"{obligation} (dependency_unavailable)" in gate.text
-    assert "Missing or inconsistent data the task says is recoverable" in gate.text
-    assert "is not a blocker" in gate.text
+    # Re-pinned against the current re-check text: repair first, recoverable data and a Yoetz
+    # limit are not blockers, and how to confirm is said only in the challenge (#985, #984).
+    assert "Continue that work unless it is genuinely outside your control" in gate.text
+    assert "a Yoetz limit never is" in gate.text
+    assert "same yoetz-blocker line again in a later" in gate.text
 
 
 def test_a_genuine_blocker_lets_pretrain_stop_after_one_recheck() -> None:
@@ -344,6 +391,102 @@ def test_a_genuine_blocker_lets_pretrain_stop_after_one_recheck() -> None:
     _declare_blocker(replayed, "Replay: every open obligation declared blocked.")
     first, _signals = _stop_gate(replayed, {})
     assert first is not None
-    # The agent stops again without changing anything: the blocker is honoured, never a loop.
+    # Stopping again without confirming leaves the claimed blocker as agent work (#985).
+    unconfirmed, _signals = _stop_gate(replayed, {}, reasked=frozenset(first.blocker_keys))
+    assert unconfirmed is not None
+    assert "obligation_blocker_unconfirmed" in unconfirmed.items
+    # The agent keeps its position after the challenge: the same line in a later decision
+    # confirms it, and the blocker is then honoured, never a loop.
+    _declare_blocker(replayed, "Replay: confirmed after the re-ask.")
     second, _signals = _stop_gate(replayed, {}, reasked=frozenset(first.blocker_keys))
     assert second is None
+
+
+def _readiness(replayed: _Replay) -> Any:
+    from dataclasses import replace
+
+    records = replayed.ledger.prefix
+    projection = replay(records)
+    signals = task_fact_signals(projection, records)
+    conditions = ("obligations_open",) if open_effective_obligations(projection) else ()
+    # The real attempt had recorded checks; the replay keeps only their findings, so the check
+    # condition is taken as applicable here to isolate the blocker semantics.
+    facts = replace(closure_readiness_facts(projection, records), check_applicability="applicable")
+    return derive_closure_readiness(
+        conditions, signals.codes, facts, semantic_review_required=False
+    )
+
+
+def test_tb4n1_pretrain_det_blocker_is_claimed_until_confirmed() -> None:
+    """tb4n1 pretrain-shard-corruption (deterministic, reward 0; #985 C4).
+
+    Readiness was ``action_required [obligations_open, planned_verification_not_observed]`` at
+    09:09 and, after one ``yoetz-blocker:dependency_unavailable`` ("authoritative historical
+    source") on every open obligation, ``ready_with_limitations []`` by 09:27:30 although the main
+    deliverable was not done. A first blocker is now only claimed: still agent work. Only the same
+    line again in a later decision (after the publish-time challenge and the Stop re-ask) turns it
+    into a disclosed limitation.
+    """
+
+    replayed, _fixture = _replay("pretrain_shard_corruption_det")
+    before = _readiness(replayed)
+    assert before.state == "action_required"
+    assert before.agent_actionable == ("obligations_open", PLANNED_VERIFICATION_NOT_OBSERVED_GAP)
+
+    _declare_blocker(replayed, "dependency_unavailable: authoritative historical source")
+    claimed = _readiness(replayed)
+    assert claimed.state == "action_required"
+    assert "obligations_open" not in claimed.agent_actionable
+    assert "obligation_blocker_unconfirmed" in claimed.agent_actionable
+    # A claimed blocker suppresses nothing: the planned verification is still owed.
+    assert PLANNED_VERIFICATION_NOT_OBSERVED_GAP in claimed.agent_actionable
+    assert "obligation_blocked_outside_agent_control" not in claimed.standing_limitations
+
+    _declare_blocker(replayed, "dependency_unavailable: authoritative historical source")
+    confirmed = _readiness(replayed)
+    assert confirmed.state == "ready_with_limitations"
+    assert confirmed.agent_actionable == ()
+    assert "obligation_blocked_outside_agent_control" in confirmed.standing_limitations
+
+
+def test_a_blocker_naming_only_finished_obligations_has_no_effect() -> None:
+    """tb4n1: 31 of 38 blocker attempts named only resolved obligations to excuse findings
+    Yoetz could not clear (#985 C3). Such a blocker changes no readiness and no gap."""
+
+    from yoetz.domain.events import DecisionRecordedPayload
+    from yoetz.domain.values import actor_id
+    from yoetz.domain.values import event_id as make_event_id
+    from yoetz.kernel.task_facts import (
+        BLOCKER_NOTICE_WITHOUT_EFFECT,
+        OBLIGATION_BLOCKED_GAP,
+        OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
+        blocker_publication_notices,
+    )
+
+    replayed, fixture = _replay("pretrain_shard_corruption_det")
+    row = next(item for item in fixture["obligations"] if item["status"] == "resolved")
+    resolved = obligation_id(row["obligation_id"])
+    # The replay's receipt step already resolved it, as the agent had.
+    assert resolved not in open_effective_obligations(replay(replayed.ledger.prefix))
+    before = _readiness(replayed)
+    payload = DecisionRecordedPayload(
+        statement="Closure is blocked by Yoetz review limits.\nyoetz-blocker:authority",
+        rationale="coverage:content_redacted prevents a qualifying closure",
+        authority=actor_id("agt_codex"),
+        affected_obligation_ids=(resolved,),
+    )
+    replayed.ledger.append(EventSchema("decision_recorded", "1.0.0"), payload, observed=False)
+    records = replayed.ledger.prefix
+    projection = replay(records)
+    after = _readiness(replayed)
+    assert after == before
+    codes = set(task_fact_signals(projection, records).codes)
+    assert not codes & {OBLIGATION_BLOCKED_GAP, OBLIGATION_BLOCKER_UNCONFIRMED_GAP}
+    assert closure_readiness_facts(projection, records).blocked_obligation_ids == ()
+    decision = make_event_id(str(replayed.ledger.records[-1].event_id))
+    [notice] = blocker_publication_notices(projection, ((decision, payload),))
+    assert (notice.obligation_id, notice.kind, notice.notice) == (
+        resolved,
+        "authority",
+        BLOCKER_NOTICE_WITHOUT_EFFECT,
+    )

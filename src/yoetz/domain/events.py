@@ -25,6 +25,7 @@ from yoetz.domain.coordination import (
 from yoetz.domain.findings import (
     FINDING_KIND_TRAITS,
     MAX_RECORDED_VERDICTS,
+    RESPONSE_V1_1_DISPOSITIONS,
     CheckVerdict,
     Finding,
     FindingKind,
@@ -237,10 +238,10 @@ __all__ = [
     "ResultRecordedPayload",
     "RuntimeProfile",
     "RESPONSE_EVENT_SCHEMA_VERSION",
+    "OBLIGATION_SCHEMA_VERSION",
     "SESSION_EVENT_SCHEMA_VERSION",
     "TASK_STATEMENT_EVENT_SCHEMAS",
     "TASK_STATEMENT_PLAN_SCHEMA_VERSION",
-    "OBLIGATION_SCHEMA_VERSION",
     "TASK_STATEMENT_SESSION_OPENED_SCHEMA_VERSION",
     "TASK_STATEMENT_SESSION_RESUMED_SCHEMA_VERSION",
     "SessionOpenedPayload",
@@ -294,8 +295,10 @@ SEMANTIC_EVENT_SCHEMA_VERSIONS: Final = ("1.1.0", SEMANTIC_EVENT_SCHEMA_VERSION)
 FINDING_EVENT_SCHEMA_VERSION: Final = "1.3.0"
 FINDING_SNIPPET_EVENT_SCHEMA_VERSION: Final = "1.4.0"
 # ``response_recorded`` 1.0.0 is released and frozen. 1.1.0 exists only to admit the terminal
-# ``acknowledged_not_done`` disposition (issue #905); every other disposition keeps 1.0.0 bytes,
-# so the version is a pure function of the payload and old ledgers replay unchanged.
+# ``acknowledged_not_done`` (issue #905), ``self_verified`` (issue #984) and ``duplicate_of``
+# (issue #996, with its ``duplicate_of_finding_id``) dispositions; every other disposition keeps
+# 1.0.0 bytes, so the version is a pure function of the payload and old
+# ledgers replay unchanged.
 RESPONSE_EVENT_SCHEMA_VERSION: Final = "1.1.0"
 COORDINATION_EVENT_SCHEMA_VERSION: Final = "1.0.0"
 SESSION_EVENT_SCHEMA_VERSION: Final = "1.1.0"
@@ -417,9 +420,8 @@ class RequestedItemRole(str, Enum):  # noqa: UP042 - exact wire enum base
 class ObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
     OPEN = "open"
     RESOLVED = "resolved"
-    # obligation_published 1.1.0 only (issue #1002/#996): the agent states it did not do this
-    # obligation and why. It is not resolved; consumers treat it like ``open`` unless they decide
-    # otherwise.
+    # ``obligation_published`` 1.1.0 only (issue #997, ADR-032 slice C): the agent will not do
+    # this obligation and says why. Not open, not resolved; disclosed as not done.
     ACKNOWLEDGED_NOT_DONE = "acknowledged_not_done"
 
 
@@ -1145,6 +1147,9 @@ class ChildFindingSnapshot:
     resolved: bool
     resolution_event_id: EventId | None = None
     actionable: bool | None = None
+    # Issue #984 (ADR-034): the child agent self-verified this repair and Yoetz could not prove
+    # it. Recorded only when true, so every other snapshot keeps its bytes.
+    self_verified: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "finding_id", finding_id(self.finding_id))
@@ -1167,6 +1172,10 @@ class ChildFindingSnapshot:
         if type(actionable) is not bool or actionable is not expected_actionable:
             raise ProtocolValueError("finding_actionable_mismatch")
         object.__setattr__(self, "actionable", actionable)
+        if type(self.self_verified) is not bool:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.self_verified and (self.resolved or not actionable):
+            raise ProtocolValueError("finding_resolution_mismatch")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2426,11 +2435,21 @@ class ResponseRecordedPayload:
     waiver_scope: WaiverScope | None = None
     waiver_expiry: Timestamp | None = None
     evidence_refs: tuple[EvidenceId | ResultId, ...] = ()
+    # Issue #996: the earlier finding a ``duplicate_of`` response links to; set only for it.
+    duplicate_of_finding_id: FindingId | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "finding_id", finding_id(self.finding_id))
         object.__setattr__(self, "finding_frontier", _frontier(self.finding_frontier))
         disposition = _exact_enum(self.disposition, ResponseDisposition)
+        if self.duplicate_of_finding_id is not None:
+            object.__setattr__(
+                self, "duplicate_of_finding_id", finding_id(self.duplicate_of_finding_id)
+            )
+        if (disposition is ResponseDisposition.DUPLICATE_OF) != (
+            self.duplicate_of_finding_id is not None
+        ) or self.duplicate_of_finding_id == self.finding_id:
+            raise ProtocolValueError("response_fields_invalid")
         object.__setattr__(self, "disposition", disposition)
         if self.reason is not None:
             object.__setattr__(
@@ -2455,10 +2474,14 @@ class ResponseRecordedPayload:
             ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
             ResponseDisposition.PROVENANCE_DISPUTED,
             ResponseDisposition.REJECTED,
+            ResponseDisposition.SELF_VERIFIED,
             ResponseDisposition.WAIVED,
         }:
             if self.reason is None:
                 raise ProtocolValueError("response_fields_invalid")
+        # Issue #984: a self-verification names the agent's own recorded evidence.
+        if disposition is ResponseDisposition.SELF_VERIFIED and not self.evidence_refs:
+            raise ProtocolValueError("response_fields_invalid")
         if disposition is ResponseDisposition.WAIVED:
             if self.waiver_scope is None:
                 raise ProtocolValueError("response_fields_invalid")
@@ -3539,9 +3562,13 @@ def _decode_child_finding(value: object) -> ChildFindingSnapshot:
     source = _closed_object(
         value,
         required=frozenset({"finding_id", "kind", "origin", "priority", "resolved"}),
-        optional=frozenset({"resolution_event_id", "actionable"}),
+        optional=frozenset({"resolution_event_id", "actionable", "self_verified"}),
     )
     actionable = _nullable(source, "actionable")
+    # Emitted only when true (issue #984); an explicit false is not a recorded spelling.
+    self_verified = _field(source, "self_verified") if "self_verified" in source else False
+    if "self_verified" in source and self_verified is not True:
+        raise ProtocolValueError("invalid_event_value_type")
     return ChildFindingSnapshot(
         finding_id=finding_id(_field(source, "finding_id")),
         kind=_enum_from_json(_field(source, "kind"), FindingKind),
@@ -3554,6 +3581,7 @@ def _decode_child_finding(value: object) -> ChildFindingSnapshot:
             else event_id(_field(source, "resolution_event_id"))
         ),
         actionable=(None if actionable is None else cast(bool, actionable)),
+        self_verified=cast(bool, self_verified),
     )
 
 
@@ -3891,7 +3919,15 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
         ),
         "response_recorded": (
             frozenset({"finding_id", "finding_frontier", "disposition"}),
-            frozenset({"reason", "waiver_scope", "waiver_expiry", "evidence_refs"}),
+            frozenset(
+                {
+                    "reason",
+                    "waiver_scope",
+                    "waiver_expiry",
+                    "evidence_refs",
+                    "duplicate_of_finding_id",
+                }
+            ),
         ),
         "redaction_recorded": (
             frozenset(
@@ -4370,6 +4406,7 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
         evidence = _optional(source, "evidence_refs")
         waiver_scope_value = _optional(source, "waiver_scope")
         waiver_expiry_value = _optional(source, "waiver_expiry")
+        duplicate_of_value = _optional(source, "duplicate_of_finding_id")
         return ResponseRecordedPayload(
             finding_id=finding_id(_field(source, "finding_id")),
             finding_frontier=frontier_from_json(_field(source, "finding_frontier")),
@@ -4387,6 +4424,9 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 ()
                 if evidence is None
                 else cast(tuple[EvidenceId | ResultId, ...], tuple(_array(evidence)))
+            ),
+            duplicate_of_finding_id=(
+                None if duplicate_of_value is None else finding_id(duplicate_of_value)
             ),
         )
     if schema.name == "redaction_recorded":
@@ -4518,6 +4558,8 @@ def _encode_child_finding(value: ChildFindingSnapshot) -> JsonObject:
         "resolved": value.resolved,
     }
     _optional_value(result, "resolution_event_id", value.resolution_event_id)
+    if value.self_verified:
+        result["self_verified"] = True
     return _json_object(result)
 
 
@@ -4920,6 +4962,7 @@ def encode_payload(payload: EventPayload) -> JsonValue:
             None if value.waiver_expiry is None else value.waiver_expiry.wire,
         )
         _optional_tuple(result, "evidence_refs", cast(tuple[object, ...], value.evidence_refs))
+        _optional_value(result, "duplicate_of_finding_id", value.duplicate_of_finding_id)
         return _json_object(result)
     if payload_type is RedactionRecordedPayload:
         value = cast(RedactionRecordedPayload, payload)
@@ -5122,7 +5165,7 @@ def _validate_event_schema_payload(
         # never carries one, and 1.1.0 is never chosen without one.
         raise ProtocolValueError("invalid_event_schema")
     if type(payload) is ResponseRecordedPayload:
-        if (payload.disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE) != (
+        if (payload.disposition in RESPONSE_V1_1_DISPOSITIONS) != (
             schema.version == RESPONSE_EVENT_SCHEMA_VERSION
         ):
             raise ProtocolValueError("invalid_event_schema")

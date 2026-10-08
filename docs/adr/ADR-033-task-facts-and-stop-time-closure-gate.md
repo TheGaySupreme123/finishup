@@ -385,3 +385,177 @@ quiet. The owner decided the following, with no prerequisite such as a prior fai
 
 The receipt still discloses blocked obligations as standing limitations, and the reviewer's
 verdict on a blocker appears as a normal finding.
+
+## Amendment (2026-10-07): the re-check reaches active Stops, repair-first text, one view (#984, #985)
+
+TB4 run tb4n1 showed the gate was single-shot per Codex run: 35 of the 38 attempts that declared a
+blocker did so after the first gate, and their next Stop arrived with `stop_hook_active` set, so
+the hook recorded `closure_gate_loop_guard` without reading status and the re-check of decision 1
+above never ran. Codex honours repeated Stop blocks within one turn (codex-rs `turn.rs` sets
+`stop_hook_active` once per turn and keeps honouring blocks; its test
+`stop_hook_can_block_multiple_times_in_same_turn` asserts it); the limit was Yoetz's own. The gate
+also fired on receipt-blocking findings the agent could not clear because of Yoetz's own limits,
+and its text offered the blocker as the exit. The owner decided:
+
+1. **Active Stops re-ask new blockers, capped.** A Stop the host already continued this turn
+   (`stop_hook_active` on Codex and Claude Code, Cursor `loop_count > 0`) still reads status when
+   at least five seconds of the Stop budget remain. It continues the agent only for a
+   `blocked_obligations` key `<obligation id>:<kind>` the session has not been asked about, never
+   for the ordinary items. Hard caps: at most one re-check per Stop, and at most two gate
+   continuations per host turn, counted in a third owner-only file
+   (`observation/closure-gate-turns.json`, opaque session ids and a count, 128 sessions) and reset
+   at every mapped Stop the host did not continue, whether or not the gate is evaluated there; an
+   unreadable or corrupt counter counts as the cap. On an active Stop the memory is written before the
+   text is emitted; if it cannot be written, or status fails, the agent stops (fail open). The new
+   diagnostic `closure_gate_active_stop_rechecked` joins `closure_gate_continued` and
+   `closure_gate_blocker_rechecked` when that happens; `closure_gate_loop_guard` is recorded only
+   when an active Stop emitted nothing. A blocker row readiness reports as `confirmation:
+   confirmed` (the agent re-published the same line in a later decision) is never re-asked, and
+   the readiness token `obligation_blocker_unconfirmed` is a gate item like `obligations_open`.
+   How to confirm a blocker (publish the same `yoetz-blocker` line again in a later decision) is
+   told only after the challenge: in the re-check, or in a later gate whose blocker was already
+   re-asked. The offer that introduces the blocker line never says it, so publishing the line
+   twice up front cannot skip the challenge (the kernel rule that a repeat confirms only after
+   the challenge is owned by the blockers change). The re-check tells the agent that a Yoetz
+   limit is never a blocker: finish the obligation and disclose any limit in the final answer
+   (`self_verified` is for findings only).
+2. **Repair first; a Yoetz limit is never a blocker (#984).** For receipt-blocking findings the
+   text says: repair what you can; for a finding you repaired that Yoetz still cannot prove (its
+   resolution names a Yoetz limit such as redaction, observation loss or a review-packet limit),
+   verify it yourself, record that evidence and respond `self_verified` with how you verified it
+   and the evidence ids (ADR-034); respond `acknowledged_not_done` only if you truly cannot or will
+   not do it. Every gate says a Yoetz limit is never a `yoetz-blocker`. The blocker sentence, with
+   "Data the task says is recoverable is not such a blocker" and the confirmation step, is offered
+   only when open obligations (or an unconfirmed blocker) remain, never for a findings-only gate.
+   The text never exceeds every host's 2,000-character bound: whole optional sentences are
+   dropped (the drain note first, then the long obligation sentence, then the verification hint)
+   and the re-check sentence is always kept; it names at most three blocked obligations.
+3. **The drain note only when it changed the decision.** `observation_pending` is now computed for
+   this task's own hook rows after the Stop drain (#994, owned by the observation lead). The
+   planned-verification items are used when it is false; the "(Observations were still draining
+   ...)" note is added only when a planned-verification item was present and dropped.
+4. **No ordinary advice on any Stop.** Codex renders Stop text as `decision: block`, and Claude
+   Code's Stop `additionalContext` also continues the conversation, so ordinary advice at Stop
+   spent the turn's continuation the gate needs (tb4n1 hof-topology). Ordinary advice now stays
+   pending for the next `PostToolUse` or `SessionStart` on every host; Cursor never delivered it
+   at `stop`. Standing advice (provider repair, e.g. `connect_provider`) therefore no longer
+   reaches Codex or Claude Code at Stop. To keep its once-per-turn cadence, a Stop that finds it
+   pending marks the session (owner-only `observation/stop-withheld-standing-advice.json`, opaque
+   session commitments only), and the first later advice-eligible `PostToolUse` may carry it;
+   the mark clears once it is delivered or nothing is pending. Otherwise it reaches them at
+   `SessionStart`. Cursor is unchanged (`sessionStart` only).
+5. **The gate and the CLI read the agent's route.** A route-less `status` (the Stop gate, the CLI,
+   an export) read the policy route, so on a strict-route session it listed
+   `semantic_review_not_requested` as work the agent's own MCP view never showed (37 of 37
+   deterministic exports). The service now remembers, per session, the route that session's MCP
+   bridge named on its last successful `status` or `check`, in an owner-only file in the service
+   state directory (`session-routes.json`: `ses_` ids and the closed route only, at most 256
+   sessions with least-recently-written eviction, atomic replace, symlinks never followed,
+   loaded lazily), so it survives a service restart or upgrade. A later route-less `status` for
+   the same session reads on that route. A failed call teaches nothing; when two bridges on
+   different routes serve one session, the last successful call wins. A route-less `check` is
+   unchanged. Before any bridge call for the session, a route-less read still uses the policy
+   route. The applied route is visible on `status` `view: versions` (`route_profile` on each
+   version slice); the compact view carries no route field, so it is not labelled there.
+
+## Amendment (2026-10-07): a blocker is claimed until confirmed after the challenge (#985, #978, #986)
+
+tb4n1 showed three more blocker defects. In the deterministic arm one blocker line on every open
+obligation turned readiness `ready_with_limitations` with nothing left to do although the main
+deliverable was undone (pretrain-shard-corruption, payments-pipeline-fix; both scored 0).
+Thirty-one of 38 blocker attempts named only finished obligations to excuse findings Yoetz could
+not clear; such a blocker changed nothing yet read as a claim. And the closing review accepted
+every blocker it was shown, including one the task statement contradicted. The owner decisions for
+C2 (challenge a blocker when it is published) and C4/C5 apply:
+
+1. **Claimed, then confirmed.** The first accepted blocker decision for an `(obligation, kind)`
+   only *claims* it. It stays agent work: readiness lists the agent-actionable Stop-gate token
+   `obligation_blocker_unconfirmed` instead of `obligations_open`, and a claimed blocker
+   suppresses no task fact or `requested_item_never_attempted`. It becomes the standing
+   `obligation_blocked_outside_agent_control` only when the same `yoetz-blocker:<kind>` line for
+   that obligation arrives in a later publish batch, which is necessarily after the publish-time
+   challenge below (and, if the agent stopped, the Stop re-ask). A repeat in the same batch, two
+   lines in one decision, or a dry run never confirms. A later decision of a different kind for
+   the obligation starts a new claim of that kind (even over a confirmed one), and a superseded
+   decision counts in neither role. The rule reads only recorded facts (ledger position and the
+   record's operation id), so it is replay-stable and needs no migration. Two back-to-back
+   publishes still confirm: the first result's `blocker_claimed` notice is the challenge, and no
+   text the agent can read before claiming (finding repair text, guidance, skills, the gate's
+   blocker offer) says how to confirm, so a reflexive double publish has nothing to follow. A
+   rule requiring an intervening record of some other kind was rejected: "not the same agent
+   burst" has no replay-stable definition, and any such record is cheap to manufacture.
+   Status rows carry `confirmation` (`claimed|confirmed`) and `confirmation_event_id` (additive on
+   the unreleased status-result 1.4.0). When every open obligation is confirmed blocked,
+   `completion_plan_not_claimed` is disclosed as standing too (C9).
+2. **Publish-time challenge and no-effect notice.** A `publish_work` result, dry runs included,
+   carries `blocker_notices` with fixed text per `(obligation, kind)`: `blocker_claimed` (repair
+   first; a Yoetz limit is never a blocker, respond `self_verified`; data the task says is
+   recoverable is not a blocker; how to confirm), `blocker_confirmed`, or
+   `blocker_without_effect` for a blocker naming no open obligation. The last is accepted (no
+   protocol break) and changes no readiness, gap, finding or receipt section; it points to
+   `self_verified`, or `acknowledged_not_done` as a last resort. Rejecting such a blocker at
+   admission stays a later option.
+3. **The closing review challenges what the task contradicts (#978).** The blocker question
+   tells the reviewer to quote the blocked obligation's own description and evidence expectation
+   from its privacy-gated packet item and requires a challenge when the statement says the
+   outcome is achievable or the data recoverable, the obvious prerequisite was not attempted, the
+   material contradicts the blocker, or it names a Yoetz or review limit. Being the task's main
+   deliverable calls for close scrutiny, not an automatic challenge: a genuine credential or
+   authority blocker on it may stand. The question itself carries ids and fixed text only, never the obligation text,
+   because questions are not privacy-scanned. A golden question pins the tb4n1 pretrain case.
+4. **Blocker texts agree (#984 F1).** The `requested_item_never_attempted` repair text, the MCP
+   outcome hint, the approved-checks continuation, the guidance and the skills all say: repair
+   first; for a Yoetz limit, verify yourself and respond `self_verified`; `acknowledged_not_done`
+   is the last resort; `yoetz-blocker` only for an open obligation genuinely blocked outside your
+   control. Only the `blocker_claimed` notice and the Stop re-check say how to confirm one.
+5. **One clean-compatible gap list (#986 E2).** `kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`
+   (standing in `GAP_CLASSIFICATION` and tolerated by the deterministic local absence proof,
+   excluding AI-review `semantic_*` and evidence-strength `evidence_*` codes, plus the existing
+   advisory sets) bounds both the receipt conclusion and the scoped deterministic verdict, and a
+   pack that is `skipped/not_applicable` on the whole case (coordination on a single-agent run)
+   counts as complete; `scope_excluded` and `material_unavailable` do not. Host-observation gaps
+   such as `host_outcome_unavailable` and `unpaired_event` therefore no longer bar
+   `no_unresolved_deterministic_findings`, but only where they are guarded: a full check reads
+   them as clean-compatible only when its command counters show no unknown or live failed outcome
+   (`commands_complete`), the scoped verdict keeps its own counter checks, and the receipt treats
+   `HOST_OBSERVATION_GUARDED_GAPS` as advisory only when the applicable check's own coverage
+   carried them. Full-check completeness (`application.check.full_check_gaps_clean`) reads the
+   same list. `semantic_review_not_requested` still bounds the
+   receipt: a check records only `deterministic_mode` or `no_material_semantic_case` with it, never
+   whether the serving route required AI-powered review (a strict route records
+   `blocked_by_policy`/`route_semantic_ceiling` and its own gap instead), so the receipt cannot
+   apply the route rule without reading live configuration, which would break replay.
+
+## Amendment (2026-10-07): disclosures are not blockers; premise disputes are asked once (#995, #997, #984)
+
+Owner-approved 2026-10-07 (issue #995; L5 request D7a under #984).
+
+1. **Disclosure lines (#995).** tb4n1 agents declared blockers on finished work because a hidden
+   verifier or a private trace was out of reach (ks-solver, lake-temp-glm, vpp-loss-divergence), or
+   blocked repeatedly on a choice a best-effort assumption could make (cargo-flight-dispatch). A
+   `decision_recorded` statement line `yoetz-assumption:<obligation id>` or
+   `yoetz-verification-limit:<obligation id>` (exact line, well-formed id; the rationale carries
+   the text) now records that instead (`task_facts.disclosure_declarations`). It never blocks,
+   resolves, or changes an obligation's status; the earliest unsuperseded decision records each
+   `(obligation, kind)`, a decision superseded through `supersedes_event_id` withdraws it (as for
+   blockers), and an id naming no recorded obligation is a `missing_ref` like a blocker's
+   `affected_obligation_ids`. Readiness lists the standing codes `assumption_disclosed` and
+   `verification_limit_disclosed` (`GAP_CLASSIFICATION_VERSION` "4"); `receipt-document` 1.3.0
+   carries `disclosed_assumptions` rows `{obligation_id, kind, decision_event_id}` (ids and the
+   closed kind only) and the section "Assumptions and verification limits the agent disclosed";
+   the conclusion is unchanged. The blocker offer, the re-check, the `blocker_claimed` publish
+   notice, the requested-item repair text, the MCP rejected-outcome hint and the guidance say an
+   inherent verification limit or a best-effort choice is not a blocker: finish and disclose it.
+   The review packet's blocker section does not list disclosures yet.
+2. **Obligation acknowledgement (#997).** The gate and repair texts name an obligation-level
+   `acknowledged_not_done` (ADR-032 slice C amendment) as the honest last resort after repair.
+3. **Premise disputes (D7a).** L5's opaque predicate `finding_todo.standing_premise_disputes`
+   (imported behind a guard: a build without it reports nothing) names acknowledged-not-done
+   findings whose challenge says the task itself requires the work. Readiness discloses the
+   standing code `finding_premise_disputed`; `receipt-document` 1.3.0 lists
+   `premise_disputed_finding_ids` (a subset of `acknowledged_not_done_finding_ids`) in the section
+   "Not done although the review says the task requires it". On a Stop the host has not already
+   continued, the gate asks once (closed item `premise_recheck`, remembered as
+   `premise:<acknowledged count>` beside the blocker keys, so a new acknowledgement asks again);
+   in a combined gate the sentence is dropped before the blocker re-check under the 2,000-character
+   bound.

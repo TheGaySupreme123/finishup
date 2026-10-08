@@ -74,6 +74,14 @@ __all__ = [
     "SEMANTIC_REDACTED_VALUES_AGENT_LINE",
     "SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT",
     "semantic_redacted_value_text",
+    "ACKNOWLEDGED_OBLIGATIONS_SECTION_TITLE",
+    "PREMISE_DISPUTED_SECTION_TITLE",
+    "DISCLOSED_ASSUMPTIONS_SECTION_TITLE",
+    "ReceiptDisclosure",
+    "DUPLICATE_LINKS_SECTION_TITLE",
+    "ReceiptDuplicateLink",
+    "SELF_VERIFIED_SECTION_TITLE",
+    "CHILD_SELF_VERIFIED_NOTE",
     "receipt_document_carries_terminal_sections",
     "CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP",
     "CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP",
@@ -477,8 +485,12 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
         ),
         "obligation_blocked_outside_agent_control": (
             "An open obligation is named by a blocker the agent recorded as outside its control"
-            " (authority, consent, credentials, or an unobtainable dependency); Yoetz did not"
-            " verify the claim."
+            " (authority, consent, credentials, or an unobtainable dependency) and confirmed in a"
+            " later decision; Yoetz did not verify the claim."
+        ),
+        "obligation_blocker_unconfirmed": (
+            "An open obligation is named by a blocker the agent claimed but did not confirm in a"
+            " later decision; the obligation still counts as open work."
         ),
     }
 )
@@ -529,6 +541,60 @@ class ReceiptConclusion(str, Enum):  # noqa: UP042 - exact wire enum base
     NO_UNRESOLVED_DETERMINISTIC_FINDINGS = "no_unresolved_deterministic_findings"
     UNRESOLVED_FINDINGS_REMAIN = "unresolved_findings_remain"
     INSUFFICIENT_COVERAGE = "insufficient_coverage"
+
+
+# The receipt fields that disclose terminal finding states by id (issues #905, #984); a finding
+# is in at most one of them.
+_TERMINAL_ID_FIELDS: Final = (
+    "acknowledged_not_done_finding_ids",
+    "rejection_accepted_finding_ids",
+    "self_verified_finding_ids",
+)
+SELF_VERIFIED_SECTION_TITLE: Final = "Self-verified by the agent; Yoetz could not prove the repair"
+# Issue #984 (ADR-034): how a child's self-verified finding reads on the parent receipt.
+CHILD_SELF_VERIFIED_NOTE: Final = "self-verified by the child agent; Yoetz could not prove it"
+DUPLICATE_LINKS_SECTION_TITLE: Final = "Linked duplicates"
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptDuplicateLink:
+    """One holding ``duplicate_of`` link (issue #996): ids only, never prose."""
+
+    finding_id: FindingId
+    duplicate_of_finding_id: FindingId
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "finding_id", finding_id(self.finding_id))
+        object.__setattr__(
+            self, "duplicate_of_finding_id", finding_id(self.duplicate_of_finding_id)
+        )
+        if self.finding_id == self.duplicate_of_finding_id:
+            raise ProtocolValueError("invalid_receipt_document")
+
+
+# Issue #995 (ADR-033): the agent's recorded ``yoetz-assumption:`` / ``yoetz-verification-limit:``
+# decision lines. Disclosed by id and closed kind only; the rationale stays in the decision.
+DISCLOSED_ASSUMPTIONS_SECTION_TITLE: Final = (
+    "Assumptions and verification limits the agent disclosed"
+)
+RECEIPT_DISCLOSURE_KINDS: Final = ("assumption", "verification_limit")
+ACKNOWLEDGED_OBLIGATIONS_SECTION_TITLE: Final = "Obligations acknowledged as not done"
+PREMISE_DISPUTED_SECTION_TITLE: Final = "Not done although the review says the task requires it"
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptDisclosure:
+    """One disclosed assumption or verification limit: ids and a closed kind, never prose."""
+
+    obligation_id: ObligationId
+    kind: str
+    decision_event_id: EventId
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "obligation_id", obligation_id(self.obligation_id))
+        object.__setattr__(self, "decision_event_id", event_id(self.decision_event_id))
+        if type(self.kind) is not str or self.kind not in RECEIPT_DISCLOSURE_KINDS:
+            raise ProtocolValueError("invalid_receipt_document")
 
 
 class ReceiptObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
@@ -953,18 +1019,20 @@ class ReceiptResponse:
             raise ProtocolValueError(invalid)
         if self.waiver_expiry is not None and type(self.waiver_expiry) is not Timestamp:
             raise ProtocolValueError(invalid)
-        if self.disposition is ResponseDisposition.ACKNOWLEDGED:
+        if self.disposition in {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.DUPLICATE_OF}:
             if self.waiver_scope is not None or self.waiver_expiry is not None:
                 raise ProtocolValueError(invalid)
         elif self.disposition in {
             ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
             ResponseDisposition.PROVENANCE_DISPUTED,
             ResponseDisposition.REJECTED,
+            ResponseDisposition.SELF_VERIFIED,
         }:
             if (
                 self.reason is None
                 or self.waiver_scope is not None
                 or self.waiver_expiry is not None
+                or (self.disposition is ResponseDisposition.SELF_VERIFIED and not refs)
             ):
                 raise ProtocolValueError(invalid)
         elif self.disposition is ResponseDisposition.WAIVED:
@@ -1003,6 +1071,8 @@ class ReceiptChildFinding:
     actionable: bool
     resolved: bool
     resolution_event_id: EventId | None = None
+    # Issue #984 (ADR-034): self-verified by the child agent; Yoetz could not prove it.
+    self_verified: bool = False
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_child_finding"
@@ -1022,6 +1092,10 @@ class ReceiptChildFinding:
         if self.resolved is not (resolution is not None):
             raise ProtocolValueError(invalid)
         object.__setattr__(self, "resolution_event_id", resolution)
+        if type(self.self_verified) is not bool or (
+            self.self_verified and (self.resolved or not self.actionable)
+        ):
+            raise ProtocolValueError(invalid)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1156,12 +1230,27 @@ class ReceiptDocument:
     # Absent (empty) keeps every earlier receipt's exact bytes.
     acknowledged_not_done_finding_ids: tuple[FindingId, ...] = ()
     rejection_accepted_finding_ids: tuple[FindingId, ...] = ()
+    # Issue #984 (ADR-034): the agent repaired these and verified the repair itself because Yoetz
+    # could not prove it. Disclosed by id in their own section; the conclusion is never clean.
+    self_verified_finding_ids: tuple[FindingId, ...] = ()
+    # Issue #996: holding ``duplicate_of`` links of carried findings, sorted by finding id. Each
+    # duplicate reads as its earlier finding allows; the link never resolves anything.
+    duplicate_finding_links: tuple[ReceiptDuplicateLink, ...] = ()
     # Opaque review item identities withheld by the never-send heuristic.  The field is omitted
     # when empty so historical receipt objects retain their exact bytes.
     semantic_withheld_items: tuple[ReceiptSemanticWithheldItem, ...] = ()
     # PL2-1 (issue #982): item refs and line numbers of values the external reviewer did not see.
     # Omitted when empty so historical receipt objects retain their exact bytes.
     semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
+    # Issue #995 (ADR-033): assumptions and inherent verification limits the agent disclosed on
+    # obligations. Ids and a closed kind only; never changes the conclusion.
+    disclosed_assumptions: tuple[ReceiptDisclosure, ...] = ()
+    # Issue #997 (ADR-032 slice C): obligations the agent acknowledged as not done, with a
+    # reason recorded on the obligation. Disclosed by id; the conclusion is never clean.
+    acknowledged_not_done_obligation_ids: tuple[ObligationId, ...] = ()
+    # Issue #984 (D7a): acknowledged-not-done findings whose challenge says the task itself
+    # requires the work. A subset of ``acknowledged_not_done_finding_ids``, disclosed by id.
+    premise_disputed_finding_ids: tuple[FindingId, ...] = ()
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_document"
@@ -1224,14 +1313,67 @@ class ReceiptDocument:
         carried_ids = frozenset(
             finding.finding_id for finding in cast(tuple[Finding, ...], findings)
         )
-        for name in ("acknowledged_not_done_finding_ids", "rejection_accepted_finding_ids"):
+        for name in _TERMINAL_ID_FIELDS:
             raw_ids = _validate_tuple(getattr(self, name), 0, 100, invalid)
             ids = tuple(finding_id(value) for value in raw_ids)
             _validate_sorted_unique_strings(cast(tuple[str, ...], ids))
             if ids and (receipt_schema_version != "1.3.0" or not carried_ids.issuperset(ids)):
                 raise ProtocolValueError(invalid)
             object.__setattr__(self, name, ids)
-        if set(self.acknowledged_not_done_finding_ids) & set(self.rejection_accepted_finding_ids):
+        terminal_ids = [
+            str(item)
+            for name in _TERMINAL_ID_FIELDS
+            for item in cast(tuple[FindingId, ...], getattr(self, name))
+        ]
+        if len(terminal_ids) != len(set(terminal_ids)):
+            raise ProtocolValueError(invalid)
+        if (
+            self.self_verified_finding_ids
+            and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+        ):
+            # A repair only the agent verified never reads as clean (issue #984).
+            raise ProtocolValueError("invalid_receipt_conclusion")
+        links = _validate_tuple(self.duplicate_finding_links, 0, 100, invalid)
+        if any(type(value) is not ReceiptDuplicateLink for value in links):
+            raise ProtocolValueError(invalid)
+        linked = tuple(
+            str(item.finding_id) for item in cast(tuple[ReceiptDuplicateLink, ...], links)
+        )
+        _validate_sorted_unique_strings(linked)
+        if links and (receipt_schema_version != "1.3.0" or not carried_ids.issuperset(linked)):
+            raise ProtocolValueError(invalid)
+        disputed = tuple(
+            finding_id(value)
+            for value in _validate_tuple(self.premise_disputed_finding_ids, 0, 100, invalid)
+        )
+        _validate_sorted_unique_strings(cast(tuple[str, ...], disputed))
+        if not set(disputed) <= set(self.acknowledged_not_done_finding_ids):
+            raise ProtocolValueError(invalid)
+        object.__setattr__(self, "premise_disputed_finding_ids", disputed)
+        acknowledged_obligations = tuple(
+            obligation_id(value)
+            for value in _validate_tuple(self.acknowledged_not_done_obligation_ids, 0, 100, invalid)
+        )
+        _validate_sorted_unique_strings(cast(tuple[str, ...], acknowledged_obligations))
+        if acknowledged_obligations and receipt_schema_version != "1.3.0":
+            raise ProtocolValueError(invalid)
+        object.__setattr__(self, "acknowledged_not_done_obligation_ids", acknowledged_obligations)
+        if (
+            acknowledged_obligations
+            and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+        ):
+            # An obligation the agent will not do never reads as clean (issue #997).
+            raise ProtocolValueError("invalid_receipt_conclusion")
+        disclosures = _validate_tuple(self.disclosed_assumptions, 0, 64, invalid)
+        if any(type(value) is not ReceiptDisclosure for value in disclosures):
+            raise ProtocolValueError(invalid)
+        disclosure_keys = tuple(
+            (str(item.obligation_id).encode(), item.kind.encode())
+            for item in cast(tuple[ReceiptDisclosure, ...], disclosures)
+        )
+        if disclosure_keys != tuple(sorted(set(disclosure_keys))) or (
+            disclosures and receipt_schema_version != "1.3.0"
+        ):
             raise ProtocolValueError(invalid)
         withheld = _validate_tuple(self.semantic_withheld_items, 0, 64, invalid)
         if any(type(value) is not ReceiptSemanticWithheldItem for value in withheld):
@@ -1420,9 +1562,12 @@ def _child_finding_from_json(value: object) -> ReceiptChildFinding:
     source = _closed_object(
         value,
         frozenset({"finding_id", "kind", "origin", "priority", "actionable", "resolved"}),
-        frozenset({"resolution_event_id"}),
+        frozenset({"resolution_event_id", "self_verified"}),
         invalid,
     )
+    # Present only when true (issue #984).
+    if "self_verified" in source and _field(source, "self_verified", invalid) is not True:
+        raise ProtocolValueError(invalid)
     keys = frozenset(cast(tuple[str, ...], tuple(source)))
     return ReceiptChildFinding(
         finding_id=finding_id(_field(source, "finding_id", invalid)),
@@ -1436,6 +1581,7 @@ def _child_finding_from_json(value: object) -> ReceiptChildFinding:
             if "resolution_event_id" in keys
             else None
         ),
+        self_verified="self_verified" in keys,
     )
 
 
@@ -1591,8 +1737,13 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         frozenset(
             {
                 "acknowledged_not_done_finding_ids",
+                "acknowledged_not_done_obligation_ids",
                 "children",
+                "premise_disputed_finding_ids",
+                "disclosed_assumptions",
+                "duplicate_finding_links",
                 "rejection_accepted_finding_ids",
+                "self_verified_finding_ids",
                 "semantic_withheld_items",
                 "semantic_redacted_values",
                 "semantic_provenance",
@@ -1635,7 +1786,14 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         raise ProtocolValueError("invalid_receipt_document")
     if not has_children and artifact_version == "1.3.0":
         raise ProtocolValueError("invalid_receipt_document")
-    for name in ("acknowledged_not_done_finding_ids", "rejection_accepted_finding_ids"):
+    for name in (*_TERMINAL_ID_FIELDS, "duplicate_finding_links"):
+        if name in source and not _array(source[name], invalid):
+            raise ProtocolValueError(invalid)
+    for name in (
+        "disclosed_assumptions",
+        "acknowledged_not_done_obligation_ids",
+        "premise_disputed_finding_ids",
+    ):
         if name in source and not _array(source[name], invalid):
             raise ProtocolValueError(invalid)
     semantic_provenance_value = (
@@ -1697,10 +1855,51 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
             finding_id(item)
             for item in _array(source.get("rejection_accepted_finding_ids", ()), invalid)
         ),
+        self_verified_finding_ids=tuple(
+            finding_id(item)
+            for item in _array(source.get("self_verified_finding_ids", ()), invalid)
+        ),
+        duplicate_finding_links=tuple(
+            _duplicate_link_from_json(item, invalid)
+            for item in _array(source.get("duplicate_finding_links", ()), invalid)
+        ),
         semantic_withheld_items=semantic_withheld_items,
         semantic_redacted_values=semantic_redacted_values,
+        disclosed_assumptions=tuple(
+            _disclosure_from_json(item)
+            for item in _array(source.get("disclosed_assumptions", ()), invalid)
+        ),
+        acknowledged_not_done_obligation_ids=tuple(
+            obligation_id(item)
+            for item in _array(source.get("acknowledged_not_done_obligation_ids", ()), invalid)
+        ),
+        premise_disputed_finding_ids=tuple(
+            finding_id(item)
+            for item in _array(source.get("premise_disputed_finding_ids", ()), invalid)
+        ),
     )
     return document
+
+
+def _duplicate_link_from_json(value: object, invalid: str) -> ReceiptDuplicateLink:
+    source = _closed_object(
+        value, frozenset({"finding_id", "duplicate_of_finding_id"}), frozenset(), invalid
+    )
+    return ReceiptDuplicateLink(
+        finding_id=finding_id(_field(source, "finding_id", invalid)),
+        duplicate_of_finding_id=finding_id(_field(source, "duplicate_of_finding_id", invalid)),
+    )
+
+
+def _disclosure_from_json(value: object) -> ReceiptDisclosure:
+    invalid = "invalid_receipt_document"
+    keys = frozenset({"obligation_id", "kind", "decision_event_id"})
+    source = _closed_object(value, keys, frozenset(), invalid)
+    return ReceiptDisclosure(
+        obligation_id=obligation_id(_field(source, "obligation_id", invalid)),
+        kind=cast(str, _field(source, "kind", invalid)),
+        decision_event_id=event_id(_field(source, "decision_event_id", invalid)),
+    )
 
 
 def _frontier_to_json(frontier: Frontier) -> dict[str, object]:
@@ -1794,6 +1993,8 @@ def _child_finding_to_json(value: ReceiptChildFinding) -> dict[str, object]:
     }
     if value.resolution_event_id is not None:
         result["resolution_event_id"] = value.resolution_event_id
+    if value.self_verified:
+        result["self_verified"] = True
     return result
 
 
@@ -1850,6 +2051,28 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
         )
     if document.rejection_accepted_finding_ids:
         result["rejection_accepted_finding_ids"] = list(document.rejection_accepted_finding_ids)
+    if document.self_verified_finding_ids:
+        result["self_verified_finding_ids"] = list(document.self_verified_finding_ids)
+    if document.duplicate_finding_links:
+        result["duplicate_finding_links"] = [
+            {"finding_id": item.finding_id, "duplicate_of_finding_id": item.duplicate_of_finding_id}
+            for item in document.duplicate_finding_links
+        ]
+    if document.premise_disputed_finding_ids:
+        result["premise_disputed_finding_ids"] = list(document.premise_disputed_finding_ids)
+    if document.acknowledged_not_done_obligation_ids:
+        result["acknowledged_not_done_obligation_ids"] = list(
+            document.acknowledged_not_done_obligation_ids
+        )
+    if document.disclosed_assumptions:
+        result["disclosed_assumptions"] = [
+            {
+                "obligation_id": item.obligation_id,
+                "kind": item.kind,
+                "decision_event_id": item.decision_event_id,
+            }
+            for item in document.disclosed_assumptions
+        ]
     if document.semantic_withheld_items:
         result["semantic_withheld_items"] = [
             {"item_id": item.item_id, "reason": item.reason}
@@ -1906,12 +2129,14 @@ def resolved_finding_ids_for_render(document: ReceiptDocument) -> frozenset[str]
 def unresolved_findings_for_render(document: ReceiptDocument) -> tuple[Finding, ...]:
     """Current (not resolved) finding rows, in document order.
 
-    A ``rejection_accepted`` row is unresolved but settled (issue #905): it has its own section
-    and does not count here.
+    A ``rejection_accepted`` row (issue #905) or a ``self_verified`` row (issue #984) is
+    unresolved but settled: it has its own section and does not count here.
     """
 
     resolved = resolved_finding_ids_for_render(document)
-    settled = frozenset(document.rejection_accepted_finding_ids)
+    settled = frozenset(
+        (*document.rejection_accepted_finding_ids, *document.self_verified_finding_ids)
+    )
     return tuple(
         finding
         for finding in document.findings
@@ -2002,6 +2227,11 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                     f"freshness={child.freshness}; tested_manifest={tested}; "
                     f"later_manifest={later}; findings={findings}"
                 )
+                child_parts.extend(
+                    f"  - {item.finding_id}: {CHILD_SELF_VERIFIED_NOTE}"
+                    for item in child.findings
+                    if item.self_verified
+                )
         parts.append("\n".join(child_parts))
     if document.acknowledged_not_done_finding_ids:
         heading = "## Acknowledged, not done" if markdown else "Acknowledged, not done"
@@ -2024,6 +2254,90 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                     "The agent rejected these AI-powered findings with a reason and a later "
                     "review withdrew them. They are not resolved and stay on the record.",
                     *(f"- {item}" for item in document.rejection_accepted_finding_ids),
+                )
+            )
+        )
+    if document.self_verified_finding_ids:
+        heading = f"## {SELF_VERIFIED_SECTION_TITLE}" if markdown else SELF_VERIFIED_SECTION_TITLE
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent repaired these findings and verified each repair itself, citing "
+                    "its own recorded evidence, because Yoetz could not prove the repair. They "
+                    "are not resolved by Yoetz and keep this receipt from reading clean.",
+                    *(f"- {item}" for item in document.self_verified_finding_ids),
+                )
+            )
+        )
+    if document.duplicate_finding_links:
+        heading = (
+            f"## {DUPLICATE_LINKS_SECTION_TITLE}" if markdown else DUPLICATE_LINKS_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent linked these findings to an earlier finding that names the same "
+                    "issue. A link never resolves a finding by itself: each stays open until its "
+                    "own check proves it absent, or carries the earlier finding's not-done or "
+                    "self-verified answer.",
+                    *(
+                        f"- {item.finding_id} duplicates {item.duplicate_of_finding_id}"
+                        for item in document.duplicate_finding_links
+                    ),
+                )
+            )
+        )
+    if document.premise_disputed_finding_ids:
+        heading = (
+            f"## {PREMISE_DISPUTED_SECTION_TITLE}" if markdown else PREMISE_DISPUTED_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent recorded these findings as not done although the AI-powered review "
+                    "said the task itself requires the work. The agent's reasons are in its "
+                    "responses; Yoetz did not judge them.",
+                    *(f"- {item}" for item in document.premise_disputed_finding_ids),
+                )
+            )
+        )
+    if document.acknowledged_not_done_obligation_ids:
+        heading = (
+            f"## {ACKNOWLEDGED_OBLIGATIONS_SECTION_TITLE}"
+            if markdown
+            else ACKNOWLEDGED_OBLIGATIONS_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent recorded these obligations as acknowledged and not done, each with "
+                    "a reason on the obligation. They are not done and keep this receipt from "
+                    "reading clean.",
+                    *(f"- {item}" for item in document.acknowledged_not_done_obligation_ids),
+                )
+            )
+        )
+    if document.disclosed_assumptions:
+        heading = (
+            f"## {DISCLOSED_ASSUMPTIONS_SECTION_TITLE}"
+            if markdown
+            else DISCLOSED_ASSUMPTIONS_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent recorded these in decisions: a best-effort assumption it made, or "
+                    "a check it inherently could not run. Yoetz did not verify them; each "
+                    "decision holds the agent's text.",
+                    *(
+                        f"- {item.obligation_id}: {item.kind} (decision {item.decision_event_id})"
+                        for item in document.disclosed_assumptions
+                    ),
                 )
             )
         )
@@ -2203,6 +2517,29 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
         verb = "remains" if count == 1 else "remain"
         return prefix + f"{count} unresolved {noun} {verb}."
     if document.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE:
+        if document.acknowledged_not_done_obligation_ids:
+            count = len(document.acknowledged_not_done_obligation_ids)
+            noun = "obligation was" if count == 1 else "obligations were"
+            return (
+                prefix + f"coverage is insufficient. {count} {noun} acknowledged as not done "
+                "by the agent."
+            )
+        if document.self_verified_finding_ids:
+            count = len(document.self_verified_finding_ids)
+            noun = "finding was" if count == 1 else "findings were"
+            return (
+                prefix + f"coverage is insufficient. {count} {noun} self-verified by the agent; "
+                "Yoetz could not prove the repair."
+            )
+        child_self_verified = sum(
+            item.self_verified for child in document.children.children for item in child.findings
+        )
+        if child_self_verified:
+            noun = "child finding was" if child_self_verified == 1 else "child findings were"
+            return (
+                prefix + f"coverage is insufficient. {child_self_verified} {noun} self-verified "
+                "by the child agent; Yoetz could not prove the repair."
+            )
         return prefix + "coverage is insufficient. Declared gaps bound this receipt's conclusion."
 
     outstanding_work = next(

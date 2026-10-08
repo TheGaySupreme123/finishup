@@ -30,19 +30,31 @@ verdicts are unchanged; this module only decides which readiness group names the
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from yoetz.domain.events import CheckRecordedPayload, LedgerRecord
-from yoetz.domain.receipts import CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS
+from yoetz.domain.receipts import (
+    CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
+    COMPLETION_PLAN_NOT_CLAIMED_GAP,
+)
 from yoetz.domain.values import EventId, FindingId, ObligationId
+from yoetz.kernel import finding_todo as _finding_todo_module
+from yoetz.kernel.claim_limitations import required_limitation_ids_for_projection
 from yoetz.kernel.claims import completion_claim_present
 from yoetz.kernel.finding_resolution import finding_is_resolved
-from yoetz.kernel.finding_todo import finding_blocks_receipt
+from yoetz.kernel.finding_todo import (
+    FindingTodoState,
+    duplicate_counting_id,
+    finding_blocks_receipt,
+    finding_todo_state,
+)
+from yoetz.kernel.observed_failures import observed_event_ids_from_records
 from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS, PLAN_DRIFT_GAPS
+from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.reducers import invalidates_recorded_check
@@ -50,15 +62,31 @@ from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS,
     OBLIGATION_BLOCKED_GAP,
+    OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
     STANDING_TASK_FACT_GAPS,
+    acknowledged_obligation_ids,
     blocker_declarations,
+    decision_batches,
+    disclosure_declarations,
     open_effective_obligations,
 )
 from yoetz.protocol.models import SemanticStatus
 
+# L5's D7 predicate (#984, D7a), looked up by name so this module works on a build without it:
+# absent, nothing is reported as disputed. Tests monkeypatch this attribute.
+_standing_premise_disputes: Callable[[ProjectionState], Iterable[object]] | None = cast(
+    "Callable[[ProjectionState], Iterable[object]] | None",
+    getattr(_finding_todo_module, "standing_premise_disputes", None),
+)
+
 __all__ = [
     "ACKNOWLEDGED_NOT_DONE",
     "AGENT_READINESS_CONDITIONS",
+    "ASSUMPTION_DISCLOSED_GAP",
+    "FINDING_PREMISE_DISPUTED_GAP",
+    "premise_disputed_finding_ids",
+    "VERIFICATION_LIMIT_DISCLOSED_GAP",
+    "FINDING_SELF_VERIFIED_GAP",
     "GAP_CLASSIFICATION",
     "GAP_CLASSIFICATION_VERSION",
     "MAX_ACKNOWLEDGED_READINESS_ITEMS",
@@ -81,8 +109,25 @@ __all__ = [
 # Bump when any assignment below changes meaning. Status responses carry the version so a reader
 # can tell which table classified a recorded readiness answer. "2": the task-statement gap
 # ``instruction_requirement_unmapped`` became agent-actionable and the previously unclassified
-# ``compound_outcome_unavailable`` became a standing limitation.
-GAP_CLASSIFICATION_VERSION: Final = "2"
+# ``compound_outcome_unavailable`` became a standing limitation. "3": the standing readiness code
+# ``finding_self_verified`` (issue #984, ADR-034) was added. "4": the standing disclosure codes
+# ``assumption_disclosed`` and ``verification_limit_disclosed`` (issue #995, ADR-033) and
+# ``finding_premise_disputed`` (issue #984, D7a) were added.
+GAP_CLASSIFICATION_VERSION: Final = "4"
+# Issue #984 (ADR-034): a current finding the agent answered ``self_verified``. Yoetz could not
+# prove the repair; the agent verified it itself. Disclosed, never agent work.
+FINDING_SELF_VERIFIED_GAP: Final = "finding_self_verified"
+# Issue #995 (ADR-033): a recorded ``yoetz-assumption:`` / ``yoetz-verification-limit:`` decision
+# line on an obligation. A disclosure, never a blocker and never agent work.
+ASSUMPTION_DISCLOSED_GAP: Final = "assumption_disclosed"
+VERIFICATION_LIMIT_DISCLOSED_GAP: Final = "verification_limit_disclosed"
+# Issue #984 (D7a): the agent answered ``acknowledged_not_done`` on an AI-powered finding whose
+# challenge says the task itself requires the work. Terminal, so never agent work: disclosed, and
+# the Stop gate asks once.
+FINDING_PREMISE_DISPUTED_GAP: Final = "finding_premise_disputed"
+_DISCLOSURE_CODES: Final[Mapping[str, str]] = MappingProxyType(
+    {"assumption": ASSUMPTION_DISCLOSED_GAP, "verification_limit": VERIFICATION_LIMIT_DISCLOSED_GAP}
+)
 UNCLASSIFIED_GAP_PREFIX: Final = "unclassified_gap:"
 
 _CODE_RE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
@@ -276,6 +321,16 @@ GAP_CLASSIFICATION: Final[Mapping[str, GapClass]] = MappingProxyType(
         # assertion.
         "command_attempt_uncorroborated": _S,
         "command_attempt_mismatch": _A,
+        # -- Findings the agent self-verified because a Yoetz limit kept the repair unproven
+        # (issue #984). Final and disclosed; no agent action removes it.
+        FINDING_SELF_VERIFIED_GAP: _S,
+        # -- The agent's own disclosures (issue #995): a best-effort assumption or a check it
+        # inherently cannot run, recorded on an obligation. Disclosed; no agent action removes it.
+        ASSUMPTION_DISCLOSED_GAP: _S,
+        VERIFICATION_LIMIT_DISCLOSED_GAP: _S,
+        # Acknowledged-not-done findings the reviewer says the task requires (D7a). Final
+        # answers, so standing; the Stop gate asks about them once.
+        FINDING_PREMISE_DISPUTED_GAP: _S,
         # -- Lineage (ADR-027). Child work, child verification and a check that has not covered
         # the latest manifest are actionable; unreadable, restricted or terminal child facts are
         # disclosures. A manifest that trails the catalog is refreshed by the service, so, like
@@ -444,8 +499,10 @@ def split_gaps(
 # ---------------------------------------------------------------------------------------------
 
 # The one "not done" vocabulary shared by findings (#905's ``respond`` disposition) and
-# obligations (ADR-032). An acknowledged item is carried to the receipt as not done; it is never
-# resolved, never counted as clean, and never reopened.
+# obligations (ADR-032; the obligation form is #997's ``obligation_published`` 1.1.0). An
+# acknowledged item is carried to the receipt as not done; it is never resolved and never counted
+# as clean. A finding's acknowledgement is final; an obligation's is undone only by a later
+# publication of that obligation (open or resolved).
 ACKNOWLEDGED_NOT_DONE: Final = "acknowledged_not_done"
 # Readiness conditions the agent removes by its own action, in their wire order.
 # ``receipt_findings_unresolved`` joins them unless every receipt-blocking finding is acknowledged
@@ -497,12 +554,32 @@ class ClosureReadinessFacts:
     # ``(obligation, blocker kind, decision event id)`` for each blocked open obligation, in
     # obligation order: what the Stop gate names when it re-asks a blocker once (#977).
     blocked_obligation_details: tuple[tuple[ObligationId, str, EventId], ...] = ()
+    # ``(obligation, confirming decision event id)`` for each blocked open obligation whose
+    # blocker a later decision confirmed (#985), in obligation order. A blocked obligation absent
+    # here is only claimed: it stays agent work (``obligation_blocker_unconfirmed``).
+    blocked_obligation_confirmations: tuple[tuple[ObligationId, EventId], ...] = ()
     # Issue #976. Whether a closing review (final phase) is current since the last material
     # change, or a review attempt since then could not complete for a reason the agent cannot
     # remove; and whether any AI-powered review completed on this task. The defaults keep a
     # hand-built fact set at its pre-#976 answer.
     closing_review_current: bool = True
     semantic_review_used: bool = False
+    # Issue #984: current findings in the terminal ``self_verified`` state. Not agent work (they
+    # never count as receipt-blocking); readiness discloses them as ``finding_self_verified``.
+    self_verified_finding_ids: tuple[FindingId, ...] = ()
+    # F3: every result id a whole-task completion claim recorded now must name in
+    # ``limitation_refs`` (``kernel.claim_limitations``, the reducer's rule), sorted. Status
+    # lists them before the claim so the first claim is accepted.
+    limitation_refs_required: tuple[str, ...] = ()
+    # Issue #995: ``(obligation, kind, decision event id)`` for each recorded disclosure line
+    # (``task_facts.disclosure_declarations``), in obligation then kind order. Standing only.
+    disclosed_obligations: tuple[tuple[ObligationId, str, EventId], ...] = ()
+    # #997: an effective obligation whose payload is unreadable may be open; it keeps
+    # ``obligations_open`` actionable even when every readable one is acknowledged. A hand-built
+    # fact set that does not say defaults to unknown, which never clears the condition.
+    open_obligations_unreadable: bool = True
+    # Issue #984 (D7a): acknowledged-not-done findings whose premise the reviewer disputes.
+    premise_disputed_finding_ids: tuple[FindingId, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -521,9 +598,12 @@ class ClosureReadinessFacts:
         for values in (
             self.receipt_blocking_finding_ids,
             self.acknowledged_finding_ids,
+            self.self_verified_finding_ids,
             self.acknowledged_obligation_ids,
             self.open_obligation_ids,
             self.blocked_obligation_ids,
+            self.limitation_refs_required,
+            self.premise_disputed_finding_ids,
         ):
             if type(values) is not tuple or values != tuple(sorted(set(values), key=str.encode)):
                 raise ValueError("closure_readiness_facts_invalid")
@@ -533,6 +613,22 @@ class ClosureReadinessFacts:
             != self.blocked_obligation_ids
         ):
             raise ValueError("closure_readiness_facts_invalid")
+        confirmed = tuple(item[0] for item in self.blocked_obligation_confirmations)
+        if (
+            type(self.blocked_obligation_confirmations) is not tuple
+            or confirmed != tuple(sorted(set(confirmed), key=str.encode))
+            or not set(confirmed) <= set(self.blocked_obligation_ids)
+        ):
+            raise ValueError("closure_readiness_facts_invalid")
+        if type(self.disclosed_obligations) is not tuple or any(
+            type(item) is not tuple or len(item) != 3 or item[1] not in _DISCLOSURE_CODES
+            for item in self.disclosed_obligations
+        ):
+            raise ValueError("closure_readiness_facts_invalid")
+
+    @property
+    def confirmed_blocked_obligation_ids(self) -> tuple[ObligationId, ...]:
+        return tuple(item[0] for item in self.blocked_obligation_confirmations)
 
 
 def live_lineage_blockers(tokens: Iterable[str], recorded_gaps: Iterable[str]) -> tuple[str, ...]:
@@ -713,17 +809,54 @@ def _closing_review_facts(
 
 
 def _acknowledged_obligation_ids(state: ProjectionState) -> tuple[ObligationId, ...]:
-    """Always empty: no recorded form acknowledges an obligation as not done yet.
+    """Effective obligations whose latest publication is ``acknowledged_not_done`` (#997).
 
-    The obligation-level acknowledgement is issue #913 slice C (it needs a new
-    ``obligation_published`` version); #905 owns only the finding form, which
-    ``finding_acknowledged_not_done`` already reads. Until slice C ships, an obligation the agent
-    cannot finish stays open, so ``obligations_open`` keeps readiness ``action_required``; the
-    guidance says so. Nothing here may be inferred from other records.
+    ADR-032 slice C: an ``obligation_published`` 1.1.0 with that status and a reason. Such an
+    obligation is not open (it leaves ``obligations_open``) and not resolved; readiness lists it
+    in ``acknowledged_not_done`` and the receipt discloses it as not done. A later publication
+    with ``open`` or ``resolved`` takes it out again. Nothing is inferred from other records.
     """
 
-    del state
-    return ()
+    return tuple(sorted(acknowledged_obligation_ids(state), key=str.encode))
+
+
+def premise_disputed_finding_ids(state: ProjectionState) -> tuple[FindingId, ...]:
+    """Acknowledged-not-done findings the reviewer says the task itself requires (D7a, #984).
+
+    Reads L5's ``finding_todo.standing_premise_disputes`` as an opaque predicate. On a build
+    without it, or if it fails, nothing is reported as disputed (a disclosure is never invented).
+    """
+
+    predicate = _standing_premise_disputes
+    if predicate is None:
+        return ()
+    try:
+        values: tuple[object, ...] = tuple(predicate(state))
+    except (AttributeError, KeyError, LookupError, TypeError, ValueError) as exc:
+        # A predicate defect must not break status; it is recorded, never silently hidden, and
+        # nothing is reported as disputed.
+        from yoetz.observability.logging import record_unexpected_exception_without_raising
+
+        record_unexpected_exception_without_raising(
+            exc,
+            component="kernel.closure_readiness",
+            operation="premise_dispute_predicate_failed",
+        )
+        return ()
+    disputed = {
+        FindingId(value) for value in values if type(value) is str and value.startswith("fnd_")
+    }
+    return tuple(sorted(disputed, key=str.encode))
+
+
+def _open_obligations_unreadable(state: ProjectionState) -> bool:
+    scope = current_plan_scope(state.plans, state.coverage_gaps)
+    refs = scope.effective_obligation_refs
+    if refs is None:
+        return True
+    return any(
+        (record := state.obligations.get(item)) is None or record.payload is None for item in refs
+    )
 
 
 def closure_readiness_facts(
@@ -740,21 +873,35 @@ def closure_readiness_facts(
     )
     # Same predicate as receipt_blocking_finding_count (``finding_todo.finding_blocks_receipt``): an
     # actionable finding kind that no later qualifying check resolved and that is not a terminal
-    # ``rejection_accepted`` item (issue #905).
+    # ``rejection_accepted`` item (issue #905). A linked ``duplicate_of`` item (issue #996) is
+    # named by the finding that answers for it (``duplicate_counting_id``), so a pair counts once.
     blocking = {
-        finding.finding_id
+        duplicate_counting_id(state, finding.finding_id)
         for finding in current
         if finding_blocks_receipt(state, finding.finding_id)
     }
     acknowledged = {
-        finding.finding_id
+        duplicate_counting_id(state, finding.finding_id)
         for finding in current
         if finding_acknowledged_not_done(state, finding.finding_id)
+        or finding_todo_state(state, finding.finding_id) is FindingTodoState.ACKNOWLEDGED_NOT_DONE
+    }
+    self_verified = {
+        duplicate_counting_id(state, finding.finding_id)
+        for finding in current
+        if finding_todo_state(state, finding.finding_id) is FindingTodoState.SELF_VERIFIED
     }
     # The receipt's applicability rule reads the same observation-limitation set (issue #911).
     limitations = observation_limitation_finding_ids(state, records)
-    open_obligations = open_effective_obligations(state)
-    blocked = blocker_declarations(state)
+    # #997: an acknowledged obligation is never open work here, whichever counting regime the
+    # projection uses (L6 counts it among open obligations); it is listed once, as acknowledged.
+    acknowledged_obligations = _acknowledged_obligation_ids(state)
+    open_obligations = tuple(
+        item
+        for item in open_effective_obligations(state)
+        if item not in set(acknowledged_obligations)
+    )
+    blocked = blocker_declarations(state, decision_batches(records))
     blocked_open = tuple(
         sorted({item for item in open_obligations if item in blocked}, key=str.encode)
     )
@@ -764,14 +911,29 @@ def closure_readiness_facts(
         semantic_review_current=_semantic_review_current(records, limitations),
         receipt_blocking_finding_ids=tuple(sorted(blocking, key=str.encode)),
         acknowledged_finding_ids=tuple(sorted(acknowledged, key=str.encode)),
-        acknowledged_obligation_ids=_acknowledged_obligation_ids(state),
+        acknowledged_obligation_ids=acknowledged_obligations,
+        open_obligations_unreadable=_open_obligations_unreadable(state),
         open_obligation_ids=tuple(sorted(set(open_obligations), key=str.encode)),
         blocked_obligation_ids=blocked_open,
         blocked_obligation_details=tuple(
             (item, blocked[item].kind, blocked[item].decision_event_id) for item in blocked_open
         ),
+        blocked_obligation_confirmations=tuple(
+            (item, confirmation)
+            for item in blocked_open
+            if (confirmation := blocked[item].confirmation_event_id) is not None
+        ),
         closing_review_current=closing_current,
         semantic_review_used=review_used,
+        self_verified_finding_ids=tuple(sorted(self_verified, key=str.encode)),
+        limitation_refs_required=tuple(
+            required_limitation_ids_for_projection(state, observed_event_ids_from_records(records))
+        ),
+        disclosed_obligations=tuple(
+            (item.obligation_id, item.kind, item.decision_event_id)
+            for item in disclosure_declarations(state)
+        ),
+        premise_disputed_finding_ids=premise_disputed_finding_ids(state),
     )
 
 
@@ -794,6 +956,7 @@ def derive_closure_readiness(
     semantic_review_required: bool,
     check_in_flight: bool = False,
     live_blockers: Iterable[str] = (),
+    lineage_self_verified: bool = False,
 ) -> ClosureReadinessSplit:
     """Split readiness into agent-actionable work, standing limitations and acknowledged items.
 
@@ -809,14 +972,30 @@ def derive_closure_readiness(
 
     conditions = tuple(blocking_conditions)
     actionable: list[str] = []
-    blocked_only = False
+    standing: set[str] = set()
+    # Every open obligation is named by a recorded blocker (#977), and every one of those blockers
+    # was confirmed by a later decision after the challenge (#985).
+    blocked_confirmed_only = False
     for condition in AGENT_READINESS_CONDITIONS:
         if condition not in conditions:
             continue
         if condition == "receipt_findings_unresolved" and facts is not None:
             blocking = set(facts.receipt_blocking_finding_ids)
-            if blocking and blocking <= set(facts.acknowledged_finding_ids):
+            # Acknowledged-not-done (#905) and self-verified (#984) items are final answers,
+            # not agent work.
+            settled = {*facts.acknowledged_finding_ids, *facts.self_verified_finding_ids}
+            if blocking and blocking <= settled:
                 continue
+        if (
+            condition == "obligations_open"
+            and facts is not None
+            and not facts.open_obligation_ids
+            and facts.acknowledged_obligation_ids
+            and not facts.open_obligations_unreadable
+        ):
+            # #997: the only obligations the projection counts as open are acknowledged as not
+            # done (L6's counting regime). They are listed once, under acknowledged_not_done.
+            continue
         if (
             condition == "obligations_open"
             and facts is not None
@@ -824,14 +1003,21 @@ def derive_closure_readiness(
             and set(facts.open_obligation_ids) <= set(facts.blocked_obligation_ids)
         ):
             # Every open obligation is named by a recorded blocker outside the agent's control
-            # (authority, consent, credential, an unobtainable dependency; #977). Nothing the
-            # agent can do removes it, so it is disclosed rather than listed as work.
-            blocked_only = True
+            # (authority, consent, credential, an unobtainable dependency; #977). A blocker the
+            # agent only claimed is still its work: repair the obligation, or confirm the blocker
+            # in a later decision after the challenge (#985). Only when every one is confirmed
+            # is it disclosed rather than listed as work.
+            unconfirmed = set(facts.blocked_obligation_ids) - set(
+                facts.confirmed_blocked_obligation_ids
+            )
+            if unconfirmed:
+                actionable.append(OBLIGATION_BLOCKER_UNCONFIRMED_GAP)
+            else:
+                blocked_confirmed_only = True
+            if facts.confirmed_blocked_obligation_ids:
+                standing.add(OBLIGATION_BLOCKED_GAP)
             continue
         actionable.append(condition)
-    standing: set[str] = set()
-    if blocked_only:
-        standing.add(OBLIGATION_BLOCKED_GAP)
     if check_in_flight:
         actionable.append("check_in_progress")
     if facts is not None:
@@ -844,7 +1030,15 @@ def derive_closure_readiness(
         semantic_review_required=semantic_review_required,
         semantic_review_current=facts is not None and facts.semantic_review_current,
     )
-    actionable.extend(code for code in split.agent_actionable if code not in actionable)
+    split_actionable = split.agent_actionable
+    if blocked_confirmed_only and COMPLETION_PLAN_NOT_CLAIMED_GAP in split_actionable:
+        # Issue #985 (C9): every open obligation is confirmed blocked, so no completion claim can
+        # cover the plan; the unclaimed plan is disclosed beside the blocker, not listed as work.
+        split_actionable = tuple(
+            code for code in split_actionable if code != COMPLETION_PLAN_NOT_CLAIMED_GAP
+        )
+        standing.add(COMPLETION_PLAN_NOT_CLAIMED_GAP)
+    actionable.extend(code for code in split_actionable if code not in actionable)
     # Issue #976: the receipt is the last step, so the last review before it judges
     # completeness. Required on a route that requires AI-powered review, and on any task that
     # already used it; not repeated while the missing review is already the actionable item.
@@ -860,6 +1054,17 @@ def derive_closure_readiness(
         if item not in actionable:
             actionable.append(item)
     standing.update(split.standing_limitations)
+    if (facts is not None and facts.self_verified_finding_ids) or lineage_self_verified:
+        # ``lineage_self_verified``: an accepted child holds self-verified findings (ADR-034,
+        # ADR-027). The parent receipt is then at best insufficient_coverage; status says so.
+        standing.add(FINDING_SELF_VERIFIED_GAP)
+    if facts is not None:
+        # Issue #995: disclosed assumptions and verification limits never add or remove work.
+        standing.update(
+            _DISCLOSURE_CODES[kind] for _obligation, kind, _event in facts.disclosed_obligations
+        )
+        if facts.premise_disputed_finding_ids:
+            standing.add(FINDING_PREMISE_DISPUTED_GAP)
     acknowledged: tuple[str, ...] = ()
     if facts is not None:
         acknowledged = tuple(

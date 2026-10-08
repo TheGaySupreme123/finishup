@@ -239,7 +239,7 @@ _REQUEST_MODEL_SPECS: tuple[tuple[str, str], ...] = (
     ("StartRequestModel", "operations/start-request-1.1.0.schema.json"),
     ("PublishWorkRequestModel", "operations/publish-work-request-1.1.0.schema.json"),
     ("CheckRequestModel", "operations/check-request-1.1.0.schema.json"),
-    ("RespondRequestModel", "operations/respond-request-1.0.0.schema.json"),
+    ("RespondRequestModel", "operations/respond-request-1.1.0.schema.json"),
     ("StatusRequestModel", "operations/status-request-1.2.0.schema.json"),
     ("ReceiptRequestModel", "operations/receipt-request-1.0.0.schema.json"),
 )
@@ -309,23 +309,23 @@ _STATUS_PAGE_DEF_BY_VIEW_FOR_TEST: tuple[tuple[str, str], ...] = (
     ("versions", "versions_page"),
 )
 _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
-    ("check", None): 371,
-    ("publish_work", None): 57,
-    ("receipt", None): 280,
-    ("respond", None): 53,
+    ("check", None): 372,
+    ("publish_work", None): 61,
+    ("receipt", None): 289,
+    ("respond", None): 54,
     ("start", None): 72,
-    ("status", None): 58,
+    ("status", None): 63,
     ("status", "advice"): 25,
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,
     ("status", "compact"): 57,
     ("status", "evidence"): 19,
-    ("status", "findings"): 125,
+    ("status", "findings"): 126,
     ("status", "history"): 63,
-    ("status", "lineage"): 16,
+    ("status", "lineage"): 17,
     ("status", "obligations"): 39,
     ("status", "operation"): 48,
-    ("status", "project"): 67,
+    ("status", "project"): 68,
     ("status", "results"): 11,
     ("status", "versions"): 13,
 }
@@ -334,10 +334,17 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
     ("StartSuccessModel", "operations/start-result-1.1.0.schema.json", "success"),
     ("StartCompactViewModel", "operations/start-result-1.0.0.schema.json", "compact_view"),
     ("StartVersionSliceModel", "operations/start-result-1.0.0.schema.json", "version_slice"),
+    # 1.1.0 (unreleased) adds the optional yoetz-blocker notices (#985).
     (
         "PublishWorkSuccessModel",
-        "operations/publish-work-result-1.0.0.schema.json",
+        "operations/publish-work-result-1.1.0.schema.json",
         "success",
+    ),
+    ("PublishWorkDryRunModel", "operations/publish-work-result-1.1.0.schema.json", "dry_run"),
+    (
+        "PublishWorkBlockerNoticeModel",
+        "operations/publish-work-result-1.1.0.schema.json",
+        "blocker_notice",
     ),
     (
         "PublishWorkAcceptedEventModel",
@@ -382,7 +389,7 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "operations/respond-result-1.0.0.schema.json",
         "evidence_summary",
     ),
-    ("RespondResponseModel", "operations/respond-result-1.0.0.schema.json", "response"),
+    ("RespondResponseModel", "operations/respond-result-1.1.0.schema.json", "response"),
     ("RespondVersionSliceModel", "operations/respond-result-1.0.0.schema.json", "version_slice"),
     ("StatusSuccessModel", "operations/status-result-1.4.0.schema.json", "success"),
     (
@@ -960,6 +967,41 @@ def test_human_status_reports_unknown_readiness_counts_as_unavailable() -> None:
     assert "Open obligations: unavailable" in rendered
     assert "Unanswered findings: unavailable" in rendered
     assert "Receipt-blocking findings: unavailable" in rendered
+
+
+def test_human_status_counts_acknowledged_obligations_apart() -> None:
+    """#997 review item 2: an acknowledged obligation is shown once, never as open."""
+
+    from yoetz.cli.render import render_human_status
+    from yoetz.mcp.summaries import summary_for_status
+
+    models = _models_module()
+    result = _status_result_wire()
+    readiness = with_checklist(
+        {
+            "declared_obligation_count": "2",
+            "no_obligations_reason": None,
+            "open_obligation_count": "0",
+            "unanswered_finding_count": "0",
+            "receipt_blocking_finding_count": "0",
+            "blocking_conditions": [],
+        }
+    )
+    obligation = "obl_00000000-0000-4000-8000-000000000001"
+    readiness.update(
+        state="ready_with_limitations",
+        acknowledged_not_done=[obligation],
+        acknowledged_not_done_count="1",
+        acknowledged_obligation_count="1",
+    )
+    result["closure_readiness"] = readiness
+    parsed = models.StatusResultModel.model_validate(result)
+    assert type(parsed.root) is models.StatusSuccessModel
+    rendered = render_human_status(parsed.root)
+    assert "Open obligations: 0" in rendered
+    assert "Obligations acknowledged as not done: 1" in rendered
+    summary = summary_for_status(parsed.root.model_dump(mode="json"))
+    assert "open obligations: 0; acknowledged not done (not open): 1;" in summary
 
 
 def _respond_result_wire() -> dict[str, JsonValue]:
@@ -2486,7 +2528,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     rules = cast(tuple[Any, ...], getattr(models, "_RESULT_LEAF_RULES"))
 
     derived_patterns = _derived_result_success_patterns(catalog)
-    assert len(derived_patterns) == 1412
+    assert len(derived_patterns) == 1435
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2495,7 +2537,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert derived_counts == _EXPECTED_RESULT_PATTERN_COUNTS
 
     assert type(rules) is tuple
-    assert len(rules) == 1439
+    assert len(rules) == 1462
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {
@@ -2504,7 +2546,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1412
+    assert len(registry_patterns) == 1435
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)
@@ -3201,7 +3243,7 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     root = resources.files("yoetz").joinpath("resources", "schemas")
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
-    assert sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_686
+    assert sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_708
 
 
 def test_schema_name_derivation_and_version_maps_are_exact() -> None:

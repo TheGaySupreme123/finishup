@@ -107,7 +107,7 @@ from yoetz.kernel.finding_resolution import (
     finding_is_resolved,
     finding_resolution_explanation,
 )
-from yoetz.kernel.finding_todo import finding_todo_state
+from yoetz.kernel.finding_todo import duplicate_link_target, finding_todo_state
 from yoetz.kernel.observed_failures import (
     observed_event_ids_from_records,
     observed_run_facts,
@@ -1240,6 +1240,8 @@ def _obligation_item(
     )
     values = dict(
         obligation_id=obligation,
+        # Issue #997/#1002: the row is the not-done marker: ``acknowledged_not_done`` with the
+        # agent's reason (status-result 1.4.0). Closure readiness counts it once, as not done.
         status=typed.payload.status.value,
         description=typed.payload.description,
         evidence_expectation=typed.payload.evidence_expectation,
@@ -1699,6 +1701,10 @@ def _projection_items(
                     else FrontierModel.model_validate(dict(finding_frontier.as_wire()))
                 ),
             }
+            # Issue #996: present exactly while a ``duplicate_of`` link holds.
+            duplicate_of = duplicate_link_target(projection, finding.finding_id)
+            if duplicate_of is not None:
+                finding_fields["duplicate_of_finding_id"] = duplicate_of
             if finding.challenge is not None:
                 finding_fields["challenge"] = {
                     "alternative_interpretation": finding.challenge.alternative_interpretation,
@@ -1734,8 +1740,8 @@ def _projection_items(
                 for key in scope_refs
                 if (record := projection.obligations.get(key)) is not None
                 and record.payload is not None
-                # acknowledged_not_done (#1002) is not resolved: listed like open.
-                and record.payload.status.value != "resolved"
+                # acknowledged_not_done (#997) is listed by closure readiness, never as open.
+                and record.payload.status.value == "open"
             )
         )
         proof_state_cache: dict[tuple[int, int, str], ProjectionState | None] = {}
@@ -1781,8 +1787,8 @@ def _projection_items(
             else sum(
                 (record := projection.obligations.get(obligation)) is None
                 or record.payload is None
-                # acknowledged_not_done (#1002) is not resolved: counted like open.
-                or record.payload.status.value != "resolved"
+                # acknowledged_not_done (#997) is counted once, as not done, never as open.
+                or record.payload.status.value == "open"
                 for obligation in scope_refs
             )
         )

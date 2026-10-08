@@ -166,10 +166,10 @@ A response never deletes the original challenge. That is the point — the recor
 disagreement visible.
 
 No disposition resolves a finding. Agents can record `acknowledged`, `acknowledged_not_done`,
-`provenance_disputed`, or `rejected`; `waived` is reserved for an authorized local-CLI human. Each records what was decided
+`self_verified`, `provenance_disputed`, or `rejected`; `waived` is reserved for an authorized local-CLI human. Each records what was decided
 and what evidence was attached; none clears the finding for receipt purposes. A readable response
 does clear the status surface's `unanswered_finding_count`, while the actionable finding remains in
-`receipt_blocking_finding_count`.
+`receipt_blocking_finding_count` (except `self_verified`, below).
 
 Observation-authored, non-actionable findings (such as "Observation coverage is incomplete or
 stale") are disclosed coverage limitations: they never count in `unanswered_finding_count` and need
@@ -236,6 +236,45 @@ item never reads as proved absent). A final item never changes again and is not 
 later `respond` to it records nothing and answers `finding_terminal`. New evidence about the same
 problem comes back as a new finding. `acknowledged_not_done` is an honest "not done": it keeps the
 receipt from reading clean and appears in its own "Acknowledged, not done" section.
+
+`self_verified` is the final state for a finding you repaired that Yoetz cannot prove repaired
+because of its own limits (a *Yoetz limit*: content it could not capture or had to redact, lost
+observations, a review packet that could not show the repair). You verify the repair yourself,
+record that evidence, and respond `self_verified` with how you verified it and the evidence ids.
+Yoetz accepts it only after a later check of the finding and only when that check no longer sees
+the issue itself (`finding_not_rechecked` and `finding_not_proof_limited` otherwise). The item stops
+being your work and never counts as receipt-blocking, but it is never resolved: closure readiness
+lists `finding_self_verified` as a standing limitation, the receipt names it in its own
+"Self-verified by the agent; Yoetz could not prove the repair" section, and the receipt's
+conclusion is at best `insufficient_coverage`. A Yoetz limit is never a `yoetz-blocker`.
+
+Three more things the receipt discloses in their own sections, by id only:
+
+- **Assumptions and verification limits.** When you make a best-effort choice, or a check is
+  inherently out of reach (a hidden verifier, a private trace), that is not a blocker: finish the
+  work and record a decision whose statement holds the line `yoetz-assumption:<obligation id>` or
+  `yoetz-verification-limit:<obligation id>`, with the assumption or limit as the rationale. Closure
+  readiness lists `assumption_disclosed` or `verification_limit_disclosed` as standing
+  limitations, and the receipt names each one under "Assumptions and verification limits the agent
+  disclosed". Nothing is blocked or resolved by it; supersede the decision to withdraw it.
+- **Obligations acknowledged as not done.** For an obligation you truly will not do, after
+  trying to repair it, publish it again with `status: "acknowledged_not_done"` and an
+  `acknowledged_not_done_reason` (event version 1.1.0). It is no longer open work, readiness lists
+  it under `acknowledged_not_done`, and the receipt names it under "Obligations acknowledged as not
+  done" and never reads clean. Publishing the obligation again as `open` (or `resolved` with
+  evidence) takes it back.
+- **Findings the review says the task requires.** A finding you answered `acknowledged_not_done`
+  whose review challenge says the task itself requires the work is listed as
+  `finding_premise_disputed` and under "Not done although the review says the task requires it".
+  A Stop asks you about it once.
+
+`duplicate_of` is only for a genuine restatement: a new finding of the same origin and kind that
+names the same issue as an earlier finding you already answered. It is not a final state of its own
+and never resolves the new finding: the finding stays open until its own check proves it absent,
+and it is counted once with the earlier finding meanwhile. It carries over only the earlier
+finding's never-clean answers (acknowledged not done, self-verified), and the receipt lists each
+link by ids in a "Linked duplicates" section. A later check that raises the finding again, or a
+review that says it is still present, breaks the link; it then needs its own answer.
 `rejection_accepted` no longer blocks the receipt's conclusion but is listed in its own "Rejection
 accepted" section. Both sections name finding ids only. A review that restates a recorded AI-powered
 finding without anything recorded since does not add a second item: it is seen again and suppressed,
@@ -244,8 +283,9 @@ and the check discloses `semantic_restatements_suppressed`.
 The check result's `finding_checklist` and `status` with the `findings` view show each item's state
 and how many later reviews left it open, against the owner's budget
 (`verification.finding_attempt_budget`, default 5), for example `[ ] F-3 open (2/5)`. At the budget
-Yoetz asks for a decision: repair with new evidence, or respond `acknowledged_not_done` with the
-reason. It never limits checks and never closes or acknowledges anything on anyone's behalf.
+Yoetz asks for a decision: repair with new evidence; if you repaired it and only a Yoetz limit keeps
+it unproven, verify it yourself and respond `self_verified`; respond `acknowledged_not_done` with
+the reason only if you truly will not or cannot do it. It never limits checks and never closes or acknowledges anything on anyone's behalf.
 
 Repairing the record is therefore the way back to a stronger receipt: repair, recheck, and read the
 finding's `resolved` state rather than assuming that absence alone qualified. If the issue re-fires,

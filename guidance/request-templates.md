@@ -493,7 +493,11 @@ Use `claim_recorded/1.1.0` for new claims. Its payload keeps admissible evidence
 results, and resolved obligations in `supporting_refs`, while partial or failed results belong in
 `limitation_refs`. A completion claim must list every live failed, partial, or unknown result in
 its scope, including command runs host hooks recorded that you never published; a failure retires
-only when a later observed run of the same command passes before the claim. Do not copy every
+only when a later observed run of the same command passes before the claim. Before claiming, read
+`status` `closure_readiness.limitation_refs_required`: it lists the result ids a whole-task
+completion claim must name, as recorded before your claim. A scoped claim names only those whose
+action names a claimed obligation, or names none. A failed, partial or unknown result you publish
+in the same batch as the claim is not in that list yet: add it too. Do not copy every
 non-success id from `status view=results`: if one is missing, the rejection names the exact ids
 (and their count) to add, so add those and retry with a new `request_id`. It also admits `claim_id`, `claim_kind`, `disputes_refs`, `obligation_refs`,
 `statement`, `subject_state`, and `supersedes_claim_refs` — never `attempted_items`, which lives on
@@ -761,7 +765,13 @@ actionable finding is still current: repair the record and recheck if you can, b
 qualifying check resolves it, never another response. If the repaired record was rechecked and the
 issue still fires, or it did not re-fire but `status view=findings` with `filter.include_resolved:
 true` still reports `resolved=false`,
-do not recheck unchanged state again. Request the receipt and keep the final claim no stronger than
+do not recheck unchanged state again. If you repaired it and Yoetz cannot prove it (a Yoetz limit),
+verify it yourself, record that evidence, and respond `self_verified` with how you verified it and
+the evidence ids; it then stops being your work and the receipt names it as self-verified. Respond
+`acknowledged_not_done` only if you truly will not or cannot do the work. A Yoetz limit is never a
+`yoetz-blocker`. Only if a new finding restates the SAME issue as an earlier one you answered (same
+origin and kind), respond `duplicate_of` with `duplicate_of_finding_id` set to the earlier finding;
+linking never resolves the new finding, its own check must. Request the receipt and keep the final claim no stronger than
 its conclusion, coverage, freshness, receipt-blocking findings, and limitations. A local-check
 recheck can still qualify when only `captured_object_unavailable`, `content_unselected`,
 `host_outcome_unavailable`, or `unpaired_event` limits its case-wide host-observation coverage and

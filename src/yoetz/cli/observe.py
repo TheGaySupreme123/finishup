@@ -2328,12 +2328,17 @@ def _check_policy_context(workspace: str | None, *, _state: Path | None):
 # Approved workspace checks are an optional owner feature. A workspace without
 # `.yoetz/checks.toml` is "not configured", never an invalid policy. Configuring or trusting a
 # policy is the owner's choice and no finding asks the agent for it, so a policy-route failure is
-# never a reason to stop or a `yoetz-blocker`; the continuation says so in fixed text.
+# never a reason to stop or a `yoetz-blocker`; the continuation says so in fixed text, in the same
+# order as every other blocker text (#984): repair first, a Yoetz limit is self-verified and
+# answered `self_verified`, `acknowledged_not_done` is the last resort, and `yoetz-blocker` is only
+# for an open obligation genuinely blocked outside the agent's control.
 _CHECK_POLICY_NOT_CONFIGURED: Final = "not_configured"
 _CHECK_POLICY_CONTINUATION: Final = (
     "Approved workspace checks are optional owner configuration (.yoetz/checks.toml); no "
-    "finding asks you to configure or trust them. This is not a task blocker: do not record a "
-    "yoetz-blocker for it. Finish the task; the receipt discloses any finding left unresolved."
+    "finding asks you to configure or trust them. This is a Yoetz limit, not a task blocker: "
+    "never record a yoetz-blocker for it. Finish and verify the task yourself; if a finding "
+    "stays unresolved only because Yoetz cannot prove your repair, record your evidence and "
+    "respond self_verified. The receipt discloses what Yoetz could not prove."
 )
 
 

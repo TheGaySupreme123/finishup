@@ -66,7 +66,7 @@ from yoetz.kernel.policies.response_support import (
 from yoetz.kernel.task_facts import (
     STANDING_TASK_FACT_GAPS,
     acting_started,
-    blocked_obligations,
+    confirmed_blocked_obligation_ids,
     cooperative_event_ids_from_coverage,
 )
 from yoetz.protocol.policy_packs import WORK_INTEGRITY_POLICY_ID, WORK_INTEGRITY_POLICY_VERSION
@@ -289,8 +289,9 @@ def _requested_item_findings(
     ``attempted_items`` does not create it, but only once acting on that obligation has started
     (an edit, command or other non-research action linked to it) or a completion claim stands
     (tb4n1 E4). Each check re-reads the workspace, so the fact clears as soon as the file exists,
-    whatever the observation coverage. Obligations a recorded blocker decision names are
-    disclosed through their blocker gap instead.
+    whatever the observation coverage. Obligations a *confirmed* blocker names are disclosed
+    through their blocker gap instead; a blocker the agent only claimed suppresses nothing until
+    a later decision confirms it (#985).
     """
 
     output: list[DeterministicAssessment] = []
@@ -299,11 +300,17 @@ def _requested_item_findings(
         observed_event_ids_from_coverage(case.coverage_by_ref),
         cooperative_event_ids_from_coverage(case.coverage_by_ref),
     )
-    blocked = blocked_obligations(case.projection)
+    # The case's task-fact markers carry the confirmation rule (it needs the publish batches).
+    blocked = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
     for obligation_ref in sorted(_active_requested_obligations(case), key=_ascii):
         record = case.projection.obligations[obligation_ref]
         payload = record.payload
-        if payload is None or obligation_ref in blocked:
+        if (
+            payload is None
+            or obligation_ref in blocked
+            # #997: the agent acknowledged it as not done; the receipt discloses that instead.
+            or payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+        ):
             continue
         attempted = attempted_items_for_obligation(case.projection, obligation_ref)
         # tb4n1 E4: the pre-work check the guidance asks for found every requested output absent

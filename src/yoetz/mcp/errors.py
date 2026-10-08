@@ -107,6 +107,8 @@ _SAFE_LOCATION_SEGMENTS: Final = frozenset(
         "disposition",
         "disputes_refs",
         "dry_run",
+        # Issue #996: the earlier finding a respond duplicate_of answer links to.
+        "duplicate_of_finding_id",
         "event_drafts",
         "event_id",
         "evidence_expectation",

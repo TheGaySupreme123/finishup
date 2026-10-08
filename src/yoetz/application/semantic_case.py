@@ -85,6 +85,7 @@ from yoetz.domain.task_statement import (
     TaskStatementSource,
 )
 from yoetz.domain.values import (
+    EventId,
     JsonObject,
     SubjectStateRelation,
     freeze_json,
@@ -106,14 +107,22 @@ from yoetz.kernel.deterministic_checks import (
     FrozenHistoryEvent,
 )
 from yoetz.kernel.finding_resolution import AGENT_SETTLED_DISPOSITION_VALUES
-from yoetz.kernel.finding_todo import FindingTodoState, finding_todo_state
+from yoetz.kernel.finding_todo import (
+    FindingTodoState,
+    duplicate_link_target,
+    finding_todo_state,
+)
 from yoetz.kernel.lineage import LineageEvaluation
 from yoetz.kernel.projections import (
     EvidenceProjectionRecord,
     FindingProjectionRecord,
     ProjectionState,
 )
-from yoetz.kernel.task_facts import blocker_declarations, open_effective_obligations
+from yoetz.kernel.task_facts import (
+    acknowledged_obligation_ids,
+    blocker_declarations,
+    open_effective_obligations,
+)
 from yoetz.ports.change_capture import CHECK_CHANGE_MEDIA_TYPE, CheckChangeCapture
 from yoetz.ports.objects import ObjectKind, ObjectRef
 from yoetz.ports.semantic import (
@@ -187,6 +196,8 @@ __all__ = [
     "assemble_filtered_review_packet",
     "build_semantic_case",
     "recorded_blockers",
+    "acknowledged_obligation_rows",
+    "BLOCKER_REVIEW_INSTRUCTION",
     "review_question_set",
     "captured_edit_paths",
     "review_selection_digest",
@@ -281,6 +292,8 @@ _REVIEW_QUESTIONS: Final = (
 )
 
 
+# The review lists claimed and confirmed blockers alike, so it never needs the publish batches.
+_NO_BATCHES: Final[Mapping[EventId, str]] = MappingProxyType({})
 # A closing review names at most this many recorded blockers in its blocker question.
 MAX_REVIEWED_BLOCKERS: Final = 16
 
@@ -288,14 +301,17 @@ MAX_REVIEWED_BLOCKERS: Final = 16
 def recorded_blockers(projection: ProjectionState) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
     """``(decision event id, kind, open obligation ids)`` for each recorded blocker (#976, #977).
 
-    Only open effective obligations count, as in closure readiness. Ids and the closed kind only:
-    the decision's statement and rationale reach the reviewer through its privacy-gated decision
-    item, never through this summary.
+    Only open effective obligations count, as in closure readiness; a blocker the agent only
+    claimed is listed as well as a confirmed one (#985), because the closing review is where a
+    claim is tested. A blocker naming only finished obligations has no effect and is not asked
+    about (its publish result already told the agent so). Ids and the closed kind only: the
+    decision's statement and rationale, and the obligation's own text, reach the reviewer through
+    their privacy-gated packet items, never through this summary.
     """
 
     open_obligations = set(open_effective_obligations(projection))
     grouped: dict[str, tuple[str, set[str]]] = {}
-    for obligation, declaration in blocker_declarations(projection).items():
+    for obligation, declaration in blocker_declarations(projection, _NO_BATCHES).items():
         if obligation not in open_obligations:
             continue
         row = grouped.setdefault(str(declaration.decision_event_id), (declaration.kind, set()))
@@ -311,10 +327,72 @@ def recorded_blockers(projection: ProjectionState) -> tuple[tuple[str, str, tupl
 # Obligations named per blocker decision, and the byte bound of the listing itself, so the
 # question stays far below ``MAX_REVIEW_TEXT_BYTES`` however many obligations a decision names.
 _MAX_BLOCKER_OBLIGATIONS_LISTED: Final = 8
-_MAX_BLOCKER_LISTING_BYTES: Final = 2_048
+_MAX_BLOCKER_LISTING_BYTES: Final = 1_536
+# Issue #978 (tb4v2/tb4n1 pretrain-shard-corruption): the reviewer accepted a
+# ``dependency_unavailable`` blocker on the task's main deliverable although the statement said
+# "The final state should recover the intended training examples". The question therefore makes
+# the reviewer read the blocked obligation's own text first and lists the cases in which a
+# challenge is required, not optional. Being the main deliverable calls for scrutiny only: a
+# genuine credential or authority blocker may stand there. The obligation text stays in its
+# privacy-gated packet item (``obligation-<id>``); this fixed text never carries agent or user
+# content.
+BLOCKER_REVIEW_INSTRUCTION: Final = (
+    "For each blocker, first quote the blocked obligation's own description and evidence"
+    " expectation from its packet item obligation-<obligation id> (say so if the packet does not"
+    " carry it), then verify the blocker once against the task statement and the work. You must"
+    " challenge it (one finding citing whichever of its decision and obligation ids citable_refs"
+    " lists, naming the work the agent can still do) when any of these holds: the task statement"
+    " says the outcome is achievable or the data recoverable (for example that the final state"
+    " should recover the intended data); the agent has not attempted the obvious prerequisite"
+    " (inspecting the inputs it has, deriving or reconstructing what is missing); the readable"
+    " material contradicts it (the dependency is present, the authority was granted); or it names"
+    " something Yoetz or this review could not show or prove, which is never a blocker. When the"
+    " blocked obligation is the task's main deliverable, scrutinise the blocker closely, but a"
+    " genuine blocker outside the agent's control (authority, consent, a credential, a dependency"
+    " it cannot obtain) that none of these contradicts stands as a disclosed limitation even then:"
+    " do not challenge that one."
+)
 
 
-def _blocker_question(blockers: tuple[tuple[str, str, tuple[str, ...]], ...]) -> str:
+def acknowledged_obligation_rows(projection: ProjectionState) -> tuple[str, ...]:
+    """Effective obligations acknowledged as not done (#997), ids only, sorted.
+
+    The closing review tests them against the task statement the way it tests blockers: an
+    acknowledgement is the agent's own position and Yoetz cannot verify that the work is
+    genuinely impossible.
+    """
+
+    return tuple(sorted(acknowledged_obligation_ids(projection), key=str.encode))
+
+
+# Fixed text appended when the agent acknowledged obligations as not done (#997).
+ACKNOWLEDGED_REVIEW_INSTRUCTION: Final = (
+    "For each obligation acknowledged as not done, quote its own description from its packet"
+    " item obligation-<obligation id>, then verify the acknowledgement against the task statement"
+    " and the work: challenge it (one finding citing the obligation id, naming the work the agent"
+    " can still do) when the task statement requires that work and nothing readable shows it is"
+    " genuinely impossible, or when the agent did not attempt the obvious prerequisite."
+)
+_MAX_ACKNOWLEDGED_LISTED: Final = 8
+
+
+def _acknowledged_question(acknowledged: tuple[str, ...]) -> str:
+    listed = ", ".join(acknowledged[:_MAX_ACKNOWLEDGED_LISTED])
+    hidden = len(acknowledged) - _MAX_ACKNOWLEDGED_LISTED
+    return (
+        f"Obligations acknowledged as not done: {listed}"
+        + (f" (+{hidden} more)" if hidden > 0 else "")
+        + ". "
+        + ACKNOWLEDGED_REVIEW_INSTRUCTION
+    )
+
+
+def _blocker_question(
+    blockers: tuple[tuple[str, str, tuple[str, ...]], ...],
+    acknowledged: tuple[str, ...] = (),
+) -> str:
+    if not blockers:
+        return _acknowledged_question(acknowledged)
     rows: list[str] = []
     used = 0
     for decision, kind, obligations in blockers[:MAX_REVIEWED_BLOCKERS]:
@@ -331,18 +409,16 @@ def _blocker_question(blockers: tuple[tuple[str, str, tuple[str, ...]], ...]) ->
     return (
         f"Recorded blockers: {'; '.join(rows)}"
         + (f" (+{more} more blocker decisions)" if more > 0 else "")
-        + ". Verify each blocker once against the task statement and the work. When the task "
-        "statement or the readable material contradicts it (the task says the data is "
-        "recoverable, the dependency is present, the authority was granted), challenge it once, "
-        "citing whichever of its decision and obligation ids citable_refs lists, and name the "
-        "work the agent can still do. Otherwise it stands as a disclosed limitation outside the "
-        "agent's control: do not challenge it."
+        + ". "
+        + BLOCKER_REVIEW_INSTRUCTION
+        + (" " + _acknowledged_question(acknowledged) if acknowledged else "")
     )
 
 
 def review_question_set(
     phase: SemanticBudgetProfile,
     blockers: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
+    acknowledged: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Return the closed question set for one review phase.
 
@@ -351,7 +427,11 @@ def review_question_set(
     """
 
     parsed = parse_semantic_budget_profile(phase)
-    extra = (_blocker_question(blockers),) if parsed == "final" and blockers else ()
+    extra = (
+        (_blocker_question(blockers, acknowledged),)
+        if parsed == "final" and (blockers or acknowledged)
+        else ()
+    )
     return (REVIEW_PHASE_QUESTIONS[parsed], *_REVIEW_QUESTIONS, *extra)
 
 
@@ -2731,8 +2811,8 @@ def _prior_finding_candidates(
 
     Local findings are proven by the local packs that raised them and reach the reviewer as this
     check's assessments; resolved findings are history. Neither is a live question for the reviewer.
-    Nor is a terminal item (issue #905): ``acknowledged_not_done`` and ``rejection_accepted`` are
-    final and are never re-reviewed.
+    Nor is a terminal item (issue #905): ``acknowledged_not_done``, ``rejection_accepted`` and
+    ``self_verified`` (issue #984) are final and are never re-reviewed.
     """
 
     rows: list[tuple[str, FindingProjectionRecord]] = []
@@ -2745,7 +2825,12 @@ def _prior_finding_candidates(
             or record.resolved_by_check_event_id is not None
             or payload.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
             or ref not in allowed
-            or finding_todo_state(projection, key) is not FindingTodoState.OPEN
+            or (
+                finding_todo_state(projection, key) is not FindingTodoState.OPEN
+                # Issue #996: a linked duplicate only inherits a final state; it stays in the
+                # packet so the reviewer can rule still_present and break a wrong link.
+                and duplicate_link_target(projection, key) is None
+            )
         ):
             continue
         rows.append((ref, record))
@@ -2833,6 +2918,11 @@ def _prior_finding_items(
         }
         if str(response_record.source_event_id) in allowed:
             answer["response_event_ref"] = str(response_record.source_event_id)
+        # Issue #996: the earlier finding a ``duplicate_of`` answer links to, so the reviewer
+        # can rule ``still_present`` on this one if it is not the same issue.
+        duplicate_of = response.duplicate_of_finding_id
+        if duplicate_of is not None and str(duplicate_of) in allowed:
+            answer["duplicate_of_ref"] = str(duplicate_of)
         body["response"] = answer
     prose: list[tuple[str, str, int]] = []
     if include_prose:
@@ -3082,7 +3172,11 @@ def _local_answer_candidates(
             or ref not in allowed
             or record.resolved_by_check_event_id is not None
             or finding_todo_state(projection, key)
-            in {FindingTodoState.VERIFIED_RESOLVED, FindingTodoState.REJECTION_ACCEPTED}
+            in {
+                FindingTodoState.VERIFIED_RESOLVED,
+                FindingTodoState.REJECTION_ACCEPTED,
+                FindingTodoState.SELF_VERIFIED,
+            }
         ):
             continue
         response = projection.responses.get(key)
@@ -3589,7 +3683,8 @@ def _build_semantic_case_once(
     # Recorded blockers go first so the decision cap never drops one the closing review must
     # verify (#976, #977).
     blocker_decision_refs = {
-        str(item.decision_event_id) for item in blocker_declarations(projection).values()
+        str(item.decision_event_id)
+        for item in blocker_declarations(projection, _NO_BATCHES).values()
     }
     for event_id, record in sorted(
         projection.decisions.items(),
@@ -4621,7 +4716,11 @@ def _build_semantic_case_once(
             ),
         }
     # A pure function of the frozen projection, so recovery rebuilds the same phase and digest.
-    question_set = review_question_set(review_phase, recorded_blockers(frozen_case.projection))
+    question_set = review_question_set(
+        review_phase,
+        recorded_blockers(frozen_case.projection),
+        acknowledged_obligation_rows(frozen_case.projection),
+    )
     # Bind assessments/omissions/packet lists into the digest so provenance covers the full case.
     case_digest = canonical_digest(
         cast(

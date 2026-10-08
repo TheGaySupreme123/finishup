@@ -47,7 +47,7 @@ RESEARCH_EVIDENCE_POLICY_VERSION: Final = "0.2.0"
 # observed edits or runs trigger the corroboration rule.
 # 0.3.0 (#977): ``requested_item_never_attempted`` waits until the agent has started acting, names
 # a requested file the check-time workspace read found absent whatever was published, and skips
-# obligations a recorded blocker decision names.
+# obligations a confirmed blocker decision names (a claimed blocker suppresses nothing, #985).
 WORK_INTEGRITY_POLICY_VERSION: Final = "0.3.0"
 
 CURRENT_POLICY_VERSIONS: Final = MappingProxyType(

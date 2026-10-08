@@ -31,11 +31,12 @@ Nothing is stored; the result is closed codes only.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from types import MappingProxyType
 from typing import Final
 
 from yoetz.domain.events import ActionKind
-from yoetz.domain.values import ObligationId
+from yoetz.domain.values import EventId, ObligationId
 from yoetz.kernel.command_attempts import attempted_items_for_obligation
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.task_facts import (
@@ -57,6 +58,8 @@ __all__ = [
 ]
 
 _DECLARED_KINDS: Final = frozenset({"file", "directory"})
+_NO_BATCHES: Final[Mapping[EventId, str]] = MappingProxyType({})
+
 # The content-moved rule (ADR-035), deliberately conservative: a declared file lost at least this
 # many lines and at least half of its task-base lines, and the same change added at least half as
 # many lines to files outside the declared delivered set.
@@ -75,16 +78,22 @@ def item_role(item: object) -> object:
 
 def declared_delivered_items(
     projection: ProjectionState,
+    *,
+    blocked: Iterable[ObligationId] | None = None,
 ) -> tuple[tuple[ObligationId, int, str, str], ...]:
     """``(obligation, item index, item kind, value)`` for the declared delivered set.
 
-    Blocked obligations are excluded. Order follows the effective obligations and item order.
+    Obligations a *confirmed* blocker names are excluded (#985). ``blocked`` is that set when
+    the caller has it (a check passes the case's confirmed markers); without it, confirmation is
+    read with no publish-batch boundaries. Order follows the effective obligations and items.
     """
 
-    blocked = blocked_obligations(projection)
+    excluded = frozenset(
+        blocked_obligations(projection, _NO_BATCHES) if blocked is None else blocked
+    )
     rows: list[tuple[ObligationId, int, str, str]] = []
     for obligation in effective_obligations(projection):
-        if obligation in blocked:
+        if obligation in excluded:
             continue
         payload = projection.obligations[obligation].payload
         if payload is None:
@@ -100,12 +109,19 @@ def declared_delivered_items(
 def declared_output_removed(
     projection: ProjectionState,
     states: Mapping[tuple[ObligationId, int], RequestedOutputState],
+    *,
+    blocked: Iterable[ObligationId] | None = None,
 ) -> tuple[ObligationId, ...]:
     """Obligations with a declared delivered item ``removed_declared_items`` names."""
 
     return tuple(
         sorted(
-            {obligation for obligation, _index in removed_declared_items(projection, states)},
+            {
+                obligation
+                for obligation, _index in removed_declared_items(
+                    projection, states, blocked=blocked
+                )
+            },
             key=str.encode,
         )
     )
@@ -114,6 +130,8 @@ def declared_output_removed(
 def removed_declared_items(
     projection: ProjectionState,
     states: Mapping[tuple[ObligationId, int], RequestedOutputState],
+    *,
+    blocked: Iterable[ObligationId] | None = None,
 ) -> tuple[tuple[ObligationId, int], ...]:
     """Declared delivered items the check-time change deleted or renamed away, or that an edit
     action of the session wrote and that are now gone.
@@ -125,7 +143,7 @@ def removed_declared_items(
 
     removed: list[tuple[ObligationId, int]] = []
     edited: dict[ObligationId, frozenset[str]] = {}
-    for obligation, index, _kind, value in declared_delivered_items(projection):
+    for obligation, index, _kind, value in declared_delivered_items(projection, blocked=blocked):
         state = states.get((obligation, index))
         if state is None or state.location != "inside" or state.exists is not False:
             continue
@@ -145,6 +163,8 @@ def removed_declared_items(
 def content_moved_declared_items(
     projection: ProjectionState,
     states: Mapping[tuple[ObligationId, int], RequestedOutputState],
+    *,
+    blocked: Iterable[ObligationId] | None = None,
 ) -> tuple[tuple[ObligationId, int], ...]:
     """Declared delivered files whose content the check-time change moved to undeclared files.
 
@@ -156,7 +176,7 @@ def content_moved_declared_items(
     """
 
     moved: list[tuple[ObligationId, int]] = []
-    for obligation, index, _kind, _value in declared_delivered_items(projection):
+    for obligation, index, _kind, _value in declared_delivered_items(projection, blocked=blocked):
         state = states.get((obligation, index))
         if (
             state is None

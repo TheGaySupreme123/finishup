@@ -110,7 +110,7 @@ def test_an_input_item_never_yields_a_requested_output_fact(state: RequestedOutp
     """tb4n1 layout-config: the read-only /app/layout_spec.json was reported unchanged."""
 
     projection = _projection((_obligation(_A, _INPUT),), edited=(_INPUT.value,))
-    assert requested_output_facts(projection, {(_A, 0): state}) == ((), ())
+    assert requested_output_facts(projection, {(_A, 0): state}, blocked=()) == ((), ())
 
 
 def test_an_output_item_counts_as_written_without_an_edit_action() -> None:
@@ -126,7 +126,7 @@ def test_an_output_item_counts_as_written_without_an_edit_action() -> None:
         (_A, 2): unchanged,
     }
 
-    assert requested_output_facts(projection, states) == (
+    assert requested_output_facts(projection, states, blocked=()) == (
         (),
         (
             (REQUESTED_OUTPUT_OUTSIDE_WORKSPACE_GAP, _A),
@@ -144,7 +144,7 @@ def test_an_output_item_counts_as_written_without_an_edit_action() -> None:
             ),
         )
     )
-    assert requested_output_facts(plain, states) == ((), ())
+    assert requested_output_facts(plain, states, blocked=()) == ((), ())
 
 
 def test_a_directory_item_reads_like_a_file_item() -> None:
@@ -155,20 +155,22 @@ def test_a_directory_item_reads_like_a_file_item() -> None:
     changed = RequestedOutputState("inside", exists=True, ignored=False, changed=True)
     absent = RequestedOutputState("inside", exists=False, ignored=False, changed=False)
     ignored = RequestedOutputState("inside", exists=True, ignored=True, changed=True)
-    assert requested_output_facts(projection, {(_A, 0): changed}) == ((), ())
-    assert requested_output_facts(projection, {(_A, 0): absent}) == (((_A, 0),), ())
-    assert requested_output_facts(projection, {(_A, 0): ignored}) == (
+    assert requested_output_facts(projection, {(_A, 0): changed}, blocked=()) == ((), ())
+    assert requested_output_facts(projection, {(_A, 0): absent}, blocked=()) == (((_A, 0),), ())
+    assert requested_output_facts(projection, {(_A, 0): ignored}, blocked=()) == (
         (),
         ((REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP, _A),),
     )
-    assert requested_output_facts(projection, {(_A, 0): RequestedOutputState("unverified")}) == (
+    assert requested_output_facts(
+        projection, {(_A, 0): RequestedOutputState("unverified")}, blocked=()
+    ) == (
         (),
         ((REQUESTED_OUTPUT_UNVERIFIED_GAP, _A),),
     )
     git_ignored = RequestedOutputState(
         "inside", exists=True, ignored=True, changed=True, ignored_by_task=True
     )
-    assert requested_output_facts(projection, {(_A, 0): git_ignored}) == (
+    assert requested_output_facts(projection, {(_A, 0): git_ignored}, blocked=()) == (
         (),
         ((REQUESTED_OUTPUT_GIT_IGNORED_GAP, _A),),
     )
@@ -247,8 +249,8 @@ def test_acknowledged_not_done_projects_and_last_effective_status_wins() -> None
     payload = acknowledged.obligations[_A].payload
     assert payload is not None and payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
     assert payload.acknowledged_not_done_reason is not None
-    # Not resolved: still counted with the open obligations.
-    assert open_effective_obligations(acknowledged) == (_A,)
+    # Not resolved and not open (#997): counted once, as not done.
+    assert open_effective_obligations(acknowledged) == ()
 
     ledger.append(_V1_0, _obligation(_A), observed=False)
     reopened = replay(ledger.prefix).obligations[_A].payload

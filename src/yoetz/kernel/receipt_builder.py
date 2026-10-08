@@ -49,7 +49,9 @@ from yoetz.domain.receipts import (
     ReceiptChildOutcome,
     ReceiptChildren,
     ReceiptConclusion,
+    ReceiptDisclosure,
     ReceiptDocument,
+    ReceiptDuplicateLink,
     ReceiptGap,
     ReceiptObligation,
     ReceiptObligationStatus,
@@ -96,6 +98,7 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
+from yoetz.kernel.closure_readiness import premise_disputed_finding_ids
 from yoetz.kernel.command_attempts import command_attempts
 from yoetz.kernel.completion_scope import (
     SCOPE_REPAIR,
@@ -105,6 +108,10 @@ from yoetz.kernel.deterministic_checks import (
     CALLER_DIGEST_PROVENANCE_GAPS,
     CaseAvailabilityFacts,
     CaseGap,
+)
+from yoetz.kernel.deterministic_scope import (
+    CLEAN_COMPATIBLE_GAPS,
+    HOST_OBSERVATION_GUARDED_GAPS,
 )
 from yoetz.kernel.finding_resolution import (
     finding_resolution_explanation,
@@ -117,11 +124,13 @@ from yoetz.kernel.observed_failures import (
     observed_event_ids_from_records,
     observed_failure_states,
 )
-from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS
 from yoetz.kernel.plan_scope import CurrentPlanScope, current_plan_scope
 from yoetz.kernel.projections import ObligationProjectionRecord, ProjectionRecord, ProjectionState
 from yoetz.kernel.reducers import is_material_event_family
-from yoetz.kernel.task_facts import STANDING_TASK_FACT_GAPS
+from yoetz.kernel.task_facts import (
+    acknowledged_obligation_ids,
+    disclosure_declarations,
+)
 from yoetz.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, PublicationChannel, weakest
 from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile, SemanticStatus
 
@@ -188,20 +197,36 @@ class ReceiptFindingState:
     resolved: bool
     # Issue #905 terminal states. ``acknowledged_not_done`` stays unresolved and blocking;
     # ``rejection_accepted`` stays unresolved but no longer blocks a clean conclusion. Both are
-    # disclosed by id in their own receipt sections.
+    # disclosed by id in their own receipt sections. ``self_verified`` (issue #984) stays
+    # unresolved, is not agent work, and caps the conclusion at ``insufficient_coverage``.
     acknowledged_not_done: bool = False
     rejection_accepted: bool = False
+    self_verified: bool = False
+    # Issue #996: the earlier finding a holding ``duplicate_of`` link names. The flags above are
+    # then the ones derived from it (``finding_todo``); the link is disclosed by ids.
+    duplicate_of_finding_id: FindingId | None = None
 
     def __post_init__(self) -> None:
         try:
             object.__setattr__(self, "finding_id", finding_id(self.finding_id))
+            if self.duplicate_of_finding_id is not None:
+                object.__setattr__(
+                    self, "duplicate_of_finding_id", finding_id(self.duplicate_of_finding_id)
+                )
         except ValueError as exc:
             raise ValueError(_CONTEXT_INVALID) from exc
+        if self.duplicate_of_finding_id == self.finding_id:
+            raise ValueError(_CONTEXT_INVALID)
         if (
             type(self.resolved) is not bool
             or type(self.acknowledged_not_done) is not bool
             or type(self.rejection_accepted) is not bool
-            or self.resolved + self.acknowledged_not_done + self.rejection_accepted > 1
+            or type(self.self_verified) is not bool
+            or self.resolved
+            + self.acknowledged_not_done
+            + self.rejection_accepted
+            + self.self_verified
+            > 1
         ):
             raise ValueError(_CONTEXT_INVALID)
 
@@ -800,7 +825,11 @@ def _apply_profile(
         )
         transformed_responses: list[ReceiptResponse] = []
         for response in responses:
-            if response.disposition is ResponseDisposition.ACKNOWLEDGED:
+            # A ``duplicate_of`` answer (issue #996) has an optional reason like acknowledged.
+            if response.disposition in {
+                ResponseDisposition.ACKNOWLEDGED,
+                ResponseDisposition.DUPLICATE_OF,
+            }:
                 if response.reason is not None:
                     counts[
                         (
@@ -813,6 +842,7 @@ def _apply_profile(
                 ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
                 ResponseDisposition.PROVENANCE_DISPUTED,
                 ResponseDisposition.REJECTED,
+                ResponseDisposition.SELF_VERIFIED,
                 ResponseDisposition.WAIVED,
             }:
                 counts[
@@ -864,6 +894,7 @@ def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
                     actionable=bool(finding.actionable),
                     resolved=finding.resolved,
                     resolution_event_id=finding.resolution_event_id,
+                    self_verified=finding.self_verified,
                 )
                 for finding in snapshot.findings
             )
@@ -900,10 +931,12 @@ def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
 def _conclusion(
     context: ReceiptBuildContext,
     unresolved_actionable: tuple[Finding, ...],
+    *,
+    self_verified: bool = False,
+    obligations_not_done: bool = False,
 ) -> ReceiptConclusion:
-    advisory_gaps = (
-        PLAN_DRIFT_ADVISORY_GAPS | PREEXISTING_TEST_INFORMATIONAL_GAPS | STANDING_TASK_FACT_GAPS
-    )
+    # One clean-compatible list for the receipt and the scoped deterministic verdict (#986).
+    advisory_gaps = CLEAN_COMPATIBLE_GAPS
     if _COMPLETION_SCOPE_GAPS & set(context.coverage.known_gaps):
         # These two closed gaps bound completion itself. Findings remain visible and actionable,
         # but they cannot make an empty completion scope read as sufficiently covered.
@@ -912,6 +945,14 @@ def _conclusion(
         context.lineage is not None and context.lineage.actionable_finding_ids
     ):
         return ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN
+    if self_verified:
+        # Issue #984 (ADR-034): only the agent verified these repairs; Yoetz could not prove
+        # them, so the receipt is at best ``insufficient_coverage``, never clean.
+        return ReceiptConclusion.INSUFFICIENT_COVERAGE
+    if obligations_not_done:
+        # Issue #997 (ADR-032 slice C): the agent acknowledged an obligation as not done, so the
+        # declared scope is not complete; the receipt never reads clean.
+        return ReceiptConclusion.INSUFFICIENT_COVERAGE
     if context.lineage is not None and context.lineage.blocks_clean_completion:
         return ReceiptConclusion.INSUFFICIENT_COVERAGE
     check = context.applicable_check
@@ -926,10 +967,20 @@ def _conclusion(
         return ReceiptConclusion.INSUFFICIENT_COVERAGE
     if check.verdict is CheckVerdict.ACTION_REQUIRED:
         raise ValueError(_CONTEXT_INVALID)
+    # A pack that ran to completion, or that had nothing to judge on the whole case
+    # (``skipped/not_applicable``: no root of its kind exists, e.g. the coordination pack on a
+    # single-agent run), leaves nothing unexamined (#986). ``scope_excluded`` (a scoped check
+    # left roots of the pack unexamined) and ``material_unavailable`` (its roots were
+    # unreadable) are real coverage loss and stay incomplete, as does ``failed``.
     executions_complete = all(
-        execution.outcome == "run" and execution.reason == "completed"
+        (execution.outcome == "run" and execution.reason == "completed")
+        or (execution.outcome == "skipped" and execution.reason == "not_applicable")
         for execution in check.policy_executions
     )
+    # A host-observation gap is advisory only when the applicable check itself carried it: that
+    # check reached its clean verdict only after its command counters showed no unknown or live
+    # failed outcome. One that arrived after the check was never so guarded (#986).
+    advisory_gaps = advisory_gaps - (HOST_OBSERVATION_GUARDED_GAPS - set(check.coverage.known_gaps))
     if (
         not executions_complete
         or any(gap.code not in advisory_gaps for gap in context.gaps)
@@ -1496,6 +1547,7 @@ def _sections(
     review_input_manifest: object | None = None,
     missing_for_assessment: object = (),
     check_totals_text: str = "",
+    acknowledged_obligations: frozenset[str] = frozenset(),
 ) -> tuple[ReceiptSection, ...]:
     gap_codes = coverage.known_gaps
     gap_texts = check_change_gap_texts or {}
@@ -1534,6 +1586,8 @@ def _sections(
         obligation
         for obligation in current_obligations
         if obligation.status is ReceiptObligationStatus.OPEN
+        # #997: an obligation acknowledged as not done is not open work; it is counted apart.
+        and obligation.obligation_id not in acknowledged_obligations
     )
     open_count = len(open_current)
     if not plan_scope.has_plan:
@@ -1584,6 +1638,14 @@ def _sections(
         bodies[ReceiptSectionKey.OUTSTANDING_WORK] = "One obligation remains open."
     else:
         bodies[ReceiptSectionKey.OUTSTANDING_WORK] = f"{open_count} obligations remain open."
+    acknowledged_current = sum(
+        obligation.obligation_id in acknowledged_obligations for obligation in current_obligations
+    )
+    if acknowledged_current and ReceiptSectionKey.OUTSTANDING_WORK in bodies:
+        noun = "obligation is" if acknowledged_current == 1 else "obligations are"
+        bodies[ReceiptSectionKey.OUTSTANDING_WORK] += (
+            f" {acknowledged_current} {noun} acknowledged as not done (not counted as open)."
+        )
     items[ReceiptSectionKey.OUTSTANDING_WORK] = tuple(
         obligation.obligation_id for obligation in open_current
     )
@@ -1807,14 +1869,26 @@ def build_receipt(
     # A ``rejection_accepted`` row stops blocking only on an artifact that also discloses it in its
     # own section (issue #905); an older artifact has no such section, so there it still blocks.
     settles_rejections = receipt_document_carries_terminal_sections(versions)
+    # A ``self_verified`` row (issue #984) likewise stops counting as agent work only where its
+    # own section discloses it; it still keeps the conclusion from reading clean.
     unresolved_actionable = tuple(
         finding
         for finding in findings
         if not states_by_id[finding.finding_id].resolved
         and not (settles_rejections and states_by_id[finding.finding_id].rejection_accepted)
+        and not (settles_rejections and states_by_id[finding.finding_id].self_verified)
         and FINDING_KIND_TRAITS[finding.kind][1]
     )
-    conclusion = _conclusion(context, unresolved_actionable)
+    # Issue #997: obligations the agent acknowledged as not done (ADR-032 slice C).
+    acknowledged_obligations = tuple(
+        sorted(acknowledged_obligation_ids(context.projection), key=_ascii_key)
+    )[:100]
+    conclusion = _conclusion(
+        context,
+        unresolved_actionable,
+        self_verified=any(states_by_id[finding.finding_id].self_verified for finding in findings),
+        obligations_not_done=bool(acknowledged_obligations),
+    )
     obligations = _select_obligations(context, findings)
     responses = _select_responses(context, frozenset(finding.finding_id for finding in findings))
     claim_refs = _select_claim_refs(context, findings)
@@ -1916,6 +1990,7 @@ def build_receipt(
         host_observation_suffix=host_observation_suffix,
         input_loss_causes=_input_loss_causes(context),
         observed_failure_sentence=_observed_failure_history_sentence(context),
+        acknowledged_obligations=frozenset(acknowledged_obligation_ids(context.projection)),
         caller_digest_counts=_caller_digest_counts(context),
         limitation_response_suffix=limitation_response_suffix,
         review_input_manifest=(
@@ -1962,6 +2037,29 @@ def build_receipt(
         if terminal_sections
         else ()
     )
+    self_verified_ids = tuple(
+        sorted(
+            (
+                state.finding_id
+                for state in context.finding_states
+                if state.self_verified and state.finding_id in retained_ids
+            ),
+            key=_ascii_key,
+        )
+        if terminal_sections
+        else ()
+    )
+    duplicate_links = (
+        tuple(
+            ReceiptDuplicateLink(state.finding_id, state.duplicate_of_finding_id)
+            for state in sorted(
+                context.finding_states, key=lambda item: _ascii_key(item.finding_id)
+            )
+            if state.duplicate_of_finding_id is not None and state.finding_id in retained_ids
+        )[:100]
+        if terminal_sections
+        else ()
+    )
     return ReceiptDocument(
         receipt_id=receipt_id,
         task_id=task_id,
@@ -1988,6 +2086,27 @@ def build_receipt(
         ),
         acknowledged_not_done_finding_ids=acknowledged_not_done_ids,
         rejection_accepted_finding_ids=rejection_accepted_ids,
+        self_verified_finding_ids=self_verified_ids,
+        duplicate_finding_links=duplicate_links,
+        # Issue #984 (D7a): the acknowledged findings whose premise the reviewer disputes.
+        premise_disputed_finding_ids=tuple(
+            item
+            for item in premise_disputed_finding_ids(context.projection)
+            if item in acknowledged_not_done_ids
+        ),
+        acknowledged_not_done_obligation_ids=(
+            acknowledged_obligations if terminal_sections else ()
+        ),
+        # Issue #995: the agent's disclosed assumptions and verification limits, ids and kind
+        # only, on an artifact that carries the 1.3.0 sections. They never change the conclusion.
+        disclosed_assumptions=(
+            tuple(
+                ReceiptDisclosure(item.obligation_id, item.kind, item.decision_event_id)
+                for item in disclosure_declarations(context.projection)[:64]
+            )
+            if terminal_sections
+            else ()
+        ),
         semantic_withheld_items=tuple(
             ReceiptSemanticWithheldItem(item_id=item_id)
             for item_id in (

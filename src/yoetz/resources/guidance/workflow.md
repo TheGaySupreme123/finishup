@@ -215,9 +215,11 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   an unacknowledged receipt-blocking finding, `check_in_progress` (recover the running check's
   result through `status view=operation`), `check_not_recorded` or `check_not_applicable` (run a
   check after the material change), or an actionable gap such as `completion_plan_not_claimed`.
-- `ready_with_limitations`: nothing further to do. Every remaining condition is a
-  `standing_limitations` code this host, profile or privacy policy always has, or an item in
-  `acknowledged_not_done` (empty in this build: nothing can record that disposition yet). Request
+- `ready_with_limitations`: nothing further to do. (An obligation you acknowledged as not done
+  is still challenged once at Stop: do it unless it is genuinely impossible.) Every remaining condition is a
+  `standing_limitations` code this host, profile or privacy policy always has (or a disclosure
+  you recorded, such as `assumption_disclosed`), or an item in `acknowledged_not_done` (a finding
+  or an obligation you recorded as not done). Request
   the receipt now; do not recheck unchanged state. The receipt
   still discloses every limitation and acknowledged item, and its verdict stays coverage-bounded
   (a local-only check stays `insufficient_coverage`).
@@ -232,15 +234,35 @@ you once with that list; restore that delivered file where the task needs it, or
 requested item if the task asked for the deletion. A delivered file that lost most of its lines
 while files outside the delivered set changed or hold about as many lines is disclosed on the receipt
 (`declared_output_content_moved`; it never stops you): check the deliverable still works where
-the task delivers it. Finish the work, or
-record a blocker outside your control as above; then stop. The first Stop after you record a
-blocker also asks you once to confirm it: if the task says the data or dependency is recoverable,
-continue the work; if it is genuinely outside your control, stop again and Yoetz honours it.
+the task delivers it. Repair first. If
+you repaired a finding and Yoetz still cannot prove it (a Yoetz limit), verify it yourself, record
+that evidence, and respond `self_verified`; respond `acknowledged_not_done` only if you truly
+cannot or will not do it. A Yoetz limit is never a `yoetz-blocker`: record a blocker only for an
+open obligation outside your control, as above. A Stop after you record a blocker asks you once
+to reconsider it, even right after an earlier continuation: if the task says the data or
+dependency is recoverable, continue the work; if it is genuinely outside your control, follow the
+confirmation step that re-check gives you, then stop. A Stop also asks you once about findings you
+marked `acknowledged_not_done` that the review says the task itself requires
+(`finding_premise_disputed`): do that work unless it is genuinely impossible.
 If a script ran the planned command for you (for example `python run_tests.py` calling the
 planned `pytest` command internally), link that run: publish an `action_recorded` with
 `action_kind` `command`, the planned item's exact `value` in `attempted_items`, and the observed
 run's action event id (from `status` `view=history`) in `causal_parents`; the receipt discloses
 the link as your unverified equivalence, and the observed run's outcome still decides.
+
+An inherent verification limit (a hidden verifier, a private trace) or a best-effort choice is not
+a blocker: finish the work and disclose it in a `decision_recorded` whose statement holds the
+exact line `yoetz-verification-limit:<obligation id>` or `yoetz-assumption:<obligation id>`, with
+the limit or assumption as the rationale. A disclosure never blocks, resolves or reopens anything;
+readiness lists `verification_limit_disclosed` or `assumption_disclosed`, and the receipt names it.
+Supersede the decision (`supersedes_event_id`) to withdraw it. For an open obligation you truly
+will not do, after repair, republish it on `obligation_published` 1.1.0 with the same meaning
+fields, `status: "acknowledged_not_done"` and an `acknowledged_not_done_reason`: the honest last
+resort, never a blocker. It leaves `obligations_open`, readiness lists it in
+`acknowledged_not_done`, a Stop challenges it once and the closing review tests it against the
+task, and the receipt discloses it as not done and never reads clean. Republishing it with `open`
+(or `resolved` with evidence; 1.0.0 unless it has a role or directory item) takes it back; a resolved
+obligation stays resolved.
 
 `blocking_conditions` still names everything that bounds the conclusion; `coverage_gaps_declared`
 there is a disclosure, not a task. Never treat a standing limitation as work, and never describe
@@ -250,8 +272,8 @@ Approved workspace checks (`yoetz observe checks`) are optional owner configurat
 asks you to configure or trust them, so `not_configured` or `invalid_policy` there is not by
 itself a `yoetz-blocker`. Likewise, when a qualifying recheck after your repair still lists
 `Resolution requirements not met` only for proof limits such as `command_attempt_uncorroborated`
-or `content_redacted`, that is a Yoetz proof limit, not a blocker: leave the finding unresolved
-and let the receipt disclose it.
+or `content_redacted`, that is a Yoetz proof limit, not a blocker: verify the repair yourself,
+record that evidence, and respond `self_verified`; the receipt discloses it.
 
 Before claiming feedback complete, put its obligation in a supported plan revision or exact
 next-version restatement; a stored or resolved obligation alone does not update effective scope.
@@ -302,7 +324,7 @@ for `INTERNAL_ERROR` or a message that did not name that command.
 5. Publish material work-package transitions: assignment, decision, blocked attempt, independently useful result, completion, or revision. Omit routine reads, searches, formatting, and per-file mechanics.
 6. Stay next to the record. After resume, compaction, handoff, or uncertainty about what is already done or committed, call `status`. `view=candidate_findings` is an advisory read: it creates no verdict, IDs, receipt, or event. For claim correction, read `candidate_findings`, `history`, and `results`, then dry-run one `claim_recorded/1.1.0` replacement: admissible support belongs in `supporting_refs`, partial/failed results in `limitation_refs`, and prior effective claim ids in `supersedes_claim_refs`.
 7. Before completion, publish the intended material completion claim and current evidence, then call `check`. Read `declared_obligation_count`, `no_obligations_reason`, and `closure_readiness` on `status` first. A readable plan with zero declared obligations and no reason is blocked by `no_obligations_declared`; add effective obligations or revise the plan with a typed reason. The reason clears readiness but a completion claim over zero obligations still yields an insufficient-coverage gap. Resolve remediable blockers before spending a check or receipt. `receipt_findings_unresolved` is different: it says an actionable finding is still current. Only a later qualifying check of the repaired record resolves it, never a response; if you can repair the record, do so and recheck. Then read the finding's `resolved` state. If the issue re-fires, or it does not re-fire but remains `resolved=false` because the check did not qualify, proceed to the receipt rather than rechecking unchanged state. A deterministic check with otherwise readable proof may still qualify when its only case-wide host-observation limits are `captured_object_unavailable`, `content_unselected`, `host_outcome_unavailable`, or `unpaired_event`; those codes remain receipt limitations, require the original finding coverage to have been readable, and never replace semantic-finding proof. A bounded AI-powered review scope (`semantic_reference_scope_reduced`) likewise stays a receipt limitation without vetoing that local-check proof. A completed semantic re-review may tolerate the same closed capture limits, including an unchanged bounded review scope, already present in a readable original semantic finding, but only after material work was recorded since the finding, and a bounded scope only when that review actually sent the finding, the repair evidence your response cites, and the change, and each subject was sent, superseded by a sent corrected claim, or an early event the bounded history evicted (a mention, link, or omitted or withheld item does not count; a record carried by the history item of the event that recorded it, or any part of a carried multi-part captured excerpt, does; captured evidence counts only through its own excerpt). Cite the repair's evidence rather than only a result: rechecks select cited evidence first, while a result without evidence stays in view only while it is recent; if the check shows `semantic_included_refs_not_recorded`, Yoetz could not record what that review sent: run one new check with the repair evidence recorded and cited, and if the code repeats, stop and disclose the open finding; an unchanged re-run, new limits, unreadable original coverage, or an insufficient packet still block that proof. Select `semantic_required` when the user, effective policy, or named acceptance criterion requires independent semantic review; omit `mode` when relying on the configured default; use `semantic_if_configured` only when review is known to be optional; use `deterministic_only` only for explicitly local/structural checks, a semantic-disabled policy, or a deliberate no-egress choice, and disclose that limitation. Publish the smallest state-bound diff/symbol and the directly relevant test or failure excerpt; never rely on self-asserted completion prose alone.
-8. Respond to each challenge by accepting and acting, supplying evidence, revising the claim, disputing with evidence, or stating an unresolved limitation. Agents can record `acknowledged`, `acknowledged_not_done` (with a required reason; final), `provenance_disputed`, or `rejected`; `waived` is reserved for an authorized local-CLI human. A readable response identifies the finding as answered and removes it from `unanswered_finding_count`, but it does not erase the historical finding, reduce `receipt_blocking_finding_count`, or close an underlying coverage gap. Repair the record and recheck: a later qualifying check that finds the same issue absent resolves the finding, which then stays visible as history; the receipt wording names resolved history apart from current findings and from coverage limitations. After every recorded repair, run at least one recheck: the reviewer sees each earlier finding with your answer and the evidence recorded since, and rules on it; cite the repair's result or evidence in your response so the ruling can rest on it.
+8. Respond to each challenge by accepting and acting, supplying evidence, revising the claim, disputing with evidence, or stating an unresolved limitation. Agents can record `acknowledged`, `self_verified` (you repaired it, a later check still cannot prove it because of a Yoetz limit, and you verified it yourself: a required reason and at least one recorded evidence id; final), `acknowledged_not_done` (with a required reason; final; only if you truly will not or cannot do it), `provenance_disputed`, or `rejected`; `waived` is reserved for an authorized local-CLI human. A readable response identifies the finding as answered and removes it from `unanswered_finding_count`, but it does not erase the historical finding, reduce `receipt_blocking_finding_count`, or close an underlying coverage gap. Repair the record and recheck: a later qualifying check that finds the same issue absent resolves the finding, which then stays visible as history; the receipt wording names resolved history apart from current findings and from coverage limitations. After every recorded repair, run at least one recheck: the reviewer sees each earlier finding with your answer and the evidence recorded since, and rules on it; cite the repair's result or evidence in your response so the ruling can rest on it.
 9. Recheck after any material edit, evidence change, or plan change; a recorded repair always gets at least one recheck. A readable response to a finding returned by the current check needs no recheck, nor does acknowledging an observation-authored non-actionable finding or publishing `work_closed`; a redacted or unreadable response does because it cannot prove which finding it answered. After an `insufficient_packet` review, go to the receipt unless you publish a material repair; never run a `deterministic_only` fallback for it.
 10. Request a receipt, then publish `work_closed` when the work is complete, and keep the final answer no stronger than its weakest material coverage, freshness, unresolved findings, and limitations. All receipt formats (`json`, `markdown`, `text`) project under default policy; if a stricter owner policy blocks `json`, re-request `markdown` or `text`.
 ## Consumer and maintainer scope
@@ -656,15 +678,20 @@ relevant test/doctest/lint check, or repair the named defect. Select the target 
 changed files and existing project checks, never invent a command. Record the action and its
 result; put exact requested items on an obligation in the effective plan and record their
 `attempted_items` on the action. Do not resolve an obligation while its requested items remain
-unattempted. If something outside your control prevents the attempt (authority, consent,
-credentials, or a dependency you cannot obtain), record it as a blocker instead of widening
-disclosure, credentials or runtime authority: publish `decision_recorded` naming the obligation in
-`affected_obligation_ids` with the exact statement line
-`yoetz-blocker:<authority|consent|credential|dependency_unavailable>` and a rationale. Missing or
-inconsistent data the task says is recoverable, a failing test, or a result that looks infeasible
-is not a blocker: deliver a best-effort result in the requested form and disclose the assumption.
-Yoetz cannot verify a blocker: the next Stop asks you once to re-confirm it, and the closing review
-checks it against the task and may challenge it. Only then report the remaining limitation or narrow the claim. `respond` rejects an `acknowledged` answer to an
+unattempted. If something genuinely outside your control prevents the attempt on an open
+obligation (authority, consent, credentials, or a dependency you cannot obtain), record it as a
+blocker instead of widening disclosure, credentials or runtime authority: publish
+`decision_recorded` naming the obligation in `affected_obligation_ids` with the exact statement
+line `yoetz-blocker:<authority|consent|credential|dependency_unavailable>` and a rationale. Missing
+or inconsistent data the task says is recoverable, a failing test, or a result that looks
+infeasible is not a blocker: deliver a best-effort result in the requested form and disclose the
+assumption with a `yoetz-assumption:<obligation id>` decision line. A Yoetz limit (something Yoetz cannot show or prove) is never a blocker: verify the
+work yourself and respond `self_verified` on the finding. Yoetz cannot verify a blocker, so the
+first one is only claimed: the `publish_work` result challenges it (`blocker_notices`), the
+obligation stays agent work (`obligation_blocker_unconfirmed`), and that challenge (or a Stop
+re-check) tells you how to keep a blocker that is still genuine. A blocker naming no open
+obligation has no effect. The closing review checks it against the task and challenges it when the
+task says the outcome is achievable or recoverable, or the obvious prerequisite was not attempted. Only then report the remaining limitation or narrow the claim. `respond` rejects an `acknowledged` answer to an
 AI-powered review finding unless `evidence_refs` cites evidence or a result recorded after the
 finding (`resolution_attempt_required`); the result of the blocked attempt counts (outcome
 `failure` or `partial`: there is no `blocked` outcome). An acknowledgement or
@@ -686,4 +713,4 @@ attempt; any other kind, even one citing only a check, and a finding naming any 
 response, or work record, or restating a finding about the work, still does. After repairing a
 finding, run at least one re-review in the same mode before the receipt.
 
-Findings form a to-do list that ends: each is `open` or final (`verified_resolved`, `acknowledged_not_done`, `rejection_accepted`), and a final item is never re-reviewed. Final states, `finding_terminal`, the `finding_checklist` and the review-round budget are in [coverage-and-receipts.md](coverage-and-receipts.md).
+Findings form a to-do list that ends: each is `open` or final (`verified_resolved`, `self_verified`, `acknowledged_not_done`, `rejection_accepted`), and a final item is never re-reviewed. Final states, `finding_terminal`, the `finding_checklist` and the review-round budget are in [coverage-and-receipts.md](coverage-and-receipts.md).

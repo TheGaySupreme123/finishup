@@ -18,7 +18,7 @@ projection checkpoint all read the same fact.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Final, Literal, cast
 
 from yoetz.domain.coordination import CoordinationGapCode
@@ -34,7 +34,13 @@ from yoetz.domain.events import (
     RequestedItemKind,
     ResponseRecordedPayload,
 )
-from yoetz.domain.findings import Finding, FindingKind, FindingOrigin, ResponseDisposition
+from yoetz.domain.findings import (
+    SELF_VERIFIED_GUIDANCE,
+    Finding,
+    FindingKind,
+    FindingOrigin,
+    ResponseDisposition,
+)
 from yoetz.domain.receipts import (
     CHECK_TIME_CHANGE_GAPS,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
@@ -113,17 +119,22 @@ from yoetz.protocol.policy_packs import (
 __all__ = [
     "AGENT_SETTLED_DISPOSITION_VALUES",
     "CAPTURE_FAILURE_GAPS",
+    "DETERMINISTIC_PROOF_TOLERATED_GAPS",
+    "SEMANTIC_ONLY_GAPS",
     "REVIEW_SELECTION_GAPS",
     "SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS",
     "SEMANTIC_REFERENCE_SCOPE_REDUCED_GAP",
     "IssueKey",
     "OPEN_REVIEW_VERDICTS",
+    "UNRESOLVED_FINDING_NEXT_STEPS",
+    "ResolutionAttempt",
     "apply_check_resolution",
     "apply_check_rulings",
     "check_change_limits_tolerated",
     "check_change_resolution_unverified",
     "unverified_resolution_finding_ids",
     "finding_is_resolved",
+    "finding_resolution_attempt",
     "issue_key",
     "prior_finding_verdict",
     "qualifying_check_resolves",
@@ -300,6 +311,9 @@ _SEMANTIC_PROOF_TOLERATED_GAPS: Final = (
     | _EGRESS_VALUE_REDACTION_GAPS
     | _OWNER_DISCLOSURE_CHOICE_GAPS
 )
+# Read-only public names for ``kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`` (#986).
+DETERMINISTIC_PROOF_TOLERATED_GAPS: Final = _DETERMINISTIC_PROOF_TOLERATED_GAPS
+SEMANTIC_ONLY_GAPS: Final = _SEMANTIC_ONLY_GAPS
 # Structural test-edit accounting (ADR-032) is read by exactly one local rule: the unjustified
 # pre-existing test edit, which raises ``task_requirement_unmet`` with the fact
 # ``preexisting_test_edit_unjustified``. It is local accounting, never a basis of any other rule.
@@ -1464,6 +1478,13 @@ def _finding_resolution_explanation(
             "Acknowledged, not done: the agent recorded with a reason that it will not do this. "
             "The item is final, is not reviewed again, and keeps the receipt from reading clean."
         )
+    if disposition is ResponseDisposition.SELF_VERIFIED:
+        return (
+            "Self-verified by the agent: the agent repaired this and verified the repair itself, "
+            "citing its own recorded evidence, because Yoetz could not prove it (a Yoetz limit). "
+            "The item is final, is not reviewed again and is not agent work; the receipt "
+            "discloses it and cannot read clean."
+        )
     if (
         finding_record.rejection_accepted_by_check_event_id is not None
         and disposition is ResponseDisposition.REJECTED
@@ -1498,16 +1519,12 @@ def _finding_resolution_explanation(
                 "material recorded after the finding; retained as history."
             )
         return f"Resolved by qualifying check {resolving}; retained as history."
-    later_checks = tuple(
-        row
-        for row in reversed(records)
-        if row.schema.name == "check_recorded"
-        and finding_record.source_frontier < row.ledger.ingestion_sequence <= state.frontier
-    )
-    candidate = next(iter(later_checks), None)
+    attempt = _resolution_attempt(state, finding_record, records, proof_state_cache)
     if superseded is not None:
         candidate_sequence = (
-            None if candidate is None else _check_subject_sequence(records, candidate.event_id)
+            None
+            if attempt is None
+            else _check_subject_sequence(records, attempt.newest_check_event_id)
         )
         if candidate_sequence is None or candidate_sequence < superseded[1]:
             return (
@@ -1515,60 +1532,13 @@ def _finding_resolution_explanation(
                 "this is historical context rather than a current coordination obligation; the "
                 "later qualifying coordination check can resolve it."
             )
-    if candidate is None:
+    if attempt is None:
         return "Unresolved: no later recorded check is available for an absence proof."
-    newest = candidate
-    # Explain the newest check that could have resolved this finding (issue #947), not merely the
-    # newest one: a later scoped or local-only check would otherwise hide the blockers that matter.
-    candidate = next(
-        (
-            row
-            for row in later_checks
-            if _could_resolve(state, row, finding_record.payload, finding_record.source_frontier)
-        ),
-        newest,
-    )
-    check = candidate.payload
-    if (
-        not isinstance(check, CheckRecordedPayload)
-        or f"redacted_event:{candidate.event_id}" in state.coverage_gaps
-    ):
-        return f"Unresolved: check {candidate.event_id} is unreadable; absence is unproven."
-    returned = [state.findings.get(key) for key in check.returned_finding_ids]
-    if any(row is None or row.payload is None for row in returned):
-        return f"Unresolved: returned findings of check {candidate.event_id} are unreadable."
-    keys = frozenset(
-        issue_key(row.payload) for row in returned if row is not None and row.payload is not None
-    )
-    proof_state = None
-    if (
-        finding_record.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
-        or _command_partition_candidate(
-            finding_record.payload, finding_record.source_frontier, check, keys
-        )
-        or (
-            finding_record.payload.kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
-            and bool(set(check.coverage.known_gaps) & _COMMAND_GAPS)
-        )
-    ):
-        proof_state = _historical_proof_state(
-            check,
-            candidate,
-            records,
-            {} if proof_state_cache is None else proof_state_cache,
-        )
-    reasons = resolution_blockers(
-        finding_record.payload,
-        finding_record.source_frontier,
-        check,
-        keys,
-        proof_state=proof_state,
-        raised_before_task_statement=_raised_before_task_statement(
-            finding_record.payload, first_task_statement_sequence_of(records)
-        ),
-        check_change_raised_files=_record_raised_files(finding_record),
-        raised_under_reduced_scope=finding_record.reduced_scope_raising_check_event_id is not None,
-    )
+    if attempt.reasons == (_CHECK_UNREADABLE,):
+        return f"Unresolved: check {attempt.check_event_id} is unreadable; absence is unproven."
+    if attempt.reasons == (_RETURNED_FINDINGS_UNREADABLE,):
+        return f"Unresolved: returned findings of check {attempt.check_event_id} are unreadable."
+    reasons = attempt.reasons
     returned_again = "issue_returned_again" in reasons
     relation = "Returned again" if returned_again else "Not returned; absence remains unproven"
     if not reasons:
@@ -1582,17 +1552,149 @@ def _finding_resolution_explanation(
         )
     later = (
         ""
-        if candidate is newest
+        if attempt.check_event_id == attempt.newest_check_event_id
         else (
-            f" Later check {newest.event_id} did not run a completed matching review over this "
-            "finding's subject, so it cannot resolve it."
+            f" Later check {attempt.newest_check_event_id} did not run a completed matching "
+            "review over this finding's subject, so it cannot resolve it."
         )
     )
     return (
-        f"{relation} in check {candidate.event_id} of subject frontier "
-        f"{check.subject_frontier.sequence}. Resolution requirements not met: {detail}."
-        f"{later} "
-        "Acknowledgement is not repair evidence; an unchanged recheck cannot remove durable proof limits."
+        f"{relation} in check {attempt.check_event_id} of subject frontier "
+        f"{attempt.subject_sequence}. Resolution requirements not met: {detail}."
+        f"{later} {UNRESOLVED_FINDING_NEXT_STEPS}"
+    )
+
+
+# Synthetic reasons for a resolution attempt Yoetz could not read at all.
+_CHECK_UNREADABLE: Final = "check_unreadable"
+_RETURNED_FINDINGS_UNREADABLE: Final = "returned_findings_unreadable"
+# What every unresolved-finding explanation tells the agent to do next, in order (issue #984,
+# F1): repair first; self-verify a repair only a Yoetz limit keeps unproven; acknowledge as not
+# done only as the last resort. It never invites an immediate acknowledgement.
+UNRESOLVED_FINDING_NEXT_STEPS: Final = (
+    "Next: repair it, then check. "
+    + SELF_VERIFIED_GUIDANCE
+    + " Respond acknowledged_not_done only if you truly will not or cannot do it; an "
+    "acknowledgement is not repair evidence."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolutionAttempt:
+    """Why the newest later check that could resolve a finding did not (issue #984).
+
+    ``check_event_id`` is the newest later check that could resolve the finding (``_could_resolve``),
+    falling back to the newest later check (issue #947); ``newest_check_event_id`` is the newest
+    later check. ``reasons`` are exactly ``resolution_blockers`` for that check, or one of the
+    synthetic ``check_unreadable`` / ``returned_findings_unreadable`` reasons. This only exposes
+    what the explanation already reports; it changes no proof rule.
+    """
+
+    check_event_id: EventId
+    newest_check_event_id: EventId
+    could_resolve: bool
+    subject_sequence: int | None
+    reasons: tuple[str, ...]
+
+
+def finding_resolution_attempt(
+    state: ProjectionState,
+    finding_id: FindingId,
+    records: tuple[LedgerRecord, ...],
+    *,
+    proof_state_cache: ProofStateCache | None = None,
+) -> ResolutionAttempt | None:
+    """The newest later resolution attempt for a readable finding, or ``None`` when none exists."""
+
+    finding_record = state.findings.get(finding_id)
+    if finding_record is None or finding_record.payload is None:
+        return None
+    return _resolution_attempt(state, finding_record, records, proof_state_cache)
+
+
+def _resolution_attempt(
+    state: ProjectionState,
+    finding_record: FindingProjectionRecord,
+    records: tuple[LedgerRecord, ...],
+    proof_state_cache: ProofStateCache | None,
+) -> ResolutionAttempt | None:
+    finding = finding_record.payload
+    assert finding is not None
+    later_checks = tuple(
+        row
+        for row in reversed(records)
+        if row.schema.name == "check_recorded"
+        and finding_record.source_frontier < row.ledger.ingestion_sequence <= state.frontier
+    )
+    newest = next(iter(later_checks), None)
+    if newest is None:
+        return None
+    # Explain the newest check that could have resolved this finding (issue #947), not merely the
+    # newest one: a later scoped or local-only check would otherwise hide the blockers that matter.
+    candidate = next(
+        (
+            row
+            for row in later_checks
+            if _could_resolve(state, row, finding, finding_record.source_frontier)
+        ),
+        None,
+    )
+    could_resolve = candidate is not None
+    if candidate is None:
+        candidate = newest
+    check = candidate.payload
+    if (
+        not isinstance(check, CheckRecordedPayload)
+        or f"redacted_event:{candidate.event_id}" in state.coverage_gaps
+    ):
+        return ResolutionAttempt(
+            candidate.event_id, newest.event_id, could_resolve, None, (_CHECK_UNREADABLE,)
+        )
+    returned = [state.findings.get(key) for key in check.returned_finding_ids]
+    if any(row is None or row.payload is None for row in returned):
+        return ResolutionAttempt(
+            candidate.event_id,
+            newest.event_id,
+            could_resolve,
+            check.subject_frontier.sequence,
+            (_RETURNED_FINDINGS_UNREADABLE,),
+        )
+    keys = frozenset(
+        issue_key(row.payload) for row in returned if row is not None and row.payload is not None
+    )
+    proof_state = None
+    if (
+        finding.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+        or _command_partition_candidate(finding, finding_record.source_frontier, check, keys)
+        or (
+            finding.kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
+            and bool(set(check.coverage.known_gaps) & _COMMAND_GAPS)
+        )
+    ):
+        proof_state = _historical_proof_state(
+            check,
+            candidate,
+            records,
+            {} if proof_state_cache is None else proof_state_cache,
+        )
+    reasons = resolution_blockers(
+        finding,
+        finding_record.source_frontier,
+        check,
+        keys,
+        proof_state=proof_state,
+        raised_before_task_statement=_raised_before_task_statement(
+            finding, first_task_statement_sequence_of(records)
+        ),
+        check_change_raised_files=_record_raised_files(finding_record),
+        raised_under_reduced_scope=finding_record.reduced_scope_raising_check_event_id is not None,
+    )
+    return ResolutionAttempt(
+        candidate.event_id,
+        newest.event_id,
+        could_resolve,
+        check.subject_frontier.sequence,
+        reasons,
     )
 
 
@@ -1887,6 +1989,7 @@ def apply_check_rulings(
             # The reviewer's newest answer on this item, carried to the next packet beside the
             # agent's rebuttal count (TB4 tb4n1 D7). It is a dialogue fact, never a proof.
             findings[ruled_id] = replace(ruled, last_reviewer_verdict=ruling)
+    _break_duplicate_links(findings, responses, check, check_event_id, rulings)
     touched = frozenset(check.returned_finding_ids) | frozenset(rulings)
     for current_id in sorted(touched, key=str.encode):
         record = findings.get(current_id)
@@ -1956,6 +2059,63 @@ def apply_check_rulings(
             )
 
 
+# The reviewer rulings that say the issue of a ``duplicate_of`` finding is still there (#996).
+DUPLICATE_LINK_BREAKING_VERDICTS: Final = frozenset({"answered_not_fixed", "still_present"})
+
+
+def _break_duplicate_links(
+    findings: dict[FindingId, FindingProjectionRecord],
+    responses: Mapping[FindingId, ProjectionRecord[ResponseRecordedPayload]],
+    check: CheckRecordedPayload,
+    check_event_id: EventId,
+    rulings: Mapping[FindingId, str],
+) -> None:
+    """Record every check that raises a linked duplicate's issue again (issue #996).
+
+    A finding whose latest readable response is ``duplicate_of`` keeps its link until a later
+    check says its own issue is still there: the check returned it again, returned a readable
+    local finding with the same issue key (a deterministic rule fired again on the same subject),
+    or the reviewer ruled it ``still_present`` or ``answered_not_fixed``. Each such check is
+    recorded, so the link stays broken while any of them remains readable (redacting one removes
+    only its id, as a full replay would). An AI-powered issue key is too coarse to stand for one
+    issue, so only the finding's own id or ruling breaks its link.
+    """
+
+    returned_local_keys = {
+        issue_key(record.payload)
+        for returned_id in check.returned_finding_ids
+        if (record := findings.get(returned_id)) is not None
+        and record.payload is not None
+        and record.payload.origin is FindingOrigin.DETERMINISTIC
+    }
+    returned = frozenset(check.returned_finding_ids)
+    for current_id, record in tuple(findings.items()):
+        latest = responses.get(current_id)
+        if (
+            record.payload is None
+            or check_event_id in record.duplicate_link_broken_by_check_event_ids
+            or latest is None
+            or latest.payload is None
+            or latest.payload.disposition is not ResponseDisposition.DUPLICATE_OF
+        ):
+            continue
+        if (
+            current_id in returned
+            or rulings.get(current_id) in DUPLICATE_LINK_BREAKING_VERDICTS
+            or (
+                record.payload.origin is FindingOrigin.DETERMINISTIC
+                and issue_key(record.payload) in returned_local_keys
+            )
+        ):
+            findings[current_id] = replace(
+                record,
+                duplicate_link_broken_by_check_event_ids=(
+                    *record.duplicate_link_broken_by_check_event_ids,
+                    check_event_id,
+                ),
+            )
+
+
 def _readable_rejection(response: ProjectionRecord[ResponseRecordedPayload] | None) -> bool:
     """Whether the finding's latest response is a readable, reasoned ``rejected``."""
 
@@ -1996,6 +2156,16 @@ def reopen_findings_resolved_by(
             record = replace(record, reduced_scope_raising_check_event_id=None)
         if record.rejection_accepted_by_check_event_id in event_ids:
             record = replace(record, rejection_accepted_by_check_event_id=None)
+        # Issue #996: a full replay of the redacted ledger never saw the breaking check.
+        if event_ids & set(record.duplicate_link_broken_by_check_event_ids):
+            record = replace(
+                record,
+                duplicate_link_broken_by_check_event_ids=tuple(
+                    item
+                    for item in record.duplicate_link_broken_by_check_event_ids
+                    if item not in event_ids
+                ),
+            )
         if event_ids & set(record.check_change_raising_check_event_ids):
             record = replace(record, check_change_raised_files=None)
         findings[current_id] = record
@@ -2020,9 +2190,12 @@ def finding_is_resolved(state: ProjectionState, finding_id: FindingId) -> bool:
         return False
     # ``acknowledged_not_done`` is terminal and never reads as resolved (issue #905): the agent
     # said it will not do this, so a later absence proof must not turn it into a clean row.
+    # ``self_verified`` (issue #984) is final the same way: the item stays the agent's own
+    # verification, disclosed, and never becomes a Yoetz-proven row afterwards.
     return response.payload.disposition not in {
         ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
         ResponseDisposition.PROVENANCE_DISPUTED,
+        ResponseDisposition.SELF_VERIFIED,
     }
 
 

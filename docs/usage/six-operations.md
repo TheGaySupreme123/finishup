@@ -181,9 +181,19 @@ material edit, evidence change, or plan change. A readable response to a finding
 current check does not require a recheck, nor does acknowledging an observation-authored
 non-actionable finding or publishing `work_closed`; a redacted or unreadable response does.
 `acknowledged_not_done` records, with a required reason, that you will not do what a finding asks;
-it is final, is not reviewed again, and keeps the receipt from reading clean. A finding that is
-already `verified_resolved`, `acknowledged_not_done` or `rejection_accepted` is final: `respond`
-records nothing and answers `finding_terminal`.
+it is final, is not reviewed again, and keeps the receipt from reading clean; use it only if you
+truly will not or cannot do the work. `self_verified` is for a finding you repaired that Yoetz still
+cannot prove after a later check because of its own limits: say how you verified the repair in
+`reason` and cite at least one recorded evidence or result id in `evidence_refs`. It is final, is
+not your work any more, and keeps the receipt at best `insufficient_coverage`; Yoetz refuses it
+with `finding_not_rechecked` before a later check, or `finding_not_proof_limited` while that check
+still sees the issue. A finding that is already `verified_resolved`, `acknowledged_not_done`,
+`self_verified` or `rejection_accepted` is final: `respond` records nothing and answers
+`finding_terminal`. `duplicate_of` is only for a genuine restatement of the same issue (same origin
+and kind) as an earlier finding you answered: name it in `duplicate_of_finding_id`. Linking never
+resolves the new finding; it stays open until its own check proves it absent, needs no separate
+answer, and inherits only the earlier finding's not-done or self-verified answer. A later check
+that raises it again breaks the link, and then it needs its own answer.
 
 ### `status`
 Reads current state — use it after a resume, a compaction, a handoff, or any uncertainty about what
@@ -239,11 +249,16 @@ receipt-blocking finding, or one of those planned-verification or excluded-outpu
 the stop is continued once with the list. When something outside your control blocks an
 obligation (authority, consent, credentials, or a dependency you cannot obtain), record a
 `decision_recorded` naming it in `affected_obligation_ids` with the statement line
-`yoetz-blocker:<authority|consent|credential|dependency_unavailable>`; it then reads as a disclosed
-limitation instead of open work. Yoetz cannot verify a blocker, so the next stop asks you once to
-confirm each blocked obligation and its kind: data the task says is recoverable, a failing test,
-or a result that only looks infeasible is not a blocker, so continue the work instead. Stopping
-again keeps the blocker, and the closing review checks it against the task once.
+`yoetz-blocker:<authority|consent|credential|dependency_unavailable>`. A Yoetz limit (something
+Yoetz cannot show or prove) is never a blocker: verify the work yourself and respond
+`self_verified` instead. Yoetz cannot verify a blocker either, so the first one is only claimed:
+the `publish_work` result challenges it (data the task says is recoverable, a failing test, or a
+result that only looks infeasible is not a blocker, so continue the work instead), and the
+obligation stays open work (`obligation_blocker_unconfirmed`) until you answer that challenge
+as it describes; a confirmed blocker then reads as a disclosed limitation. A blocker that
+names only finished obligations has no effect. The next stop may ask you once to confirm a
+blocker, and the closing review checks it against the task once and challenges it when the
+blocked obligation is the task's main deliverable.
 
 ### `receipt`
 Projects the honest summary of what was checked, at what coverage, and what remains open. Formats:

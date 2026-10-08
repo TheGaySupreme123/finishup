@@ -613,6 +613,10 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
             "session_resumed",
         }
     )
+    # Issue #997: 1.1.0 admits the obligation-level ``acknowledged_not_done`` status.
+    assert {
+        schema.version for schema in PAYLOAD_TYPES if schema.name == "obligation_published"
+    } == {SCHEMA_VERSION, "1.1.0"}
     # Issue #905: 1.1.0 exists only for the terminal ``acknowledged_not_done`` disposition.
     assert {schema.version for schema in PAYLOAD_TYPES if schema.name == "response_recorded"} == {
         SCHEMA_VERSION,

@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Final, cast
 
 from yoetz.domain.check_totals import render_check_totals
+from yoetz.domain.findings import SELF_VERIFIED_GUIDANCE
 from yoetz.domain.receipts import (
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     check_time_change_gap_sentence,
@@ -191,12 +192,19 @@ _CHECKBOX: Final = {
     "verified_resolved": "[x]",
     "acknowledged_not_done": "[~]",
     "rejection_accepted": "[-]",
+    # Issue #984: final, disclosed, not resolved by Yoetz.
+    "self_verified": "[s]",
 }
 _CHECKLIST_NEXT_TEXT: Final = {
-    "work_open_findings": "Repair or answer the open findings, then check again.",
+    "work_open_findings": (
+        "Repair the open findings (or answer the reviewer's questions), then check again."
+    ),
     "decide_at_budget": (
-        "An open finding reached the review-round budget: repair it with new evidence, or "
-        "respond acknowledged_not_done with a reason. Checks are never throttled."
+        "An open finding reached the review-round budget: repair it with new evidence, then "
+        "check. "
+        + SELF_VERIFIED_GUIDANCE
+        + " Respond acknowledged_not_done with a reason only if you truly will not or cannot "
+        "do it. Checks are never throttled."
     ),
     "request_receipt": "No open findings remain on the list; request the receipt.",
 }
@@ -236,6 +244,7 @@ def _render_checklist(
         + (f" ({at_budget} at budget)" if at_budget else "")
         + f", verified {counts.verified_resolved}, not done {counts.acknowledged_not_done}, "
         f"rejection accepted {counts.rejection_accepted}"
+        + (f", self-verified {counts.self_verified}" if int(counts.self_verified) else "")
     )
     total = sum(
         int(value)
@@ -244,6 +253,7 @@ def _render_checklist(
             counts.verified_resolved,
             counts.acknowledged_not_done,
             counts.rejection_accepted,
+            counts.self_verified,
         )
     )
     if total > len(checklist.items):
@@ -492,6 +502,16 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
                 for item in readiness.blocked_obligations
             )
         )
+    if readiness.limitation_refs_required and readiness.limitation_refs_required_count:
+        # F3: ids only; what a whole-task completion claim must name in limitation_refs.
+        hidden = int(readiness.limitation_refs_required_count) - len(
+            readiness.limitation_refs_required
+        )
+        lines.append(
+            "A whole-task completion claim must name in limitation_refs: "
+            + ", ".join(readiness.limitation_refs_required)
+            + (f" (+{hidden} more)" if hidden > 0 else "")
+        )
     if readiness.acknowledged_not_done:
         listed = ", ".join(readiness.acknowledged_not_done)
         hidden = int(readiness.acknowledged_not_done_count) - len(readiness.acknowledged_not_done)
@@ -550,6 +570,15 @@ def render_human_status(result: StatusSuccessModel) -> str:
         f"Frontier: {result.head_frontier.sequence}",
         f"Freshness: {_token(result.coverage.ledger_freshness)}",
         f"Open obligations: {_count(result.closure_readiness.open_obligation_count)}",
+        *(
+            # #997: counted apart, never in the open count.
+            (
+                "Obligations acknowledged as not done: "
+                f"{_count(result.closure_readiness.acknowledged_obligation_count)}",
+            )
+            if result.closure_readiness.acknowledged_obligation_count not in {None, "0"}
+            else ()
+        ),
         f"Unanswered findings: {_count(result.closure_readiness.unanswered_finding_count)}",
         (
             "Receipt-blocking findings: "
@@ -689,6 +718,9 @@ def render_human_status(result: StatusSuccessModel) -> str:
                     f"  finding_frontier: {finding.finding_frontier.sequence} "
                     f"({finding.finding_frontier.head_digest})"
                 )
+            if finding.duplicate_of_finding_id is not None:
+                # Issue #996: the to-do state above is the earlier finding's while this holds.
+                lines.append(f"  duplicate of: {finding.duplicate_of_finding_id}")
     if isinstance(result.page, StatusResultsPageModel):
         lines.extend(_render_result_items(result.page))
     if isinstance(result.page, StatusObligationsPageModel):

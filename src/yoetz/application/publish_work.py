@@ -87,6 +87,7 @@ from yoetz.domain.values import (
 from yoetz.kernel.completion_scope import with_completion_scope_coverage
 from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
 from yoetz.kernel.reducers import replay_extension
+from yoetz.kernel.task_facts import blocker_publication_notices
 from yoetz.ports.clock import ClockPort
 from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.ledger import (
@@ -133,9 +134,11 @@ from yoetz.protocol.errors import (
 from yoetz.protocol.models import (
     MAX_CANONICAL_REQUEST_BYTES,
     MAX_EVENTS_PER_BATCH,
+    PUBLISH_BLOCKER_NOTICE_TEXTS,
     CoverageModel,
     FrontierModel,
     PublishWorkAcceptedEventModel,
+    PublishWorkBlockerNoticeModel,
     PublishWorkDryRunModel,
     PublishWorkDryRunPreviewEventModel,
     PublishWorkRequestModel,
@@ -269,11 +272,13 @@ class PublishWorkInternalResult:
     coverage: Coverage
     gaps: tuple[str, ...]
     versions: PublishWorkVersionSliceModel
+    # Issue #985: fixed publish-time notices for yoetz-blocker lines; empty means absent.
+    blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] = ()
 
     def as_json(self) -> dict[str, JsonValue]:
         """Serialize the closed internal result without materializing absent optional leaves."""
 
-        return {
+        body: dict[str, JsonValue] = {
             "protocol_version": self.protocol_version,
             "schema_version": self.schema_version,
             "request_id": self.request_id,
@@ -300,6 +305,12 @@ class PublishWorkInternalResult:
             "gaps": self.gaps,
             "versions": cast(JsonValue, self.versions.model_dump(mode="json")),
         }
+        if self.blocker_notices:
+            # Absent when the batch carried no yoetz-blocker line (never an empty list, #985).
+            body["blocker_notices"] = tuple(
+                cast(JsonValue, item.model_dump(mode="json")) for item in self.blocker_notices
+            )
+        return body
 
 
 def _error(
@@ -478,7 +489,19 @@ _REF_MIRROR_CORRECTIONS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyTy
                     "mirrors. Correct the event payload before retrying."
                 ),
             }
-        )
+        ),
+        # #997: the obligation version is a pure function of the payload.
+        "invalid_event_schema": MappingProxyType(
+            {
+                "obligation_published": (
+                    "The event batch is invalid. Use obligation_published/1.1.0 exactly when the "
+                    "obligation has a directory item, an item role, or status "
+                    "acknowledged_not_done with an acknowledged_not_done_reason; otherwise, "
+                    "including reopening an acknowledged one, use obligation_published/1.0.0 "
+                    "with the same meaning fields."
+                ),
+            }
+        ),
     }
 )
 
@@ -1068,6 +1091,7 @@ async def _internal_result(
     records = await _load_accepted_records(runtime, result)
     projection = await _projection_at_result_frontier(runtime, result)
     coverage = with_completion_scope_coverage(prepared.coverage, projection)
+    notices = _blocker_notices(projection, prepared)
     return PublishWorkInternalResult(
         protocol_version="0.1",
         schema_version="1.0.0",
@@ -1090,6 +1114,40 @@ async def _internal_result(
             projection_version=runtime.projection_version,
             policy_packs=_POLICY_PACKS,
         ),
+        blocker_notices=notices,
+    )
+
+
+def _blocker_notices(
+    projection: ProjectionState, prepared: PreparedPublication
+) -> tuple[PublishWorkBlockerNoticeModel, ...]:
+    """Publish-time challenge and no-effect notices for the batch's yoetz-blocker lines (#985).
+
+    ``projection`` already includes the batch (the accepted frontier, or a dry run's provisional
+    fold). Notices are closed codes with fixed text, so a replay returns the same body.
+    """
+
+    decisions = tuple(
+        (item.draft.event_id, item.draft.payload)
+        for item in prepared.drafts
+        if type(item.draft.payload) is DecisionRecordedPayload
+    )
+    if not decisions:
+        return ()
+    return tuple(
+        PublishWorkBlockerNoticeModel(
+            obligation_id=notice.obligation_id,
+            blocker_kind=cast(
+                Literal["authority", "consent", "credential", "dependency_unavailable"],
+                notice.kind,
+            ),
+            notice=cast(
+                Literal["blocker_claimed", "blocker_confirmed", "blocker_without_effect"],
+                notice.notice,
+            ),
+            text=PUBLISH_BLOCKER_NOTICE_TEXTS[notice.notice],
+        )
+        for notice in blocker_publication_notices(projection, decisions)[:64]
     )
 
 
@@ -1364,7 +1422,7 @@ async def _preflight_dry_run_feasibility(
     runtime: TaskRuntime,
     request: PublishWorkRequestModel,
     prepared: PreparedPublication,
-) -> tuple[Frontier, Coverage]:
+) -> tuple[Frontier, Coverage, ProjectionState]:
     """Reject batches the real append path would reject before reporting would_accept.
 
     Matches ``append_batch`` acceptance for frontier sequence, event-id uniqueness, causal
@@ -1502,7 +1560,7 @@ async def _preflight_dry_run_feasibility(
         TypeError,
     ):
         raise _event_invalid("invalid_event_value_type") from None
-    return current, with_completion_scope_coverage(prepared.coverage, projected)
+    return current, with_completion_scope_coverage(prepared.coverage, projected), projected
 
 
 def _validate_new_completion_scope(
@@ -1547,7 +1605,8 @@ async def _execute_dry_run(
     # Intentionally skip operation lookup: dry_run must not consume or conflict on request_id.
     prepared = prepare_publication(request, channel=channel, app=app)
     _validate_new_completion_scope(request, prepared)
-    current, coverage = await _preflight_dry_run_feasibility(runtime, request, prepared)
+    current, coverage, projected = await _preflight_dry_run_feasibility(runtime, request, prepared)
+    notices = _blocker_notices(projected, prepared)
     frontier = FrontierModel.model_validate(dict(current.as_wire()))
     preview = tuple(
         PublishWorkDryRunPreviewEventModel(
@@ -1575,6 +1634,7 @@ async def _execute_dry_run(
         would_accept=preview,
         coverage=CoverageModel.model_validate(coverage_to_json(coverage)),
         gaps=coverage.known_gaps,
+        **({"blocker_notices": notices} if notices else {}),
     )
     return PublishWorkResultModel.model_validate(
         body.model_dump(mode="json", by_alias=True, exclude_unset=True)

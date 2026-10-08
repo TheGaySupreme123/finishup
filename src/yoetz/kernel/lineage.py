@@ -58,6 +58,7 @@ from yoetz.protocol.coverage import (
 from yoetz.protocol.errors import ProtocolValueError
 
 __all__ = [
+    "CHILD_SELF_VERIFIED_GAP",
     "ChildDependencySnapshot",
     "ChildFindingSnapshot",
     "ChildRollup",
@@ -85,6 +86,9 @@ _PROVENANCE_RESTRICTIONS: Final = frozenset(
     {"category_restricted", "never_send", "task_scope", "minimization", "authorization_missing"}
 )
 _MISSING: Final = object()
+# Issue #984: the same standing code the child's own readiness uses
+# (``closure_readiness.FINDING_SELF_VERIFIED_GAP``), so parent and child receipts agree.
+CHILD_SELF_VERIFIED_GAP: Final = "finding_self_verified"
 
 
 class LineageRollupState(str, Enum):  # noqa: UP042 - stable evaluator vocabulary
@@ -230,6 +234,8 @@ class ChildFindingSnapshot:
     resolved: bool
     resolution_event_id: EventId | None = None
     actionable: bool | None = None
+    # Issue #984 (ADR-034): the child agent self-verified this repair; Yoetz could not prove it.
+    self_verified: bool = False
 
     def __post_init__(self) -> None:
         try:
@@ -261,6 +267,10 @@ class ChildFindingSnapshot:
         if resolved is not (resolution is not None):
             raise _invalid()
         object.__setattr__(self, "resolution_event_id", resolution)
+        self_verified = _bool(self.self_verified)
+        if self_verified and (resolved or not actionable):
+            raise _invalid()
+        object.__setattr__(self, "self_verified", self_verified)
 
     @classmethod
     def from_recorded(cls, value: object) -> ChildFindingSnapshot:
@@ -275,6 +285,8 @@ class ChildFindingSnapshot:
         # The protocol may use ``resolution_event_id`` or the older explicit null spelling.  Both
         # map to the same closed domain field; an arbitrary alias is never accepted.
         raw_resolution = _field(value, "resolution_event_id")
+        # Absent (or null on a protocol model) means "not self-verified" (issue #984).
+        raw_self_verified = _field(value, "self_verified")
         if raw_actionable is _MISSING:
             # Actionability is service-stamped and may not be inferred from an untrusted
             # payload. Incomplete/old manifests become a named read gap at the adapter boundary.
@@ -287,6 +299,7 @@ class ChildFindingSnapshot:
             resolved=cast(bool, raw_resolved),
             resolution_event_id=cast(EventId | None, raw_resolution),
             actionable=cast(bool, raw_actionable),
+            self_verified=False if raw_self_verified is None else cast(bool, raw_self_verified),
         )
 
 
@@ -467,6 +480,8 @@ class ChildDependencySnapshot:
                     "actionable": item.actionable,
                     "resolved": item.resolved,
                     "resolution_event_id": item.resolution_event_id,
+                    # Present only when true so every earlier manifest digest is unchanged.
+                    **({"self_verified": True} if item.self_verified else {}),
                 }
                 for item in self.findings
             ],
@@ -559,6 +574,9 @@ class ChildRollup:
     manifest_event_id: EventId | None = None
     tested_manifest_ref: EventId | None = None
     later_manifest_ref: EventId | None = None
+    # Issue #984 (ADR-034): child findings the child agent self-verified. They are not parent
+    # work (never in ``finding_ids``), but they keep the parent from reading clean.
+    self_verified_finding_ids: tuple[FindingId, ...] = ()
 
     def __post_init__(self) -> None:
         try:
@@ -573,6 +591,10 @@ class ChildRollup:
         object.__setattr__(self, "manifest_event_id", _optional_event(self.manifest_event_id))
         object.__setattr__(self, "tested_manifest_ref", _optional_event(self.tested_manifest_ref))
         object.__setattr__(self, "later_manifest_ref", _optional_event(self.later_manifest_ref))
+        self_verified = _finding_ids(self.self_verified_finding_ids)
+        if set(self_verified) & set(self.finding_ids):
+            raise _invalid()
+        object.__setattr__(self, "self_verified_finding_ids", self_verified)
 
     @property
     def outcome(self) -> str:
@@ -580,7 +602,7 @@ class ChildRollup:
 
     @property
     def blocks_clean_completion(self) -> bool:
-        return self.state in {
+        return bool(self.self_verified_finding_ids) or self.state in {
             LineageRollupState.BLOCKED,
             LineageRollupState.OPEN_GAP,
             LineageRollupState.INCOMPLETE,
@@ -655,6 +677,13 @@ class LineageEvaluation:
         }
         return tuple(sorted(ids, key=str.encode))
 
+    @property
+    def self_verified_finding_ids(self) -> tuple[FindingId, ...]:
+        """Child findings carried as self-verified by the child agent (issue #984)."""
+
+        ids = {item for child in self.children for item in child.self_verified_finding_ids}
+        return tuple(sorted(ids, key=str.encode))
+
 
 def _snapshot_rollup(
     snapshot: ChildDependencySnapshot,
@@ -666,8 +695,16 @@ def _snapshot_rollup(
     gaps: list[LineageGap] = []
     read_gaps = set(snapshot.read_gap_reasons)
     restrictions = set(snapshot.provenance_restrictions)
+    # Issue #984 (ADR-034): a child's self-verified repair rolls up as "self-verified by the child
+    # agent; Yoetz could not prove it". It is not parent work, so it never enters the actionable
+    # set, but an accepted child carrying one never reads clean.
+    self_verified = tuple(
+        finding for finding in snapshot.findings if not finding.resolved and finding.self_verified
+    )
     unresolved_actionable = tuple(
-        finding for finding in snapshot.findings if not finding.resolved and finding.actionable
+        finding
+        for finding in snapshot.findings
+        if not finding.resolved and finding.actionable and not finding.self_verified
     )
     unresolved_informational = tuple(
         finding for finding in snapshot.findings if not finding.resolved and not finding.actionable
@@ -686,6 +723,9 @@ def _snapshot_rollup(
     # snapshot that still carries actionable work stays blocking on the branch below.
     annotation_only = (
         snapshot.acceptance is not LineageAcceptance.ACCEPTED and not invalid_rejection
+    )
+    self_verified_ids = (
+        () if annotation_only else tuple(finding.finding_id for finding in self_verified)
     )
 
     def note_blocker(token: str) -> None:
@@ -729,6 +769,16 @@ def _snapshot_rollup(
                 "lineage_child_actionable_finding",
                 snapshot.child_task_id,
                 tuple(sorted(finding_ids, key=str.encode)),
+                snapshot.manifest_event_id,
+            )
+        )
+    if self_verified_ids:
+        # A standing disclosure, not a blocker token: the parent agent has no action to take.
+        gaps.append(
+            LineageGap(
+                CHILD_SELF_VERIFIED_GAP,
+                snapshot.child_task_id,
+                tuple(sorted(self_verified_ids, key=str.encode)),
                 snapshot.manifest_event_id,
             )
         )
@@ -859,6 +909,10 @@ def _snapshot_rollup(
     elif blockers:
         # Coverage and verification blockers stay ahead of an informational annotation.
         state = LineageRollupState.OPEN_GAP
+    elif self_verified_ids:
+        # Not clean and not parent work: the receipt row shows each self-verified finding and
+        # ``blocks_clean_completion`` holds the parent at best at insufficient_coverage.
+        state = LineageRollupState.ANNOTATION
     elif unresolved_informational:
         # Informational findings stay on the receipt child row. They annotate a fully
         # verified terminal child and do not select unresolved_findings_remain. They never
@@ -877,6 +931,7 @@ def _snapshot_rollup(
         tested_manifest_ref=(
             None if state is LineageRollupState.UNAVAILABLE else snapshot.manifest_event_id
         ),
+        self_verified_finding_ids=tuple(sorted(self_verified_ids, key=str.encode)),
     )
     return rollup, tuple(gaps)
 

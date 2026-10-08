@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 
 import pytest
 
@@ -40,6 +40,7 @@ from yoetz.kernel.task_facts import (
     INSTALL_INTO_PRIVATE_ENV_GAP,
     INSTALL_INTO_YOETZ_RUNTIME_GAP,
     OBLIGATION_BLOCKED_GAP,
+    OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
     PLANNED_VERIFICATION_AGENT_LINKED_GAP,
     PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
@@ -58,7 +59,10 @@ from yoetz.kernel.task_facts import (
     RequestedOutputState,
     acting_started,
     blocked_obligations,
+    blocker_declarations,
+    confirmed_blocked_obligation_ids,
     cooperative_event_ids_from_records,
+    decision_batches,
     register_command_identity_key,
     requested_output_facts,
     task_fact_signals,
@@ -306,7 +310,17 @@ def test_description_suffixes_round_trip_with_tool_and_runner() -> None:
     assert observed_action_tool(plain) == "apply_patch"
 
 
-def _decision(ledger: ObservedLedger, statement: str, *obligations: ObligationId) -> None:
+_BATCHES = [0]
+
+
+def _decision(
+    ledger: ObservedLedger, statement: str, *obligations: ObligationId, batch: str | None = None
+) -> None:
+    """Append a decision in its own publish batch unless ``batch`` names one (#985)."""
+
+    if batch is None:
+        _BATCHES[0] += 1
+        batch = f"req_98500000-0000-4000-8000-{_BATCHES[0]:012d}"
     ledger.append(
         _DECISION_SCHEMA,
         DecisionRecordedPayload(
@@ -316,6 +330,21 @@ def _decision(ledger: ObservedLedger, statement: str, *obligations: ObligationId
             affected_obligation_ids=tuple(sorted(obligations)),
         ),
         observed=False,
+        operation=batch,
+    )
+
+
+def _batches(ledger: ObservedLedger) -> Mapping[EventId, str]:
+    return decision_batches(ledger.prefix)
+
+
+def _confirmed(ledger: ObservedLedger) -> frozenset[ObligationId]:
+    """What a deterministic case's task-fact markers say is confirmed blocked."""
+
+    prefix = ledger.prefix
+    markers = task_fact_signals(replay(prefix), prefix).markers
+    return confirmed_blocked_obligation_ids(
+        (code, () if obligation is None else (obligation,)) for code, obligation in markers
     )
 
 
@@ -329,12 +358,161 @@ def test_blocker_decision_is_honoured_only_for_closed_kinds() -> None:
     prefix = ledger.prefix
     projection = replay(prefix)
 
-    assert dict(blocked_obligations(projection)) == {_OBLIGATION: "credential"}
+    # #985: the first decision only claims the blocker; it is still agent work.
+    assert dict(blocked_obligations(projection, _batches(ledger))) == {}
+    [declaration] = blocker_declarations(projection, _batches(ledger)).values()
+    assert declaration.kind == "credential" and not declaration.confirmed
+    markers = set(task_fact_signals(projection, prefix).markers)
+    assert (OBLIGATION_BLOCKER_UNCONFIRMED_GAP, _OBLIGATION) in markers
+    assert (OBLIGATION_BLOCKED_GAP, _OBLIGATION) not in markers
+    # A claimed blocker suppresses nothing: the planned verification is still reported.
+    assert any(code.startswith("planned_verification") for code, _ in markers)
+
+    # The same line again in a later decision confirms it.
+    _decision(ledger, "Still blocked.\nyoetz-blocker:credential", _OBLIGATION)
+    prefix = ledger.prefix
+    projection = replay(prefix)
+    assert dict(blocked_obligations(projection, _batches(ledger))) == {_OBLIGATION: "credential"}
+    assert blocker_declarations(projection, _batches(ledger))[_OBLIGATION].confirmed
     markers = set(task_fact_signals(projection, prefix).markers)
     assert (OBLIGATION_BLOCKED_GAP, _OBLIGATION) in markers
+    assert (OBLIGATION_BLOCKER_UNCONFIRMED_GAP, _OBLIGATION) not in markers
     assert (OBLIGATION_BLOCKED_GAP, _OTHER) not in markers
-    # A blocked obligation's planned verification is not reported as missing.
+    # A confirmed blocked obligation's planned verification is not reported as missing.
     assert not any(code.startswith("planned_verification") for code, _ in markers)
+
+
+def test_a_kind_change_starts_a_new_claim_and_an_unrelated_obligation_confirms_nothing() -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, obligation=_OBLIGATION)
+    _planned(ledger, obligation=_OTHER)
+    _plan(ledger, _OBLIGATION, _OTHER)
+    _decision(ledger, "yoetz-blocker:authority", _OBLIGATION)
+    _decision(ledger, "yoetz-blocker:authority", _OTHER)
+    _decision(ledger, "yoetz-blocker:authority", _OBLIGATION)
+    projection = replay(ledger.prefix)
+    declarations = blocker_declarations(projection, _batches(ledger))
+    assert declarations[_OBLIGATION].confirmed
+    # _OTHER's own claim was never repeated; _OBLIGATION's confirmation does not reach it.
+    assert not declarations[_OTHER].confirmed
+
+    # A different kind resets the claim, even over a confirmed blocker: it must face its own
+    # challenge.
+    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    projection = replay(ledger.prefix)
+    declaration = blocker_declarations(projection, _batches(ledger))[_OBLIGATION]
+    assert (declaration.kind, declaration.confirmed) == ("consent", False)
+    assert dict(blocked_obligations(projection, _batches(ledger))) == {}
+    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    projection = replay(ledger.prefix)
+    declaration = blocker_declarations(projection, _batches(ledger))[_OBLIGATION]
+    assert (declaration.kind, declaration.confirmed) == ("consent", True)
+
+
+def _supersede(ledger: ObservedLedger, statement: str, superseded: EventId) -> EventId:
+    _BATCHES[0] += 1
+    return ledger.append(
+        _DECISION_SCHEMA,
+        DecisionRecordedPayload(
+            statement=statement,
+            rationale="Revised after the challenge.",
+            authority=actor_id("agt_codex"),
+            affected_obligation_ids=(_OBLIGATION,),
+            supersedes_event_id=superseded,
+        ),
+        observed=False,
+        operation=f"req_98500000-0000-4000-8000-{_BATCHES[0]:012d}",
+    )
+
+
+def _last_event(ledger: ObservedLedger) -> EventId:
+    return ledger.prefix[-1].event_id
+
+
+def test_superseding_the_claim_or_the_confirmation_resets_what_counts() -> None:
+    """#985: a superseded blocker decision no longer counts, whichever role it had."""
+
+    ledger = ObservedLedger()
+    _planned(ledger, obligation=_OBLIGATION)
+    _plan(ledger, _OBLIGATION)
+    _decision(ledger, "yoetz-blocker:credential", _OBLIGATION)
+    claim = _last_event(ledger)
+    # Superseding the claim with the same line makes the replacement the (unconfirmed) claim.
+    replacement = _supersede(ledger, "yoetz-blocker:credential", claim)
+    declaration = blocker_declarations(replay(ledger.prefix), _batches(ledger))[_OBLIGATION]
+    assert (declaration.decision_event_id, declaration.confirmed) == (replacement, False)
+
+    _decision(ledger, "yoetz-blocker:credential", _OBLIGATION)
+    confirmation = _last_event(ledger)
+    declaration = blocker_declarations(replay(ledger.prefix), _batches(ledger))[_OBLIGATION]
+    assert declaration.confirmation_event_id == confirmation
+
+    # Superseding the confirmation with a plain decision withdraws it: claimed again.
+    _supersede(ledger, "The credential arrived; the work continues.", confirmation)
+    projection = replay(ledger.prefix)
+    declaration = blocker_declarations(projection, _batches(ledger))[_OBLIGATION]
+    assert (declaration.decision_event_id, declaration.confirmed) == (replacement, False)
+    assert dict(blocked_obligations(projection, _batches(ledger))) == {}
+
+
+def test_two_back_to_back_publishes_confirm_because_the_first_result_carried_the_challenge() -> (
+    None
+):
+    """#985 (lead decision): later-batch semantics. The claimed notice in the first publish
+    result is the challenge, and no pre-claim text tells the agent how to confirm, so a second
+    publish right after it is the agent's answer to that challenge."""
+
+    from yoetz.kernel.task_facts import (
+        BLOCKER_NOTICE_CLAIMED,
+        BLOCKER_NOTICE_CONFIRMED,
+        blocker_publication_notices,
+    )
+
+    ledger = ObservedLedger()
+    _planned(ledger, obligation=_OBLIGATION)
+    _plan(ledger, _OBLIGATION)
+    payload = DecisionRecordedPayload(
+        statement="yoetz-blocker:authority",
+        rationale="Production deploy rights belong to the operator.",
+        authority=actor_id("agt_codex"),
+        affected_obligation_ids=(_OBLIGATION,),
+    )
+    first = ledger.append(
+        _DECISION_SCHEMA,
+        payload,
+        observed=False,
+        operation="req_98500000-0000-4000-8000-0000000009c1",
+    )
+    [notice] = blocker_publication_notices(replay(ledger.prefix), ((first, payload),))
+    assert notice.notice == BLOCKER_NOTICE_CLAIMED
+    second = ledger.append(
+        _DECISION_SCHEMA,
+        payload,
+        observed=False,
+        operation="req_98500000-0000-4000-8000-0000000009c2",
+    )
+    projection = replay(ledger.prefix)
+    [notice] = blocker_publication_notices(projection, ((second, payload),))
+    assert notice.notice == BLOCKER_NOTICE_CONFIRMED
+    assert blocker_declarations(projection, _batches(ledger))[_OBLIGATION].confirmed
+
+
+def test_a_blocker_naming_an_unknown_obligation_has_no_effect() -> None:
+    from yoetz.kernel.task_facts import BLOCKER_NOTICE_WITHOUT_EFFECT, blocker_publication_notices
+
+    ledger = ObservedLedger()
+    _planned(ledger, obligation=_OBLIGATION)
+    _plan(ledger, _OBLIGATION)
+    unknown = obligation_id("obl_00000000-0000-4000-8000-0000000009ff")
+    payload = DecisionRecordedPayload(
+        statement="yoetz-blocker:consent",
+        rationale="Named the wrong id.",
+        authority=actor_id("agt_codex"),
+        affected_obligation_ids=(unknown,),
+    )
+    event = ledger.append(_DECISION_SCHEMA, payload, observed=False)
+    [notice] = blocker_publication_notices(replay(ledger.prefix), ((event, payload),))
+    assert (notice.obligation_id, notice.notice) == (unknown, BLOCKER_NOTICE_WITHOUT_EFFECT)
 
 
 def test_readiness_turns_fully_blocked_open_obligations_into_a_disclosure() -> None:
@@ -353,13 +531,41 @@ def test_readiness_turns_fully_blocked_open_obligations_into_a_disclosure() -> N
     _decision(ledger, "yoetz-blocker:dependency_unavailable", _OTHER)
     prefix = ledger.prefix
     facts = closure_readiness_facts(replay(prefix), prefix)
-    blocked = derive_closure_readiness(
+    claimed = derive_closure_readiness(
         ("obligations_open",), (), facts, semantic_review_required=False
+    )
+    # #985 (C4): claimed blockers never turn readiness ready; the agent must repair or confirm.
+    assert claimed.state == "action_required"
+    assert "obligations_open" not in claimed.agent_actionable
+    assert claimed.agent_actionable == (OBLIGATION_BLOCKER_UNCONFIRMED_GAP, "check_not_recorded")
+    assert OBLIGATION_BLOCKED_GAP not in claimed.standing_limitations
+
+    # Confirming one of the two is not enough.
+    _decision(ledger, "yoetz-blocker:authority", _OBLIGATION)
+    prefix = ledger.prefix
+    facts = closure_readiness_facts(replay(prefix), prefix)
+    assert facts.confirmed_blocked_obligation_ids == (_OBLIGATION,)
+    half = derive_closure_readiness(
+        ("obligations_open",), (), facts, semantic_review_required=False
+    )
+    assert OBLIGATION_BLOCKER_UNCONFIRMED_GAP in half.agent_actionable
+    assert OBLIGATION_BLOCKED_GAP in half.standing_limitations
+
+    _decision(ledger, "yoetz-blocker:dependency_unavailable", _OTHER)
+    prefix = ledger.prefix
+    facts = closure_readiness_facts(replay(prefix), prefix)
+    blocked = derive_closure_readiness(
+        ("obligations_open",),
+        ("completion_plan_not_claimed",),
+        facts,
+        semantic_review_required=False,
     )
     assert "obligations_open" not in blocked.agent_actionable
     assert OBLIGATION_BLOCKED_GAP in blocked.standing_limitations
-    # Only the missing check remains: the blocked obligations are not agent work.
+    # Only the missing check remains: the confirmed blocked obligations are not agent work,
+    # and no completion claim can cover a plan whose every open obligation is blocked (C9).
     assert blocked.agent_actionable == ("check_not_recorded",)
+    assert "completion_plan_not_claimed" in blocked.standing_limitations
 
 
 def test_acting_starts_with_an_edit_a_published_action_or_a_verification_run() -> None:
@@ -443,7 +649,7 @@ def test_requested_output_facts_split_absent_from_gap_markers() -> None:
         (_OBLIGATION, 5): RequestedOutputState("unverified"),
         (_OBLIGATION, 6): RequestedOutputState("inside", exists=True, ignored=False, changed=True),
     }
-    absent, markers = requested_output_facts(projection, states)
+    absent, markers = requested_output_facts(projection, states, blocked=_confirmed(ledger))
     assert absent == ((_OBLIGATION, 0),)
     assert {code for code, _ in markers} == {
         REQUESTED_OUTPUT_GIT_IGNORED_GAP,
@@ -454,7 +660,15 @@ def test_requested_output_facts_split_absent_from_gap_markers() -> None:
     }
 
     _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
-    blocked_absent, blocked_markers = requested_output_facts(replay(ledger.prefix), states)
+    # #985: a claimed blocker suppresses nothing until a later decision confirms it.
+    assert requested_output_facts(replay(ledger.prefix), states, blocked=_confirmed(ledger)) == (
+        absent,
+        markers,
+    )
+    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    blocked_absent, blocked_markers = requested_output_facts(
+        replay(ledger.prefix), states, blocked=_confirmed(ledger)
+    )
     assert blocked_absent == ()
     assert blocked_markers == ()
 
@@ -485,15 +699,21 @@ def test_tb4v1_atrx_read_only_inputs_are_not_unchanged_outputs() -> None:
         for index in range(len(inputs))
     }
     states[(_OTHER, 0)] = RequestedOutputState("inside", exists=True, ignored=False, changed=True)
-    assert requested_output_facts(replay(ledger.prefix), states) == ((), ())
+    assert requested_output_facts(replay(ledger.prefix), states, blocked=_confirmed(ledger)) == (
+        (),
+        (),
+    )
 
     # Before the report exists it is still the receipt-blocking absent output.
     states[(_OTHER, 0)] = RequestedOutputState("inside", exists=False, ignored=False)
-    assert requested_output_facts(replay(ledger.prefix), states) == (((_OTHER, 0),), ())
+    assert requested_output_facts(replay(ledger.prefix), states, blocked=_confirmed(ledger)) == (
+        ((_OTHER, 0),),
+        (),
+    )
 
     # An item the record says was edited and that is still unchanged keeps the disclosure.
     _attempt(ledger, ActionKind.EDIT, inputs[1], number=903, obligations=(_OBLIGATION,))
-    _, markers = requested_output_facts(replay(ledger.prefix), states)
+    _, markers = requested_output_facts(replay(ledger.prefix), states, blocked=_confirmed(ledger))
     assert markers == ((REQUESTED_OUTPUT_UNCHANGED_GAP, _OBLIGATION),)
 
 
@@ -516,11 +736,14 @@ def test_tb4v1_heat_pump_inputs_outside_the_workspace_are_not_outputs() -> None:
     _attempt(ledger, ActionKind.RESEARCH, *packet, "/app/packet/claim_export.csv", number=904)
     states = {(_OBLIGATION, index): RequestedOutputState("outside") for index in range(3)}
     states[(_OTHER, 0)] = RequestedOutputState("outside")
-    assert requested_output_facts(replay(ledger.prefix), states) == ((), ())
+    assert requested_output_facts(replay(ledger.prefix), states, blocked=_confirmed(ledger)) == (
+        (),
+        (),
+    )
 
     # A global edit action covers every obligation that lists the value.
     _attempt(ledger, ActionKind.EDIT, "/app/packet/claim_export.csv", number=905)
-    _, markers = requested_output_facts(replay(ledger.prefix), states)
+    _, markers = requested_output_facts(replay(ledger.prefix), states, blocked=_confirmed(ledger))
     assert markers == ((REQUESTED_OUTPUT_OUTSIDE_WORKSPACE_GAP, _OTHER),)
 
     # An edit scoped to another obligation does not mark this one.
@@ -533,7 +756,7 @@ def test_tb4v1_heat_pump_inputs_outside_the_workspace_are_not_outputs() -> None:
         (_OBLIGATION, 0): RequestedOutputState("outside"),
         (_OTHER, 0): RequestedOutputState("outside"),
     }
-    _, markers = requested_output_facts(replay(scoped.prefix), both)
+    _, markers = requested_output_facts(replay(scoped.prefix), both, blocked=_confirmed(scoped))
     assert markers == ((REQUESTED_OUTPUT_OUTSIDE_WORKSPACE_GAP, _OTHER),)
 
 
@@ -547,7 +770,10 @@ def test_only_an_edit_action_marks_an_output_unchanged_or_outside(kind: ActionKi
     _plan(ledger, _OBLIGATION)
     _attempt(ledger, kind, "/elsewhere/a.txt", "a.txt", number=910)
     states = {(_OBLIGATION, 0): _UNCHANGED, (_OBLIGATION, 1): RequestedOutputState("outside")}
-    assert requested_output_facts(replay(ledger.prefix), states) == ((), ())
+    assert requested_output_facts(replay(ledger.prefix), states, blocked=_confirmed(ledger)) == (
+        (),
+        (),
+    )
 
 
 def test_ungated_output_facts_need_no_edit_and_matching_is_exact() -> None:
@@ -574,7 +800,9 @@ def test_ungated_output_facts_need_no_edit_and_matching_is_exact() -> None:
         (_OBLIGATION, 4): _UNCHANGED,
         (_OBLIGATION, 5): RequestedOutputState("inside", exists=False, ignored=False),
     }
-    absent, markers = requested_output_facts(replay(ledger.prefix), states)
+    absent, markers = requested_output_facts(
+        replay(ledger.prefix), states, blocked=_confirmed(ledger)
+    )
     assert absent == ((_OBLIGATION, 5),)
     assert {code for code, _ in markers} == {
         REQUESTED_OUTPUT_UNVERIFIED_GAP,
@@ -583,12 +811,16 @@ def test_ungated_output_facts_need_no_edit_and_matching_is_exact() -> None:
     }
 
     _attempt(ledger, ActionKind.EDIT, "/app/data/vep/", number=912)
-    _, markers = requested_output_facts(replay(ledger.prefix), states)
+    _, markers = requested_output_facts(replay(ledger.prefix), states, blocked=_confirmed(ledger))
     assert (REQUESTED_OUTPUT_UNCHANGED_GAP, _OBLIGATION) in markers
 
-    # A blocker on the obligation still suppresses every output fact, edited or not.
+    # A confirmed blocker on the obligation still suppresses every output fact, edited or not.
     _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
-    assert requested_output_facts(replay(ledger.prefix), states) == ((), ())
+    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    assert requested_output_facts(replay(ledger.prefix), states, blocked=_confirmed(ledger)) == (
+        (),
+        (),
+    )
 
 
 def test_every_task_fact_code_has_one_fixed_sentence() -> None:
@@ -901,3 +1133,62 @@ def test_a_placeholder_item_stays_unobservable_even_when_linked() -> None:
     parent = _observed_run(ledger, "python cracker.py data.bin", ResultOutcome.SUCCESS)
     _link(ledger, "python cracker.py <ciphertext_file>", parent, number=1)
     assert _codes(ledger) & _LINKED_GAPS == {PLANNED_VERIFICATION_UNOBSERVABLE_GAP}
+
+
+def test_only_a_later_publish_batch_confirms_a_blocker() -> None:
+    """#985: a reflexive double publish skips the publish-time challenge, so it never confirms."""
+
+    ledger = ObservedLedger()
+    _planned(ledger, obligation=_OBLIGATION)
+    _plan(ledger, _OBLIGATION)
+    batch = "req_98500000-0000-4000-8000-0000000009a1"
+    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION, batch=batch)
+    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION, batch=batch)
+    # Two identical lines in one decision are one claim as well.
+    _decision(ledger, "yoetz-blocker:consent\nyoetz-blocker:consent", _OBLIGATION, batch=batch)
+    projection = replay(ledger.prefix)
+    assert not blocker_declarations(projection, _batches(ledger))[_OBLIGATION].confirmed
+    assert dict(blocked_obligations(projection, _batches(ledger))) == {}
+    # Without the publish batches nothing is ever confirmed.
+    assert not blocker_declarations(projection, {})[_OBLIGATION].confirmed
+
+    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    projection = replay(ledger.prefix)
+    declaration = blocker_declarations(projection, _batches(ledger))[_OBLIGATION]
+    assert declaration.confirmed
+    assert dict(blocked_obligations(projection, _batches(ledger))) == {_OBLIGATION: "consent"}
+
+
+def test_publish_notices_challenge_a_first_claim_and_confirm_only_from_a_later_batch() -> None:
+    from yoetz.kernel.task_facts import (
+        BLOCKER_NOTICE_CLAIMED,
+        BLOCKER_NOTICE_CONFIRMED,
+        blocker_publication_notices,
+    )
+
+    ledger = ObservedLedger()
+    _planned(ledger, obligation=_OBLIGATION)
+    _planned(ledger, obligation=_OTHER)
+    _plan(ledger, _OBLIGATION, _OTHER)
+    payload = DecisionRecordedPayload(
+        statement="yoetz-blocker:authority",
+        rationale="Deploy rights are held by the operator.",
+        authority=actor_id("agt_codex"),
+        affected_obligation_ids=(_OBLIGATION,),
+    )
+    first = ledger.append(_DECISION_SCHEMA, payload, observed=False)
+    second = ledger.append(_DECISION_SCHEMA, payload, observed=False)
+    projection = replay(ledger.prefix)
+    # One batch carrying the line twice: still only claimed.
+    [notice] = blocker_publication_notices(projection, ((first, payload), (second, payload)))
+    assert notice.notice == BLOCKER_NOTICE_CLAIMED
+    # A later batch repeating it confirms the claim.
+    third = ledger.append(
+        _DECISION_SCHEMA,
+        payload,
+        observed=False,
+        operation="req_98500000-0000-4000-8000-0000000009b1",
+    )
+    projection = replay(ledger.prefix)
+    [notice] = blocker_publication_notices(projection, ((third, payload),))
+    assert notice.notice == BLOCKER_NOTICE_CONFIRMED

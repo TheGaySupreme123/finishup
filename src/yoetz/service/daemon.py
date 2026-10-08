@@ -12,7 +12,7 @@ import stat
 import struct
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -215,6 +215,7 @@ from yoetz.service.lifecycle import (
 from yoetz.service.loop_health import ControlPlaneWatchdog
 from yoetz.service.ready_composition import build_ready_application_factory
 from yoetz.service.secret_ingress import SecretIngressService
+from yoetz.service.session_routes import SESSION_ROUTE_FILE_NAME, SessionRouteMemory
 from yoetz.service.unlock import UnlockCoordinator, UnlockThrottleRecord, UnlockThrottleStore
 from yoetz.service.vault import VaultError, VaultMode, VaultService
 
@@ -689,6 +690,8 @@ class ServiceComposition:
     privacy_policy_app_relay: _PrivacyPolicyAppRelay | None = None
     auto_unlock_reason: str = "none"
     auto_unlock_bundle: Path | None = None
+    # Where the per-session MCP serving route is remembered (#985); ``None`` keeps it in memory.
+    session_route_path: Path | None = None
     maintenance_gate: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # Observation sweeps serialize one row at a time on this gate.  Keep it separate from the
     # installation-wide maintenance lease so a native capture can stage a content ticket while a
@@ -727,6 +730,8 @@ class ServiceDaemon:
         self._closed = False
         self._stopping = False
         self._state_reason = "none"
+        # The serving route each session's MCP bridge last named on a status or check (#985).
+        self._session_routes = SessionRouteMemory(_composition.session_route_path)
         # Composition is frozen; keep the live auto-unlock reason on the daemon so soft-lock
         # re-ready can update it without replacing the composition object.
         self._auto_unlock_reason = _composition.auto_unlock_reason
@@ -1375,11 +1380,12 @@ class ServiceDaemon:
             handler = getattr(application, request.method.value, None)
             if not callable(handler):
                 raise ControlError("method_forbidden")
+            routed = self._with_session_route(request)
             try:
                 if request.deadline_ms is None or detached_check:
                     internal = await self._invoke_ready_handler(
                         handler,
-                        request,
+                        routed,
                         repository_privacy_context,
                         observations_awaited=observations_awaited,
                     )
@@ -1387,7 +1393,7 @@ class ServiceDaemon:
                     async with asyncio.timeout(request.deadline_ms / 1_000):
                         internal = await self._invoke_ready_handler(
                             handler,
-                            request,
+                            routed,
                             repository_privacy_context,
                             observations_awaited=observations_awaited,
                         )
@@ -1408,6 +1414,8 @@ class ServiceDaemon:
                 if _request_is_read_only(request):
                     raise self._read_projection_failure(request, exc, phase="handler") from exc
                 raise
+            # Only a call the handler completed teaches the session's route (#985).
+            self._remember_session_route(request)
             # The handler has returned, so a write may already be durable. Everything below only
             # shapes the response; an unexpected failure there must not be reported as a failed
             # operation.
@@ -1424,6 +1432,40 @@ class ServiceDaemon:
         finally:
             if admission is not None:
                 await self._composition.lifecycle.release(admission)
+
+    def _with_session_route(self, request: ControlCallRequest) -> ControlCallRequest:
+        """Give a route-less ``status`` the route the session's own MCP bridge serves (#985).
+
+        The MCP bridge names its serving route (``policy`` or ``strict``) on every ``status`` and
+        ``check``; the Stop-hook closure gate and the CLI carry none, so they used to read the
+        policy route and could list ``semantic_review_not_requested`` as work the agent's strict
+        view never shows. ``SessionRouteMemory`` keeps the route the session's last successful
+        route-carrying call named (owner-only file in the service state directory, so it
+        survives a restart; last writer wins when two bridges serve one session), and a later
+        route-less ``status`` for the same session reads on it. A route-less ``check`` is never
+        changed: the route still decides what a check may dispatch. With nothing remembered the
+        read keeps the policy route.
+        """
+
+        if request.method is not ControlMethod.STATUS or request.route_profile is not None:
+            return request
+        session_id = getattr(request.body, "session_id", None)
+        if type(session_id) is not str:
+            return request
+        remembered = self._session_routes.get(session_id)
+        if remembered is None:
+            return request
+        return replace(request, route_profile=remembered)
+
+    def _remember_session_route(self, request: ControlCallRequest) -> None:
+        if request.route_profile is None or request.method not in {
+            ControlMethod.CHECK,
+            ControlMethod.STATUS,
+        }:
+            return
+        session_id = getattr(request.body, "session_id", None)
+        if type(session_id) is str:
+            self._session_routes.remember(session_id, request.route_profile)
 
     @staticmethod
     async def _invoke_ready_handler(
@@ -4513,6 +4555,7 @@ async def _production_composition(
             privacy_policy_app_relay=privacy_relay,
             auto_unlock_reason=auto_unlock_reason,
             auto_unlock_bundle=paths.bundle,
+            session_route_path=paths.state / SESSION_ROUTE_FILE_NAME,
             observation_gate=observation_gate,
         )
     except BaseException:

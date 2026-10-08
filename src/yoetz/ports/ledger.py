@@ -730,10 +730,10 @@ class CheckAdvisoryNote:
 
 
 FindingTodoStateWire = Literal[
-    "acknowledged_not_done", "open", "rejection_accepted", "verified_resolved"
+    "acknowledged_not_done", "open", "rejection_accepted", "self_verified", "verified_resolved"
 ]
 _TODO_STATES: Final = frozenset(
-    {"acknowledged_not_done", "open", "rejection_accepted", "verified_resolved"}
+    {"acknowledged_not_done", "open", "rejection_accepted", "self_verified", "verified_resolved"}
 )
 # The closed "next:" tokens of the finding checklist (issue #905).
 ChecklistNext = Literal["decide_at_budget", "request_receipt", "work_open_findings"]
@@ -798,6 +798,7 @@ class CheckFindingChecklist:
             self.counts.acknowledged_not_done,
             self.counts.rejection_accepted,
             self.counts.budget_reached,
+            self.counts.self_verified,
         ):
             _uint(value)
         total = (
@@ -805,6 +806,7 @@ class CheckFindingChecklist:
             + self.counts.verified_resolved
             + self.counts.acknowledged_not_done
             + self.counts.rejection_accepted
+            + self.counts.self_verified
         )
         if total < len(self.items) or self.counts.budget_reached > self.counts.open:
             raise _invalid()
@@ -1676,8 +1678,10 @@ class FindingsProjectionFilter:
             "none",
             "acknowledged",
             "acknowledged_not_done",
+            "duplicate_of",
             "provenance_disputed",
             "rejected",
+            "self_verified",
             "waived",
         ]
         | None
@@ -1701,8 +1705,10 @@ class FindingsProjectionFilter:
                 "none",
                 "acknowledged",
                 "acknowledged_not_done",
+                "duplicate_of",
                 "provenance_disputed",
                 "rejected",
+                "self_verified",
                 "waived",
             }
         ):

@@ -802,6 +802,7 @@ def build_version_manifest(*, include_optional_probes: bool = False) -> VersionM
                 in {
                     "check_recorded",
                     "claim_recorded",
+                    "obligation_published",
                     "plan_published",
                     "plan_revised",
                     "response_recorded",

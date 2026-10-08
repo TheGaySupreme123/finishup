@@ -79,6 +79,13 @@ _VALIDATION_POINTER: Final = re.compile(
 _MAX_NAMED_VALIDATION_LOCATIONS: Final = 2
 _SAFE_TOKEN: Final = re.compile(r"^[A-Za-z0-9_+.-]{1,128}$", re.ASCII)
 _GAP_CODE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
+# F3: the status summary names at most this many required limitation ids, then "+N more"; the
+# structured closure_readiness lists up to 64.
+_MAX_SUMMARY_LIMITATION_IDS: Final = 3
+_CLOSURE_CLAUSE_RESERVE: Final = 96
+_RESULT_REF: Final = re.compile(
+    r"^res_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.ASCII
+)
 _READINESS_ITEM: Final = re.compile(r"^(?:unclassified_gap:)?[a-z][a-z0-9_]{0,127}$", re.ASCII)
 _MISSING_REF: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", re.ASCII)
 # Closed shape for the frozen field and family tokens the repair clause may carry (issue #266).
@@ -172,7 +179,13 @@ def _identity_clause(envelope: Mapping[str, JsonValue]) -> str:
     return "; ".join(parts) + "; "
 
 
-_TODO_STATES: Final = ("open", "verified_resolved", "acknowledged_not_done", "rejection_accepted")
+_TODO_STATES: Final = (
+    "open",
+    "verified_resolved",
+    "acknowledged_not_done",
+    "rejection_accepted",
+    "self_verified",
+)
 _CHECKLIST_NEXT: Final = frozenset({"decide_at_budget", "request_receipt", "work_open_findings"})
 _BUDGET: Final = re.compile(r"^(?:[1-9]|[1-4][0-9]|50)$", re.ASCII)
 _ROUNDS: Final = re.compile(r"^(?:0|[1-9][0-9]{0,17})$", re.ASCII)
@@ -202,6 +215,7 @@ def _checklist_clause(rows: object, budget: object, next_step: object | None) ->
         return ""
     counts = dict.fromkeys(_TODO_STATES, 0)
     at_budget = 0
+    linked = 0
     budget_value = int(budget) if type(budget) is str and _BUDGET.fullmatch(budget) else None
     for raw in cast(Sequence[JsonValue], rows):
         if not isinstance(raw, Mapping):
@@ -213,6 +227,8 @@ def _checklist_clause(rows: object, budget: object, next_step: object | None) ->
         if type(state) is not str or state not in counts:
             continue
         counts[state] += 1
+        # Issue #996: a holding duplicate link; the row's state is its earlier finding's.
+        linked += is_valid_id(IdKind.FINDING, row.get("duplicate_of_finding_id"))
         rounds = row.get("review_rounds")
         if (
             state == "open"
@@ -229,11 +245,20 @@ def _checklist_clause(rows: object, budget: object, next_step: object | None) ->
         + (f" ({at_budget} at budget {budget_value})" if at_budget else "")
         + f", verified {counts['verified_resolved']}"
         + f", not done {counts['acknowledged_not_done']}"
-        + f", rejection accepted {counts['rejection_accepted']}; "
+        + f", rejection accepted {counts['rejection_accepted']}"
+        + _self_verified_part(counts["self_verified"])
+        + (f", linked duplicates {linked}" if linked else "")
+        + "; "
     )
     if type(next_step) is str and next_step in _CHECKLIST_NEXT:
         clause += f"next: {next_step}; "
     return clause
+
+
+def _self_verified_part(count: int) -> str:
+    """Issue #984: named only when present, so every earlier summary keeps its exact bytes."""
+
+    return f", self-verified {count}" if count else ""
 
 
 def _checklist_budget_cue(budget: object, next_step: object) -> str:
@@ -270,6 +295,13 @@ def _checklist_counts_clause(
         if type(raw) is not str or _ROUNDS.fullmatch(raw) is None:
             return ""
         values[key] = int(raw)
+    # Absent on a result an earlier build shaped (issue #984).
+    raw_self_verified = source.get("self_verified", "0")
+    self_verified = (
+        int(raw_self_verified)
+        if type(raw_self_verified) is str and _ROUNDS.fullmatch(raw_self_verified)
+        else 0
+    )
     budget_text = budget if type(budget) is str and _BUDGET.fullmatch(budget) else None
     clause = (
         f"to-do: open {values['open']}"
@@ -280,7 +312,9 @@ def _checklist_counts_clause(
         )
         + f", verified {values['verified_resolved']}"
         + f", not done {values['acknowledged_not_done']}"
-        + f", rejection accepted {values['rejection_accepted']}; "
+        + f", rejection accepted {values['rejection_accepted']}"
+        + _self_verified_part(self_verified)
+        + "; "
     )
     if type(next_step) is str and next_step in _CHECKLIST_NEXT:
         label = "finding checklist next" if input_action_required else "next"
@@ -488,6 +522,40 @@ def _bounded_list_clause(prefix: str, values: Sequence[str], *, byte_budget: int
     remaining = len(values) - len(selected)
     suffix = f"; +{remaining} more" if remaining else ""
     return f"{prefix}{', '.join(selected)}{suffix}; "
+
+
+def _limitation_refs_required_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
+    """Name the result ids a whole-task completion claim must list in ``limitation_refs`` (F3).
+
+    Ids and the service count only, so the first completion claim is accepted. A scoped claim
+    needs only those whose action names a claimed obligation or none.
+    """
+
+    readiness = source.get("closure_readiness")
+    if not isinstance(readiness, Mapping):
+        return ""
+    typed = cast(Mapping[str, JsonValue], readiness)
+    count = _safe_count(typed.get("limitation_refs_required_count"))
+    raw = typed.get("limitation_refs_required")
+    if count in {"unavailable", "0"} or not isinstance(raw, list | tuple):
+        return ""
+    values = tuple(
+        value
+        for value in cast(Sequence[object], raw)
+        if type(value) is str and _RESULT_REF.fullmatch(value) is not None
+    )
+    prefix = f"limitation_refs a whole-task completion claim must name ({count}): "
+    selected: list[str] = []
+    rendered = ""
+    for value in values[:_MAX_SUMMARY_LIMITATION_IDS]:
+        candidate = [*selected, value]
+        remaining = int(count) - len(candidate)
+        suffix = f"; +{remaining} more" if remaining > 0 else ""
+        clause = f"{prefix}{', '.join(candidate)}{suffix}; "
+        if len(clause.encode("ascii")) > byte_budget:
+            break
+        selected, rendered = candidate, clause
+    return rendered
 
 
 def _obligation_ids_from_status(source: Mapping[str, JsonValue], view: str) -> tuple[str, ...]:
@@ -943,8 +1011,10 @@ def _validation_location_clause(error: Mapping[str, JsonValue]) -> str:
 
 _RESULT_OUTCOME_POINTER: Final = re.compile(r"\A/event_drafts/[0-9]{1,3}/payload/outcome\Z")
 _RESULT_OUTCOME_HINT: Final = (
-    " Outcomes: success|failure|partial|unknown (no blocked): record failure or partial, and a"
-    " blocker outside your control as decision_recorded with the line yoetz-blocker:<kind>."
+    " Outcomes: success|failure|partial|unknown (no blocked): record failure or partial, then"
+    " repair. A Yoetz limit is never a blocker (respond self_verified), nor a guess or a check"
+    " you cannot run (yoetz-assumption: or yoetz-verification-limit:<obl id>); yoetz-blocker:<kind>"
+    " is only for an open obligation genuinely blocked outside your control."
 )
 
 
@@ -1245,6 +1315,20 @@ def _status_freshness(
     return "unavailable"
 
 
+def _acknowledged_obligations_clause(source: Mapping[str, JsonValue]) -> str:
+    """#997: obligations acknowledged as not done, never part of the open count."""
+
+    readiness = source.get("closure_readiness")
+    if not isinstance(readiness, Mapping):
+        return ""
+    count = _safe_count(
+        cast(Mapping[str, JsonValue], readiness).get("acknowledged_obligation_count")
+    )
+    if count in {"unavailable", "0"}:
+        return ""
+    return f"acknowledged not done (not open): {count}; "
+
+
 def _compact_status_fields(source: Mapping[str, JsonValue], view: str) -> tuple[str, str, str, str]:
     item = _first_page_item(source)
     readiness = source.get("closure_readiness")
@@ -1330,7 +1414,7 @@ def summary_for_status(envelope: object) -> str:
     gaps = _item_count(source.get("gaps"))
     prefix = (
         f"Status view: {view}; {_frontier_clause(source)}; freshness: {freshness}; "
-        f"open obligations: {obligations}; "
+        f"open obligations: {obligations}; " + _acknowledged_obligations_clause(source)
     )
     prefix = _with_room(prefix, _compact_test_edit_clause(source, view))
     prefix = _with_room(prefix, _credential_heuristic_clause(source))
@@ -1356,14 +1440,22 @@ def summary_for_status(envelope: object) -> str:
         f"unanswered findings: {unanswered}; "
         f"receipt-blocking findings: {receipt_blocking}; reported gaps: {gaps}."
     )
+    # F3: the ids a first completion claim must disclose get room before the closure clause,
+    # which shrinks to its shorter variants; a reserve keeps the closure state named.
+    clause = _limitation_refs_required_clause(
+        source,
+        byte_budget=_MAX_SUMMARY_BYTES
+        - len((prefix + suffix).encode("ascii"))
+        - _CLOSURE_CLAUSE_RESERVE,
+    )
     suffix += _closure_clause(
-        source, byte_budget=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
+        source, byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii"))
     )
     obligation_ids = _obligation_ids_from_status(source, view)
-    clause = _bounded_list_clause(
+    clause += _bounded_list_clause(
         "obligation IDs: ",
         obligation_ids,
-        byte_budget=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii")),
+        byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
     )
     if view == "findings":
         clause += _bounded_list_clause(
@@ -1798,6 +1890,58 @@ def _summary_for_other_success(source: Mapping[str, JsonValue]) -> str:
             f"{identity}{_frontier_clause(source)}."
         )
     return _bounded(f"Operation outcome: {outcome}; {identity}{_frontier_clause(source)}.")
+
+
+_OBLIGATION_ID: Final = re.compile(
+    r"^obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.ASCII
+)
+_MAX_RENDERED_BLOCKER_NOTICES: Final = 8
+_BLOCKER_KINDS: Final = frozenset({"authority", "consent", "credential", "dependency_unavailable"})
+
+
+def render_publish_blocker_notices(envelope: object) -> str:
+    """Render a publish result's yoetz-blocker notices as model-visible text (#985).
+
+    Only rows whose closed code, kind and obligation id validate, and whose text is exactly the
+    fixed repository text for that code, are rendered; anything else renders nothing. One line
+    per notice code, naming the obligations it covers.
+    """
+
+    from yoetz.protocol.models import PUBLISH_BLOCKER_NOTICE_TEXTS
+
+    source = _mapping(envelope)
+    rows = source.get("blocker_notices")
+    if not isinstance(rows, Sequence) or isinstance(rows, str):
+        return ""
+    grouped: dict[str, list[str]] = {}
+    for row in cast(Sequence[JsonValue], rows):
+        if not isinstance(row, Mapping):
+            return ""
+        item = cast(Mapping[str, JsonValue], row)
+        notice, kind, obligation, text = (
+            item.get("notice"),
+            item.get("blocker_kind"),
+            item.get("obligation_id"),
+            item.get("text"),
+        )
+        if (
+            type(notice) is not str
+            or notice not in PUBLISH_BLOCKER_NOTICE_TEXTS
+            or text != PUBLISH_BLOCKER_NOTICE_TEXTS[notice]
+            or kind not in _BLOCKER_KINDS
+            or type(obligation) is not str
+            or _OBLIGATION_ID.fullmatch(obligation) is None
+        ):
+            return ""
+        grouped.setdefault(notice, []).append(f"{obligation} ({kind})")
+    lines: list[str] = []
+    for notice in sorted(grouped):
+        named = grouped[notice]
+        listed = ", ".join(named[:_MAX_RENDERED_BLOCKER_NOTICES])
+        hidden = len(named) - _MAX_RENDERED_BLOCKER_NOTICES
+        more = f" (+{hidden} more)" if hidden > 0 else ""
+        lines.append(f"Blocker notice for {listed}{more}: {PUBLISH_BLOCKER_NOTICE_TEXTS[notice]}")
+    return "\n".join(lines)
 
 
 def render_safe_compact_summary(envelope: object) -> str:

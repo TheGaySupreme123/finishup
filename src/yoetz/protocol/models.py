@@ -1345,7 +1345,7 @@ _CHILD_FINDING_TRAITS: Final[Mapping[str, tuple[int, bool]]] = MappingProxyType(
 
 
 class ChildFindingSnapshotModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"resolution_event_id"})
+    optional_non_null_fields = frozenset({"resolution_event_id", "self_verified"})
 
     finding_id: FindingIdWire
     kind: Literal[
@@ -1372,6 +1372,8 @@ class ChildFindingSnapshotModel(_ClosedModel):
     actionable: bool
     resolved: bool
     resolution_event_id: EventIdWire | None = None
+    # Issue #984: present (and true) only for a repair the child agent self-verified.
+    self_verified: Literal[True] | None = None
 
     @model_validator(mode="after")
     def _validate_child_finding_snapshot(self) -> ChildFindingSnapshotModel:
@@ -1381,6 +1383,8 @@ class ChildFindingSnapshotModel(_ClosedModel):
         if self.actionable != expected_actionable:
             raise ValueError("child_finding_actionable_mismatch")
         if self.resolved != (self.resolution_event_id is not None):
+            raise ValueError("child_finding_resolution_mismatch")
+        if self.self_verified and (self.resolved or not self.actionable):
             raise ValueError("child_finding_resolution_mismatch")
         return self
 
@@ -1695,7 +1699,7 @@ class CheckRequestModel(PublicRequestModel):
 
 class RespondRequestModel(PublicRequestModel):
     optional_non_null_fields = frozenset(
-        {"reason", "waiver_scope", "waiver_expiry", "evidence_refs"}
+        {"reason", "waiver_scope", "waiver_expiry", "evidence_refs", "duplicate_of_finding_id"}
     )
 
     session_id: SessionIdWire
@@ -1704,12 +1708,20 @@ class RespondRequestModel(PublicRequestModel):
     finding_id: FindingIdWire
     finding_frontier: FrontierModel
     disposition: Literal[
-        "acknowledged", "acknowledged_not_done", "provenance_disputed", "rejected", "waived"
+        "acknowledged",
+        "acknowledged_not_done",
+        "duplicate_of",
+        "provenance_disputed",
+        "rejected",
+        "self_verified",
+        "waived",
     ]
     reason: String1To4096 | None = None
     waiver_scope: Literal["finding_only"] | None = None
     waiver_expiry: TimestampWire | None = None
     evidence_refs: tuple[EvidenceOrResultIdWire, ...] | None = None
+    # Issue #996: the earlier finding a ``duplicate_of`` answer links to; only with it.
+    duplicate_of_finding_id: FindingIdWire | None = None
 
     @model_validator(mode="after")
     def _validate_respond_request(self) -> RespondRequestModel:
@@ -1760,9 +1772,11 @@ class StatusFindingsFilterModel(_ClosedModel):
         Literal[
             "acknowledged",
             "acknowledged_not_done",
+            "duplicate_of",
             "none",
             "provenance_disputed",
             "rejected",
+            "self_verified",
             "waived",
         ]
         | None
@@ -2109,8 +2123,10 @@ class ClosureSelectionModel(_ClosedModel):
         Literal[
             "acknowledged",
             "acknowledged_not_done",
+            "duplicate_of",
             "provenance_disputed",
             "rejected",
+            "self_verified",
             "waived",
         ]
         | None
@@ -2687,6 +2703,55 @@ class PublishWorkVersionSliceModel(_ClosedModel):
         return self
 
 
+# Issue #985 (C2b/C3): fixed, closed publish-time texts for a ``yoetz-blocker`` line, selected by
+# the notice code. They carry no caller value; the obligation id and kind ride beside them.
+PUBLISH_BLOCKER_NOTICE_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "blocker_claimed": (
+            "Yoetz challenges this yoetz-blocker before it counts. Repair the obligation first if"
+            " any route remains. A Yoetz limit (something Yoetz cannot show or prove) is never a"
+            " blocker: verify that work yourself and respond self_verified on the finding. Data"
+            " or an outcome the task says is recoverable or achievable is not a blocker, and"
+            " neither is an inherent verification limit (a hidden verifier, a private trace) or"
+            " a best-effort choice: finish the work and disclose it with a decision line"
+            " yoetz-assumption:<obligation id> or yoetz-verification-limit:<obligation id>. Keep a"
+            " blocker only for an open obligation genuinely blocked outside your control"
+            " (authority, consent, a credential, a dependency you cannot obtain). Until then the"
+            " obligation stays your work (obligation_blocker_unconfirmed). If it is still genuine"
+            " after you re-read the task and tried the obvious prerequisite, confirm it: publish"
+            " the same yoetz-blocker line for it again in a later publish_work call."
+        ),
+        "blocker_confirmed": (
+            "This yoetz-blocker is confirmed: the obligation is disclosed as blocked outside your"
+            " control (obligation_blocked_outside_agent_control), not done. Yoetz did not verify"
+            " the claim; say so in your final answer, and supersede the decision if the"
+            " obligation becomes doable."
+        ),
+        "blocker_without_effect": (
+            "This yoetz-blocker has no effect: the obligation it names is not open, and a blocker"
+            " only applies to open obligations. If a finding stays unresolved because Yoetz cannot"
+            " prove your repair (a Yoetz limit), verify it yourself and respond self_verified;"
+            " respond acknowledged_not_done only as a last resort, for work you will not do."
+        ),
+    }
+)
+
+
+class PublishWorkBlockerNoticeModel(_ClosedModel):
+    """One publish-time notice for a ``yoetz-blocker`` line (#985): closed code and fixed text."""
+
+    obligation_id: ObligationIdWire
+    blocker_kind: Literal["authority", "consent", "credential", "dependency_unavailable"]
+    notice: Literal["blocker_claimed", "blocker_confirmed", "blocker_without_effect"]
+    text: str
+
+    @model_validator(mode="after")
+    def _validate_fixed_text(self) -> PublishWorkBlockerNoticeModel:
+        if self.text != PUBLISH_BLOCKER_NOTICE_TEXTS[self.notice]:
+            raise ValueError("publish_blocker_notice_text_mismatch")
+        return self
+
+
 class PublishWorkSuccessModel(_ClosedModel):
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
@@ -2704,6 +2769,10 @@ class PublishWorkSuccessModel(_ClosedModel):
     gaps: tuple[CodeWire, ...]
     versions: PublishWorkVersionSliceModel
     privacy_projection: PrivacyProjectionModel
+    # Issue #985: present only when the batch carried a yoetz-blocker line Yoetz has a notice for.
+    blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
+
+    optional_non_null_fields = frozenset({"blocker_notices"})
 
     @model_validator(mode="after")
     def _validate_publish_success(self) -> PublishWorkSuccessModel:
@@ -2711,6 +2780,7 @@ class PublishWorkSuccessModel(_ClosedModel):
             raise ValueError("accepted_event_count_invalid")
         _require_unique(self.warning_codes, limit=1)
         _require_unique(self.gaps, limit=64)
+        _validate_blocker_notices(self.blocker_notices)
         _validate_model_against_schema(self, "publish-work-result")
         return self
 
@@ -2795,6 +2865,10 @@ class PublishWorkDryRunModel(_ClosedModel):
     would_accept: tuple[PublishWorkDryRunPreviewEventModel, ...]
     coverage: CoverageModel
     gaps: tuple[CodeWire, ...]
+    # Issue #985: the same publish-time blocker notices a real publish would return.
+    blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
+
+    optional_non_null_fields = frozenset({"blocker_notices"})
 
     @model_validator(mode="after")
     def _validate_publish_dry_run(self) -> PublishWorkDryRunModel:
@@ -2803,8 +2877,17 @@ class PublishWorkDryRunModel(_ClosedModel):
         if self.subject_frontier != self.result_frontier:
             raise ValueError("dry_run_frontier_moved")
         _require_unique(self.gaps, limit=64)
+        _validate_blocker_notices(self.blocker_notices)
         _validate_model_against_schema(self, "publish-work-result")
         return self
+
+
+def _validate_blocker_notices(notices: tuple[PublishWorkBlockerNoticeModel, ...] | None) -> None:
+    if notices is None:
+        return
+    if not 1 <= len(notices) <= 64:
+        raise ValueError("publish_blocker_notice_count_invalid")
+    _require_unique(tuple((item.obligation_id, item.blocker_kind) for item in notices), limit=64)
 
 
 def _publish_work_result_kind(value: object) -> str:
@@ -3367,6 +3450,7 @@ class CheckChecklistCountsModel(_ClosedModel):
     open: CanonicalUInt64Wire
     open_at_budget: CanonicalUInt64Wire
     rejection_accepted: CanonicalUInt64Wire
+    self_verified: CanonicalUInt64Wire
     verified_resolved: CanonicalUInt64Wire
 
 
@@ -3636,36 +3720,56 @@ class RespondEvidenceSummaryModel(_ClosedModel):
 
 
 class RespondResponseModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"reason", "waiver_scope", "waiver_expiry"})
+    optional_non_null_fields = frozenset(
+        {"reason", "waiver_scope", "waiver_expiry", "duplicate_of_finding_id"}
+    )
 
     response_event_id: EventIdWire
     finding_id: FindingIdWire
     finding_frontier: FrontierModel
     disposition: Literal[
-        "acknowledged", "acknowledged_not_done", "provenance_disputed", "rejected", "waived"
+        "acknowledged",
+        "acknowledged_not_done",
+        "duplicate_of",
+        "provenance_disputed",
+        "rejected",
+        "self_verified",
+        "waived",
     ]
     evidence: tuple[RespondEvidenceSummaryModel, ...]
     reason: String1To4096 | OmittedContentModel | None = None
     waiver_scope: Literal["finding_only"] | None = None
     waiver_expiry: TimestampWire | None = None
+    duplicate_of_finding_id: FindingIdWire | None = None
 
     @model_validator(mode="after")
     def _validate_response_fields(self) -> RespondResponseModel:
         if len(self.evidence) > 64:
             raise ValueError("response_evidence_limit")
+        # Issue #996: the link target is present exactly on a ``duplicate_of`` answer.
+        if (self.disposition == "duplicate_of") != (
+            self.duplicate_of_finding_id is not None
+        ) or self.duplicate_of_finding_id == self.finding_id:
+            raise ValueError("response_fields_invalid")
         if (
             isinstance(self.reason, OmittedContentModel)
             and self.reason.category is not DataCategory.FINDING_SUMMARY
         ):
             raise ValueError("reason_omission_category_invalid")
-        if self.disposition == "acknowledged":
+        if self.disposition in {"acknowledged", "duplicate_of"}:
             if self.waiver_scope is not None or self.waiver_expiry is not None:
                 raise ValueError("response_fields_invalid")
-        elif self.disposition in {"acknowledged_not_done", "provenance_disputed", "rejected"}:
+        elif self.disposition in {
+            "acknowledged_not_done",
+            "provenance_disputed",
+            "rejected",
+            "self_verified",
+        }:
             if (
                 self.reason is None
                 or self.waiver_scope is not None
                 or self.waiver_expiry is not None
+                or (self.disposition == "self_verified" and not self.evidence)
             ):
                 raise ValueError("response_fields_invalid")
         elif self.reason is None or self.waiver_scope != "finding_only":
@@ -4014,14 +4118,14 @@ class StatusEvidencePageModel(_ClosedModel):
 
 
 FindingTodoStateLiteral = Literal[
-    "acknowledged_not_done", "open", "rejection_accepted", "verified_resolved"
+    "acknowledged_not_done", "open", "rejection_accepted", "self_verified", "verified_resolved"
 ]
 
 
 class StatusFindingItemModel(_ClosedModel):
     # Issue #905 to-do facts: present on every current row, absent only on older recordings.
     optional_non_null_fields = frozenset(
-        {"challenge", "todo_state", "review_rounds", "finding_frontier"}
+        {"challenge", "todo_state", "review_rounds", "finding_frontier", "duplicate_of_finding_id"}
     )
 
     finding_id: FindingIdWire
@@ -4039,9 +4143,11 @@ class StatusFindingItemModel(_ClosedModel):
     disposition: Literal[
         "acknowledged",
         "acknowledged_not_done",
+        "duplicate_of",
         "none",
         "provenance_disputed",
         "rejected",
+        "self_verified",
         "waived",
     ]
     resolved: bool
@@ -4056,6 +4162,10 @@ class StatusFindingItemModel(_ClosedModel):
     # (sequence plus that event's head digest), for every origin. ``respond`` accepts it
     # as ``finding_frontier`` as-is, so no historical frontier has to be reconstructed.
     finding_frontier: FrontierModel | None = None
+    # Issue #996: the earlier finding this one is linked to, present exactly while its
+    # ``duplicate_of`` link holds; ``todo_state`` is then derived from that finding. A
+    # ``duplicate_of`` row without it is a link a later check broke: it needs its own answer.
+    duplicate_of_finding_id: FindingIdWire | None = None
 
     @model_validator(mode="after")
     def _validate_finding_item(self) -> StatusFindingItemModel:
@@ -4082,6 +4192,21 @@ class StatusFindingItemModel(_ClosedModel):
             or self.waiver_expiry is not None
         ):
             raise ValueError("acknowledged_not_done_finding_state_invalid")
+        if self.disposition == "self_verified" and (
+            self.reason is None
+            or self.resolved
+            or self.waiver_scope is not None
+            or self.waiver_expiry is not None
+        ):
+            raise ValueError("self_verified_finding_state_invalid")
+        if self.duplicate_of_finding_id is not None and (
+            self.disposition != "duplicate_of" or self.duplicate_of_finding_id == self.finding_id
+        ):
+            raise ValueError("duplicate_of_finding_state_invalid")
+        if self.disposition == "duplicate_of" and (
+            self.waiver_scope is not None or self.waiver_expiry is not None
+        ):
+            raise ValueError("duplicate_of_finding_state_invalid")
         return self
 
 
@@ -4214,6 +4339,22 @@ class StatusBlockedObligationModel(_ClosedModel):
     obligation_id: ObligationIdWire
     blocker_kind: Literal["authority", "consent", "credential", "dependency_unavailable"]
     decision_event_id: EventIdWire
+    # Issue #985. ``claimed``: only the first decision names it, so it is still agent work
+    # (``obligation_blocker_unconfirmed``); ``confirmed``: a later decision repeated the same
+    # blocker line (``confirmation_event_id``). Optional on the unreleased 1.4.0 wire: an earlier
+    # 0.3 build omits both, and absence never means confirmed.
+    confirmation: Literal["claimed", "confirmed"] | None = None
+    confirmation_event_id: EventIdWire | None = None
+
+    optional_non_null_fields = frozenset({"confirmation", "confirmation_event_id"})
+
+    @model_validator(mode="after")
+    def _validate_blocker_confirmation(self) -> StatusBlockedObligationModel:
+        if (self.confirmation == "confirmed") != (self.confirmation_event_id is not None):
+            raise ValueError("closure_readiness_blocker_confirmation_mismatch")
+        if self.confirmation_event_id == self.decision_event_id:
+            raise ValueError("closure_readiness_blocker_confirmation_mismatch")
+        return self
 
 
 class StatusCredentialHeuristicModel(_ClosedModel):
@@ -4267,7 +4408,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     # on the unreleased 1.4.0 wire so a result shaped by an earlier 0.3 build still validates; it
     # is then absent as a whole, never partially present and never null.
     state: Literal["action_required", "ready", "ready_with_limitations", "unknown"] | None = None
-    gap_classification_version: Literal["1", "2"] | None = None
+    gap_classification_version: Literal["1", "2", "3", "4"] | None = None
     agent_actionable: tuple[ReadinessItemWire, ...] | None = None
     standing_limitations: tuple[CodeWire, ...] | None = None
     acknowledged_not_done: tuple[AcknowledgedItemIdWire, ...] | None = None
@@ -4275,9 +4416,19 @@ class StatusClosureReadinessModel(_ClosedModel):
     # Open obligations a recorded blocker decision names (#977). Optional on the unreleased 1.4.0
     # wire: an earlier 0.3 build omits it, and absence never means "nothing is blocked".
     blocked_obligations: tuple[StatusBlockedObligationModel, ...] | None = None
+    # F3: result ids a whole-task completion claim recorded now must name in ``limitation_refs``
+    # (the reducer's rule; sorted, first 64) and their full count. Optional on the unreleased
+    # 1.4.0 wire, present together; absence never means "nothing is required".
+    limitation_refs_required: tuple[ResultIdWire, ...] | None = None
+    limitation_refs_required_count: CanonicalUInt64Wire | None = None
+    # #997: how many obligations are acknowledged as not done (not truncated, unlike
+    # ``acknowledged_not_done``). ``open_obligation_count`` never includes them. Optional on
+    # the unreleased 1.4.0 wire; absent from an earlier 0.3 build.
+    acknowledged_obligation_count: CanonicalUInt64Wire | None = None
 
     optional_non_null_fields = frozenset(
         {
+            "acknowledged_obligation_count",
             "state",
             "gap_classification_version",
             "agent_actionable",
@@ -4285,12 +4436,24 @@ class StatusClosureReadinessModel(_ClosedModel):
             "acknowledged_not_done",
             "acknowledged_not_done_count",
             "blocked_obligations",
+            "limitation_refs_required",
+            "limitation_refs_required_count",
         }
     )
 
     @model_validator(mode="after")
     def _validate_closure_readiness(self) -> StatusClosureReadinessModel:
         _require_unique(self.blocking_conditions, limit=8)
+        if (self.limitation_refs_required is None) != (self.limitation_refs_required_count is None):
+            raise ValueError("closure_readiness_limitation_refs_partial")
+        if self.limitation_refs_required is not None:
+            _require_unique(self.limitation_refs_required, limit=64)
+            if len(self.limitation_refs_required) != min(
+                int(cast(str, self.limitation_refs_required_count)), 64
+            ) or self.limitation_refs_required != tuple(
+                sorted(self.limitation_refs_required, key=str.encode)
+            ):
+                raise ValueError("closure_readiness_limitation_refs_mismatch")
         if self.blocked_obligations is not None:
             _require_unique(
                 tuple(item.obligation_id for item in self.blocked_obligations), limit=64
@@ -4394,9 +4557,23 @@ class StatusClosureReadinessModel(_ClosedModel):
         blocked_rows = self.blocked_obligations
         open_count = None if self.open_obligation_count is None else int(self.open_obligation_count)
         if "obligations_open" in self.blocking_conditions and "obligations_open" not in actionable:
-            if "obligation_blocked_outside_agent_control" not in standing or (
+            # Replaced by a confirmed blocker (standing) or a claimed one still to confirm (#985),
+            # or the open count includes obligations acknowledged as not done (#997).
+            # #997: the untruncated count when present; the id list (64, findings sort first)
+            # only as a fallback for an earlier 0.3 build.
+            acknowledged_obligations = (
+                int(self.acknowledged_obligation_count) > 0
+                if self.acknowledged_obligation_count is not None
+                else any(item.startswith("obl_") for item in acknowledged_ids)
+            )
+            if (
+                "obligation_blocked_outside_agent_control" not in standing
+                and "obligation_blocker_unconfirmed" not in actionable
+                and not acknowledged_obligations
+            ) or (
                 blocked_rows is not None
                 and open_count is not None
+                and not acknowledged_obligations
                 and len(blocked_rows) != min(open_count, 64)
             ):
                 raise ValueError("closure_readiness_actionable_condition_mismatch")
@@ -4641,6 +4818,8 @@ class StatusAdvicePageModel(_ClosedModel):
 class StatusLineageChildModel(_ClosedModel):
     """One direct child in the bounded lineage projection."""
 
+    optional_non_null_fields = frozenset({"self_verified_finding_count"})
+
     task_id: TaskIdWire
     parent_task_id: TaskIdWire
     origin: LineageOriginWire
@@ -4650,6 +4829,9 @@ class StatusLineageChildModel(_ClosedModel):
     depth: CanonicalPositiveUInt64Wire
     rollup_state: LineageRollupStateWire
     blocking_conditions: tuple[CodeWire, ...]
+    # Issue #984 (S2): how many of an accepted child's findings its agent self-verified; present
+    # only when positive. The parent receipt is then at best insufficient_coverage.
+    self_verified_finding_count: CanonicalPositiveUInt64Wire | None = None
 
     @model_validator(mode="after")
     def _validate_lineage_child(self) -> StatusLineageChildModel:
@@ -5647,6 +5829,11 @@ _PUBLISH_STRUCTURAL_POINTERS: Final = (
             "schema_version",
         ),
     )
+    # #985: service-minted ids, closed codes and fixed repository text only.
+    + _prefix_leaf_patterns(
+        "/blocker_notices/*",
+        ("blocker_kind", "notice", "obligation_id", "text"),
+    )
 )
 
 _CHECK_STRUCTURAL_POINTERS: Final = (
@@ -5704,6 +5891,7 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         "/finding_checklist/counts/open",
         "/finding_checklist/counts/open_at_budget",
         "/finding_checklist/counts/rejection_accepted",
+        "/finding_checklist/counts/self_verified",
         "/finding_checklist/counts/verified_resolved",
         "/finding_checklist/items/*/finding_id",
         "/finding_checklist/items/*/review_rounds",
@@ -5831,7 +6019,14 @@ _RESPOND_STRUCTURAL_POINTERS: Final = (
     )
     + _prefix_leaf_patterns(
         "/response",
-        ("disposition", "finding_id", "response_event_id", "waiver_expiry", "waiver_scope"),
+        (
+            "disposition",
+            "duplicate_of_finding_id",
+            "finding_id",
+            "response_event_id",
+            "waiver_expiry",
+            "waiver_scope",
+        ),
     )
     + _prefix_leaf_patterns("/response/finding_frontier", FRONTIER_LEAVES)
     + _prefix_leaf_patterns("/response/evidence/*", ("reference_id",))
@@ -5888,6 +6083,13 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "blocked_obligations/*/obligation_id",
             "blocked_obligations/*/blocker_kind",
             "blocked_obligations/*/decision_event_id",
+            "blocked_obligations/*/confirmation",
+            "blocked_obligations/*/confirmation_event_id",
+            # F3: service-minted result ids and their count only.
+            "limitation_refs_required/*",
+            "limitation_refs_required_count",
+            # #997: a count only.
+            "acknowledged_obligation_count",
         ),
     )
     # Closed state tokens only (issue #982).
@@ -6047,6 +6249,7 @@ _STATUS_FINDINGS_STRUCTURAL_POINTERS: Final = (
         "/page/items/*",
         (
             "disposition",
+            "duplicate_of_finding_id",
             "finding_id",
             "kind",
             "origin",
@@ -6228,6 +6431,7 @@ _STATUS_LINEAGE_STRUCTURAL_POINTERS: Final = (
     "/page/children/*/origin",
     "/page/children/*/parent_task_id",
     "/page/children/*/rollup_state",
+    "/page/children/*/self_verified_finding_count",
     "/page/children/*/session_health",
     "/page/children/*/task_id",
     "/page/children/*/work_state",
@@ -6295,6 +6499,7 @@ _STATUS_PROJECT_STRUCTURAL_POINTERS: Final = (
     "/page/lineage/children/*/origin",
     "/page/lineage/children/*/parent_task_id",
     "/page/lineage/children/*/rollup_state",
+    "/page/lineage/children/*/self_verified_finding_count",
     "/page/lineage/children/*/session_health",
     "/page/lineage/children/*/task_id",
     "/page/lineage/children/*/work_state",
@@ -6328,13 +6533,21 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
         "/document",
         (
             "acknowledged_not_done_finding_ids/*",
+            "acknowledged_not_done_obligation_ids/*",
             "claim_refs/*",
+            "premise_disputed_finding_ids/*",
             "conclusion",
+            "disclosed_assumptions/*/decision_event_id",
+            "disclosed_assumptions/*/kind",
+            "disclosed_assumptions/*/obligation_id",
+            "duplicate_finding_links/*/duplicate_of_finding_id",
+            "duplicate_finding_links/*/finding_id",
             "evidence_refs/*",
             "generated_at",
             "receipt_id",
             "rejection_accepted_finding_ids/*",
             "schema_version",
+            "self_verified_finding_ids/*",
             "session_id",
             "suppressed_finding_count",
             "task_id",
@@ -6399,6 +6612,7 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
             "actionable",
             "resolved",
             "resolution_event_id",
+            "self_verified",
         ),
     )
 )
@@ -6640,7 +6854,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1439:  # L2 +14, L3 +2 (#1012), L6 +6 (#1002), L5 +2 (#976)
+    if len(result) != 1462:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +23
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

@@ -21,6 +21,14 @@ def test_rejected_outcome_names_the_closed_set_and_the_blocker_line() -> None:
     assert "Rejected: invalid_type_or_value at /event_drafts/1/payload/outcome." in text
     assert "success|failure|partial|unknown (no blocked)" in text
     assert "yoetz-blocker:<kind>" in text
+    # #984: repair first, a Yoetz limit is self-verified and never a blocker, and the blocker is
+    # offered only for an open obligation genuinely blocked outside the agent's control.
+    assert "then repair" in text
+    assert "A Yoetz limit is never a blocker" in text
+    assert "respond self_verified" in text
+    assert "only for an open obligation genuinely blocked outside your control" in text
+    # #995: a best-effort guess or a check the agent cannot run is disclosed, never a blocker.
+    assert "yoetz-assumption: or yoetz-verification-limit:<obl id>" in text
     assert len(text.encode("ascii")) <= 512
 
 

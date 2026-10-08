@@ -51,7 +51,6 @@ from yoetz.domain.receipts import (
     OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     PREEXISTING_TEST_BASELINE_UNKNOWN_GAP,
-    PREEXISTING_TEST_INFORMATIONAL_GAPS,
     SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
     SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
     SEMANTIC_CHALLENGES_REJECTED_GAP,
@@ -118,7 +117,12 @@ from yoetz.kernel.deterministic_checks import (
     finding_basis_to_json,
     render_deterministic_finding_text,
 )
-from yoetz.kernel.deterministic_scope import deterministic_scope_is_clean
+from yoetz.kernel.deterministic_scope import (
+    CLEAN_COMPATIBLE_GAPS,
+    HOST_OBSERVATION_GUARDED_GAPS,
+    commands_complete,
+    deterministic_scope_is_clean,
+)
 from yoetz.kernel.finding_resolution import (
     AGENT_SETTLED_DISPOSITION_VALUES,
     SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
@@ -127,6 +131,7 @@ from yoetz.kernel.finding_resolution import (
 from yoetz.kernel.finding_todo import (
     DEFAULT_FINDING_ATTEMPT_BUDGET,
     FindingTodoState,
+    duplicate_link_target,
     finding_todo,
     finding_todo_state,
     todo_counts,
@@ -138,7 +143,6 @@ from yoetz.kernel.observed_failures import (
     observed_event_ids_from_coverage,
     observed_failure_states,
 )
-from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.policies.research_evidence import research_evidence_findings
 from yoetz.kernel.policies.response_support import (
@@ -153,7 +157,10 @@ from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.review_round import review_round_stopped
-from yoetz.kernel.task_facts import STANDING_TASK_FACT_GAPS, requested_output_facts
+from yoetz.kernel.task_facts import (
+    confirmed_blocked_obligation_ids,
+    requested_output_facts,
+)
 from yoetz.kernel.test_edit_visibility import PreExistingTestEdits, preexisting_test_edits
 from yoetz.observability.logging import (
     record_bounded_counts_without_raising,
@@ -689,6 +696,7 @@ def _checklist_json(checklist: CheckFindingChecklist) -> JsonValue:
             "open": str(counts.open),
             "open_at_budget": str(counts.budget_reached),
             "rejection_accepted": str(counts.rejection_accepted),
+            "self_verified": str(counts.self_verified),
             "verified_resolved": str(counts.verified_resolved),
         },
         "items": tuple(
@@ -2302,14 +2310,15 @@ async def _requested_output_inputs(
         port=port,
         request_id=request_id,
     )
-    found, markers = requested_output_facts(case.projection, states)
+    confirmed = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
+    found, markers = requested_output_facts(case.projection, states, blocked=confirmed)
     codes = {code for code, _obligation in markers}
-    removed = set(removed_declared_items(case.projection, states))
+    removed = set(removed_declared_items(case.projection, states, blocked=confirmed))
     if removed:
         # One fact per item: a removed deliverable is not also reported as an absent output.
         codes.add(DECLARED_OUTPUT_REMOVED_GAP)
         found = [item for item in found if item not in removed]
-    if content_moved_declared_items(case.projection, states):
+    if content_moved_declared_items(case.projection, states, blocked=confirmed):
         # A non-blocking disclosure (ADR-035): never a Stop-gate token, never a finding.
         codes.add(DECLARED_OUTPUT_CONTENT_MOVED_GAP)
     # E4 (#989): an absent output is reported only once work on its obligation began.
@@ -2476,6 +2485,11 @@ def prior_finding_ids(projection: ProjectionState) -> dict[FindingIdentity, Find
     An AI-powered finding with the same kind, policy and subject is a different issue; letting a
     local re-derivation take its ID would rewrite that row's origin and leave the real local row
     unreturned, and so look resolved (issue #884).
+
+    A ``self_verified`` row (issue #984) is not offered either: the agent answered it because Yoetz
+    could not prove the repair. If the rule fires again, Yoetz positively sees the issue, so the
+    re-derivation is a new finding the agent must answer instead of landing silently on the
+    terminal row.
     """
 
     prior: dict[FindingIdentity, FindingId] = {}
@@ -2484,6 +2498,7 @@ def prior_finding_ids(projection: ProjectionState) -> dict[FindingIdentity, Find
             record.payload is None
             or record.resolved_by_check_event_id is not None
             or record.payload.origin is not FindingOrigin.DETERMINISTIC
+            or finding_todo_state(projection, key) is FindingTodoState.SELF_VERIFIED
         ):
             continue
         prior[(record.payload.kind, record.payload.policy_id, record.payload.subject_refs)] = key
@@ -3056,7 +3071,8 @@ def _admit_prior_verdicts(
     Returns the admitted rulings, the count of unsupported ones (malformed, unknown or outside
     the fence, unshown, trimmed, reduced or repeated; disclosed as
     ``semantic_prior_verdicts_unsupported``), and the count set aside because their target is
-    already final (``verified_resolved``, ``acknowledged_not_done``, ``rejection_accepted``).
+    already final (``verified_resolved``, ``acknowledged_not_done``, ``rejection_accepted``,
+    ``self_verified``).
     A final item is never re-reviewed, so a ruling on it says nothing about the review's other
     findings and must not raise the gap that blocks every unruled open finding; it is only
     counted as a diagnostic.
@@ -3094,10 +3110,11 @@ def _admit_prior_verdicts(
             # on it says nothing about the review's own findings and is only counted.
             set_aside += 1
             continue
-        if (
-            record.resolved_by_check_event_id is not None
-            or finding_todo_state(projection, record.payload.finding_id)
-            is not FindingTodoState.OPEN
+        if record.resolved_by_check_event_id is not None or (
+            finding_todo_state(projection, record.payload.finding_id) is not FindingTodoState.OPEN
+            # Issue #996: a linked duplicate only inherits a final state; the reviewer can
+            # still rule on it, and a still_present ruling breaks the link.
+            and duplicate_link_target(projection, record.payload.finding_id) is None
         ):
             # A terminal item is never re-reviewed, so no ruling on it is admitted.
             set_aside += 1
@@ -3515,18 +3532,28 @@ def _record_restatement(
     names an answered item in ``restates`` records ``answered_not_fixed``, issue #980), so the
     check cannot resolve it by silence and the item's review round advances once per concern. A
     restatement contradicts an explicit ``fixed`` or ``withdrawn`` ruling on the same item, which
-    becomes ``unassessable``. An ``acknowledged_not_done`` (or ``self_verified``) item is final:
-    the re-raise is recorded on it as a standing dispute (``_record_settled_reraise``, #980) and
-    it is never reopened. A ``rejection_accepted`` item is final, stays disclosed on the receipt,
-    and needs nothing recorded. (A ``verified_resolved`` item is never a restatement
-    target: see ``_restated_finding``.) When no ruling can be recorded (the check's ruling bound
-    is full) the restatement is not suppressed and is minted as before.
+    becomes ``unassessable``. An ``acknowledged_not_done`` item is final: the re-raise is recorded
+    on it as a standing dispute (``_record_settled_reraise``, #980) and it is never reopened. A
+    ``rejection_accepted`` item is final, stays disclosed on the receipt, and needs nothing
+    recorded. A ``self_verified`` item (issue #984) is final too, but only because Yoetz could not
+    see the repair; a reviewer that still raises the issue is a new sighting, so the restatement
+    is not suppressed and is minted as a new finding the agent must answer. (A
+    ``verified_resolved`` item is never a restatement target: see ``_restated_finding``.) When no
+    ruling can be recorded (the check's ruling bound is full) the restatement is not suppressed
+    and is minted as before.
     """
 
-    if _latest_response_value(case, restated) in AGENT_SETTLED_DISPOSITION_VALUES:
+    todo = finding_todo_state(case.projection, restated)
+    if duplicate_link_target(case.projection, restated) is not None:
+        # Issue #996: a linked duplicate's final state is only inherited; a restatement of it is
+        # a still_present ruling that breaks the link, never a silent suppression.
+        todo = FindingTodoState.OPEN
+    if todo is FindingTodoState.SELF_VERIFIED:
+        return False, False
+    if todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE:
         # The agent settled it; the re-raise is recorded on it as a standing dispute (#980).
         return _record_settled_reraise(admitted, restated, refs), False
-    if finding_todo_state(case.projection, restated) is FindingTodoState.REJECTION_ACCEPTED:
+    if todo is FindingTodoState.REJECTION_ACCEPTED:
         return True, False
     key = str(restated)
     earlier = admitted.get(key)
@@ -3637,6 +3664,19 @@ def _sorted_verdicts(
     admitted: Mapping[str, PriorFindingVerdictRecord],
 ) -> tuple[PriorFindingVerdictRecord, ...]:
     return tuple(admitted[key] for key in sorted(admitted, key=str.encode))
+
+
+def full_check_gaps_clean(known_gaps: Iterable[str], totals: Mapping[str, object]) -> bool:
+    """Whether a full check's gaps allow ``complete`` (#986): the one clean-compatible list.
+
+    The same list bounds the receipt and the scoped deterministic verdict. A host-observation
+    member counts only when the case's command counters show no unknown or live failed outcome.
+    """
+
+    extra = set(known_gaps) - CLEAN_COMPATIBLE_GAPS
+    if extra:
+        return False
+    return not (set(known_gaps) & HOST_OBSERVATION_GUARDED_GAPS) or commands_complete(totals)
 
 
 def _request_digest(
@@ -4508,11 +4548,14 @@ async def execute_check_commit(
         elif scoped_local_clean:
             completeness = CheckCompleteness.SCOPED_COMPLETE
         elif (
-            set(coverage.known_gaps)
-            - PLAN_DRIFT_ADVISORY_GAPS
-            - PREEXISTING_TEST_INFORMATIONAL_GAPS
-            - STANDING_TASK_FACT_GAPS
-        ) or semantic_failed:
+            not full_check_gaps_clean(
+                coverage.known_gaps,
+                build_check_totals(
+                    frozen.case, candidate_findings, test_edits=deterministic_test_edit_facts
+                ),
+            )
+            or semantic_failed
+        ):
             completeness = CheckCompleteness.COVERAGE_INCOMPLETE
         else:
             completeness = CheckCompleteness.COMPLETE

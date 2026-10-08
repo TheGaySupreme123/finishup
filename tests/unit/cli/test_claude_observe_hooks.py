@@ -764,10 +764,16 @@ def test_claude_plugin_tool_does_not_lease_frontier_advice_for_its_own_call(
     assert store.peek_frontier_motion(commitment, session) is not None
 
 
-def test_claude_stop_delivers_advice_as_non_error_feedback_not_a_block(
+def test_claude_stop_withholds_ordinary_advice_for_the_next_session_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pending advice at Claude Stop uses the documented additionalContext channel (#420)."""
+    """Claude Stop feedback continues the turn, so ordinary advice waits (#420, #985).
+
+    Claude Code's Stop ``additionalContext`` is non-error feedback, but the conversation still
+    continues so Claude can act on it: it spends the continuation the closure gate needs, and
+    the next Stop arrives with ``stop_hook_active``. Advice stays pending and reaches the agent
+    on the next SessionStart through the same additionalContext channel.
+    """
 
     store, commitment = _consented_store(tmp_path)
     # SessionStart would deliver any advice pending at that moment together
@@ -837,13 +843,13 @@ def test_claude_stop_delivers_advice_as_non_error_feedback_not_a_block(
         )
         == 0
     )
-    emitted = cast(Mapping[str, JsonValue], strict_json_parse(stop_out.getvalue()))
-    assert set(emitted) == {"hookSpecificOutput"}
-    specific = cast(Mapping[str, JsonValue], emitted["hookSpecificOutput"])
-    assert specific["hookEventName"] == "Stop"
-    assert "connect_provider" in cast(str, specific["additionalContext"])
-    assert b"decision" not in stop_out.getvalue()
-    assert store.peek_advice_for_delivery(commitment, session_commitment=session_commitment) is None
+    assert stop_out.getvalue() == b"{}\n"
+    assert (
+        store.peek_advice_for_delivery(
+            commitment, allow_standing=True, session_commitment=session_commitment
+        )
+        is not None
+    )
 
     # A second Stop in the same host loop is the documented loop guard: nothing
     # is re-delivered and the output stays empty.
@@ -862,6 +868,26 @@ def test_claude_stop_delivers_advice_as_non_error_feedback_not_a_block(
         == 0
     )
     assert guarded_out.getvalue() == b"{}\n"
+
+    resume_out = io.BytesIO()
+    assert (
+        observe_hooks.handle_claude_observe(
+            event_name="SessionStart",
+            stdin_bytes=canonical_encode(
+                {"session_id": session, "hook_event_name": "SessionStart", "source": "resume"}
+            ),
+            stdout=resume_out,
+            workspace=str(tmp_path),
+            _state=tmp_path,
+            skip_service=True,
+        )
+        == 0
+    )
+    resumed = cast(Mapping[str, JsonValue], strict_json_parse(resume_out.getvalue()))
+    specific = cast(Mapping[str, JsonValue], resumed["hookSpecificOutput"])
+    assert specific["hookEventName"] == "SessionStart"
+    assert "connect_provider" in cast(str, specific["additionalContext"])
+    assert b"decision" not in resume_out.getvalue()
 
 
 @pytest.mark.parametrize(

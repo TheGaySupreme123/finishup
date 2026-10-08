@@ -201,7 +201,7 @@ def test_check_time_states_feed_the_requested_output_facts(tmp_path: Path) -> No
             request_id="req_00000000-0000-4000-8000-000000000001",
         )
     )
-    absent, markers = requested_output_facts(projection, states)
+    absent, markers = requested_output_facts(projection, states, blocked=())
 
     assert absent == ((_OBLIGATION, 1),)  # mutation.report.json; gone.txt is a tracked deletion
     assert {code for code, _ in markers} == {
@@ -226,7 +226,7 @@ def test_check_time_states_feed_the_requested_output_facts(tmp_path: Path) -> No
         )
     )
     assert states[(_OBLIGATION, 2)].changed is True
-    assert requested_output_facts(inputs, states) == ((), ())
+    assert requested_output_facts(inputs, states, blocked=()) == ((), ())
 
 
 def test_without_a_capture_every_requested_file_is_unverified() -> None:
@@ -314,7 +314,7 @@ def test_a_requested_directory_is_changed_by_new_files_under_it(tmp_path: Path) 
         False,
         False,
     ]
-    _, markers = requested_output_facts(projection, states)
+    _, markers = requested_output_facts(projection, states, blocked=())
     # Only the genuinely untouched directories stay unchanged; nothing is "outside".
     assert {code for code, _ in markers} == {REQUESTED_OUTPUT_UNCHANGED_GAP}
 
@@ -439,7 +439,7 @@ def test_roles_and_directories_at_check_time(tmp_path: Path) -> None:
         )
         # Inputs are not read at all.
         assert (_OBLIGATION, 0) not in states and (_OBLIGATION, 3) not in states
-        return requested_output_facts(projection, states)
+        return requested_output_facts(projection, states, blocked=())
 
     (repository / "hollow" / "sub").mkdir(parents=True)
     unchanged = ((REQUESTED_OUTPUT_UNCHANGED_GAP, _OBLIGATION),)
