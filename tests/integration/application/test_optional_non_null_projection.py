@@ -59,6 +59,7 @@ from yoetz.protocol.canonical import JsonValue, canonical_encode
 from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel, coverage_to_json
 from yoetz.protocol.models import (
     CheckAwaitingHumanModel,
+    CheckChecklistCountsModel,
     CheckContinuationModel,
     CheckProjectedFindingModel,
     CheckRequest,
@@ -220,6 +221,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
         ),
     ),
     (CheckAwaitingHumanModel, frozenset({"specification_preflight"})),
+    # Issue #1020: present only when non-zero.
+    (CheckChecklistCountsModel, frozenset({"disputed_after_rebuttal"})),
     (
         ChildDependencySnapshotModel,
         frozenset(
@@ -1138,6 +1141,25 @@ def test_status_closure_readiness_omits_an_unset_checklist() -> None:
     assert dumped["no_obligations_reason"] is None
 
 
+def test_checklist_counts_omit_an_unset_disputed_count() -> None:
+    """Issue #1020: the disputed count is absent when zero, present when set, never null."""
+
+    base = {
+        "acknowledged_not_done": "0",
+        "open": "1",
+        "open_at_budget": "0",
+        "rejection_accepted": "0",
+        "self_verified": "0",
+        "verified_resolved": "0",
+    }
+    parsed = CheckChecklistCountsModel.model_validate(base)
+    assert "disputed_after_rebuttal" not in parsed.model_dump(mode="json", exclude_unset=True)
+    present = CheckChecklistCountsModel.model_validate({**base, "disputed_after_rebuttal": "2"})
+    assert present.model_dump(mode="json", exclude_unset=True)["disputed_after_rebuttal"] == "2"
+    with pytest.raises(ValueError):
+        CheckChecklistCountsModel.model_validate({**base, "disputed_after_rebuttal": None})
+
+
 def test_status_version_slice_omits_unset_route_profile() -> None:
     parsed = StatusVersionSliceModel.model_validate(_version_slice_payload())
     assert "route_profile" not in parsed.model_dump(mode="json", exclude_unset=True)
@@ -1513,6 +1535,10 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
             "test_publish_accepted_events_omit_unset_summary"
         ),
         ("PublicErrorModel", "safe_details"): "test_public_error_omits_unset_safe_details",
+        # Issue #1020: emitted only when non-zero.
+        ("CheckChecklistCountsModel", "disputed_after_rebuttal"): (
+            "test_checklist_counts_omit_an_unset_disputed_count"
+        ),
         ("RespondEvidenceSummaryModel", "description"): (
             "test_respond_omits_unset_optional_response_fields"
         ),
