@@ -84,12 +84,18 @@ _FIELD_ORDER: Final = (
     # Admits the loop-health connection count into _CALLER_FIELDS/_COUNT_FIELDS below, so a
     # bounded-counts caller can report how much work was in flight during a stall.
     "operation_count",
+    # Closed control-plane identity for a response write the peer abandoned (tb4n2 NEW-8).
+    "control_method",
+    "client_kind",
 )
 _FIELD_SET: Final = frozenset(_FIELD_ORDER)
 _CALLER_FIELDS: Final = _FIELD_SET - {"timestamp", "level", "component", "operation"}
 # Fields a bounded-counts caller may supply. The identity fields the emitter binds itself are
 # excluded so a caller can never pass the same keyword twice.
 _COUNT_FIELDS: Final = _CALLER_FIELDS - {"correlation_id", "request_id", "outcome"}
+# Extra structural context a bounded event may carry; the identity and reason fields it binds
+# itself are excluded so a caller can never pass the same keyword twice.
+_CONTEXT_FIELDS: Final = _COUNT_FIELDS - {"reason", "origin", "reason_code", "phase"}
 _STRUCTURAL_MARKER: Final = "_yoetz_structured_record"
 _STRUCTURAL_FIELDS: Final = "_yoetz_structured_fields"
 _COMPONENT_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$", re.ASCII)
@@ -422,6 +428,7 @@ def record_bounded_event_without_raising(
     operation: str,
     reason: str,
     request_id: str | None = None,
+    context: Mapping[str, object] | None = None,
 ) -> str:
     """Emit bounded structural identity for a reviewed non-exception event.
 
@@ -431,6 +438,11 @@ def record_bounded_event_without_raising(
     tokens are reviewed literals at the call site, and the sinks re-validate them against the
     same field allowlists as an exception record. The durable owner-only line is what makes the
     outcome resolvable when harnesses swallow process stderr.
+
+    ``context`` adds bounded structural fields (closed tokens and integers under allowlisted
+    names such as ``control_method``, ``client_kind`` or ``duration_ms``); a name the sinks do not
+    allowlist, or one this function binds itself, is dropped, and every value passes the same
+    fence as any other field.
     """
 
     return _record_bounded_without_raising(
@@ -439,6 +451,7 @@ def record_bounded_event_without_raising(
         reason=reason,
         outcome="not_dispatched",
         request_id=request_id,
+        context=context,
     )
 
 
@@ -512,10 +525,21 @@ def _record_bounded_without_raising(
     origin: str | None = None,
     reason_code: str | None = None,
     phase: str | None = None,
+    context: Mapping[str, object] | None = None,
 ) -> str:
     """Mint one correlation id and write it to both sinks. Never raises to callers."""
 
     correlation_id = _new_correlation()
+    extra: dict[str, object] = {}
+    if context is not None:
+        try:
+            extra = {
+                name: value
+                for name, value in context.items()
+                if type(name) is str and name in _CONTEXT_FIELDS
+            }
+        except BaseException:
+            extra = {}
     try:
         get_logger(component).warning(
             operation,
@@ -526,6 +550,7 @@ def _record_bounded_without_raising(
             origin=origin,
             reason_code=reason_code,
             phase=phase,
+            **extra,
         )
     except BaseException:
         pass
@@ -541,6 +566,7 @@ def _record_bounded_without_raising(
             origin=origin,
             reason_code=reason_code,
             phase=phase,
+            counts=extra or None,
         )
     except BaseException:
         pass

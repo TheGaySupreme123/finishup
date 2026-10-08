@@ -2892,7 +2892,12 @@ retryable `service_unavailable`). A send failure the transport itself did not cl
 bounded protocol reason `transport_failed`, whose public code is `SERVICE_UNAVAILABLE` and which
 never carries raw exception text, a path, or peer data. Both peers share the one write helper, so a
 failed response write is classified the same way; the daemon records it as a bounded
-`control_response_write` diagnostic and ends that call rather than reporting a malformed frame. A
+`control_response_write` diagnostic and ends that call rather than reporting a malformed frame.
+That record carries only bounded structural context so an abandoned write can be attributed
+(tb4n2 NEW-8, issue #1019): `control_method` (the closed wire method), `client_kind` (the
+handshake kind: `cli`, `mcp_bridge` or `ui`), `duration_ms` (dispatch start to the failed write)
+and `request_id` only when the body carries a valid public `req_` id; never the body, the rpc id or
+peer data. A
 caller whose valid request could not be written is therefore never told `INVALID_REQUEST`, and every
 pending future failed by the resulting connection teardown — including the future of the call whose
 own write failed — is consumed, so a failed send emits no unhandled-future report.

@@ -21,6 +21,7 @@ from yoetz.observability.logging import (
     configure_logging,
     exception_origin,
     record_bounded_counts_without_raising,
+    record_bounded_event_without_raising,
     record_classified_exception_without_raising,
     record_unexpected_exception_without_raising,
 )
@@ -281,6 +282,54 @@ def test_bounded_counts_reach_the_durable_ring(
     assert found[0]["duration_ms"] == 12_345
     assert found[0]["operation_count"] == 7
     assert found[0]["phase"] == "projection"
+
+
+def test_bounded_event_context_is_fenced_and_reaches_the_ring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tb4n2 NEW-8: an abandoned response write carries closed, bounded control context."""
+
+    import yoetz.observability.diagnostics as diagnostics
+
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    configure_logging(
+        LoggingConfig(level="error"),  # type: ignore[arg-type]
+        LogMode.SERVICE,
+        clock=frozen_clock(utc=_NOW, monotonic=0.0),
+    )
+
+    correlation_id = record_bounded_event_without_raising(
+        component="service.daemon",
+        operation="control_response_write",
+        reason="connection_failed",
+        request_id="req_00000000-0000-4000-8000-000000000001",
+        context={
+            "control_method": "observation_ingest",
+            "client_kind": "cli",
+            "duration_ms": 812,
+            # Not context: a bound identity field and two unknown or hostile names are dropped.
+            "reason": "overridden",
+            "path": "/home/user/secret",
+            "body": "secret",
+        },
+    )
+    (record,) = lookup_diagnostic_records(correlation_id, root=tmp_path)
+    assert record["reason"] == "connection_failed"
+    assert record["control_method"] == "observation_ingest"
+    assert record["client_kind"] == "cli"
+    assert record["duration_ms"] == 812
+    assert record["request_id"] == "req_00000000-0000-4000-8000-000000000001"
+    assert "secret" not in json.dumps(record)
+
+    hostile = record_bounded_event_without_raising(
+        component="service.daemon",
+        operation="control_response_write",
+        reason="connection_failed",
+        context={"control_method": "/etc/passwd", "duration_ms": -1},
+    )
+    (fenced,) = lookup_diagnostic_records(hostile, root=tmp_path)
+    assert fenced["control_method"] == "unavailable"
+    assert fenced["duration_ms"] == "unavailable"
 
 
 @pytest.mark.parametrize(
