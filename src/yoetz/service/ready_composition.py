@@ -4905,6 +4905,7 @@ def _privacy_gated_semantic_evaluator(
                                 max(16, review_selection.max_excerpts * 16),
                             ),
                             max_total_bytes=MAX_CAPTURED_SEMANTIC_INPUT_BYTES,
+                            workspace_root=await _workspace_root_for_runtime(runtime),
                         )
                         captured_content = captured_resolution.content
                         captured_content_scope = captured_resolution.scope

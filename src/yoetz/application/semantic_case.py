@@ -11,6 +11,7 @@ service-authenticated values; missing material becomes an omission.
 from __future__ import annotations
 
 import hashlib
+import posixpath
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -121,6 +122,7 @@ from yoetz.kernel.projections import (
 from yoetz.kernel.task_facts import (
     acknowledged_obligation_ids,
     blocker_declarations,
+    effective_obligations,
     open_effective_obligations,
 )
 from yoetz.ports.change_capture import CHECK_CHANGE_MEDIA_TYPE, CheckChangeCapture
@@ -1862,6 +1864,140 @@ def _match_assessments(
     return tuple(matched)
 
 
+# Declared outputs outside the workspace (tb4n2 R7, P1-15): the check-time change never holds
+# them, so their captured evidence is reserved instead. Bounded per output and in total.
+_MAX_DECLARED_OUTPUT_CAPTURES: Final = 8
+_CLAIM_LINKED_CAPTURES_PER_OUTPUT: Final = 2
+_DECLARED_OUTPUT_KINDS: Final = frozenset({"file", "directory"})
+
+
+def _outside_workspace(value: str, workspace_root: str | None) -> str | None:
+    """The normalised absolute ``value`` when it lies outside ``workspace_root``; else ``None``.
+
+    Lexical only: nothing is opened or resolved. A relative value is inside by definition, and
+    without a known root nothing can be called outside.
+    """
+
+    if workspace_root is None or not value.startswith("/") or "\x00" in value:
+        return None
+    root = posixpath.normpath(workspace_root)
+    path = posixpath.normpath(value)
+    if path == root or path.startswith(root.rstrip("/") + "/"):
+        return None
+    return path
+
+
+def _names_output(reference: str, output: str) -> bool:
+    if not reference.startswith("/") or "://" in reference:
+        return False
+    path = posixpath.normpath(reference.strip())
+    return path == output or path.startswith(output.rstrip("/") + "/")
+
+
+def declared_output_capture_refs(
+    projection: ProjectionState, allowed: frozenset[str], workspace_root: str | None
+) -> frozenset[str]:
+    """Evidence that records a declared ``role: output`` item lying outside the workspace.
+
+    tb4n2 R7 (P1-15, cargo-flight-dispatch ``/output/flight_plan.json``): the check-time change
+    reads only the repository, so a deliverable the task places elsewhere reached the reviewer
+    only if a hook capture of it happened to win general excerpt room. The evidence selected
+    here is reserved beside the current diff instead: evidence whose own reference names the
+    output, evidence of a result whose action lists the output among its attempted items, and,
+    per output, the newest two content-bearing captures an effective claim on the declaring
+    obligation cites. This is relevance selection only: every selected row still passes the
+    content consent, capture authentication, redaction and never-send checks of any excerpt.
+    """
+
+    outputs: list[tuple[str, str]] = []
+    for obligation in effective_obligations(projection):
+        record = projection.obligations.get(obligation)
+        if record is None or record.payload is None or record.redacted:
+            continue
+        for item in record.payload.requested_items:
+            if (
+                getattr(item.item_kind, "value", item.item_kind) not in _DECLARED_OUTPUT_KINDS
+                or getattr(getattr(item, "role", None), "value", None) != "output"
+            ):
+                continue
+            outside = _outside_workspace(item.value, workspace_root)
+            if outside is not None:
+                outputs.append((str(obligation), outside))
+    if not outputs:
+        return frozenset()
+    evidence = {
+        str(key): row
+        for key, row in projection.evidence.items()
+        if str(key) in allowed and row.payload is not None and not row.redacted
+    }
+    results = {
+        str(key): row
+        for key, row in projection.results.items()
+        if row.payload is not None and not row.redacted
+    }
+
+    def frontier(ref: str) -> int:
+        return evidence[ref].source_frontier
+
+    def result_evidence(result_ref: str) -> set[str]:
+        row = results.get(result_ref)
+        if row is None or row.payload is None:
+            return set()
+        return {str(ref) for ref in row.payload.evidence_refs if str(ref) in evidence}
+
+    attempted: dict[str, set[str]] = {}
+    for result_ref, row in results.items():
+        assert row.payload is not None
+        action = projection.actions.get(row.payload.action_id)
+        if action is None or action.payload is None or action.redacted:
+            continue
+        for value in action.payload.attempted_items:
+            attempted.setdefault(value, set()).update(result_evidence(result_ref))
+    claims = [
+        claim.payload
+        for _, claim in effective_claim_items(projection)
+        if claim.payload is not None and not claim.redacted
+    ]
+    exact: set[str] = set()
+    linked: set[str] = set()
+    for obligation, output in outputs:
+        exact.update(
+            ref
+            for ref, row in evidence.items()
+            if row.payload is not None
+            and row.payload.reference is not None
+            and _names_output(row.payload.reference, output)
+        )
+        for value, refs in attempted.items():
+            if _names_output(value, output):
+                exact.update(refs)
+        cited: set[str] = set()
+        for claim in claims:
+            if obligation not in {
+                *(str(ref) for ref in claim.obligation_refs),
+                *(str(ref) for ref in claim.supporting_refs),
+            }:
+                continue
+            for ref in claim.supporting_refs:
+                value = str(ref)
+                cited.update({value} & evidence.keys())
+                cited.update(result_evidence(value))
+        captured = sorted(
+            (
+                ref
+                for ref in cited
+                if (payload := evidence[ref].payload) is not None
+                and payload.captured_object_id is not None
+            ),
+            key=lambda ref: (-frontier(ref), ref.encode("ascii")),
+        )
+        linked.update(captured[:_CLAIM_LINKED_CAPTURES_PER_OUTPUT])
+    ordered = sorted(exact, key=lambda ref: (-frontier(ref), ref.encode("ascii"))) + sorted(
+        linked - exact, key=lambda ref: (-frontier(ref), ref.encode("ascii"))
+    )
+    return frozenset(ordered[:_MAX_DECLARED_OUTPUT_CAPTURES])
+
+
 def repair_evidence_refs(projection: ProjectionState, allowed: frozenset[str]) -> frozenset[str]:
     """Select readable evidence linked by responses to in-scope, unresolved findings.
 
@@ -2440,6 +2576,7 @@ def _select_targeted_excerpts(
     excerpt_byte_budget: int,
     excerpt_count_budget: int | None = None,
     before_lower_ranks: _LowerRankAdmission | None = None,
+    declared_output_refs: frozenset[str] = frozenset(),
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -2454,10 +2591,13 @@ def _select_targeted_excerpts(
     ``before_lower_ranks`` is offered the slots and bytes the reserved classes (current diff,
     latest verification, finding repair evidence) leave, once, before any older edit hunk or
     unreserved excerpt is considered; what it admits is listed at that rank (issue #983).
+
+    ``declared_output_refs`` (``declared_output_capture_refs``) rank with the current diff: they
+    are the current state of a deliverable the check-time change cannot hold (tb4n2 R7).
     """
 
     repair_refs = repair_evidence_refs(projection, allowed)
-    linked_subjects: set[str] = set(repair_refs)
+    linked_subjects: set[str] = set(repair_refs) | set(declared_output_refs)
     for finding in findings:
         linked_subjects.update(str(ref) for ref in finding.subject_refs)
     for claim_id, _ in effective_claim_items(projection):
@@ -2678,7 +2818,7 @@ def _select_targeted_excerpts(
     def rank(index: int) -> tuple[int, int, int, int, bytes, bytes]:
         candidate = candidates[index]
         linked = bool(candidate.identity_refs & linked_subjects)
-        if index in current_diffs:
+        if index in current_diffs or candidate.identity_refs & declared_output_refs:
             klass = _RANK_CURRENT_DIFF
         elif index in reserved_runs:
             klass = _RANK_LATEST_VERIFICATION
@@ -4216,6 +4356,7 @@ def _build_semantic_case_once(
             excerpt_count_budget=selection.max_excerpts - len(targeted),
             excerpt_byte_budget=(max(0, total_excerpt_budget - excerpt_bytes_used)),
             before_lower_ranks=check_time_change_parts if check_change_parts else None,
+            declared_output_refs=declared_output_capture_refs(projection, allowed, workspace_root),
         )
         items.extend(excerpts.items)
         targeted.extend(excerpts.targeted)

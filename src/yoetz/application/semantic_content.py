@@ -24,6 +24,7 @@ from yoetz.application.semantic_case import (
     MAX_CAPTURED_SEMANTIC_CONTENT_BYTES,
     CapturedContentScope,
     CapturedSemanticContent,
+    declared_output_capture_refs,
     repair_evidence_refs,
 )
 from yoetz.domain.events import (
@@ -744,6 +745,7 @@ async def resolve_captured_semantic_content(
     local_observation: object | None = None,
     max_parts: int = _MAX_CAPTURED_SEMANTIC_PARTS,
     max_total_bytes: int = _MAX_CAPTURED_SEMANTIC_INPUT_BYTES,
+    workspace_root: str | None = None,
 ) -> CapturedContentResolution:
     """Resolve current-consent native content for one frozen task.
 
@@ -847,6 +849,9 @@ async def resolve_captured_semantic_content(
     # selecting only the first object ID could split a valid multipart group and
     # turn an otherwise admissible capture into a false unavailable gap.
     repair_refs = repair_evidence_refs(frozen.case.projection, allowed)
+    # Captures of a declared output outside the workspace are read first too (tb4n2 R7): the
+    # check-time change never holds them, so the case builder reserves them beside the diff.
+    repair_refs |= declared_output_capture_refs(frozen.case.projection, allowed, workspace_root)
     linked_evidence = {
         str(ref)
         for _, claim in effective_claim_items(frozen.case.projection)

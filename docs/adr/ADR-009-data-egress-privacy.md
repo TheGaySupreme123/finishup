@@ -866,3 +866,31 @@ reviewer only, and status shows it before any check. Decisions:
   under it carries the standing-limitation gap `semantic_review_credential_heuristic_disabled`. It
   is an owner disclosure choice, never agent work, and it weakens neither proof class.
 - The behaviour is service-side and identical on Codex, Claude Code and Cursor.
+
+## Declared outputs outside the workspace amendment (2026-10-08, issue #1016, tb4n2 R7)
+
+Owner decision (maintainer acknowledgement on #1016): a deliverable the task places outside the
+repository (cargo-flight-dispatch's `/output/flight_plan.json`) must reach the AI-powered reviewer,
+because the check-time change (ADR-031) only reads the repository and the reviewer otherwise cannot
+see the work it is asked to judge. This widens what reaches a packet in practice, so it is recorded
+here.
+
+- Scope: evidence already in the case that records an obligation's requested `role: output` file or
+  directory whose absolute path lies outside the session's workspace root: evidence whose own
+  reference names the output, evidence of a result whose action lists the output among its
+  attempted items, and per output the newest two content-bearing captures an effective claim on
+  the declaring obligation cites (at most eight rows per case). These rows rank with the current
+  diff instead of competing with general tool output for excerpt room, and the content resolver
+  reads their captures first.
+- No new read path: Yoetz never opens the outside file itself. Only content a hook already captured
+  under the session's content-capture consent, or text the agent published, can be carried. A
+  declared input, a role-less item, a relative path and a task with no known workspace root select
+  nothing.
+- Same controls as every excerpt: only a recipe that includes targeted excerpts carries them; each
+  part passes capture authentication, the partial-withholding redaction, the credential heuristic
+  (unless the owner turned it off) and the non-overridable never-send scan. Opting out is the
+  existing path: a Structural profile or a custom recipe without targeted excerpts, or content
+  capture off for the host.
+- Disclosure: carried rows are listed in the review input manifest and the egress receipt like any
+  other excerpt; nothing new is hidden from the owner, and the behaviour is service-side and the
+  same on Codex, Claude Code and Cursor.
