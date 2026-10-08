@@ -242,38 +242,51 @@ def test_a_cited_capture_with_the_same_bytes_as_an_older_one_keeps_its_reservati
     """Codex review round 1: a later identical capture folds into the older excerpt, so the
     reservation of the cited (later) row must transfer to the kept one."""
 
-    from tests.unit.application.test_semantic_case_selection import (
-        _PHASE,
-        _PROFILE,
-        _SESSION,
-        _TASK,
-        _WORKSPACE_COMMITMENT,
-        _capture,
-        _captured_row,
-        _output_payload,
-    )
-    from yoetz.application.semantic_case import CapturedContentScope
+    from typing import Any
+
+    import tests.unit.application.test_semantic_case_selection as selection_tests
+
+    from yoetz.application.semantic_case import CapturedContentScope, CapturedSemanticContent
+
+    helpers: dict[str, Any] = {
+        name: getattr(selection_tests, name)
+        for name in (
+            "_PHASE",
+            "_PROFILE",
+            "_SESSION",
+            "_TASK",
+            "_WORKSPACE_COMMITMENT",
+            "_capture",
+            "_captured_row",
+            "_output_payload",
+        )
+    }
+    phase, profile_of = helpers["_PHASE"], helpers["_PROFILE"]
 
     plan_text = '{"legs": 3, "PLAN_MARKER": true}\n'
     evidence: dict[EvidenceId, EvidenceProjectionRecord] = {}
-    captured = []
+    captured: list[CapturedSemanticContent] = []
     for number, text in [
         (10, plan_text),
         *((n, f"NEWER_TOOL_OUTPUT {n}\n") for n in range(11, 20)),
         (20, plan_text),
     ]:
-        kind, content = _capture("codex", _output_payload("codex", text, number))
-        row, item = _captured_row(number, evd(number), content, kind, _PROFILE["codex"])
+        kind, content = helpers["_capture"](
+            "codex", helpers["_output_payload"]("codex", text, number)
+        )
+        row, item = helpers["_captured_row"](
+            number, evd(number), content, kind, profile_of["codex"]
+        )
         evidence[evd(number)] = row
         captured.append(item)
     case = _case(evidence=evidence, claim_refs=(evd(20),))
     scope = CapturedContentScope(
-        task_id=_TASK,
-        session_id=_SESSION,
-        workspace_commitment=_WORKSPACE_COMMITMENT,
-        authorized_profiles=(_PROFILE["codex"],),
+        task_id=helpers["_TASK"],
+        session_id=helpers["_SESSION"],
+        workspace_commitment=helpers["_WORKSPACE_COMMITMENT"],
+        authorized_profiles=(profile_of["codex"],),
         phase_bindings=tuple(
-            sorted(((str(ref), _PHASE) for ref in evidence), key=lambda pair: pair[0].encode())
+            sorted(((str(ref), phase) for ref in evidence), key=lambda pair: pair[0].encode())
         ),
     )
     profile = ReviewContextProfile.EXPANDED
@@ -293,3 +306,35 @@ def test_a_cited_capture_with_the_same_bytes_as_an_older_one_keeps_its_reservati
 
     excerpts = b"".join(item.content for item in semantic.items if item.section == "excerpt")
     assert b"PLAN_MARKER" in excerpts
+
+
+def test_repeats_of_one_output_never_crowd_out_another() -> None:
+    """Codex review round 2: nine newer rows for output A, one older row for output B."""
+
+    plan = plan_record(PlanPublishedPayload(1, "Write both outputs", (obl(1),)), 1)
+    obligation = obligation_record(
+        ObligationPublishedPayload(
+            obl(1),
+            "Write both outputs",
+            "Both exist",
+            ObligationStatus.OPEN,
+            requested_items=(
+                RequestedItem(RequestedItemKind.FILE, "/output/a.json", RequestedItemRole.OUTPUT),
+                RequestedItem(RequestedItemKind.FILE, "/output/b.json", RequestedItemRole.OUTPUT),
+            ),
+        ),
+        2,
+    )
+    evidence = {evd(1): _evidence(1, 10, reference="/output/b.json")} | {
+        evd(n): _evidence(n, 10 + n, reference="/output/a.json") for n in range(2, 11)
+    }
+    case = make_case(
+        plans={1: plan},
+        obligations={obl(1): obligation},
+        evidence=evidence,
+        extra_refs=(obl(1), *evidence),
+    )
+
+    refs = _refs(case)
+    assert str(evd(1)) in refs
+    assert refs == frozenset({str(evd(1)), str(evd(10)), str(evd(9)), str(evd(8))})

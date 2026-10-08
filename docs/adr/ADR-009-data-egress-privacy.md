@@ -879,7 +879,9 @@ here.
   directory whose absolute path lies outside the session's workspace root: evidence whose own
   reference names the output, evidence of a result whose action lists the output among its
   attempted items, and per output the newest two content-bearing captures an effective claim on
-  the declaring obligation cites (at most eight rows per case). These rows rank with the current
+  the declaring obligation cites; at most three rows per output (newest first) and eight per case,
+  taken round-robin across outputs so one deliverable's repeats never crowd out another's. These
+  rows rank with the current
   diff instead of competing with general tool output for excerpt room, and the content resolver
   reads their captures first.
 - No new read path: Yoetz never opens the outside file itself. Only content a hook already captured

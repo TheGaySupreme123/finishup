@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import posixpath
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Final, Literal, NamedTuple, cast
@@ -1869,6 +1869,7 @@ def _match_assessments(
 # them, so their captured evidence is reserved instead. Bounded per output and in total.
 _MAX_DECLARED_OUTPUT_CAPTURES: Final = 8
 _CLAIM_LINKED_CAPTURES_PER_OUTPUT: Final = 2
+_DECLARED_OUTPUT_CAPTURES_PER_OUTPUT: Final = 3
 _DECLARED_OUTPUT_KINDS: Final = frozenset({"file", "directory"})
 
 
@@ -1906,7 +1907,8 @@ def declared_output_capture_refs(
     here is reserved beside the current diff instead: evidence whose own reference names the
     output, evidence of a result whose action lists the output among its attempted items, and,
     per output, the newest two content-bearing captures an effective claim on the declaring
-    obligation cites. This is relevance selection only: every selected row still passes the
+    obligation cites. At most three rows per output (newest first) and eight in all, taken
+    round-robin across outputs so one deliverable's repeats never crowd out another's. This is relevance selection only: every selected row still passes the
     content consent, capture authentication, redaction and never-send checks of any excerpt.
     """
 
@@ -1959,16 +1961,19 @@ def declared_output_capture_refs(
         for _, claim in effective_claim_items(projection)
         if claim.payload is not None and not claim.redacted
     ]
-    exact: set[str] = set()
-    linked: set[str] = set()
+
+    def newest(refs: Iterable[str]) -> list[str]:
+        return sorted(set(refs), key=lambda ref: (-frontier(ref), ref.encode("ascii")))
+
+    per_output: list[list[str]] = []
     for obligation, output in outputs:
-        exact.update(
+        exact = {
             ref
             for ref, row in evidence.items()
             if row.payload is not None
             and row.payload.reference is not None
             and _names_output(row.payload.reference, output)
-        )
+        }
         for value, refs in attempted.items():
             if _names_output(value, output):
                 exact.update(refs)
@@ -1983,20 +1988,25 @@ def declared_output_capture_refs(
                 value = str(ref)
                 cited.update({value} & evidence.keys())
                 cited.update(result_evidence(value))
-        captured = sorted(
-            (
-                ref
-                for ref in cited
-                if (payload := evidence[ref].payload) is not None
-                and payload.captured_object_id is not None
-            ),
-            key=lambda ref: (-frontier(ref), ref.encode("ascii")),
+        captured = [
+            ref
+            for ref in newest(cited - exact)
+            if (payload := evidence[ref].payload) is not None
+            and payload.captured_object_id is not None
+        ]
+        per_output.append(
+            (newest(exact) + captured[:_CLAIM_LINKED_CAPTURES_PER_OUTPUT])[
+                :_DECLARED_OUTPUT_CAPTURES_PER_OUTPUT
+            ]
         )
-        linked.update(captured[:_CLAIM_LINKED_CAPTURES_PER_OUTPUT])
-    ordered = sorted(exact, key=lambda ref: (-frontier(ref), ref.encode("ascii"))) + sorted(
-        linked - exact, key=lambda ref: (-frontier(ref), ref.encode("ascii"))
-    )
-    return frozenset(ordered[:_MAX_DECLARED_OUTPUT_CAPTURES])
+    # Round-robin over outputs, newest first within each, so many captures of one deliverable
+    # never take every reserved row from another (Codex review round 2).
+    selected: dict[str, None] = {}
+    for depth in range(_DECLARED_OUTPUT_CAPTURES_PER_OUTPUT):
+        for refs in per_output:
+            if depth < len(refs) and len(selected) < _MAX_DECLARED_OUTPUT_CAPTURES:
+                selected.setdefault(refs[depth])
+    return frozenset(selected)
 
 
 def repair_evidence_refs(projection: ProjectionState, allowed: frozenset[str]) -> frozenset[str]:
