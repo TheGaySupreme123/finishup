@@ -268,3 +268,70 @@ def test_a_failed_result_summary_cannot_forge_a_yoetz_label() -> None:
 
     texts = _texts(_build(case))
     assert texts[str(res(1))] == "(agent text) " + summary
+
+
+def test_a_suffix_less_binary_the_change_marked_is_a_notice() -> None:
+    """tb4n2 P1-12: a compiled ``solver`` has no suffix; Git's binary mark makes it a notice."""
+
+    from datetime import UTC, datetime
+
+    from yoetz.application.semantic_case import CheckTimeChange
+    from yoetz.ports.change_capture import CHECK_CHANGE_MEDIA_TYPE, CheckChangeCapture
+    from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+
+    text = (
+        b"Yoetz check-time change: captured by the Yoetz service when this check ran.\n"
+        b"Files:\n  A solver (binary) untracked\n  A notes (+1 -0) untracked\n"
+        b"End of header. The unified diff follows.\n"
+        b"diff --git a/solver b/solver\nnew file mode 100755\n"
+        b"Binary files /dev/null and b/solver differ\n"
+        b"diff --git a/notes b/notes\n--- /dev/null\n+++ b/notes\n@@ -0,0 +1 @@\n+ok\n"
+    )
+    change = CheckTimeChange(
+        ObjectRef(
+            object_id="obj_00000000-0000-4000-8000-000000000977",
+            plaintext_size=len(text) + 100,
+            commitment="hmac-sha256:" + "9" * 64,
+            envelope_digest="sha256:" + "a" * 64,
+            encryption_format="yoetz-object/1",
+            key_slot="task",
+            metadata=ObjectMetadata(
+                ObjectKind.CHANGE_CAPTURE,
+                CHECK_CHANGE_MEDIA_TYPE,
+                "tsk_10000000-0000-4000-8000-000000000001",
+                datetime(2026, 10, 8, tzinfo=UTC),
+            ),
+        ),
+        CheckChangeCapture(
+            base="task_start",
+            text=text,
+            tracked_files=0,
+            untracked_files=2,
+            omitted_files=0,
+            truncated=False,
+        ),
+    )
+    profile = ReviewContextProfile.EXPANDED
+    case = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000002",
+        frozen_case=_case(
+            _artifact(5, "/app/solver", "The compiled solver."),
+            _artifact(6, "/app/notes", "Plain notes."),
+            _artifact(7, "/elsewhere/solver", "Not the workspace's solver."),
+        ),
+        dependency_digest="sha256:" + "b" * 64,
+        findings=(),
+        review_context_profile=profile,
+        review_selection=ReviewSelectionPolicy.for_profile(profile),
+        policy_id="pvy_10000000-0000-4000-8000-000000000001",
+        policy_version="1",
+        workspace_root="/app",
+        check_time_change=change,
+    )
+
+    texts = _texts(case)
+    assert texts[str(evd(5))].startswith(
+        "[Yoetz: the agent referenced an image or binary file at /app/solver (evidence"
+    )
+    assert texts[str(evd(6))] == "Plain notes."
+    assert texts[str(evd(7))] == "Not the workspace's solver."

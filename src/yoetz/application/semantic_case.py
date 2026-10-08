@@ -24,6 +24,7 @@ from yoetz.application.check import (
     run_deterministic_policies,
 )
 from yoetz.application.missing_for_assessment import (
+    check_change_binary_paths,
     observed_image_evidence,
     supplied_since,
     unsupported_data_type,
@@ -2274,8 +2275,34 @@ def _marker_path(reference: str) -> str:
     return folded
 
 
+def _known_binary(reference: str, binary_paths: frozenset[str], workspace_root: str | None) -> bool:
+    """Whether ``reference`` names a file the check-time change marked binary (tb4n2 R7, P1-12).
+
+    The change lists repository-relative paths; an absolute reference counts only under the
+    workspace root. Lexical only: the path is never opened or resolved.
+    """
+
+    if not binary_paths or not reference or "://" in reference or "\x00" in reference:
+        return False
+    if reference.startswith("/"):
+        if workspace_root is None:
+            return False
+        root = posixpath.normpath(workspace_root).rstrip("/") + "/"
+        path = posixpath.normpath(reference)
+        if not path.startswith(root):
+            return False
+        reference = path[len(root) :]
+    relative = posixpath.normpath(reference)
+    return relative in binary_paths
+
+
 def _binary_file_label(
-    ref: str, payload: EvidenceRecordedPayload, *, captured: bool
+    ref: str,
+    payload: EvidenceRecordedPayload,
+    *,
+    captured: bool,
+    binary_paths: frozenset[str] = frozenset(),
+    workspace_root: str | None = None,
 ) -> tuple[str, bool] | None:
     """The label for a row that records an image or binary file, and whether it is a notice.
 
@@ -2289,7 +2316,14 @@ def _binary_file_label(
     if observed_image_evidence(payload):
         return _OBSERVED_IMAGE_NOTICE_MARKER.format(ref=ref), True
     reference = (payload.reference or "").strip()
-    if not reference or "://" in reference or not unsupported_data_type(reference):
+    if (
+        not reference
+        or "://" in reference
+        or not (
+            unsupported_data_type(reference)
+            or _known_binary(reference, binary_paths, workspace_root)
+        )
+    ):
         return None
     path = _marker_path(reference)
     binding = payload.digest_binding
@@ -2314,6 +2348,8 @@ def _evidence_candidates(
     verification_by_evidence: Mapping[str, _VerificationRun],
     omissions: list[ReviewOmission],
     gaps: set[str],
+    binary_paths: frozenset[str] = frozenset(),
+    workspace_root: str | None = None,
 ) -> list[_ExcerptCandidate]:
     candidates: list[_ExcerptCandidate] = []
     admitted_capture_digests: set[bytes] = set()
@@ -2456,7 +2492,13 @@ def _evidence_candidates(
         binary = (
             None
             if split_diff
-            else _binary_file_label(ref, payload, captured=captured_group is not None)
+            else _binary_file_label(
+                ref,
+                payload,
+                captured=captured_group is not None,
+                binary_paths=binary_paths,
+                workspace_root=workspace_root,
+            )
         )
         if binary is not None:
             # The label leads the excerpt, so a head-and-tail clip always keeps it.
@@ -2577,6 +2619,8 @@ def _select_targeted_excerpts(
     excerpt_count_budget: int | None = None,
     before_lower_ranks: _LowerRankAdmission | None = None,
     declared_output_refs: frozenset[str] = frozenset(),
+    binary_paths: frozenset[str] = frozenset(),
+    workspace_root: str | None = None,
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -2635,6 +2679,8 @@ def _select_targeted_excerpts(
         verification_by_evidence=verification_by_evidence,
         omissions=omissions,
         gaps=gaps,
+        binary_paths=binary_paths,
+        workspace_root=workspace_root,
     )
 
     # Optional command excerpts from actions when expanded selection allows exact commands.
@@ -4357,6 +4403,12 @@ def _build_semantic_case_once(
             excerpt_byte_budget=(max(0, total_excerpt_budget - excerpt_bytes_used)),
             before_lower_ranks=check_time_change_parts if check_change_parts else None,
             declared_output_refs=declared_output_capture_refs(projection, allowed, workspace_root),
+            # A suffix-less binary the change marked (a compiled ``solver``) gets the same
+            # "not sent" notice as a named binary type (tb4n2 P1-12).
+            binary_paths=check_change_binary_paths(
+                None if check_time_change is None else check_time_change.capture
+            ),
+            workspace_root=workspace_root,
         )
         items.extend(excerpts.items)
         targeted.extend(excerpts.targeted)
