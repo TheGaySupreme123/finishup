@@ -1171,6 +1171,16 @@ class _TargetFiles:
         if not self.binary:
             return False
         path = _normal_path(name, self.links.roots, known_path=True)
+        if path is None and name.strip() and "://" not in name:
+            # ``_normal_path`` refuses inner whitespace (prose is not a path), but Git names a
+            # binary ``my solver`` exactly; an exact match against Git's own list is safe.
+            text = name.strip()
+            relative = (
+                _inside(os.path.normpath(text), self.links.roots)
+                if text.startswith("/")
+                else "/".join(part for part in text.split("/") if part not in {"", "."})
+            )
+            return relative is not None and relative in self.binary
         return path is not None and path[0] in self.binary
 
     def __call__(self, target: str) -> frozenset[str]:

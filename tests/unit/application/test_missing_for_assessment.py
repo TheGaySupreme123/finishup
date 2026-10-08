@@ -1365,13 +1365,27 @@ def test_a_suffix_less_binary_the_change_marks_is_an_unsupported_data_type() -> 
     """tb4n2 A11: a compiled ``solver`` or ELF harness reads as Yoetz's limit, never agent work."""
 
     binary = check_change_binary_paths(_binary_capture())
-    for name in ("solver", "./solver", "/work/repo/a.out", "bin/firmware"):
+    for name in (
+        "solver",
+        "./solver",
+        "/work/repo/a.out",
+        "bin/firmware",
+        "old tool",
+        "/work/repo/old tool",
+        "café",
+    ):
         for kind in ("other", "verification_output", "current_diff_for_path"):
             assert _named_file_review(name, kind, binary_paths=binary) == [
                 "yoetz_limit_unsupported_data_type"
             ], (name, kind)
     # A text file in the same change, and a binary's name outside the workspace, stay agent work.
-    for name in ("Makefile", "src/solver.c", "/elsewhere/solver"):
+    for name in (
+        "Makefile",
+        "src/solver.c",
+        "/elsewhere/solver",
+        "/elsewhere/old tool",
+        "old  tool",
+    ):
         assert _named_file_review(name, binary_paths=binary) == ["agent_suppliable"], name
 
 
