@@ -323,9 +323,11 @@ Resolving an obligation is a one-way `open → resolved` state transition, not a
 3. supplies the final bounded `resolution_evidence_refs` (one or more evidence or result ids).
 
 Only `status` and `resolution_evidence_refs` may differ. Changing meaning fields, republishing
-`status: open` for an existing id, mutating an already-resolved obligation, or reopening
-`resolved → open` is rejected with reason `obligation_resolution_mismatch` and invariant
-`meaning_fields_must_repeat` (or `open_to_resolved_only` for an invalid status transition). The
+`status: open` for an open id, or re-resolving an already-resolved obligation is rejected with
+reason `obligation_resolution_mismatch` and invariant `meaning_fields_must_repeat` (or
+`open_to_resolved_only` for an invalid status transition). A resolved obligation whose work no
+longer holds may be reopened (`status: open`) or acknowledged as not done
+(`acknowledged_not_done` with its reason, on `1.1.0`), repeating every meaning field. The
 public error names the mismatched schema field names only — never their values. A worked open +
 resolution pair lives in the `publish_work` tool input schema `examples` entry. Complete request
 bodies remain available at `yoetz://guidance/request-templates.md` if a host drops schema examples.

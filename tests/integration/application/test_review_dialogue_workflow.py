@@ -1456,3 +1456,45 @@ async def test_formal_crypto_repeat_over_a_reasoned_rebuttal_is_a_standing_disag
     assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
         _live_projection(session.app)
     )
+
+
+async def test_a_self_verified_refusal_names_the_recorded_blocking_reasons() -> None:
+    """tb4n2 R5 (issue #1023): the refusal says what disqualified it and the way out.
+
+    The refusal carries the recorded resolution-reason tokens in ``safe_details`` and names them,
+    a next step and the ``yoetz-verification-limit:`` exit in its message, so the agent need not
+    retry ``self_verified`` blind.
+    """
+
+    seed = 3600
+    reviewer = _Reviewer([_challenge_obligation, _still_present_first_finding])
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    result_id, repaired = await _repair(session, at, seed + 20)
+    second = await _check(session, repaired, seed + 40)
+    with pytest.raises(PublicOperationError) as refused:
+        await session.app.respond(
+            RespondRequest.model_validate(
+                _self_verified_wire(
+                    session,
+                    frontier_json(second.result_frontier),
+                    at,
+                    raised,
+                    seed + 50,
+                    "I checked it myself.",
+                    (result_id,),
+                )
+            )
+        )
+    assert _refusal(refused) == "finding_not_proof_limited"
+    details = refused.value.safe_details
+    blocking = cast(tuple[str, ...], details["blocking_reasons"])
+    assert blocking
+    assert "reviewer_verdict_still_present" in blocking
+    message = refused.value.message
+    assert all(token in message for token in blocking)
+    assert "yoetz-verification-limit:" in message
+    assert "the check still sees the issue" in message
+    assert "I checked it myself." not in message

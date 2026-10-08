@@ -6,7 +6,17 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import cast
 
+from pydantic import ValidationError
+
 from yoetz import __version__
+from yoetz.domain.events import (
+    OBLIGATION_SCHEMA_VERSION,
+    EventSchema,
+    ObligationPublishedPayload,
+    decode_payload,
+    obligation_schema_version,
+)
+from yoetz.domain.values import freeze_json
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.ids import IdKind, new_id
 from yoetz.protocol.models import (
@@ -29,7 +39,7 @@ PREPARATION_REMEDIATIONS = {
     "closure_inventory_limit": "The bounded inventory is incomplete; use paginated status without assuming closure.",
     "closure_result_too_large": "The complete preparation exceeds the MCP response bound; use the CLI closure-prepare --output path or read status pages directly, and do not claim closure from an incomplete response.",
     "closure_obligation_unknown": "Select an obligation ID from the returned inventory.",
-    "closure_evidence_unavailable": "Select available, relevant evidence or retain the missing-evidence limitation.",
+    "closure_evidence_unavailable": "Select available evidence ids (evd_) from the inventory in evidence_refs; result ids (res_) go in result_ids. Otherwise retain the missing-evidence limitation.",
     "closure_result_unavailable": "The selected result payload is unavailable; inspect results and retain its limitation.",
     "closure_attempt_selection_required": "Select one obligation, exact requested-item indexes, and an explicit action description.",
     "closure_item_unknown": "Select requested-item indexes from the current obligation.",
@@ -42,6 +52,7 @@ PREPARATION_REMEDIATIONS = {
     "closure_unattempted_items": "Account for genuine attempts or revise the obligation; do not copy unchecked requested items.",
     "closure_obligation_content_unavailable": "The obligation's meaning fields are withheld; do not recreate them to resolve it.",
     "closure_claim_decision_required": "Supply the bounded completion assertion and explicitly select its obligations and support.",
+    "closure_draft_invalid": "The prepared draft did not validate; nothing was recorded. Publish the change yourself with publish_work (obligation_published/1.1.0 accepts every obligation) and report this preparation failure.",
     "closure_output_unwritable": "Nothing was saved. Choose a writable file path in an existing directory and prepare again.",
     "closure_output_not_durable": "The file was replaced, but its directory could not be flushed to disk, so a crash may lose it. Prepare again, saving to a local disk.",
 }
@@ -283,7 +294,9 @@ async def prepare_closure(
                     ),
                 }
             )
-            draft("obligation_published", payload)
+            # One version rule for every obligation draft (issue #1023): a role, directory item
+            # or acknowledgement needs 1.1.0; a plain obligation keeps its 1.0.0 bytes.
+            draft("obligation_published", payload, version=_obligation_draft_version(payload))
     elif selection.phase == "claim":
         if not selection.description or not selection.obligation_ids:
             raise ValueError("closure_claim_decision_required")
@@ -314,13 +327,18 @@ async def prepare_closure(
                 "redaction_profile": "default_local_export",
             }
         )
-    if operation == "publish_work":
-        request.update({"event_drafts": drafts, "dry_run": True})
-        validated = public_model_to_wire(PublishWorkRequest.model_validate(request))
-    elif operation == "respond":
-        validated = public_model_to_wire(RespondRequest.model_validate(request))
-    else:
-        validated = public_model_to_wire(ReceiptRequest.model_validate(request))
+    try:
+        if operation == "publish_work":
+            request.update({"event_drafts": drafts, "dry_run": True})
+            validated = public_model_to_wire(PublishWorkRequest.model_validate(request))
+        elif operation == "respond":
+            validated = public_model_to_wire(RespondRequest.model_validate(request))
+        else:
+            validated = public_model_to_wire(ReceiptRequest.model_validate(request))
+    except ValidationError as exc:
+        # A draft this composer built that its own request model refuses is a preparation
+        # defect, never an internal error the agent cannot act on (tb4n2 retro S, N2-2).
+        raise ValueError("closure_draft_invalid") from exc
     output["operation"] = operation
     output["request"] = validated
     recovery = StatusRequest.model_validate(
@@ -343,3 +361,22 @@ async def prepare_closure(
         "After timeout, inspect this operation: absent permits replay; pending keeps the same request; committed uses its stored result. Never regenerate the request identity."
     )
     return output
+
+
+def _obligation_draft_version(payload: dict[str, object]) -> str:
+    """The ``obligation_published`` version for a resolve draft, by the shared rule.
+
+    The payload is read with the 1.1.0 codec (a superset), then ``obligation_schema_version``
+    picks 1.1.0 only for a payload that needs it. A payload the codec refuses is a draft defect.
+    """
+
+    try:
+        decoded = decode_payload(
+            EventSchema("obligation_published", OBLIGATION_SCHEMA_VERSION),
+            freeze_json(cast(JsonValue, payload)),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("closure_draft_invalid") from exc
+    if type(decoded) is not ObligationPublishedPayload:
+        raise ValueError("closure_draft_invalid")
+    return obligation_schema_version(decoded)

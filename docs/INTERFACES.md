@@ -840,12 +840,14 @@ Key payload fields (minimum; full shapes in `src/yoetz/domain/events.py`):
   Absent `role` keeps the 1.0.0 meaning (a `file` item may be an input or an output). `status`
   adds `acknowledged_not_done` (`ObligationStatus.ACKNOWLEDGED_NOT_DONE`) with
   `acknowledged_not_done_reason` (1..4096 UTF-8 bytes, non-blank), required for that status and
-  forbidden otherwise; `resolution_evidence_refs` stays reserved to `resolved`. The version is a
-  pure function of the payload: 1.1.0 iff it carries a role, a `directory` item or
-  `acknowledged_not_done`, else 1.0.0; each version refuses the other's payloads, so released
-  `1.0.0` stays admitted and byte-identical. The reducer keeps the last effective status among
-  `open`, `acknowledged_not_done` and `resolved` (meaning fields must repeat; `resolved` is
-  terminal); consumers treat `acknowledged_not_done` as not resolved, like `open`, and status
+  forbidden otherwise; `resolution_evidence_refs` stays reserved to `resolved`. One rule
+  (`domain.events.obligation_schema_admits`, ADR-041): 1.0.0 refuses a role, a `directory` item
+  and `acknowledged_not_done`; 1.1.0 is a superset that admits every payload, including a plain
+  one. Yoetz itself drafts the lowest admitting version (`obligation_schema_version`: 1.1.0 iff
+  one of those is present), so released `1.0.0` stays admitted and byte-identical. Ledgers that
+  hold a plain 1.1.0 obligation do not replay on a build older than this rule. The reducer keeps the last effective status among
+  `open`, `acknowledged_not_done` and `resolved` (meaning fields must repeat; a `resolved`
+  obligation may be reopened `open` or acknowledged, never re-resolved in place; ADR-041); consumers treat `acknowledged_not_done` as not resolved, like `open`, and status
   `view=obligations` (status-result 1.4.0) shows the status and `acknowledged_not_done_reason`
   under the `obligation_text` category, like the description. The unreleased event-draft 1.2.0 (and so `publish-work-request/1.2.0`) admits
   the pair in place and excludes it from its opaque branch. `role: input` items never yield
@@ -6750,8 +6752,10 @@ then every actionable gap code and
 `check_payload_unavailable`). `acknowledged_not_done` lists up to 64 obligation and finding ids
 recorded as not done, and `acknowledged_not_done_count` counts them all. An obligation is recorded as not done
 by `obligation_published` 1.1.0 with `status: "acknowledged_not_done"` and a required
-`acknowledged_not_done_reason` (1..4096 UTF-8 bytes; 1.1.0 is used if and only if a 1.1.0-only
-feature is; issue #997, ADR-032 slice C); it is then not open and not resolved, a later
+`acknowledged_not_done_reason` (1..4096 UTF-8 bytes; 1.0.0 refuses that status; issue #997,
+ADR-032 slice C); it is then not open and not resolved, outside completion coverage (a completion
+claim that omits it raises no `completion_plan_not_claimed`; one that names it still raises
+`completion_with_open_obligations`; ADR-041), a later
 publication of it with `open` or `resolved` takes it back, and the obligations view shows it as
 `open`. A `decision_recorded` statement line `yoetz-assumption:<obligation id>` or
 `yoetz-verification-limit:<obligation id>` (issue #995, ADR-033) adds the standing code
@@ -8175,6 +8179,11 @@ evidence version, strength or content availability); it accepts no waiver fields
 blank, `/evidence_refs` empty), `finding_terminal`, `finding_not_rechecked` (no later check tested
 the finding: repair, then `check`), `finding_not_proof_limited` (the newest check that could resolve
 it still sees it or names agent work); the last two continue as `input_correction_new_identity`.
+`finding_not_proof_limited` carries `safe_details.blocking_reasons`: the 1-32 recorded
+resolution-reason tokens that disqualified it (`self_verification_blocking_reasons`, matching
+`^(coverage:)?[a-z][a-z0-9_]{0,95}$`, `no_recorded_limit` when the check recorded none), and its
+message names them with a next step and the `yoetz-verification-limit:<obligation id>` exit
+(ADR-041).
 Eligibility is `kernel/self_verification.self_verification_refusal(state, finding_id, records)`
 over the resolution reasons of that check (ADR-034): any `coverage:<code>` classified standing in
 `GAP_CLASSIFICATION` is a Yoetz limit. The to-do state `self_verified` is terminal and never
@@ -8731,11 +8740,12 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   frozen case) or `None`. Agent-actionable (`AGENT_ACTIONABLE_TASK_FACT_GAPS`):
   `planned_verification_not_observed`, `planned_verification_failed`,
   `planned_verification_stale`, `edited_after_last_verification`, `requested_output_git_ignored`,
-  `declared_output_removed` (ADR-035). Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
+  `declared_output_removed` (ADR-035), `declared_output_emptied` (ADR-035 amendment, ADR-041). Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
   `planned_verification_unobservable`, `planned_verification_agent_linked`, `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`, `verification_only_as_root`,
   `obligation_blocked_outside_agent_control`, `requested_output_ignored_by_repository`,
   `declared_output_content_moved` (ADR-035),
+  `deliverable_references_undeclared_file` (ADR-035 amendment, #1022),
   `requested_output_unchanged`,
   `requested_output_outside_workspace`, `requested_output_unverified`. Each code is classified
   once in `GAP_CLASSIFICATION`; standing ones are advisory for the check verdict, the receipt
@@ -8872,6 +8882,15 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   (`CONTENT_MOVED_MIN_LINES`), `2 * lines_lost >= base_lines` and
   `2 * undeclared_lines_added >= lines_lost`; the check then adds the standing disclosure
   `declared_output_content_moved` (`DECLARED_OUTPUT_CONTENT_MOVED_GAP`), never a Stop-gate token.
+  `emptied_declared_items(projection, states) -> tuple[(obligation, item index), ...]` (ADR-041)
+  names declared `file` items of an obligation that is `resolved` or named by an effective
+  completion claim (not `acknowledged_not_done`) whose
+  `inside` state exists, is not deleted, and has `size_bytes == 0` (`RequestedPathProbe.size_bytes`,
+  a regular file's size from the link-free probe; never for `__init__.py`, `py.typed`, `.gitkeep`,
+  `.keep`, `.nojekyll`), or `base_lines >= 20` with fewer than a tenth kept, not the content-moved
+  shape, and no other declared delivered item changed; the check adds the agent-actionable
+  `declared_output_emptied` (`DECLARED_OUTPUT_EMPTIED_GAP`), a Stop-gate token, under which the
+  obligation's `resolved` no longer counts as delivered.
   `requested_output_states` fills those fields only for a declared `file` the change modifies
   (`M`), through the optional adapter method `count_change_lines(workspace, base_commit,
   base_paths) -> ChangeLineCounts(changed: tuple[ChangeLineCount(path, added, removed,
@@ -8879,6 +8898,21 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   changes, newline counts of untracked non-ignored files (bounded, no link followed, no
   credential-named or binary file), base line counts for the named paths; numbers only, nothing
   stored. A declared `directory` covers the files beneath it.
+  `undeclared_reference_inputs(projection, states, blocked=) -> (deliverables, declared)` (tb4n2
+  R2, #1022) returns the values of declared output `file` items that exist `inside` and were not
+  deleted (obligations neither blocked nor `acknowledged_not_done`) and every `file`/`directory`
+  value of any role. `application.check_change.count_undeclared_references(...) -> int` probes
+  them, takes as candidates the files the check-time change created (untracked or `A`) that no
+  declared value names or covers (pre-existing tracked files never count), and calls the optional
+  adapter method `count_undeclared_references(workspace, deliverables, candidates) -> int`: for at
+  most 16 root-relative source deliverables (`.py .sh .bash .js .mjs .cjs .ts .rb .pl .r .R .jl .lua
+  .php`, or no suffix with a `#!` first line) it reads at most 256 KiB from the start, link-free,
+  never a credential-named, multiply linked or binary file, and counts those with a one-line quoted
+  literal (`'`, `"` or backtick) equal to a candidate path, ending with `/` plus it, or equal to a
+  candidate basename of at least 5 bytes. Only the count leaves the adapter; nothing is stored. A
+  count above zero adds the standing disclosure `deliverable_references_undeclared_file`
+  (`DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP`), never a Stop-gate token or finding; any failure
+  is `0`.
 - **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the
   absent-output fact, and skips blocked obligations. `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
@@ -8899,7 +8933,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `obligations_open`, `receipt_findings_unresolved`, `closing_review_required`,
   `planned_verification_failed`,
   `planned_verification_not_observed`, `planned_verification_stale`,
-  `requested_output_git_ignored`, `declared_output_removed`. `closure_gate_from_readiness(readiness, frontier_sequence=,
+  `requested_output_git_ignored`, `declared_output_removed`, `declared_output_emptied`. `closure_gate_from_readiness(readiness, frontier_sequence=,
   frontier_digest=, observation_pending=, reasked_blockers=) -> ClosureGate(identity, text, items,
   blocker_keys) | None` also fires, in `action_required` or `ready_with_limitations`, for a
   `blocked_obligations` pair whose `<obligation id>:<kind>` key is not in `reasked_blockers`. It adds

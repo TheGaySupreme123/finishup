@@ -20,6 +20,18 @@ action of the session named it (a new deliverable written, then moved away: musi
 agent-actionable: restore the delivered file, or correct the requested item when the task really
 asked for the deletion.
 
+``declared_output_emptied`` (tb4n2 R2, ADR-035 amendment) re-derives a resolved obligation from
+the current deliverable instead of trusting its latched status. It is raised when a declared
+``file`` of an obligation that is ``resolved``, or that an effective completion claim names, is now
+an existing regular file of 0 bytes (not a conventionally empty name such as ``__init__.py``), or
+a tracked file that kept under a tenth of its (at least ``CONTENT_MOVED_MIN_LINES``) task-base
+lines without the content-moved shape below and with no other declared output changed. While it
+stands that obligation is no longer counted as delivered: the fact is agent-actionable and a
+Stop-gate token. It clears at the next check once the file is restored, or once the obligation is
+republished open or ``acknowledged_not_done``; a disclosure line never clears it (formal-crypto S
+emptied its delivered ``solve.sage`` after a finding, with six obligations still recorded
+resolved).
+
 ``declared_output_content_moved`` is the non-blocking disclosure for content moved out of a
 declared file that still exists (interleaved-vigenere). A bounded line-count read of the
 check-time change sets ``base_lines``, ``lines_lost`` and ``undeclared_lines_added`` on the
@@ -35,12 +47,14 @@ from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 from typing import Final
 
-from yoetz.domain.events import ActionKind
+from yoetz.domain.events import ActionKind, ClaimKind, ObligationStatus
 from yoetz.domain.values import EventId, ObligationId
+from yoetz.kernel.claims import effective_claim_items
 from yoetz.kernel.command_attempts import attempted_items_for_obligation
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
+    DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
     RequestedOutputState,
     blocked_obligations,
@@ -50,11 +64,14 @@ from yoetz.kernel.task_facts import (
 __all__ = [
     "CONTENT_MOVED_MIN_LINES",
     "DECLARED_OUTPUT_CONTENT_MOVED_GAP",
+    "DECLARED_OUTPUT_EMPTIED_GAP",
     "DECLARED_OUTPUT_REMOVED_GAP",
     "content_moved_declared_items",
     "declared_delivered_items",
+    "emptied_declared_items",
     "declared_output_removed",
     "removed_declared_items",
+    "undeclared_reference_inputs",
 ]
 
 _DECLARED_KINDS: Final = frozenset({"file", "directory"})
@@ -64,6 +81,13 @@ _NO_BATCHES: Final[Mapping[EventId, str]] = MappingProxyType({})
 # many lines and at least half of its task-base lines, and the same change added at least half as
 # many lines to files outside the declared delivered set.
 CONTENT_MOVED_MIN_LINES: Final = 20
+# The truncation rule of ``declared_output_emptied``: a tracked declared file that kept fewer than
+# one line in this many of its task-base lines.
+EMPTIED_KEPT_FRACTION: Final = 10
+# Files that are conventionally empty; a 0-byte one is never "emptied".
+_CONVENTIONALLY_EMPTY: Final = frozenset(
+    {"__init__.py", "py.typed", ".gitkeep", ".keep", ".nojekyll"}
+)
 
 
 def _wire(value: object) -> object:
@@ -188,11 +212,147 @@ def content_moved_declared_items(
             or state.undeclared_lines_added is None
         ):
             continue
-        lost = state.lines_lost
-        if (
-            lost >= CONTENT_MOVED_MIN_LINES
-            and 2 * lost >= state.base_lines
-            and 2 * state.undeclared_lines_added >= lost
-        ):
+        if _content_moved(state):
             moved.append((obligation, index))
     return tuple(moved)
+
+
+def _content_moved(state: RequestedOutputState) -> bool:
+    if state.base_lines is None or state.lines_lost is None or state.undeclared_lines_added is None:
+        return False
+    lost = state.lines_lost
+    return (
+        lost >= CONTENT_MOVED_MIN_LINES
+        and 2 * lost >= state.base_lines
+        and 2 * state.undeclared_lines_added >= lost
+    )
+
+
+def _delivered_obligations(projection: ProjectionState) -> frozenset[ObligationId]:
+    """Obligations the record presents as delivered: ``resolved``, or named by an effective
+    completion claim, unless acknowledged as not done."""
+
+    claimed: set[ObligationId] = set()
+    for _key, record in effective_claim_items(projection):
+        claim = record.payload
+        if claim is not None and claim.claim_kind is ClaimKind.COMPLETION:
+            claimed.update(claim.obligation_refs)
+    delivered: set[ObligationId] = set()
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None or payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE:
+            continue
+        if payload.status is ObligationStatus.RESOLVED or obligation in claimed:
+            delivered.add(obligation)
+    return frozenset(delivered)
+
+
+def _distinct_paths(
+    state: RequestedOutputState, value: str, other: RequestedOutputState, other_value: str
+) -> bool:
+    """Whether another declared item is not the very same file as *state*'s.
+
+    The same file declared twice (absolute and relative) is one deliverable (Codex review 2). A
+    declared directory that holds it counts as another output: content split into a sibling under
+    that directory is a refactor (Codex review 3), so truncation is not raised there; a 0-byte
+    file still is.
+    """
+
+    if state.relative is not None and other.relative is not None:
+        return state.relative.rstrip("/") != other.relative.rstrip("/")
+    return value.rstrip("/") != other_value.rstrip("/")
+
+
+def emptied_declared_items(
+    projection: ProjectionState,
+    states: Mapping[tuple[ObligationId, int], RequestedOutputState],
+    *,
+    blocked: Iterable[ObligationId] | None = None,
+) -> tuple[tuple[ObligationId, int], ...]:
+    """Declared delivered files of a delivered obligation that are now empty or truncated.
+
+    Only an ``inside`` state that exists, was not deleted, and is a regular file qualifies:
+
+    * 0 bytes, unless its name is conventionally empty (``__init__.py``, ``py.typed``,
+      ``.gitkeep``, ``.keep``, ``.nojekyll``);
+    * or truncated: ``base_lines >= CONTENT_MOVED_MIN_LINES`` with fewer than one line in
+      ``EMPTIED_KEPT_FRACTION`` kept, not the content-moved shape (the standing
+      ``declared_output_content_moved`` disclosure), and no *other* declared delivered item
+      changed in the same change: a split into another declared output is a refactor, and its
+      growth is not counted in ``undeclared_lines_added``, so it is never read as truncation.
+
+    An unread size or line count never raises it. Deliberately conservative: a wrong
+    agent-actionable fact would steer the agent away from finished work.
+    """
+
+    delivered = _delivered_obligations(projection)
+    if not delivered:
+        return ()
+    rows = declared_delivered_items(projection, blocked=blocked)
+    emptied: list[tuple[ObligationId, int]] = []
+    for obligation, index, kind, value in rows:
+        if kind != "file" or obligation not in delivered:
+            continue
+        state = states.get((obligation, index))
+        if state is None or state.location != "inside" or state.exists is not True or state.deleted:
+            continue
+        if state.size_bytes == 0:
+            if value.rstrip("/").rsplit("/", 1)[-1] not in _CONVENTIONALLY_EMPTY:
+                emptied.append((obligation, index))
+            continue
+        other_declared_changed = any(
+            (other := states.get((other_obligation, other_index))) is not None
+            and other.changed is not False
+            and _distinct_paths(state, value, other, other_value)
+            for other_obligation, other_index, _other_kind, other_value in rows
+        )
+        if (
+            state.base_lines is not None
+            and state.lines_lost is not None
+            and state.base_lines >= CONTENT_MOVED_MIN_LINES
+            and EMPTIED_KEPT_FRACTION * (state.base_lines - state.lines_lost) < state.base_lines
+            and not _content_moved(state)
+            and not other_declared_changed
+        ):
+            emptied.append((obligation, index))
+    return tuple(emptied)
+
+
+def undeclared_reference_inputs(
+    projection: ProjectionState,
+    states: Mapping[tuple[ObligationId, int], RequestedOutputState],
+    *,
+    blocked: Iterable[ObligationId] | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The inputs of the ``deliverable_references_undeclared_file`` read (tb4n2 R2).
+
+    Returns ``(deliverables, declared)``: the values of declared delivered ``file`` items whose
+    check-time state is ``inside``, existing and not deleted, of obligations neither blocked nor
+    ``acknowledged_not_done``; and the value of every ``file`` or ``directory`` item of every
+    effective obligation, whatever its role, which the caller excludes from the referenced
+    candidates (a declared input or output was delivered or is expected). Values are deduplicated
+    in first-seen order; nothing is read here.
+    """
+
+    deliverables: dict[str, None] = {}
+    for obligation, index, kind, value in declared_delivered_items(projection, blocked=blocked):
+        payload = projection.obligations[obligation].payload
+        if (
+            kind != "file"
+            or payload is None
+            or payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+        ):
+            continue
+        state = states.get((obligation, index))
+        if state is None or state.location != "inside" or state.exists is not True or state.deleted:
+            continue
+        deliverables[value] = None
+    declared: dict[str, None] = {}
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for item in payload.requested_items:
+            if _wire(item.item_kind) in _DECLARED_KINDS:
+                declared[item.value] = None
+    return tuple(deliverables), tuple(declared)

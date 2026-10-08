@@ -30,6 +30,7 @@ __all__ = [
     "CHANGE_CAPTURE_UNAVAILABLE_REASONS",
     "CHECK_CHANGE_MEDIA_TYPE",
     "MAX_CHECK_CHANGE_TEXT_BYTES",
+    "MAX_PROBED_FILE_SIZE",
     "TASK_CHANGE_BASE_MEDIA_TYPE",
     "ChangeBaseKind",
     "ChangeCapturePort",
@@ -298,6 +299,9 @@ class RequestedPathProbe:
     # entry that is not a directory beneath it. ``False`` means empty or only empty directories;
     # ``None`` means not a directory, or the walk was blocked or exceeded its bound.
     holds_file: bool | None = None
+    # For an existing regular file only (tb4n2 R2): its size in bytes from the same link-free
+    # ``stat``; no content is read. ``None`` for anything else or when the walk was blocked.
+    size_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if self.location not in {"inside", "outside"}:
@@ -313,9 +317,17 @@ class RequestedPathProbe:
             raise _invalid()
         if self.holds_file is not None and self.exists is not True:
             raise _invalid()
+        if self.size_bytes is not None and (
+            self.exists is not True
+            or type(self.size_bytes) is not int
+            or not 0 <= self.size_bytes <= MAX_PROBED_FILE_SIZE
+        ):
+            raise _invalid()
 
 
 _MAX_LINE_COUNT: Final = 1 << 40
+# The largest file size a probe reports (the JSON-safe integer range); a larger one is unknown.
+MAX_PROBED_FILE_SIZE: Final = (1 << 53) - 1
 
 
 def _line_count(value: object) -> bool:

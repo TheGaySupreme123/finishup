@@ -248,7 +248,9 @@ because of its own limits (a *Yoetz limit*: content it could not capture or had 
 observations, a review packet that could not show the repair). You verify the repair yourself,
 record that evidence, and respond `self_verified` with how you verified it and the evidence ids.
 Yoetz accepts it only after a later check of the finding and only when that check no longer sees
-the issue itself (`finding_not_rechecked` and `finding_not_proof_limited` otherwise). The item stops
+the issue itself (`finding_not_rechecked` and `finding_not_proof_limited` otherwise; the
+`finding_not_proof_limited` refusal lists the recorded reasons that disqualified it in
+`blocking_reasons` and says what to do next). The item stops
 being your work and never counts as receipt-blocking, but it is never resolved: closure readiness
 lists `finding_self_verified` as a standing limitation, the receipt names it in its own
 "Self-verified by the agent; Yoetz could not prove the repair" section, and the receipt's
@@ -277,8 +279,13 @@ Three more things the receipt discloses in their own sections, by id only:
   trying to repair it, publish it again with `status: "acknowledged_not_done"` and an
   `acknowledged_not_done_reason` (event version 1.1.0). It is no longer open work, readiness lists
   it under `acknowledged_not_done`, and the receipt names it under "Obligations acknowledged as not
-  done" and never reads clean. Publishing the obligation again as `open` (or `resolved` with
-  evidence) takes it back.
+  done" and never reads clean. Leave it out of your completion claim: an acknowledged obligation
+  is outside completion coverage, so omitting it is not a scope gap, while naming it in the claim
+  is still flagged. Publishing the obligation again as `open` (or `resolved` with evidence) takes
+  it back.
+- **Emptied deliverables.** When a file your resolved or claimed obligation delivers is now empty
+  or truncated, `declared_output_emptied` asks you once at Stop to restore it, and that obligation
+  no longer counts as done until you restore it, reopen it, or acknowledge it as not done.
 - **Findings the review says the task requires.** A finding you answered `acknowledged_not_done`
   whose review challenge says the task itself requires the work is listed as
   `finding_premise_disputed` and under "Not done although the review says the task requires it".

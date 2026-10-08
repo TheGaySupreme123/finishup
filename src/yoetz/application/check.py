@@ -101,8 +101,10 @@ from yoetz.kernel.claims import (
 )
 from yoetz.kernel.delivered_set import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
+    DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
     content_moved_declared_items,
+    emptied_declared_items,
     removed_declared_items,
 )
 from yoetz.kernel.deterministic_checks import (
@@ -159,6 +161,7 @@ from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_finding
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
+    DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     confirmed_blocked_obligation_ids,
     requested_output_facts,
 )
@@ -2320,7 +2323,10 @@ async def _requested_output_inputs(
     request_id: str,
 ) -> tuple[_PolicyEvaluator, tuple[str, ...], bool]:
 
-    from yoetz.application.check_change import requested_output_states
+    from yoetz.application.check_change import (
+        count_undeclared_references,
+        requested_output_states,
+    )
 
     states = await requested_output_states(
         projection=case.projection,
@@ -2337,9 +2343,28 @@ async def _requested_output_inputs(
         # One fact per item: a removed deliverable is not also reported as an absent output.
         codes.add(DECLARED_OUTPUT_REMOVED_GAP)
         found = [item for item in found if item not in removed]
+    if emptied_declared_items(case.projection, states, blocked=confirmed):
+        # tb4n2 R2: a delivered obligation's deliverable is now empty or truncated, so its
+        # recorded ``resolved`` no longer counts as delivered (agent work, Stop-gate token).
+        codes.add(DECLARED_OUTPUT_EMPTIED_GAP)
     if content_moved_declared_items(case.projection, states, blocked=confirmed):
         # A non-blocking disclosure (ADR-035): never a Stop-gate token, never a finding.
         codes.add(DECLARED_OUTPUT_CONTENT_MOVED_GAP)
+    if (
+        await count_undeclared_references(
+            projection=case.projection,
+            capture=capture,
+            source=source,
+            port=port,
+            states=states,
+            blocked=confirmed,
+            request_id=request_id,
+        )
+        > 0
+    ):
+        # tb4n2 R2: a declared deliverable names a file the change created but never declared,
+        # so the delivery may not carry what it needs. Standing disclosure (ADR-035 amendment).
+        codes.add(DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP)
     # E4 (#989): an absent output is reported only once work on its obligation began.
     absent = reportable_absent_outputs(case, frozenset(found))
     gaps = tuple(sorted(codes, key=str.encode))

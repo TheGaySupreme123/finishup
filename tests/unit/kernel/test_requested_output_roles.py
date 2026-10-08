@@ -235,7 +235,7 @@ def _acknowledged(obligation: ObligationId) -> ObligationPublishedPayload:
 
 
 def test_acknowledged_not_done_projects_and_last_effective_status_wins() -> None:
-    """#1002/#996: open -> acknowledged_not_done -> open -> resolved; resolved stays terminal."""
+    """#1002/#996: open -> acknowledged_not_done -> open -> resolved; #1022: then reopened."""
 
     ledger = ObservedLedger()
     ledger.append(_V1_0, _obligation(_A), observed=False)
@@ -263,7 +263,13 @@ def test_acknowledged_not_done_projects_and_last_effective_status_wins() -> None
     assert resolved is not None and resolved.status is ObligationStatus.RESOLVED
     assert open_effective_obligations(resolved_state) == ()
 
+    # tb4n2 R2 (#1022): a resolution no longer holding is acknowledged as not done...
     ledger.append(_V1_1, _acknowledged(_A), observed=False)
+    after = replay(ledger.prefix).obligations[_A].payload
+    assert after is not None and after.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+    # ...but a resolution is never re-recorded in place.
+    ledger.append(_V1_0, _obligation(_A, status=ObligationStatus.RESOLVED), observed=False)
+    ledger.append(_V1_0, _obligation(_A, status=ObligationStatus.RESOLVED), observed=False)
     with pytest.raises(ObligationResolutionMismatch):
         replay(ledger.prefix)
 

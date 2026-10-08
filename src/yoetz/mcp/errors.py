@@ -254,6 +254,23 @@ _EVENT_DRAFT_PAYLOAD_FIELD_POINTER: Final = re.compile(
 )
 # Payload pointers the unknown-key hint answers. Deeper pointers name their own admitted values.
 _EVENT_DRAFT_PAYLOAD_POINTER: Final = re.compile(r"/event_drafts/[0-9]{1,3}/payload", re.ASCII)
+# tb4n2 R3 (issue #1023): where a 1.1.0-only obligation feature lands when the draft says 1.0.0.
+_OBLIGATION_V1_1_FEATURE_POINTER: Final = re.compile(
+    r"/event_drafts/[0-9]{1,3}/payload(?:/status|/requested_items/[0-9]{1,2}(?:/item_kind)?)?",
+    re.ASCII,
+)
+_OBLIGATION_ITEM_POINTER: Final = re.compile(
+    r"/event_drafts/[0-9]{1,3}/payload/requested_items/[0-9]{1,2}", re.ASCII
+)
+_OBLIGATION_ITEM_KEYS_HINT: Final = (
+    "a requested item admits only item_kind, value and role, and role only on"
+    " obligation_published 1.1.0 (on file and directory items)"
+)
+_OBLIGATION_VERSION_HINT: Final = (
+    "obligation_published 1.0.0 admits no item role, no directory item and no"
+    " acknowledged_not_done status; only obligation_published 1.1.0 carries those (and it also"
+    " accepts a plain obligation)"
+)
 _EVENT_DRAFT_NESTED_PAYLOAD_POINTER: Final = re.compile(
     r"/event_drafts/[0-9]{1,3}/payload/[a-z]", re.ASCII
 )
@@ -633,6 +650,7 @@ def authoring_hint(
         # Fixed order, least specific last, so truncation at _MAX_HINT_FIELDS always keeps the
         # part that names the most about how to author the next request.
         keyed_parts: list[tuple[str, tuple[str, str]]] = [
+            *((text, (text, "")) for text in _obligation_version_hint_parts(locations)),
             *_family_payload_contract_hint_parts(document, locations),
             *_unknown_payload_key_hint_parts(document, locations),
             *_conditional_requirement_hint_parts(document, locations),
@@ -1236,6 +1254,39 @@ def _is_event_draft_index_pointer(location: Mapping[str, str]) -> bool:
     if len(segments) == 2 and segments[1].isdigit():
         return True
     return len(segments) == 3 and segments[1].isdigit() and segments[2] == "payload"
+
+
+def _obligation_version_hint_parts(locations: Sequence[Mapping[str, str]]) -> list[str]:
+    """The one obligation version sentence for a 1.1.0-only feature sent on 1.0.0 (issue #1023).
+
+    It fires for a 1.0.0 ``obligation_published`` location at the payload, its ``status`` or a
+    requested item's ``item_kind``, and for an unknown key on a requested item (``role`` is the
+    only key a requested item gains in 1.1.0; requested items exist only on obligations). The
+    sentence is checked-in text, never caller content.
+    """
+
+    for location in locations:
+        pointer = location.get("field", "")
+        if type(pointer) is not str:
+            continue
+        reason = location.get("reason", "")
+        on_v1_0 = (
+            location.get("family") == "obligation_published"
+            and location.get("family_version") == "1.0.0"
+            and _OBLIGATION_V1_1_FEATURE_POINTER.fullmatch(pointer) is not None
+            and "missing_fields" not in location
+        )
+        unknown_item_key = (
+            reason == _EXTRA_FORBIDDEN_REASON
+            and _OBLIGATION_ITEM_POINTER.fullmatch(pointer) is not None
+        )
+        if on_v1_0:
+            return [_OBLIGATION_VERSION_HINT]
+        if unknown_item_key:
+            # The validator does not say which key or version, so state the item contract that
+            # is true for both: an unknown key is wrong everywhere, a role needs 1.1.0.
+            return [_OBLIGATION_ITEM_KEYS_HINT]
+    return []
 
 
 def _corrective_hint_parts(tool: str | None, locations: Sequence[Mapping[str, str]]) -> list[str]:

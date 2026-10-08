@@ -239,3 +239,41 @@ def test_a_failed_directory_flush_says_the_file_was_replaced_but_may_not_survive
     assert sorted(path.name for path in tmp_path.iterdir() if path.name != "state") == [
         "closure.json"
     ]
+
+
+@pytest.mark.parametrize(
+    ("reason", "remedy"),
+    [
+        # tb4n2 retro S (N2-2): a draft the composer's own request model refuses is a typed
+        # preparation failure with a way forward, never an internal error (issue #1023).
+        ("closure_draft_invalid", "Publish the change yourself with publish_work"),
+        ("closure_evidence_unavailable", "result ids (res_) go in result_ids"),
+    ],
+)
+def test_a_preparation_refusal_prints_its_remediation(
+    monkeypatch: pytest.MonkeyPatch, reason: str, remedy: str
+) -> None:
+    closed: list[bool] = []
+
+    class Client:
+        async def status(self, _request: object) -> None:
+            raise AssertionError("prepare_closure is replaced in this test")
+
+        async def close(self) -> None:
+            closed.append(True)
+
+    async def connect() -> ServiceClient:
+        return cast(ServiceClient, Client())
+
+    async def refuse(*_args: object) -> dict[str, JsonValue]:
+        raise ValueError(reason)
+
+    monkeypatch.setattr(cli, "build_service_client", connect)
+    monkeypatch.setattr(closure, "prepare_closure", refuse)
+    code, stdout, stderr = _invoke()
+    assert code == 2
+    assert stdout == b""
+    assert stderr.startswith(f"{reason}: ")
+    assert remedy in stderr
+    assert reason in closure.PREPARATION_REMEDIATIONS
+    assert closed == [True]

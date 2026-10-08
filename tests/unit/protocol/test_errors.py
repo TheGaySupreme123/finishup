@@ -16,6 +16,7 @@ from typing import TypeAliasType, cast
 import pytest
 
 import yoetz.protocol.errors as errors_module
+from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.errors import (
     PROTOCOL_REASON_CODES,
     SAFE_DETAIL_KEYS,
@@ -25,6 +26,7 @@ from yoetz.protocol.errors import (
     SafeDetailValue,
     normalize_safe_details,
 )
+from yoetz.protocol.schemas import validate_schema_instance
 
 _VALID_CORRELATION_ID = "err_00000000-0000-4000-8000-000000000000"
 _OTHER_CORRELATION_ID = "err_00000000-0000-4000-8000-000000000001"
@@ -507,7 +509,7 @@ def test_public_error_code_membership() -> None:
     assert tuple(member.name for member in PublicErrorCode) == expected
     assert tuple(member.value for member in PublicErrorCode) == expected
     assert isinstance(SafeDetailValue, TypeAliasType)
-    assert SafeDetailValue.__value__ == str | int
+    assert SafeDetailValue.__value__ == str | int | tuple[str, ...]
 
 
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
@@ -771,6 +773,7 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
         "availability",
         "availability_inherited",
         "availability_request_id",
+        "blocking_reasons",
         "component",
         "continuation",
         "count",
@@ -836,6 +839,7 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
     accepted = normalize_safe_details(
         {
             "actual_version": "1.0.0+local",
+            "blocking_reasons": ("issue_returned_again",),
             "authorize_command": "yoetz consent authorize",
             "availability": "terminal_unavailable",
             "availability_inherited": True,
@@ -874,7 +878,7 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
     assert accepted["component"] == "ready"
     assert normalize_safe_details({"phase": "projection"}) == {"phase": "projection"}
     assert normalize_safe_details({"phase": "user_supplied_value"}) == {}
-    assert all(type(value) in {str, int, bool} for value in accepted.values())
+    assert all(type(value) in {str, int, bool, tuple} for value in accepted.values())
     assert isinstance(accepted, MappingProxyType)
     hostile = _KnownKeyOnlyMapping()
     assert dict(normalize_safe_details(hostile)) == {"count": 3}
@@ -1083,3 +1087,37 @@ def test_public_dict_shape_and_copy_are_exact() -> None:
         _VALID_CORRELATION_ID,
     ).as_public_dict()
     assert tuple(empty) == ("code", "message", "retryable", "correlation_id")
+
+
+def test_blocking_reasons_detail_admits_only_bounded_closed_tokens() -> None:
+    """Issue #1023: the self_verified refusal names its closed reason tokens, never prose."""
+
+    accepted = normalize_safe_details(
+        {
+            "reason_code": "finding_not_proof_limited",
+            "blocking_reasons": ("coverage:completion_plan_not_claimed", "issue_returned_again"),
+        }
+    )
+    assert accepted["blocking_reasons"] == (
+        "coverage:completion_plan_not_claimed",
+        "issue_returned_again",
+    )
+    for bad in (
+        (),
+        ("Fix the bug please",),
+        ("coverage:" + "a" * 97,),
+        tuple(f"reason_{index}" for index in range(33)),
+        "issue_returned_again",
+        (1,),
+    ):
+        assert "blocking_reasons" not in normalize_safe_details({"blocking_reasons": bad})
+    error = PublicOperationError(
+        PublicErrorCode.INVALID_REQUEST,
+        "refused",
+        False,
+        safe_details={"blocking_reasons": ("issue_returned_again",)},
+        correlation_id="err_00000000-0000-4000-8000-000000000001",
+    )
+    public = error.as_public_dict()
+    assert public["safe_details"] == {"blocking_reasons": ["issue_returned_again"]}
+    validate_schema_instance("public-error", "1.0.0", cast(JsonValue, public))

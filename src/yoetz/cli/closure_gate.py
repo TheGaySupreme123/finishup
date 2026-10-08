@@ -49,6 +49,7 @@ from yoetz import __version__
 from yoetz.config.paths import ensure_owner_only_dir, state_dir
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
+    DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
     PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
@@ -154,6 +155,12 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
         " correct the requested item if the task asked for the deletion: Yoetz review limits"
         " never justify moving, splitting or deleting deliverables"
     ),
+    DECLARED_OUTPUT_EMPTIED_GAP: (
+        "a declared deliverable of a resolved or claimed obligation is now empty or truncated, so"
+        " that obligation no longer counts as delivered; restore the deliverable, or republish"
+        " the obligation open (or acknowledged_not_done) if it is not done. Never empty or"
+        " withdraw a working deliverable because of an open finding"
+    ),
 }
 # Repair-first guidance, one sentence per present item family (F1, #984). Acknowledgement is the
 # last resort and a Yoetz limit is never a ``yoetz-blocker``.
@@ -173,6 +180,15 @@ _FINDING_TEXT: Final = (
 )
 _CLOSE_TEXT: Final = (
     "Then run `check` and request the receipt. A Yoetz limit is never a `yoetz-blocker`."
+)
+# tb4n2 FH A-12 (cargo D): an obligation was published resolved while the agent's own output said
+# the outcome was infeasible. Asked on the first-stop question; an acknowledged obligation is left
+# out of the completion claim and no longer traps closure (issue #1022).
+_ACCEPTANCE_TEXT: Final = (
+    "Before you stop, read each resolved obligation's acceptance_criteria against your final"
+    " output. If the output does not meet it (for example it reports infeasible, skipped or"
+    " partial), republish that obligation as `acknowledged_not_done` with the reason instead of"
+    " resolved, and leave it out of the completion claim; the receipt discloses it."
 )
 _BLOCKER_OFFER_TEXT: Final = (
     "Leave an open obligation undone only for a blocker outside your control (authority,"
@@ -284,8 +300,9 @@ def _acknowledgement_text(keys: tuple[str, ...]) -> str:
         f"Acknowledgement re-check (asked once): {subject}. Repair first: do that work unless it"
         " is genuinely impossible; missing data the task says is recoverable, a hard result or a"
         " Yoetz limit is not a reason. If it truly stays undone, you may stop: the receipt"
-        " discloses it as not done. To take it back, republish it as `open` on"
-        " obligation_published 1.0.0."
+        " discloses it as not done. To take it back, republish it with status `open`, repeating"
+        " every meaning field, on obligation_published 1.1.0 (it keeps any role or directory"
+        " item)."
     )
 
 
@@ -491,6 +508,11 @@ def closure_gate_from_readiness(
             parts.append(_FINDING_TEXT)
         if limits and limitations:
             parts.append(limitations)
+        if drain and "obligations_open" not in items:
+            # FH A-12, for an agent that resolved everything: never offered beside open
+            # obligations, where acknowledgement stays the challenged last resort (#997). The
+            # first optional sentence dropped under the host bound, with the drain note.
+            parts.append(_ACCEPTANCE_TEXT)
         parts.append(_CLOSE_TEXT)
         # The blocker exit is offered only for open obligations: findings, reviews and Yoetz
         # limits are never excused by a blocker (F1, #984).

@@ -463,7 +463,10 @@ DETERMINISTIC_FINDING_TEMPLATES: Final[
     {
         FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS: DeterministicFindingTemplate(
             "A completion claim covers an obligation that remains open.",
-            "Resolve the obligation or revise the completion claim.",
+            "Resolve the obligation or revise the completion claim. An obligation you acknowledged"
+            " as not done is not completed: omit it from the completion claim (replace the claim"
+            " with claim_recorded/1.1.0 supersedes_claim_refs); the receipt discloses it as not"
+            " done, and omitting it is not a plan-scope gap.",
         ),
         FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED: DeterministicFindingTemplate(
             "A requested item has no recorded attempt.",

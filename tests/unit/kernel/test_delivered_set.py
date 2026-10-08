@@ -24,10 +24,12 @@ from yoetz.kernel import delivered_set
 from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
 from yoetz.kernel.delivered_set import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
+    DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
     content_moved_declared_items,
     declared_delivered_items,
     declared_output_removed,
+    emptied_declared_items,
 )
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.reducers import replay
@@ -407,3 +409,287 @@ def test_content_moved_never_fires_the_stop_gate_and_is_noted_when_it_fires() ->
     assert gate is not None
     assert gate.items == ("obligations_open",)
     assert "content may have moved out of a delivered file into an undelivered one" in gate.text
+
+
+def test_undeclared_reference_inputs_pick_existing_declared_files() -> None:
+    from yoetz.domain.events import RequestedItemRole
+    from yoetz.kernel.delivered_set import undeclared_reference_inputs
+    from yoetz.kernel.task_facts import (
+        DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
+        STANDING_TASK_FACT_GAPS,
+    )
+
+    assert DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP in STANDING_TASK_FACT_GAPS
+    assert DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP not in STOP_GATE_TOKENS
+    assert DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP not in AGENT_ACTIONABLE_TASK_FACT_GAPS
+    ledger = ObservedLedger()
+    ledger.append(
+        EventSchema("obligation_published", "1.1.0"),
+        ObligationPublishedPayload(
+            obligation_id=_OBLIGATION,
+            description="Deliver the outputs",
+            evidence_expectation="The files",
+            status=ObligationStatus.OPEN,
+            requested_items=(
+                _file("/app/cracker.py"),
+                _file("/app/gone.py"),
+                RequestedItem(
+                    RequestedItemKind.FILE, "/app/words.txt", role=RequestedItemRole.INPUT
+                ),
+                RequestedItem(RequestedItemKind.DIRECTORY, "/app/models"),
+            ),
+        ),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", (_OBLIGATION,)),
+        observed=False,
+    )
+    projection = replay(ledger.prefix)
+    existing = RequestedOutputState("inside", exists=True)
+    states = {
+        (_OBLIGATION, 0): existing,
+        (_OBLIGATION, 1): _GONE,
+        (_OBLIGATION, 2): existing,
+        (_OBLIGATION, 3): existing,
+    }
+    deliverables, declared = undeclared_reference_inputs(projection, states)
+    # Only an existing declared output file is read; every file/directory value is declared.
+    assert deliverables == ("/app/cracker.py",)
+    assert declared == ("/app/cracker.py", "/app/gone.py", "/app/words.txt", "/app/models")
+    assert undeclared_reference_inputs(projection, states, blocked=(_OBLIGATION,))[0] == ()
+    outside = {(_OBLIGATION, 0): RequestedOutputState("outside")}
+    assert undeclared_reference_inputs(projection, outside)[0] == ()
+
+
+def test_check_adds_undeclared_reference_as_a_disclosure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from yoetz.application import check, check_change
+    from yoetz.kernel.task_facts import DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP
+
+    projection = _projection(_file("/app/cracker.py"))
+
+    async def states(**_kwargs: object) -> dict[tuple[ObligationId, int], RequestedOutputState]:
+        return {(_OBLIGATION, 0): RequestedOutputState("inside", exists=True)}
+
+    async def references(**_kwargs: object) -> int:
+        return 1
+
+    monkeypatch.setattr(check_change, "requested_output_states", states)
+    monkeypatch.setattr(check_change, "count_undeclared_references", references)
+    _evaluator, gaps, absent = asyncio.run(
+        check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
+            SimpleNamespace(projection=projection, coverage_by_ref={}, gaps=()),  # type: ignore[arg-type]
+            None,
+            None,
+            None,
+            "req_00000000-0000-4000-8000-000000000001",
+        )
+    )
+    assert gaps == (DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,)
+    assert absent is False
+
+
+# --- declared_output_emptied (tb4n2 R2, issue #1022, ADR-035 amendment) -------------------------
+
+
+def _resolved_projection(
+    *items: RequestedItem,
+    status: ObligationStatus = ObligationStatus.RESOLVED,
+    assumption: bool = False,
+) -> ProjectionState:
+    from yoetz.domain.values import evidence_id
+
+    ledger = ObservedLedger()
+    ledger.append(
+        EventSchema("obligation_published", "1.1.0"),
+        ObligationPublishedPayload(
+            obligation_id=_OBLIGATION,
+            description="Deliver standalone Sage CLI at /app/solve.sage",
+            evidence_expectation="The file runs",
+            status=ObligationStatus.OPEN,
+            requested_items=items,
+        ),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", (_OBLIGATION,)),
+        observed=False,
+    )
+    if status is ObligationStatus.RESOLVED:
+        ledger.append(
+            EventSchema("obligation_published", "1.1.0"),
+            ObligationPublishedPayload(
+                obligation_id=_OBLIGATION,
+                description="Deliver standalone Sage CLI at /app/solve.sage",
+                evidence_expectation="The file runs",
+                status=ObligationStatus.RESOLVED,
+                requested_items=items,
+                resolution_evidence_refs=(evidence_id("evd_00000000-0000-4000-8000-000000000009"),),
+            ),
+            observed=False,
+        )
+    if assumption:
+        ledger.append(
+            EventSchema("decision_recorded", "1.0.0"),
+            DecisionRecordedPayload(
+                statement=f"The task asks for an empty file.\nyoetz-assumption:{_OBLIGATION}",
+                rationale="The task statement says the file must be empty.",
+                authority=actor_id("agt_codex"),
+            ),
+            observed=False,
+        )
+    return replay(ledger.prefix)
+
+
+def _sized(size: int | None, **fields: object) -> RequestedOutputState:
+    return RequestedOutputState("inside", exists=True, changed=True, size_bytes=size, **fields)  # type: ignore[arg-type]
+
+
+def test_emptied_is_agent_actionable_and_continues_the_stop_gate() -> None:
+    assert DECLARED_OUTPUT_EMPTIED_GAP == "declared_output_emptied"
+    assert DECLARED_OUTPUT_EMPTIED_GAP in AGENT_ACTIONABLE_TASK_FACT_GAPS
+    assert DECLARED_OUTPUT_EMPTIED_GAP in STOP_GATE_TOKENS
+    assert GAP_CLASSIFICATION[DECLARED_OUTPUT_EMPTIED_GAP] is GapClass.AGENT_ACTIONABLE
+
+
+def test_formal_crypto_resolved_obligation_over_a_zero_byte_deliverable_is_emptied() -> None:
+    """tb4n2 formal-crypto S: ``write_bytes(b'')`` on the delivered solve.sage, 6/6 resolved."""
+
+    projection = _resolved_projection(_file("/app/solve.sage"))
+    assert emptied_declared_items(projection, {(_OBLIGATION, 0): _sized(0)}) == ((_OBLIGATION, 0),)
+    assert emptied_declared_items(projection, {(_OBLIGATION, 0): _sized(14_900)}) == ()
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        _sized(None),
+        RequestedOutputState("inside", exists=False, deleted=True),
+        RequestedOutputState("outside"),
+        RequestedOutputState("unverified"),
+        RequestedOutputState("inside", exists=None),
+    ],
+)
+def test_emptied_needs_a_read_proving_it(state: RequestedOutputState) -> None:
+    projection = _resolved_projection(_file("/app/solve.sage"))
+    assert emptied_declared_items(projection, {(_OBLIGATION, 0): state}) == ()
+
+
+def test_an_open_unclaimed_obligation_is_still_the_plan() -> None:
+    projection = _resolved_projection(_file("/app/solve.sage"), status=ObligationStatus.OPEN)
+    assert emptied_declared_items(projection, {(_OBLIGATION, 0): _sized(0)}) == ()
+
+
+def test_an_unrelated_assumption_never_hides_an_emptied_deliverable() -> None:
+    """Codex review: a best-effort disclosure must not disable the incomplete-work check."""
+
+    projection = _resolved_projection(_file("/app/cracker.py"), assumption=True)
+    assert emptied_declared_items(projection, {(_OBLIGATION, 0): _sized(0)}) == ((_OBLIGATION, 0),)
+
+
+def test_a_conventionally_empty_deliverable_is_never_emptied() -> None:
+    projection = _resolved_projection(_file("/app/pkg/__init__.py"))
+    assert emptied_declared_items(projection, {(_OBLIGATION, 0): _sized(0)}) == ()
+
+
+def test_a_split_into_another_declared_output_is_not_truncation() -> None:
+    """Codex review: a 201-line file split into a second declared output is a refactor."""
+
+    projection = _resolved_projection(_file("/app/cracker.py"), _file("/app/english_model.py"))
+    wrapper = _sized(40, base_lines=201, lines_lost=199, undeclared_lines_added=0)
+    states = {(_OBLIGATION, 0): wrapper, (_OBLIGATION, 1): _sized(9_000)}
+    assert emptied_declared_items(projection, states) == ()
+    unchanged = RequestedOutputState("inside", exists=True, changed=False, size_bytes=9_000)
+    states[(_OBLIGATION, 1)] = unchanged
+    assert emptied_declared_items(projection, states) == ((_OBLIGATION, 0),)
+
+
+@pytest.mark.parametrize(
+    ("base", "lost", "elsewhere", "emptied"),
+    [
+        (200, 195, 0, True),  # truncated to under a tenth, nothing moved out
+        (200, 181, 0, True),
+        (200, 180, 0, False),  # kept exactly a tenth
+        (19, 19, 0, False),  # too small to judge as truncated (not 0 bytes)
+        (200, 195, 195, False),  # the content-moved shape stays the standing disclosure
+    ],
+)
+def test_truncation_rule(base: int, lost: int, elsewhere: int, emptied: bool) -> None:
+    projection = _resolved_projection(_file("/app/cracker.py"))
+    state = _sized(512, base_lines=base, lines_lost=lost, undeclared_lines_added=elsewhere)
+    assert bool(emptied_declared_items(projection, {(_OBLIGATION, 0): state})) is emptied
+
+
+def test_check_adds_emptied_and_the_gate_names_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    from yoetz.application import check, check_change
+    from yoetz.cli.closure_gate import closure_gate_from_readiness
+
+    projection = _resolved_projection(_file("/app/solve.sage"))
+
+    async def states(**_kwargs: object) -> dict[tuple[ObligationId, int], RequestedOutputState]:
+        return {(_OBLIGATION, 0): _sized(0)}
+
+    monkeypatch.setattr(check_change, "requested_output_states", states)
+    _evaluator, gaps, _absent = asyncio.run(
+        check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
+            SimpleNamespace(projection=projection, coverage_by_ref={}, gaps=()),  # type: ignore[arg-type]
+            None,
+            None,
+            None,
+            "req_00000000-0000-4000-8000-000000000001",
+        )
+    )
+    assert DECLARED_OUTPUT_EMPTIED_GAP in gaps
+    readiness = SimpleNamespace(
+        state="action_required",
+        agent_actionable=(DECLARED_OUTPUT_EMPTIED_GAP,),
+        standing_limitations=(),
+        open_obligation_count=0,
+        receipt_blocking_finding_count=0,
+        blocked_obligations=(),
+    )
+    gate = closure_gate_from_readiness(
+        readiness, frontier_sequence="9", frontier_digest="d", observation_pending=False
+    )
+    assert gate is not None
+    assert DECLARED_OUTPUT_EMPTIED_GAP in gate.items
+    assert "no longer counts as delivered" in gate.text
+    assert "acceptance_criteria" in gate.text
+
+
+def test_an_overlapping_declaration_of_the_same_file_is_not_another_output() -> None:
+    """Codex review 2: the file and its declared directory, or two spellings, are one path."""
+
+    projection = _resolved_projection(
+        _file("/app/src/cracker.py"),
+        RequestedItem(RequestedItemKind.DIRECTORY, "/app/src"),
+        _file("src/cracker.py"),
+    )
+    truncated = RequestedOutputState(
+        "inside",
+        exists=True,
+        changed=True,
+        size_bytes=40,
+        base_lines=200,
+        lines_lost=199,
+        undeclared_lines_added=0,
+        relative="src/cracker.py",
+    )
+    states = {
+        (_OBLIGATION, 0): truncated,
+        (_OBLIGATION, 1): RequestedOutputState(
+            "inside", exists=True, changed=False, relative="src"
+        ),
+        (_OBLIGATION, 2): truncated,
+    }
+    assert emptied_declared_items(projection, states) == ((_OBLIGATION, 0), (_OBLIGATION, 2))
+    # Codex review 3: a changed declared directory may hold the split-out content (a refactor),
+    # so truncation is not raised; an emptied (0-byte) file still is.
+    states[(_OBLIGATION, 1)] = RequestedOutputState(
+        "inside", exists=True, changed=True, relative="src"
+    )
+    assert emptied_declared_items(projection, states) == ()
+    states[(_OBLIGATION, 0)] = _sized(0, relative="src/cracker.py")
+    assert emptied_declared_items(projection, states) == ((_OBLIGATION, 0),)

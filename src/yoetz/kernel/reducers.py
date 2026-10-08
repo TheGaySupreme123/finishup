@@ -682,6 +682,12 @@ _OBLIGATION_TRANSITIONS: Final = frozenset(
         (ObligationStatus.OPEN, ObligationStatus.ACKNOWLEDGED_NOT_DONE),
         (ObligationStatus.ACKNOWLEDGED_NOT_DONE, ObligationStatus.OPEN),
         (ObligationStatus.ACKNOWLEDGED_NOT_DONE, ObligationStatus.RESOLVED),
+        # tb4n2 R2 (issue #1022, ADR-041): a resolution is no longer latched. When its
+        # deliverable no longer holds (an emptied output, an acceptance criterion its own output
+        # contradicts), the agent reopens it or acknowledges it as not done. Re-resolving a
+        # resolved obligation is still refused: a resolution is recorded once per transition.
+        (ObligationStatus.RESOLVED, ObligationStatus.OPEN),
+        (ObligationStatus.RESOLVED, ObligationStatus.ACKNOWLEDGED_NOT_DONE),
     }
 )
 
@@ -711,8 +717,8 @@ def _apply_obligation(
         # an acknowledged one reopened or resolved by a later publication (the reverse path).
         meaning_diffs = obligation_meaning_field_diffs(previous, payload)
         # ``acknowledged_not_done`` (obligation_published 1.1.0, #997/#1002) is not resolved; the
-        # last effective status wins among open, acknowledged_not_done and resolved, and resolved
-        # stays terminal.
+        # last effective status wins among open, acknowledged_not_done and resolved. A resolved
+        # obligation may be reopened or acknowledged (#1022), never re-resolved in place.
         valid_transition = (previous.status, payload.status) in _OBLIGATION_TRANSITIONS
         if not valid_transition or meaning_diffs:
             if meaning_diffs:
@@ -808,6 +814,7 @@ def _apply_claim(
     results: Mapping[ResultId, ProjectionRecord[ResultRecordedPayload]],
     event: AcceptedEvent,
     observed_event_ids: frozenset[EventId] = frozenset(),
+    obligations: Mapping[ObligationId, ObligationProjectionRecord] | None = None,
 ) -> None:
     key = _locator_id(event, claim_id)
     # A v1.0 claim id may be re-published, and an unreadable payload tombstones the row in place.
@@ -915,7 +922,19 @@ def _apply_claim(
                 # An accepted empty scope has no overlap to preserve. Explicit supersession
                 # repairs that authoring mistake without inferring scope from supporting_refs.
                 # Populated targets still require overlap, including in a mixed target batch.
-                if prior_scope and (not current_scope or prior_scope.isdisjoint(current_scope)):
+                # tb4n2 R2 (#1022): a completion claim whose every obligation is now acknowledged
+                # as not done claims nothing; its honest replacement may drop them all.
+                withdrawn = obligations is not None and all(
+                    (row := obligations.get(ref)) is not None
+                    and row.payload is not None
+                    and row.payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+                    for ref in prior_scope
+                )
+                if (
+                    prior_scope
+                    and not withdrawn
+                    and (not current_scope or prior_scope.isdisjoint(current_scope))
+                ):
                     raise ClaimRevisionMismatch(
                         "obligation_refs",
                         "scope_overlap_required",
@@ -1352,7 +1371,14 @@ def reduce_event(
                 source_frontier=accepted.ledger.ingestion_sequence,
             )
         elif family == "claim_recorded":
-            _apply_claim(claims, actions, results, accepted, replay_index.observed_event_ids)
+            _apply_claim(
+                claims,
+                actions,
+                results,
+                accepted,
+                replay_index.observed_event_ids,
+                obligations,
+            )
         elif family == "finding_recorded":
             key = _locator_id(accepted, finding_id)
             findings[key] = _finding_record(

@@ -45,7 +45,11 @@ from yoetz.kernel.finding_todo import (
     finding_todo_state,
 )
 from yoetz.kernel.projections import FindingProjectionRecord, ProjectionState
-from yoetz.kernel.self_verification import FINDING_NOT_RECHECKED, self_verification_refusal
+from yoetz.kernel.self_verification import (
+    FINDING_NOT_RECHECKED,
+    self_verification_blocking_reasons,
+    self_verification_refusal,
+)
 from yoetz.ports.clock import ClockPort
 from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.ids import IdPort
@@ -158,12 +162,15 @@ def _error(
     retryable: bool = False,
     reason_code: str | None = None,
     field: str | None = None,
+    blocking_reasons: tuple[str, ...] = (),
 ) -> PublicOperationError:
-    details: dict[str, str] = {}
+    details: dict[str, str | tuple[str, ...]] = {}
     if reason_code is not None:
         details["reason_code"] = reason_code
     if field is not None:
         details["field"] = field
+    if blocking_reasons:
+        details["blocking_reasons"] = blocking_reasons
     return PublicOperationError(code, message, retryable, safe_details=details or None)
 
 
@@ -425,19 +432,98 @@ def _admit_self_verification(
             field="/finding_id",
         )
     if refusal is not None:
+        blocking = self_verification_blocking_reasons(
+            projection, finding_id(request.finding_id), records
+        )
         raise _error(
             PublicErrorCode.INVALID_REQUEST,
-            (
-                "Yoetz's newest check of this finding still sees it or names work you can do "
-                "(the rule fired again, a review without a packet limit ruled it still present, "
-                "nothing changed since the finding, or the check did not cover it), so this is "
-                "not a Yoetz limit. Repair it and check again; respond rejected with a reason if "
-                "the finding is wrong; respond acknowledged_not_done only if you truly will not "
-                "or cannot do it. status view=findings shows the unmet requirements."
-            ),
+            self_verification_refusal_message(blocking),
             reason_code=refusal,
             field="/finding_id",
+            blocking_reasons=blocking[:_MAX_NAMED_BLOCKING_REASONS],
         )
+
+
+# tb4n2 R5 (issue #1023): a refusal names what disqualified the finding and the way out. The
+# tokens are recorded resolution reasons (closed vocabulary), never response or finding prose.
+_MAX_NAMED_BLOCKING_REASONS: Final = 32
+_MAX_MESSAGE_REASONS: Final = 8
+_BLOCKING_HINTS: Final[tuple[tuple[frozenset[str], str], ...]] = (
+    (
+        frozenset(
+            {
+                "issue_returned_again",
+                "reviewer_verdict_still_present",
+                "reviewer_verdict_answered_not_fixed",
+            }
+        ),
+        "the check still sees the issue: repair it, then check",
+    ),
+    (
+        frozenset({"no_material_change_since_finding"}),
+        "nothing changed since the finding: repair it, then check",
+    ),
+    (
+        frozenset(
+            {
+                "finding_not_in_checked_frontier",
+                "matching_policy_not_completed",
+                "subject_outside_checked_scope",
+                "findings_suppressed",
+                "check_unreadable",
+                "returned_findings_unreadable",
+                "semantic_review_not_completed",
+            }
+        ),
+        "the check did not fully cover it: run a full check again",
+    ),
+    (
+        frozenset({"coverage:completion_plan_not_claimed"}),
+        "the completion claim must name every plan obligation not acknowledged as not done:"
+        " finish and resolve the open ones before claiming them, and acknowledge the ones you"
+        " will not do and leave those out of the claim",
+    ),
+    (
+        frozenset(
+            {
+                "coverage:edited_after_last_verification",
+                "coverage:planned_verification_stale",
+                "coverage:planned_verification_not_observed",
+                "coverage:planned_verification_failed",
+            }
+        ),
+        "re-run your planned verification after your last edit, then check",
+    ),
+)
+
+
+def self_verification_refusal_message(blocking: tuple[str, ...]) -> str:
+    """The ``finding_not_proof_limited`` message: the disqualifying tokens and the exits."""
+
+    named = ", ".join(blocking[:_MAX_MESSAGE_REASONS])
+    if len(blocking) > _MAX_MESSAGE_REASONS:
+        named += f" and {len(blocking) - _MAX_MESSAGE_REASONS} more (safe_details.blocking_reasons)"
+    hints = [
+        hint for tokens, hint in _BLOCKING_HINTS if any(reason in tokens for reason in blocking)
+    ]
+    if any(reason.startswith("coverage:") for reason in blocking) and not any(
+        reason in tokens for tokens, _hint in _BLOCKING_HINTS[3:] for reason in blocking
+    ):
+        hints.append("a listed coverage code is work you can do: clear it, then check")
+    reasons_text = (
+        f"Not a Yoetz limit: the newest check of this finding still lists {named}"
+        if named
+        else "Not a Yoetz limit: the newest check of this finding names no Yoetz limit"
+    )
+    hint_text = f" Next: {'; '.join(hints)}." if hints else ""
+    return (
+        f"{reasons_text}.{hint_text} If the finding asks for something you inherently cannot"
+        " run (a hidden verifier, a private reference), that is not a Yoetz limit either: finish"
+        " the work and disclose it with a decision line yoetz-verification-limit:<obligation id>,"
+        " then respond rejected explaining that. Respond rejected if the finding is wrong;"
+        " acknowledged_not_done only if you truly will not or cannot do it. Do not retry"
+        " self_verified until a later check changes these reasons."
+    )
 
 
 # Issue #996 typed refusals of a ``duplicate_of`` answer.

@@ -88,7 +88,9 @@ __all__ = [
     "BLOCKER_KINDS",
     "BLOCKER_MARKER",
     "DECLARED_OUTPUT_CONTENT_MOVED_GAP",
+    "DECLARED_OUTPUT_EMPTIED_GAP",
     "DECLARED_OUTPUT_REMOVED_GAP",
+    "DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP",
     "EDITED_AFTER_LAST_VERIFICATION_GAP",
     "INSTALL_INTO_PRIVATE_ENV_GAP",
     "INSTALL_INTO_YOETZ_RUNTIME_GAP",
@@ -167,6 +169,13 @@ DECLARED_OUTPUT_REMOVED_GAP: Final = "declared_output_removed"
 # Content that left a declared deliverable for an undeclared file in the same change (ADR-035):
 # a non-blocking disclosure, never a Stop-gate token.
 DECLARED_OUTPUT_CONTENT_MOVED_GAP: Final = "declared_output_content_moved"
+# A declared deliverable of a resolved or completion-claimed obligation that is now empty or
+# truncated (tb4n2 R2, ADR-035 amendment): agent work, and a Stop-gate token. While it stands the
+# obligation's recorded ``resolved`` is not counted as delivered.
+DECLARED_OUTPUT_EMPTIED_GAP: Final = "declared_output_emptied"
+# A declared deliverable that names an existing workspace file that is neither a declared output
+# nor a declared input (tb4n2 R2, ADR-035 amendment): a non-blocking disclosure only.
+DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP: Final = "deliverable_references_undeclared_file"
 
 # Facts the agent removes by its own action: run the planned verification after the last edit
 # (or correct the requested item to the command it runs), or stop excluding a requested output.
@@ -178,6 +187,7 @@ AGENT_ACTIONABLE_TASK_FACT_GAPS: Final = frozenset(
         EDITED_AFTER_LAST_VERIFICATION_GAP,
         REQUESTED_OUTPUT_GIT_IGNORED_GAP,
         DECLARED_OUTPUT_REMOVED_GAP,
+        DECLARED_OUTPUT_EMPTIED_GAP,
         # A claimed blocker: repair the obligation, or confirm the blocker in a later decision.
         OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
     }
@@ -201,6 +211,7 @@ STANDING_TASK_FACT_GAPS: Final = frozenset(
         REQUESTED_OUTPUT_UNVERIFIED_GAP,
         REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP,
         DECLARED_OUTPUT_CONTENT_MOVED_GAP,
+        DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     }
 )
 TASK_FACT_GAPS: Final = AGENT_ACTIONABLE_TASK_FACT_GAPS | STANDING_TASK_FACT_GAPS
@@ -216,6 +227,7 @@ STOP_GATE_TOKENS: Final = (
     PLANNED_VERIFICATION_STALE_GAP,
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
+    DECLARED_OUTPUT_EMPTIED_GAP,
     # A blocker claimed on an open obligation and not yet confirmed (#985).
     OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
 )
@@ -1050,6 +1062,12 @@ class RequestedOutputState:
     base_lines: int | None = None
     lines_lost: int | None = None
     undeclared_lines_added: int | None = None
+    # The size of an existing regular file inside the root, from the metadata-only probe
+    # (tb4n2 R2: ``declared_output_emptied``); ``None`` when unknown or not a regular file.
+    size_bytes: int | None = None
+    # The root-relative path of an ``inside`` item (``.`` for the root), compared only in memory
+    # to tell overlapping declarations of one path apart (tb4n2 R2); never stored or rendered.
+    relative: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.location not in {"inside", "outside", "unverified"}:

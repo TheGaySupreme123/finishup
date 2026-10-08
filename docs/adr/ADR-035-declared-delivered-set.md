@@ -92,3 +92,56 @@ needs a deterministic fact that tells the agent when its change removed a delive
   disclosure for that reason. The declared set used to exclude growth is built from the first 64
   probed `file` items (the requested-output probe bound); growth into a declared output beyond
   that bound counts as undeclared. A path containing CR or LF is skipped by the line-count read.
+
+## Amendment (tb4n2 R2, issue #1022): deliverable_references_undeclared_file
+
+tb4n2 interleaved-vigenere: the declared deliverable `cracker.py` loaded `english_model.npz` and
+`english_words.json.gz`, files the agent created in the workspace and never declared. The grader
+received only the declared files, so the deliverable failed. Yoetz now discloses that shape.
+
+- **Deliverables read.** Every effective obligation's requested item with role `output` and kind
+  `file` whose check-time state is `inside` and existing (not deleted), skipping blocked and
+  `acknowledged_not_done` obligations, whose name has a source-code suffix (`.py .sh .bash .js
+  .mjs .cjs .ts .rb .pl .r .R .jl .lua .php`) or no suffix and a `#!` first line.
+- **Candidates.** Files the check-time change created (untracked, or status `A`) minus every
+  declared `file` or `directory` value of any role, compared root-relative; a declared directory
+  covers the files beneath it. Pre-existing tracked repository files are never candidates.
+- **Rule.** The fact fires when a deliverable contains a one-line quoted string literal (single,
+  double or backtick quotes) equal to a candidate's root-relative path, ending with `/` plus that
+  path (which covers its absolute path under the root), or equal to the candidate's basename when
+  that basename is at least 5 bytes long.
+- **Bounded local content read.** The adapter method `count_undeclared_references` reads at most
+  256 KiB from the start of at most 16 deliverables per check, one component at a time from the
+  validated root descriptor without following a link, never a credential-named or multiply linked
+  file, and skips binary content (a NUL byte in the prefix). Only a count leaves the adapter; no
+  path or content is returned, logged or stored. Any failure means the fact is not raised.
+- **Standing and non-blocking.** `deliverable_references_undeclared_file` is a
+  `STANDING_TASK_FACT_GAPS` disclosure: never a finding, never a `STOP_GATE_TOKENS` entry, never
+  receipt-blocking. Declaring the referenced file as an output or input clears it. It is a
+  heuristic: a reference built at run time from pieces, or beyond the read bound, is not seen, and
+  a matching literal that is not actually loaded still raises it.
+
+## Amendment (tb4n2 R2, issue #1022): declared_output_emptied
+
+tb4n2 formal-crypto S emptied its delivered `/app/solve.sage` (0 bytes) after an open finding,
+while six obligations stayed recorded `resolved`; Yoetz showed only the standing
+`obligation_evidence_stale_after_scope_edit`, so the Stop gate said nothing. A recorded status is
+now re-derived from the current deliverable (ADR-041):
+
+- **Rule.** `emptied_declared_items` names a declared `file` of an obligation that is `resolved`,
+  or that an effective completion claim names (never `acknowledged_not_done`), whose check-time
+  state is `inside`, existing and not deleted, and which is a regular file of 0 bytes
+  (`size_bytes` from the same link-free metadata probe; no content read) whose name is not
+  conventionally empty (`__init__.py`, `py.typed`, `.gitkeep`, `.keep`, `.nojekyll`), or a
+  tracked file of at least `CONTENT_MOVED_MIN_LINES` task-base lines that kept fewer than a tenth
+  of them, is not the content-moved shape (that stays the standing disclosure above), and no
+  other declared delivered item changed in the same change (a split into another declared
+  output is a refactor).
+- **Agent work.** `declared_output_emptied` is in `AGENT_ACTIONABLE_TASK_FACT_GAPS` and
+  `STOP_GATE_TOKENS`. While it stands the obligation's `resolved` no longer counts as delivered;
+  the ledger is not rewritten. It clears at the next check once the file is restored or the
+  obligation is republished `open` or `acknowledged_not_done` (the reducer admits both from
+  `resolved`, ADR-041). A disclosure line does not clear it: an unrelated assumption must never
+  hide an emptied deliverable.
+- **Limits.** An untracked file truncated to a non-zero size is not seen (no earlier size is
+  stored); an unread size or line count never raises the fact.

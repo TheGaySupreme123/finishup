@@ -490,15 +490,15 @@ _REF_MIRROR_CORRECTIONS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyTy
                 ),
             }
         ),
-        # #997: the obligation version is a pure function of the payload.
+        # #1023: the one obligation version rule (``domain.events.obligation_schema_admits``).
         "invalid_event_schema": MappingProxyType(
             {
                 "obligation_published": (
-                    "The event batch is invalid. Use obligation_published/1.1.0 exactly when the "
-                    "obligation has a directory item, an item role, or status "
-                    "acknowledged_not_done with an acknowledged_not_done_reason; otherwise, "
-                    "including reopening an acknowledged one, use obligation_published/1.0.0 "
-                    "with the same meaning fields."
+                    "The event batch is invalid. obligation_published/1.0.0 cannot carry a "
+                    "directory item, an item role, or status acknowledged_not_done: publish such "
+                    "an obligation as obligation_published/1.1.0 (with an "
+                    "acknowledged_not_done_reason for that status). 1.1.0 also accepts a plain "
+                    "obligation, so 1.1.0 is always safe; only 1.0.0 and 1.1.0 exist."
                 ),
             }
         ),
@@ -640,6 +640,9 @@ def _decode_draft(value: JsonValue, event_index: int) -> _PreparedDraft:
     """Decode one draft, attributing any rejection to that draft and its owning field."""
 
     source = _mapping(value)
+    # The declared family selects a family-specific corrective hint (issue #1023: without it the
+    # obligation-version hint was unreachable and every rejection read as a generic one).
+    declared_family = _declared_schema_name(value)
 
     def _locate[T](subfield: str, decode: Callable[[], T]) -> T:
         try:
@@ -652,6 +655,7 @@ def _decode_draft(value: JsonValue, event_index: int) -> _PreparedDraft:
                 event_index=event_index,
                 subfield=subfield,
                 payload_field=_payload_field_of(exc),
+                schema_name=declared_family,
             ) from exc
 
     schema_source = _locate("schema", lambda: _mapping(_field(source, "schema")))

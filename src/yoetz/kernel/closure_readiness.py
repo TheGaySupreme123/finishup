@@ -114,8 +114,10 @@ __all__ = [
 # ``finding_self_verified`` (issue #984, ADR-034) was added. "4": the standing disclosure codes
 # ``assumption_disclosed`` and ``verification_limit_disclosed`` (issue #995, ADR-033) and
 # ``finding_premise_disputed`` (issue #984, D7a) were added. "5": the standing disclosure code
-# ``finding_disputed_after_rebuttal`` (issue #1020, ADR-040) was added.
-GAP_CLASSIFICATION_VERSION: Final = "5"
+# ``finding_disputed_after_rebuttal`` (issue #1020, ADR-040) was added. "6": the agent-actionable
+# task fact ``declared_output_emptied`` and the standing disclosure
+# ``deliverable_references_undeclared_file`` (tb4n2 R2, issue #1022, ADR-035) were added.
+GAP_CLASSIFICATION_VERSION: Final = "6"
 # Issue #1020 (ADR-040): a current AI-powered finding the reviewer repeated over the agent's
 # reasoned rejection without newer material. A standing disagreement; never agent work.
 FINDING_DISPUTED_AFTER_REBUTTAL_GAP: Final = "finding_disputed_after_rebuttal"

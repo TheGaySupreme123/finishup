@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from yoetz.domain.events import ClaimKind
+from yoetz.domain.events import ClaimKind, ObligationStatus
 from yoetz.domain.receipts import (
     COMPLETION_CLAIM_OUTSIDE_PLAN_GAP,
     COMPLETION_PLAN_NOT_CLAIMED_GAP,
@@ -41,6 +41,13 @@ def completion_scope_differences(state: ProjectionState) -> tuple[CompletionScop
     explicit waiver, therefore requires reviewing that assertion against the current scope too.
     Missing/unreadable inputs are left to the existing unknown-input coverage, never interpreted as
     an empty declaration.
+
+    An obligation whose current status is ``acknowledged_not_done`` is outside completion coverage
+    (tb4n2 R2, issue #1022): a completion claim that omits it is the honest claim, so it is never
+    "plan not claimed". The acknowledgement stays disclosed by readiness and the receipt, which
+    never reads clean while it stands; a claim that *names* it still raises the open-obligation
+    finding. The status is read from the current projection on every call, so republishing the
+    obligation open brings it back into coverage.
     """
 
     scope = current_plan_scope(state.plans, state.coverage_gaps)
@@ -58,7 +65,14 @@ def completion_scope_differences(state: ProjectionState) -> tuple[CompletionScop
             for ref in plan | refs
         ):
             continue
-        outside, missing = tuple(sorted(refs - plan)), tuple(sorted(plan - refs))
+        acknowledged = frozenset(
+            ref
+            for ref in plan
+            if (payload := state.obligations[ref].payload) is not None
+            and payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+        )
+        outside = tuple(sorted(refs - plan))
+        missing = tuple(sorted(plan - refs - acknowledged))
         if outside or missing:
             differences.append(CompletionScopeDifference(key, outside, missing))
     return tuple(differences)

@@ -241,7 +241,7 @@ hook-observed run (hooks keep only a keyed commitment), so it stays a disclosed
     },
     {
       "event_id": "evt_00000000-0000-4000-8000-000000000002",
-      "schema": {"name": "obligation_published", "version": "1.1.0"},
+      "schema": {"name": "obligation_published", "version": "1.0.0"},
       "occurred_at": "2026-01-01T00:00:00.000Z",
       "causal_parents": [],
       "payload": {
@@ -252,8 +252,7 @@ hook-observed run (hooks keep only a keyed commitment), so it stays a disclosed
         "status": "open",
         "requested_items": [
           {"item_kind": "command", "value": "pytest -q"},
-          {"item_kind": "change", "value": "Replace with the named change this obligation owes"},
-          {"item_kind": "file", "value": "tests/test_requested_regression.py", "role": "output"}
+          {"item_kind": "change", "value": "Replace with the named change this obligation owes"}
         ],
         "source_refs": ["evt_00000000-0000-4000-8000-000000000000"]
       },
@@ -270,8 +269,54 @@ hook-observed run (hooks keep only a keyed commitment), so it stays a disclosed
 }
 ```
 
-The two drafts above cover `plan_published` and `obligation_published`. The following requests
-show the other ordinary families, including separate lifecycle transitions below. Replace the frontier in each; the genesis values only keep
+The two drafts above cover `plan_published` and `obligation_published`. An obligation that
+names a file or directory the task must deliver (or only reads) uses `obligation_published`
+`1.1.0`, because only `1.1.0` carries a `role` or a `directory` item. Publish it in the same plan
+batch as its own draft, listed in the plan's `obligation_refs`; standalone, it reads:
+
+```json
+{
+  "protocol_version": "0.1",
+  "schema_version": "1.0.0",
+  "request_id": "req_00000000-0000-4000-8000-000000000012",
+  "session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "expected_frontier": {
+    "sequence": "0",
+    "head_digest": "genesis"
+  },
+  "event_drafts": [
+    {
+      "event_id": "evt_00000000-0000-4000-8000-000000000003",
+      "schema": {"name": "obligation_published", "version": "1.1.0"},
+      "occurred_at": "2026-01-01T00:00:00.000Z",
+      "causal_parents": [],
+      "payload": {
+        "obligation_id": "obl_00000000-0000-4000-8000-000000000002",
+        "description": "Replace with the deliverable this work owes",
+        "acceptance_criteria": "Replace with an observable acceptance criterion",
+        "evidence_expectation": "Replace with the named test, reviewed diff, or other evidence",
+        "status": "open",
+        "requested_items": [
+          {"item_kind": "file", "value": "tests/test_requested_regression.py", "role": "output"},
+          {"item_kind": "file", "value": "data/input_spec.json", "role": "input"}
+        ],
+        "source_refs": ["evt_00000000-0000-4000-8000-000000000000"]
+      },
+      "artifact_refs": [],
+      "evidence_refs": []
+    }
+  ],
+  "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
+  "client": {
+    "kind": "cooperative_agent",
+    "version": "0.1.0",
+    "integration": "cooperative_mcp"
+  }
+}
+```
+
+The following requests show the other ordinary families, including separate lifecycle transitions below. Replace the frontier in each; the genesis values only keep
 each standalone example schema-valid.
 
 `requested_items` declares the material items the obligation asks for; each entry is an object
@@ -279,9 +324,10 @@ whose `item_kind` admits `change`, `command`, `file`, `source`, `url` and whose 
 exact item string. `obligation_published` `1.1.0`, as above, also admits `item_kind`
 `directory`, an optional `role` on `file` and `directory` items — `input` (the task reads it) or
 `output` (the task must deliver it) — and the status `acknowledged_not_done` with a required,
-non-blank `acknowledged_not_done_reason`. Use `1.1.0` exactly when the payload carries one of
-those, and `1.0.0` otherwise: each version refuses the other's payloads, and a resolution or
-acknowledgement republish picks its version the same way. Mark every file or directory the task
+non-blank `acknowledged_not_done_reason`. `1.0.0` refuses all three, so a payload that carries
+one of them must use `1.1.0`; `1.1.0` also accepts a plain obligation, so `1.1.0` is always
+safe. A resolution or acknowledgement republish follows the same rule: keep `1.1.0` while the
+obligation has a role or a `directory` item. Mark every file or directory the task
 must deliver `role: output` and every one it only reads `role: input`. Yoetz checks a declared
 output at each `check` — absent, unchanged, outside the workspace, or ignored by Git — and never
 reports those facts for an input; an output directory that holds no file counts as absent.
