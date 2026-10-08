@@ -934,6 +934,9 @@ class CheckCommitResult:
     semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
     # Present only when the check request set ``await_observations`` (issue #1012).
     observations_awaited: CheckObservationsAwaited | None = None
+    # Issue #986: ``False`` when the check's route did not require AI-powered review; ``None``
+    # when it did or the check predates the field (``CheckRecordedPayload``).
+    semantic_route_required: bool | None = None
 
     def __post_init__(self) -> None:
         if type(self.outcome) is not str or self.outcome not in {"committed", "replayed"}:
@@ -1016,6 +1019,11 @@ class CheckCommitResult:
             validate_semantic_redacted_values(self.semantic_redacted_values)
         except ValueError as exc:
             raise _invalid() from exc
+        if (
+            self.semantic_route_required is not None
+            and type(self.semantic_route_required) is not bool
+        ):
+            raise _invalid()
         if (
             self.review_input_manifest is not None
             and type(self.review_input_manifest) is not JsonObject
@@ -2254,6 +2262,7 @@ class LedgerPort(Protocol):
         review_input_manifest: JsonObject | None = None,
         totals: JsonObject | None = None,
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
+        semantic_route_required: bool | None = None,
     ) -> CheckCommitResult: ...
 
     async def fail_check_if_current(

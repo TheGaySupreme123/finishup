@@ -1434,7 +1434,12 @@ async def test_receipt_folds_retained_observation_finding_coverage_after_recover
     )
 
     assert FINDING_KIND_TRAITS[kind][1] is False
-    assert receipt.conclusion == "insufficient_coverage"
+    # Issue #986 (E2): with the retained row resolved, the only remaining gap is the local-only
+    # disclosure of a check whose route did not require AI-powered review, which no longer bounds
+    # the conclusion; the disputed row's retained coverage still does.
+    assert receipt.conclusion == (
+        "no_unresolved_deterministic_findings" if resolved else "insufficient_coverage"
+    )
     assert receipt.coverage.ledger_freshness is LedgerFreshness.PARTIAL
     document = cast(Mapping[str, JsonValue], receipt.document)
     findings = cast(tuple[Mapping[str, JsonValue], ...], document["findings"])

@@ -63,7 +63,10 @@ Not honest:
 A clean `deterministic_only` check is **not** an implementation review. When mode is
 `deterministic_only`, or AI-powered review status is `not_requested`, the coverage includes
 `semantic_review_not_requested`. A clean result means “no issue detected within deterministic
-coverage”; it does not remove that limitation from the receipt. The receipt leads with its scope,
+coverage”; it does not remove that limitation from the receipt. Where AI-powered review is not
+required (it is optional or off), the check records `semantic_route_required: false` and the
+limitation is disclosed without keeping the receipt from a clean conclusion; where review is
+required, it still keeps the receipt at `insufficient_coverage`. The receipt leads with its scope,
 review status and material limitations, followed by the finding count and frozen check totals.
 
 Omit `mode` to retain the configured verification default. Use `semantic_if_configured` only when

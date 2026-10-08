@@ -1795,7 +1795,10 @@ once, a code the running build does not know stays agent-actionable as `unclassi
 and nothing is removed from `known_gaps` or the receipt. `semantic_review_not_requested` is
 standing on a local-only or optional route and on the strict MCP route (which never dispatches
 AI-powered review), and agent-actionable only when the verification policy requires AI-powered
-review, the serving route can dispatch it, and none has succeeded since the last material change. At
+review, the serving route can dispatch it, and none has succeeded since the last material change.
+A check on a route that did not require AI-powered review records `semantic_route_required:
+false`; there the code no longer bounds the receipt conclusion (issue #986, same on every host).
+At
 `closure_readiness.state: ready_with_limitations` the agent requests the receipt without another
 check; the receipt conclusion is unchanged (a local-only check stays `insufficient_coverage`).
 

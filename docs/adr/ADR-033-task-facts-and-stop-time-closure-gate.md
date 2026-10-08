@@ -559,3 +559,35 @@ Owner-approved 2026-10-07 (issue #995; L5 request D7a under #984).
    `premise:<acknowledged count>` beside the blocker keys, so a new acknowledgement asks again);
    in a combined gate the sentence is dropped before the blocker re-check under the 2,000-character
    bound.
+
+## Amendment (2026-10-08): record the route; a local-only check on a non-requiring route does not block (#986, E2)
+
+Owner decision (issue #986, L4 residual (b) / E2): **"Record route; don't block".** Each check
+records whether its route required AI-powered review. When the route did not require review, the
+gap `semantic_review_not_requested` is a disclosure and does not block a clean receipt or verdict.
+When the route did require review, it still blocks exactly as before. Old checks without the field
+keep the blocking behaviour, the safe default.
+
+This replaces the earlier statement in this ADR that the receipt cannot apply the route rule.
+
+1. **Record.** `check-recorded` 1.4.0 and `check-result` 1.4.0 (both unreleased, additive in
+   place) gain the optional boolean `semantic_route_required`. A check's route required review
+   when the check asked for it (`mode: semantic_required`) or the effective verification policy is
+   `semantic: required`, whatever mode the caller chose and whatever route profile served it (a
+   strict MCP process that cannot dispatch a required review still ran on a route that required
+   one). The writer emits the field only as `false`, on a route that did not require review; a
+   requiring route omits it. Checks on a requiring route and every check an older build wrote
+   therefore keep their exact bytes, and replay reads them as before.
+2. **Receipt.** The receipt conclusion treats `semantic_review_not_requested` as clean-compatible
+   only when the applicable check recorded `semantic_route_required: false`, its AI-powered review
+   status is `not_requested`, and its own coverage carries the gap. The code stays in coverage,
+   the gap rows and the limitations section, which adds one fixed sentence saying the route did
+   not require review. Absent or `true` keeps `insufficient_coverage`. Carried attempt gaps
+   (`semantic_relevance_review_not_run`, `optional_semantic_review_blocked_by_policy`, …) and
+   `semantic_review_skipped_insufficient_packet` keep bounding the conclusion.
+3. **Verdict and readiness.** The check verdict rules are unchanged: a clean `deterministic_only`
+   check already reached its scoped `no_issue_detected` verdict. Closure readiness keeps the
+   ADR-032 route rule, so the code is standing on a non-requiring route and actionable only where
+   the serving route requires and can dispatch review.
+4. **Surfaces.** The CLI check rendering and the MCP check summary add a short clause when the
+   field is `false`; guidance states that a local-only check blocks only where review is required.

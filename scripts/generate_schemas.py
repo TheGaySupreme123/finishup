@@ -2229,6 +2229,7 @@ def _check_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "uniqueItems": True,
     }
     _add_semantic_redacted_values(definitions, properties)
+    _add_semantic_route_required(properties)
     _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz check recorded {entry.schema_version}"
@@ -3313,6 +3314,17 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _add_semantic_route_required(properties: dict[str, JsonValue]) -> None:
+    """Issue #986: whether the check's route required AI-powered review (unreleased 1.4.0).
+
+    Optional and additive. Writers emit only ``false`` (the route did not require review, so
+    ``semantic_review_not_requested`` is a disclosure); a requiring route and every older check
+    omit it, which keeps their bytes and the blocking default.
+    """
+
+    properties["semantic_route_required"] = {"type": "boolean"}
+
+
 def _add_semantic_redacted_values(
     definitions: dict[str, JsonValue],
     properties: dict[str, JsonValue],
@@ -3557,6 +3569,7 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             values.append(value)
     values.sort(key=lambda item: str(item).encode("ascii"))
     _add_semantic_redacted_values(definitions, properties)
+    _add_semantic_route_required(properties)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz check result {entry.schema_version}"

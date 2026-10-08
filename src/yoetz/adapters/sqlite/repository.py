@@ -1058,6 +1058,7 @@ class SqliteLedger:
                             # Recovery rebuilds the same result the commit returned (#982).
                             semantic_withheld_item_ids=check_payload.semantic_withheld_item_ids,
                             semantic_redacted_values=check_payload.semantic_redacted_values,
+                            semantic_route_required=check_payload.semantic_route_required,
                         )
                 else:
                     check_error = self._stored_check_error(cast(bytes, result_canonical))
@@ -2773,6 +2774,7 @@ class SqliteLedger:
         review_input_manifest: JsonObject | None = None,
         totals: JsonObject | None = None,
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
+        semantic_route_required: bool | None = None,
     ) -> CheckCommitResult:
         await self._ensure_recovered()
         async with self._lock:
@@ -2809,6 +2811,7 @@ class SqliteLedger:
                     review_input_manifest=review_input_manifest,
                     totals=totals,
                     semantic_redacted_values=semantic_redacted_values,
+                    semantic_route_required=semantic_route_required,
                 )
             except PublicOperationError:
                 # The memory oracle terminalizes a frontier conflict before raising it. Preserve

@@ -303,9 +303,15 @@ def render_human_check(result: CheckSuccessModel) -> str:
         if scoped_local_verdict
         else f"Verdict: {result.verdict}"
     )
+    review_line = (
+        f"AI-powered review: {_token(result.semantic_status)} ({_token(result.semantic_reason)})"
+    )
+    if result.semantic_status == "not_requested" and result.semantic_route_required is False:
+        # Issue #986 (owner decision E2): disclosed, never a receipt blocker on such a route.
+        review_line += "; the route did not require it, so it does not block a clean receipt"
     lines = [
         verdict_line,
-        f"AI-powered review: {_token(result.semantic_status)} ({_token(result.semantic_reason)})",
+        review_line,
         render_human_findings(result.findings),
     ]
     if result.totals is not None:

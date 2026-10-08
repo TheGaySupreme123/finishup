@@ -2262,3 +2262,115 @@ def test_acknowledged_obligation_is_disclosed_and_never_clean() -> None:
     assert obligation.obligation_id not in outstanding.items
     # The reason stays on the obligation; the receipt carries ids only.
     assert "task owner's decision" not in str(wire.get("acknowledged_not_done_obligation_ids"))
+
+
+def _not_requested_receipt(route_required: bool | None) -> ReceiptDocument:
+    from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
+
+    coverage = _coverage(gaps=(SEMANTIC_REVIEW_NOT_REQUESTED_GAP,))
+    gap = CaseGap(
+        f"semantic_outcome:{SEMANTIC_REVIEW_NOT_REQUESTED_GAP}",
+        SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
+        (),
+    )
+    check = replace(
+        _check(CheckVerdict.NO_ISSUE_DETECTED, coverage, totals=_totals()),
+        semantic_route_required=route_required,
+    )
+    return _build(_context(coverage=coverage, gaps=(gap,), check=check))
+
+
+_ROUTE_SENTENCE = (
+    "The check's route did not require AI-powered review, so its absence is disclosed and does "
+    "not bound the conclusion."
+)
+
+
+def test_a_route_without_required_review_makes_not_requested_a_disclosure() -> None:
+    """Issue #986 (owner decision E2, "record route; don't block")."""
+
+    receipt = _not_requested_receipt(False)
+    assert receipt.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    # Disclosed, never dropped.
+    assert "semantic_review_not_requested" in receipt.coverage.known_gaps
+    assert "semantic_review_not_requested" in {item.code for item in receipt.gaps}
+    for markdown in (True, False):
+        rendered = render_receipt_human(receipt, markdown=markdown)
+        assert "AI-powered review was not requested (local-only check)." in rendered
+        assert _ROUTE_SENTENCE in rendered
+
+
+@pytest.mark.parametrize("route_required", (None, True))
+def test_a_requiring_or_unrecorded_route_keeps_not_requested_blocking(
+    route_required: bool | None,
+) -> None:
+    """Issue #986: an old check (no field) or a requiring route reads exactly as before."""
+
+    receipt = _not_requested_receipt(route_required)
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    for markdown in (True, False):
+        assert _ROUTE_SENTENCE not in render_receipt_human(receipt, markdown=markdown)
+
+
+def test_a_route_record_never_excuses_a_carried_review_attempt_gap() -> None:
+    """Issue #986: only the not-requested code is tolerated; a refused review still bounds."""
+
+    from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
+
+    gaps = ("semantic_relevance_review_not_run", SEMANTIC_REVIEW_NOT_REQUESTED_GAP)
+    coverage = _coverage(gaps=gaps)
+    check = replace(
+        _check(CheckVerdict.INSUFFICIENT_COVERAGE, coverage, totals=_totals()),
+        semantic_route_required=False,
+    )
+    receipt = _build(
+        _context(
+            coverage=coverage,
+            gaps=tuple(CaseGap(code, code, ()) for code in gaps),
+            check=check,
+        )
+    )
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+
+
+def test_check_event_route_record_round_trips_and_old_events_replay_unchanged() -> None:
+    """Issue #986: optional on check_recorded 1.4.0 only; events without it keep their bytes."""
+
+    from yoetz.domain.events import (
+        CHECK_EVENT_SCHEMA_VERSION,
+        REVIEW_CHECK_EVENT_SCHEMA_VERSION,
+        EventSchema,
+        decode_payload,
+        encode_payload,
+    )
+    from yoetz.protocol.canonical import canonical_encode
+
+    schema = EventSchema("check_recorded", REVIEW_CHECK_EVENT_SCHEMA_VERSION)
+    old = _check(
+        CheckVerdict.NO_ISSUE_DETECTED,
+        _coverage(gaps=("semantic_review_not_requested",)),
+        totals=_totals(),
+    )
+    old_wire = encode_payload(old)
+    assert isinstance(old_wire, Mapping)
+    assert "semantic_route_required" not in old_wire
+    decoded_old = decode_payload(schema, old_wire)
+    assert isinstance(decoded_old, CheckRecordedPayload)
+    assert decoded_old.semantic_route_required is None
+    # Replay re-encodes an old event to the identical bytes and the identical conclusion.
+    assert canonical_encode(encode_payload(decoded_old)) == canonical_encode(old_wire)
+    assert _not_requested_receipt(None) == _not_requested_receipt(None)
+
+    recorded = replace(old, semantic_route_required=False)
+    wire = encode_payload(recorded)
+    assert isinstance(wire, Mapping)
+    assert wire["semantic_route_required"] is False
+    assert decode_payload(schema, wire) == recorded
+    # Never on an older plain-check schema, and never a non-boolean.
+    plain = replace(recorded, totals=None)
+    with pytest.raises(ValueError):
+        decode_payload(
+            EventSchema("check_recorded", CHECK_EVENT_SCHEMA_VERSION), encode_payload(plain)
+        )
+    with pytest.raises(ValueError):
+        replace(old, semantic_route_required=cast(Any, 0))

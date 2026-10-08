@@ -1163,6 +1163,10 @@ def summary_for_check(envelope: object) -> str:
         prefix = (
             f"Check verdict: {verdict}; findings returned: {findings}; suppressed: {suppressed}; "
         )
+    if status == "not_requested" and source.get("semantic_route_required") is False:
+        # Issue #986 (owner decision E2): the route did not require review, so the missing review
+        # is a disclosure; a route that required it omits the field and the gap still blocks.
+        prefix += "route did not require AI-powered review (disclosed; does not block receipt); "
     prefix += _observations_awaited_clause(source)
     children = source.get("children")
     if (

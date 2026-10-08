@@ -622,6 +622,12 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
                 )
             }
         ),
+        # Issue #986: present (``false``) only when the check's route did not require review.
+        **(
+            {}
+            if (route_required := getattr(result, "semantic_route_required", None)) is None
+            else {"semantic_route_required": route_required}
+        ),
         "coverage": coverage_to_json(result.coverage),
         "versions": {
             "protocol_version": result.versions.protocol_version,
@@ -3666,6 +3672,21 @@ def _sorted_verdicts(
     return tuple(admitted[key] for key in sorted(admitted, key=str.encode))
 
 
+def semantic_route_required(
+    mode: str | None, policy_semantic: Literal["disabled", "optional", "required"]
+) -> bool:
+    """Whether a check's route required AI-powered review (issue #986, owner decision E2).
+
+    True when the check asked for it (``semantic_required``) or the verification policy requires
+    it, whatever mode the caller chose and whatever route profile served the call: a strict MCP
+    process that cannot dispatch a required review still ran on a route that required one. Only
+    a check on a route that did not require review records ``semantic_route_required: false``;
+    there ``semantic_review_not_requested`` is a disclosure that does not bound the receipt.
+    """
+
+    return mode == "semantic_required" or policy_semantic == "required"
+
+
 def full_check_gaps_clean(known_gaps: Iterable[str], totals: Mapping[str, object]) -> bool:
     """Whether a full check's gaps allow ``complete`` (#986): the one clean-compatible list.
 
@@ -4638,6 +4659,16 @@ async def execute_check_commit(
             "semantic_included_refs": semantic_included_refs(semantic_result),
             "semantic_withheld_item_ids": semantic_result.semantic_withheld_item_ids,
             "semantic_redacted_values": semantic_result.semantic_redacted_values,
+            # Issue #986: record the route, never block on it here. Only a route that did not
+            # require review is written (``False``); a requiring route keeps today's bytes.
+            "semantic_route_required": (
+                None
+                if semantic_route_required(
+                    request.mode,
+                    app.verification_policy.semantic,
+                )
+                else False
+            ),
             "review_input_manifest": recorded_manifest,
             "totals": build_check_totals(
                 frozen.case,

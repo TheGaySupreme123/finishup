@@ -928,6 +928,21 @@ def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
     return ReceiptChildren(tuple(children))
 
 
+def route_did_not_require_review(check: CheckRecordedPayload | None) -> bool:
+    """True when ``check`` recorded a route that did not require AI-powered review (#986).
+
+    Only an explicit ``semantic_route_required: false`` on a local-only check (``not_requested``)
+    qualifies; an absent field is the safe default and keeps the missing review blocking.
+    """
+
+    return (
+        check is not None
+        and check.semantic_route_required is False
+        and check.semantic_status is SemanticStatus.NOT_REQUESTED
+        and SEMANTIC_REVIEW_NOT_REQUESTED_GAP in check.coverage.known_gaps
+    )
+
+
 def _conclusion(
     context: ReceiptBuildContext,
     unresolved_actionable: tuple[Finding, ...],
@@ -981,6 +996,12 @@ def _conclusion(
     # check reached its clean verdict only after its command counters showed no unknown or live
     # failed outcome. One that arrived after the check was never so guarded (#986).
     advisory_gaps = advisory_gaps - (HOST_OBSERVATION_GUARDED_GAPS - set(check.coverage.known_gaps))
+    if route_did_not_require_review(check):
+        # Issue #986 (owner decision E2, "record route; don't block"): the applicable check
+        # recorded that its route did not require AI-powered review, so the missing review is a
+        # disclosure. A check without the field (older builds, or a route that required review)
+        # keeps it blocking.
+        advisory_gaps = advisory_gaps | {SEMANTIC_REVIEW_NOT_REQUESTED_GAP}
     if (
         not executions_complete
         or any(gap.code not in advisory_gaps for gap in context.gaps)
@@ -1548,6 +1569,7 @@ def _sections(
     missing_for_assessment: object = (),
     check_totals_text: str = "",
     acknowledged_obligations: frozenset[str] = frozenset(),
+    review_not_required: bool = False,
 ) -> tuple[ReceiptSection, ...]:
     gap_codes = coverage.known_gaps
     gap_texts = check_change_gap_texts or {}
@@ -1746,6 +1768,12 @@ def _sections(
             )
         else:
             gap_body = f"Coverage is limited by: {', '.join(gap_codes)}."
+        if not_requested and review_not_required:
+            # Issue #986 (owner decision E2): the applicable check's route did not require it.
+            gap_body += (
+                " The check's route did not require AI-powered review, so its absence is "
+                "disclosed and does not bound the conclusion."
+            )
         if PREEXISTING_TEST_INFORMATIONAL_GAPS & set(gap_codes):
             gap_body += (
                 " Existing test-file edits are listed for review; their presence alone does not "
@@ -1955,6 +1983,7 @@ def build_receipt(
         ),
         resolved_finding_ids=resolved_finding_ids,
         semantic_endpoint_sentence=_semantic_endpoint_sentence(context.applicable_check),
+        review_not_required=route_did_not_require_review(context.applicable_check),
         task_statement_source_sentence=_task_statement_source_sentence(
             context.applicable_check, context.records
         ),

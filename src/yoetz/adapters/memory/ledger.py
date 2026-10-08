@@ -3885,6 +3885,7 @@ class MemoryLedgerAdapter:
         review_input_manifest: JsonObject | None = None,
         totals: JsonObject | None = None,
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
+        semantic_route_required: bool | None = None,
     ) -> CheckCommitResult:
         key = (frozen.lease.writer_id, frozen.lease.operation_id)
         async with self._lock:
@@ -4001,6 +4002,7 @@ class MemoryLedgerAdapter:
             semantic_included_refs=semantic_included_refs,
             semantic_withheld_item_ids=semantic_withheld_item_ids,
             semantic_redacted_values=semantic_redacted_values,
+            semantic_route_required=semantic_route_required,
             review_input_manifest=review_input_manifest,
             totals=(
                 build_check_totals(frozen.case, findings.findings, findings.suppressed_count)
@@ -4139,6 +4141,7 @@ class MemoryLedgerAdapter:
             review_input_manifest=check_payload.review_input_manifest,
             totals=check_payload.totals,
             semantic_redacted_values=check_payload.semantic_redacted_values,
+            semantic_route_required=check_payload.semantic_route_required,
         )
         canonical = canonical_encode(
             {

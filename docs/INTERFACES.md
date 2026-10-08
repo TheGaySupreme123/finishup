@@ -1275,6 +1275,15 @@ Shared structural gap codes for optional AI-powered relevance review (distinct f
 - `semantic_review_not_configured` — evaluator/provider not configured;
 - `semantic_relevance_review_not_run` — evaluation failed/timed out/unavailable without a clean pass;
 - `semantic_review_not_requested` — local-only check; AI-powered review was never requested.
+  It bounds the receipt conclusion unless the applicable check recorded
+  `semantic_route_required: false` (issue #986, ADR-033 amendment of 2026-10-08): then the check's
+  route did not require AI-powered review and the code is a disclosure only.
+
+`semantic_route_required` (optional boolean on the unreleased `check-recorded` and `check-result`
+1.4.0) records whether the check's route required AI-powered review: the check asked for
+`semantic_required`, or the effective verification policy is `semantic: required`, whatever the
+route profile. Writers emit it only as `false`; a requiring route omits it, so those checks and
+every check an older build wrote keep their bytes and the blocking default.
 
 A `deterministic_only` check that follows a blocked or unavailable review carries that earlier
 code forward alongside `semantic_review_not_requested`. The stop-rules make a blocked review a

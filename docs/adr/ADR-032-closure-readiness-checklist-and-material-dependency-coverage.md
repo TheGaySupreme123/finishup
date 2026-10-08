@@ -361,3 +361,16 @@ agent that would not finish one obligation had no honest exit except a `yoetz-bl
    keys: the remainder of `declared` is rendered as acknowledged). Publishing `open` or
    `resolved` on 1.1.0 is refused with a hint naming 1.0.0. Residual: `status view=obligations`
    shows an acknowledged obligation as `open` with no marker; L6 owns that view and adds the reason.
+
+## Amendment (2026-10-08): the route is recorded on the check (#986, E2)
+
+Owner decision (issue #986, L4 residual (b) / E2): **"Record route; don't block".** Each check
+records whether its route required AI-powered review (`semantic_route_required`, optional on the
+unreleased `check-recorded` and `check-result` 1.4.0, written only as `false`). When the route did
+not require review, `semantic_review_not_requested` is a disclosure that no longer bounds the
+receipt conclusion; when it did, or the check predates the field, it still bounds it. The
+classification table and `GAP_CLASSIFICATION_VERSION` are unchanged: the code stays
+`route_dependent`, standing on a non-requiring route and actionable only where the serving route
+requires and can dispatch review. The scoped-local-verdict allowlist above is unchanged; the
+receipt's tolerance of the code is decided from the applicable check's recorded route, never from
+live configuration, so replay is stable. Details: ADR-033, amendment of 2026-10-08.

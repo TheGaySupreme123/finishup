@@ -707,3 +707,115 @@ async def test_a_child_with_self_verified_findings_is_a_standing_status_note(
     assert readiness.state != "ready"
     assert readiness.agent_actionable is not None
     assert "finding_self_verified" not in readiness.agent_actionable
+
+
+async def _clean_local_session(
+    ledger_backend: Literal["memory", "sqlite"],
+    *,
+    semantic: Literal["disabled", "optional", "required"],
+) -> tuple[_Session, CheckCommitResult]:
+    """Finished work with no hook rows: one obligation resolved with evidence, claimed, checked."""
+
+    app, runtime, _ = workflow._build_app(  # pyright: ignore[reportPrivateUsage]
+        seed_offset=986, ledger_backend=ledger_backend
+    )
+    app = replace(app, verification_policy=VerificationPolicy(semantic=semantic))
+    started = await app.start(start_request(986_500, title="Route recorded on the check"))
+    session = _Session(app, runtime, started)
+    obligation = session.next("obl_")
+    evidence = session.next("evd_")
+    open_obligation: dict[str, JsonValue] = {
+        "obligation_id": obligation,
+        "description": "Record the review route on each check.",
+        "evidence_expectation": "The focused test run passes.",
+        "status": "open",
+    }
+    await session.publish(
+        session.draft(
+            "plan_published",
+            {"plan_version": 1, "summary": "Route record", "obligation_refs": [obligation]},
+        ),
+        session.draft("obligation_published", open_obligation),
+    )
+    await session.publish(
+        session.draft(
+            "evidence_recorded",
+            {
+                "evidence_id": evidence,
+                "evidence_kind": "test_result",
+                "strength": "metadata_only",
+                "observed_at": "2026-09-28T12:00:00.000Z",
+                "description": "The focused test run passed.",
+            },
+        ),
+        session.draft(
+            "obligation_published",
+            {**open_obligation, "status": "resolved", "resolution_evidence_refs": [evidence]},
+        ),
+        session.draft(
+            "claim_recorded",
+            {
+                "claim_id": session.next("clm_"),
+                "claim_kind": "completion",
+                "statement": "The review route is recorded on each check.",
+                "obligation_refs": [obligation],
+                "supporting_refs": [evidence],
+                "limitation_refs": [],
+                "supersedes_claim_refs": [],
+            },
+        ),
+    )
+    checked = await session.check()
+    return session, checked
+
+
+@pytest.mark.parametrize("semantic", ("disabled", "optional"))
+@pytest.mark.parametrize("ledger_backend", ("memory", "sqlite"))
+async def test_a_local_only_check_on_a_route_without_required_review_reaches_a_clean_receipt(
+    ledger_backend: Literal["memory", "sqlite"],
+    semantic: Literal["disabled", "optional"],
+) -> None:
+    """Issue #986 (owner decision E2, "record route; don't block")."""
+
+    session, checked = await _clean_local_session(ledger_backend, semantic=semantic)
+    assert checked.semantic_route_required is False
+    assert checked.verdict.value == "no_issue_detected", checked.coverage.known_gaps
+    assert "semantic_review_not_requested" in checked.coverage.known_gaps
+    status = await session.status()
+    readiness = status.closure_readiness
+    assert readiness.agent_actionable == ()
+    assert readiness.standing_limitations is not None
+    assert "semantic_review_not_requested" in readiness.standing_limitations
+    receipt = await session.app.receipt(
+        ReceiptRequest.model_validate(
+            {
+                **workflow._request_base(session.next("req_")),  # pyright: ignore[reportPrivateUsage]
+                "task_id": session.started.task_id,
+                "session_id": session.started.session_id,
+                "writer_id": session.started.writer_id,
+                "expected_frontier": workflow._frontier(session.frontier),  # pyright: ignore[reportPrivateUsage]
+                "format": "json",
+                "include": "standard",
+                "redaction_profile": "full_local",
+            }
+        )
+    )
+    assert str(receipt.conclusion) == "no_unresolved_deterministic_findings", (
+        receipt.coverage.known_gaps
+    )
+    # Still disclosed: the gap stays in the receipt's coverage.
+    assert "semantic_review_not_requested" in receipt.coverage.known_gaps
+
+
+@pytest.mark.parametrize("ledger_backend", ("memory", "sqlite"))
+async def test_a_route_that_requires_review_still_blocks_the_local_only_receipt(
+    ledger_backend: Literal["memory", "sqlite"],
+) -> None:
+    """Issue #986: a policy that requires AI-powered review keeps the gap blocking, as before."""
+
+    session, checked = await _clean_local_session(ledger_backend, semantic="required")
+    assert checked.semantic_route_required is None
+    assert "semantic_review_not_requested" in checked.coverage.known_gaps
+    readiness = (await session.status()).closure_readiness
+    assert readiness.agent_actionable == ("semantic_review_not_requested",)
+    assert await session.receipt() == "insufficient_coverage"

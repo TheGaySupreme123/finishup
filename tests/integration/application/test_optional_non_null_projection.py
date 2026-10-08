@@ -214,6 +214,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 # Issue #982 PL2-1 and issue #1012.
                 "semantic_redacted_values",
                 "observations_awaited",
+                # Issue #986 (E2): written only as ``false``.
+                "semantic_route_required",
             }
         ),
     ),
@@ -1184,8 +1186,11 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
         # Issue #905: the checklist is current context a ledger may not offer; unset, it is
         # absent rather than null, and an explicit null is refused.
         assert "finding_checklist" in projected_check
+        # Issue #986 (E2): a route that did not require AI-powered review is recorded as false.
+        assert projected_check["semantic_route_required"] is False
         for field in (
             "finding_checklist",
+            "semantic_route_required",
             "semantic_withheld_items",
             "review_input_manifest",
             "semantic_conclusion",
@@ -1602,6 +1607,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
                 "overall_next",
                 "semantic_redacted_values",
                 "observations_awaited",
+                "semantic_route_required",
             ),
         ),
     ):

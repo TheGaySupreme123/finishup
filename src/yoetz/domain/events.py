@@ -2876,6 +2876,11 @@ class CheckRecordedPayload:
     # PL2-1 (issue #982, 1.4.0 only): per case item, its catalogued ref and the 1-based lines whose
     # credential-like values the external reviewer's copy did not carry. Never values.
     semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
+    # Issue #986 (owner decision "record route; don't block", 1.4.0 only): whether the check's
+    # route required AI-powered review. Writers record only ``False`` (the route did not require
+    # it); a route that required review omits it, so those checks and every older check keep
+    # their bytes. Absent or ``True`` keeps ``semantic_review_not_requested`` blocking.
+    semantic_route_required: bool | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", _exact_enum(self.mode, CheckMode))
@@ -3023,6 +3028,11 @@ class CheckRecordedPayload:
         if (
             self.review_input_manifest is not None
             and type(self.review_input_manifest) is not JsonObject
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        if (
+            self.semantic_route_required is not None
+            and type(self.semantic_route_required) is not bool
         ):
             raise ProtocolValueError("invalid_event_value_type")
         if type(self.engine_version) is not str or self.engine_version != "0.1.0":
@@ -3972,6 +3982,7 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
                     "semantic_included_refs",
                     "semantic_withheld_item_ids",
                     "semantic_redacted_values",
+                    "semantic_route_required",
                     "review_input_manifest",
                     "totals",
                 }
@@ -4502,6 +4513,7 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
             review_input_manifest=_review_input_manifest_from_json(
                 _optional(source, "review_input_manifest")
             ),
+            semantic_route_required=cast(bool | None, _optional(source, "semantic_route_required")),
             totals=(
                 None
                 if _optional(source, "totals") is None
@@ -5048,6 +5060,7 @@ def encode_payload(payload: EventPayload) -> JsonValue:
             tuple(item.as_wire() for item in value.semantic_redacted_values),
         )
         _optional_value(result, "review_input_manifest", value.review_input_manifest)
+        _optional_value(result, "semantic_route_required", value.semantic_route_required)
         _optional_value(result, "totals", value.totals)
         return _json_object(result)
     if payload_type is ReceiptRecordedPayload:
@@ -5124,6 +5137,7 @@ def _validate_event_schema_payload(
             or bool(payload.verified)
             or payload.totals is not None
             or bool(payload.semantic_redacted_values)
+            or payload.semantic_route_required is not None
         )
         if has_review_output:
             if schema.version != REVIEW_CHECK_EVENT_SCHEMA_VERSION:

@@ -3579,6 +3579,7 @@ class CheckSuccessModel(_ClosedModel):
             "overall_next",
             "semantic_withheld_items",
             "semantic_redacted_values",
+            "semantic_route_required",
             "review_input_manifest",
             "semantic_conclusion",
             "review_summary",
@@ -3625,6 +3626,9 @@ class CheckSuccessModel(_ClosedModel):
     review_input_manifest: ReviewInputManifestModel | None = None
     totals: CheckTotalsModel | None = None
     observations_awaited: CheckObservationsAwaitedModel | None = None
+    # Issue #986: ``false`` only when the check's route did not require AI-powered review; absent
+    # when it did or on results from older builds (the missing review then still blocks).
+    semantic_route_required: bool | None = None
     coverage: CoverageModel
     versions: CheckVersionSliceModel
     privacy_projection: PrivacyProjectionModel
@@ -5842,6 +5846,8 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         "/semantic_conclusion",
         "/semantic_provenance",
         "/semantic_reason",
+        # Issue #986: a closed boolean the service writes from the route, never case content.
+        "/semantic_route_required",
         "/semantic_status",
         # Every continuation leaf is service-authored: an opaque proposal id, its expiry, the
         # fixed argv, the request id to replay, and fixed instruction prose. None of it carries
@@ -6854,7 +6860,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1462:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +23
+    if len(result) != 1463:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 
