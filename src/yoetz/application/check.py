@@ -3134,24 +3134,31 @@ def _cites_material_after(case: DeterministicCase, refs: Iterable[str], frontier
     )
 
 
-def _bookkeeping_event(case: DeterministicCase, ref: str) -> bool:
-    """Whether an ``evt_`` ref is the event that recorded a claim or an obligation (#1020).
+_CLAIM_EVENT_SCHEMAS: Final = frozenset({"claim_recorded"})
+_BOOKKEEPING_EVENT_SCHEMAS: Final = frozenset({"claim_recorded", "obligation_published"})
+
+
+def _bookkeeping_event(
+    case: DeterministicCase, ref: str, schemas: frozenset[str] = _BOOKKEEPING_EVENT_SCHEMAS
+) -> bool:
+    """Whether an ``evt_`` ref is an event that recorded a claim or obligation (#1020).
 
     Citing that event is citing the claim or obligation itself, which is bookkeeping, not
-    material about the problem.
+    material about the problem. Both the frozen history (every publication, including ones a
+    later publication replaced) and the current projection rows are consulted.
     """
 
     if not ref.startswith("evt_"):
         return False
+    if any(str(event.event_id) == ref and event.schema_name in schemas for event in case.history):
+        return True
     projection = case.projection
-    return any(
-        str(row.source_event_id) == ref
-        for rows in (
-            cast(Mapping[object, ProjectionRecord[object]], projection.claims),
-            cast(Mapping[object, ProjectionRecord[object]], projection.obligations),
-        )
-        for row in rows.values()
-    )
+    sources: list[Mapping[object, ProjectionRecord[object]]] = []
+    if "claim_recorded" in schemas:
+        sources.append(cast(Mapping[object, ProjectionRecord[object]], projection.claims))
+    if "obligation_published" in schemas:
+        sources.append(cast(Mapping[object, ProjectionRecord[object]], projection.obligations))
+    return any(str(row.source_event_id) == ref for rows in sources for row in rows.values())
 
 
 def _material_sequence(case: DeterministicCase, ref: str) -> int | None:
@@ -3777,6 +3784,17 @@ def _record_restatement(
         )
         admitted[key] = PriorFindingVerdictRecord(restated, contradicted, ())
         return True, True
+    if (
+        earlier.verdict in _HELD_OPEN_RULINGS
+        and earlier.verdict != DISPUTED_AFTER_REBUTTAL_VERDICT
+        and _disputed_after_rebuttal(case, restated, verdict, (*refs, *cited, *earlier.cited_refs))
+    ):
+        # Issue #1020: the explicit ruling was reduced (or kept open) without anything newer, and
+        # the restatement repeats the concern over the rebuttal: the standing disagreement.
+        admitted[key] = PriorFindingVerdictRecord(
+            restated, DISPUTED_AFTER_REBUTTAL_VERDICT, earlier.cited_refs
+        )
+        return True, False
     if earlier.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT and not _disputed_after_rebuttal(
         case, restated, verdict, (*refs, *cited)
     ):
@@ -3882,7 +3900,16 @@ def _restated_finding(
             and not _disputed_after_rebuttal(case, key, "still_present", (*refs, *cited))
         ):
             continue
-        held = wanted if exact else frozenset(ref for ref in wanted if not ref.startswith("clm_"))
+        held = (
+            wanted
+            if exact
+            else frozenset(
+                ref
+                for ref in wanted
+                if not ref.startswith("clm_")
+                and not _bookkeeping_event(case, ref, _CLAIM_EVENT_SCHEMAS)
+            )
+        )
         # Issue #1020: over the agent's reasoned rejection, material recorded before that
         # rejection is what the agent already answered; only material after it is new.
         rebuttal = _reasoned_rejection_frontier(case.projection, key)

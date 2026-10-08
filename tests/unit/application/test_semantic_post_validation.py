@@ -2044,3 +2044,88 @@ def test_a_withdrawn_contradicted_by_a_stale_restatement_is_the_dispute() -> Non
         (str(fnd(1)), "disputed_after_rebuttal")
     ]
     assert "answer it there" not in review.review_summary
+
+
+def _with_republished_claim(case: DeterministicCase) -> DeterministicCase:
+    from builders.policy_cases import claim_record
+    from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
+
+    republished = claim_record(
+        ClaimRecordedPayload(clm(2), ClaimKind.COMPLETION, "solve.sage works", ()), 11
+    )
+    return replace(
+        case,
+        projection=replace(case.projection, claims={**case.projection.claims, clm(2): republished}),
+        allowed_ids=case.allowed_ids | {clm(2), evt(11)},
+        coverage_by_ref={**case.coverage_by_ref, clm(2): BASE_COVERAGE, evt(11): BASE_COVERAGE},
+    )
+
+
+def test_an_unnamed_repeat_citing_a_republished_claim_event_folds_into_the_dispute() -> None:
+    """Codex review round 3: the new claim and its event are bookkeeping, not new material."""
+
+    case = _with_republished_claim(_formal_crypto_case())
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "challenges_returned",
+            (_formal_crypto_reraise(str(clm(2)), str(evt(11)), str(obl(1))),),
+        ),
+        case,
+    )
+    assert review.candidates == ()
+    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+        (str(fnd(1)), "disputed_after_rebuttal")
+    ]
+
+
+def test_an_unsupported_fixed_with_a_stale_restatement_is_the_dispute() -> None:
+    """Codex review round 3: a reduced ``fixed`` never restores pressure on a rebutted item."""
+
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "challenges_returned",
+            (_formal_crypto_reraise(str(clm(1)), str(obl(1)), restates=str(fnd(1))),),
+            (_verdict(1, "fixed"),),
+        )
+    )
+    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+        (str(fnd(1)), "disputed_after_rebuttal")
+    ]
+    assert "answer it there" not in review.review_summary
+
+
+def test_a_historical_obligation_publication_event_is_not_new_material() -> None:
+    """Codex review round 3: an obligation event the projection no longer holds is still
+    bookkeeping when the frozen history names it."""
+
+    from yoetz.kernel.deterministic_checks import FrozenHistoryEvent
+
+    base = _formal_crypto_case()
+    historical = FrozenHistoryEvent(
+        event_id=evt(10),
+        schema_name="obligation_published",
+        schema_version="1.1.0",
+        ingestion_sequence=10,
+        occurred_at="2026-10-08T12:00:00.000Z",
+        accepted_at=None,
+        occurred_at_consistency=None,
+        payload_digest="sha256:" + "c" * 64,
+        content_visibility="not_recorded",
+        payload=None,
+    )
+    case = replace(
+        base,
+        history=(historical,),
+        history_availability="available",
+        allowed_ids=base.allowed_ids | {evt(10)},
+        coverage_by_ref={**base.coverage_by_ref, evt(10): BASE_COVERAGE},
+    )
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "no_material_discrepancy", (), (_verdict(1, "still_present", str(evt(10))),)
+        ),
+        case,
+    )
+    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+        (str(fnd(1)), "disputed_after_rebuttal")
+    ]
