@@ -328,6 +328,11 @@ def test_one_image_result_is_one_digest_only_evidence_row(
     )
     assert len(results) == 1
     assert evidence.evidence_id in results[0].evidence_refs
+    # Cross-lane (L5 D6, #983): the review packet recognizes this exact row as an observed image
+    # notice and a Yoetz-limit (unsupported data type) target, never a request for its pixels.
+    from yoetz.application.missing_for_assessment import observed_image_evidence
+
+    assert observed_image_evidence(evidence)
 
 
 @pytest.mark.parametrize(("host", "run", "shape"), _HOSTS, ids=[name for name, *_ in _HOSTS])

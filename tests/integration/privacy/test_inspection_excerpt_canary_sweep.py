@@ -161,11 +161,12 @@ def test_inspection_snapshot_plaintext_and_ciphertext_stay_canary_free(tmp_path:
         (_artifact("src/env.py", b"export " + _SECRET + b"\n"),)
     )
     assert unavailable is False
-    assert redacted is True
+    # B1 (#982, owner decision 2026-10-07): a heuristic-only credential shape stays raw at capture
+    # for local and deterministic checks and is redacted only at egress. It still never reaches
+    # plaintext SQLite or the object files: the sweep below runs over the encrypted surfaces.
+    assert redacted is False
     assert truncated is False
     assert encoded is not None
-    assert _SECRET not in encoded
-    assert b"wJalrXUtnFEMI" not in encoded
 
     async def persist() -> ObjectRef:
         metadata = ObjectMetadata(
@@ -205,7 +206,7 @@ def test_inspection_snapshot_plaintext_and_ciphertext_stay_canary_free(tmp_path:
     assert snapshot.excerpt_object_id == ref.object_id
     assert snapshot.excerpt_content_digest == "sha256:" + hashlib.sha256(encoded).hexdigest()
     assert snapshot.excerpt_content_bytes == len(encoded)
-    assert snapshot.excerpt_redacted is True
+    assert snapshot.excerpt_redacted is False
     assert snapshot.excerpt_truncated is False
 
     surfaces = {
@@ -227,6 +228,6 @@ def test_inspection_snapshot_plaintext_and_ciphertext_stay_canary_free(tmp_path:
         return b"".join([chunk async for chunk in objects.open_verified(ref)])
 
     recovered = asyncio.run(decrypt())
+    # The decrypted vault object is the raw local excerpt (B1): egress re-scans and redacts it.
     assert recovered == encoded
-    assert b"excerpt_b64" not in recovered
-    assert _SECRET not in recovered
+    assert b"excerpt_b64" in recovered
