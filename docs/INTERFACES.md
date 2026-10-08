@@ -8898,7 +8898,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
 - **Runtime structural fields.** The observation envelope and control-request 2.9.0
   `structural_payload` admit `install_target` (`yoetz_runtime|workspace_env|private_env|system|
   unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned`; ADR-042: `scratch` and
-  `yoetz_owned` name an edit whose every path is a temp root/`*.log` or Yoetz's own material) and
+  `yoetz_owned` name an edit whose every path is a temp root outside the workspace or Yoetz's own material) and
   `effective_user` (`root|non_root`),
   produced only by `cli/runtime_facts.runtime_structural_facts`, which judges `install_target`
   against the task interpreter (the agent's `python3`/`python` on the hook's `PATH`; ADR-033
@@ -8911,7 +8911,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   names a `FileChange` item's `write_scope` from its own paths (never `outside_workspace`). A Yoetz
   MCP tool (`mcp__yoetz__*`, `mcp__plugin_yoetz_*__*`) always materializes as action kind `other`.
   `domain/write_scope.py`: `classify_write_path(path, *, workspace, inside, owned_roots) ->
-  workspace|outside_workspace|scratch|yoetz_owned`, `edit_write_scope(classes) -> str | None`. Observation advice 0.1.8 adds the
+  workspace|outside_workspace|scratch|yoetz_owned`, `edit_write_scope(classes) -> str | None`,
+  `non_counting_path(path) -> bool`; `kernel.task_facts.non_counting_edits_exempt(projection)` is
+  `False` when a requested non-input file could itself be classified so (deliverables win). Observation advice 0.1.8 adds the
   advice-only rule codes `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`.
 - **Closure gate (`cli/closure_gate.py`).** `STOP_GATE_TOKENS` (in `kernel/task_facts.py`) are

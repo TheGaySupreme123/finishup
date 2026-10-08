@@ -6,8 +6,8 @@ An observed edit is one of four classes:
   declared delivered set, never here);
 * ``workspace`` — any other path in the workspace, and a real write outside it (an installed
   package the task told the agent to patch);
-* ``scratch`` — a temporary location (``/tmp`` and the platform temp roots) or a log file
-  (``*.log``): working notes the delivered work never reads;
+* ``scratch`` — a temporary location outside the workspace (``/tmp`` and the platform temp
+  roots): working notes the delivered work never reads;
 * ``yoetz_owned`` — Yoetz's own material: a receipt or export the agent saved (``yoetz_receipt.md``),
   Yoetz's state directory, and the packaged Yoetz plugin and skill trees.
 
@@ -31,6 +31,7 @@ __all__ = [
     "WriteClass",
     "classify_write_path",
     "edit_write_scope",
+    "non_counting_path",
     "scratch_path",
 ]
 
@@ -53,11 +54,12 @@ _WSL_WINDOWS_TEMP: Final = re.compile(
 )
 # The last component of an environment temp directory must name temporary space.
 _TEMP_NAME: Final = re.compile(r"te?mp|scratch", re.IGNORECASE)
-# A log file the agent writes through an edit tool. Shell redirects are commands, not edits.
-_LOG_NAME: Final = re.compile(r"\.log(?:\.[0-9]+)?$", re.IGNORECASE)
 # A Yoetz receipt or export the agent saved as a file (tb4n2 cad S `/app/yoetz_receipt.md`,
 # lake D `/app/output/yoetz_receipt.json`).
-_YOETZ_ARTIFACT_NAME: Final = re.compile(r"^yoetz[-_.]?(?:receipt|export)", re.IGNORECASE)
+_YOETZ_ARTIFACT_NAME: Final = re.compile(
+    r"^yoetz[-_.]?(?:receipt|export)s?(?:[-_.][a-z0-9]+)*\.(?:md|markdown|json|txt|text)$",
+    re.IGNORECASE,
+)
 # Packaged Yoetz trees a host installation writes into a repository (generated, never the work).
 _YOETZ_TREES: Final = (".agents/plugins/yoetz", ".agents/skills/yoetz")
 
@@ -104,15 +106,38 @@ def process_temp_roots(workspace: str | None) -> tuple[str, ...]:
     )
 
 
-def scratch_path(path: str, workspace: str | None = None) -> bool:
-    """Whether an absolute path lands in a temporary or device directory."""
+def scratch_path(path: str, workspace: str | None = None, *, environment: bool = True) -> bool:
+    """Whether an absolute path lands in a temporary or device directory.
+
+    ``environment=False`` uses only the fixed roots, never ``TMPDIR``/``TEMP``/``TMP``: a pure,
+    replay-stable answer for the kernel.
+    """
 
     normalized = _normalize(path)
     if normalized.startswith("/dev/"):
         return True
     if _MACOS_USER_TEMP.match(normalized) or _WSL_WINDOWS_TEMP.match(normalized):
         return True
-    return any(_under(normalized, root) for root in (*TEMP_ROOTS, *process_temp_roots(workspace)))
+    roots = (*TEMP_ROOTS, *(process_temp_roots(workspace) if environment else ()))
+    return any(_under(normalized, root) for root in roots)
+
+
+def non_counting_path(path: str) -> bool:
+    """Whether a declared path is one the lexical rule could call scratch or Yoetz-owned.
+
+    Pure (fixed temp roots only). The kernel uses it to keep the stale rule conservative: when a
+    declared deliverable could itself be classified scratch or Yoetz-owned, no edit is exempt.
+    """
+
+    if type(path) is not str or not path:
+        return False
+    normalized = _normalize(path)
+    if _YOETZ_ARTIFACT_NAME.match(posixpath.basename(normalized)) is not None:
+        return True
+    padded = "/" + normalized.lstrip("/")
+    if any(f"/{tree}/" in padded + "/" for tree in _YOETZ_TREES):
+        return True
+    return normalized.startswith("/") and scratch_path(normalized, environment=False)
 
 
 def _yoetz_owned(normalized: str, owned_roots: Iterable[str]) -> bool:
@@ -136,8 +161,9 @@ def classify_write_path(
     """The class of one written path.
 
     ``inside`` is the caller's lexical answer to "is this path under the workspace root"
-    (``None`` when no workspace is known: only scratch and Yoetz-owned paths are named then, and
-    every other path is ``workspace``). A relative path is read against the workspace.
+    (``None`` when no workspace is known: only a Yoetz-owned path is named then, and every other
+    path is ``workspace``, since a temporary directory may be the workspace itself). A relative
+    path is read against the workspace.
     """
 
     if type(path) is not str or not path:
@@ -146,17 +172,15 @@ def classify_write_path(
     if _yoetz_owned(normalized, owned_roots):
         return "yoetz_owned"
     absolute = normalized.startswith("/")
-    log = _LOG_NAME.search(posixpath.basename(normalized)) is not None
-    if absolute and inside is True or not absolute:
-        # A workspace may itself sit under a temporary root (a test checkout under ``$TMPDIR``):
-        # inside the workspace only a log file is scratch.
-        return "scratch" if log else "workspace"
+    if not absolute or inside is not False:
+        # Inside the workspace (or unknown: no workspace root to compare with) every write counts.
+        # A workspace may itself sit under a temporary root, and a log file there may be a
+        # deliverable, so neither is ever exempt by location or name alone.
+        return "workspace"
     if scratch_path(normalized, workspace):
         return "scratch"
-    if inside is False:
-        # A real write outside the workspace keeps counting and stays disclosed, a log included.
-        return "outside_workspace"
-    return "scratch" if log else "workspace"
+    # A real write outside the workspace keeps counting and stays disclosed.
+    return "outside_workspace"
 
 
 def edit_write_scope(classes: Iterable[WriteClass]) -> str | None:

@@ -30,7 +30,7 @@ for delivery are reduced here to closed tokens and nothing else crosses into the
   ``/private`` aliases, the per-user macOS ``/var/folders/<a>/<b>/T`` directory, or this
   process's own temporary directory) is not a misplaced deliverable and claims nothing. Paths are
   normalized lexically first, so ``/tmp/../etc/x`` is ``/etc/x``. An edit tool whose every
-  path is scratch (a temporary directory or a ``*.log`` file) reports ``scratch``, and one whose
+  path is scratch (a temporary directory outside the workspace) reports ``scratch``, and one whose
   every path is Yoetz's own material (a saved ``yoetz_receipt.*``/``yoetz_export.*``, Yoetz's state
   or isolation root, ``.agents/plugins/yoetz``, ``.agents/skills/yoetz``) reports ``yoetz_owned``
   (``domain.write_scope``, ADR-042): neither makes an earlier verification stale.
@@ -81,7 +81,9 @@ _EDIT_TOOLS: Final = frozenset(
 )
 _EDIT_PATH_KEYS: Final = ("file_path", "path", "target_file", "filePath", "notebook_path")
 _HEREDOC: Final = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-_PATCH_PATH: Final = re.compile(r"^\*\*\* (?:Add File|Update File|Move to): (.+)$", re.MULTILINE)
+_PATCH_PATH: Final = re.compile(
+    r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", re.MULTILINE
+)
 _REDIRECT_OPERATORS: Final = frozenset({">", ">>", ">|", "&>", "&>>"})
 _SHELL_TOOLS: Final = frozenset({"Bash", "bash", "Shell", "shell", "exec_command", "local_shell"})
 _LOCATION_FLAGS: Final = ("--target", "-t", "--prefix", "--root")
@@ -416,7 +418,7 @@ def runtime_structural_facts(
     )
     if tool_name in _PATCH_TOOLS or tool_name in _EDIT_TOOLS:
         # Classify every written path (tb4n2 R4, ADR-042): only an edit whose every path is
-        # scratch (temp roots, ``*.log``) or Yoetz-owned (a saved receipt, Yoetz state, the
+        # scratch (temp roots outside the workspace) or Yoetz-owned (a saved receipt, Yoetz state, the
         # packaged Yoetz trees) is named so; it never makes an earlier verification stale.
         owned = _owned_roots()
         scope = edit_write_scope(

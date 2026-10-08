@@ -595,7 +595,7 @@ This replaces the earlier statement in this ADR that the receipt cannot apply th
 ## Amendment (2026-10-08): finer stale rule and a gate token for edits after verification (#1018)
 
 ADR-042 refines decisions here without replacing them. An observed edit whose every path is scratch
-(a temporary root or a `*.log` file) or Yoetz's own material (a saved receipt or export, Yoetz state,
+(a temporary root outside the workspace) or Yoetz's own material (a saved receipt or export, Yoetz state,
 the packaged Yoetz trees) carries `write_scope` `scratch` or `yoetz_owned` and never advances the
 latest edit, so it never makes `planned_verification_stale` or `edited_after_last_verification`
 fire and is not acting. `python -m pytest` and the other verification modules are verification

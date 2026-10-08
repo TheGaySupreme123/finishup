@@ -266,6 +266,26 @@ def test_scratch_and_yoetz_owned_edits_never_make_verification_stale(scope: str)
     assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(outside)
 
 
+def test_a_deliverable_the_rule_could_call_scratch_keeps_every_edit_counting() -> None:
+    """Codex review round 1: a declared output under /tmp takes precedence over the exemption."""
+
+    ledger = ObservedLedger()
+    _planned(ledger, RequestedItem(RequestedItemKind.FILE, "/tmp/out/results.json"))
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.edit(write_scope="scratch")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
+def test_non_executing_pytest_never_clears_staleness() -> None:
+    ledger = ObservedLedger()
+    ledger.passes("pytest -q")
+    ledger.edit()
+    ledger.passes("python -m pytest --version")
+    ledger.passes("uv run python /app/dev/build_model.py")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
 def test_scratch_edit_alone_is_not_acting() -> None:
     ledger = ObservedLedger()
     ledger.edit(write_scope="scratch")

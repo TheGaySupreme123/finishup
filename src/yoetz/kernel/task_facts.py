@@ -71,6 +71,7 @@ from yoetz.domain.events import (
 )
 from yoetz.domain.observation import normalize_observed_command, observed_command_commitment
 from yoetz.domain.values import EventId, ObligationId, obligation_id
+from yoetz.domain.write_scope import non_counting_path
 from yoetz.kernel.command_attempts import attempted_items_for_obligation
 from yoetz.kernel.observed_failures import (
     command_identity,
@@ -142,6 +143,7 @@ __all__ = [
     "requested_command_identity",
     "requested_output_facts",
     "task_fact_signals",
+    "non_counting_edits_exempt",
 ]
 
 PLANNED_VERIFICATION_NOT_OBSERVED_GAP: Final = "planned_verification_not_observed"
@@ -786,6 +788,29 @@ def _agent_linked_runs(
     }
 
 
+def non_counting_edits_exempt(projection: ProjectionState) -> bool:
+    """Whether scratch and Yoetz-owned edits may be exempt from the stale rule (ADR-042).
+
+    Deliverables take precedence over the lexical write classes: when any effective obligation
+    requests a file or directory (not ``role: input``) that the rule could itself call scratch or
+    Yoetz-owned (a deliverable under ``/tmp``, a requested ``yoetz_report.md``), the observed
+    description cannot tell that edit from scratch work, so no edit is exempt.
+    """
+
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for item in payload.requested_items:
+            if (
+                item.item_kind in _DECLARED_OUTPUT_KINDS
+                and item.role is not RequestedItemRole.INPUT
+                and non_counting_path(item.value)
+            ):
+                return False
+    return True
+
+
 def _non_counting_edit(description: str) -> bool:
     """An observed edit whose every path was scratch or Yoetz-owned (ADR-042, tb4n2 R4).
 
@@ -802,6 +827,7 @@ def _observed_state(
     observed: frozenset[EventId],
     cooperative: frozenset[EventId],
 ) -> _ObservedState:
+    exempt = non_counting_edits_exempt(projection)
     runs: list[_ObservedRun] = []
     latest_edit: int | None = None
     edit_tokens: set[str] = set()
@@ -819,7 +845,9 @@ def _observed_state(
         description = action.payload.description
         if action.payload.action_kind is ActionKind.EDIT:
             edits_with_result.add(str(payload.action_id))
-            if payload.outcome is ResultOutcome.FAILURE or _non_counting_edit(description):
+            if payload.outcome is ResultOutcome.FAILURE or (
+                exempt and _non_counting_edit(description)
+            ):
                 continue
             latest_edit = max(latest_edit or 0, result.source_frontier)
             edit_tokens.update(observed_action_runtime_tokens(description))
@@ -856,7 +884,7 @@ def _observed_state(
         if action.source_event_id not in observed:
             continue
         if payload.action_kind is ActionKind.EDIT and str(action_ref) not in edits_with_result:
-            if _non_counting_edit(payload.description):
+            if exempt and _non_counting_edit(payload.description):
                 continue
             # An observed edit whose outcome has not arrived yet still changed the state under
             # test as far as the observer can tell; a stated failure above never counts.

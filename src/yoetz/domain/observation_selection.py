@@ -515,6 +515,11 @@ def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
     command = argv[0].rsplit("/", 1)[-1].casefold()
     if command in _SHELL_WRAPPERS and len(argv) >= 3 and _SHELL_COMMAND_FLAG_RE.fullmatch(argv[1]):
         return command_runner_class({"command": argv[2]})
+    wrapped = _run_wrapper_target(command, argv)
+    if wrapped is not None:
+        # ``uv run python build_model.py`` is the wrapped command, classified on its own; the
+        # wrapper's name never makes a script a build or a test (ADR-042).
+        return _runner_class_for_argv(wrapped)
     if command == "rg" and any(
         argument.partition("=")[0].casefold() in _RG_PRE_OPTIONS
         or argument.casefold().startswith("--pre")
@@ -529,8 +534,13 @@ def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
         return "other"
     if command in {"cat", "cut", "find", "grep", "head", "less", "ls", "pwd", "rg", "tail", "wc"}:
         return "exploration"
+    if command in {"pytest", "py.test"} and _non_executing_test_run(argv[1:]):
+        return "other"
     module = _python_module(command, argv)
     if module is not None:
+        if module == "pytest" and _non_executing_test_run(argv):
+            # ``python -m pytest --version`` or ``--collect-only`` runs no test.
+            return "other"
         # ``python -m pytest`` is a test run exactly like ``pytest`` (tb4n2 interleaved S: every
         # ``python -m pytest`` counted as ``other``, so a passing post-edit run never cleared
         # ``edited_after_last_verification``). Only a closed set of verification modules is named;
@@ -609,6 +619,54 @@ _PYTHON_VERIFICATION_MODULES: Final[Mapping[str, RunnerClass]] = MappingProxyTyp
         "compileall": "build",
     }
 )
+
+
+# Options that make pytest report on itself or collect without running a test.
+_PYTEST_NON_EXECUTING: Final = frozenset(
+    {"--version", "-V", "-h", "--help", "--collect-only", "--co", "--fixtures", "--markers"}
+)
+# Project runners whose ``run`` subcommand executes the command that follows.
+_RUN_WRAPPERS: Final = frozenset({"uv", "poetry", "pipenv", "pdm", "hatch", "rye"})
+# ``uv run`` options that take a separate value (``uv run --with numpy python x.py``).
+_RUN_OPTIONS_WITH_VALUE: Final = frozenset(
+    {
+        "--with",
+        "--with-requirements",
+        "--python",
+        "-p",
+        "--project",
+        "--directory",
+        "--env-file",
+        "--extra",
+        "--group",
+        "--package",
+        "--index",
+        "--index-url",
+        "-e",
+        "--env",
+    }
+)
+
+
+def _non_executing_test_run(arguments: list[str]) -> bool:
+    return any(argument in _PYTEST_NON_EXECUTING for argument in arguments)
+
+
+def _run_wrapper_target(command: str, argv: list[str]) -> list[str] | None:
+    """The command a ``uv run``/``poetry run`` style wrapper executes, or ``None``."""
+
+    if command not in _RUN_WRAPPERS or len(argv) < 3 or argv[1] != "run":
+        return None
+    index = 2
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--":
+            index += 1
+            break
+        if not argument.startswith("-"):
+            break
+        index += 2 if argument in _RUN_OPTIONS_WITH_VALUE else 1
+    return argv[index:] or None
 
 
 def _python_module(command: str, argv: list[str]) -> str | None:

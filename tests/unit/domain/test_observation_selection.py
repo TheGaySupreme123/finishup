@@ -187,6 +187,11 @@ def test_command_runner_class_is_closed_and_conservative(command: str, expected:
         ("node build.js", "other"),
         ("make build", "build"),
         ("pytest -q", "test"),
+        ("python -m pytest --version", "other"),
+        ("pytest --collect-only", "other"),
+        ("uv run python /app/dev/build_model.py", "other"),
+        ("uv run --with numpy python -m pytest -q", "test"),
+        ("poetry run mypy .", "typecheck"),
     ],
 )
 def test_python_module_runs_and_build_named_scripts(command: str, runner: str) -> None:

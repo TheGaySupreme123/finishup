@@ -58,6 +58,11 @@ VERIFICATION_FINDING_KINDS: Final = frozenset(
     }
 )
 _TASK_WIDE_SCOPED: Final = frozenset({EDITED_AFTER_LAST_VERIFICATION_GAP})
+_CHECK_TIME_FACTS: Final = frozenset(
+    code
+    for code in TASK_FACT_GAPS
+    if code.startswith("requested_output_") or code.startswith("declared_output_")
+)
 _COVERAGE_PREFIX: Final = "coverage:"
 
 
@@ -116,7 +121,10 @@ def task_fact_bears_on_finding(
         return True
     if code in _TASK_WIDE_SCOPED:
         return record.payload.kind in VERIFICATION_FINDING_KINDS
-    if markers is None:
+    if code in _CHECK_TIME_FACTS or markers is None:
+        # Requested- and declared-output facts come from the check-time workspace read, never
+        # from ``task_fact_signals``: their obligation scope is not replayable here, so they bear
+        # (fail closed).
         return True
     named = {obligation for marker, obligation in markers if marker == code}
     if None in named:

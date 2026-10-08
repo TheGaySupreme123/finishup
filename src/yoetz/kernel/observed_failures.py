@@ -118,7 +118,7 @@ RUNTIME_SUFFIX_TOKENS: Final = frozenset(
     }
 )
 # Edit runtime tokens that name a write which changes nothing under test (ADR-042, tb4n2 R4):
-# every path the edit named was scratch (temp roots, ``*.log``) or Yoetz's own material.
+# every path the edit named was scratch (temp roots outside the workspace) or Yoetz's own material.
 NON_COUNTING_WRITE_TOKENS: Final = frozenset({"write scratch", "write yoetz_owned"})
 
 
@@ -411,7 +411,7 @@ def observed_action_runtime_tokens(description: str) -> frozenset[str]:
 def observed_edit_counts(description: str) -> bool:
     """Whether an observed edit can change the work under test (ADR-042, tb4n2 R4).
 
-    ``False`` only for an edit whose every path was scratch (temp roots, ``*.log``) or Yoetz's own
+    ``False`` only for an edit whose every path was scratch (temp roots outside the workspace) or Yoetz's own
     material (``write scratch`` / ``write yoetz_owned``): it never makes an earlier verification
     stale and is not acting on the task. Deliverable, workspace and real outside-workspace edits,
     and every edit recorded before the class existed, count.

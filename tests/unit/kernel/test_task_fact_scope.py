@@ -181,6 +181,10 @@ def test_obligation_scoped_facts_bear_only_on_their_obligation() -> None:
         "planned_verification_stale", state=state, finding_id=fnd(1), markers=None
     )
     assert task_fact_bears_on_finding("missing_ref", state=state, finding_id=fnd(1), markers=())
+    # Check-time output facts are not replayable here: they always bear (Codex review round 1).
+    assert task_fact_bears_on_finding(
+        "requested_output_git_ignored", state=state, finding_id=fnd(1), markers=()
+    )
 
 
 def test_scoped_reasons_drop_unrelated_facts_but_never_empty_the_list() -> None:

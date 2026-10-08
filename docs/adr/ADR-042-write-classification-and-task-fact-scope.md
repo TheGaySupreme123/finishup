@@ -47,21 +47,27 @@ did not stop the agent:
 
 1. **Four write classes.** An observed edit's paths are `deliverable` (a declared `role: output`
    file, ADR-035), `workspace` (any other workspace path, and a real write outside the workspace such
-   as an installed package the task told the agent to patch), `scratch` (a temporary root — the same
-   lexical roots ADR-033 decision 7 uses for writes outside the workspace — or a `*.log` file inside
-   the workspace) or `yoetz_owned` (a file named `yoetz[-_.]receipt*` / `yoetz[-_.]export*`, Yoetz's
-   state directory or isolation root, `.agents/plugins/yoetz`, `.agents/skills/yoetz`). The rule is
-   lexical and never resolves a path through the filesystem; a workspace that itself sits under a
-   temporary root is still the workspace. Only `deliverable` and `workspace` (and real outside)
-   writes make an earlier verification stale. `deliverable` versus `workspace` needs no separate
-   token: both count.
+   as an installed package the task told the agent to patch), `scratch` (a path outside the workspace
+   under a temporary root — the same lexical roots ADR-033 decision 7 uses) or `yoetz_owned` (a
+   receipt or export file named `yoetz[-_.]receipt*.{md,markdown,json,txt,text}` /
+   `yoetz[-_.]export*.…`, Yoetz's state directory or isolation root, `.agents/plugins/yoetz`,
+   `.agents/skills/yoetz`). The rule is lexical and never resolves a path through the filesystem.
+   Every path inside the workspace counts, a log file included (a log may be a deliverable; shell
+   redirects into logs are commands, never edits, and a log under a temporary root is scratch), and
+   a path whose workspace relation is unknown counts (a temporary directory may be the workspace).
+   Only `deliverable` and `workspace` (and real outside) writes make an earlier verification stale.
+   Deliverables take precedence: when any effective obligation requests a file or directory (not
+   `role: input`) that the rule could itself call scratch or Yoetz-owned (a deliverable under `/tmp`),
+   the kernel exempts no edit for that task (`task_facts.non_counting_edits_exempt`, fixed roots
+   only, so replay never depends on the environment).
 2. **The hook names the class, the kernel reads a closed token.** The control-request 2.9.0
    structural fact `write_scope` (unreleased; edited in place) admits `outside_workspace`, `scratch`
    and `yoetz_owned`. An edit tool reports `scratch` or `yoetz_owned` only when every path it names is
    in that class (Yoetz-owned wins over scratch); any workspace path makes it an ordinary edit;
    `outside_workspace` wins over everything. A Codex session-stream `FileChange` item is classified
-   from its own change paths; the stream knows no workspace root, so it never claims
-   `outside_workspace`. The observed action description carries `(write scratch)` or
+   from its own change paths; the stream knows no workspace root, so it names only `yoetz_owned`
+   (never `scratch` or `outside_workspace`). A patch's `Delete File` paths are classified too, so a
+   patch that deletes a workspace file is a workspace edit. The observed action description carries `(write scratch)` or
    `(write yoetz_owned)` beside the existing `(write outside_workspace)`; no path crosses.
 3. **Non-counting edits.** `kernel.task_facts._observed_state` and the work-integrity "completion
    claim must cite a verification after the latest observed edit" rule skip an edit carrying a
@@ -73,13 +79,17 @@ did not stop the agent:
 5. **Python module runs are classified by module.** `python[3[.x]] [-X opt] -m <module>` is `test`
    for pytest, unittest, nose2, tox, nox and doctest; `typecheck` for mypy and pyright; `lint` for
    ruff, flake8, pylint, pyflakes and pycodestyle; `build` for build and compileall; `other`
-   otherwise. A script an interpreter runs is never a `build` because its file name contains
+   otherwise. A pytest run that only reports on itself or collects (`--version`, `-h`, `--help`,
+   `--collect-only`, `--co`, `--fixtures`, `--markers`) is `other`. A project runner's `run`
+   (`uv run`, `poetry run`, `pipenv run`, `pdm run`, `hatch run`, `rye run`) is classified by the
+   command it runs. A script an interpreter runs is never a `build` because its file name contains
    "build"; only an explicit `build` argument (`python setup.py build`) is.
 6. **Task facts are scoped per finding for self-verification.** `kernel.task_fact_scope` decides
    whether a task fact bears on one finding: an obligation-scoped fact only when the finding is
    about that obligation (an obligation subject ref, a claim subject ref naming it — a completion
    claim naming none covers every effective obligation — or an action-event subject ref naming it);
-   the task-wide `edited_after_last_verification` only for a finding about verification or evidence
+   the requested- and declared-output facts (read at check time, so their scope is not replayable)
+   always; the task-wide `edited_after_last_verification` only for a finding about verification or evidence
    (`claim_without_admissible_evidence`, `evidence_does_not_support_claim`,
    `stale_evidence_for_changed_state`, `failed_work_omitted`, `weak_or_stale_response`,
    `ledger_stale_or_incomplete`). `self_verification_refusal` drops the `coverage:` reasons of
@@ -106,7 +116,7 @@ did not stop the agent:
 
 ## Consequences
 
-- Scratch work, logs and a saved receipt no longer reopen closure or keep a stale fact alive; real
+- Scratch work outside the workspace and a saved receipt no longer reopen closure or keep a stale fact alive; real
   edits to the work, including docs inside the workspace and writes outside it, still do. A file
   misclassified as scratch would hide a real edit from the stale rule only; the closure checklist,
   requested-output facts and the review still see the workspace change.

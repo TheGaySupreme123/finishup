@@ -27,7 +27,9 @@ def _inside(path: str) -> bool:
         ("relative/x.py", "workspace"),
         ("/tmp/solve_remap.py", "scratch"),
         ("/var/tmp/x", "scratch"),
-        ("/app/run.log", "scratch"),
+        # A log inside the workspace may be a deliverable: it counts (Codex review round 1).
+        ("/app/run.log", "workspace"),
+        ("/app/yoetz_exporter.py", "workspace"),
         ("/app/yoetz_receipt.md", "yoetz_owned"),
         ("/app/output/yoetz_receipt.json", "yoetz_owned"),
         ("/app/.agents/skills/yoetz/SKILL.md", "yoetz_owned"),
@@ -49,7 +51,9 @@ def test_classify_write_path(path: str, expected: str) -> None:
 
 def test_a_workspace_under_a_temporary_root_is_still_the_workspace() -> None:
     assert classify_write_path("/tmp/work/a.py", workspace="/tmp/work", inside=True) == "workspace"
-    assert classify_write_path("/tmp/work/a.log", workspace="/tmp/work", inside=True) == "scratch"
+    assert classify_write_path("/tmp/work/a.log", workspace="/tmp/work", inside=True) == "workspace"
+    # Without a workspace root nothing is scratch: `/tmp/project` may be the workspace itself.
+    assert classify_write_path("/tmp/project/core.py", workspace=None, inside=None) == "workspace"
 
 
 @pytest.mark.parametrize(
@@ -86,7 +90,8 @@ def test_yoetz_mcp_tools_are_never_edits_or_commands(tool: str, kind: ActionKind
 
 def test_codex_stream_file_change_names_only_non_counting_scopes() -> None:
     # Rollout mapping form and `codex exec --json` list form.
-    assert _file_change_write_scope({"/tmp/a.py": {"type": "add"}}) == "scratch"
+    # The stream knows no workspace root, so a temp path is never exempt there.
+    assert _file_change_write_scope({"/tmp/a.py": {"type": "add"}}) is None
     assert _file_change_write_scope([{"path": "/app/yoetz_receipt.md"}]) == "yoetz_owned"
     assert _file_change_write_scope({"/app/cracker.py": {"type": "update"}}) is None
     assert (

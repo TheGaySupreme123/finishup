@@ -487,3 +487,15 @@ def test_a_temp_dir_not_named_as_temporary_space_is_never_trusted(
 def test_wsl_windows_temp_is_scratch(target: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", "/home/someone")
     assert _facts("Write", {"file_path": target}, Path("/srv/work")) == {"write_scope": "scratch"}
+
+
+def test_a_patch_that_deletes_a_workspace_file_is_a_workspace_edit(tmp_path: Path) -> None:
+    """Codex review round 1: Delete File paths count, so a mixed patch is never scratch."""
+
+    workspace = tmp_path / "work"
+    patch = (
+        "*** Begin Patch\n"
+        f"*** Delete File: {workspace}/src/core.py\n"
+        "*** Add File: /tmp/notes.py\n+x\n*** End Patch\n"
+    )
+    assert _facts("apply_patch", {"command": patch}, workspace) == {}

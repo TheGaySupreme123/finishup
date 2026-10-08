@@ -70,6 +70,7 @@ from yoetz.kernel.task_facts import (
     acting_started,
     confirmed_blocked_obligation_ids,
     cooperative_event_ids_from_coverage,
+    non_counting_edits_exempt,
 )
 from yoetz.protocol.policy_packs import WORK_INTEGRITY_POLICY_ID, WORK_INTEGRITY_POLICY_VERSION
 
@@ -533,6 +534,7 @@ def _observed_verification_facts(
     """
 
     observed = observed_event_ids_from_coverage(case.coverage_by_ref)
+    exempt = non_counting_edits_exempt(case.projection)
     latest_edit: int | None = None
     for action in case.projection.actions.values():
         payload = action.payload
@@ -542,7 +544,7 @@ def _observed_verification_facts(
             and payload.action_kind is ActionKind.EDIT
             # A scratch or Yoetz-owned write (a saved receipt) changes nothing a claim's
             # verification covered (ADR-042, tb4n2 R4: cad S, lake D).
-            and observed_edit_counts(payload.description)
+            and (not exempt or observed_edit_counts(payload.description))
         ):
             latest_edit = max(latest_edit or 0, action.source_frontier)
     runs: dict[str, int] = {}
