@@ -293,6 +293,16 @@ unsupported claims and unbounded duplicate findings.
     one this completion itself recorded; otherwise the stream keeps its own generation. The
     reverse order (a stream completion delivered before a post-compaction hook call) still
     records two actions.
+    Amendment (issue #1019, tb4n2 N-4): a retired native content handoff is disclosed on its own
+    task. Each retirement appends one marker, keyed by the ticket identity, to the ticket's task
+    ledger with the standing gap `capture_handoff_retired`; it never reaches another task and
+    names no path or content. Local proof and clean deterministic conclusions tolerate it, and
+    AI-powered findings treat it as a capture baseline. The workspace-level
+    `content_capture_unavailable` flag in observation status stays a lifetime workspace flag:
+    the local store records it without a task (`note_coverage_gap` takes only the workspace, and
+    the status query names no task), so scoping it would need a task-keyed gap store and a
+    status query that resolves the current host session's task. The per-task marker is the
+    task-scoped signal instead.
 
 16. `obs-ledger/1.4.0` carries trusted observation-content manifests into ledger materialization.
     A manifest binds the encrypted object envelope plus the SHA-256 digest and byte count of its

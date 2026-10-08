@@ -3582,3 +3582,32 @@ def test_egress_item_withholding_bounds_only_the_ai_powered_review() -> None:
         "coverage:" + SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
     )
     assert _blockers(_semantic_finding(SEMANTIC_REVIEW_ITEM_WITHHELD_GAP), later) == ()
+
+
+def test_a_retired_capture_handoff_never_vetoes_deterministic_proof() -> None:
+    """#1019 (tb4n2 N-4): the retirement disclosure stays on the check, the repair still proves.
+
+    For AI-powered findings it is a capture baseline like the other host-capture gaps: tolerated
+    only when the raising review ran under it too.
+    """
+
+    from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
+    from yoetz.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
+    from yoetz.kernel.finding_resolution import (
+        DETERMINISTIC_PROOF_TOLERATED_GAPS,
+        SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
+    )
+
+    gap = "capture_handoff_retired"
+    assert GAP_CLASSIFICATION[gap] is GapClass.STANDING_LIMITATION
+    assert gap in DETERMINISTIC_PROOF_TOLERATED_GAPS
+    assert gap in CLEAN_COMPATIBLE_GAPS
+    assert gap in SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS
+    coverage = _coverage(gaps=(gap, "semantic_review_not_requested"))
+    assert _resolves(_finding(), _check(coverage=coverage)) is True
+    research_finding = _finding(
+        kind=FindingKind.MATERIAL_LIMITATION_OMITTED,
+        subject_refs=(clm(1),),
+        policy_id="research-evidence",
+    )
+    assert _resolves(research_finding, _check(coverage=coverage)) is True

@@ -64,6 +64,7 @@ from yoetz.application.observation_materialize import (
     approved_check_author,
     canonical_logical_identity,
     codex_stream_call_generation_links,
+    materialize_capture_handoff_retirement,
     materialize_observation_envelope,
     materialize_observation_inspection_snapshot,
     materialize_observation_outcome_correction,
@@ -1633,6 +1634,46 @@ class ObservationCoordinator:
             return False
         return True
 
+    async def _publish_capture_handoff_retirement(
+        self,
+        runtime: TaskRuntime,
+        ticket: ObservationCaptureTicket,
+        reason: CaptureHandoffRetirementReason,
+    ) -> None:
+        """Put one retired handoff on its own task's coverage (issue #1019, tb4n2 N-4).
+
+        Only the ticket's own task receives the marker, keyed by the ticket identity so a replay
+        of the same retirement appends nothing new. The local retirement account is already
+        durable; a failed append is recorded and never changes the retirement or the delivery.
+        """
+
+        if ticket.task_id != runtime.task_id:
+            return
+        try:
+            ticket_id = observation_capture_ticket_id(ticket)
+            batch = materialize_capture_handoff_retirement(
+                task_id=runtime.task_id,
+                ticket_id=ticket_id,
+                reason=reason.value,
+                observed_at=timestamp_from_datetime(self.clock.now_utc()),
+            )
+            digest = canonical_digest(
+                JsonObject(
+                    {
+                        "format": "yoetz.capture-handoff-retirement-report/1",
+                        "task_id": runtime.task_id,
+                        "ticket_id": ticket_id,
+                    }
+                )
+            )
+            await self._append_structural_batch(runtime, batch, digest)
+        except Exception as exc:
+            record_unexpected_exception_without_raising(
+                exc,
+                component="application.observation_coordinator",
+                operation="capture_handoff_retirement_publish_failed",
+            )
+
     async def _retire_stranded_capture_handoff(
         self,
         workspace: str,
@@ -1679,6 +1720,7 @@ class ObservationCoordinator:
                 ):
                     return
                 await self._retire_capture_ticket(workspace, runtime, store, ticket)
+                await self._publish_capture_handoff_retirement(runtime, ticket, reason)
         except Exception as exc:
             record_unexpected_exception_without_raising(
                 exc,
@@ -1824,6 +1866,7 @@ class ObservationCoordinator:
             ):
                 continue
             await self._retire_capture_ticket(current_workspace, runtime, store, ticket)
+            await self._publish_capture_handoff_retirement(runtime, ticket, reason)
             retired += 1
         for current_workspace in sorted(structural_states, key=str.encode):
             await self._publish_capture_backlog(current_workspace, runtime, store)

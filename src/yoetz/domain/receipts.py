@@ -87,6 +87,7 @@ __all__ = [
     "CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP",
     "CHECK_TIME_CHANGE_GAPS",
     "CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP",
+    "CAPTURE_HANDOFF_RETIRED_GAP",
     "CHECK_TIME_CHANGE_REDACTED_GAP",
     "CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP",
     "CHECK_TIME_CHANGE_TRUNCATED_GAP",
@@ -336,6 +337,10 @@ CHECK_TIME_CHANGE_REDACTED_GAP: Final = "check_time_change_redacted"
 # carriage return or line feed (issue #1019). The read stays usable but is marked incomplete, so
 # a requested file it could not list stays unproven rather than unchanged. Never names the path.
 CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP: Final = "check_time_change_path_unrepresentable"
+# Native content staged for one observed host call of this task was retired before its structural
+# row could attach it (issue #1019, tb4n2 N-4): the call's record stands, its captured bytes do
+# not. A standing limitation of host capture, never a finding; local packs never read those bytes.
+CAPTURE_HANDOFF_RETIRED_GAP: Final = "capture_handoff_retired"
 # Why the change was unavailable, as one closed code beside ``check_time_change_unavailable``:
 # ``check_time_change_unavailable_<reason>``. Each maps to one fixed sentence; neither carries a
 # path, Git output or any other user-controlled text. A check recorded before reasons existed
@@ -409,6 +414,11 @@ def check_time_change_gap_sentence(code: str) -> str | None:
             "An AI-powered finding was resolved against a raising review recorded before file "
             "view commitments existed, so only the lengths and counts of what each review saw "
             "were compared, not where redactions and hunks lay."
+        )
+    if code == CAPTURE_HANDOFF_RETIRED_GAP:
+        return (
+            "Captured content for at least one observed call of this task was dropped before it"
+            " could be attached; the call itself is still recorded."
         )
     if code == CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP:
         return (

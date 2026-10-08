@@ -2078,8 +2078,8 @@ check_time_change_base_unavailable|check_time_change_truncated|
 check_time_change_redacted|check_time_change_path_unrepresentable`) plus the evidence-strength
 codes
 (`evidence_content_digest_only|evidence_content_withheld|evidence_digest_subject_legacy_unknown`)
-and the host-observation codes (`captured_object_unavailable|content_unselected|
-host_outcome_unavailable|unpaired_event`), plus the review-selection code
+and the host-observation codes (`captured_object_unavailable|capture_handoff_retired|
+content_unselected|host_outcome_unavailable|unpaired_event`), plus the review-selection code
 `semantic_reference_scope_reduced` (#904): the local-check case is not reduced, so a bounded
 AI-powered review packet is not a limitation of local proof. Those host and selection codes remain
 receipt coverage limitations; the host codes only stop vetoing local absence proof because local
@@ -4865,6 +4865,15 @@ lane in the shared workspace, but sends its content profile only with rows from 
 Claude Code or Cursor hook delivers a queued Codex or other-host row without a profile, and the
 service resolves that row's profile from its own ticket, instead of refusing it as the terminal
 `content_capture_profile_mismatch`.
+
+Every retirement of a handoff (any `CaptureHandoffRetirementReason`) also appends one
+service-authenticated marker to the ticket's own task ledger, keyed by the ticket identity, whose
+coverage carries `capture_handoff_retired` (issue #1019). The marker names the closed retirement
+reason only, never a path or content, and another task never receives it. The code is a standing
+limitation with a fixed sentence: deterministic proof and a clean deterministic conclusion tolerate
+it, because local packs never read native captured bytes, and an AI-powered finding treats it as a
+capture baseline (tolerated only when the raising review ran under it too). The workspace
+`content_capture_unavailable` flag in observation status is unchanged and remains workspace-wide.
 
 `content_capture_pending` means encrypted staging is durable while structural ledger ingest is still
 pending. It is separate from `operation_pending`, which is generic observation back-pressure and
