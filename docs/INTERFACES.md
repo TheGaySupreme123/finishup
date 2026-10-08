@@ -8920,8 +8920,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   MCP tool (`mcp__yoetz__*`, `mcp__plugin_yoetz_*__*`) always materializes as action kind `other`.
   `domain/write_scope.py`: `classify_write_path(path, *, workspace, inside, owned_roots) ->
   workspace|outside_workspace|scratch|yoetz_owned`, `edit_write_scope(classes) -> str | None`,
-  `non_counting_path(path) -> bool`; `kernel.task_facts.non_counting_edits_exempt(projection)` is
-  `False` when a requested non-input file could itself be classified so (deliverables win). Observation advice 0.1.8 adds the
+  `scratch_overlap(path)`, `yoetz_artifact_name(path)`;
+  `kernel.task_facts.non_counting_edits_exempt(projection) -> frozenset[str]` names the exempt write
+  tokens per class (deliverables win: no `write scratch` exemption when a requested non-input item
+  is under or contains a fixed temp root; no `write yoetz_owned` exemption when one has a receipt
+  name or a requested non-input directory exists). Observation advice 0.1.8 adds the
   advice-only rule codes `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`.
 - **Closure gate (`cli/closure_gate.py`).** `STOP_GATE_TOKENS` (in `kernel/task_facts.py`) are
