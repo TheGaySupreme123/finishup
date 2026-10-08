@@ -43,6 +43,7 @@ from yoetz.domain.findings import (
 )
 from yoetz.domain.receipts import (
     CHECK_TIME_CHANGE_GAPS,
+    CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
@@ -1765,7 +1766,9 @@ def first_task_statement_sequence_of(records: tuple[LedgerRecord, ...]) -> int |
 
 # Codes that imply a check-time change reached the packet in part: without ``unavailable`` they
 # mean parts were carried.
+# The local structural read's skipped-path disclosure (issue #1019) says nothing about the packet.
 _CHECK_TIME_CHANGE_CARRIED_GAPS: Final = CHECK_TIME_CHANGE_GAPS - {
+    CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
     *CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
 }

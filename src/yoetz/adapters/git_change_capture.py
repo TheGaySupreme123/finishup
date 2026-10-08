@@ -54,6 +54,7 @@ from yoetz.ports.change_capture import (
     CheckChangeMetadata,
     RequestedPathProbe,
     TaskChangeBase,
+    metadata_path_representable,
 )
 from yoetz.ports.subject_state import LocalWorkspaceHandle
 
@@ -745,7 +746,7 @@ class GitChangeCaptureAdapter:
         else:
             base_kind, base_id = "empty", _EMPTY_TREES[object_format]
 
-        tracked_raw, tracked_entries, tracked_identities, tracked_arguments = (
+        tracked_raw, tracked_entries, tracked_identities, tracked_arguments, tracked_skipped = (
             self._tracked_metadata(pinned, base_id, assembly)
         )
         index = _path_identity(pinned.descriptor, b".git/index")
@@ -762,29 +763,25 @@ class GitChangeCaptureAdapter:
             deadline,
         )
         metadata_paths = tuple(sorted(untracked.identities, key=bytes))
-        entries = tuple(
-            [
-                ChangeMetadataEntry(
-                    entry.status,
-                    entry.path,
-                    original_path=entry.original_path,
-                )
-                for entry in tracked_entries
-            ]
-            + [
-                ChangeMetadataEntry("A", os.fsdecode(path), untracked=True)
-                for path in metadata_paths
-            ]
-        )
-        omitted = untracked.total - len(metadata_paths)
+        # A CR or LF in a file name cannot be an entry. Skip and count each such path instead of
+        # failing the whole check-time read (issue #1019); the path itself is never kept.
+        untracked_entries = [
+            ChangeMetadataEntry("A", name, untracked=True)
+            for path in metadata_paths
+            if metadata_path_representable(name := os.fsdecode(path))
+        ]
+        unrepresentable = tracked_skipped + len(metadata_paths) - len(untracked_entries)
+        entries = tuple([*tracked_entries, *untracked_entries])
+        omitted = untracked.total - len(metadata_paths) + unrepresentable
         return CheckChangeMetadata(
             base=base_kind,
             entries=entries,
-            tracked_files=len(tracked_entries),
+            tracked_files=len(tracked_entries) + tracked_skipped,
             untracked_files=untracked.total,
             omitted_files=omitted,
             truncated=omitted > 0 or untracked.listing_truncated,
             base_commit=base_id,
+            unrepresentable_files=unrepresentable,
         )
 
     def _capture_once(
@@ -1095,8 +1092,13 @@ class GitChangeCaptureAdapter:
         list[ChangeMetadataEntry],
         dict[bytes, _Identity | None],
         tuple[str, ...],
+        int,
     ]:
-        """Read name/status metadata without numstat, patch or blob reads."""
+        """Read name/status metadata without numstat, patch or blob reads.
+
+        The last value counts changed paths skipped because a CR or LF in a name cannot be an
+        entry (issue #1019); their identities still take part in the stability check.
+        """
 
         arguments = self._metadata_arguments(base_id)
         try:
@@ -1106,6 +1108,7 @@ class GitChangeCaptureAdapter:
         fields = _nul_fields(raw)
         entries: list[ChangeMetadataEntry] = []
         paths: list[bytes] = []
+        skipped = 0
         index = 0
         while index < len(fields):
             status = fields[index].decode("ascii", errors="replace")
@@ -1118,13 +1121,14 @@ class GitChangeCaptureAdapter:
                 if not _safe_relative(old) or not _safe_relative(new):
                     raise ChangeCaptureUnavailable("unsafe_root")
                 paths.extend((old, new))
-                entries.append(
-                    ChangeMetadataEntry(
-                        status[:1],
-                        os.fsdecode(new),
-                        original_path=os.fsdecode(old) if status.startswith("R") else None,
-                    )
-                )
+                new_name = os.fsdecode(new)
+                original = os.fsdecode(old) if status.startswith("R") else None
+                if not metadata_path_representable(new_name) or (
+                    original is not None and not metadata_path_representable(original)
+                ):
+                    skipped += 1
+                    continue
+                entries.append(ChangeMetadataEntry(status[:1], new_name, original_path=original))
                 continue
             if index >= len(fields):
                 raise ChangeCaptureUnavailable("git_failed")
@@ -1133,9 +1137,13 @@ class GitChangeCaptureAdapter:
             if not _safe_relative(path):
                 raise ChangeCaptureUnavailable("unsafe_root")
             paths.append(path)
-            entries.append(ChangeMetadataEntry(status[:1], os.fsdecode(path)))
+            name = os.fsdecode(path)
+            if not metadata_path_representable(name):
+                skipped += 1
+                continue
+            entries.append(ChangeMetadataEntry(status[:1], name))
         identities = {path: _path_identity(pinned.descriptor, path) for path in paths}
-        return raw, entries, identities, arguments
+        return raw, entries, identities, arguments, skipped
 
     @staticmethod
     def _metadata_arguments(base_id: str) -> tuple[str, ...]:

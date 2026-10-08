@@ -1378,6 +1378,11 @@ when that recipe selected the change:
 - `check_time_change_truncated` — a changed file (named in the change's header), a part of the
   change, or untracked names beyond the listing bound did not reach the reviewer;
 - `check_time_change_redacted` — credential-like spans were replaced before storage and review.
+- `check_time_change_path_unrepresentable` — the check's local, metadata-only read of changed
+  paths skipped at least one path whose name holds a carriage return or line feed (issue #1019).
+  The read stays usable: each skipped path counts as omitted, the listing is marked truncated, and
+  a requested file it could not list stays unproven rather than unchanged. A standing limitation,
+  classed with the other check-time codes; never a finding, and the path is never recorded.
 
 Post-validation fences each challenge independently: a rejected challenge costs only itself, the
 challenges beside it still become findings, and the drop is declared through this gap. A judgment
@@ -2070,7 +2075,7 @@ semantic_case_content_over_item_limit|semantic_case_finding_refs_over_limit|
 semantic_prior_findings_over_limit|semantic_prior_verdicts_unsupported|
 semantic_restatements_suppressed|check_time_change_unavailable|
 check_time_change_base_unavailable|check_time_change_truncated|
-check_time_change_redacted`) plus the evidence-strength
+check_time_change_redacted|check_time_change_path_unrepresentable`) plus the evidence-strength
 codes
 (`evidence_content_digest_only|evidence_content_withheld|evidence_digest_subject_legacy_unknown`)
 and the host-observation codes (`captured_object_unavailable|content_unselected|

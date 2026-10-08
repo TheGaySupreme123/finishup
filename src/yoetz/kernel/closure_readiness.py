@@ -298,6 +298,8 @@ GAP_CLASSIFICATION: Final[Mapping[str, GapClass]] = MappingProxyType(
         "check_time_change_base_unavailable": _S,
         "check_time_change_truncated": _S,
         "check_time_change_redacted": _S,
+        # #1019: the local changed-path read skipped a file name holding a line break.
+        "check_time_change_path_unrepresentable": _S,
         "check_time_change_resolution_unverified": _S,
         # Each closed unavailability reason travels beside the generic code with the same class.
         **{code: _S for code in sorted(CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS)},

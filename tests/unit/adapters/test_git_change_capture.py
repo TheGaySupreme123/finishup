@@ -21,6 +21,7 @@ from yoetz.ports.change_capture import (
     decode_task_change_base,
     encode_check_change,
     encode_task_change_base,
+    metadata_path_representable,
 )
 
 _EMPTY_SHA1_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -1153,3 +1154,79 @@ def test_submodule_checkout_opened_as_the_root_is_unsafe_root(tmp_path: Path) ->
         GitChangeCaptureAdapter().capture(os.fspath(checkout), None)
 
     assert raised.value.reason == "unsafe_root"
+
+
+def test_metadata_capture_skips_and_counts_a_line_break_file_name(tmp_path: Path) -> None:
+    """#1019: a CR or LF in a name is skipped and counted, never a failed capture or a path."""
+
+    repository = _repository(tmp_path)
+    tracked = repository / "tracked\nname.txt"
+    tracked.write_text("one\n", encoding="utf-8")
+    _git(repository, "add", "--", "tracked\nname.txt")
+    _commit(repository, "add odd tracked name")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    tracked.write_text("two\n", encoding="utf-8")
+    (repository / "a\nb").write_bytes(b"x\n")
+    (repository / "c\rd").write_bytes(b"x\n")
+    (repository / "selectors.ts").write_text("export const changed = 1;\n", encoding="utf-8")
+    (repository / "out.txt").write_text("result\n", encoding="utf-8")
+
+    metadata = adapter.capture_metadata(os.fspath(repository), base)
+
+    assert [(entry.status, entry.path, entry.untracked) for entry in metadata.entries] == [
+        ("M", "selectors.ts", False),
+        ("A", "out.txt", True),
+    ]
+    assert metadata.unrepresentable_files == 3
+    assert metadata.tracked_files == 2
+    assert metadata.untracked_files == 3
+    assert metadata.omitted_files == 3
+    assert metadata.truncated is True
+    assert "a\nb" not in repr(metadata) and "c\rd" not in repr(metadata)
+
+
+def test_metadata_capture_skips_a_rename_from_a_line_break_name(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    odd = repository / "old\nname.txt"
+    odd.write_text("same content\n", encoding="utf-8")
+    _git(repository, "add", "--", "old\nname.txt")
+    _commit(repository, "add odd name")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    _git(repository, "mv", "--", "old\nname.txt", "plain.txt")
+
+    metadata = adapter.capture_metadata(os.fspath(repository), base)
+
+    assert metadata.entries == ()
+    assert metadata.unrepresentable_files == 1
+    assert metadata.omitted_files == 1 and metadata.truncated is True
+
+
+def test_metadata_counter_invariants() -> None:
+    """The skipped-path count is part of ``omitted_files``, which implies ``truncated``."""
+
+    with pytest.raises(ValueError):
+        CheckChangeMetadata(
+            base="head",
+            entries=(),
+            tracked_files=1,
+            untracked_files=0,
+            omitted_files=0,
+            truncated=False,
+            unrepresentable_files=1,
+        )
+    with pytest.raises(ValueError):
+        CheckChangeMetadata(
+            base="head",
+            entries=(),
+            tracked_files=1,
+            untracked_files=0,
+            omitted_files=1,
+            truncated=True,
+            unrepresentable_files=True,
+        )
+    assert not metadata_path_representable("a\nb")
+    assert not metadata_path_representable("a\rb")
+    assert not metadata_path_representable("a\x00b")
+    assert metadata_path_representable("a\tb")

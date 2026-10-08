@@ -43,6 +43,7 @@ from yoetz.domain.findings import (
 )
 from yoetz.domain.receipts import (
     CHECK_TIME_CHANGE_GAPS,
+    CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
     CHECK_TIME_CHANGE_REDACTED_GAP,
     CHECK_TIME_CHANGE_TRUNCATED_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
@@ -2299,6 +2300,20 @@ def _requirement_assessments(
     return tuple(output)
 
 
+def _with_structural_capture_gaps(
+    gaps: tuple[str, ...], capture: CheckChangeMetadata
+) -> tuple[str, ...]:
+    """Add the structural read's own disclosures to the test-edit accounting gaps.
+
+    A changed path whose name holds a CR or LF was skipped and counted (issue #1019): the read
+    stays usable and is marked truncated, and the check names the skip by code only.
+    """
+
+    if not capture.unrepresentable_files:
+        return gaps
+    return tuple(sorted({*gaps, CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP}, key=str.encode))
+
+
 async def _requested_output_inputs(
     case: DeterministicCase,
     capture: CheckChangeMetadata | None,
@@ -4183,7 +4198,9 @@ async def execute_check_commit(
                     deterministic_test_edit_facts = (
                         test_edit_facts if test_edit_facts.baseline_known else None
                     )
-                    deterministic_test_edit_gaps = test_edit_facts.gaps
+                    deterministic_test_edit_gaps = _with_structural_capture_gaps(
+                        test_edit_facts.gaps, capture
+                    )
                     deterministic_test_edit_support_refs = (
                         test_edit_facts.unjustified_action_event_ids
                     )

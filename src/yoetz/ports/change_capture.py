@@ -48,6 +48,7 @@ __all__ = [
     "decode_task_change_base",
     "encode_check_change",
     "encode_task_change_base",
+    "metadata_path_representable",
     "RequestedPathProbe",
 ]
 
@@ -174,6 +175,24 @@ class CheckChangeCapture:
             raise _invalid()
 
 
+_UNREPRESENTABLE_PATH_CHARACTERS: Final = "\x00\r\n"
+
+
+def metadata_path_representable(path: str) -> bool:
+    """Whether *path* can be a :class:`ChangeMetadataEntry` path.
+
+    Git allows a carriage return or line feed in a file name (NUL never reaches a ``-z`` field),
+    but structural accounting is line-oriented and refuses such a path.  The capture skips that
+    one entry and counts it instead of failing the whole check-time read (issue #1019).
+    """
+
+    return (
+        type(path) is str
+        and bool(path)
+        and not any(char in path for char in _UNREPRESENTABLE_PATH_CHARACTERS)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ChangeMetadataEntry:
     """One changed path used only for local structural accounting.
@@ -195,19 +214,11 @@ class ChangeMetadataEntry:
             or any(ord(char) < 0x20 or ord(char) > 0x7E for char in self.status)
         ):
             raise _invalid()
-        if (
-            type(self.path) is not str
-            or not self.path
-            or any(char in self.path for char in "\x00\r\n")
-        ):
+        if not metadata_path_representable(self.path):
             raise _invalid()
         if type(self.untracked) is not bool:
             raise _invalid()
-        if self.original_path is not None and (
-            type(self.original_path) is not str
-            or not self.original_path
-            or any(char in self.original_path for char in "\x00\r\n")
-        ):
+        if self.original_path is not None and not metadata_path_representable(self.original_path):
             raise _invalid()
         if self.original_path is not None and self.status != "R":
             raise _invalid()
@@ -231,6 +242,9 @@ class CheckChangeMetadata:
     truncated: bool
     content_available: bool = False
     base_commit: str = field(default="", repr=False)
+    # Changed paths skipped because a CR or LF in the name cannot be an entry (issue #1019).
+    # Each is also counted in ``omitted_files``, so the listing is truncated.
+    unrepresentable_files: int = 0
 
     def __post_init__(self) -> None:
         if self.base not in _BASE_KINDS:
@@ -251,6 +265,12 @@ class CheckChangeMetadata:
         if self.content_available:
             raise _invalid()
         if self.omitted_files and not self.truncated:
+            raise _invalid()
+        if (
+            type(self.unrepresentable_files) is not int
+            or isinstance(self.unrepresentable_files, bool)
+            or not 0 <= self.unrepresentable_files <= self.omitted_files
+        ):
             raise _invalid()
         if type(self.base_commit) is not str or (
             self.base_commit
