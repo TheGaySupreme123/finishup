@@ -236,3 +236,60 @@ def test_outside_output_capture_wins_the_excerpt_cap(profile: ReviewContextProfi
     assert b"PLAN_MARKER" in build("/app")
     # Without the reservation the newest unrelated output takes the one slot.
     assert b"PLAN_MARKER" not in build(None)
+
+
+def test_a_cited_capture_with_the_same_bytes_as_an_older_one_keeps_its_reservation() -> None:
+    """Codex review round 1: a later identical capture folds into the older excerpt, so the
+    reservation of the cited (later) row must transfer to the kept one."""
+
+    from tests.unit.application.test_semantic_case_selection import (
+        _PHASE,
+        _PROFILE,
+        _SESSION,
+        _TASK,
+        _WORKSPACE_COMMITMENT,
+        _capture,
+        _captured_row,
+        _output_payload,
+    )
+    from yoetz.application.semantic_case import CapturedContentScope
+
+    plan_text = '{"legs": 3, "PLAN_MARKER": true}\n'
+    evidence: dict[EvidenceId, EvidenceProjectionRecord] = {}
+    captured = []
+    for number, text in [
+        (10, plan_text),
+        *((n, f"NEWER_TOOL_OUTPUT {n}\n") for n in range(11, 20)),
+        (20, plan_text),
+    ]:
+        kind, content = _capture("codex", _output_payload("codex", text, number))
+        row, item = _captured_row(number, evd(number), content, kind, _PROFILE["codex"])
+        evidence[evd(number)] = row
+        captured.append(item)
+    case = _case(evidence=evidence, claim_refs=(evd(20),))
+    scope = CapturedContentScope(
+        task_id=_TASK,
+        session_id=_SESSION,
+        workspace_commitment=_WORKSPACE_COMMITMENT,
+        authorized_profiles=(_PROFILE["codex"],),
+        phase_bindings=tuple(
+            sorted(((str(ref), _PHASE) for ref in evidence), key=lambda pair: pair[0].encode())
+        ),
+    )
+    profile = ReviewContextProfile.EXPANDED
+    semantic = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000001017",
+        frozen_case=case,
+        dependency_digest="sha256:" + "c" * 64,
+        findings=(),
+        review_context_profile=profile,
+        review_selection=replace(ReviewSelectionPolicy.for_profile(profile), max_excerpts=1),
+        policy_id="research-evidence",
+        policy_version="0.1.0",
+        captured_content=tuple(captured),
+        captured_content_scope=scope,
+        workspace_root="/app",
+    )
+
+    excerpts = b"".join(item.content for item in semantic.items if item.section == "excerpt")
+    assert b"PLAN_MARKER" in excerpts

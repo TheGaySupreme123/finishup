@@ -2352,7 +2352,8 @@ def _evidence_candidates(
     workspace_root: str | None = None,
 ) -> list[_ExcerptCandidate]:
     candidates: list[_ExcerptCandidate] = []
-    admitted_capture_digests: set[bytes] = set()
+    # Each admitted capture's bytes digest, mapped to its candidate's index.
+    admitted_capture_digests: dict[bytes, int] = {}
     for evidence_id, record in sorted(
         projection.evidence.items(),
         key=lambda pair: (pair[1].source_frontier, str(pair[0]).encode("ascii")),
@@ -2415,16 +2416,24 @@ def _evidence_candidates(
             continue
         digest_provenance: ExcerptDigestProvenance | None = None
         text: str | None
+        capture_digest: bytes | None = None
         if captured_group is not None:
             capture_digest = hashlib.sha256(captured_group.content).digest()
-            if capture_digest in admitted_capture_digests:
+            survivor = admitted_capture_digests.get(capture_digest)
+            if survivor is not None:
                 # Identical retained bytes (for example a patch captured by an older build
-                # on both its pre- and post-tool events) are one excerpt, not two.
+                # on both its pre- and post-tool events) are one excerpt, not two. The kept
+                # excerpt answers for this row too, so a link or reservation naming this row
+                # (a claim citing the later capture of a declared output, tb4n2 R7) still holds.
+                candidates[survivor] = replace(
+                    candidates[survivor],
+                    identity_refs=candidates[survivor].identity_refs
+                    | frozenset({ref, *(captured_group.evidence_refs)}),
+                )
                 omissions.append(
                     _omit(ref, DataCategory.EVIDENCE_EXCERPT, excerpt_kind, "not_selected")
                 )
                 continue
-            admitted_capture_digests.add(capture_digest)
             # The service-authenticated inner bytes are the only source that may populate a
             # captured AI-powered review excerpt. Their digest provenance is retained separately
             # from the digest of the selection-clipped item below.
@@ -2572,6 +2581,8 @@ def _evidence_candidates(
             failed_edit, paths = _captured_edit_paths(captured_group.content)
             edit_paths = None if failed_edit else paths
         verification = verification_by_evidence.get(ref)
+        if capture_digest is not None:
+            admitted_capture_digests[capture_digest] = len(candidates)
         candidates.append(
             _ExcerptCandidate(
                 source_ref=ref,
