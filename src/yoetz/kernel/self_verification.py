@@ -21,7 +21,9 @@ later check). The proof rules themselves are unchanged.
     ``subject_outside_checked_scope`` (the check did not cover it; run a full check);
   - ``no_material_change_since_finding`` (nothing changed since the finding);
   - any ``coverage:<code>`` whose ``GAP_CLASSIFICATION`` class is agent-actionable,
-    route-dependent or unknown (only a *standing* code is a Yoetz limit, so a new standing code
+    route-dependent or unknown, except a task fact that does not bear on this finding
+    (``kernel.task_fact_scope``, tb4n2 P1-2: an obligation-scoped fact about another obligation,
+    or ``edited_after_last_verification`` on a finding that is not about verification) (only a *standing* code is a Yoetz limit, so a new standing code
     becomes self-verifiable as soon as ``kernel/closure_readiness.py`` classifies it);
   - ``issue_returned_again`` for a deterministic finding (the rule fired again);
   - for an AI-powered finding, ``issue_returned_again``, ``reviewer_verdict_still_present`` or
@@ -50,6 +52,7 @@ from yoetz.domain.values import FindingId
 from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
 from yoetz.kernel.finding_resolution import finding_resolution_attempt
 from yoetz.kernel.projections import ProjectionState
+from yoetz.kernel.task_fact_scope import scoped_resolution_reasons
 from yoetz.protocol.models import SemanticStatus
 
 __all__ = [
@@ -205,8 +208,13 @@ def self_verification_refusal(
         type(check) is CheckRecordedPayload
         and check.semantic_status in _DURABLE_UNDELIVERABLE_STATUSES
     )
+    # Task facts about unrelated obligations (or a task-wide edit-after-verification fact on a
+    # finding that is not about verification) never disqualify this finding (tb4n2 P1-2).
+    reasons = scoped_resolution_reasons(
+        attempt.reasons, state=state, finding_id=finding_id, records=records
+    )
     if not reasons_proof_limited(
-        attempt.reasons, record.payload.origin, review_undeliverable=undeliverable
+        reasons, record.payload.origin, review_undeliverable=undeliverable
     ):
         return FINDING_NOT_PROOF_LIMITED
     return None
