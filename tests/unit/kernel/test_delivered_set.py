@@ -679,7 +679,17 @@ def test_an_overlapping_declaration_of_the_same_file_is_not_another_output() -> 
     )
     states = {
         (_OBLIGATION, 0): truncated,
-        (_OBLIGATION, 1): RequestedOutputState("inside", exists=True, changed=True, relative="src"),
+        (_OBLIGATION, 1): RequestedOutputState(
+            "inside", exists=True, changed=False, relative="src"
+        ),
         (_OBLIGATION, 2): truncated,
     }
     assert emptied_declared_items(projection, states) == ((_OBLIGATION, 0), (_OBLIGATION, 2))
+    # Codex review 3: a changed declared directory may hold the split-out content (a refactor),
+    # so truncation is not raised; an emptied (0-byte) file still is.
+    states[(_OBLIGATION, 1)] = RequestedOutputState(
+        "inside", exists=True, changed=True, relative="src"
+    )
+    assert emptied_declared_items(projection, states) == ()
+    states[(_OBLIGATION, 0)] = _sized(0, relative="src/cracker.py")
+    assert emptied_declared_items(projection, states) == ((_OBLIGATION, 0),)

@@ -89,7 +89,7 @@ def test_an_unknown_item_key_on_1_1_0_is_not_told_to_switch_versions() -> None:
         PublishWorkRequestModel.model_validate(_request(payload, "1.1.0"))
     hint = authoring_hint(_SCHEMA, safe_validation_locations(caught.value), tool="publish_work")
     assert "a requested item admits only item_kind, value and role" in hint
-    assert "publish such an obligation as" not in hint
+    assert "only obligation_published 1.1.0 carries those" not in hint
 
 
 def test_the_text_projection_names_self_verified_blocking_reasons_and_the_exit() -> None:

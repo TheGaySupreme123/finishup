@@ -179,7 +179,9 @@ def test_reducer_transition_table() -> None:
         ObligationStatus.RESOLVED,
     )
     assert (opened, ack) in table and (ack, opened) in table and (ack, resolved) in table
-    assert (resolved, ack) not in table and (resolved, opened) not in table
+    # tb4n2 R2 (#1022, ADR-041): a resolution is not latched; it is never re-resolved in place.
+    assert (resolved, ack) in table and (resolved, opened) in table
+    assert (resolved, resolved) not in table and (opened, opened) not in table
 
 
 def test_no_requested_item_finding_for_an_acknowledged_obligation() -> None:
@@ -206,8 +208,9 @@ def test_no_requested_item_finding_for_an_acknowledged_obligation() -> None:
     assert _OTHER in remaining
 
 
-def test_resolved_is_final_an_acknowledgement_never_reopens_it() -> None:
-    """Agreed semantics with L6: ``resolved`` is final; a later acknowledgement is refused."""
+def test_a_resolution_that_no_longer_holds_can_be_acknowledged() -> None:
+    """tb4n2 R2 (#1022, ADR-041) replaces L6's "resolved is final": a resolved obligation whose
+    work no longer holds is acknowledged as not done; re-resolving it in place stays refused."""
 
     from yoetz.kernel import reducers
 
@@ -222,6 +225,10 @@ def test_resolved_is_final_an_acknowledgement_never_reopens_it() -> None:
     )
     ledger.append(_V1, resolved, observed=False)
     _acknowledge(ledger)
+    payload = replay(ledger.prefix).obligations[_OBLIGATION].payload
+    assert payload is not None and payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+    ledger.append(_V1, resolved, observed=False)
+    ledger.append(_V1, resolved, observed=False)
     with pytest.raises(reducers.ObligationResolutionMismatch):
         replay(ledger.prefix)
 
@@ -377,3 +384,43 @@ def test_check_totals_count_an_acknowledged_obligation_once() -> None:
         totals[group] = dict.fromkeys(CHECK_TOTAL_KEYS[group], "0")
     rendered = render_check_totals(totals)
     assert "1 open, 1 acknowledged not done, 0 unreadable" in rendered
+
+
+def test_a_claim_on_only_acknowledged_obligations_can_be_withdrawn() -> None:
+    """Codex review 3 (#1022): the honest replacement of a claim whose every obligation is now
+    acknowledged as not done names none; an overlapping scope is still required otherwise."""
+
+    from yoetz.domain.events import ClaimKind, ClaimRecordedPayloadV1_1
+    from yoetz.domain.values import claim_id
+    from yoetz.kernel.reducers import ClaimRevisionMismatch
+
+    old = claim_id("clm_00000000-0000-4000-8000-000000000001")
+    new = claim_id("clm_00000000-0000-4000-8000-000000000002")
+    claim_v11 = EventSchema("claim_recorded", "1.1.0")
+
+    def claim(key: object, refs: tuple[object, ...], supersedes: tuple[object, ...] = ()) -> None:
+        ledger.append(
+            claim_v11,
+            ClaimRecordedPayloadV1_1(
+                claim_id=key,  # type: ignore[arg-type]
+                claim_kind=ClaimKind.COMPLETION,
+                statement="Claim",
+                supporting_refs=(),
+                obligation_refs=refs,  # type: ignore[arg-type]
+                supersedes_claim_refs=supersedes,  # type: ignore[arg-type]
+            ),
+            observed=False,
+        )
+
+    ledger = _ledger()
+    claim(old, (_OBLIGATION,))
+    _acknowledge(ledger)
+    claim(new, (), (old,))
+    state = replay(ledger.prefix)
+    assert state.claims[old].superseded_by_claim_id == new
+
+    ledger = _ledger()
+    claim(old, (_OBLIGATION,))
+    claim(new, (), (old,))
+    with pytest.raises(ClaimRevisionMismatch):
+        replay(ledger.prefix)

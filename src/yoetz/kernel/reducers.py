@@ -814,6 +814,7 @@ def _apply_claim(
     results: Mapping[ResultId, ProjectionRecord[ResultRecordedPayload]],
     event: AcceptedEvent,
     observed_event_ids: frozenset[EventId] = frozenset(),
+    obligations: Mapping[ObligationId, ObligationProjectionRecord] | None = None,
 ) -> None:
     key = _locator_id(event, claim_id)
     # A v1.0 claim id may be re-published, and an unreadable payload tombstones the row in place.
@@ -921,7 +922,19 @@ def _apply_claim(
                 # An accepted empty scope has no overlap to preserve. Explicit supersession
                 # repairs that authoring mistake without inferring scope from supporting_refs.
                 # Populated targets still require overlap, including in a mixed target batch.
-                if prior_scope and (not current_scope or prior_scope.isdisjoint(current_scope)):
+                # tb4n2 R2 (#1022): a completion claim whose every obligation is now acknowledged
+                # as not done claims nothing; its honest replacement may drop them all.
+                withdrawn = obligations is not None and all(
+                    (row := obligations.get(ref)) is not None
+                    and row.payload is not None
+                    and row.payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+                    for ref in prior_scope
+                )
+                if (
+                    prior_scope
+                    and not withdrawn
+                    and (not current_scope or prior_scope.isdisjoint(current_scope))
+                ):
                     raise ClaimRevisionMismatch(
                         "obligation_refs",
                         "scope_overlap_required",
@@ -1358,7 +1371,14 @@ def reduce_event(
                 source_frontier=accepted.ledger.ingestion_sequence,
             )
         elif family == "claim_recorded":
-            _apply_claim(claims, actions, results, accepted, replay_index.observed_event_ids)
+            _apply_claim(
+                claims,
+                actions,
+                results,
+                accepted,
+                replay_index.observed_event_ids,
+                obligations,
+            )
         elif family == "finding_recorded":
             key = _locator_id(accepted, finding_id)
             findings[key] = _finding_record(

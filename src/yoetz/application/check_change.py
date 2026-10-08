@@ -815,7 +815,11 @@ async def count_undeclared_references(
         return 0
     values = tuple(
         dict.fromkeys((*deliverables, *(value for value in declared if _plain_path(value))))
-    )[:_MAX_REQUESTED_OUTPUT_PROBES]
+    )
+    if len(values) > _MAX_REQUESTED_OUTPUT_PROBES:
+        # Codex review 3: an unprobed declaration could be reported as undeclared. A disclosure
+        # Yoetz cannot compute exactly is not raised.
+        return 0
     try:
         raw_probes = await asyncio.to_thread(
             cast(Callable[[str, tuple[str, ...]], object], probe), source.workspace, values

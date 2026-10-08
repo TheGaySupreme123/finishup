@@ -268,8 +268,8 @@ _OBLIGATION_ITEM_KEYS_HINT: Final = (
 )
 _OBLIGATION_VERSION_HINT: Final = (
     "obligation_published 1.0.0 admits no item role, no directory item and no"
-    " acknowledged_not_done status: publish such an obligation as obligation_published 1.1.0,"
-    " which also accepts a plain obligation"
+    " acknowledged_not_done status; only obligation_published 1.1.0 carries those (and it also"
+    " accepts a plain obligation)"
 )
 _EVENT_DRAFT_NESTED_PAYLOAD_POINTER: Final = re.compile(
     r"/event_drafts/[0-9]{1,3}/payload/[a-z]", re.ASCII

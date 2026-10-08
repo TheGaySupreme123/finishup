@@ -247,25 +247,20 @@ def _delivered_obligations(projection: ProjectionState) -> frozenset[ObligationI
     return frozenset(delivered)
 
 
-def _overlaps(left: str, right: str) -> bool:
-    if left in {".", ""} or right in {".", ""}:
-        return True
-    left, right = left.rstrip("/"), right.rstrip("/")
-    return left == right or left.startswith(right + "/") or right.startswith(left + "/")
-
-
 def _distinct_paths(
     state: RequestedOutputState, value: str, other: RequestedOutputState, other_value: str
 ) -> bool:
-    """Whether another declared item names a different path than *state*'s file.
+    """Whether another declared item is not the very same file as *state*'s.
 
-    The same file declared twice (absolute and relative) or a declared directory holding it is
-    the same deliverable, never "another declared output changed" (Codex review 2).
+    The same file declared twice (absolute and relative) is one deliverable (Codex review 2). A
+    declared directory that holds it counts as another output: content split into a sibling under
+    that directory is a refactor (Codex review 3), so truncation is not raised there; a 0-byte
+    file still is.
     """
 
     if state.relative is not None and other.relative is not None:
-        return not _overlaps(state.relative, other.relative)
-    return not _overlaps(value, other_value)
+        return state.relative.rstrip("/") != other.relative.rstrip("/")
+    return value.rstrip("/") != other_value.rstrip("/")
 
 
 def emptied_declared_items(

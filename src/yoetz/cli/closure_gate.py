@@ -508,8 +508,10 @@ def closure_gate_from_readiness(
             parts.append(_FINDING_TEXT)
         if limits and limitations:
             parts.append(limitations)
-        if drain:
-            # The first optional sentence dropped under the host bound, with the drain note.
+        if drain and "obligations_open" not in items:
+            # FH A-12, for an agent that resolved everything: never offered beside open
+            # obligations, where acknowledgement stays the challenged last resort (#997). The
+            # first optional sentence dropped under the host bound, with the drain note.
             parts.append(_ACCEPTANCE_TEXT)
         parts.append(_CLOSE_TEXT)
         # The blocker exit is offered only for open obligations: findings, reviews and Yoetz
