@@ -638,6 +638,14 @@ the reviewer sees it labelled as your rendering, and the file itself is never se
 review, checks skip the AI-powered review (`semantic_review_skipped_insufficient_packet`); a real
 repair re-arms it until that cap. Never edit only to get another review.
 
+**Findings are advisory; never withdraw working deliverables because of one.** A fallback such
+as "an empty file if unsolved" is for when nothing you have works. A deliverable that passes the
+requested command is delivered and its limits disclosed. If you disagree with a finding, answer it
+with `respond` `rejected` and your reasoning; if you will not do it, `acknowledged_not_done`. Never
+empty, truncate or delete a working deliverable because a finding is open. When the reviewer
+repeats a finding you rejected without citing anything newer, Yoetz records it as
+`disputed_after_rebuttal`: it stays listed on the receipt and does not block.
+
 **Never reshape your deliverable for the reviewer.** Never split, move, shrink, rename, stash,
 delete, `git add` (including `git add -N`), git-ignore or exclude deliverables or workspace files to
 fit the review packet or to make a diff show them. Delivered files stay exactly where and how the
@@ -713,4 +721,4 @@ attempt; any other kind, even one citing only a check, and a finding naming any 
 response, or work record, or restating a finding about the work, still does. After repairing a
 finding, run at least one re-review in the same mode before the receipt.
 
-Findings form a to-do list that ends: each is `open` or final (`verified_resolved`, `self_verified`, `acknowledged_not_done`, `rejection_accepted`), and a final item is never re-reviewed. Final states, `finding_terminal`, the `finding_checklist` and the review-round budget are in [coverage-and-receipts.md](coverage-and-receipts.md).
+Findings form a to-do list that ends: each is `open` or final (`verified_resolved`, `self_verified`, `acknowledged_not_done`, `rejection_accepted`, `disputed_after_rebuttal`), and a final item is never re-reviewed. Final states, `finding_terminal`, the `finding_checklist` and the review-round budget are in [coverage-and-receipts.md](coverage-and-receipts.md).

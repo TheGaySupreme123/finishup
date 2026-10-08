@@ -8,11 +8,10 @@ description: Use for material multi-step, resumable, delegated, or verification-
 The first workflow operation is `start`. This includes `read_guidance` and commands. Read
 `yoetz://guidance/agent-instructions.md` before it; page and verify empty or clipped guidance. If
 start fails, follow same-request recovery first; ask the user for intro and guidance; do not work
-without a task. Read-only skips.
+without a task.
 
-After start, use `yoetz://guidance/workflow.md#start-and-resume` for resume/recovery/delegation/
-capacity; publication policy before `publish_work`; coverage before `check`; and
-`yoetz://guidance/request-templates.md` for setup. See [startup.md](references/startup.md).
+After start, use `yoetz://guidance/workflow.md#start-and-resume` for resume/recovery/delegation;
+coverage before `check`; `yoetz://guidance/request-templates.md` for setup. See [startup.md](references/startup.md).
 
 Capacity and cost changes need a disclosed choice: never choose a larger or uncapped local
 observation capacity for an ordinary task. On request run `yoetz observe selection-preview`, relay
@@ -24,3 +23,4 @@ For closure, publish evidence before `check`, answer findings, and request `rece
 not just recheck. At `ready_with_limitations`, nothing further is to do: request the receipt without another check;
 `standing_limitations` are disclosed, never tasks. A `respond` does not clear a finding.
 Keep `unresolved_findings_remain`. Yoetz limit: respond `self_verified`, never `yoetz-blocker`.
+Never empty a working deliverable over a finding; dispute via `respond`.
