@@ -55,6 +55,7 @@ from yoetz.kernel.delivered_set import item_role
 from yoetz.kernel.deterministic_checks import DeterministicCase
 from yoetz.kernel.projections import PendingMissingForAssessment, ProjectionState
 from yoetz.kernel.task_facts import effective_obligations
+from yoetz.ports.change_capture import CheckChangeCapture
 from yoetz.ports.semantic import SemanticJudgment
 from yoetz.protocol.models import MISSING_FOR_ASSESSMENT_KINDS, DataCategory
 
@@ -62,6 +63,7 @@ __all__ = [
     "YOETZ_LIMIT_PACKET_ROOM",
     "YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE",
     "MissingItemsReview",
+    "check_change_binary_paths",
     "observed_image_evidence",
     "review_missing_for_assessment",
     "supplied_since",
@@ -76,66 +78,191 @@ STRUCTURALLY_UNAVAILABLE: Final = "structurally_unavailable_on_this_host"
 # must never split, move, shrink, stash, delete, git-add or git-ignore its work to fit the packet.
 YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE: Final = "yoetz_limit_unsupported_data_type"
 YOETZ_LIMIT_PACKET_ROOM: Final = "yoetz_limit_packet_room"
-# Content the review packet never carries: images, documents, archives, CAD and other binary
-# formats. Matched on the file name a target records, case-insensitively.
+# Content the review packet never carries: images, audio, video, documents, archives, disk
+# images, CAD/EDA, fonts, ROMs, data and model files, databases, native objects and captures
+# (tb4n2 A11). Matched on the file name a target records, case-insensitively, on its last suffix
+# (so ``x.tar.zst`` matches ``.zst``). A few suffixes also name text formats (``.key`` a PEM key,
+# ``.nc`` G-code, ``.hdr`` an ENVI header, ``.brd``/``.svf``/``.fig``/``.gb`` text board, vector,
+# figure or GenBank files): they are listed anyway, because a false Yoetz limit only means the
+# agent verifies the file itself under a disclosed limit, while a false "agent work" pushes the
+# agent to reshape a deliverable for the reviewer. A suffix-less binary is recognised from the
+# check-time change instead (``check_change_binary_paths``).
 _UNSUPPORTED_SUFFIXES: Final = frozenset(
     {
+        ".3dm",
+        ".3mf",
         ".7z",
+        ".a",
+        ".aac",
+        ".aar",
+        ".accdb",
+        ".aiff",
+        ".apk",
+        ".arrow",
+        ".avi",
         ".avif",
+        ".avro",
+        ".beam",
         ".bin",
+        ".bit",
         ".blend",
         ".bmp",
+        ".brd",
         ".bz2",
+        ".cab",
+        ".catpart",
+        ".ckpt",
         ".class",
+        ".cr2",
         ".db",
+        ".db3",
+        ".deb",
         ".dll",
+        ".dmg",
+        ".dng",
+        ".doc",
         ".docx",
+        ".dta",
+        ".duckdb",
         ".dwg",
         ".dxf",
         ".dylib",
+        ".ear",
+        ".egg",
+        ".elf",
+        ".epub",
         ".exe",
+        ".exr",
+        ".f3d",
+        ".fbx",
         ".fcstd",
+        ".feather",
+        ".fig",
+        ".flac",
+        ".gb",
+        ".gba",
+        ".gds",
+        ".ggml",
+        ".gguf",
         ".gif",
+        ".glb",
         ".gz",
         ".h5",
+        ".hdf",
+        ".hdf5",
+        ".hdr",
         ".heic",
+        ".iam",
         ".ico",
         ".iges",
         ".igs",
+        ".img",
+        ".ipa",
+        ".ipt",
+        ".iso",
         ".jar",
+        ".joblib",
+        ".jp2",
         ".jpeg",
         ".jpg",
+        ".jxl",
+        ".keras",
+        ".key",
+        ".ko",
+        ".lib",
+        ".lmdb",
+        ".lz4",
+        ".lzma",
+        ".m4a",
+        ".m4v",
+        ".mat",
+        ".mdb",
         ".mid",
         ".midi",
+        ".mkv",
+        ".mlmodel",
+        ".mov",
         ".mp3",
         ".mp4",
+        ".mscz",
+        ".msi",
         ".mxl",
+        ".nc",
+        ".nef",
+        ".nes",
         ".npy",
         ".npz",
+        ".numbers",
+        ".nupkg",
         ".o",
+        ".oas",
+        ".odp",
+        ".ods",
+        ".odt",
+        ".ogg",
         ".onnx",
+        ".opus",
+        ".orc",
+        ".otf",
+        ".pages",
         ".parquet",
+        ".pb",
+        ".pcap",
+        ".pcapng",
         ".pdf",
         ".pickle",
         ".pkl",
         ".png",
+        ".ppt",
         ".pptx",
+        ".psd",
         ".pt",
         ".pth",
         ".pyc",
+        ".pyd",
+        ".qcow2",
+        ".rar",
+        ".raw",
+        ".rdata",
+        ".rds",
+        ".rom",
+        ".rpm",
+        ".sab",
         ".safetensors",
+        ".sav",
+        ".sfc",
+        ".sif",
+        ".sketch",
+        ".skp",
+        ".sldasm",
+        ".sldprt",
         ".so",
         ".sqlite",
+        ".sqlite3",
         ".step",
         ".stl",
         ".stp",
+        ".svf",
         ".tar",
+        ".tflite",
+        ".tfrecord",
+        ".tga",
         ".tgz",
         ".tif",
         ".tiff",
+        ".ttf",
+        ".vmdk",
+        ".war",
         ".wasm",
         ".wav",
+        ".webm",
         ".webp",
+        ".whl",
+        ".wma",
+        ".wmv",
+        ".woff",
+        ".woff2",
+        ".x_b",
         ".xls",
         ".xlsx",
         ".xz",
@@ -896,6 +1023,7 @@ def review_missing_for_assessment(
     packet_limited_refs: frozenset[str] = frozenset(),
     privacy_withheld_refs: frozenset[str] = frozenset(),
     change_clipped: bool = False,
+    binary_paths: frozenset[str] = frozenset(),
 ) -> MissingItemsReview:
     """Fence what the reviewer named to the packet it was shown and classify who can supply it.
 
@@ -911,7 +1039,8 @@ def review_missing_for_assessment(
     ``supplied_since``). Every kept item is recorded with Yoetz's own availability class.
 
     Content the packet cannot show is Yoetz's own limit, never agent work (tb4n1 D1, #983): a
-    target whose recorded file is an image or other binary format
+    target whose recorded file is an image or other binary format, by suffix or because the
+    check-time change marks it binary (``binary_paths``, see ``check_change_binary_paths``)
     (``yoetz_limit_unsupported_data_type``); a target the packet named but could not carry whole
     (``packet_limited_refs``), or a diff request while the check-time change was clipped for room
     (``change_clipped``) (``yoetz_limit_packet_room``). The agent verifies such content itself;
@@ -944,6 +1073,7 @@ def review_missing_for_assessment(
     paths_of = _TargetFiles(
         _Links.of(projection, _ALL_ROWS, observed, captured_edit_paths or {}, workspace_root),
         captured_edit_paths or {},
+        binary_paths,
     )
     gaps: set[str] = set()
     kept: dict[tuple[str, tuple[str, ...]], str] = {}
@@ -1025,6 +1155,23 @@ class _TargetFiles:
 
     links: _Links
     captured: Mapping[str, frozenset[str]]
+    # Workspace-relative paths the check-time change marks binary (tb4n2 A11).
+    binary: frozenset[str] = frozenset()
+
+    def unsupported(self, name: str) -> bool:
+        """Whether a recorded file name is a type the packet never carries.
+
+        By suffix, or because Git found the file binary when the check-time change was captured
+        (a suffix-less ``solver`` or firmware blob). An absolute name counts only inside the
+        workspace root; names compare normalized but exact, never resolved.
+        """
+
+        if _unsupported_data_type(name):
+            return True
+        if not self.binary:
+            return False
+        path = _normal_path(name, self.links.roots, known_path=True)
+        return path is not None and path[0] in self.binary
 
     def __call__(self, target: str) -> frozenset[str]:
         projection = self.links.projection
@@ -1137,6 +1284,69 @@ def unsupported_data_type(name: str) -> bool:
     return _unsupported_data_type(name)
 
 
+# The rendered check-time change (``adapters.git_change_capture``): a header listing each changed
+# file as ``  <status> <path>[ (binary)][ notes]``, then a unified diff whose binary sections carry
+# Git's ``Binary files a/X and b/Y differ`` line (an untracked file Yoetz found NUL bytes in is
+# rendered the same way against ``/dev/null``).
+_CHANGE_HEADER_END: Final = b"\nEnd of header. The unified diff follows.\n"
+_CHANGE_LISTED_BINARY: Final = re.compile(r"^  [A-Z?]+ (\S.*?) \(binary\)(?: .*)?$")
+_CHANGE_BINARY_LINE: Final = re.compile(rb"^Binary files (.+) differ$", re.MULTILINE)
+
+
+def check_change_binary_paths(capture: CheckChangeCapture | None) -> frozenset[str]:
+    """The repository-relative paths the check-time change marks binary (tb4n2 A11).
+
+    Lets a suffix-less binary (a compiled ``solver``, ``a.out``, a firmware blob) count as a type
+    the packet never carries, without the classifier reading any file: Git's NUL-byte heuristic
+    already ran when the change was captured. Read from the header's ``(binary)`` entries and the
+    diff's ``Binary files`` lines. A C-quoted path (non-ASCII or control bytes), or one the header
+    cut short, is skipped rather than guessed, so it stays classified by its suffix alone.
+    """
+
+    if capture is None:
+        return frozenset()
+    text = capture.text
+    end = text.find(_CHANGE_HEADER_END)
+    header = text if end < 0 else text[:end]
+    paths: set[str] = set()
+    for line in header.decode("utf-8", errors="replace").split("\n"):
+        match = _CHANGE_LISTED_BINARY.match(line)
+        if match is not None:
+            paths.add(match.group(1))
+    if end >= 0:
+        for match in _CHANGE_BINARY_LINE.finditer(text, end):
+            paths.update(_binary_line_paths(match.group(1).decode("utf-8", errors="replace")))
+    return frozenset(
+        path
+        for path in paths
+        if path and not path.startswith('"') and not path.endswith("...") and "\ufffd" not in path
+    )
+
+
+def _binary_line_paths(operands: str) -> tuple[str, ...]:
+    """The paths of one ``Binary files <a> and <b>`` line; empty when it cannot be split surely.
+
+    An unquoted path may itself hold `` and b/``, so a two-sided line is split only where both
+    operands name the same path, or where exactly one split exists.
+    """
+
+    if operands.startswith("/dev/null and b/"):
+        return (operands.removeprefix("/dev/null and b/"),)
+    if operands.startswith("a/") and operands.endswith(" and /dev/null"):
+        return (operands.removeprefix("a/").removesuffix(" and /dev/null"),)
+    if not operands.startswith("a/"):
+        return ()
+    splits = [
+        (operands[2:index], operands[index + len(" and b/") :])
+        for index in range(len(operands))
+        if operands.startswith(" and b/", index)
+    ]
+    same = [left for left, right in splits if left == right]
+    if same:
+        return (same[0],)
+    return splits[0] if len(splits) == 1 else ()
+
+
 def _unsupported_data_type(name: str) -> bool:
     base = name.rstrip("/").rsplit("/", 1)[-1].lower()
     dot = base.rfind(".")
@@ -1152,7 +1362,7 @@ def _only_unsupported_outputs(refs: tuple[str, ...], paths_of: _TargetFiles) -> 
 
     scoped = [files for ref in refs if (files := paths_of.requested_files(ref)) is not None]
     names = {name for files in scoped for name in files}
-    return bool(names) and all(_unsupported_data_type(name) for name in names)
+    return bool(names) and all(paths_of.unsupported(name) for name in names)
 
 
 def _yoetz_limit(
@@ -1166,7 +1376,7 @@ def _yoetz_limit(
     """Whether Yoetz's own packet, not the agent, is why the reviewer could not see the item."""
 
     if (
-        any(_unsupported_data_type(name) for ref in refs for name in paths_of(ref))
+        any(paths_of.unsupported(name) for ref in refs for name in paths_of(ref))
         or any(paths_of.observed_image(ref) for ref in refs)
         or (kind == "other" and _only_unsupported_outputs(refs, paths_of))
     ):

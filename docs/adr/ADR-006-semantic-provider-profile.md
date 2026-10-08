@@ -1374,7 +1374,12 @@ Yoetz's own limit, marked as such for the agent, never a blocker; the agent veri
   new standing gap `semantic_missing_yoetz_limit` and never actionable:
   `yoetz_limit_unsupported_data_type` (a target whose recorded file, a hook-observed image, or for
   an `other` item a file the plan, task statement or obligation names, is an image, document,
-  archive, CAD or other binary format, matched lexically on its file name) and
+  archive, CAD or other binary format, matched lexically on its file name's last suffix or, for a
+  suffix-less binary such as a compiled `solver`, because the check-time change marks that
+  workspace path binary (Git's binary mark, read in process and never recorded; tb4n2 A11). An
+  ambiguous suffix that also names a text format is listed anyway: a false Yoetz limit only asks
+  the agent to verify the file itself, while false agent work steers it to reshape a deliverable)
+  and
   `yoetz_limit_packet_room` (a target an omission row of the exact sent packet withheld for room,
   selection or policy, never `not_recorded` and never this check's own local finding, or a diff
   request while the check-time change was clipped or redacted). `evt_` targets resolve to the row

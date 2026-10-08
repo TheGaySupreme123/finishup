@@ -1657,6 +1657,9 @@ class FinalSemanticEvaluation:
     # Issue #907: the absolute workspace root the session opened with, anchoring absolute paths
     # an agent names; in process only, never recorded. ``None`` when it was not resolved.
     case_workspace_root: str | None = None
+    # tb4n2 A11: repository-relative paths the check-time change marks binary, so a suffix-less
+    # binary a reviewer names is Yoetz's unsupported-data-type limit. In process only.
+    case_binary_paths: frozenset[str] = frozenset()
     # ADR-031: keyed commitments to the check-time change files the review packet carried.
     check_change_files: CheckChangeShownFiles | None = None
     # Set only on the nonterminal awaiting_human branch: what the caller must do to resume this
@@ -4469,6 +4472,7 @@ async def execute_check_commit(
                 citable_refs=semantic_result.case_citable_refs,
                 captured_edit_paths=semantic_result.case_captured_edit_paths,
                 workspace_root=semantic_result.case_workspace_root,
+                binary_paths=semantic_result.case_binary_paths,
                 **_packet_limits(semantic_result, deterministic),
             )
             declared_gaps |= missing.gaps

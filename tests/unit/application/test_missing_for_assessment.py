@@ -26,9 +26,11 @@ from builders.policy_cases import (
 )
 from builders.privacy_policies import local_only_policy, minimal_external_policy
 from yoetz.application.missing_for_assessment import (
+    check_change_binary_paths,
     review_missing_for_assessment,
     supplied_since,
     unsuppliable_missing_kinds,
+    unsupported_data_type,
 )
 from yoetz.domain.events import (
     ActionKind,
@@ -77,6 +79,7 @@ from yoetz.kernel.projections import (
     ProjectionRecord,
 )
 from yoetz.mcp.summaries import summary_for_check
+from yoetz.ports.change_capture import CheckChangeCapture
 from yoetz.ports.runtime import TaskRuntime
 from yoetz.ports.semantic import (
     MissingForAssessment,
@@ -1239,5 +1242,180 @@ def test_an_other_item_is_a_yoetz_limit_only_when_every_requested_output_is_bina
     )
     review = review_missing_for_assessment(
         satb, (), _first_request("other", str(obl(3))), unsuppliable_kinds=frozenset()
+    )
+    assert [item.availability for item in review.items] == ["agent_suppliable"]
+
+
+# --- tb4n2 A11: edge-case file types and suffix-less binaries ------------------------------------
+
+_A11_SUFFIXES = (
+    # Archives and containers (a multi-suffix name matches on its last suffix).
+    *(
+        ".rar .lz4 .lzma .cab .iso .dmg .img .qcow2 .vmdk .deb .rpm .apk .ipa .whl .egg .war .ear"
+    ).split(),
+    *".aar .nupkg .sif .tar.zst .tar.lz4 .tar.xz".split(),
+    # Zip-based office and app files.
+    *".doc .ppt .odt .ods .odp .epub .key .pages .numbers .mscz .3mf .sketch .fig".split(),
+    # Audio and video.
+    *".flac .ogg .opus .m4a .aac .aiff .wma .mov .avi .mkv .webm .m4v .wmv".split(),
+    # Images.
+    *".psd .raw .cr2 .nef .dng .exr .hdr .tga .jp2 .jxl".split(),
+    # CAD, 3D and EDA.
+    *".glb .fbx .3dm .skp .f3d .sldprt .sldasm .ipt .iam .catpart .x_b .sab .gds .oas".split(),
+    *".brd .bit .svf".split(),
+    # ROMs and fonts.
+    *".rom .nes .gb .gba .sfc .ttf .otf .woff .woff2".split(),
+    # Data and model files.
+    *".feather .arrow .orc .avro .tfrecord .lmdb .hdf5 .hdf .nc .mat .sav .dta .rds".split(),
+    *".rdata .joblib .ckpt .gguf .ggml .tflite .pb .keras .mlmodel".split(),
+    # Databases, natives and captures.
+    *".sqlite3 .db3 .duckdb .mdb .accdb .a .lib .elf .ko .pyd .msi .beam .pcap .pcapng".split(),
+)
+
+
+def _named_file_review(
+    name: str, kind: str = "other", *, binary_paths: frozenset[str] = frozenset()
+) -> list[str]:
+    case = make_case(
+        evidence={evd(5): evidence_record(_diff(5, name), 5)},
+        extra_refs=(evd(5),),
+    )
+    review = review_missing_for_assessment(
+        case,
+        (),
+        _first_request(kind, str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+        workspace_root="/work/repo",
+        binary_paths=binary_paths,
+    )
+    return [item.availability for item in review.items]
+
+
+@pytest.mark.parametrize("suffix", _A11_SUFFIXES)
+def test_every_listed_binary_kind_is_an_unsupported_data_type(suffix: str) -> None:
+    """tb4n2 A11: content the packet cannot carry is Yoetz's limit, whatever its case."""
+
+    assert unsupported_data_type(f"out/deliverable{suffix}")
+    assert unsupported_data_type(f"out/DELIVERABLE{suffix.upper()}")
+    assert _named_file_review(f"out/deliverable{suffix}") == ["yoetz_limit_unsupported_data_type"]
+
+
+@pytest.mark.parametrize(
+    "name", ("Makefile", "Dockerfile", "solver.c", "build.sh", "README", ".a", "notes.txt")
+)
+def test_text_and_suffix_less_names_stay_agent_work_without_a_binary_mark(name: str) -> None:
+    assert not unsupported_data_type(name)
+    assert _named_file_review(name) == ["agent_suppliable"]
+
+
+_BINARY_CHANGE = (
+    b"Yoetz check-time change: captured by the Yoetz service when this check ran; "
+    b"the agent did not supply it.\n"
+    b"Base: the commit HEAD named when this task started.\n"
+    b"Scope: committed and uncommitted changes.\n"
+    b"Changed files: 3 tracked, 3 untracked. Not shown: 0.\n"
+    b"Files:\n"
+    b"  M bin/firmware (binary)\n"
+    b"  M src/solver.c (+3 -1)\n"
+    b"  D old tool (binary)\n"
+    b"  A solver (binary) untracked\n"
+    b'  A "caf\\303\\251" (binary) untracked\n'
+    b"  A Makefile (+2 -0) untracked\n"
+    b"End of header. The unified diff follows.\n"
+    b"diff --git a/bin/firmware b/bin/firmware\n"
+    b"Binary files a/bin/firmware and b/bin/firmware differ\n"
+    b"diff --git a/src/solver.c b/src/solver.c\n"
+    b"--- a/src/solver.c\n"
+    b"+++ b/src/solver.c\n"
+    b"@@ -1 +1,3 @@\n"
+    b"+Binary files a/fake and b/fake differ\n"
+    b"diff --git a/old tool b/old tool\n"
+    b"deleted file mode 100755\n"
+    b"Binary files a/old tool and /dev/null differ\n"
+    b"diff --git a/a.out b/a.out\n"
+    b"new file mode 100755\n"
+    b"Binary files /dev/null and b/a.out differ\n"
+    b"diff --git a/x and b/y b/x and b/y\n"
+    b"Binary files a/x and b/y and b/x and b/y differ\n"
+)
+
+
+def _binary_capture(text: bytes = _BINARY_CHANGE) -> CheckChangeCapture:
+    return CheckChangeCapture(
+        base="task_start",
+        text=text,
+        tracked_files=3,
+        untracked_files=3,
+        omitted_files=0,
+        truncated=False,
+    )
+
+
+def test_the_check_time_change_names_its_binary_files() -> None:
+    """Git's binary marks, read from the header and the diff; quoted and diff-body lines skipped."""
+
+    assert check_change_binary_paths(_binary_capture()) == frozenset(
+        {"bin/firmware", "old tool", "solver", "a.out", "x and b/y"}
+    )
+    assert check_change_binary_paths(None) == frozenset()
+
+
+def test_a_suffix_less_binary_the_change_marks_is_an_unsupported_data_type() -> None:
+    """tb4n2 A11: a compiled ``solver`` or ELF harness reads as Yoetz's limit, never agent work."""
+
+    binary = check_change_binary_paths(_binary_capture())
+    for name in ("solver", "./solver", "/work/repo/a.out", "bin/firmware"):
+        for kind in ("other", "verification_output", "current_diff_for_path"):
+            assert _named_file_review(name, kind, binary_paths=binary) == [
+                "yoetz_limit_unsupported_data_type"
+            ], (name, kind)
+    # A text file in the same change, and a binary's name outside the workspace, stay agent work.
+    for name in ("Makefile", "src/solver.c", "/elsewhere/solver"):
+        assert _named_file_review(name, binary_paths=binary) == ["agent_suppliable"], name
+
+
+def test_an_other_item_whose_requested_outputs_are_marked_binary_is_a_yoetz_limit() -> None:
+    case = make_case(
+        obligations={obl(3): obligation_record(_requesting(3, "/work/repo/solver"), 3)},
+        extra_refs=(obl(3),),
+    )
+
+    def availability(binary: frozenset[str]) -> list[str]:
+        review = review_missing_for_assessment(
+            case,
+            (),
+            _first_request("other", str(obl(3))),
+            unsuppliable_kinds=frozenset(),
+            workspace_root="/work/repo",
+            binary_paths=binary,
+        )
+        return [item.availability for item in review.items]
+
+    assert availability(frozenset({"solver"})) == ["yoetz_limit_unsupported_data_type"]
+    assert availability(frozenset()) == ["agent_suppliable"]
+
+
+def test_a_claim_target_with_only_text_evidence_stays_agent_work() -> None:
+    """tb4n2 music L205: the validator's output for a claim is text the agent can publish."""
+
+    claim = ClaimRecordedPayload(clm(1), ClaimKind.COMPLETION, "harmony.mxl written", (evd(4),))
+    evidence = EvidenceRecordedPayload(
+        evd(4),
+        EvidenceKind.COMMAND_OUTPUT,
+        EvidenceImmutability.METADATA_ONLY,
+        timestamp_from_string("2026-09-27T00:00:00.000Z"),
+        description="validator: 0 parallel fifths",
+    )
+    case = make_case(
+        claims={clm(1): claim_record(claim, 3)},
+        evidence={evd(4): evidence_record(evidence, 4)},
+        extra_refs=(clm(1), evd(4)),
+    )
+    review = review_missing_for_assessment(
+        case,
+        (),
+        _first_request("verification_output", str(clm(1))),
+        unsuppliable_kinds=frozenset(),
+        binary_paths=frozenset({"harmony.mxl"}),
     )
     assert [item.availability for item in review.items] == ["agent_suppliable"]
