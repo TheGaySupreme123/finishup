@@ -121,3 +121,66 @@ def test_partial_claims_do_not_silently_union_into_whole_plan_completion() -> No
         (obl(2),),
         (obl(1),),
     )
+
+
+def _ack_case(refs: tuple[int, ...], acknowledged: frozenset[int]):  # noqa: ANN202
+    def payload(n: int) -> ObligationPublishedPayload:
+        if n in acknowledged:
+            return ObligationPublishedPayload(
+                obl(n),
+                "Work",
+                "Evidence",
+                ObligationStatus.ACKNOWLEDGED_NOT_DONE,
+                acknowledged_not_done_reason="The licence is unavailable; reported.",
+            )
+        return ObligationPublishedPayload(obl(n), "Work", "Evidence", ObligationStatus.OPEN)
+
+    return make_case(
+        plans={1: plan_record(PlanPublishedPayload(1, "Plan", (obl(1), obl(2))), 1)},
+        obligations={obl(n): obligation_record(payload(n), n + 1) for n in (1, 2, 3)},
+        claims={
+            clm(1): record(
+                ClaimRecordedPayload(
+                    clm(1),
+                    ClaimKind.COMPLETION,
+                    "Claim",
+                    supporting_refs=(),
+                    obligation_refs=tuple(obl(n) for n in refs),
+                ),
+                5,
+            )
+        },
+    )
+
+
+def test_an_acknowledged_obligation_omitted_from_the_claim_is_not_plan_not_claimed() -> None:
+    """tb4n2 cargo/payments/vpp S (issue #1022): the honest claim omits what it acknowledged."""
+
+    two = frozenset({2})
+    assert completion_scope_codes(_ack_case((1,), two).projection) == ()
+    # Status is read from the current projection: reopened, it is plan scope again.
+    assert completion_scope_codes(_ack_case((1,), frozenset()).projection) == (PLAN_NOT_CLAIMED,)
+    # Only the acknowledged one is exempt; another omitted obligation still counts.
+    projection = _ack_case((), two).projection
+    assert completion_scope_codes(projection) == (PLAN_NOT_CLAIMED,)
+    assert completion_scope_differences(projection)[0].not_claimed == (obl(1),)
+
+
+def test_a_claim_naming_an_acknowledged_obligation_still_raises_the_open_obligation_finding() -> (
+    None
+):
+    from yoetz.domain.findings import FindingKind
+    from yoetz.kernel.deterministic_checks import DETERMINISTIC_FINDING_TEMPLATES
+    from yoetz.kernel.policies.work_integrity import (
+        _completion_findings,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    case = _ack_case((1, 2), frozenset({2}))
+    assert completion_scope_codes(case.projection) == ()
+    findings = _completion_findings(case)
+    # obl 1 is open and obl 2 acknowledged: naming either in a completion claim is flagged.
+    assert len(findings) == 2
+    remediation = DETERMINISTIC_FINDING_TEMPLATES[
+        FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
+    ].next_action
+    assert "omit it from the completion claim" in remediation
