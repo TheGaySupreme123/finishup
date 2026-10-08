@@ -38,6 +38,7 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [031](ADR-031-check-time-change-capture.md) | The service captures the check-time change as one reviewed object |
 | [032](ADR-032-closure-readiness-checklist-and-material-dependency-coverage.md) | Closure readiness as a checklist, and material-dependency coverage (proposed) |
 | [034](ADR-034-proof-limited-findings-self-verified.md) | Proof-limited findings: the `self_verified` respond disposition |
+| [041](ADR-041-obligation-status-re-derived-and-refusal-reasons.md) | Obligation status re-derived from current evidence, one obligation version rule, refusals that say why |
 
 Unresolved gates are centralized in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md), not scattered
 through individual ADRs.

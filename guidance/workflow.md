@@ -231,7 +231,15 @@ finding, a planned verification that was not observed, failed, or ran before you
 git-ignored requested output, or a declared deliverable you deleted or renamed away
 (`declared_output_removed`: a requested `file` item marked as an output), the Stop hook continues
 you once with that list; restore that delivered file where the task needs it, or correct the
-requested item if the task asked for the deletion. A delivered file that lost most of its lines
+requested item if the task asked for the deletion. The same happens once when a deliverable of an
+obligation you resolved or claimed is now empty or truncated (`declared_output_emptied`): that
+obligation no longer counts as done. Restore the deliverable; never empty or withdraw a working
+deliverable because of an open finding. If it is genuinely not done, republish the obligation
+`acknowledged_not_done` with the reason and leave it out of your completion claim: an acknowledged
+obligation is outside completion coverage, so omitting it is not a scope gap. A deliverable that
+names a file you created but did not declare is disclosed (`deliverable_references_undeclared_file`;
+it never stops you): a grader may receive only the declared files, so embed it, build it at run
+time, or declare it. A delivered file that lost most of its lines
 while files outside the delivered set changed or hold about as many lines is disclosed on the receipt
 (`declared_output_content_moved`; it never stops you): check the deliverable still works where
 the task delivers it. Repair first. If
@@ -261,7 +269,7 @@ fields, `status: "acknowledged_not_done"` and an `acknowledged_not_done_reason`:
 resort, never a blocker. It leaves `obligations_open`, readiness lists it in
 `acknowledged_not_done`, a Stop challenges it once and the closing review tests it against the
 task, and the receipt discloses it as not done and never reads clean. Republishing it with `open`
-(or `resolved` with evidence; 1.0.0 unless it has a role or directory item) takes it back; a resolved
+(or `resolved` with evidence; 1.1.0 always works, and 1.0.0 only when it has no role or directory item) takes it back; a resolved
 obligation stays resolved.
 
 `blocking_conditions` still names everything that bounds the conclusion; `coverage_gaps_declared`
@@ -507,7 +515,7 @@ Same conversation resuming, or a fresh conversation continuing the same work →
 
 Candidate findings are what deterministic packs currently say about the record. They carry no verdict and cannot be cited as a check. An empty candidate list means only that no rule fired in that advisory read. Only a recorded check can support receipt-bounded completion wording.
 
-The cheapest finding is the one that never fires. Before the first `check`, read `status` with `view=obligations`: every row exposes its exact `requested_items` plus the `unattempted_items` subset under the existing obligation-text privacy category. Mark each requested file or `directory` the task must deliver `role: output` and each it only reads `role: input` (`obligation_published` `1.1.0`, used exactly when an obligation carries a role, a `directory` item or `acknowledged_not_done`), so the check reports a missing or untouched output and never an input. Record each attempted value exactly on `action_recorded.attempted_items` (`attempted_items` belongs to that family alone — never a claim), and do not resolve the obligation while `unattempted_items` remains non-empty. Also confirm that completion scope is declared, every claim has linked evidence, and every declared obligation is resolved or deliberately left open with a stated reason. A typed empty-scope declaration still produces `completion_scope_declared_none` when a completion claim exists; it records the scope decision rather than proving it. This pre-flight costs one status read; an actionable finding costs the receipt for the rest of the task.
+The cheapest finding is the one that never fires. Before the first `check`, read `status` with `view=obligations`: every row exposes its exact `requested_items` plus the `unattempted_items` subset under the existing obligation-text privacy category. Mark each requested file or `directory` the task must deliver `role: output` and each it only reads `role: input` (`obligation_published` `1.1.0`, required when an obligation carries a role, a `directory` item or `acknowledged_not_done`, and accepted for any obligation), so the check reports a missing or untouched output and never an input. Record each attempted value exactly on `action_recorded.attempted_items` (`attempted_items` belongs to that family alone — never a claim), and do not resolve the obligation while `unattempted_items` remains non-empty. Also confirm that completion scope is declared, every claim has linked evidence, and every declared obligation is resolved or deliberately left open with a stated reason. A typed empty-scope declaration still produces `completion_scope_declared_none` when a completion claim exists; it records the scope decision rather than proving it. This pre-flight costs one status read; an actionable finding costs the receipt for the rest of the task.
 
 Two completion findings exist because an agent can believe it finished when it has not, and the record can show that. Both are structural; neither reads prose. `task_requirement_unmet` (subject: the task-statement event, the newest event that carried `task_statement`) fires while the effective plan declares obligations and none cites that statement in `source_refs`, or while a completion claim stands on no plan or an explicit empty scope: decompose the request into new statement-sourced obligations with `plan_revised`, or, when the request asks for no material work and no file changed (shell writes count), record a `decision_recorded` line `yoetz-no-material-work:<statement event id>` with a rationale. `claim_without_admissible_evidence` with the observed-verification wording (subject: the completion claim) fires when hooks observed edits or verification runs and the claim, together with the resolution evidence of the obligations it names, cites no verification made after the latest observed edit — neither a hook-observed run nor your own `command` result or `test_result`/`command_output` evidence published after that edit (self-generated evidence is admissible): run the verification, then replace the claim citing that run (the observed `res_` id from `status view=results`, or your own result). A recheck without that change returns the same finding. If you cannot clear one, answer it with `respond` (`acknowledged_not_done` with the reason, or a dispute with evidence); the receipt still reports it unresolved.
 
