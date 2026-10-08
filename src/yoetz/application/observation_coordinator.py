@@ -1639,16 +1639,23 @@ class ObservationCoordinator:
         runtime: TaskRuntime,
         ticket: ObservationCaptureTicket,
         reason: CaptureHandoffRetirementReason,
-    ) -> None:
-        """Put one retired handoff on its own task's coverage (issue #1019, tb4n2 N-4).
+    ) -> bool:
+        """Put one retiring handoff on its own task's coverage (issue #1019, tb4n2 N-4).
 
-        Only the ticket's own task receives the marker, keyed by the ticket identity so a replay
-        of the same retirement appends nothing new. The local retirement account is already
-        durable; a failed append is recorded and never changes the retirement or the delivery.
+        Called after the local loss account and *before* the ticket is tombstoned: the ledger
+        marker is the durable disclosure, so it must exist before the ticket stops being listed
+        for reconciliation. Only the ticket's own task receives it, keyed by the ticket identity,
+        so a retry after an interrupted retirement appends nothing new. Returns ``False`` when the
+        marker is not durable yet but could become so (a retryable or unexpected failure); the
+        caller then leaves the ticket pending, and the next reconciliation pass (the READY sweep or
+        a CHECK preflight) publishes it again. A ledger that terminally refuses the marker (a
+        non-retryable typed refusal, an operation conflict, or no writer) can never hold it, so
+        the retirement proceeds rather than holding capture pressure forever; that refusal is
+        recorded in service diagnostics.
         """
 
         if ticket.task_id != runtime.task_id:
-            return
+            return False
         try:
             ticket_id = observation_capture_ticket_id(ticket)
             batch = materialize_capture_handoff_retirement(
@@ -1666,13 +1673,21 @@ class ObservationCoordinator:
                     }
                 )
             )
+            if runtime.writer_id is None:
+                return True
             await self._append_structural_batch(runtime, batch, digest)
+            return True
         except Exception as exc:
-            record_unexpected_exception_without_raising(
-                exc,
-                component="application.observation_coordinator",
-                operation="capture_handoff_retirement_publish_failed",
+            terminal = (isinstance(exc, PublicOperationError) and not exc.retryable) or isinstance(
+                exc, ProtocolValueError | ValueError
             )
+            if not isinstance(exc, PublicOperationError) or not exc.retryable:
+                record_unexpected_exception_without_raising(
+                    exc,
+                    component="application.observation_coordinator",
+                    operation="capture_handoff_retirement_publish_failed",
+                )
+            return terminal
 
     async def _retire_stranded_capture_handoff(
         self,
@@ -1719,8 +1734,11 @@ class ObservationCoordinator:
                     workspace, ticket, stage=stage, reason=reason
                 ):
                     return
+                if not await self._publish_capture_handoff_retirement(runtime, ticket, reason):
+                    # The disclosure is not durable yet: keep the ticket listed so a later
+                    # reconciliation pass retires it and publishes the marker.
+                    return
                 await self._retire_capture_ticket(workspace, runtime, store, ticket)
-                await self._publish_capture_handoff_retirement(runtime, ticket, reason)
         except Exception as exc:
             record_unexpected_exception_without_raising(
                 exc,
@@ -1865,8 +1883,10 @@ class ObservationCoordinator:
                 quarantine_reason=quarantine_reason,
             ):
                 continue
+            if not await self._publish_capture_handoff_retirement(runtime, ticket, reason):
+                # Not durable yet: the ticket stays listed and the next pass retries.
+                continue
             await self._retire_capture_ticket(current_workspace, runtime, store, ticket)
-            await self._publish_capture_handoff_retirement(runtime, ticket, reason)
             retired += 1
         for current_workspace in sorted(structural_states, key=str.encode):
             await self._publish_capture_backlog(current_workspace, runtime, store)

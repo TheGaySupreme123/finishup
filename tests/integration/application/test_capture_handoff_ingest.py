@@ -365,3 +365,63 @@ async def test_a_consumed_handoff_leaves_no_retirement_disclosure(
     assert lane.retirements() == ()
     assert "capture_handoff_retired" not in await _case_gaps(lane, 42)
     lane.coordinator.close()
+
+
+@pytest.mark.anyio
+async def test_an_interrupted_retirement_disclosure_is_retried_not_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1019 review: the marker is durable before the ticket stops being reconcilable.
+
+    A failed marker append leaves the ticket pending (and counted once); the next
+    reconciliation pass publishes the marker and only then retires the ticket.
+    """
+
+    from yoetz.application import observation_coordinator as coordinator_module
+
+    lane = await _lane(tmp_path, monkeypatch)
+    await lane.stage()
+
+    def fenced(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(lane.local, "content_capture_authority_is_current", fenced)
+    original = ObservationCoordinator._append_structural_batch  # pyright: ignore[reportPrivateUsage]
+    failures: list[object] = []
+
+    async def interrupted(*_args: object, **_kwargs: object) -> object:
+        failures.append(_args)
+        raise RuntimeError("ledger append interrupted")
+
+    def quiet(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(lane.coordinator, "_append_structural_batch", interrupted)
+    monkeypatch.setattr(coordinator_module, "record_unexpected_exception_without_raising", quiet)
+    result = await lane.coordinator.ingest_request(lane.structural)
+    assert result.disposition is ObservationIngestDisposition.ACCEPTED
+    assert len(failures) == 1
+    pending = lane.ticket()
+    assert pending is not None and pending.state == "pending"
+    # While the ticket is pending a new check is not admitted, so no check can miss the loss.
+    with pytest.raises(PublicOperationError):
+        await _case_gaps(lane, 43)
+
+    # The row is gone and the handoff aged out: the next pass retries the disclosure.
+    monkeypatch.setattr(
+        lane.coordinator,
+        "_append_structural_batch",
+        original.__get__(lane.coordinator, ObservationCoordinator),
+    )
+    lane.acknowledge_structural_row()
+
+    def aged(_ticket: ObservationCaptureTicket) -> int:
+        return 10**12
+
+    monkeypatch.setattr(lane.coordinator, "_capture_handoff_age_ms", aged)
+    assert await lane.coordinator.reconcile_task_capture_handoffs(lane.runtime) == 1
+    retired = lane.ticket()
+    assert retired is not None and retired.state == "revoked"
+    assert "capture_handoff_retired" in await _case_gaps(lane, 44)
+    assert len(lane.retirements()) == 1  # the loss is counted once across both passes
+    lane.coordinator.close()
