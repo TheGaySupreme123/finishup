@@ -544,7 +544,7 @@ def _observed_verification_facts(
             and payload.action_kind is ActionKind.EDIT
             # A scratch or Yoetz-owned write (a saved receipt) changes nothing a claim's
             # verification covered (ADR-042, tb4n2 R4: cad S, lake D).
-            and (not exempt or observed_edit_counts(payload.description))
+            and observed_edit_counts(payload.description, exempt)
         ):
             latest_edit = max(latest_edit or 0, action.source_frontier)
     runs: dict[str, int] = {}

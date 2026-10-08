@@ -31,7 +31,8 @@ __all__ = [
     "WriteClass",
     "classify_write_path",
     "edit_write_scope",
-    "non_counting_path",
+    "scratch_overlap",
+    "yoetz_artifact_name",
     "scratch_path",
 ]
 
@@ -122,22 +123,24 @@ def scratch_path(path: str, workspace: str | None = None, *, environment: bool =
     return any(_under(normalized, root) for root in roots)
 
 
-def non_counting_path(path: str) -> bool:
-    """Whether a declared path is one the lexical rule could call scratch or Yoetz-owned.
+def yoetz_artifact_name(path: str) -> bool:
+    """Whether a path's file name is a Yoetz receipt or export name (pure)."""
 
-    Pure (fixed temp roots only). The kernel uses it to keep the stale rule conservative: when a
-    declared deliverable could itself be classified scratch or Yoetz-owned, no edit is exempt.
-    """
+    return (
+        type(path) is str
+        and _YOETZ_ARTIFACT_NAME.match(posixpath.basename(_normalize(path))) is not None
+    )
 
-    if type(path) is not str or not path:
+
+def scratch_overlap(path: str) -> bool:
+    """Whether a declared absolute path lies under, or contains, a fixed temporary root (pure)."""
+
+    if type(path) is not str or not path.startswith("/"):
         return False
     normalized = _normalize(path)
-    if _YOETZ_ARTIFACT_NAME.match(posixpath.basename(normalized)) is not None:
-        return True
-    padded = "/" + normalized.lstrip("/")
-    if any(f"/{tree}/" in padded + "/" for tree in _YOETZ_TREES):
-        return True
-    return normalized.startswith("/") and scratch_path(normalized, environment=False)
+    return scratch_path(normalized, environment=False) or any(
+        _under(root, normalized) for root in TEMP_ROOTS
+    )
 
 
 def _yoetz_owned(normalized: str, owned_roots: Iterable[str]) -> bool:
@@ -177,8 +180,13 @@ def classify_write_path(
         # A workspace may itself sit under a temporary root, and a log file there may be a
         # deliverable, so neither is ever exempt by location or name alone.
         return "workspace"
-    if scratch_path(normalized, workspace):
+    if scratch_path(normalized, workspace, environment=False):
         return "scratch"
+    if scratch_path(normalized, workspace):
+        # The process's own TMPDIR is not a misplaced deliverable (no outside claim), but only the
+        # fixed roots are named scratch: the kernel can check a declared deliverable against them
+        # replay-stably, never against this environment (Codex review round 2).
+        return "workspace"
     # A real write outside the workspace keeps counting and stays disclosed.
     return "outside_workspace"
 

@@ -17,6 +17,7 @@ from yoetz.domain.events import (
     PlanPublishedPayload,
     RequestedItem,
     RequestedItemKind,
+    RequestedItemRole,
     ResultOutcome,
 )
 from yoetz.domain.values import EventId, ObligationId, action_id, actor_id, obligation_id
@@ -89,8 +90,11 @@ def _planned(
     obligation: ObligationId = _OBLIGATION,
     status: ObligationStatus = ObligationStatus.OPEN,
 ) -> None:
+    versioned = any(
+        item.role is not None or item.item_kind is RequestedItemKind.DIRECTORY for item in items
+    )
     ledger.append(
-        _OBLIGATION_SCHEMA,
+        EventSchema("obligation_published", "1.1.0") if versioned else _OBLIGATION_SCHEMA,
         ObligationPublishedPayload(
             obligation_id=obligation,
             description="Synthetic obligation",
@@ -277,11 +281,38 @@ def test_a_deliverable_the_rule_could_call_scratch_keeps_every_edit_counting() -
     assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
 
 
+def test_a_declared_output_directory_keeps_a_saved_receipt_counting() -> None:
+    """Codex review round 2: a receipt saved into a declared output directory changes it."""
+
+    ledger = ObservedLedger()
+    _planned(
+        ledger,
+        RequestedItem(RequestedItemKind.DIRECTORY, "/app/output", RequestedItemRole.OUTPUT),
+    )
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.edit(write_scope="yoetz_owned")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    # Scratch under /tmp stays exempt: the declared directory does not overlap a temp root.
+    other = ObservedLedger()
+    _planned(
+        other,
+        RequestedItem(RequestedItemKind.DIRECTORY, "/app/output", RequestedItemRole.OUTPUT),
+    )
+    _plan(other, _OBLIGATION)
+    other.passes("pytest -q")
+    other.edit(write_scope="scratch")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(other)
+
+
 def test_non_executing_pytest_never_clears_staleness() -> None:
     ledger = ObservedLedger()
     ledger.passes("pytest -q")
     ledger.edit()
     ledger.passes("python -m pytest --version")
+    ledger.passes("pytest --collectonly")
+    ledger.passes("python -m pytest --fixtures-per-test")
+    ledger.passes("uv run --script build_model.py")
     ledger.passes("uv run python /app/dev/build_model.py")
     assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
 

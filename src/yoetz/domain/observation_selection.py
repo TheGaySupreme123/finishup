@@ -623,14 +623,31 @@ _PYTHON_VERIFICATION_MODULES: Final[Mapping[str, RunnerClass]] = MappingProxyTyp
 
 # Options that make pytest report on itself or collect without running a test.
 _PYTEST_NON_EXECUTING: Final = frozenset(
-    {"--version", "-V", "-h", "--help", "--collect-only", "--co", "--fixtures", "--markers"}
+    {
+        "--version",
+        "-V",
+        "-h",
+        "--help",
+        "--collect-only",
+        "--collectonly",
+        "--co",
+        "--fixtures",
+        "--funcargs",
+        "--fixtures-per-test",
+        "--markers",
+        "--setup-only",
+        "--setup-plan",
+    }
 )
 # Project runners whose ``run`` subcommand executes the command that follows.
 _RUN_WRAPPERS: Final = frozenset({"uv", "poetry", "pipenv", "pdm", "hatch", "rye"})
+_RUN_SCRIPT_OPTIONS: Final = frozenset({"--script", "-s", "--gui-script"})
 # ``uv run`` options that take a separate value (``uv run --with numpy python x.py``).
 _RUN_OPTIONS_WITH_VALUE: Final = frozenset(
     {
         "--with",
+        "-w",
+        "--with-editable",
         "--with-requirements",
         "--python",
         "-p",
@@ -639,9 +656,24 @@ _RUN_OPTIONS_WITH_VALUE: Final = frozenset(
         "--env-file",
         "--extra",
         "--group",
+        "--only-group",
+        "--no-group",
         "--package",
         "--index",
         "--index-url",
+        "--default-index",
+        "--extra-index-url",
+        "--find-links",
+        "-f",
+        "--index-strategy",
+        "--config-setting",
+        "-C",
+        "--resolution",
+        "--prerelease",
+        "--exclude-newer",
+        "--link-mode",
+        "--cache-dir",
+        "--color",
         "-e",
         "--env",
     }
@@ -665,6 +697,9 @@ def _run_wrapper_target(command: str, argv: list[str]) -> list[str] | None:
             break
         if not argument.startswith("-"):
             break
+        if argument in _RUN_SCRIPT_OPTIONS:
+            # ``uv run --script build_model.py`` runs the agent's own script.
+            return ["script"]
         index += 2 if argument in _RUN_OPTIONS_WITH_VALUE else 1
     return argv[index:] or None
 

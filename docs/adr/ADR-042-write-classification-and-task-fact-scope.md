@@ -48,7 +48,9 @@ did not stop the agent:
 1. **Four write classes.** An observed edit's paths are `deliverable` (a declared `role: output`
    file, ADR-035), `workspace` (any other workspace path, and a real write outside the workspace such
    as an installed package the task told the agent to patch), `scratch` (a path outside the workspace
-   under a temporary root — the same lexical roots ADR-033 decision 7 uses) or `yoetz_owned` (a
+   under a fixed temporary root: `/tmp`, `/var/tmp`, `/dev/shm`, their `/private` aliases, the macOS
+   per-user and WSL Windows temp directories; the process's own `TMPDIR` claims no outside write, as
+   ADR-033 decision 7 says, but is not named scratch, so replay never depends on it) or `yoetz_owned` (a
    receipt or export file named `yoetz[-_.]receipt*.{md,markdown,json,txt,text}` /
    `yoetz[-_.]export*.…`, Yoetz's state directory or isolation root, `.agents/plugins/yoetz`,
    `.agents/skills/yoetz`). The rule is lexical and never resolves a path through the filesystem.
@@ -56,10 +58,11 @@ did not stop the agent:
    redirects into logs are commands, never edits, and a log under a temporary root is scratch), and
    a path whose workspace relation is unknown counts (a temporary directory may be the workspace).
    Only `deliverable` and `workspace` (and real outside) writes make an earlier verification stale.
-   Deliverables take precedence: when any effective obligation requests a file or directory (not
-   `role: input`) that the rule could itself call scratch or Yoetz-owned (a deliverable under `/tmp`),
-   the kernel exempts no edit for that task (`task_facts.non_counting_edits_exempt`, fixed roots
-   only, so replay never depends on the environment).
+   Deliverables take precedence, per class (`task_facts.non_counting_edits_exempt`): no scratch
+   edit is exempt when a requested non-input file or directory lies under or contains a fixed
+   temporary root (a deliverable under `/tmp`), and no Yoetz-owned edit is exempt when a requested
+   non-input file has a receipt or export name or any requested non-input directory exists (a
+   receipt saved into a declared output directory changes that delivery).
 2. **The hook names the class, the kernel reads a closed token.** The control-request 2.9.0
    structural fact `write_scope` (unreleased; edited in place) admits `outside_workspace`, `scratch`
    and `yoetz_owned`. An edit tool reports `scratch` or `yoetz_owned` only when every path it names is
@@ -80,9 +83,10 @@ did not stop the agent:
    for pytest, unittest, nose2, tox, nox and doctest; `typecheck` for mypy and pyright; `lint` for
    ruff, flake8, pylint, pyflakes and pycodestyle; `build` for build and compileall; `other`
    otherwise. A pytest run that only reports on itself or collects (`--version`, `-h`, `--help`,
-   `--collect-only`, `--co`, `--fixtures`, `--markers`) is `other`. A project runner's `run`
-   (`uv run`, `poetry run`, `pipenv run`, `pdm run`, `hatch run`, `rye run`) is classified by the
-   command it runs. A script an interpreter runs is never a `build` because its file name contains
+   `--collect-only`, `--collectonly`, `--co`, `--fixtures`, `--funcargs`, `--fixtures-per-test`,
+   `--markers`, `--setup-only`, `--setup-plan`) is `other`. A project runner's `run` (`uv run`,
+   `poetry run`, `pipenv run`, `pdm run`, `hatch run`, `rye run`) is classified by the command it
+   runs (options and their operands skipped); `uv run --script` runs the agent's script (`other`). A script an interpreter runs is never a `build` because its file name contains
    "build"; only an explicit `build` argument (`python setup.py build`) is.
 6. **Task facts are scoped per finding for self-verification.** `kernel.task_fact_scope` decides
    whether a task fact bears on one finding: an obligation-scoped fact only when the finding is

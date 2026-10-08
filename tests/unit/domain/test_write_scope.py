@@ -101,3 +101,13 @@ def test_codex_stream_file_change_names_only_non_counting_scopes() -> None:
     assert _file_change_write_scope({"/tmp/a": {"type": "update", "move_path": "/app/a"}}) is None
     assert _file_change_write_scope(None) is None
     assert _file_change_write_scope({}) is None
+
+
+def test_only_fixed_temp_roots_are_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Codex review round 2: a custom TMPDIR claims no outside write but is never exempt."""
+
+    monkeypatch.setenv("TMPDIR", "/scratch-tmp")
+    assert (
+        classify_write_path("/scratch-tmp/out.json", workspace="/app", inside=False) == "workspace"
+    )
+    assert classify_write_path("/tmp/x.py", workspace="/app", inside=False) == "scratch"

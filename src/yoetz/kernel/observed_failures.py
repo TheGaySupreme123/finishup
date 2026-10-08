@@ -408,16 +408,19 @@ def observed_action_runtime_tokens(description: str) -> frozenset[str]:
     return _split_runtime_suffixes(description)[1]
 
 
-def observed_edit_counts(description: str) -> bool:
+def observed_edit_counts(
+    description: str, exempt: frozenset[str] = NON_COUNTING_WRITE_TOKENS
+) -> bool:
     """Whether an observed edit can change the work under test (ADR-042, tb4n2 R4).
 
     ``False`` only for an edit whose every path was scratch (temp roots outside the workspace) or Yoetz's own
     material (``write scratch`` / ``write yoetz_owned``): it never makes an earlier verification
     stale and is not acting on the task. Deliverable, workspace and real outside-workspace edits,
-    and every edit recorded before the class existed, count.
+    and every edit recorded before the class existed, count. ``exempt`` narrows which
+    non-counting tokens apply (``task_facts.non_counting_edits_exempt``: deliverables win).
     """
 
-    return not (observed_action_runtime_tokens(description) & NON_COUNTING_WRITE_TOKENS)
+    return not (observed_action_runtime_tokens(description) & exempt)
 
 
 def observed_action_tool(description: str) -> str | None:
