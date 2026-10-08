@@ -20,9 +20,11 @@ def test_the_closing_review_tests_an_acknowledged_obligation_against_the_task() 
     assert len(review_question_set("final")) == len(final) - 1
 
 
-def test_a_wrong_obligation_version_names_the_reopen_path() -> None:
+def test_a_wrong_obligation_version_names_the_1_1_0_correction() -> None:
     error = _event_invalid(
         "invalid_event_schema", event_index=0, schema_name="obligation_published"
     )
-    assert "obligation_published/1.0.0" in error.message
-    assert "reopening an acknowledged one" in error.message
+    # Issue #1023: 1.1.0 is a superset, so the hint names it as always safe for any obligation.
+    assert "obligation_published/1.0.0 cannot carry" in error.message
+    assert "obligation_published/1.1.0" in error.message
+    assert "1.1.0 is always safe" in error.message

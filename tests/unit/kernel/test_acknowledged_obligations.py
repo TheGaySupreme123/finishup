@@ -84,14 +84,15 @@ def installation_key() -> object:
     register_command_identity_key(None)
 
 
-def test_the_event_version_is_a_pure_function_of_the_status() -> None:
+def test_the_acknowledged_status_needs_1_1_0_which_also_admits_a_plain_obligation() -> None:
     acknowledged = _payload(_OBLIGATION, ObligationStatus.ACKNOWLEDGED_NOT_DONE, reason=_REASON)
     wire = encode_payload(acknowledged)
     assert decode_payload(_V11, wire) == acknowledged
     with pytest.raises(ProtocolValueError):
         decode_payload(_V1, wire)
-    with pytest.raises(ProtocolValueError):
-        decode_payload(_V11, encode_payload(_payload(_OBLIGATION, ObligationStatus.OPEN)))
+    # Issue #1023: 1.1.0 is a superset, so a plain open obligation is admitted there too.
+    plain = _payload(_OBLIGATION, ObligationStatus.OPEN)
+    assert decode_payload(_V11, encode_payload(plain)) == plain
     # 1.0.0 bytes of an open obligation are unchanged: no reason key appears.
     assert "acknowledged_not_done_reason" not in cast(
         Mapping[str, object], encode_payload(_payload(_OBLIGATION, ObligationStatus.OPEN))

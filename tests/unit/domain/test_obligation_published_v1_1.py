@@ -17,6 +17,8 @@ from yoetz.domain.events import (
     RequestedItemRole,
     decode_payload,
     encode_payload,
+    obligation_schema_admits,
+    obligation_schema_version,
 )
 from yoetz.domain.values import freeze_json, obligation_id
 from yoetz.protocol.canonical import JsonValue, canonical_encode
@@ -82,7 +84,7 @@ def test_1_0_0_refuses_each_addition_alone(item: RequestedItem) -> None:
     assert decode_payload(_V1_1, wire) == _payload(item)
 
 
-def test_a_payload_without_additions_keeps_1_0_0_and_never_selects_1_1_0() -> None:
+def test_a_payload_without_additions_keeps_1_0_0_and_1_1_0_also_admits_it() -> None:
     payload = _payload(RequestedItem(RequestedItemKind.FILE, "report.json"))
     wire = encode_payload(payload)
     assert canonical_encode(wire) == canonical_encode(
@@ -98,9 +100,58 @@ def test_a_payload_without_additions_keeps_1_0_0_and_never_selects_1_1_0() -> No
     )
     assert decode_payload(_V1_0, wire) == payload
     assert not payload.requires_obligation_v1_1
-    # The version is a pure function of the payload: 1.1.0 is only chosen for its features.
-    with pytest.raises(ProtocolValueError):
-        decode_payload(_V1_1, wire)
+    # Yoetz drafts the lowest admitting version, so a plain obligation keeps its 1.0.0 bytes...
+    assert obligation_schema_version(payload) == "1.0.0"
+    # ...but 1.1.0 is a superset (issue #1023): a feature-free 1.1.0 draft is admitted.
+    assert decode_payload(_V1_1, wire) == payload
+    validate_schema_instance("obligation-published", "1.1.0", cast(JsonValue, wire))
+
+
+@pytest.mark.parametrize(
+    ("items", "status", "reason"),
+    [
+        ((), ObligationStatus.OPEN, None),
+        ((RequestedItem(RequestedItemKind.COMMAND, "pytest -q"),), ObligationStatus.OPEN, None),
+        ((RequestedItem(RequestedItemKind.DIRECTORY, "/app/src"),), ObligationStatus.OPEN, None),
+        (
+            (RequestedItem(RequestedItemKind.FILE, "/app/out.json", RequestedItemRole.OUTPUT),),
+            ObligationStatus.OPEN,
+            None,
+        ),
+        ((), ObligationStatus.ACKNOWLEDGED_NOT_DONE, "The licence is unavailable."),
+    ],
+    ids=("empty", "command", "directory", "role", "acknowledged"),
+)
+def test_one_version_rule_for_the_codec_the_schema_and_the_writer(
+    items: tuple[RequestedItem, ...], status: ObligationStatus, reason: str | None
+) -> None:
+    """Conformance over both versions (issue #1023): the validator, the frozen JSON schemas and
+    the writer's choice all follow ``obligation_schema_admits``."""
+
+    payload = ObligationPublishedPayload(
+        obligation_id=_OBLIGATION,
+        description="Deliver the report.",
+        evidence_expectation="The report exists.",
+        status=status,
+        requested_items=items,
+        acknowledged_not_done_reason=reason,
+    )
+    wire = encode_payload(payload)
+    for version, schema in (("1.0.0", _V1_0), ("1.1.0", _V1_1)):
+        admitted = obligation_schema_admits(payload, version)
+        assert admitted is (version == "1.1.0" or not payload.requires_obligation_v1_1)
+        if admitted:
+            assert decode_payload(schema, wire) == payload
+            validate_schema_instance("obligation-published", version, cast(JsonValue, wire))
+        else:
+            with pytest.raises(ProtocolValueError):
+                decode_payload(schema, wire)
+            with pytest.raises(SchemaInstanceInvalid):
+                validate_schema_instance("obligation-published", version, cast(JsonValue, wire))
+    chosen = obligation_schema_version(payload)
+    assert obligation_schema_admits(payload, chosen)
+    assert chosen == ("1.1.0" if payload.requires_obligation_v1_1 else "1.0.0")
+    assert not obligation_schema_admits(payload, "1.2.0")
 
 
 def test_unknown_role_and_item_fields_are_refused() -> None:

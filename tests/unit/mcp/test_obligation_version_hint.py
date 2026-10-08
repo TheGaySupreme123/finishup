@@ -1,0 +1,79 @@
+"""A 1.1.0-only obligation feature sent on 1.0.0 names the version to use (tb4n2 R3, #1023).
+
+tb4n2 pretrain D: a 1.0.0 obligation carrying ``role`` was refused by the request schema before
+the event decoder ran, so the only hint was the generic template pointer. Every 1.1.0-only
+feature (an item ``role``, a ``directory`` item, ``acknowledged_not_done``) now names 1.1.0.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from pydantic import ValidationError
+
+from yoetz.mcp.descriptors import descriptor_for
+from yoetz.mcp.errors import authoring_hint, safe_validation_locations
+from yoetz.protocol.models import PublishWorkRequestModel
+
+_SCHEMA = descriptor_for("publish_work").input_schema
+_PAYLOAD: dict[str, Any] = {
+    "obligation_id": "obl_00000000-0000-4000-8000-000000000001",
+    "description": "Deliver the report.",
+    "evidence_expectation": "The report exists.",
+    "status": "open",
+}
+
+
+def _request(payload: dict[str, Any], version: str) -> dict[str, Any]:
+    return {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "request_id": "req_00000000-0000-4000-8000-000000000003",
+        "session_id": "ses_00000000-0000-4000-8000-000000000001",
+        "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+        "expected_frontier": {"sequence": "1", "head_digest": "sha256:" + "0" * 64},
+        "actor": {"actor_id": "harness:x", "actor_type": "harness"},
+        "client": {"integration": "cooperative_mcp", "kind": "cooperative_agent", "version": "0"},
+        "event_drafts": [
+            {
+                "event_id": "evt_00000000-0000-4000-8000-000000000002",
+                "schema": {"name": "obligation_published", "version": version},
+                "occurred_at": "2026-01-01T00:00:00.000Z",
+                "causal_parents": [],
+                "payload": payload,
+                "artifact_refs": [],
+                "evidence_refs": [],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {**_PAYLOAD, "requested_items": [{"item_kind": "file", "value": "a", "role": "output"}]},
+        {**_PAYLOAD, "requested_items": [{"item_kind": "directory", "value": "/app/src"}]},
+        {**_PAYLOAD, "status": "acknowledged_not_done", "acknowledged_not_done_reason": "r"},
+    ],
+    ids=("role", "directory", "acknowledged"),
+)
+def test_a_1_1_0_feature_on_1_0_0_names_1_1_0(payload: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError) as caught:
+        PublishWorkRequestModel.model_validate(_request(payload, "1.0.0"))
+    hint = authoring_hint(_SCHEMA, safe_validation_locations(caught.value), tool="publish_work")
+    assert "publish such an obligation as obligation_published 1.1.0" in hint
+    # The same body on 1.1.0 is admitted by the request schema.
+    PublishWorkRequestModel.model_validate(_request(payload, "1.1.0"))
+
+
+def test_a_plain_obligation_is_admitted_on_both_versions_and_other_errors_get_no_version_hint() -> (
+    None
+):
+    for version in ("1.0.0", "1.1.0"):
+        PublishWorkRequestModel.model_validate(_request(_PAYLOAD, version))
+    missing = {key: value for key, value in _PAYLOAD.items() if key != "evidence_expectation"}
+    with pytest.raises(ValidationError) as caught:
+        PublishWorkRequestModel.model_validate(_request(missing, "1.0.0"))
+    hint = authoring_hint(_SCHEMA, safe_validation_locations(caught.value), tool="publish_work")
+    assert "obligation_published 1.1.0" not in hint

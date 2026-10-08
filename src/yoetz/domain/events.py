@@ -238,6 +238,7 @@ __all__ = [
     "ResultRecordedPayload",
     "RuntimeProfile",
     "RESPONSE_EVENT_SCHEMA_VERSION",
+    "OBLIGATION_BASE_SCHEMA_VERSION",
     "OBLIGATION_SCHEMA_VERSION",
     "SESSION_EVENT_SCHEMA_VERSION",
     "TASK_STATEMENT_EVENT_SCHEMAS",
@@ -262,6 +263,8 @@ __all__ = [
     "encode_payload",
     "media_type_for",
     "normalize_payload_json",
+    "obligation_schema_admits",
+    "obligation_schema_version",
 ]
 
 OBSERVATION_COORDINATOR_ACTOR_ID: Final = "yoetz:observation-coordinator"
@@ -278,9 +281,13 @@ CLAIM_SCHEMA_VERSION: Final = "1.1.0"
 # ``obligation_published`` 1.0.0 is released and frozen. 1.1.0 (issue #1002) admits the
 # ``directory`` requested-item kind, the optional per-item ``role`` (``input``/``output``, on ``file``
 # and ``directory`` items only) and the ``acknowledged_not_done`` status with its required reason.
-# The version is a pure function of the payload: 1.1.0 iff one of those is present, so an
-# obligation without them keeps its exact 1.0.0 bytes and old ledgers replay unchanged.
+# 1.0.0 refuses those; 1.1.0 is a superset and also admits a payload without them (tb4n2 R3,
+# issue #1023: agents copied the 1.1.0 template onto plain obligations and 24/28 attempts were
+# refused). ``obligation_schema_admits`` is that single rule and ``obligation_schema_version`` the
+# single writer choice (1.1.0 iff one of those is present), so every Yoetz-drafted obligation
+# without them keeps its exact 1.0.0 bytes and old ledgers replay unchanged.
 OBLIGATION_SCHEMA_VERSION: Final = "1.1.0"
+OBLIGATION_BASE_SCHEMA_VERSION: Final = "1.0.0"
 # 1.3.0 (unreleased on the 0.3 line) also carries the optional per-finding reviewer rulings of
 # issue #905; a check without rulings keeps its earlier 1.3.0 bytes.
 CHECK_EVENT_SCHEMA_VERSION: Final = "1.3.0"
@@ -1979,9 +1986,9 @@ class ObligationPublishedPayload:
     def requires_obligation_v1_1(self) -> bool:
         """Whether only ``obligation_published`` 1.1.0 can carry this payload (issue #1002).
 
-        The version is a pure function of the payload: 1.1.0 iff a ``directory`` item, an item
-        ``role`` or ``acknowledged_not_done`` is present, so every other obligation keeps its
-        released 1.0.0 bytes.
+        True iff a ``directory`` item, an item ``role`` or ``acknowledged_not_done`` is present.
+        Use ``obligation_schema_admits`` / ``obligation_schema_version`` rather than comparing
+        versions against this directly, so the rule lives in one place (issue #1023).
         """
 
         return self.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE or any(
@@ -2031,6 +2038,32 @@ class ObligationPublishedPayload:
             if len(reason.encode("utf-8")) > MAX_REASON_BYTES or not reason.strip():
                 raise ProtocolValueError("obligation_resolution_invalid")
             object.__setattr__(self, "acknowledged_not_done_reason", reason)
+
+
+def obligation_schema_admits(payload: ObligationPublishedPayload, version: str) -> bool:
+    """The one ``obligation_published`` version rule (tb4n2 R3, issue #1023).
+
+    1.1.0 admits every payload; 1.0.0 admits a payload without a ``directory`` item, an item
+    ``role`` or ``acknowledged_not_done``. Any other version admits nothing. The ingest validator,
+    closure preparation and every corrective hint read this rule.
+    """
+
+    if version == OBLIGATION_SCHEMA_VERSION:
+        return True
+    return version == OBLIGATION_BASE_SCHEMA_VERSION and not payload.requires_obligation_v1_1
+
+
+def obligation_schema_version(payload: ObligationPublishedPayload) -> str:
+    """The version Yoetz drafts for *payload*: 1.1.0 iff it needs a 1.1.0 feature, else 1.0.0.
+
+    Choosing the lowest admitting version keeps a plain obligation's released 1.0.0 bytes.
+    """
+
+    return (
+        OBLIGATION_SCHEMA_VERSION
+        if payload.requires_obligation_v1_1
+        else OBLIGATION_BASE_SCHEMA_VERSION
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -5172,11 +5205,11 @@ def _validate_event_schema_payload(
             # semantic 1.1/1.2 additions, or the current dialogue-capable 1.3.0 shape. Keep all
             # of those readable; 1.4.0 is reserved for snippets and the new semantic kinds.
             raise ProtocolValueError("invalid_event_schema")
-    if type(payload) is ObligationPublishedPayload and payload.requires_obligation_v1_1 != (
-        schema.version == OBLIGATION_SCHEMA_VERSION
+    if type(payload) is ObligationPublishedPayload and not obligation_schema_admits(
+        payload, schema.version
     ):
-        # 1.1.0 iff the payload uses a 1.1.0-only feature (issue #1002): the released 1.0.0
-        # never carries one, and 1.1.0 is never chosen without one.
+        # The released 1.0.0 never carries a 1.1.0-only feature (issue #1002); 1.1.0 is a
+        # superset that also admits a plain obligation (issue #1023).
         raise ProtocolValueError("invalid_event_schema")
     if type(payload) is ResponseRecordedPayload:
         if (payload.disposition in RESPONSE_V1_1_DISPOSITIONS) != (
