@@ -50,7 +50,9 @@ class PublicErrorCode(str, Enum):  # noqa: UP042 - the wire contract requires th
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
-type SafeDetailValue = str | int
+# A tuple value is a bounded list of closed tokens (``blocking_reasons``, issue #1023); the
+# public-error schema already admits an array of primitives as a detail value.
+type SafeDetailValue = str | int | tuple[str, ...]
 
 
 _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
@@ -385,6 +387,7 @@ SAFE_DETAIL_KEYS: tuple[str, ...] = (
     "availability",
     "availability_inherited",
     "availability_request_id",
+    "blocking_reasons",
     "component",
     "continuation",
     "count",
@@ -721,6 +724,10 @@ _QUARANTINE_CODES = frozenset(
 )
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
 _LOWER_SNAKE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
+# A recorded resolution-reason token: a closed reason or ``coverage:<closed gap code>``. Never
+# prose; anything else drops the whole detail.
+_BLOCKING_REASON_PATTERN = re.compile(r"^(?:coverage:)?[a-z][a-z0-9_]{0,95}$", re.ASCII)
+_MAX_BLOCKING_REASONS = 32
 _VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$", re.ASCII)
 _SCHEMA_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$", re.ASCII)
 _CORRELATION_ID_PATTERN = re.compile(
@@ -801,6 +808,16 @@ def _valid_json_pointer(value: object) -> bool:
 
 
 def _normalize_detail(key: str, value: object) -> SafeDetailValue | None:
+    if key == "blocking_reasons":
+        if type(value) not in {tuple, list}:
+            return None
+        items = tuple(cast(tuple[object, ...] | list[object], value))
+        if not 1 <= len(items) <= _MAX_BLOCKING_REASONS or any(
+            type(item) is not str or _BLOCKING_REASON_PATTERN.fullmatch(item) is None
+            for item in items
+        ):
+            return None
+        return cast(tuple[str, ...], items)
     if key in _INTEGER_DETAIL_KEYS:
         if type(value) is int and 0 <= value <= _MAX_SAFE_INTEGER:
             return value
@@ -1018,5 +1035,8 @@ class PublicOperationError(Exception):
             "correlation_id": self.correlation_id,
         }
         if self.safe_details:
-            result["safe_details"] = dict(self.safe_details)
+            result["safe_details"] = {
+                key: list(value) if type(value) is tuple else value
+                for key, value in self.safe_details.items()
+            }
         return result

@@ -55,8 +55,10 @@ from yoetz.protocol.models import SemanticStatus
 __all__ = [
     "FINDING_NOT_PROOF_LIMITED",
     "FINDING_NOT_RECHECKED",
+    "disqualifying_reasons",
     "finding_proof_limited",
     "reasons_proof_limited",
+    "self_verification_blocking_reasons",
     "self_verification_refusal",
 ]
 
@@ -152,35 +154,53 @@ def _packet_limit(reason: str) -> bool:
     )
 
 
+# The single token reported when a check recorded no reason at all (the finding resolved, or the
+# cause is not a recorded limit): nothing names a Yoetz limit.
+NO_RECORDED_LIMIT: Final = "no_recorded_limit"
+
+
+def disqualifying_reasons(
+    reasons: tuple[str, ...],
+    origin: FindingOrigin,
+    *,
+    review_undeliverable: bool = False,
+) -> tuple[str, ...]:
+    """The resolution *reasons* that keep a finding of *origin* from being proof-limited.
+
+    Empty exactly when the reasons name only Yoetz limits (``self_verified`` is allowed). The
+    result is a subsequence of *reasons* in their recorded order, so ``respond`` can name the
+    closed tokens that refused it (tb4n2 R5, issue #1023); a check with no reasons at all answers
+    ``(NO_RECORDED_LIMIT,)``. ``review_undeliverable`` is true when that check's AI-powered
+    review did not complete for a durable reason (policy, privacy, configuration, a human
+    decision); without it, ``semantic_review_not_completed`` is transient agent work.
+    """
+
+    if not reasons:
+        return (NO_RECORDED_LIMIT,)
+    still_seen_blocks = origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED or not any(
+        _packet_limit(reason) for reason in reasons
+    )
+    blocking: list[str] = []
+    for reason in reasons:
+        if (
+            (reason == _REVIEW_NOT_COMPLETED and not review_undeliverable)
+            or reason in _AGENT_WORK_REASONS
+            or _standing_coverage(reason) is False
+            or (reason in _STILL_SEEN_REASONS and still_seen_blocks)
+        ):
+            blocking.append(reason)
+    return tuple(dict.fromkeys(blocking))
+
+
 def reasons_proof_limited(
     reasons: tuple[str, ...],
     origin: FindingOrigin,
     *,
     review_undeliverable: bool = False,
 ) -> bool:
-    """Whether a check's resolution *reasons* name only Yoetz limits for a finding of *origin*.
+    """Whether a check's resolution *reasons* name only Yoetz limits for a finding of *origin*."""
 
-    ``review_undeliverable`` is true when that check's AI-powered review did not complete for a
-    durable reason (policy, privacy, configuration, a human decision); without it,
-    ``semantic_review_not_completed`` is transient agent work (run ``check`` again).
-    """
-
-    if not reasons:
-        return False
-    if _REVIEW_NOT_COMPLETED in reasons and not review_undeliverable:
-        return False
-    if any(reason in _AGENT_WORK_REASONS for reason in reasons):
-        return False
-    if any(_standing_coverage(reason) is False for reason in reasons):
-        return False
-    still_seen = any(reason in _STILL_SEEN_REASONS for reason in reasons)
-    if still_seen:
-        if origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED:
-            return False
-        review_limited = any(_packet_limit(reason) for reason in reasons)
-        if not review_limited:
-            return False
-    return True
+    return not disqualifying_reasons(reasons, origin, review_undeliverable=review_undeliverable)
 
 
 def self_verification_refusal(
@@ -192,24 +212,65 @@ def self_verification_refusal(
     replay-derived. Terminal to-do states and field rules are ``respond``'s, not this predicate's.
     """
 
+    refusal, _blocking = _evaluate(state, finding_id, records)
+    return refusal
+
+
+def self_verification_blocking_reasons(
+    state: ProjectionState, finding_id: FindingId, records: tuple[LedgerRecord, ...]
+) -> tuple[str, ...]:
+    """The closed reasons behind a ``finding_not_proof_limited`` refusal, in recorded order.
+
+    Empty when the answer is not that refusal. Only resolution-reason tokens recorded by a check
+    (``coverage:<code>`` and the fixed reason vocabulary) are returned, never prose.
+    """
+
+    refusal, blocking = _evaluate(state, finding_id, records)
+    return blocking if refusal == FINDING_NOT_PROOF_LIMITED else ()
+
+
+def _attempt_reasons(
+    state: ProjectionState,
+    finding_id: FindingId,
+    records: tuple[LedgerRecord, ...],
+    reasons: tuple[str, ...],
+) -> tuple[str, ...]:
+    """The resolution reasons eligibility reads for *finding_id*, and the refusal names.
+
+    The one seam for per-finding scoping of task-wide ``coverage:`` codes (tb4n2 R4): at merge it
+    becomes ``kernel.task_fact_scope.scoped_resolution_reasons(reasons, state=state,
+    finding_id=finding_id, records=records)``, so a refusal never names an unrelated task fact.
+    Until then the recorded reasons are returned unchanged.
+    """
+
+    del state, finding_id, records
+    return reasons
+
+
+def _evaluate(
+    state: ProjectionState, finding_id: FindingId, records: tuple[LedgerRecord, ...]
+) -> tuple[str | None, tuple[str, ...]]:
     record = state.findings.get(finding_id)
     if record is None or record.payload is None:
-        return FINDING_NOT_RECHECKED
+        return FINDING_NOT_RECHECKED, ()
     attempt = finding_resolution_attempt(state, finding_id, records)
     if attempt is None or (
         not attempt.could_resolve and "finding_not_in_checked_frontier" in attempt.reasons
     ):
-        return FINDING_NOT_RECHECKED
+        return FINDING_NOT_RECHECKED, ()
     check = next((row.payload for row in records if row.event_id == attempt.check_event_id), None)
     undeliverable = (
         type(check) is CheckRecordedPayload
         and check.semantic_status in _DURABLE_UNDELIVERABLE_STATUSES
     )
-    if not reasons_proof_limited(
-        attempt.reasons, record.payload.origin, review_undeliverable=undeliverable
-    ):
-        return FINDING_NOT_PROOF_LIMITED
-    return None
+    blocking = disqualifying_reasons(
+        _attempt_reasons(state, finding_id, records, attempt.reasons),
+        record.payload.origin,
+        review_undeliverable=undeliverable,
+    )
+    if blocking:
+        return FINDING_NOT_PROOF_LIMITED, blocking
+    return None, ()
 
 
 def finding_proof_limited(
