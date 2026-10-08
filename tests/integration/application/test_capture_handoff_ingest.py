@@ -425,3 +425,36 @@ async def test_an_interrupted_retirement_disclosure_is_retried_not_lost(
     assert "capture_handoff_retired" in await _case_gaps(lane, 44)
     assert len(lane.retirements()) == 1  # the loss is counted once across both passes
     lane.coordinator.close()
+
+
+@pytest.mark.anyio
+async def test_a_terminal_store_refusal_still_discloses_the_retired_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1019 review: a ``cursor_stale`` refusal tombstones the staged ticket only after the
+    task-ledger marker is durable; the refused call's record is not claimed anywhere."""
+
+    from yoetz.domain.observation import ObservationIngestResult
+    from yoetz.domain.receipts import (
+        CAPTURE_HANDOFF_RETIRED_GAP,
+        check_time_change_gap_sentence,
+    )
+
+    lane = await _lane(tmp_path, monkeypatch)
+    await lane.stage()
+
+    async def stale(*_args: object, **_kwargs: object) -> ObservationIngestResult:
+        return ObservationIngestResult(ObservationIngestDisposition.REJECTED, "cursor_stale", None)
+
+    monkeypatch.setattr(lane.observation, "ingest", stale)
+    result = await lane.coordinator.ingest_request(lane.structural)
+    assert result.disposition is ObservationIngestDisposition.REJECTED
+    retired = lane.ticket()
+    assert retired is not None and retired.state == "revoked"
+    (entry,) = lane.retirements()
+    assert (entry["stage"], entry["reason"]) == ("structural_refused", "terminal_refusal")
+    assert CAPTURE_HANDOFF_RETIRED_GAP in await _case_gaps(lane, 45)
+    sentence = check_time_change_gap_sentence(CAPTURE_HANDOFF_RETIRED_GAP)
+    assert sentence is not None
+    assert "still recorded" not in sentence and "may be missing" in sentence
+    lane.coordinator.close()

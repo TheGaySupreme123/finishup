@@ -3030,7 +3030,22 @@ class ObservationCoordinator:
                         # admitted for this envelope; retryable coordination keeps it durable.
                         for ticket in (staged_ticket, capture_staging_ticket):
                             if ticket is not None and ticket.state in {"staging", "pending"}:
-                                await self._retire_capture_ticket(workspace, runtime, store, ticket)
+                                # Account and disclose before the tombstone (#1019): a ticket
+                                # whose marker is not durable yet stays listed, so a later
+                                # reconciliation pass retires it and publishes the marker.
+                                if await self._record_capture_handoff_retirement(
+                                    workspace,
+                                    ticket,
+                                    stage=CaptureHandoffRetirementStage.STRUCTURAL_REFUSED,
+                                    reason=CaptureHandoffRetirementReason.TERMINAL_REFUSAL,
+                                ) and await self._publish_capture_handoff_retirement(
+                                    runtime,
+                                    ticket,
+                                    CaptureHandoffRetirementReason.TERMINAL_REFUSAL,
+                                ):
+                                    await self._retire_capture_ticket(
+                                        workspace, runtime, store, ticket
+                                    )
                                 break
                         # A matched handoff this delivery never staged (content
                         # blocked or unauthorized) is stranded as well (#836).

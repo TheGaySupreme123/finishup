@@ -338,8 +338,9 @@ CHECK_TIME_CHANGE_REDACTED_GAP: Final = "check_time_change_redacted"
 # a requested file it could not list stays unproven rather than unchanged. Never names the path.
 CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP: Final = "check_time_change_path_unrepresentable"
 # Native content staged for one observed host call of this task was retired before its structural
-# row could attach it (issue #1019, tb4n2 N-4): the call's record stands, its captured bytes do
-# not. A standing limitation of host capture, never a finding; local packs never read those bytes.
+# row could attach it (issue #1019, tb4n2 N-4): its captured bytes are missing, and for a refused
+# or quarantined row the call's structural record may be missing as well. A standing limitation
+# of host capture, never a finding; local packs never read captured bytes.
 CAPTURE_HANDOFF_RETIRED_GAP: Final = "capture_handoff_retired"
 # Why the change was unavailable, as one closed code beside ``check_time_change_unavailable``:
 # ``check_time_change_unavailable_<reason>``. Each maps to one fixed sentence; neither carries a
@@ -417,8 +418,9 @@ def check_time_change_gap_sentence(code: str) -> str | None:
         )
     if code == CAPTURE_HANDOFF_RETIRED_GAP:
         return (
-            "Captured content for at least one observed call of this task was dropped before it"
-            " could be attached; the call itself is still recorded."
+            "Captured content for at least one observed call of this task was discarded before"
+            " it could be attached, so that content is not available here; depending on why it"
+            " was discarded, the call's own record may be missing too."
         )
     if code == CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP:
         return (

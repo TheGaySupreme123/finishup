@@ -999,7 +999,8 @@ def materialize_capture_handoff_retirement(
         observed_at,
         description=(
             "Captured content staged for one observed call was retired before it could be"
-            " attached; the call's structural record stands. Retirement reason: " + reason + "."
+            " attached, so it is not available; this marker does not show whether the call's"
+            " own record was committed. Retirement reason: " + reason + "."
         ),
     )
     coverage = replace(

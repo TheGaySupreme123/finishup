@@ -4868,7 +4868,10 @@ service resolves that row's profile from its own ticket, instead of refusing it 
 
 Every retirement of a handoff (any `CaptureHandoffRetirementReason`) also appends one
 service-authenticated marker to the ticket's own task ledger, keyed by the ticket identity, whose
-coverage carries `capture_handoff_retired` (issue #1019). The marker is appended before the ticket is
+coverage carries `capture_handoff_retired` (issue #1019), including a ticket a terminal store
+refusal retires. The marker and its fixed sentence claim only that the captured content is not
+available; for a refused or quarantined row the call's own record may be missing too, and its own
+codes disclose that. The marker is appended before the ticket is
 tombstoned: a retryable or unexpected append failure leaves the ticket pending, and the next
 reconciliation pass (READY sweep or check preflight) publishes it and only then retires the ticket,
 counting the loss once. A ledger that terminally refuses the marker (a non-retryable typed refusal,

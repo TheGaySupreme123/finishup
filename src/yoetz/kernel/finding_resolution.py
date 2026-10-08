@@ -255,8 +255,8 @@ _EVIDENCE_STRENGTH_GAPS: Final = frozenset(
 _HOST_OBSERVATION_GAPS: Final = frozenset(
     {
         "captured_object_unavailable",
-        # A native content handoff retired before its row attached it (issue #1019): only the
-        # captured bytes of one call are missing, never the structured rows a local pack judges.
+        # A native content handoff retired before its row attached it (issue #1019): local packs
+        # never read captured bytes. A refused or quarantined row is disclosed by its own codes.
         "capture_handoff_retired",
         # Capture-time redaction of a high-confidence secret shape (issue #982). Privacy filtering
         # exists for content leaving the machine; local packs judge event payloads, never the
