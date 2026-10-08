@@ -11,7 +11,11 @@ from typing import Final, cast
 from pydantic import BaseModel
 
 from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind
-from yoetz.domain.receipts import check_time_change_gap_sentence
+from yoetz.domain.receipts import (
+    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+    SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
+    check_time_change_gap_sentence,
+)
 from yoetz.domain.review_input_render import (
     has_agent_suppliable_missing,
     render_review_input_manifest_compact,
@@ -28,6 +32,7 @@ from yoetz.protocol.recovery import (
     correction_for_invariant,
     directive_for,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 __all__ = [
     "render_safe_compact_summary",
@@ -583,6 +588,48 @@ def _semantic_withheld_items_clause(source: Mapping[str, JsonValue], *, byte_bud
     )
 
 
+def _semantic_redacted_value_tokens(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """PL2-1: validated item refs and line numbers only; never a value."""
+
+    raw_items = source.get("semantic_redacted_values")
+    if not isinstance(raw_items, (list, tuple)):
+        return ()
+    result: list[str] = []
+    for raw in raw_items:
+        try:
+            item = SemanticRedactedValue.from_wire(raw)
+        except TypeError, ValueError:
+            continue
+        ref = item.item_id if item.source_ref is None else item.source_ref
+        what = "replaced" if item.disposition == "value_replaced" else "item withheld"
+        lines = "L" + ",".join(str(line) for line in item.lines) if item.lines else "L?"
+        result.append(f"{ref} {what} {lines}")
+    return tuple(result)
+
+
+def _semantic_redacted_values_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
+    return _bounded_list_clause(
+        "withheld from external review: ",
+        _semantic_redacted_value_tokens(source),
+        byte_budget=byte_budget,
+    )
+
+
+def _semantic_redacted_values_line(source: Mapping[str, JsonValue], *, room: int) -> str:
+    """The fixed PL2-1 agent line, once, when any item lost a value to external review.
+
+    ``room`` is the byte budget left beside the summary's required text. The full line is used
+    when it fits, else the shorter fixed form, else nothing (the structured result still has it).
+    """
+
+    if not _semantic_redacted_value_tokens(source):
+        return ""
+    for line in (SEMANTIC_REDACTED_VALUES_AGENT_LINE, SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT):
+        if len(line.encode("ascii")) + 1 <= room:
+            return " " + line
+    return ""
+
+
 def _bounded(summary: str) -> str:
     try:
         encoded = summary.encode("ascii", errors="strict")
@@ -1043,6 +1090,7 @@ def summary_for_check(envelope: object) -> str:
         # large finding list must never consume the bounded summary budget and leave only the
         # finding-only ``request_receipt`` token (#963).
         prefix = _with_room(prefix, "overall next: supply_missing_input before ordinary receipt; ")
+    core_prefix = prefix
     if checklist_source is not None:
         with_checklist = _with_room(
             prefix,
@@ -1062,6 +1110,7 @@ def summary_for_check(envelope: object) -> str:
     if manifest_clause:
         prefix = _with_room(prefix, manifest_clause + " ")
     suffix = f"AI-powered review status/reason: {status}/{reason}; {_frontier_clause(source)}."
+    core_suffix = suffix
     recovery = continuation_for_semantic_outcome(
         status=status,
         reason=reason,
@@ -1086,9 +1135,23 @@ def summary_for_check(envelope: object) -> str:
             if len((prefix + suffix + extra).encode("ascii")) <= _MAX_SUMMARY_BYTES:
                 suffix += extra
             break
-    clause = _finding_identity_clause(
+    # PL2-1: the fixed agent line outranks every optional clause; shed those to keep it.
+    if _semantic_redacted_value_tokens(source):
+        full = len(SEMANTIC_REDACTED_VALUES_AGENT_LINE.encode("ascii")) + 1
+        if len((prefix + suffix).encode("ascii")) + full > _MAX_SUMMARY_BYTES:
+            prefix = core_prefix
+        if len((prefix + suffix).encode("ascii")) + full > _MAX_SUMMARY_BYTES:
+            suffix = core_suffix
+        suffix += _semantic_redacted_values_line(
+            source, room=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
+        )
+    clause = _semantic_redacted_values_clause(
         source,
         byte_budget=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii")),
+    )
+    clause += _finding_identity_clause(
+        source,
+        byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
     )
     clause += _missing_items_clause(
         source,
@@ -1179,6 +1242,28 @@ def _compact_test_edit_clause(source: Mapping[str, JsonValue], view: str) -> str
     )
 
 
+def _credential_heuristic_clause(source: Mapping[str, JsonValue]) -> str:
+    """Name the external reviewer's possible-credential filter when it is not plainly on (#982).
+
+    Silent when both the repository and the installation default are on, so ordinary summaries
+    are unchanged. Off and unknown are owner/service facts, never agent work.
+    """
+
+    state = source.get("credential_heuristic")
+    if not isinstance(state, Mapping):
+        return ""
+    typed = cast(Mapping[str, JsonValue], state)
+    words = {"enforced": "on", "disabled": "off", "unknown": "unknown"}
+    repository = words.get(str(typed.get("repository")), "unknown")
+    machine_default = words.get(str(typed.get("machine_default")), "unknown")
+    if repository == "on" and machine_default == "on":
+        return ""
+    return (
+        f"possible-credential filter: {repository} for this repository, "
+        f"installation default {machine_default} (owner setting); "
+    )
+
+
 def summary_for_status(envelope: object) -> str:
     source = _mapping(envelope)
     view = _safe_token(source.get("view"))
@@ -1203,6 +1288,7 @@ def summary_for_status(envelope: object) -> str:
         f"open obligations: {obligations}; "
     )
     prefix = _with_room(prefix, _compact_test_edit_clause(source, view))
+    prefix = _with_room(prefix, _credential_heuristic_clause(source))
     if view == "evidence":
         prefix += _evidence_channel_clause(source)
     if view == "operation":
@@ -1242,8 +1328,22 @@ def summary_for_status(envelope: object) -> str:
         )
     page = source.get("page")
     if isinstance(page, Mapping):
+        typed_page = cast(Mapping[str, JsonValue], page)
+        redacted_line = _semantic_redacted_values_line(
+            typed_page, room=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
+        )
+        if redacted_line:
+            # PL2-1: the fixed agent line outranks the optional id lists.
+            suffix += redacted_line
+            # Keep the earlier id lists when they still fit beside the line; drop them otherwise.
+            if len((prefix + clause + suffix).encode("ascii")) > _MAX_SUMMARY_BYTES:
+                clause = ""
+            clause += _semantic_redacted_values_clause(
+                typed_page,
+                byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
+            )
         clause += _semantic_withheld_items_clause(
-            cast(Mapping[str, JsonValue], page),
+            typed_page,
             byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
         )
     return _bounded(prefix + clause + suffix)
@@ -1468,7 +1568,26 @@ def summary_for_receipt(envelope: object) -> str:
         f"coverage limitations: {limitations}; "
     )
     suffix = f"suppressed findings: {suppressed}."
+    document = source.get("document")
+    typed_document = (
+        cast(Mapping[str, JsonValue], document) if isinstance(document, Mapping) else None
+    )
+    redacted_line = (
+        ""
+        if typed_document is None
+        else _semantic_redacted_values_line(
+            typed_document, room=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
+        )
+    )
+    # PL2-1: the fixed agent line outranks the optional id lists.
+    suffix += redacted_line
     remaining = _MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
+    redacted_clause = (
+        _semantic_redacted_values_clause(typed_document, byte_budget=remaining)
+        if redacted_line and typed_document is not None
+        else ""
+    )
+    remaining -= len(redacted_clause.encode("ascii"))
     gap_codes = _safe_gap_codes(source)
     obligation_budget = remaining // 2 if gap_codes else remaining
     obligation_clause = _bounded_list_clause(
@@ -1477,7 +1596,6 @@ def summary_for_receipt(envelope: object) -> str:
         byte_budget=obligation_budget,
     )
     remaining -= len(obligation_clause.encode("ascii"))
-    document = source.get("document")
     withheld_clause = (
         _semantic_withheld_items_clause(
             cast(Mapping[str, JsonValue], document), byte_budget=remaining
@@ -1487,7 +1605,9 @@ def summary_for_receipt(envelope: object) -> str:
     )
     remaining -= len(withheld_clause.encode("ascii"))
     gap_clause = _bounded_list_clause("gap codes: ", gap_codes, byte_budget=remaining)
-    return _bounded(prefix + obligation_clause + withheld_clause + gap_clause + suffix)
+    return _bounded(
+        prefix + redacted_clause + obligation_clause + withheld_clause + gap_clause + suffix
+    )
 
 
 _AWAITING_STATES: Final = MappingProxyType(

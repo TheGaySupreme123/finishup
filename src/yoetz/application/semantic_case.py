@@ -203,6 +203,10 @@ OVER_CASE_ITEM_LIMIT_REASON: Final = "over_case_item_limit"
 # Version 2 (issue #907) carries each item's recording order and excerpt freshness marks, and
 # lists items in case order (section, then recording order) instead of by opaque item id.
 _PACKET_SCHEMA: Final = "yoetz.review-packet-case/2"
+# Packet omission-row reasons that the closed review-input section vocabulary spells differently.
+_SECTION_OMISSION_REASON_ALIASES: Final[Mapping[str, str]] = {
+    "never_send_heuristic": "redacted_never_send",
+}
 # Long output keeps its head and its tail: the command and first failure sit at the top, and the
 # test/lint summary line sits at the bottom. The marker says how much was cut and where.
 _ELISION_MARKER: Final = "\n[yoetz: {elided} of {total} bytes elided here; head and tail kept]\n"
@@ -5476,8 +5480,15 @@ def _provider_bound_input_manifest(
         omission_reasons: set[str] = set(prior_reasons)
         if any(item_id in redacted_item_ids for item_id in item_ids):
             omission_reasons.add("redacted_never_send")
+        # Packet omission rows name a heuristic withholding ``never_send_heuristic``; the section
+        # manifest's closed vocabulary (``ports/semantic.py``) records the same loss as
+        # ``redacted_never_send``.  Copying the row reason verbatim made the provider-bound
+        # manifest undecodable and dropped its ``review_phase`` (issue #979).
         omission_reasons.update(
-            cast(str, row["reason"]) for row in section_omissions if type(row.get("reason")) is str
+            _SECTION_OMISSION_REASON_ALIASES.get(reason, reason)
+            for row in section_omissions
+            for reason in (row.get("reason"),)
+            if type(reason) is str
         )
         section["omission_reasons"] = cast(
             JsonValue, sorted(omission_reasons, key=lambda value: value.encode())[:8]

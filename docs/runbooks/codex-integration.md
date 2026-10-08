@@ -2188,6 +2188,19 @@ under that same request ID. Never mint a replacement write ID to recover an unkn
 A lost first `start` still uses exact same-body replay because session/writer IDs may be absent.
 This behavior is identical on macOS, Linux and Windows via WSL 2. CLI callers may set `--deadline-ms`.
 
+## Possible-credential filter opt-out (issue #982)
+
+Decision for Codex: supported, service-side, identical on every host. `credential_heuristic` is a
+field of the current repository's privacy grant that the service applies only to external
+AI-reviewer egress; agent-context projection and the local model keep the filter. Codex needs no
+host-specific step and gets no write path: `yoetz privacy credential-heuristic disable` is a
+widening that applies only after the trusted-terminal decision (walking the grant-creation
+ceremony when the repository has no grant), `enable` is an immediate per-repository tightening,
+and `--machine-default` moves only the default for new grants. MCP `status` carries
+`credential_heuristic` (`repository`, `machine_default`) before any check; MCP tools and hooks can
+only see the setting (status, the `semantic_review_credential_heuristic_disabled` check gap, the
+external receipt's `secret_scan.credential_heuristic`). No Codex capability gap.
+
 ## Privacy receipts listing (issue #921)
 
 `yoetz privacy receipts list` and `get` are host-agnostic: every host's sessions write receipts

@@ -50,9 +50,11 @@ from yoetz.domain.privacy import (
     ApprovedProviderCase,
     AuthorizationScope,
     ConsentSource,
+    CredentialHeuristic,
     EgressAuthorization,
     EgressChannel,
     EgressReceipt,
+    ForbiddenDataKind,
     LocalDisclosureSink,
     PrivacyOutcome,
     PrivacyPolicy,
@@ -111,6 +113,20 @@ __all__ = [
 
 _ZERO_DIGEST = "sha256:" + "0" * 64
 _SCAN = SecretScanRuleset()
+
+
+def _final_scan(
+    classifier: PrivacyClassifierPort, data: bytes, credential_heuristic: CredentialHeuristic
+) -> tuple[ForbiddenDataKind, ...]:
+    """Run the final exact-byte scan under the setting the case was prepared with (#982).
+
+    The default keeps the historical call shape; only an owner opt-out names the setting.
+    """
+
+    if credential_heuristic is CredentialHeuristic.ENFORCED:
+        return classifier.scan_exact_bytes(data)
+    return classifier.scan_exact_bytes(data, credential_heuristic=credential_heuristic)
+
 
 _NO_AUTHORIZATION_ID_OUTCOMES = frozenset(
     {
@@ -652,7 +668,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 case, authorization, PrivacyReason.PROVIDER_UNAVAILABLE
             )
 
-        final_findings = self._classifier.scan_exact_bytes(body)
+        final_findings = _final_scan(self._classifier, body, case.credential_heuristic)
         if final_findings:
             return await self._preconsume_failure(
                 case,
@@ -943,6 +959,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 scan_stage is not ReceiptSecretScanStage.NOT_RUN and scan_match_count == 0,
                 scan_stage,
                 reason if scan_stage is ReceiptSecretScanStage.NOT_RUN else None,
+                case.credential_heuristic,
             ),
             reason,
             1,
@@ -1068,6 +1085,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 0,
                 True,
                 ReceiptSecretScanStage.RENDERED_BODY,
+                credential_heuristic=case.credential_heuristic,
             ),
             reason,
             1,
@@ -1097,7 +1115,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
         binding, evaluator = registry.local_model
         if case.binding != binding or case.policy_digest != registry.policy_digest:
             return _local_unavailable_result(case)
-        if self._classifier.scan_exact_bytes(case.payload):
+        if _final_scan(self._classifier, case.payload, case.credential_heuristic):
             return _local_unavailable_result(
                 case, failure_class=SemanticFailureClass.RESPONSE_CONTENT
             )

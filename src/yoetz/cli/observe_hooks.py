@@ -1848,13 +1848,17 @@ def _visible_content_chunks(
     workspace_locator: str | None,
     optional_limits: ModeLimits | None = None,
 ) -> tuple[tuple[ObservationContentChunk, ...], bool]:
-    """Extract only explicitly visible task content and redact it before transport.
+    """Extract only explicitly visible task content and redact secrets before transport.
+
+    Only high-confidence secret shapes are redacted here; heuristic-only matches stay in the
+    encrypted local store and are redacted at egress (issue #982). A chunk is marked
+    ``redacted`` only when its bytes were actually changed.
 
     Returns ``(chunks, truncated)``. Caps set ``truncated`` so callers attach
     ``truncated_payload`` without inventing success.
     """
 
-    from yoetz.observability.privacy import redact_sensitive_content
+    from yoetz.observability.privacy import redact_high_confidence_content
 
     selected: list[tuple[ObservationContentKind, str, bytes]] = []
     if (
@@ -1996,7 +2000,8 @@ def _visible_content_chunks(
     remaining = 680_000 if optional_limits is None else optional_limits.max_optional_bytes
     truncated = False
     for selected_index, (kind, label, raw) in enumerate(selected):
-        redacted, detected = redact_sensitive_content(raw)
+        # Capture keeps heuristic-only matches; egress redacts them (issue #982).
+        redacted, detected = redact_high_confidence_content(raw)
         if not redacted:
             continue
         part_limit = remaining

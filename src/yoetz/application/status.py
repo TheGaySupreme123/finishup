@@ -132,6 +132,7 @@ from yoetz.protocol.policy_packs import (
     WORK_INTEGRITY_POLICY_ID,
     current_policy_pack,
 )
+from yoetz.protocol.redacted_values import validate_semantic_redacted_values
 
 __all__ = [
     "Application",
@@ -245,6 +246,9 @@ class StatusInternalResult:
     # Service-read ledger authorship of the page's evidence rows at ``subject_frontier``. It feeds
     # the agent-context provenance decision and is deliberately not part of ``as_json``.
     item_authorship: tuple[ProjectionItemAuthorship, ...] = ()
+    # ``(repository, machine_default)`` possible-credential filter state, composed by the service
+    # from the owner's privacy policy (issue #982); ``None`` when not composed.
+    credential_heuristic: tuple[str, str] | None = None
 
     def as_json(self) -> dict[str, JsonValue]:
         # Unset optional non-null leaves (today: obligation ``acceptance_criteria``, structural
@@ -277,6 +281,16 @@ class StatusInternalResult:
             ),
             "closure_readiness": cast(
                 JsonValue, _dump_closed_omitting_optional_nulls(self.closure_readiness)
+            ),
+            **(
+                {}
+                if self.credential_heuristic is None
+                else {
+                    "credential_heuristic": {
+                        "repository": self.credential_heuristic[0],
+                        "machine_default": self.credential_heuristic[1],
+                    }
+                }
             ),
         }
 
@@ -750,10 +764,14 @@ async def _operation_semantic_progress(
         return None
 
 
-async def _operation_semantic_withheld_items(
+async def _operation_semantic_omissions(
     runtime: TaskRuntime, operation: object | None
-) -> tuple[dict[str, JsonValue], ...] | None:
-    """Recover withheld opaque identities from the completed check event, when present."""
+) -> tuple[tuple[dict[str, JsonValue], ...] | None, tuple[dict[str, JsonValue], ...] | None]:
+    """Recover the completed check event's withheld identities and PL2-1 line refs, if any.
+
+    Returns ``(semantic_withheld_items, semantic_redacted_values)``; each is ``None`` when the
+    check recorded none. Only structural item ids, catalogued refs and line numbers are read.
+    """
 
     if (
         type(operation) is not OperationRecord
@@ -763,12 +781,12 @@ async def _operation_semantic_withheld_items(
         or operation.result_locator.first_ingestion_sequence is None
         or operation.result_locator.last_ingestion_sequence is None
     ):
-        return None
+        return None, None
     locator = operation.result_locator
     first_sequence = locator.first_ingestion_sequence
     last_sequence = locator.last_ingestion_sequence
     if first_sequence is None or last_sequence is None:
-        return None
+        return None, None
     event_ids = frozenset(locator.structural_ids)
     try:
         records = [
@@ -785,16 +803,23 @@ async def _operation_semantic_withheld_items(
             if getattr(record.schema, "name", None) != "check_recorded":
                 continue
             payload = getattr(record, "payload", None)
+            withheld: tuple[dict[str, JsonValue], ...] | None = None
             raw_item_ids = getattr(payload, "semantic_withheld_item_ids", ())
-            if type(raw_item_ids) is not tuple or not raw_item_ids:
-                return None
-            raw_items = cast(tuple[object, ...], raw_item_ids)
-            if any(type(item_id) is not str for item_id in raw_items):
-                return None
-            item_ids = cast(tuple[str, ...], raw_items)
-            return tuple(
-                {"item_id": item_id, "reason": "never_send_heuristic"} for item_id in item_ids
-            )
+            if type(raw_item_ids) is tuple and raw_item_ids:
+                raw_items = cast(tuple[object, ...], raw_item_ids)
+                if all(type(item_id) is str for item_id in raw_items):
+                    withheld = tuple(
+                        {"item_id": item_id, "reason": "never_send_heuristic"}
+                        for item_id in cast(tuple[str, ...], raw_items)
+                    )
+            redacted: tuple[dict[str, JsonValue], ...] | None = None
+            raw_redacted = getattr(payload, "semantic_redacted_values", ())
+            if type(raw_redacted) is tuple and raw_redacted:
+                redacted = tuple(
+                    cast(dict[str, JsonValue], item.as_wire())
+                    for item in validate_semantic_redacted_values(cast(object, raw_redacted))
+                )
+            return withheld, redacted
     except Exception as exc:  # noqa: BLE001 - status enrichment must never block recovery
         record_unexpected_exception_without_raising(
             exc,
@@ -802,7 +827,7 @@ async def _operation_semantic_withheld_items(
             operation="status_semantic_withheld_items_unavailable",
             request_id=operation.operation_id,
         )
-    return None
+    return None, None
 
 
 def check_admission_wire(
@@ -867,6 +892,7 @@ def _operation_page_from_record(
     semantic_progress: Mapping[str, JsonValue] | None = None,
     semantic_withheld_items: tuple[Mapping[str, JsonValue], ...] | None = None,
     admission: Mapping[str, JsonValue] | None = None,
+    semantic_redacted_values: tuple[Mapping[str, JsonValue], ...] | None = None,
 ) -> StatusOperationPageModel:
     """Project one operation record into the recovery page, or a bounded not-found page.
 
@@ -932,6 +958,10 @@ def _operation_page_from_record(
             if semantic_withheld_items is not None and kind == "check":
                 complete["semantic_withheld_items"] = cast(
                     JsonValue, tuple(dict(item) for item in semantic_withheld_items)
+                )
+            if semantic_redacted_values is not None and kind == "check":
+                complete["semantic_redacted_values"] = cast(
+                    JsonValue, tuple(dict(item) for item in semantic_redacted_values)
                 )
             return StatusOperationPageModel.model_validate(complete)
         source = _mapping(strict_json_parse(record.result_canonical))
@@ -1533,7 +1563,9 @@ async def execute_status(
                     operation,
                 )
             semantic_progress = await _operation_semantic_progress(app, runtime, operation)
-            semantic_withheld_items = await _operation_semantic_withheld_items(runtime, operation)
+            semantic_withheld_items, semantic_redacted_values = await _operation_semantic_omissions(
+                runtime, operation
+            )
             admission = (
                 await _operation_admission(
                     app, runtime, request.writer_id, request.filter.operation_request_id
@@ -1549,6 +1581,7 @@ async def execute_status(
                     semantic_progress=semantic_progress,
                     semantic_withheld_items=semantic_withheld_items,
                     admission=admission,
+                    semantic_redacted_values=semantic_redacted_values,
                 )
             except (AttributeError, TypeError, ValueError) as exc:
                 raise StatusFault(

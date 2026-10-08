@@ -47,6 +47,7 @@ from yoetz.ports.privacy import (
 )
 from yoetz.ports.semantic import Deadline, SemanticJudgment, SemanticResultSuccess
 from yoetz.protocol.models import DataCategory, SemanticReason, SemanticStatus
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 _NOW = datetime(2026, 7, 26, tzinfo=UTC)
 _REQUEST = "req_30000000-0000-4000-8000-000000000001"
@@ -203,6 +204,7 @@ async def _dispatch(
     monotonic: float = 1.0,
     prepared_bytes: bytes | None = None,
     withheld_item_ids: tuple[str, ...] = (),
+    redacted_values: tuple[SemanticRedactedValue, ...] = (),
 ) -> tuple[object, _Audit, _Gateway]:
     binding = _binding()
     audit = _Audit(persist=persist)
@@ -223,6 +225,7 @@ async def _dispatch(
         byte_count=len(selected_bytes),
         case_digest="sha256:" + hashlib.sha256(selected_bytes).hexdigest(),
         withheld_item_ids=withheld_item_ids,
+        redacted_values=redacted_values,
     )
     proposal = replace(
         _proposal(binding, expires_at=proposal_expires_at),
@@ -271,6 +274,34 @@ async def test_withheld_notice_allows_a_safe_replacement_on_the_next_check() -> 
     assert second_audit.receipt.withheld_item_ids == ()
 
 
+@pytest.mark.anyio
+async def test_redacted_value_lines_reach_the_final_evaluation() -> None:
+    """PL2-1 (issue #982): item refs and lines travel from minimization to the check."""
+
+    values = (
+        SemanticRedactedValue(
+            "excerpt-a", "value_replaced", (3, 7), "evd_10000000-0000-4000-8000-000000000021"
+        ),
+    )
+    result, _audit, _gateway = await _dispatch(persist=True, redacted_values=values)
+    assert isinstance(result, SemanticEgressSuccess)
+    assert result.redacted_values == values
+    final = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
+        result, ready_composition.IdPort()
+    )
+    assert final.semantic_redacted_values == values
+    blocked = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
+        SemanticEgressBlocked(
+            _REQUEST,
+            PrivacyOutcome.BLOCKED_BY_POLICY,
+            PrivacyReason.POLICY_DENIED,
+            redacted_values=values,
+        ),
+        ready_composition.IdPort(),
+    )
+    assert blocked.semantic_redacted_values == values
+
+
 def test_egress_results_enforce_the_shared_opaque_item_id_shape() -> None:
     with pytest.raises(ValueError, match="semantic_withheld_item_ids_invalid"):
         SemanticEgressBlocked(
@@ -306,7 +337,14 @@ async def test_local_semantic_success_persists_receipt_and_finalizes_local_prove
     redacted_final = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
         replace(result, redacted_span_count=2), ready_composition.IdPort()
     )
-    assert redacted_final.case_content_gaps == ("content_redacted",)
+    assert redacted_final.case_content_gaps == ("semantic_review_value_redacted",)
+    # Issue #982: a withheld item is a case-content gap too, so it is stamped on the AI-powered
+    # findings the review raises and can serve as their capture baseline.
+    withheld_final = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
+        replace(result, withheld_item_ids=("excerpt-heuristic",)), ready_composition.IdPort()
+    )
+    assert "semantic_review_item_withheld" in withheld_final.case_content_gaps
+    assert withheld_final.semantic_withheld_item_ids == ("excerpt-heuristic",)
 
 
 @pytest.mark.anyio

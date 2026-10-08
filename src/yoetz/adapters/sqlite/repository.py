@@ -130,6 +130,7 @@ from yoetz.protocol.models import (
     SemanticReason,
     SemanticStatus,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 __all__ = ["CheckpointReport", "SqliteLedger"]
 
@@ -1054,6 +1055,9 @@ class SqliteLedger:
                             missing_for_assessment=check_payload.missing_for_assessment,
                             review_input_manifest=check_payload.review_input_manifest,
                             totals=check_payload.totals,
+                            # Recovery rebuilds the same result the commit returned (#982).
+                            semantic_withheld_item_ids=check_payload.semantic_withheld_item_ids,
+                            semantic_redacted_values=check_payload.semantic_redacted_values,
                         )
                 else:
                     check_error = self._stored_check_error(cast(bytes, result_canonical))
@@ -2768,6 +2772,7 @@ class SqliteLedger:
         semantic_withheld_item_ids: tuple[str, ...] = (),
         review_input_manifest: JsonObject | None = None,
         totals: JsonObject | None = None,
+        semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
     ) -> CheckCommitResult:
         await self._ensure_recovered()
         async with self._lock:
@@ -2803,6 +2808,7 @@ class SqliteLedger:
                     semantic_withheld_item_ids=semantic_withheld_item_ids,
                     review_input_manifest=review_input_manifest,
                     totals=totals,
+                    semantic_redacted_values=semantic_redacted_values,
                 )
             except PublicOperationError:
                 # The memory oracle terminalizes a frontier conflict before raising it. Preserve

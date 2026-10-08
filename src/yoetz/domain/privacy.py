@@ -24,6 +24,7 @@ from yoetz.protocol.canonical import (
 from yoetz.protocol.coverage import PublicationChannel
 from yoetz.protocol.ids import IdKind, validate_id
 from yoetz.protocol.models import MAX_REVIEW_EXCERPTS, DataCategory
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 
 __all__ = [
     "MAX_EGRESS_CASE_BYTES",
@@ -54,6 +55,8 @@ __all__ = [
     "ClassifiedContext",
     "ClassifiedContextItem",
     "ConsentSource",
+    "CredentialHeuristic",
+    "external_review_credential_heuristic",
     "DataCategory",
     "DataClass",
     "DisclosureProposal",
@@ -224,6 +227,21 @@ class ReviewContextProfile(str, Enum):  # noqa: UP042 - durable enum
     ASSISTED = "assisted"
     EXPANDED = "expanded"
     CUSTOM = "custom"
+
+
+class CredentialHeuristic(str, Enum):  # noqa: UP042 - durable enum
+    """Whether disclosure applies the low-confidence credential *heuristic* (issue #982).
+
+    ``enforced`` is the default and the only value every policy approved before this field
+    existed can mean. ``disabled`` is an owner opt-out, granted only through the trusted policy
+    decision, that stops disclosure from replacing or withholding values that only the
+    assignment heuristic (``password = ...``, ``*_token = ...``) flags. It never touches the
+    high-confidence detectors: known credential shapes, private-key markers, URI passwords,
+    canaries and scanner saturation always block or redact.
+    """
+
+    ENFORCED = "enforced"
+    DISABLED = "disabled"
 
 
 class EgressChannel(str, Enum):  # noqa: UP042 - durable enum
@@ -931,6 +949,9 @@ class PrivacyPolicy:
     trusted_human_control_data_classes: tuple[DataClass, ...]
     created_at: datetime
     supersedes_policy_digest: str | None = None
+    # Owner opt-out for the low-confidence credential heuristic (issue #982). Encoded only when
+    # ``disabled`` so every policy written before the field existed keeps its bytes and digest.
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
 
     def __post_init__(self) -> None:
         validate_id(IdKind.PRIVACY_POLICY, self.policy_id)
@@ -1016,6 +1037,11 @@ class PrivacyPolicy:
         _time(self.created_at)
         if self.supersedes_policy_digest is not None:
             validate_sha256_digest(self.supersedes_policy_digest)
+        _enum(self.credential_heuristic, CredentialHeuristic)
+
+    @property
+    def credential_heuristic_enforced(self) -> bool:
+        return self.credential_heuristic is CredentialHeuristic.ENFORCED
 
     def meet(self, other: PrivacyPolicy) -> PrivacyPolicy:
         """Intersect two standing policies (ADR-009 decision 6 / protocol policy resolution).
@@ -1152,24 +1178,24 @@ class PrivacyPolicy:
             ),
             identity.created_at,
             None,
+            _composed_credential_heuristic(self, other),
         )
+        meet_identity: dict[str, JsonValue] = {
+            "components": cast(JsonValue, sorted((self.policy_digest, other.policy_digest))),
+            "meet": "yoetz.privacy-policy-meet/1",
+            "network_egress_permitted": placeholder.network_egress_permitted,
+            "profile": placeholder.profile.value,
+            "require_current_provider_data_use_evidence": (
+                placeholder.require_current_provider_data_use_evidence
+            ),
+            "review_context_profile": placeholder.review_context_profile.value,
+        }
+        if not placeholder.credential_heuristic_enforced:
+            # Absent when enforced, so every existing composition keeps its digest.
+            meet_identity["credential_heuristic"] = placeholder.credential_heuristic.value
         return replace(
             placeholder,
-            policy_digest=canonical_digest(
-                cast(
-                    JsonValue,
-                    {
-                        "components": sorted((self.policy_digest, other.policy_digest)),
-                        "meet": "yoetz.privacy-policy-meet/1",
-                        "network_egress_permitted": placeholder.network_egress_permitted,
-                        "profile": placeholder.profile.value,
-                        "require_current_provider_data_use_evidence": (
-                            placeholder.require_current_provider_data_use_evidence
-                        ),
-                        "review_context_profile": placeholder.review_context_profile.value,
-                    },
-                )
-            ),
+            policy_digest=canonical_digest(cast(JsonValue, meet_identity)),
         )
 
     @property
@@ -1211,6 +1237,46 @@ class PrivacyPolicy:
                 key=lambda item: item.value.encode("ascii"),
             )
         )
+
+
+def external_review_credential_heuristic(
+    policy: PrivacyPolicy, binding: ProviderBinding | None, *, local_sink: object = None
+) -> CredentialHeuristic:
+    """The credential-heuristic setting one disclosure applies (owner decision, 2026-10-07).
+
+    The opt-out reaches only the external AI reviewer: an LLM-inference disclosure to an external
+    provider binding. Every local output (agent context, local model, local views) keeps the
+    heuristic exactly as when it is enabled.
+    """
+
+    if type(policy) is not PrivacyPolicy:
+        raise _invalid()
+    if local_sink is None and binding is not None and binding.transport == "external":
+        return policy.credential_heuristic
+    return CredentialHeuristic.ENFORCED
+
+
+def _composed_credential_heuristic(
+    first: PrivacyPolicy, second: PrivacyPolicy
+) -> CredentialHeuristic:
+    """Compose the credential-heuristic setting of two scopes (owner decision, 2026-10-07).
+
+    The opt-out belongs to the repository grant: between the installation-wide row and a
+    repository row, the repository row decides, so a repository is "off" only where its own grant
+    says off. The installation-wide value is only the default a repository without a grant
+    inherits. Any other composition (two installation rows, or a task or request row) keeps
+    ``enforced`` unless both sides are ``disabled``.
+    """
+
+    kinds = {first.effective_scope.kind, second.effective_scope.kind}
+    if kinds == {AuthorizationScopeKind.MACHINE, AuthorizationScopeKind.WORKSPACE}:
+        repository = (
+            first if first.effective_scope.kind is AuthorizationScopeKind.WORKSPACE else second
+        )
+        return repository.credential_heuristic
+    if first.credential_heuristic_enforced or second.credential_heuristic_enforced:
+        return CredentialHeuristic.ENFORCED
+    return CredentialHeuristic.DISABLED
 
 
 @dataclass(frozen=True, slots=True)
@@ -1267,7 +1333,14 @@ PRIVACY_CHANGE_AREAS: Final = frozenset(
 # absent here can never reach a human approval screen, and a field present here always has a
 # fixed local label. Adding a policy dimension therefore has to add its token in one place.
 PRIVACY_CHANGE_FIELDS: Final = {
-    "global": frozenset({"effective_scope", "network_egress", "provider_data_use_evidence"}),
+    "global": frozenset(
+        {
+            "credential_heuristic",
+            "effective_scope",
+            "network_egress",
+            "provider_data_use_evidence",
+        }
+    ),
     "review": frozenset(
         {
             "sections",
@@ -1434,32 +1507,35 @@ _CHANGE_IMPACT: Final[dict[tuple[str, str], int]] = {
     ("local_model", "binding"): 5,
     ("channel", "preview_required"): 6,
     ("global", "provider_data_use_evidence"): 7,
-    ("channel", "data_classes"): 8,
-    ("channel", "categories"): 9,
-    ("channel", "purposes"): 10,
-    ("global", "effective_scope"): 11,
-    ("channel", "scope_ceiling"): 12,
-    ("channel", "authorization_ttl_seconds"): 13,
-    ("channel", "max_bytes"): 14,
-    ("channel", "max_tokens"): 15,
-    ("local_model", "data_classes"): 16,
-    ("local_model", "categories"): 17,
-    ("agent_context", "data_classes"): 18,
-    ("agent_context", "categories"): 19,
-    ("human_control", "data_classes"): 20,
-    ("human_control", "categories"): 21,
-    ("review", "include_exact_command_text"): 22,
-    ("review", "include_finding_prose"): 23,
-    ("review", "relevance"): 24,
-    ("review", "excerpt_kinds"): 25,
-    ("review", "sections"): 26,
-    ("review", "max_excerpt_bytes"): 27,
-    ("review", "max_total_excerpt_bytes"): 28,
-    ("review", "max_excerpts"): 29,
-    ("review", "max_change_observations"): 30,
-    ("review", "max_assessments"): 31,
-    ("review", "max_timeline_items"): 32,
-    ("review", "max_omissions"): 33,
+    # Whether possible-credential values are filtered out of what is disclosed: a disclosure
+    # dimension, read before which categories and sensitivity classes may leave (issue #982).
+    ("global", "credential_heuristic"): 8,
+    ("channel", "data_classes"): 9,
+    ("channel", "categories"): 10,
+    ("channel", "purposes"): 11,
+    ("global", "effective_scope"): 12,
+    ("channel", "scope_ceiling"): 13,
+    ("channel", "authorization_ttl_seconds"): 14,
+    ("channel", "max_bytes"): 15,
+    ("channel", "max_tokens"): 16,
+    ("local_model", "data_classes"): 17,
+    ("local_model", "categories"): 18,
+    ("agent_context", "data_classes"): 19,
+    ("agent_context", "categories"): 20,
+    ("human_control", "data_classes"): 21,
+    ("human_control", "categories"): 22,
+    ("review", "include_exact_command_text"): 23,
+    ("review", "include_finding_prose"): 24,
+    ("review", "relevance"): 25,
+    ("review", "excerpt_kinds"): 26,
+    ("review", "sections"): 27,
+    ("review", "max_excerpt_bytes"): 28,
+    ("review", "max_total_excerpt_bytes"): 29,
+    ("review", "max_excerpts"): 30,
+    ("review", "max_change_observations"): 31,
+    ("review", "max_assessments"): 32,
+    ("review", "max_timeline_items"): 33,
+    ("review", "max_omissions"): 34,
 }
 
 
@@ -1803,10 +1879,14 @@ class ClassifiedContextItem:
 class ClassifiedContext:
     candidate: CandidateContext
     items: tuple[ClassifiedContextItem, ...]
+    # The owner policy's credential-heuristic setting this classification ran under (issue #982).
+    # Minimization reads it from here, so the classifier and minimizer cannot disagree about it.
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
 
     def __post_init__(self) -> None:
         if type(self.candidate) is not CandidateContext or type(self.items) is not tuple:
             raise _invalid()
+        _enum(self.credential_heuristic, CredentialHeuristic)
         if any(type(item) is not ClassifiedContextItem for item in self.items):
             raise _invalid()
         if tuple(item.candidate for item in self.items) != self.candidate.items:
@@ -2006,8 +2086,16 @@ class DisclosureProposal:
     # Proposal admission is route-bound.  Missing identity is an unreadable legacy proposal, not
     # permission to resume it against whichever route happens to be active now.
     route_identity_digest: str | None = None
+    # PL2-1 (issue #982): bounded item refs and line numbers of replaced or withheld
+    # credential-like values, persisted with the proposal so an approved resume or a replay
+    # reports them without reopening plaintext. Never values.
+    redacted_values: tuple[SemanticRedactedValue, ...] = ()
 
     def __post_init__(self) -> None:
+        try:
+            validate_semantic_redacted_values(self.redacted_values)
+        except ValueError as exc:
+            raise _invalid() from exc
         validate_id(IdKind.PRIVACY_PROPOSAL, self.privacy_proposal_id)
         validate_id(IdKind.REQUEST, self.request_id)
         validate_id(IdKind.TASK, self.task_id)
@@ -2148,6 +2236,9 @@ class ApprovedOutboundCase:
     case_digest: str
     withheld_item_ids: tuple[str, ...] = ()
     redacted_span_count: int = 0
+    # The owner policy's credential-heuristic setting the case was prepared under (issue #982);
+    # the gateway's final rendered-body scan honours exactly this value.
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
 
     def __post_init__(self) -> None:
         validate_id(IdKind.OUTBOUND_CASE, self.case_id)
@@ -2179,6 +2270,7 @@ class ApprovedOutboundCase:
         if len(self.withheld_item_ids) > MAX_WITHHELD_ITEM_IDS:
             raise _invalid()
         _nonnegative(self.redacted_span_count)
+        _enum(self.credential_heuristic, CredentialHeuristic)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2200,6 +2292,9 @@ class ApprovedLocalDisclosureCase:
     case_digest: str
     withheld_item_ids: tuple[str, ...] = ()
     redacted_span_count: int = 0
+    # The owner policy's credential-heuristic setting the case was prepared under (issue #982);
+    # the gateway's final rendered-body scan honours exactly this value.
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
 
     def __post_init__(self) -> None:
         validate_id(IdKind.OUTBOUND_CASE, self.case_id)
@@ -2231,6 +2326,7 @@ class ApprovedLocalDisclosureCase:
         if len(self.withheld_item_ids) > MAX_WITHHELD_ITEM_IDS:
             raise _invalid()
         _nonnegative(self.redacted_span_count)
+        _enum(self.credential_heuristic, CredentialHeuristic)
 
 
 type ApprovedProviderCase = ApprovedOutboundCase | ApprovedLocalDisclosureCase
@@ -2339,9 +2435,14 @@ class ReceiptSecretScan:
     passed: bool
     stage: ReceiptSecretScanStage = ReceiptSecretScanStage.PREPARED_CASE
     not_run_reason: PrivacyReason | None = None
+    # ``disabled`` records that the owner policy in force had the low-confidence credential
+    # heuristic turned off, so only high-confidence detectors ran (issue #982). Encoded only when
+    # disabled; every receipt written before the field existed keeps its exact bytes.
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
 
     def __post_init__(self) -> None:
         _text(self.registry_version, _VERSION)
+        _enum(self.credential_heuristic, CredentialHeuristic)
         validate_sha256_digest(self.scanner_profile_digest)
         _nonnegative(self.match_count)
         if type(self.passed) is not bool:
@@ -2500,9 +2601,16 @@ class EgressReceipt:
                 raise _invalid()
         elif self.withheld_item_reason is not None:
             raise _invalid()
-        if self.schema_version == "1.0.0" and self.withheld_item_ids:
-            # The released 1.0 wire contract has no safe place for omission identities.  Do not
-            # let a caller construct a value that a legacy encoder would silently truncate.
+        if self.schema_version == "1.0.0" and (
+            self.withheld_item_ids
+            or (
+                type(self.secret_scan) is ReceiptSecretScan
+                and self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+            )
+        ):
+            # The released 1.0 wire contract has no safe place for omission identities or the
+            # credential-heuristic opt-out.  Do not let a caller construct a value that a legacy
+            # encoder would silently truncate.
             raise _invalid()
 
 
@@ -2558,7 +2666,13 @@ class LocalDisclosureReceipt:
                 raise _invalid()
         elif self.withheld_item_reason is not None:
             raise _invalid()
-        if self.schema_version == "1.0.0" and self.withheld_item_ids:
+        if self.schema_version == "1.0.0" and (
+            self.withheld_item_ids
+            or (
+                type(self.secret_scan) is ReceiptSecretScan
+                and self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+            )
+        ):
             raise _invalid()
         _text(self.purpose, _PURPOSE)
         _enum(self.consent_source, ConsentSource)

@@ -407,6 +407,10 @@ def _privacy_policy_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         preset_sections.sort(key=lambda value: cast(str, value).encode("ascii"))
         if profile.get("const") == "expanded":
             preset["max_excerpts"] = MAX_REVIEW_EXCERPTS
+    # The owner opt-out for the low-confidence credential heuristic (issue #982). Optional, and
+    # written only when ``disabled``, so every policy without it keeps its bytes and digest; an
+    # absent field means ``enforced``. Older wire versions cannot carry it.
+    properties["credential_heuristic"] = {"enum": ["disabled", "enforced"], "type": "string"}
     return document
 
 
@@ -1754,6 +1758,9 @@ def _extend_receipt_schema_fields(
         scan_properties = cast(dict[str, JsonValue], scan["properties"])
         scan_properties["stage"] = {"enum": list(_RECEIPT_SCAN_STAGES), "type": "string"}
         scan_properties["not_run_reason"] = reason_schema
+        # Present only when the owner policy in force had the low-confidence credential heuristic
+        # turned off for this disclosure (issue #982); absent means it was enforced.
+        scan_properties["credential_heuristic"] = {"const": "disabled", "type": "string"}
         scan_all_of = scan.setdefault("allOf", [])
         if not isinstance(scan_all_of, list):
             raise SchemaGenerationError("receipt_secret_scan_schema_template_invalid")
@@ -2218,6 +2225,7 @@ def _check_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "type": "array",
         "uniqueItems": True,
     }
+    _add_semantic_redacted_values(definitions, properties)
     _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz check recorded {entry.schema_version}"
@@ -3276,6 +3284,47 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _add_semantic_redacted_values(
+    definitions: dict[str, JsonValue],
+    properties: dict[str, JsonValue],
+    *,
+    min_items: int = 0,
+) -> None:
+    """PL2-1 (issue #982): item refs and 1-based line numbers, never values. Additive/optional."""
+
+    opaque: dict[str, JsonValue] = {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string",
+    }
+    definitions["semantic_redacted_value"] = {
+        "additionalProperties": False,
+        "properties": {
+            "disposition": {"enum": ["item_withheld", "value_replaced"], "type": "string"},
+            "item_id": opaque,
+            "lines": {
+                "items": {"maximum": 2147483647, "minimum": 1, "type": "integer"},
+                "maxItems": 32,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "source_ref": dict(opaque),
+        },
+        "required": ["disposition", "item_id", "lines"],
+        "type": "object",
+    }
+    array: dict[str, JsonValue] = {
+        "items": {"$ref": "#/$defs/semantic_redacted_value"},
+        "maxItems": 64,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    if min_items:
+        array["minItems"] = min_items
+    properties["semantic_redacted_values"] = array
+
+
 def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add the public Part 2 review fields to the new check-result version.
 
@@ -3447,6 +3496,7 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         if value not in values:
             values.append(value)
     values.sort(key=lambda item: str(item).encode("ascii"))
+    _add_semantic_redacted_values(definitions, properties)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz check result {entry.schema_version}"
@@ -4220,10 +4270,59 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_status_closure_checklist(definitions)
     _add_status_finding_frontier(definitions)
     _add_review_input_continuation(definitions)
+    _add_status_credential_heuristic(definitions)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz status result {entry.schema_version}"
     return document
+
+
+def _credential_heuristic_pair_schema() -> dict[str, JsonValue]:
+    state: dict[str, JsonValue] = {"enum": ["disabled", "enforced", "unknown"], "type": "string"}
+    return {
+        "additionalProperties": False,
+        "properties": {"machine_default": dict(state), "repository": dict(state)},
+        "required": ["machine_default", "repository"],
+        "type": "object",
+    }
+
+
+def _add_setup_credential_heuristic(definitions: dict[str, JsonValue]) -> None:
+    """Carry the derived possible-credential filter pair on the repository setup read (#982).
+
+    Optional on the unreleased 2.9.0 control result, so every CLI surface shows the same
+    ``repository``/``machine_default`` pair as the status result.
+    """
+
+    body = cast(dict[str, JsonValue], definitions["privacy_get_setup_body"])
+    for branch in cast(list[JsonValue], body["oneOf"]):
+        properties = cast(dict[str, JsonValue], cast(dict[str, JsonValue], branch)["properties"])
+        if "grant_state" in properties:
+            properties["credential_heuristic"] = _credential_heuristic_pair_schema()
+
+
+def _add_status_credential_heuristic(definitions: dict[str, JsonValue]) -> None:
+    """Name the effective possible-credential filter state before any check runs (issue #982).
+
+    Optional and additive: ``repository`` is what the current repository's grant applies to the
+    external AI reviewer, ``machine_default`` what a repository without a grant inherits.
+    ``unknown`` when the service could not read the policy.
+    """
+
+    definitions["credential_heuristic_state"] = {
+        "enum": ["disabled", "enforced", "unknown"],
+        "type": "string",
+    }
+    success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["credential_heuristic"] = {
+        "additionalProperties": False,
+        "properties": {
+            "machine_default": {"$ref": "#/$defs/credential_heuristic_state"},
+            "repository": {"$ref": "#/$defs/credential_heuristic_state"},
+        },
+        "required": ["machine_default", "repository"],
+        "type": "object",
+    }
 
 
 def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
@@ -4432,6 +4531,19 @@ def _add_status_semantic_progress(definitions: dict[str, JsonValue]) -> None:
                 "properties": {
                     "operation_kind": {"const": "check"},
                     "state": {"enum": ["pending", "complete"]},
+                },
+                "required": ["operation_kind", "state"],
+            },
+        }
+    )
+    _add_semantic_redacted_values(definitions, operation_properties)
+    operation_rules.append(
+        {
+            "if": {"required": ["semantic_redacted_values"]},
+            "then": {
+                "properties": {
+                    "operation_kind": {"const": "check"},
+                    "state": {"const": "complete"},
                 },
                 "required": ["operation_kind", "state"],
             },
@@ -4660,6 +4772,7 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
         "type": "array",
         "uniqueItems": True,
     }
+    _add_semantic_redacted_values(definitions, properties, min_items=1)
     required = cast(list[JsonValue], document["required"])
     if "children" not in required:
         required.append("children")
@@ -6207,6 +6320,7 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             reason_schema=reason_schema,
             definitions=definitions,
         )
+        _add_setup_credential_heuristic(definitions)
     if entry.schema_name == "control-request":
         definitions = cast(dict[str, JsonValue], document["$defs"])
         envelope = _individual_observation_envelope(definitions)

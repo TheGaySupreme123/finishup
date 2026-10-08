@@ -61,9 +61,12 @@ from yoetz.domain.receipts import (
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
     SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP,
     SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP,
+    SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP,
+    SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_REFS_REDUCED_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
+    SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
     check_time_change_unavailable_reason_gap,
     semantic_coverage_gap_code,
 )
@@ -212,6 +215,7 @@ from yoetz.protocol.policy_packs import (
     WORK_INTEGRITY_POLICY_ID,
     current_policy_pack,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 from yoetz.version import ENGINE_VERSION
 
 __all__ = [
@@ -273,6 +277,8 @@ SEMANTIC_CASE_CONTENT_GAPS: Final = frozenset(
         "truncated_payload",
         "content_unselected",
         "content_redacted",
+        SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
+        SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
         SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
         "preexisting_test_baseline_unknown",
         "preexisting_test_modified",
@@ -582,6 +588,16 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
                         "reason": "never_send_heuristic",
                     }
                     for item_id in result.semantic_withheld_item_ids
+                )
+            }
+        ),
+        # PL2-1: item refs and line numbers only; written only when present.
+        **(
+            {}
+            if not getattr(result, "semantic_redacted_values", ())
+            else {
+                "semantic_redacted_values": tuple(
+                    cast(JsonValue, item.as_wire()) for item in result.semantic_redacted_values
                 )
             }
         ),
@@ -1485,6 +1501,9 @@ class FinalSemanticEvaluation:
     # Categories the review profile selected that the inference channel did not permit. A review
     # can succeed while structurally unable to answer its own question; coverage must say so.
     withheld_review_categories: tuple[str, ...] = ()
+    # True when the owner policy the review ran under had the low-confidence credential heuristic
+    # turned off (issue #982 owner opt-out). Coverage discloses it on every such review.
+    credential_heuristic_disabled: bool = False
     # True when composing the case had to shorten or replace recorded text that the publish-side
     # prose bound had already accepted. The reviewer judged a fragment; coverage must say so
     # rather than let the shortening pass as material the author chose not to send.
@@ -1498,6 +1517,9 @@ class FinalSemanticEvaluation:
     # public check result names these identities and the closed remediation reason, never bytes
     # or source prose.
     semantic_withheld_item_ids: tuple[str, ...] = ()
+    # PL2-1 (issue #982): per item, the catalogued ref and the 1-based lines where the external
+    # reviewer's copy had a credential-like value replaced, or the item withheld. Never values.
+    semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
     case_content_gaps: tuple[str, ...] = ()
     # Missing-item kinds the effective review selection or channel can never carry (issue #907).
     # Computed where the case is composed, so the check can classify what a reviewer names.
@@ -1556,6 +1578,10 @@ class FinalSemanticEvaluation:
             )
         ):
             raise _invalid("semantic_judgment_invalid")
+        try:
+            validate_semantic_redacted_values(self.semantic_redacted_values)
+        except ValueError as exc:
+            raise _invalid("semantic_judgment_invalid") from exc
         if (
             type(self.unsuppliable_missing_kinds) is not tuple
             or self.unsuppliable_missing_kinds
@@ -3554,13 +3580,30 @@ def _judgment_rejected_evaluation(
         attempt_accounting=result.attempt_accounting,
         operation_lease=result.operation_lease,
         withheld_review_categories=result.withheld_review_categories,
+        credential_heuristic_disabled=result.credential_heuristic_disabled,
         # The rejection restates the outcome, not the case: a truncated case stays truncated.
         case_content_over_item_limit=result.case_content_over_item_limit,
         case_reference_scope_reduced=result.case_reference_scope_reduced,
         case_included_refs=result.case_included_refs,
         semantic_withheld_item_ids=result.semantic_withheld_item_ids,
+        semantic_redacted_values=result.semantic_redacted_values,
         case_content_gaps=result.case_content_gaps,
     )
+
+
+def _credential_heuristic_gaps(semantic_result: FinalSemanticEvaluation) -> frozenset[str]:
+    """Disclose the owner's credential-heuristic opt-out on a review that ran (issue #982).
+
+    The reviewer may have seen values that only look like passwords or tokens. It is an owner
+    disclosure choice, recorded on every review that ran under it, never agent work.
+    """
+
+    if semantic_result.credential_heuristic_disabled and (
+        semantic_result.status is SemanticStatus.SUCCEEDED
+        or semantic_result.provider_input_manifest is not None
+    ):
+        return frozenset({SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP})
+    return frozenset()
 
 
 async def execute_check_commit(
@@ -4074,11 +4117,12 @@ async def execute_check_commit(
             and semantic_result.withheld_review_categories
         ):
             declared_gaps.add(SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP)
+        declared_gaps |= _credential_heuristic_gaps(semantic_result)
         if semantic_result.semantic_withheld_item_ids:
-            # Item-level omission is a useful review outcome, but it is still a material
-            # content loss. Keep the established content_redacted gap visible on every public
-            # result so CLI, MCP, hooks, and receipts share one coverage vocabulary.
-            declared_gaps.add("content_redacted")
+            # Item-level withholding is an egress decision about what the external model may see.
+            # It bounds only this AI-powered review (issue #982, owner decision B2), so it is the
+            # review-scoped code and never ``content_redacted``, which would also veto local proof.
+            declared_gaps.add(SEMANTIC_REVIEW_ITEM_WITHHELD_GAP)
         if (
             semantic_result.status is SemanticStatus.SUCCEEDED
             and semantic_result.provider_input_manifest is None
@@ -4234,6 +4278,7 @@ async def execute_check_commit(
             "missing_for_assessment": missing.items,
             "semantic_included_refs": semantic_included_refs(semantic_result),
             "semantic_withheld_item_ids": semantic_result.semantic_withheld_item_ids,
+            "semantic_redacted_values": semantic_result.semantic_redacted_values,
             "review_input_manifest": recorded_manifest,
             "totals": build_check_totals(
                 frozen.case,

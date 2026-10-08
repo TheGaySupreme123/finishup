@@ -20,6 +20,7 @@ from yoetz.application.privacy_policy import (
     PrivacyPolicyResult,
     ProposePrivacyPolicyRequest,
     TightenPrivacyPolicyRequest,
+    credential_heuristic_state,
     privacy_get_effective,
     privacy_get_setup,
     privacy_pending_list,
@@ -278,6 +279,9 @@ def encode_privacy_receipt_view(view: PrivacyReceiptView) -> JsonObject:
         secret_scan["stage"] = receipt.secret_scan.stage.value
         if receipt.secret_scan.not_run_reason is not None:
             secret_scan["not_run_reason"] = receipt.secret_scan.not_run_reason.value
+        if receipt.secret_scan.credential_heuristic.value != "enforced":
+            # The owner had the low-confidence credential heuristic off for this disclosure.
+            secret_scan["credential_heuristic"] = receipt.secret_scan.credential_heuristic.value
     body: dict[str, JsonValue] = {
         "schema_version": receipt.schema_version,
         "receipt_id": receipt.receipt_id,
@@ -497,6 +501,7 @@ def build_privacy_support_handlers(
         authority = view.authority
         if authority is None:
             raise _policy_rejection()
+        heuristic = credential_heuristic_state(authority)
         return JsonObject(
             {
                 "schema_version": "2.0.0",
@@ -512,6 +517,15 @@ def build_privacy_support_handlers(
                 "authority_digest": authority.authority_digest,
                 "grant_state": authority.grant_state,
                 "migration_state": authority.migration_state,
+                # The external reviewer's possible-credential filter, derived once for every
+                # surface (status, provider status, the terminal interface; issue #982).
+                "credential_heuristic": cast(
+                    JsonValue,
+                    {
+                        "repository": heuristic.repository,
+                        "machine_default": heuristic.machine_default,
+                    },
+                ),
                 "channel_choices": cast(
                     JsonValue,
                     [

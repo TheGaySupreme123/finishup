@@ -65,10 +65,13 @@ from yoetz.domain.receipts import (
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
     SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP,
     SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP,
+    SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP,
+    SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
     SEMANTIC_REVIEW_REFS_REDUCED_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
+    SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
 )
 from yoetz.domain.task_statement import (
     TASK_STATEMENT_FINDING_SUMMARIES,
@@ -155,7 +158,6 @@ REVIEW_SELECTION_GAPS: Final = frozenset(
 )
 CAPTURE_FAILURE_GAPS: Final = frozenset(
     {
-        "content_redacted",
         "event_payload_unavailable",
         "redacted_event",
         "redacted_object",
@@ -179,6 +181,10 @@ _SEMANTIC_ONLY_GAPS: Final = frozenset(
         OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
         OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
         SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP,
+        # Egress withholding of one packet item (issue #982, owner decision B2) decides only what
+        # the external model saw; local packs never read the packet, so it never vetoes local
+        # proof. For AI-powered proof it is a capture baseline (below), never a free pass.
+        SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
         *_INSUFFICIENT_PACKET_GAPS,
         SEMANTIC_CHALLENGES_REJECTED_GAP,
         SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
@@ -226,6 +232,12 @@ _EVIDENCE_STRENGTH_GAPS: Final = frozenset(
 _HOST_OBSERVATION_GAPS: Final = frozenset(
     {
         "captured_object_unavailable",
+        # Capture-time redaction of a high-confidence secret shape (issue #982). Privacy filtering
+        # exists for content leaving the machine; local packs judge event payloads, never the
+        # captured bytes it replaced, so it stays a receipt disclosure and never vetoes local
+        # proof. It is not a capture failure: heuristic-only matches are no longer redacted at
+        # capture at all.
+        "content_redacted",
         "content_unselected",
         "host_outcome_unavailable",
         "unpaired_event",
@@ -241,6 +253,17 @@ _REVIEW_DIALOGUE_DISCLOSURE_GAPS: Final = frozenset(
         SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP,
     }
 )
+# In-place egress redaction of credential-like values (issue #982, owner decision B2): the reviewer
+# saw every item with only the suspicious values replaced by a fixed placeholder. A credential
+# value is not what any finding is about, so the replacement stays disclosed on every receipt but
+# weakens neither proof class.
+_EGRESS_VALUE_REDACTION_GAPS: Final = frozenset({SEMANTIC_REVIEW_VALUE_REDACTED_GAP})
+# The owner's policy turned the low-confidence credential heuristic off (issue #982 opt-out): the
+# reviewer saw values it would otherwise have had replaced. An owner disclosure choice that only
+# widened what the review saw, so it stays on every receipt and weakens neither proof class.
+_OWNER_DISCLOSURE_CHOICE_GAPS: Final = frozenset(
+    {SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP}
+)
 # Plan drift (``kernel.plan_drift``) is an advisory diagnostic about the planning trace: it says the
 # ledger lacks a relation needed to read the plan as current, never that a local pack could not
 # read the rows it judges. It stays on every receipt but never vetoes a local absence proof.
@@ -248,6 +271,8 @@ _BASE_DETERMINISTIC_PROOF_TOLERATED_GAPS: Final = (
     _SEMANTIC_ONLY_GAPS
     | _EVIDENCE_STRENGTH_GAPS
     | _REVIEW_DIALOGUE_DISCLOSURE_GAPS
+    | _EGRESS_VALUE_REDACTION_GAPS
+    | _OWNER_DISCLOSURE_CHOICE_GAPS
     | PLAN_DRIFT_GAPS
     # Task facts (#977) describe the work, never whether the rows a local pack judges were
     # readable, so they never veto a local absence proof either; they stay on the receipt.
@@ -258,7 +283,12 @@ _BASE_DETERMINISTIC_PROOF_TOLERATED_GAPS: Final = (
 _DETERMINISTIC_PROOF_TOLERATED_GAPS: Final = (
     _BASE_DETERMINISTIC_PROOF_TOLERATED_GAPS | _HOST_OBSERVATION_GAPS | REVIEW_SELECTION_GAPS
 )
-_SEMANTIC_PROOF_TOLERATED_GAPS: Final = _EVIDENCE_STRENGTH_GAPS | _REVIEW_DIALOGUE_DISCLOSURE_GAPS
+_SEMANTIC_PROOF_TOLERATED_GAPS: Final = (
+    _EVIDENCE_STRENGTH_GAPS
+    | _REVIEW_DIALOGUE_DISCLOSURE_GAPS
+    | _EGRESS_VALUE_REDACTION_GAPS
+    | _OWNER_DISCLOSURE_CHOICE_GAPS
+)
 # Structural test-edit accounting (ADR-032) is read by exactly one local rule: the unjustified
 # pre-existing test edit, which raises ``task_requirement_unmet`` with the fact
 # ``preexisting_test_edit_unjustified``. It is local accounting, never a basis of any other rule.
@@ -293,7 +323,13 @@ _TEST_EDIT_ACCOUNTING_GAPS: Final = frozenset(
 SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS: Final = (
     _HOST_OBSERVATION_GAPS
     | REVIEW_SELECTION_GAPS
-    | frozenset({"content_capture_unavailable", SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP})
+    | frozenset(
+        {
+            "content_capture_unavailable",
+            SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
+            SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
+        }
+    )
     | TASK_STATEMENT_GAPS
 )
 _SEMANTIC_BASELINE_CAPTURE_GAPS: Final = SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS

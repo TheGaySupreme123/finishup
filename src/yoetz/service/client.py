@@ -31,6 +31,7 @@ from yoetz.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ConsentSource,
+    CredentialHeuristic,
     EgressChannel,
     EgressReceipt,
     LocalDisclosureReceipt,
@@ -568,6 +569,11 @@ def _secret_scan_from_wire(value: object, *, legacy_unknown: bool = False) -> Re
             None
             if source.get("not_run_reason") is None
             else PrivacyReason(cast(str, source["not_run_reason"]))
+        ),
+        credential_heuristic=(
+            CredentialHeuristic.ENFORCED
+            if source.get("credential_heuristic") is None
+            else CredentialHeuristic(cast(str, source["credential_heuristic"]))
         ),
     )
 

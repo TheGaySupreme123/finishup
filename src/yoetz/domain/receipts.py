@@ -64,8 +64,16 @@ from yoetz.protocol.models import (
     validate_semantic_outcome,
 )
 from yoetz.protocol.recovery import continuation_for_semantic_outcome, directive_for
+from yoetz.protocol.redacted_values import (
+    SemanticRedactedValue,
+    semantic_redacted_values_from_wire,
+    validate_semantic_redacted_values,
+)
 
 __all__ = [
+    "SEMANTIC_REDACTED_VALUES_AGENT_LINE",
+    "SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT",
+    "semantic_redacted_value_text",
     "receipt_document_carries_terminal_sections",
     "CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP",
     "CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP",
@@ -129,6 +137,10 @@ __all__ = [
     "SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP",
     "SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP",
     "SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP",
+    "SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP",
+    "SEMANTIC_REVIEW_EGRESS_REDACTION_GAPS",
+    "SEMANTIC_REVIEW_ITEM_WITHHELD_GAP",
+    "SEMANTIC_REVIEW_VALUE_REDACTED_GAP",
     "SEMANTIC_PACKET_INSUFFICIENT_GAP",
     "SEMANTIC_REVIEW_NOT_CONFIGURED_GAP",
     "SEMANTIC_REVIEW_NOT_REQUESTED_GAP",
@@ -193,6 +205,24 @@ SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP: Final = "semantic_relevance_review_not_ru
 # The review ran, but the inference channel withheld categories the review profile
 # selected, so it judged the work without material it was configured to receive.
 SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP: Final = "semantic_review_context_withheld"
+# Egress-only privacy redaction of the review packet (issue #982, owner decision B2). Privacy
+# filtering exists to keep sensitive values away from the external model, so these bound only the
+# AI-powered review that ran without them, never local proof. ``value_redacted``: one or more
+# credential-like values were replaced in place by ``EGRESS_CREDENTIAL_PLACEHOLDER`` and the rest
+# of each item was sent. ``item_withheld``: in-place replacement could not make an item safe to
+# send, so that item alone was left out of the packet (listed in ``semantic_withheld_items``).
+SEMANTIC_REVIEW_VALUE_REDACTED_GAP: Final = "semantic_review_value_redacted"
+SEMANTIC_REVIEW_ITEM_WITHHELD_GAP: Final = "semantic_review_item_withheld"
+SEMANTIC_REVIEW_EGRESS_REDACTION_GAPS: Final = frozenset(
+    {SEMANTIC_REVIEW_VALUE_REDACTED_GAP, SEMANTIC_REVIEW_ITEM_WITHHELD_GAP}
+)
+# The owner's privacy policy had the low-confidence credential heuristic turned off for this
+# review's disclosure (issue #982 owner opt-out): values that only look like passwords or tokens
+# were sent as written; known credential shapes, private keys and URL passwords were still
+# withheld. An owner choice that disclosed more, never agent work and never a review defect.
+SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP: Final = (
+    "semantic_review_credential_heuristic_disabled"
+)
 # A valid provider answer that could not assess the supplied content is not a clean review.
 SEMANTIC_PACKET_INSUFFICIENT_GAP: Final = "semantic_packet_insufficient"
 # The review ran and returned challenges, and at least one of them was dropped by the
@@ -500,6 +530,42 @@ class ReceiptSectionKey(str, Enum):  # noqa: UP042 - exact wire enum base
     EVIDENCE_AND_CLAIM_BASIS = "evidence_and_claim_basis"
     LIMITATIONS_AND_COVERAGE = "limitations_and_coverage"
     VERSION_AND_POLICY_IDENTITY = "version_and_policy_identity"
+
+
+# Owner-approved PL2-1 (issue #982): the one fixed line every human and agent rendering adds,
+# once, when a check or receipt names items whose values the external reviewer did not see.
+SEMANTIC_REDACTED_VALUES_AGENT_LINE: Final = (
+    "Values marked [withheld-by-yoetz:possible-credential] were withheld from the external "
+    "reviewer only; local checks saw them. Do not change consent, rename, hide or reshape your "
+    "work to clear this. If a finding stays open only because of it, verify the repair yourself "
+    "and respond self_verified."
+)
+
+
+# The 512-byte MCP summaries must keep the frontier head digest (issue #279); when the full line
+# cannot fit beside it, they carry this shorter fixed form. Full renderings always use the line.
+SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT: Final = (
+    "Values marked [withheld-by-yoetz:possible-credential] were withheld from the external "
+    "reviewer only; do not change consent or your code; verify yourself, respond self_verified."
+)
+
+
+def semantic_redacted_value_text(item: SemanticRedactedValue) -> str:
+    """One bounded ASCII line naming the item, its ref and lines; never a value."""
+
+    ref = item.item_id if item.source_ref is None else f"{item.source_ref} (item {item.item_id})"
+    lines = (
+        "line " + str(item.lines[0])
+        if len(item.lines) == 1
+        else "lines " + ", ".join(str(line) for line in item.lines)
+        if item.lines
+        else "lines not located"
+    )
+    what = "value replaced" if item.disposition == "value_replaced" else "item withheld"
+    # Line numbers count lines of the captured item (an excerpt or one of its parts), not of the
+    # file it came from; say so, so an agent never reads them as file line numbers.
+    located = f"{lines} of the captured item" if item.lines else lines
+    return f"{ref}: {what}, {located}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1062,9 +1128,16 @@ class ReceiptDocument:
     # Opaque review item identities withheld by the never-send heuristic.  The field is omitted
     # when empty so historical receipt objects retain their exact bytes.
     semantic_withheld_items: tuple[ReceiptSemanticWithheldItem, ...] = ()
+    # PL2-1 (issue #982): item refs and line numbers of values the external reviewer did not see.
+    # Omitted when empty so historical receipt objects retain their exact bytes.
+    semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_document"
+        try:
+            validate_semantic_redacted_values(self.semantic_redacted_values)
+        except ValueError as exc:
+            raise ProtocolValueError(invalid) from exc
         if self.schema_version != "1.0.0":
             raise ProtocolValueError(invalid)
         object.__setattr__(self, "receipt_id", receipt_id(self.receipt_id))
@@ -1490,6 +1563,7 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
                 "children",
                 "rejection_accepted_finding_ids",
                 "semantic_withheld_items",
+                "semantic_redacted_values",
                 "semantic_provenance",
             }
         ),
@@ -1546,6 +1620,16 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         if "semantic_withheld_items" in source
         else ()
     )
+    try:
+        semantic_redacted_values = (
+            semantic_redacted_values_from_wire(
+                _array(_field(source, "semantic_redacted_values", invalid), invalid)
+            )
+            if "semantic_redacted_values" in source
+            else ()
+        )
+    except ValueError as exc:
+        raise ProtocolValueError(invalid) from exc
     document = ReceiptDocument(
         receipt_id=receipt_id(_field(source, "receipt_id", invalid)),
         task_id=task_id(_field(source, "task_id", invalid)),
@@ -1583,6 +1667,7 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
             for item in _array(source.get("rejection_accepted_finding_ids", ()), invalid)
         ),
         semantic_withheld_items=semantic_withheld_items,
+        semantic_redacted_values=semantic_redacted_values,
     )
     return document
 
@@ -1738,6 +1823,10 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
         result["semantic_withheld_items"] = [
             {"item_id": item.item_id, "reason": item.reason}
             for item in document.semantic_withheld_items
+        ]
+    if document.semantic_redacted_values:
+        result["semantic_redacted_values"] = [
+            item.as_wire() for item in document.semantic_redacted_values
         ]
     # Omit absent provenance rather than emitting null: local-only and historical receipt
     # documents therefore retain their exact pre-extension bytes.
@@ -1921,6 +2010,24 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                         f"- {item.item_id}: {item.reason}"
                         for item in document.semantic_withheld_items
                     ),
+                )
+            )
+        )
+    if document.semantic_redacted_values:
+        heading = (
+            "## Withheld from external review" if markdown else "Withheld from external review"
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "Where the external reviewer's copy did not carry a credential-like value "
+                    "(item refs and line numbers only; no value is shown):",
+                    *(
+                        f"- {semantic_redacted_value_text(item)}"
+                        for item in document.semantic_redacted_values
+                    ),
+                    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
                 )
             )
         )

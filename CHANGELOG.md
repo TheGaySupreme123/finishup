@@ -8,6 +8,27 @@ reverse-chronological released versions.
 
 ### Added
 
+- When the external reviewer's copy of your work had a possible credential replaced or an item
+  withheld, checks, receipts and `status view=operation` now name the item and its line numbers
+  (`semantic_redacted_values`; never the value) and tell the agent, once, that local checks saw the
+  values and it should verify the repair itself and respond `self_verified` rather than reshape its
+  work (#982).
+
+- You can turn off the possible-credential filter for the external AI reviewer in one repository
+  with `yoetz privacy credential-heuristic disable`, and back on with `enable` (#982). Off, values
+  that only look like passwords or tokens are sent to the external reviewer as written instead of
+  as `[withheld-by-yoetz:possible-credential]`; local outputs (agent context, local model) keep the
+  filter, and known credential shapes, private keys, URL passwords and an unfinished scan still
+  block or redact. The setting is part of the repository's privacy grant: turning it off applies
+  only after the trusted approval on your terminal (in a repository without a grant, it walks the
+  normal grant approval), and no agent can apply it; turning it back on applies at once to that
+  repository. `--machine-default` changes the installation-wide default new grants start from.
+  `yoetz status` and MCP `status` show the repository state and the default before any check;
+  `privacy show`, `provider status`, `/privacy`, every external privacy receipt
+  (`secret_scan.credential_heuristic`) and every check whose external review ran under it
+  (`semantic_review_credential_heuristic_disabled`) say so. Existing policies keep their exact
+  bytes and digests.
+
 - Local checks now report facts about the task's own work, not only about the ledger (#977,
   ADR-033). Closure readiness, check results and receipts name a planned verification (an
   obligation's requested command) that hooks never saw run, that failed on its latest run, or that
@@ -183,6 +204,17 @@ reverse-chronological released versions.
   budget without dropping any rule.
 
 ### Fixed
+
+- Withholding a credential-like value from the external reviewer no longer taints the whole check
+  (#982, a regression from per-item withholding). Only the value is replaced, in place, by
+  `[withheld-by-yoetz:possible-credential]`, and the rest of the item is still reviewed
+  (`semantic_review_value_redacted`). An item is withheld only when that cannot be done
+  (`semantic_review_item_withheld`). Both bound only the AI-powered review; neither adds
+  `content_redacted` or blocks local finding resolution any more. A capture-time `content_redacted`
+  no longer vetoes local proof either.
+
+- A closing review with one withheld item keeps a valid provider manifest and its `final` review
+  phase (#979).
 
 - Status no longer fails when every open obligation is named by a recorded blocker, and a check
   whose only remaining gap is such a blocker no longer fails internally with

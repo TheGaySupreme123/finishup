@@ -195,6 +195,24 @@ def test_secret_assignment_in_valid_output_preserves_json_structure() -> None:
     assert "[REDACTED]" in dumped
 
 
+def test_heuristic_only_assignment_in_output_is_kept() -> None:
+    """Issue #982: only high-confidence shapes are redacted at import; egress redacts the rest."""
+
+    profile = profile_for_rollout_version("0.148.0")
+    output_text = 'self.bot_token = "<tool_call>"\napi_token = "a8F3kL9qZ2xV7mN4"'
+    source = encode_lines(
+        session_meta(),
+        function_call(name="shell", call_id="call_heuristic_output"),
+        function_call_output(call_id="call_heuristic_output", output=output_text),
+    )
+
+    parsed = parse_codex_rollout_jsonl(source, profile, require_admission=True)
+
+    output = next(record for record in parsed.records if record.item_type == "function_call_output")
+    payload = cast(dict[str, JsonValue], output.value["payload"])
+    assert payload["output"] == output_text
+
+
 def test_wrong_cli_version_is_unsupported_format() -> None:
     """A caller pinned to one exact profile still refuses a header that selects another."""
 

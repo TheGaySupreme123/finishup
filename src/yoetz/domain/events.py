@@ -40,7 +40,7 @@ from yoetz.domain.findings import (
     semantic_provenance_from_json,
     semantic_provenance_to_json,
 )
-from yoetz.domain.receipts import ReceiptConclusion
+from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP, ReceiptConclusion
 from yoetz.domain.values import (
     ActionId,
     Actor,
@@ -127,6 +127,11 @@ from yoetz.protocol.policy_packs import (
     RESEARCH_EVIDENCE_POLICY_ID,
     WORK_INTEGRITY_POLICY_ID,
     is_recorded_policy_identity,
+)
+from yoetz.protocol.redacted_values import (
+    SemanticRedactedValue,
+    semantic_redacted_values_from_wire,
+    validate_semantic_redacted_values,
 )
 
 __all__ = [
@@ -2705,13 +2710,18 @@ class CheckRecordedPayload:
     # completed review whose coverage records the reduced scope; resolution tests a finding's
     # relevant material against it.
     semantic_included_refs: tuple[str, ...] | None = None
-    # Opaque item identities omitted by the low-confidence never-send heuristic. The companion
-    # ``content_redacted`` coverage gap is required whenever this field is present.
+    # Opaque item identities omitted by the low-confidence never-send heuristic. A companion
+    # coverage gap is required whenever this field is present: ``semantic_review_item_withheld``
+    # (review-scoped, issue #982) on current checks, or ``content_redacted`` on checks recorded
+    # before that change, which stay valid on replay.
     semantic_withheld_item_ids: tuple[str, ...] = ()
     # Metadata-only input coverage for the exact check packet (issue #951).
     review_input_manifest: JsonObject | None = None
     # Frozen-frontier structural totals; absent only on legacy check events.
     totals: JsonObject | None = None
+    # PL2-1 (issue #982, 1.4.0 only): per case item, its catalogued ref and the 1-based lines whose
+    # credential-like values the external reviewer's copy did not carry. Never values.
+    semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", _exact_enum(self.mode, CheckMode))
@@ -2842,7 +2852,18 @@ class CheckRecordedPayload:
             or (
                 self.semantic_withheld_item_ids
                 and "content_redacted" not in self.coverage.known_gaps
+                and SEMANTIC_REVIEW_ITEM_WITHHELD_GAP not in self.coverage.known_gaps
             )
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        try:
+            validate_semantic_redacted_values(self.semantic_redacted_values)
+        except ValueError as exc:
+            raise ProtocolValueError("invalid_event_value_type") from exc
+        if any(
+            item.disposition == "item_withheld"
+            and item.item_id not in self.semantic_withheld_item_ids
+            for item in self.semantic_redacted_values
         ):
             raise ProtocolValueError("invalid_event_value_type")
         if (
@@ -3773,6 +3794,7 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
                     "check_change_files",
                     "semantic_included_refs",
                     "semantic_withheld_item_ids",
+                    "semantic_redacted_values",
                     "review_input_manifest",
                     "totals",
                 }
@@ -4285,6 +4307,11 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 tuple(_array(_optional(source, "semantic_withheld_item_ids")))
                 if _optional(source, "semantic_withheld_item_ids") is not None
                 else (),
+            ),
+            semantic_redacted_values=(
+                ()
+                if (redacted := _optional(source, "semantic_redacted_values")) is None
+                else semantic_redacted_values_from_wire(_array(redacted))
             ),
             review_input_manifest=_review_input_manifest_from_json(
                 _optional(source, "review_input_manifest")
@@ -4819,6 +4846,11 @@ def encode_payload(payload: EventPayload) -> JsonValue:
             "semantic_withheld_item_ids",
             cast(tuple[object, ...], value.semantic_withheld_item_ids),
         )
+        _optional_tuple(
+            result,
+            "semantic_redacted_values",
+            tuple(item.as_wire() for item in value.semantic_redacted_values),
+        )
         _optional_value(result, "review_input_manifest", value.review_input_manifest)
         _optional_value(result, "totals", value.totals)
         return _json_object(result)
@@ -4895,6 +4927,7 @@ def _validate_event_schema_payload(
             payload.review_summary is not None
             or bool(payload.verified)
             or payload.totals is not None
+            or bool(payload.semantic_redacted_values)
         )
         if has_review_output:
             if schema.version != REVIEW_CHECK_EVENT_SCHEMA_VERSION:

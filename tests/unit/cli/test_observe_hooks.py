@@ -531,6 +531,31 @@ def test_visible_unknown_content_is_redacted_and_hidden_fields_are_ignored(tmp_p
     assert b"SYSTEM_PROMPT_CANARY" not in chunks[0].content
 
 
+def test_visible_heuristic_only_content_is_kept_and_not_marked_redacted(tmp_path: Path) -> None:
+    """Issue #982: capture keeps heuristic-only matches; only egress redacts them."""
+
+    store = LocalObservationStore(_state=tmp_path)
+    session = store.session_commitment("sess-heuristic")
+    envelope = map_hook_payload_to_envelope(
+        "FutureHostEvent",
+        {"session_id": "sess-heuristic"},
+        session_commitment=session,
+        event_ordinal=1,
+        key_material=_KEY,
+    )
+    content = 'self.bot_token = "<|tool_call_start|>"\napi_token = "a8F3kL9qZ2xV7mN4"\n'
+    chunks, truncated = observe_hooks_module._visible_content_chunks(  # pyright: ignore[reportPrivateUsage]
+        "FutureHostEvent",
+        {"visibility": "task", "visible_content": content},
+        envelope=envelope,
+        workspace_locator=None,
+    )
+    assert truncated is False
+    assert len(chunks) == 1
+    assert chunks[0].redacted is False
+    assert chunks[0].content == content.encode("utf-8")
+
+
 def test_content_cap_sets_truncated_flag(tmp_path: Path) -> None:
     store = LocalObservationStore(_state=tmp_path)
     session = store.session_commitment("sess-trunc")

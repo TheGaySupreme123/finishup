@@ -183,12 +183,28 @@ PACKET_GAP_GLOSSARY: Final[Mapping[str, str]] = MappingProxyType(
         "over_case_item_limit": "the case admitted the item but could not carry it whole",
         "payload_content_omitted": "a host event row kept its identity but not its content",
         "redacted_event": "a ledger event was redacted at its source",
-        "redacted_never_send": "policy forbids sending the item",
+        "redacted_never_send": (
+            "policy forbids sending the item or a credential-like value in it; a replaced value "
+            "reads [withheld-by-yoetz:possible-credential]"
+        ),
         "redacted_object": "a stored object was redacted at its source",
         "routine_read_detail_omitted": "routine reads were summarized without per-read detail",
         "semantic_case_content_over_item_limit": "an item was clipped to the per-item size limit",
         "semantic_case_finding_refs_over_limit": (
             "a finding cites more refs than the packet can carry"
+        ),
+        # Issue #982 owner opt-out: an owner disclosure choice, never agent work.
+        "semantic_review_credential_heuristic_disabled": (
+            "the owner turned off the possible-credential filter, so values that only look like "
+            "passwords or tokens were sent as written"
+        ),
+        # Issue #982: egress-only privacy redaction of this packet; never ask for the value.
+        "semantic_review_item_withheld": (
+            "an item was left out because a credential-like value in it could not be replaced"
+        ),
+        "semantic_review_value_redacted": (
+            "a credential-like value was replaced by [withheld-by-yoetz:possible-credential]; "
+            "the rest of the item was sent"
         ),
         "semantic_reference_scope_reduced": (
             "references were left out to fit the packet's reference limit"

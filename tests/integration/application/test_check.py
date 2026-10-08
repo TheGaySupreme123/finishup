@@ -115,6 +115,7 @@ from yoetz.protocol.coverage import EvidenceImmutability
 from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind
 from yoetz.protocol.models import CheckRequest, CheckScopeModel, SemanticReason, SemanticStatus
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 _TASK = "tsk_30000000-0000-4000-8000-000000000001"
 _SESSION = "ses_30000000-0000-4000-8000-000000000001"
@@ -302,6 +303,7 @@ class _Ledger:
         semantic_withheld_item_ids: tuple[str, ...] = (),
         review_input_manifest: object | None = None,
         review_summary: str | None = None,
+        semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
     ) -> CheckCommitResult:
         assert frozen == self.frozen
         self.last_review_summary = review_summary
@@ -336,6 +338,8 @@ class _Ledger:
                 ("research-evidence/0.2.0", "work-integrity/0.3.0"),
             ),
             missing_for_assessment=missing_for_assessment,
+            semantic_withheld_item_ids=semantic_withheld_item_ids,
+            semantic_redacted_values=semantic_redacted_values,
         )
 
     async def fail_check_if_current(
@@ -1491,6 +1495,49 @@ async def test_succeeded_review_with_withheld_context_is_not_reported_as_full_co
     assert SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP not in clean.coverage.known_gaps
 
 
+@pytest.mark.anyio
+async def test_withheld_review_item_is_a_review_scoped_gap_not_content_redacted() -> None:
+    """Issue #982 (owner decision B2; regression from 860811ed, tb4n1 rs-archive S).
+
+    Withholding one item from the external reviewer used to stamp ``content_redacted`` on the
+    whole check, so local findings that never needed that item became unresolvable. The check now
+    records only the review-scoped ``semantic_review_item_withheld``.
+    """
+
+    from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
+
+    app = _App(semantic=True)
+    app.semantic_result = replace(
+        _succeeded(SemanticJudgment("no_material_discrepancy", ())),
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+    )
+    result = await execute_check_commit(app, _request("semantic_if_configured"))
+    assert SEMANTIC_REVIEW_ITEM_WITHHELD_GAP in result.coverage.known_gaps
+    assert "content_redacted" not in result.coverage.known_gaps
+
+
+@pytest.mark.anyio
+async def test_check_result_carries_redacted_value_refs_and_lines() -> None:
+    """PL2-1 (issue #982): the recorded check and its result name refs and lines, never values."""
+
+    values = (
+        SemanticRedactedValue(
+            "excerpt-a", "value_replaced", (3, 7), "evd_10000000-0000-4000-8000-000000000021"
+        ),
+        SemanticRedactedValue("excerpt-heuristic", "item_withheld", (2,)),
+    )
+    app = _App(semantic=True)
+    app.semantic_result = replace(
+        _succeeded(SemanticJudgment("no_material_discrepancy", ())),
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+        semantic_redacted_values=values,
+    )
+    result = await execute_check_commit(app, _request("semantic_if_configured"))
+    assert result.semantic_redacted_values == values
+    wire = check_internal_json(result)
+    assert wire["semantic_redacted_values"] == tuple(item.as_wire() for item in values)
+
+
 def _succeeded(judgment: SemanticJudgment) -> FinalSemanticEvaluation:
     digest = "sha256:" + "a" * 64
     return FinalSemanticEvaluation(
@@ -2244,3 +2291,21 @@ async def test_a_fresh_diff_answers_a_captured_edit_only_for_the_path_it_records
     else:
         assert [item.target_refs for item in checked.missing_for_assessment] == [(str(evd(1)),)]
         assert "semantic_missing_already_supplied" not in gaps
+
+
+def test_withheld_item_becomes_the_capture_baseline_of_raised_ai_findings() -> None:
+    """Issue #982 review: the item-withheld gap must reach the finding baseline in production.
+
+    Composition puts it in ``case_content_gaps`` (``_egress_case_content_gaps``); this is the
+    set the check stamps on every AI-powered finding the review raises.
+    """
+
+    from yoetz.application.check import semantic_capture_baseline_gaps
+    from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
+
+    result = replace(
+        _succeeded(SemanticJudgment("no_material_discrepancy", ())),
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+        case_content_gaps=(SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,),
+    )
+    assert SEMANTIC_REVIEW_ITEM_WITHHELD_GAP in semantic_capture_baseline_gaps(result)

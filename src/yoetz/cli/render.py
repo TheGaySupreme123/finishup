@@ -7,7 +7,11 @@ from enum import Enum
 from typing import Final, cast
 
 from yoetz.domain.check_totals import render_check_totals
-from yoetz.domain.receipts import check_time_change_gap_sentence
+from yoetz.domain.receipts import (
+    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+    check_time_change_gap_sentence,
+    semantic_redacted_value_text,
+)
 from yoetz.domain.review_input_render import (
     has_agent_suppliable_missing,
     render_missing_for_assessment_lines,
@@ -26,6 +30,7 @@ from yoetz.protocol.models import (
     OmittedContentModel,
     PublicErrorModel,
     ReceiptSuccessModel,
+    SemanticRedactedValueModel,
     StatusAdvicePageModel,
     StatusCheckAdmissionModel,
     StatusClosureReadinessModel,
@@ -50,6 +55,7 @@ from yoetz.protocol.recovery import (
     correction_for_invariant,
     directive_for,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 __all__ = [
     "bounded_failure_line",
@@ -57,6 +63,7 @@ __all__ = [
     "error_recovery_json",
     "local_recovery_json",
     "recovery_directive_json",
+    "credential_heuristic_line",
     "render_closure_readiness_lines",
     "render_error_recovery_lines",
     "render_hook_recovery_suffix",
@@ -354,6 +361,7 @@ def render_human_check(result: CheckSuccessModel) -> str:
         lines.append("Withheld review items (the reviewer continued without them):")
         for item in result.semantic_withheld_items:
             lines.append(f"- {item.item_id}: {_token(item.reason)}")
+    lines.extend(_semantic_redacted_value_lines(result.semantic_redacted_values))
     if result.coverage.known_gaps:
         lines.append("Coverage gaps: " + ", ".join(result.coverage.known_gaps))
         lines.extend(_check_time_change_sentences(result.coverage.known_gaps))
@@ -469,6 +477,46 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
     return tuple(lines)
 
 
+_FILTER_WORDS: Final = {"enforced": "on", "disabled": "off", "unknown": "unknown"}
+
+
+def credential_heuristic_line(repository: object, machine_default: object) -> str:
+    """One sentence for the external reviewer's possible-credential filter (issue #982).
+
+    Every human surface (``yoetz status``, provider status, the terminal interface) uses this
+    text for the same ``repository``/``machine_default`` pair, so they cannot disagree, and each
+    names the command that changes what it reports.
+    """
+
+    repo = repository if type(repository) is str and repository in _FILTER_WORDS else "unknown"
+    default = (
+        machine_default
+        if type(machine_default) is str and machine_default in _FILTER_WORDS
+        else "unknown"
+    )
+    line = (
+        "Possible-credential filter (external reviewer): "
+        f"{_FILTER_WORDS[repo]} for this repository; installation default {_FILTER_WORDS[default]}"
+    )
+    if repo == "disabled":
+        line += ". Turn it back on here with 'yoetz privacy credential-heuristic enable'"
+    if default == "disabled":
+        line += (
+            ". New repository grants start with it off; restore the default with "
+            "'yoetz privacy credential-heuristic enable --machine-default'"
+        )
+    return line
+
+
+def _credential_heuristic_lines(result: StatusSuccessModel) -> tuple[str, ...]:
+    """The possible-credential filter for the external reviewer (issue #982)."""
+
+    state = result.credential_heuristic
+    if state is None:
+        return ()
+    return (credential_heuristic_line(state.repository, state.machine_default),)
+
+
 def render_human_status(result: StatusSuccessModel) -> str:
     """Render current structural status without dumping the ledger."""
 
@@ -484,6 +532,7 @@ def render_human_status(result: StatusSuccessModel) -> str:
             f"{_count(result.closure_readiness.receipt_blocking_finding_count)}"
         ),
         *render_closure_readiness_lines(result.closure_readiness),
+        *_credential_heuristic_lines(result),
     ]
     if isinstance(result.page, StatusCompactPageModel):
         for item in result.page.items:
@@ -515,6 +564,7 @@ def render_human_status(result: StatusSuccessModel) -> str:
                 f"- {item.item_id}: {_token(item.reason)}"
                 for item in result.page.semantic_withheld_items
             )
+        lines.extend(_semantic_redacted_value_lines(result.page.semantic_redacted_values or ()))
         if result.page.admission is not None:
             lines.extend(render_check_admission_lines(result.page.admission))
     elif isinstance(result.page, StatusLineagePageModel):
@@ -700,6 +750,9 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
         withheld = _semantic_withheld_item_lines(document)
         if withheld:
             lines.extend(withheld)
+        raw_redacted = document.get("semantic_redacted_values")
+        if isinstance(raw_redacted, (list, tuple)):
+            lines.extend(_semantic_redacted_value_lines(cast(Sequence[object], raw_redacted)))
         provenance = document.get("semantic_provenance")
         if isinstance(provenance, Mapping):
             lines.extend(
@@ -712,6 +765,31 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     if result.suppressed_finding_count:
         lines.append(f"Suppressed findings: {result.suppressed_finding_count}")
     return "\n".join(lines)
+
+
+def _semantic_redacted_value_lines(items: Sequence[object]) -> list[str]:
+    """PL2-1: item refs and line numbers, then the fixed agent line once; never a value."""
+
+    values: list[SemanticRedactedValue] = []
+    for item in items:
+        try:
+            if isinstance(item, SemanticRedactedValueModel):
+                values.append(
+                    SemanticRedactedValue(
+                        item.item_id, item.disposition, tuple(item.lines), item.source_ref
+                    )
+                )
+            else:
+                values.append(SemanticRedactedValue.from_wire(item))
+        except TypeError, ValueError:
+            continue
+    if not values:
+        return []
+    return [
+        "Withheld from external review (refs and lines only; no value is shown):",
+        *(f"- {semantic_redacted_value_text(value)}" for value in values),
+        SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+    ]
 
 
 def _semantic_withheld_item_lines(document: Mapping[str, JsonValue]) -> list[str]:

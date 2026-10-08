@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
@@ -40,6 +41,7 @@ from yoetz.domain.receipts import (
     COMPLETION_CLAIM_OUTSIDE_PLAN_GAP,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
+    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     PolicyVersionEntry,
     ReceiptConclusion,
     ReceiptDocument,
@@ -107,6 +109,7 @@ from yoetz.protocol.models import (
     SemanticReason,
     SemanticStatus,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 _DIGEST = "sha256:" + "1" * 64
 _HEAD = "sha256:" + "2" * 64
@@ -157,6 +160,7 @@ def _check(
     review_input_manifest: dict[str, object] | None = None,
     semantic_withheld_item_ids: tuple[str, ...] = (),
     totals: JsonObject | None = None,
+    semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
 ) -> CheckRecordedPayload:
     return CheckRecordedPayload(
         mode=(
@@ -201,6 +205,7 @@ def _check(
         projection_version="yoetz/0.1.0",
         semantic_withheld_item_ids=semantic_withheld_item_ids,
         totals=totals,
+        semantic_redacted_values=semantic_redacted_values,
     )
 
 
@@ -1458,6 +1463,82 @@ def test_receipt_carries_opaque_withheld_item_identity_and_reason() -> None:
     rendered = render_receipt_human(receipt, markdown=False)
     assert "excerpt-heuristic" in rendered
     assert "never_send_heuristic" in rendered
+
+
+_REDACTED = (
+    SemanticRedactedValue(
+        "excerpt-a", "value_replaced", (3, 7), "evd_10000000-0000-4000-8000-000000000021"
+    ),
+    SemanticRedactedValue("excerpt-heuristic", "item_withheld", (2,)),
+)
+
+
+def test_check_event_round_trips_redacted_values_and_old_events_decode() -> None:
+    """PL2-1 (issue #982): optional 1.4.0 field; events without it decode unchanged."""
+
+    from yoetz.domain.events import (
+        REVIEW_CHECK_EVENT_SCHEMA_VERSION,
+        EventSchema,
+        decode_payload,
+        encode_payload,
+    )
+
+    gaps = ("semantic_review_item_withheld", "semantic_review_value_redacted")
+    check = _check(
+        CheckVerdict.NO_ISSUE_DETECTED,
+        _coverage(gaps=gaps),
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+        totals=_totals(),
+        semantic_redacted_values=_REDACTED,
+    )
+    schema = EventSchema("check_recorded", REVIEW_CHECK_EVENT_SCHEMA_VERSION)
+    wire = encode_payload(check)
+    assert isinstance(wire, Mapping)
+    entries = cast(tuple[Mapping[str, object], ...], wire["semantic_redacted_values"])
+    assert entries[0]["lines"] == (3, 7)
+    assert "abcdefgh" not in repr(wire)
+    assert decode_payload(schema, wire) == check
+    old = _check(
+        CheckVerdict.NO_ISSUE_DETECTED,
+        _coverage(gaps=gaps),
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+        totals=_totals(),
+    )
+    old_wire = encode_payload(old)
+    assert isinstance(old_wire, Mapping)
+    assert "semantic_redacted_values" not in old_wire
+    decoded_old = decode_payload(schema, old_wire)
+    assert isinstance(decoded_old, CheckRecordedPayload)
+    assert decoded_old.semantic_redacted_values == ()
+    with pytest.raises(ValueError):
+        # An item_withheld entry must name a withheld item.
+        _check(
+            CheckVerdict.NO_ISSUE_DETECTED,
+            _coverage(gaps=gaps),
+            totals=_totals(),
+            semantic_redacted_values=_REDACTED,
+        )
+
+
+def test_receipt_carries_redacted_value_lines_and_the_fixed_agent_line() -> None:
+    gaps = ("semantic_review_item_withheld", "semantic_review_value_redacted")
+    receipt = _build(
+        _context(
+            coverage=_coverage(gaps=gaps),
+            gaps=tuple(CaseGap(code, code, ()) for code in gaps),
+            check=_check(
+                CheckVerdict.NO_ISSUE_DETECTED,
+                _coverage(gaps=gaps),
+                semantic_withheld_item_ids=("excerpt-heuristic",),
+                semantic_redacted_values=_REDACTED,
+            ),
+        )
+    )
+    assert receipt.semantic_redacted_values == _REDACTED
+    for markdown in (True, False):
+        rendered = render_receipt_human(receipt, markdown=markdown)
+        assert rendered.count(SEMANTIC_REDACTED_VALUES_AGENT_LINE) == 1
+        assert "value replaced, lines 3, 7" in rendered
 
 
 def test_receipt_omits_absent_semantic_provenance_for_historical_bytes() -> None:

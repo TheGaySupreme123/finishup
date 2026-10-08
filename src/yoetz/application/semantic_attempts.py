@@ -1084,7 +1084,9 @@ async def run_durable_semantic_attempts(
         write is retryable or an explicit persistence-unknown terminal outcome.
         """
 
-        if not getattr(evaluation, "semantic_withheld_item_ids", ()):
+        if not getattr(evaluation, "semantic_withheld_item_ids", ()) and not getattr(
+            evaluation, "semantic_redacted_values", ()
+        ):
             return None, False
         try:
             return await publish_success_response(handle, evaluation), False

@@ -1507,8 +1507,18 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
             "observation_selection_runtime",
             "privacy_receipt_view",
             "privacy_receipts_list_body",
+            "privacy_get_setup_body",
             "error_body",
         }
+        # Issue #982: the repository setup read gains only the optional, derived
+        # possible-credential filter pair; removing it recovers the frozen 2.8 body exactly.
+        v29_setup = json.loads(json.dumps(v29_defs["privacy_get_setup_body"]))
+        for branch in v29_setup["oneOf"]:
+            pair = branch["properties"].pop("credential_heuristic", None)
+            if pair is not None:
+                assert pair["required"] == ["machine_default", "repository"]
+                assert "credential_heuristic" not in branch.get("required", [])
+        assert v29_setup == v28_defs["privacy_get_setup_body"]
         # Issue #921: the receipt page gains only optional, paired partial-listing fields, and the
         # error vocabulary gains only the closed, non-retryable store-side reason.
         v28_page = cast(dict[str, Any], v28_defs["privacy_receipts_list_body"])
