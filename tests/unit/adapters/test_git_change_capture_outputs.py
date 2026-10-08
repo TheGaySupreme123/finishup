@@ -160,3 +160,70 @@ def test_small_untracked_files_are_read_ahead_of_the_untracked_file_limit(
     text = _text(GitChangeCaptureAdapter().capture(os.fspath(repository), None))
 
     assert "+numpy==2.1" in text
+
+
+def _commit_all(repository: Path) -> None:
+    _git(repository, "add", "-A")
+    _git(
+        repository,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "base",
+    )
+
+
+def test_small_tracked_files_take_the_per_file_read_budget_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review round 2: the per-file fallback reads small files before large scratch."""
+
+    repository = _repository(tmp_path)
+    for index in range(4):
+        (repository / f"a_scratch_{index}.txt").write_text("base\n", encoding="utf-8")
+    (repository / "requirements.txt").write_text("numpy==2.0\n", encoding="utf-8")
+    _commit_all(repository)
+    for index in range(4):
+        (repository / f"a_scratch_{index}.txt").write_text(
+            "".join(f"row {row}\n" for row in range(500)), encoding="utf-8"
+        )
+    (repository / "requirements.txt").write_text("numpy==2.1\n", encoding="utf-8")
+    monkeypatch.setattr(capture_module, "_WHOLE_DIFF_LIMIT", 1_024)
+    monkeypatch.setattr(capture_module, "_MAX_PER_FILE_DIFFS", 2)
+
+    text = _text(GitChangeCaptureAdapter().capture(os.fspath(repository), None))
+
+    assert "+numpy==2.1" in text
+
+
+def test_object_verification_budget_never_withholds_a_declared_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review round 2: large scratch blobs must not spend a deliverable's verification."""
+
+    repository = _repository(tmp_path)
+    for index in range(4):
+        (repository / f"a_scratch_{index}.txt").write_text(
+            f"{index}\n" + "x" * 12_497 + "\n", encoding="utf-8"
+        )
+    (repository / "z_output.py").write_text("RESULT = 0\n", encoding="utf-8")
+    _commit_all(repository)
+    for index in range(4):
+        (repository / f"a_scratch_{index}.txt").write_text(
+            f"{index} changed\n" + "x" * 12_497 + "\n", encoding="utf-8"
+        )
+    (repository / "z_output.py").write_text("RESULT = 1\n", encoding="utf-8")
+    # Four 12,500-byte scratch base blobs spend the whole budget in path order.
+    monkeypatch.setattr(capture_module, "_MAX_TOTAL_VERIFIED_OBJECT_BYTES", 50_000)
+
+    text = _text(
+        GitChangeCaptureAdapter().capture(
+            os.fspath(repository), None, priority_paths=("z_output.py",)
+        )
+    )
+
+    assert "+RESULT = 1" in text

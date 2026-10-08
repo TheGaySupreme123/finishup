@@ -370,6 +370,26 @@ def _section_rank(section: _Section, priority: tuple[bytes, ...]) -> tuple[int, 
     return (2, 0, section.path)
 
 
+# A tracked file whose numstat line counts sum to at most this many is ranked as small before its
+# diff text exists (the per-file read fallback, tb4n2 R7).
+_SMALL_SECTION_LINES: Final = 64
+
+
+def _tracked_read_rank(section: _Section, priority: tuple[bytes, ...]) -> tuple[int, int, bytes]:
+    """Read order of a tracked file before its diff is loaded: deliverables, small, the rest."""
+
+    tier = _priority_tier(section.path, priority)
+    if tier is not None:
+        return (0, tier, section.path)
+    if (
+        section.added.isdigit()
+        and section.deleted.isdigit()
+        and int(section.added) + int(section.deleted) <= _SMALL_SECTION_LINES
+    ):
+        return (1, 0, section.path)
+    return (2, 0, section.path)
+
+
 def _untracked_order(
     pinned: _Workspace, paths: list[bytes], priority: tuple[bytes, ...], deadline: float
 ) -> list[bytes]:
@@ -1377,10 +1397,12 @@ class GitChangeCaptureAdapter:
             self._per_file_diffs(
                 pinned,
                 base_id,
-                sorted(sections, key=lambda item: _section_rank(item, priority)[:2]),
+                sorted(sections, key=lambda item: _tracked_read_rank(item, priority)),
                 deadline,
             )
-        self._verify_section_objects(pinned, object_format, entries, sections, identities, deadline)
+        self._verify_section_objects(
+            pinned, object_format, entries, sections, identities, deadline, priority
+        )
         return read
 
     def _rename_pairs(
@@ -1473,6 +1495,7 @@ class GitChangeCaptureAdapter:
         sections: list[_Section],
         identities: dict[bytes, _Identity | None],
         deadline: float,
+        priority: tuple[bytes, ...] = (),
     ) -> None:
         """Withhold every shown diff whose Git objects do not hash to their own names.
 
@@ -1485,7 +1508,12 @@ class GitChangeCaptureAdapter:
 
         verified: dict[str, _OmitReason | None] = {}
         budget = [_MAX_TOTAL_VERIFIED_OBJECT_BYTES]
-        for entry, section in zip(entries, sections, strict=True):
+        # Deliverables, then small files, take the verification budget first (tb4n2 R7): a
+        # budget spent on large scratch blobs never withholds a declared output.
+        for entry, section in sorted(
+            zip(entries, sections, strict=True),
+            key=lambda pair: _section_rank(pair[1], priority),
+        ):
             if section.text is None:
                 continue
             for oid, mode in ((entry.src_oid, entry.src_mode), (entry.dst_oid, entry.dst_mode)):
