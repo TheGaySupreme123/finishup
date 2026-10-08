@@ -208,6 +208,8 @@ __all__ = [
     "ReviewPacketDisclosureResult",
     "review_input_manifest",
     "review_input_manifest_to_json",
+    "declared_output_capture_order",
+    "declared_output_capture_refs",
     "repair_evidence_refs",
     "SemanticPacketView",
     "semantic_case_packet_view",
@@ -1870,6 +1872,8 @@ def _match_assessments(
 _MAX_DECLARED_OUTPUT_CAPTURES: Final = 8
 _CLAIM_LINKED_CAPTURES_PER_OUTPUT: Final = 2
 _DECLARED_OUTPUT_CAPTURES_PER_OUTPUT: Final = 3
+# Sorts a reserved declared-output row ahead of every recency key (``-occurred_order``).
+_DECLARED_ORDER_OFFSET: Final = 2**62
 _DECLARED_OUTPUT_KINDS: Final = frozenset({"file", "directory"})
 
 
@@ -1899,6 +1903,14 @@ def _names_output(reference: str, output: str) -> bool:
 def declared_output_capture_refs(
     projection: ProjectionState, allowed: frozenset[str], workspace_root: str | None
 ) -> frozenset[str]:
+    """The set form of ``declared_output_capture_order``."""
+
+    return frozenset(declared_output_capture_order(projection, allowed, workspace_root))
+
+
+def declared_output_capture_order(
+    projection: ProjectionState, allowed: frozenset[str], workspace_root: str | None
+) -> tuple[str, ...]:
     """Evidence that records a declared ``role: output`` item lying outside the workspace.
 
     tb4n2 R7 (P1-15, cargo-flight-dispatch ``/output/flight_plan.json``): the check-time change
@@ -1927,7 +1939,7 @@ def declared_output_capture_refs(
             if outside is not None:
                 outputs.append((str(obligation), outside))
     if not outputs:
-        return frozenset()
+        return ()
     evidence = {
         str(key): row
         for key, row in projection.evidence.items()
@@ -2006,7 +2018,7 @@ def declared_output_capture_refs(
         for refs in per_output:
             if depth < len(refs) and len(selected) < _MAX_DECLARED_OUTPUT_CAPTURES:
                 selected.setdefault(refs[depth])
-    return frozenset(selected)
+    return tuple(selected)
 
 
 def repair_evidence_refs(projection: ProjectionState, allowed: frozenset[str]) -> frozenset[str]:
@@ -2639,7 +2651,7 @@ def _select_targeted_excerpts(
     excerpt_byte_budget: int,
     excerpt_count_budget: int | None = None,
     before_lower_ranks: _LowerRankAdmission | None = None,
-    declared_output_refs: frozenset[str] = frozenset(),
+    declared_output_refs: tuple[str, ...] = (),
     binary_paths: frozenset[str] = frozenset(),
     workspace_root: str | None = None,
 ) -> _ExcerptSelection:
@@ -2663,6 +2675,9 @@ def _select_targeted_excerpts(
 
     repair_refs = repair_evidence_refs(projection, allowed)
     linked_subjects: set[str] = set(repair_refs) | set(declared_output_refs)
+    # Admission follows the round-robin order across outputs, never plain recency, so newer
+    # captures of one deliverable cannot take every slot from another (Codex review round 3).
+    declared_position = {ref: index for index, ref in enumerate(declared_output_refs)}
     for finding in findings:
         linked_subjects.update(str(ref) for ref in finding.subject_refs)
     for claim_id, _ in effective_claim_items(projection):
@@ -2885,7 +2900,20 @@ def _select_targeted_excerpts(
     def rank(index: int) -> tuple[int, int, int, int, bytes, bytes]:
         candidate = candidates[index]
         linked = bool(candidate.identity_refs & linked_subjects)
-        if index in current_diffs or candidate.identity_refs & declared_output_refs:
+        declared = [
+            declared_position[ref] for ref in candidate.identity_refs if ref in declared_position
+        ]
+        if declared:
+            # Ahead of the current diff's other rows, in the reservation's own order.
+            return (
+                _RANK_CURRENT_DIFF,
+                0,
+                min(declared) - _DECLARED_ORDER_OFFSET,
+                0,
+                candidate.source_ref.encode("ascii"),
+                candidate.item_base.encode("ascii"),
+            )
+        if index in current_diffs:
             klass = _RANK_CURRENT_DIFF
         elif index in reserved_runs:
             klass = _RANK_LATEST_VERIFICATION
@@ -4423,7 +4451,7 @@ def _build_semantic_case_once(
             excerpt_count_budget=selection.max_excerpts - len(targeted),
             excerpt_byte_budget=(max(0, total_excerpt_budget - excerpt_bytes_used)),
             before_lower_ranks=check_time_change_parts if check_change_parts else None,
-            declared_output_refs=declared_output_capture_refs(projection, allowed, workspace_root),
+            declared_output_refs=declared_output_capture_order(projection, allowed, workspace_root),
             # A suffix-less binary the change marked (a compiled ``solver``) gets the same
             # "not sent" notice as a named binary type (tb4n2 P1-12).
             binary_paths=check_change_binary_paths(

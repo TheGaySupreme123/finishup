@@ -174,9 +174,13 @@ content-returning read needed its own decision. This is that decision, for exact
    #1016): files at or under a requested `role: output` item come first (then requested files with
    no role, an `obligation_published` 1.0.0 deliverable), then files whose rendered section is at
    most 4 KiB, then the rest, each group in path order. The same order decides which untracked
-   files the untracked-file limit reads and which tracked files take the per-file read budget, so a
-   cut change or a narrowed packet keeps the deliverables and drops scratch first. The declared
-   paths only order the change; they never widen what is read.
+   files the untracked-file limit reads (sized by a metadata-only stat of up to 4096 paths) and
+   which tracked files the object-verification budget covers first. Before a tracked file's diff
+   is read (the per-file fallback when the whole diff is too large), "small" means at most 64
+   changed lines by Git's numstat, since its byte size is not yet known. A cut change or a
+   narrowed packet therefore keeps the deliverables and drops scratch first. Declared outputs
+   outrank role-less requested files. The declared paths only order the change; they never widen
+   what is read.
 7. **Frozen with the job.** The object's pointer, or the fact that it was unavailable, is frozen
    into the job's semantic-case object. A recovered or resumed job reloads exactly that object and
    never re-reads a working tree that has since moved, so the case digest is unchanged. The object

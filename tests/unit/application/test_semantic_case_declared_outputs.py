@@ -338,3 +338,48 @@ def test_repeats_of_one_output_never_crowd_out_another() -> None:
     refs = _refs(case)
     assert str(evd(1)) in refs
     assert refs == frozenset({str(evd(1)), str(evd(10)), str(evd(9)), str(evd(8))})
+
+
+def test_two_slots_carry_both_outputs_not_two_versions_of_one() -> None:
+    """Codex review round 3: admission keeps the round-robin order, not plain recency."""
+
+    plan = plan_record(PlanPublishedPayload(1, "Write both outputs", (obl(1),)), 1)
+    obligation = obligation_record(
+        ObligationPublishedPayload(
+            obl(1),
+            "Write both outputs",
+            "Both exist",
+            ObligationStatus.OPEN,
+            requested_items=(
+                RequestedItem(RequestedItemKind.FILE, "/output/a.json", RequestedItemRole.OUTPUT),
+                RequestedItem(RequestedItemKind.FILE, "/output/b.json", RequestedItemRole.OUTPUT),
+            ),
+        ),
+        2,
+    )
+    evidence = {evd(1): _evidence(1, 10, reference="/output/b.json", marker="B_MARKER")} | {
+        evd(n): _evidence(n, 10 + n, reference="/output/a.json", marker=f"A_MARKER {n}")
+        for n in range(2, 6)
+    }
+    case = make_case(
+        plans={1: plan},
+        obligations={obl(1): obligation},
+        evidence=evidence,
+        extra_refs=(obl(1), *evidence),
+    )
+    profile = ReviewContextProfile.EXPANDED
+    semantic = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000001018",
+        frozen_case=case,
+        dependency_digest="sha256:" + "c" * 64,
+        findings=(),
+        review_context_profile=profile,
+        review_selection=replace(ReviewSelectionPolicy.for_profile(profile), max_excerpts=2),
+        policy_id="research-evidence",
+        policy_version="0.1.0",
+        workspace_root="/app",
+    )
+
+    excerpts = b"".join(item.content for item in semantic.items if item.section == "excerpt")
+    assert b"B_MARKER" in excerpts
+    assert b"A_MARKER 5" in excerpts
