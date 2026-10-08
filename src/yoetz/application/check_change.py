@@ -24,6 +24,7 @@ from yoetz.domain.events import (
     CheckChangePartialFile,
     CheckChangeShownFiles,
     RequestedItemKind,
+    RequestedItemRole,
 )
 from yoetz.domain.privacy import ReviewSelectionPolicy
 from yoetz.domain.receipts import CHECK_TIME_CHANGE_UNAVAILABLE_REASONS
@@ -506,6 +507,7 @@ async def record_task_change_base(
 
 
 _MAX_REQUESTED_OUTPUT_PROBES: Final = 64
+_PROBED_KINDS: Final = frozenset({RequestedItemKind.FILE, RequestedItemKind.DIRECTORY})
 _NOT_A_PLAIN_PATH: Final = re.compile(r"[\s*?\[\]{}~$`]|://")
 
 
@@ -538,13 +540,22 @@ async def requested_output_states(
     """
 
     items: list[tuple[ObligationId, int, str]] = []
+    directories: set[tuple[ObligationId, int]] = set()
     for obligation in effective_obligations(projection):
         payload = projection.obligations[obligation].payload
         if payload is None:
             continue
         for index, item in enumerate(payload.requested_items):
-            if item.item_kind is RequestedItemKind.FILE and _plain_path(item.value):
+            # A declared input is never an output fact, so it is not read at all (#1002). A
+            # directory is located like a file; an existing one that holds no file is absent.
+            if (
+                item.item_kind in _PROBED_KINDS
+                and item.role is not RequestedItemRole.INPUT
+                and _plain_path(item.value)
+            ):
                 items.append((obligation, index, item.value))
+                if item.item_kind is RequestedItemKind.DIRECTORY:
+                    directories.add((obligation, index))
     if not items:
         return {}
     unverified = {
@@ -592,10 +603,15 @@ async def requested_output_states(
         if result.location == "outside" or result.relative is None:
             states[(obligation, index)] = RequestedOutputState("outside")
             continue
-        listed = result.relative in changed
+        listed = _changed_at_or_under(result.relative, changed)
+        exists = result.exists
+        if (obligation, index) in directories and exists and result.holds_file is False:
+            # An empty directory (or one holding only empty directories) delivers nothing; Git
+            # cannot even record it. Unknown (``None``) never makes it absent.
+            exists = False
         states[(obligation, index)] = RequestedOutputState(
             "inside",
-            exists=result.exists,
+            exists=exists,
             ignored=result.ignored,
             # Local excludes are not delivered with the repository; a .gitignore the task's own
             # change created is the work's. A pre-existing .gitignore the task merely edited is
@@ -608,6 +624,24 @@ async def requested_output_states(
             ),
             # A truncated listing cannot prove a path unchanged.
             changed=True if listed else (None if capture.truncated else False),
-            deleted=result.relative in deleted,
+            # A requested directory whose files the change deleted was deleted, not left absent.
+            deleted=result.relative != "." and _changed_at_or_under(result.relative, deleted),
         )
     return states
+
+
+def _changed_at_or_under(relative: str, changed: set[str]) -> bool:
+    """Whether the change touches ``relative`` itself or any path beneath it.
+
+    The capture lists files, never directories (untracked entries come from ``git ls-files
+    --others``), so a requested directory such as ``src`` is changed when a file under it is
+    (tb4n1 E1: four new ``src/*.sv`` files left ``/app/src`` reported unchanged). The root
+    (``.``) is changed by any change.
+    """
+
+    if relative == ".":
+        return bool(changed)
+    if relative in changed:
+        return True
+    prefix = relative.rstrip("/") + "/"
+    return any(path.startswith(prefix) for path in changed)

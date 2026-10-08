@@ -8,14 +8,18 @@ from typing import Final, cast
 from yoetz.domain.events import (
     ActionKind,
     ClaimKind,
+    ClaimRecordedPayload,
     ClaimRecordedPayloadV1_1,
+    EvidenceKind,
     ObligationChangeKind,
     ObligationStatus,
     ResponseDisposition,
     ResultOutcome,
 )
 from yoetz.domain.findings import FindingKind, FindingOrigin
+from yoetz.domain.observation_selection import command_runner_class
 from yoetz.domain.values import (
+    EventId,
     EvidenceId,
     ObligationId,
     ResultId,
@@ -72,6 +76,7 @@ __all__ = [
     "WORK_INTEGRITY_POLICY_ID",
     "WORK_INTEGRITY_POLICY_PACK",
     "WORK_INTEGRITY_POLICY_VERSION",
+    "reportable_absent_outputs",
     "work_integrity_findings",
 ]
 
@@ -248,7 +253,8 @@ def _completion_findings(case: DeterministicCase) -> list[DeterministicAssessmen
             if obligation_record is None or obligation_record.payload is None:
                 continue
             if (
-                obligation_record.payload.status is not ObligationStatus.OPEN
+                # acknowledged_not_done (#1002) is not resolved: treated like open here.
+                obligation_record.payload.status is ObligationStatus.RESOLVED
                 or obligation_record.plan_change is ObligationChangeKind.WAIVED
             ):
                 continue
@@ -280,7 +286,10 @@ def _requested_item_findings(
     so it raises nothing (#977, TB4: 86% of all findings were this plan-stage notice).
     ``absent_outputs`` comes from the check-time workspace read: a requested file that does not
     exist is reported whatever was published about it, because naming a file in
-    ``attempted_items`` does not create it. Obligations a recorded blocker decision names are
+    ``attempted_items`` does not create it, but only once acting on that obligation has started
+    (an edit, command or other non-research action linked to it) or a completion claim stands
+    (tb4n1 E4). Each check re-reads the workspace, so the fact clears as soon as the file exists,
+    whatever the observation coverage. Obligations a recorded blocker decision names are
     disclosed through their blocker gap instead.
     """
 
@@ -297,10 +306,17 @@ def _requested_item_findings(
         if payload is None or obligation_ref in blocked:
             continue
         attempted = attempted_items_for_obligation(case.projection, obligation_ref)
+        # tb4n1 E4: the pre-work check the guidance asks for found every requested output absent
+        # (48 of 68 first findings), because the file obviously does not exist yet. An absent
+        # output is reported once acting on that obligation has started, or once a completion
+        # claim stands; before then it is the plan, exactly like an unattempted item.
+        reportable = _completion_claim_covers(case, obligation_ref) or (
+            started and _obligation_acted_on(case, obligation_ref)
+        )
         unattempted = started and any(
             item.value not in attempted for item in payload.requested_items
         )
-        absent = any(
+        absent = reportable and any(
             (obligation_ref, index) in absent_outputs
             for index in range(len(payload.requested_items))
         )
@@ -320,6 +336,73 @@ def _requested_item_findings(
             )
         )
     return output
+
+
+_NON_PRODUCING_ACTIONS: Final = frozenset({ActionKind.RESEARCH, ActionKind.REVIEW})
+
+
+def reportable_absent_outputs(
+    case: DeterministicCase,
+    absent_outputs: frozenset[tuple[ObligationId, int]],
+) -> frozenset[tuple[ObligationId, int]]:
+    """The absent requested outputs this case reports: those whose obligation work has begun.
+
+    The same rule ``requested_item_never_attempted`` applies (tb4n1 E4), shared so the AI-powered
+    review packet's ``requested_output_absent`` task fact never runs ahead of the finding: a
+    completion claim covering the obligation, or acting started and a cooperative action works on
+    that obligation.
+    """
+
+    if not absent_outputs:
+        return absent_outputs
+    started = acting_started(
+        case.projection,
+        observed_event_ids_from_coverage(case.coverage_by_ref),
+        cooperative_event_ids_from_coverage(case.coverage_by_ref),
+    )
+    return frozenset(
+        pair
+        for pair in absent_outputs
+        if _completion_claim_covers(case, pair[0])
+        or (started and _obligation_acted_on(case, pair[0]))
+    )
+
+
+def _completion_claim_covers(case: DeterministicCase, obligation_ref: ObligationId) -> bool:
+    """Whether an effective completion claim names this obligation, or claims the whole task."""
+
+    return any(
+        record.payload is not None
+        and record.payload.claim_kind is ClaimKind.COMPLETION
+        and (not record.payload.obligation_refs or obligation_ref in record.payload.obligation_refs)
+        for _, record in effective_claim_items(case.projection)
+    )
+
+
+def _obligation_acted_on(case: DeterministicCase, obligation_ref: ObligationId) -> bool:
+    """Whether a recorded action works on this obligation, not merely investigates it.
+
+    Only the agent's own (cooperative) actions count; hook-observed actions name no obligation.
+    Attribution follows ``attempted_items_for_obligation``: an action with no ``obligation_refs``
+    is global and covers every obligation; one that names obligations covers only those. Only an
+    ``edit``, ``command`` or ``other`` action counts. Research and review actions read; they never
+    create a requested file.
+    """
+
+    cooperative = cooperative_event_ids_from_coverage(case.coverage_by_ref)
+    for record in case.projection.actions.values():
+        action = record.payload
+        if (
+            action is None
+            or action.action_kind in _NON_PRODUCING_ACTIONS
+            or record.source_event_id not in cooperative
+        ):
+            # A hook-observed action carries no obligation_refs, so it would read as global and
+            # mark every obligation acted on after any `ls` (adversarial review of E4).
+            continue
+        if not action.obligation_refs or obligation_ref in action.obligation_refs:
+            return True
+    return False
 
 
 def _failed_work_findings(case: DeterministicCase) -> list[DeterministicAssessment]:
@@ -472,18 +555,23 @@ def _observed_verification_facts(
 
 
 def _uncorroborated_completion_findings(case: DeterministicCase) -> list[DeterministicAssessment]:
-    """A completion claim must cite an observed verification run made after the latest edit.
+    """A completion claim must cite a verification made after the latest observed edit.
 
     Applies only when hook observation recorded an edit or a verification run in this task, so a
     host without hooks keeps its ordinary coverage disclosure instead of an unanswerable finding.
     The support chain is the claim's ``supporting_refs`` and ``limitation_refs`` plus the
     resolution evidence of the resolved obligations it names: an honestly disclosed failing run is
-    corroboration too. A rerun of the check changes none of these relations.
+    corroboration too. Self-generated evidence stays admissible (#977 item 5, ADR-033; tb4n1 E7):
+    a hook-observed verification run, or the agent's own admissible verification record (a
+    ``command`` result or ``test_result``/``command_output`` evidence) published after the latest
+    observed edit, satisfies the rule. Only a chain whose every verification predates that edit,
+    or that cites none, is reported. A rerun of the check changes none of these relations.
     """
 
     latest_edit, verification_observed, runs = _observed_verification_facts(case)
     if latest_edit is None and not verification_observed:
         return []
+    observed = observed_event_ids_from_coverage(case.coverage_by_ref)
     after = latest_edit or 0
     output: list[DeterministicAssessment] = []
     for claim_id, record in effective_claim_items(case.projection):
@@ -499,6 +587,10 @@ def _uncorroborated_completion_findings(case: DeterministicCase) -> list[Determi
                 chain.update(obligation.payload.resolution_evidence_refs)
         if any(runs.get(ref, -1) > after for ref in chain):
             continue
+        if any(
+            _self_published_verification_after(case, claim, ref, after, observed) for ref in chain
+        ):
+            continue
         output.append(
             build_policy_assessment(
                 case,
@@ -510,6 +602,65 @@ def _uncorroborated_completion_findings(case: DeterministicCase) -> list[Determi
             )
         )
     return output
+
+
+_SELF_VERIFICATION_EVIDENCE: Final = frozenset(
+    {EvidenceKind.TEST_RESULT, EvidenceKind.COMMAND_OUTPUT}
+)
+
+
+def _self_published_verification_after(
+    case: DeterministicCase,
+    claim: ClaimRecordedPayload,
+    ref: str,
+    after: int,
+    observed: frozenset[EventId],
+) -> bool:
+    """Whether ``ref`` is the agent's own verification record published after frontier ``after``.
+
+    Hook-observed records keep their verification-class rule in ``_observed_verification_facts``;
+    this admits only cooperative records: a ``command`` action's result (a disclosed failing one
+    included) or ``test_result``/``command_output`` evidence, admissible for the claim.
+    """
+
+    support = cast(FindingBasisRef, ref)
+    admissible = _claim_support_is_admissible(case, claim.claim_kind, claim.subject_state, support)
+    if ref.startswith("evd_"):
+        evidence = case.projection.evidence.get(EvidenceId(ref))
+        return (
+            admissible
+            and evidence is not None
+            and evidence.payload is not None
+            and evidence.source_event_id not in observed
+            and evidence.payload.evidence_kind in _SELF_VERIFICATION_EVIDENCE
+            and evidence.source_frontier > after
+        )
+    if ref.startswith("res_"):
+        result = case.projection.results.get(ResultId(ref))
+        if (
+            result is None
+            or result.payload is None
+            or result.source_event_id in observed
+            or result.source_frontier <= after
+            or not (admissible or _is_limitation(claim, ref))
+        ):
+            return False
+        action = case.projection.actions.get(result.payload.action_id)
+        if action is None or action.payload is None:
+            return False
+        command = action.payload.command
+        # The same verification-class rule as for observed runs: a published exploration or VCS
+        # command (`ls`, `git status`) verifies nothing (adversarial review of E7).
+        return (
+            action.payload.action_kind is ActionKind.COMMAND
+            and command is not None
+            and command_runner_class({"command": command}) not in _NON_VERIFICATION_RUNNERS
+        )
+    return False
+
+
+def _is_limitation(claim: ClaimRecordedPayload, ref: str) -> bool:
+    return type(claim) is ClaimRecordedPayloadV1_1 and ref in claim.limitation_refs
 
 
 def _orphan_result_findings(case: DeterministicCase) -> list[DeterministicAssessment]:

@@ -201,6 +201,10 @@ tokens, never the statement, plan, obligation or command prose.
    evidence alone corroborates but never makes it apply), so a
    host without hooks keeps its coverage disclosure instead of an unanswerable finding. Repair:
    replace the claim citing the observed `res_` id from `status view=results`.
+   *Amended by ADR-033 (tb4n1 E7, #987):* self-generated evidence stays admissible, so the
+   agent's own admissible `command` result or `test_result`/`command_output` evidence published
+   after the latest hook-observed edit also satisfies the rule; it fires only when every cited
+   verification predates that edit or none is cited.
 3. *Test-edit justification.* An edit to a pre-existing test file is also justified when an
    effective obligation citing the statement event lists the file as a `requested_items` entry with
    `item_kind` `file` (exact repository-relative path, `./` form, absolute path ending in the

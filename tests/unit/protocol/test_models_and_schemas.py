@@ -323,7 +323,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("status", "findings"): 125,
     ("status", "history"): 62,
     ("status", "lineage"): 16,
-    ("status", "obligations"): 33,
+    ("status", "obligations"): 39,
     ("status", "operation"): 48,
     ("status", "project"): 67,
     ("status", "results"): 11,
@@ -441,10 +441,12 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "operations/status-result-1.4.0.schema.json",
         "closure_readiness",
     ),
-    ("StatusObligationItemModel", "operations/status-result-1.1.0.schema.json", "obligation_item"),
+    # The unreleased 1.4.0 obligations row shows the acknowledgement reason (#1002).
+    ("StatusObligationItemModel", "operations/status-result-1.4.0.schema.json", "obligation_item"),
+    # The unreleased 1.4.0 obligations view shows directory items and their role (#1002).
     (
         "StatusRequestedItemModel",
-        "operations/status-result-1.1.0.schema.json",
+        "operations/status-result-1.4.0.schema.json",
         "status_requested_item",
     ),
     (
@@ -2483,7 +2485,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     rules = cast(tuple[Any, ...], getattr(models, "_RESULT_LEAF_RULES"))
 
     derived_patterns = _derived_result_success_patterns(catalog)
-    assert len(derived_patterns) == 1404
+    assert len(derived_patterns) == 1410
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2492,7 +2494,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert derived_counts == _EXPECTED_RESULT_PATTERN_COUNTS
 
     assert type(rules) is tuple
-    assert len(rules) == 1431
+    assert len(rules) == 1437
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {
@@ -2501,7 +2503,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1404
+    assert len(registry_patterns) == 1410
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)
@@ -2948,6 +2950,12 @@ def _expected_nonpublish_content_rules(
         (
             "status",
             "obligations",
+            "/page/items/*/acknowledged_not_done_reason",
+            obligation_text,
+        ),
+        (
+            "status",
+            "obligations",
             "/page/items/*/description",
             obligation_text,
         ),
@@ -3108,7 +3116,7 @@ def test_schema_catalog_reports_complete_registry() -> None:
     assert SCHEMA_NAMESPACE == "https://schemas.yoetz.dev/0.1/"
     assert SCHEMA_MANIFEST_SCHEMA == "yoetz.schema-manifest/1.0.0"
     assert SCHEMA_MANIFEST_VERSION == "1.0.0"
-    assert SCHEMA_MEMBER_COUNT == 227
+    assert SCHEMA_MEMBER_COUNT == 228
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3192,7 +3200,7 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     root = resources.files("yoetz").joinpath("resources", "schemas")
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
-    assert sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_670
+    assert sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_680
 
 
 def test_schema_name_derivation_and_version_maps_are_exact() -> None:
@@ -3226,6 +3234,8 @@ def test_schema_name_derivation_and_version_maps_are_exact() -> None:
     assert event_versions["session_resumed"] == "1.2.0"
     assert event_versions["plan_published"] == "1.1.0"
     assert event_versions["plan_revised"] == "1.1.0"
+    # Role- and directory-bearing obligations (issue #1002).
+    assert event_versions["obligation_published"] == "1.1.0"
     assert "accepted_event" not in event_versions
     assert "event_draft" not in event_versions
     assert "opaque_unknown_event_draft" not in event_versions
@@ -3510,3 +3520,56 @@ def test_closure_checklist_is_absent_as_a_whole_or_complete() -> None:
     for mismatch in mismatches:
         with pytest.raises(ValidationError):
             models.StatusClosureReadinessModel.model_validate(mismatch)
+
+
+def test_status_obligations_row_shows_the_acknowledgement_reason_as_obligation_text() -> None:
+    """#1002/#996: the agent's own acknowledged_not_done reason, like the obligation text."""
+
+    models = _models_module()
+    status = _status_result_wire()
+    status["view"] = "obligations"
+    item: dict[str, JsonValue] = {
+        "obligation_id": _test_id("obl_"),
+        "status": "acknowledged_not_done",
+        "description": "Port the RTL to the new bus.",
+        "evidence_expectation": "Simulation passes.",
+        "source_refs": [],
+        "assigned_actor_ids": [],
+        "evidence_refs": [],
+        "revision_event_id": None,
+        "requested_items": [{"item_kind": "directory", "value": "/app/src", "role": "output"}],
+        "acknowledged_not_done_reason": "The vendor simulator licence is unavailable.",
+    }
+    status["page"] = {"items": [item], "next_cursor": None}
+    models.StatusResultModel.model_validate(status)
+    validate_schema_instance("status-result", "1.4.0", status)
+    wire = models.public_model_to_wire(models.StatusResultModel.model_validate(status))
+    assert (
+        models.classify_result_leaf("status", wire, "/page/items/0/acknowledged_not_done_reason")
+        is models.DataCategory.OBLIGATION_TEXT
+    )
+
+    # Omitted under the obligation-text category only.
+    item["acknowledged_not_done_reason"] = {
+        "omitted": True,
+        "category": "obligation_text",
+        "reason": "never_send_redacted",
+    }
+    models.StatusResultModel.model_validate(status)
+    item["acknowledged_not_done_reason"] = {
+        "omitted": True,
+        "category": "task_description",
+        "reason": "never_send_redacted",
+    }
+    with pytest.raises(ValidationError):
+        models.StatusResultModel.model_validate(status)
+
+    # Present exactly for that status.
+    del item["acknowledged_not_done_reason"]
+    with pytest.raises(ValidationError):
+        models.StatusResultModel.model_validate(status)
+    item["status"] = "open"
+    models.StatusResultModel.model_validate(status)
+    item["acknowledged_not_done_reason"] = "why"
+    with pytest.raises(ValidationError):
+        models.StatusResultModel.model_validate(status)

@@ -279,17 +279,20 @@ def test_unconditional_payload_required_is_not_reported_as_conditional() -> None
             "reason": "invalid_type_or_value",
             "family": "action_recorded",
             "family_version": "1.0.0",
+            # Schema-listed required names the draft lacks, also hint-only (tb4n1).
+            "missing_fields": "action_id",
         },
     )
 
     # The selected family's own contract names the missing key; the envelope recital, which the
     # well-formed draft already satisfies, is no longer the answer (benchmark full3).
     hint = authoring_hint(_PUBLISH_SCHEMA, locations)
-    assert "the action_recorded 1.0.0 payload requires action_id, action_kind, and description" in (
-        hint
-    )
+    assert (
+        "the action_recorded 1.0.0 payload is missing action_id; it requires action_id, "
+        "action_kind, and description"
+    ) in hint
     message = invalid_request_message("publish_work", locations)
-    assert "payload requires action_id" in message
+    assert "payload is missing action_id; it requires action_id" in message
     assert "each event_drafts entry requires" not in message
 
 

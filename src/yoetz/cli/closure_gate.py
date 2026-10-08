@@ -88,8 +88,8 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
         " `final_review: true` (a recorded blocker does not waive it)"
     ),
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP: (
-        "a planned verification command (an obligation's requested command item) was never seen"
-        " run exactly as recorded"
+        "a planned verification command (an obligation's requested command item) was not matched"
+        " to an observed run"
     ),
     PLANNED_VERIFICATION_FAILED_GAP: "a planned verification command failed on its latest run",
     PLANNED_VERIFICATION_STALE_GAP: (

@@ -337,6 +337,44 @@ def _process_finding_answered_by_completed_review(
     )
 
 
+_MAX_NAMED_EARLY_REFS: Final = 8
+
+
+def _resolution_attempt_required_message(
+    finding_sequence: int, cited_before: tuple[str, ...]
+) -> str:
+    """Say which citation is missing for an acknowledgement, naming only structural ids.
+
+    tb4n1: 14 acknowledgements were refused with one fixed sentence. Most cited nothing in
+    evidence_refs (the repair was described in ``reason`` or named there by id); others cited only
+    evidence recorded before the finding. The two need different repairs, so the message names the
+    finding's ledger sequence and, when present, the cited ids that predate it. ``reason`` is never
+    echoed.
+    """
+
+    if cited_before:
+        named = ", ".join(cited_before[:_MAX_NAMED_EARLY_REFS])
+        more = len(cited_before) - _MAX_NAMED_EARLY_REFS
+        suffix = f" and {more} more" if more > 0 else ""
+        lead = (
+            "Acknowledging an AI-powered review finding requires one concrete resolution attempt "
+            f"recorded after the finding (ledger sequence {finding_sequence}). Every cited "
+            f"evidence_refs id was recorded at or before it: {named}{suffix}."
+        )
+    else:
+        lead = (
+            "Acknowledging an AI-powered review finding requires one concrete resolution attempt "
+            f"recorded after the finding (ledger sequence {finding_sequence}), cited in "
+            "evidence_refs; ids named only in reason do not count."
+        )
+    return (
+        f"{lead} Publish the repair, requested evidence, or verification result (a failed or "
+        "blocked result naming the exact authority blocker also counts) with publish_work, then "
+        "retry with its evd_ or res_ id in evidence_refs and a new request_id. Use rejected or "
+        "provenance_disputed to dispute it."
+    )
+
+
 async def _records_through(
     runtime: TaskRuntime, frontier: Frontier
 ) -> tuple[tuple[LedgerRecord, ...], ProjectionState]:
@@ -571,6 +609,9 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                 and finding_record.payload.challenge.requested_next_step == "answer_question"
             )
             attempted = False
+            # Structural ids the caller cited that exist but predate the finding; named in the
+            # rejection so the caller knows the citation, not the shape, is the problem.
+            cited_before: list[str] = []
             for ref in () if request.evidence_refs is None else request.evidence_refs:
                 present = (
                     current_projection.evidence.get(evidence_id(ref))
@@ -584,7 +625,10 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                 # "After the finding" means after the finding's own record, not after whichever
                 # in-chain frontier the caller chose to name it by: any frontier at or after the
                 # record is accepted, including the current status frontier (issue #911).
-                attempted = attempted or present.source_frontier > finding_record.source_frontier
+                after = present.source_frontier > finding_record.source_frontier
+                attempted = attempted or after
+                if not after:
+                    cited_before.append(str(ref))
             if (
                 request.disposition == "acknowledged"
                 and reviewer_finding
@@ -600,12 +644,8 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                 # their own dispositions; acknowledgement still never resolves the finding.
                 raise _error(
                     PublicErrorCode.INVALID_REQUEST,
-                    (
-                        "Acknowledging an AI-powered review finding requires one concrete "
-                        "resolution attempt recorded after the finding. Publish the repair, "
-                        "requested evidence, or verification result (a failed or blocked result "
-                        "naming the exact authority blocker also counts), then cite it in "
-                        "evidence_refs. Use rejected or provenance_disputed to dispute it."
+                    _resolution_attempt_required_message(
+                        finding_record.source_frontier, tuple(cited_before)
                     ),
                     reason_code="resolution_attempt_required",
                     field="/evidence_refs",

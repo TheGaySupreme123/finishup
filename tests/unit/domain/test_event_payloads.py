@@ -68,6 +68,7 @@ from yoetz.domain.events import (
     RedactionState,
     RequestedItem,
     RequestedItemKind,
+    RequestedItemRole,
     ResponseRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
@@ -590,7 +591,7 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
         assert {
             schema.version for schema in PAYLOAD_TYPES if schema.name == family
         } == expected_versions
-    for family in ("plan_published", "plan_revised"):
+    for family in ("plan_published", "plan_revised", "obligation_published"):
         assert {schema.version for schema in PAYLOAD_TYPES if schema.name == family} == {
             SCHEMA_VERSION,
             "1.1.0",
@@ -604,6 +605,7 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
             "claim_recorded",
             "evidence_recorded",
             "finding_recorded",
+            "obligation_published",
             "plan_published",
             "plan_revised",
             "response_recorded",
@@ -865,6 +867,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
         "command",
         "change",
         "source",
+        "directory",
     )
     expected_enum_values = {
         NoObligationsReason: (
@@ -872,7 +875,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
             "single_atomic_change",
             "exploratory_scope_unknown",
         ),
-        ObligationStatus: ("open", "resolved"),
+        ObligationStatus: ("open", "resolved", "acknowledged_not_done"),
         WritePolicy: ("read_only", "writes_allowed"),
         ActionKind: ("command", "edit", "research", "review", "other"),
         ResultOutcome: ("success", "failure", "partial", "unknown"),
@@ -885,6 +888,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
             "other",
         ),
         ClaimKind: ("completion", "material"),
+        RequestedItemRole: ("input", "output"),
         ObligationChangeKind: ("superseded", "waived", "carried"),
         RedactionMethod: ("logical_redaction", "object_deletion"),
         RedactionReasonCategory: ("secret", "privacy", "retention", "legal", "other"),
@@ -893,7 +897,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
     }
     for enum_type, expected in expected_enum_values.items():
         assert tuple(member.value for member in enum_type) == expected
-    assert tuple(field.name for field in fields(RequestedItem)) == ("item_kind", "value")
+    assert tuple(field.name for field in fields(RequestedItem)) == ("item_kind", "value", "role")
     assert tuple(field.name for field in fields(ObligationChange)) == (
         "obligation_id",
         "change",

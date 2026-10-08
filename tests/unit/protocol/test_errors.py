@@ -284,6 +284,7 @@ repository_identity_mismatch
 repository_identity_required
 request_identity_conflict
 request_timeout
+requested_command_placeholder
 resolution_attempt_required
 response_fields_invalid
 response_projection_failed
@@ -503,7 +504,7 @@ def test_public_error_code_membership() -> None:
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
     source_values = cast(tuple[str, ...], getattr(errors_module, "_PROTOCOL_REASON_CODE_VALUES"))
     assert source_values == _EXPECTED_REASON_CODES
-    assert len(source_values) == 305
+    assert len(source_values) == 306
     assert source_values == tuple(sorted(source_values, key=str.encode))
     assert len(source_values) == len(set(source_values))
     assert PROTOCOL_REASON_CODES == frozenset(_EXPECTED_REASON_CODES)

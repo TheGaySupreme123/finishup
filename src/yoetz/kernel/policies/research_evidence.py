@@ -142,7 +142,8 @@ def _typed_support_mismatch(
             record is not None
             and record.payload is not None
             and claim_kind is ClaimKind.COMPLETION
-            and record.payload.status is ObligationStatus.OPEN
+            # acknowledged_not_done (#1002) is not resolved: treated like open here.
+            and record.payload.status is not ObligationStatus.RESOLVED
             and record.plan_change is not ObligationChangeKind.WAIVED
         ):
             return True, relation

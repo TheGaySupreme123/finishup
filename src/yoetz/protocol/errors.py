@@ -308,6 +308,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "repository_identity_required",
     "request_identity_conflict",
     "request_timeout",
+    "requested_command_placeholder",
     "resolution_attempt_required",
     "response_fields_invalid",
     "response_projection_failed",
@@ -362,7 +363,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
 )
 
 _REASON_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 305
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 306
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)

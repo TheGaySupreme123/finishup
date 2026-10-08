@@ -65,7 +65,7 @@ from yoetz.domain.values import (
     object_id,
     result_id,
 )
-from yoetz.kernel.observed_failures import observed_action_description
+from yoetz.kernel.observed_failures import observed_action_description, observed_command_field
 from yoetz.ports.integrations import observation_pairing_contract
 from yoetz.protocol.canonical import request_digest
 from yoetz.protocol.coverage import (
@@ -375,7 +375,20 @@ def _omitted_command(structural: Mapping[str, JsonValue]) -> str:
     neither stays ``omitted:structural`` exactly as every pre-commitment ledger recorded it.
     """
 
-    for key in ("command_commitment", "command_digest", "argv_digest"):
+    commitment = structural.get("command_commitment")
+    if type(commitment) is str:
+        # A compound or wrapped command also carries its simple commands' keyed commitments
+        # (#977): planned-verification matching reads them; failure supersession does not.
+        segments = structural.get("command_segment_commitments")
+        composition = structural.get("command_composition")
+        return observed_command_field(
+            commitment,
+            tuple(item for item in segments if type(item) is str)
+            if isinstance(segments, tuple | list)
+            else None,
+            composition if type(composition) is str else None,
+        )
+    for key in ("command_digest", "argv_digest"):
         digest = structural.get(key)
         if type(digest) is str:
             return f"omitted:{digest}"

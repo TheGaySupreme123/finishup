@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 
 from yoetz.application.check import CheckScope, run_deterministic_policies
 from yoetz.application.observation_materialize import observation_author
+from yoetz.domain.command_segments import command_segment_commitments
 from yoetz.domain.events import (
     AcceptedEvent,
     ActionKind,
@@ -70,7 +71,7 @@ from yoetz.kernel.deterministic_checks import (
     DeterministicAssessment,
     build_deterministic_case,
 )
-from yoetz.kernel.observed_failures import observed_action_description
+from yoetz.kernel.observed_failures import observed_action_description, observed_command_field
 from yoetz.kernel.receipt_builder import ReceiptBuildContext, build_receipt
 from yoetz.kernel.reducers import replay
 from yoetz.protocol.canonical import canonical_digest, canonical_encode, entry_digest
@@ -119,7 +120,14 @@ def command_identity_for(command: str) -> str:
 
     normalized = normalize_observed_command(command)
     assert normalized is not None
-    return "omitted:" + observed_command_commitment(INSTALLATION_KEY, normalized)
+    # The hook commits to the whole command and, for a composed one, to its simple commands
+    # (#977); materialization writes both into the action's ``command`` field.
+    segments = command_segment_commitments(INSTALLATION_KEY, normalized)
+    return observed_command_field(
+        observed_command_commitment(INSTALLATION_KEY, normalized),
+        None if segments is None else segments[0],
+        None if segments is None else segments[1],
+    )
 
 
 def _logical_key(payload: EventPayload, identifier: EventId) -> str:
@@ -149,6 +157,7 @@ class ObservedLedger:
         *,
         observed: bool,
         known_gaps: tuple[str, ...] = (),
+        causal_parents: tuple[EventId, ...] = (),
     ) -> EventId:
         sequence = len(self.records) + 1
         previous = "genesis" if not self.records else self.records[-1].entry_digest
@@ -186,7 +195,7 @@ class ObservedLedger:
             },
             "operation_id": _OPERATION,
             "occurred_at": _NOW.wire,
-            "causal_parents": (),
+            "causal_parents": causal_parents,
             "publication_channel": channel.value,
             "coverage": coverage_to_json(coverage),
             "payload_ref": {
@@ -211,7 +220,7 @@ class ObservedLedger:
                 ledger=LedgerChain(sequence, previous, _NOW),
                 operation_id=_OPERATION,
                 occurred_at=_NOW,
-                causal_parents=(),
+                causal_parents=causal_parents,
                 publication_channel=channel,
                 coverage=coverage,
                 payload_ref=PayloadRef(reference, media, len(encoded), commitment),
@@ -231,10 +240,17 @@ class ObservedLedger:
         )
         return identifier
 
-    def append(self, schema: EventSchema, payload: EventPayload, *, observed: bool) -> EventId:
+    def append(
+        self,
+        schema: EventSchema,
+        payload: EventPayload,
+        *,
+        observed: bool,
+        causal_parents: tuple[EventId, ...] = (),
+    ) -> EventId:
         """Append one materialized or cooperative draft payload."""
 
-        return self._append(schema, payload, observed=observed)
+        return self._append(schema, payload, observed=observed, causal_parents=causal_parents)
 
     def run(
         self,

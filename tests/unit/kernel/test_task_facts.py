@@ -19,7 +19,7 @@ from yoetz.domain.events import (
     RequestedItemKind,
     ResultOutcome,
 )
-from yoetz.domain.values import ObligationId, action_id, actor_id, obligation_id
+from yoetz.domain.values import EventId, ObligationId, action_id, actor_id, obligation_id
 from yoetz.kernel.closure_readiness import (
     GAP_CLASSIFICATION,
     GapClass,
@@ -40,6 +40,7 @@ from yoetz.kernel.task_facts import (
     INSTALL_INTO_PRIVATE_ENV_GAP,
     INSTALL_INTO_YOETZ_RUNTIME_GAP,
     OBLIGATION_BLOCKED_GAP,
+    PLANNED_VERIFICATION_AGENT_LINKED_GAP,
     PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
@@ -619,3 +620,284 @@ def test_a_started_run_without_a_result_is_unknown_not_unobserved() -> None:
     codes = _codes(ledger)
     assert PLANNED_VERIFICATION_NOT_OBSERVED_GAP not in codes
     assert PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP in codes
+
+
+# --- Segment-aware planned-verification matching (#977 E3, tb4n1) ------------------------------
+
+_PLANNED_GAPS = {
+    PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
+    PLANNED_VERIFICATION_FAILED_GAP,
+    PLANNED_VERIFICATION_STALE_GAP,
+    PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
+    PLANNED_VERIFICATION_UNOBSERVABLE_GAP,
+}
+
+
+def _planned_codes(planned: str, *runs: tuple[str, ResultOutcome]) -> set[str]:
+    ledger = ObservedLedger()
+    _planned(ledger, _command(planned))
+    _plan(ledger, _OBLIGATION)
+    for command, outcome in runs:
+        ledger.run(
+            command,
+            outcome,
+            exit_status=0 if outcome is ResultOutcome.SUCCESS else 1,
+        )
+    return _codes(ledger) & _PLANNED_GAPS
+
+
+@pytest.mark.parametrize(
+    ("planned", "observed"),
+    [
+        # batched-eval det: the exact command inside a cd/&& chain.
+        (
+            "python evaluate.py --batch-size 8 --out /app/results.json",
+            "cd /app && python evaluate.py --batch-size 8 --out /app/results.json"
+            " && git diff --check",
+        ),
+        # react det.
+        ("npm test", "npm test && npm run build"),
+        # time and env-assignment prefixes.
+        ("python run.py", "time python run.py"),
+        ("make test", "FOO=1 make test"),
+        ("pytest -q", "env PYTHONPATH=src pytest -q"),
+        # A host shell wrapper around a chain.
+        ("pytest -q", "/bin/bash -lc 'cd /app && pytest -q'"),
+    ],
+)
+def test_planned_command_matches_one_segment_of_a_successful_and_chain(
+    planned: str, observed: str
+) -> None:
+    assert _planned_codes(planned, (observed, ResultOutcome.SUCCESS)) == set()
+
+
+def test_pretrain_redirected_run_matches_and_keeps_its_outcome() -> None:
+    planned = "bash /app/run_pretrain.sh"
+    observed = "bash /app/run_pretrain.sh > /tmp/pretrain-before.log 2>&1"
+    assert _planned_codes(planned, (observed, ResultOutcome.SUCCESS)) == set()
+    # A redirected single command is that command: its failure is the planned run's failure.
+    assert _planned_codes(planned, (observed, ResultOutcome.FAILURE)) == {
+        PLANNED_VERIFICATION_FAILED_GAP
+    }
+    # The planned value may carry the redirection while the run does not.
+    assert _planned_codes(observed, (planned, ResultOutcome.SUCCESS)) == set()
+
+
+@pytest.mark.parametrize("planned", ["! pytest -q", "pytest -q &"])
+def test_a_negated_or_backgrounded_plan_does_not_take_the_runs_outcome(planned: str) -> None:
+    """Adversarial review of E3: a planned `! X` or `X &` is not X's outcome."""
+
+    unknown = {PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP}
+    assert _planned_codes(planned, ("pytest -q", ResultOutcome.FAILURE)) == unknown
+    assert _planned_codes(planned, ("pytest -q", ResultOutcome.SUCCESS)) == unknown
+    # A redirected plan is still that command: its run's failure is the plan's failure.
+    assert _planned_codes("pytest -q > log", ("pytest -q", ResultOutcome.FAILURE)) == {
+        PLANNED_VERIFICATION_FAILED_GAP
+    }
+
+
+def test_a_failed_chain_names_no_failing_segment() -> None:
+    assert _planned_codes("npm test", ("npm test && npm run build", ResultOutcome.FAILURE)) == {
+        PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP
+    }
+
+
+def test_a_masking_composition_counts_the_run_but_not_its_outcome() -> None:
+    assert _planned_codes("pytest -q", ("pytest -q | tee log.txt", ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP
+    }
+
+
+def test_cargo_layout_planned_command_on_the_last_line_of_a_shell_heredoc() -> None:
+    script = "bash <<'EOF'\nset -e\ncd /app\ncargo build --release\npython check.py\nEOF"
+    codes = _planned_codes("python check.py", (script, ResultOutcome.SUCCESS))
+    assert PLANNED_VERIFICATION_NOT_OBSERVED_GAP not in codes
+    assert codes == {PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP}
+
+
+def test_a_python_heredoc_body_is_data_not_commands() -> None:
+    script = "python3 - <<'PY'\nimport subprocess\npython check.py\nPY"
+    assert _planned_codes("python check.py", (script, ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_NOT_OBSERVED_GAP
+    }
+
+
+def test_a_different_command_in_a_chain_still_does_not_match() -> None:
+    assert _planned_codes(
+        "pytest -q tests/unit", ("cd /app && pytest -q && ls", ResultOutcome.SUCCESS)
+    ) == {PLANNED_VERIFICATION_NOT_OBSERVED_GAP}
+    # Quoted separators are text, not composition.
+    assert _planned_codes("b", ("echo 'a && b'", ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_NOT_OBSERVED_GAP
+    }
+
+
+def test_a_compound_planned_command_matches_when_every_part_ran_in_one_run() -> None:
+    planned = "npm test && npm run build"
+    assert (
+        _planned_codes(planned, ("cd /app && npm test && npm run build", ResultOutcome.SUCCESS))
+        == set()
+    )
+    assert _planned_codes(planned, ("npm test", ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_NOT_OBSERVED_GAP
+    }
+
+
+def test_segment_matches_go_stale_after_a_later_edit() -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("npm test"))
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("npm test && npm run build")
+    ledger.edit()
+    assert _codes(ledger) & _PLANNED_GAPS == {PLANNED_VERIFICATION_STALE_GAP}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "python cracker.py <ciphertext_file>",
+        "python -m parityctl rebuild --packet <incident-packet> --out <output-dir>",
+        "Broad GSEA CLI",
+    ],
+)
+def test_placeholder_or_prose_items_are_unobservable_not_unrun(value: str) -> None:
+    assert _planned_codes(value, ("python cracker.py data.bin", ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_UNOBSERVABLE_GAP
+    }
+
+
+def test_a_single_token_requested_command_is_still_a_command() -> None:
+    assert _planned_codes("legacy-score", ("python other.py", ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_NOT_OBSERVED_GAP
+    }
+    assert (
+        _planned_codes("legacy-score", ("cd /app && legacy-score", ResultOutcome.SUCCESS)) == set()
+    )
+
+
+# --- Agent-linked planned verification (PL6-3, #1003) ------------------------------------------
+
+_LINKED_GAPS = _PLANNED_GAPS | {PLANNED_VERIFICATION_AGENT_LINKED_GAP}
+
+
+def _observed_run(ledger: ObservedLedger, command: str, outcome: ResultOutcome) -> EventId:
+    """One hook-observed run; returns its observed action event id."""
+
+    ledger.run(command, outcome, exit_status=0 if outcome is ResultOutcome.SUCCESS else 1)
+    return ledger.records[-2].event_id
+
+
+def _link(
+    ledger: ObservedLedger,
+    value: str,
+    *parents: EventId,
+    number: int,
+    obligations: tuple[ObligationId, ...] = (),
+    kind: ActionKind = ActionKind.COMMAND,
+) -> None:
+    ledger.append(
+        _ACTION_SCHEMA,
+        ActionRecordedPayload(
+            action_id(f"act_00000000-0000-4000-8000-00000000a{number:03d}"),
+            kind,
+            "Ran the planned tests through run_tests.py",
+            command="python run_tests.py" if kind is ActionKind.COMMAND else None,
+            obligation_refs=obligations,
+            attempted_items=(value,),
+        ),
+        observed=False,
+        causal_parents=parents,
+    )
+
+
+def _formal_crypto(outcome: ResultOutcome) -> ObservedLedger:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest tests/test_x.py"))
+    _plan(ledger, _OBLIGATION)
+    parent = _observed_run(ledger, "python run_tests.py", outcome)
+    _link(ledger, "pytest tests/test_x.py", parent, number=1)
+    return ledger
+
+
+def test_formal_crypto_agent_link_matches_and_is_disclosed() -> None:
+    assert _codes(_formal_crypto(ResultOutcome.SUCCESS)) & _LINKED_GAPS == {
+        PLANNED_VERIFICATION_AGENT_LINKED_GAP
+    }
+
+
+def test_a_linked_run_that_failed_reports_failed_not_pass() -> None:
+    assert _codes(_formal_crypto(ResultOutcome.FAILURE)) & _LINKED_GAPS == {
+        PLANNED_VERIFICATION_FAILED_GAP,
+        PLANNED_VERIFICATION_AGENT_LINKED_GAP,
+    }
+
+
+def test_a_linked_run_goes_stale_after_a_later_edit() -> None:
+    ledger = _formal_crypto(ResultOutcome.SUCCESS)
+    ledger.edit()
+    assert PLANNED_VERIFICATION_STALE_GAP in _codes(ledger)
+
+
+def test_an_unrelated_observed_parent_links_only_its_own_value() -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest tests/test_x.py"))
+    _plan(ledger, _OBLIGATION)
+    parent = _observed_run(ledger, "python run_tests.py", ResultOutcome.SUCCESS)
+    # The link names another value, so the planned command stays unmatched.
+    _link(ledger, "pytest tests/test_other.py", parent, number=1)
+    assert _codes(ledger) & _LINKED_GAPS == {PLANNED_VERIFICATION_NOT_OBSERVED_GAP}
+
+
+def test_a_cooperative_only_parent_never_links() -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest tests/test_x.py"))
+    _plan(ledger, _OBLIGATION)
+    _observed_run(ledger, "ls", ResultOutcome.SUCCESS)
+    # A cooperative run (action and result) as the parent: never a hook observation.
+    ledger.run("python run_tests.py", ResultOutcome.SUCCESS, exit_status=0, observed=False)
+    cooperative_action, cooperative_result = ledger.records[-2], ledger.records[-1]
+    _link(
+        ledger,
+        "pytest tests/test_x.py",
+        cooperative_action.event_id,
+        cooperative_result.event_id,
+        number=1,
+    )
+    assert _codes(ledger) & _LINKED_GAPS == {PLANNED_VERIFICATION_NOT_OBSERVED_GAP}
+
+
+def test_a_link_naming_another_obligation_does_not_count() -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest tests/test_x.py"))
+    _planned(ledger, _command("make lint"), obligation=_OTHER)
+    _plan(ledger, _OBLIGATION, _OTHER)
+    parent = _observed_run(ledger, "python run_tests.py", ResultOutcome.SUCCESS)
+    _link(ledger, "pytest tests/test_x.py", parent, number=1, obligations=(_OTHER,))
+    assert (PLANNED_VERIFICATION_NOT_OBSERVED_GAP, _OBLIGATION) in _markers(ledger)
+
+
+def test_a_non_command_linking_action_does_not_count() -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest tests/test_x.py"))
+    _plan(ledger, _OBLIGATION)
+    parent = _observed_run(ledger, "python run_tests.py", ResultOutcome.SUCCESS)
+    _link(ledger, "pytest tests/test_x.py", parent, number=1, kind=ActionKind.OTHER)
+    assert _codes(ledger) & _LINKED_GAPS == {PLANNED_VERIFICATION_NOT_OBSERVED_GAP}
+
+
+def test_a_direct_match_needs_no_link_disclosure() -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest tests/test_x.py"))
+    _plan(ledger, _OBLIGATION)
+    parent = _observed_run(ledger, "pytest tests/test_x.py", ResultOutcome.SUCCESS)
+    _link(ledger, "pytest tests/test_x.py", parent, number=1)
+    assert _codes(ledger) & _LINKED_GAPS == set()
+
+
+def test_a_placeholder_item_stays_unobservable_even_when_linked() -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("python cracker.py <ciphertext_file>"))
+    _plan(ledger, _OBLIGATION)
+    parent = _observed_run(ledger, "python cracker.py data.bin", ResultOutcome.SUCCESS)
+    _link(ledger, "python cracker.py <ciphertext_file>", parent, number=1)
+    assert _codes(ledger) & _LINKED_GAPS == {PLANNED_VERIFICATION_UNOBSERVABLE_GAP}

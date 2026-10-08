@@ -98,7 +98,9 @@ def test_a_schema_without_an_example_stays_silent_when_nothing_is_admitted() -> 
 
 def test_an_oversized_enum_is_not_dumped_into_the_message() -> None:
     schema: dict[str, JsonValue] = {
-        "properties": {"mode": {"enum": [f"value_{index}" for index in range(9)]}}
+        # One past the bound: tb4n1 raised it to 16 so status ``view`` (13) and evidence
+        # ``digest_binding.subject`` (9) are named.
+        "properties": {"mode": {"enum": [f"value_{index}" for index in range(17)]}}
     }
     assert authoring_hint(schema, _locations("/mode")) == ""
 

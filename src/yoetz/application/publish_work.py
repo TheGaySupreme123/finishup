@@ -16,8 +16,10 @@ from yoetz.application.unit_of_work import (
     abandon_preappend_objects,
     run_prepared_append,
 )
+from yoetz.domain.command_segments import requested_command_shape
 from yoetz.domain.events import (
     LINEAGE_SERVICE_STAMPED_FAMILIES,
+    MAX_REQUESTED_ITEMS,
     PAYLOAD_TYPES,
     AcceptedEvent,
     ActionRecordedPayload,
@@ -45,6 +47,7 @@ from yoetz.domain.events import (
     ProjectionLocator,
     RedactionRecordedPayload,
     RedactionState,
+    RequestedItemKind,
     ResponseRecordedPayload,
     ResultRecordedPayload,
     UnknownEvent,
@@ -352,7 +355,10 @@ _LOCATABLE_PAYLOAD_FIELDS: Final = frozenset(
 
 
 def _draft_pointer(
-    event_index: int, subfield: str | None, payload_field: str | None = None
+    event_index: int,
+    subfield: str | None,
+    payload_field: str | None = None,
+    item_index: int | None = None,
 ) -> str | None:
     """Locate one rejected draft without ever naming caller-supplied keys or values.
 
@@ -371,6 +377,14 @@ def _draft_pointer(
     # Only the payload has opaque interior structure worth naming one level deeper.
     if subfield == "payload" and payload_field in _LOCATABLE_PAYLOAD_FIELDS:
         return f"{pointer}/{payload_field}"
+    if (
+        subfield == "payload"
+        and payload_field == "requested_items"
+        and type(item_index) is int
+        and 0 <= item_index < MAX_REQUESTED_ITEMS
+    ):
+        # The item ordinal is bounded by the frozen requested_items limit, never caller text.
+        return f"{pointer}/requested_items/{item_index}/value"
     return pointer
 
 
@@ -469,9 +483,23 @@ _REF_MIRROR_CORRECTIONS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyTy
 )
 
 
+# Requested command items are matched against hook-observed runs by keyed command identity
+# (#977). A template placeholder can never match one, so it is refused before append.
+_PLACEHOLDER_CORRECTION: Final = (
+    "The event batch is invalid. The requested item of kind command at the named field holds a "
+    "<placeholder> token (such as <output-dir>) that no shell runs as written, so Yoetz could "
+    "never match it to an observed run. Replace each placeholder with the concrete value and "
+    "publish the exact command you will run. If the exact command is not known yet, drop that "
+    "item and state the check in acceptance_criteria, or name the produced file as a file item. "
+    "Then retry with a new request_id."
+)
+
+
 def _corrective_message(reason_code: str, schema_name: str | None) -> str | None:
     """Return the checked-in corrective message for one reason code and family, if registered."""
 
+    if reason_code == "requested_command_placeholder":
+        return _PLACEHOLDER_CORRECTION
     set_order = _SET_ORDER_CORRECTIONS.get(reason_code)
     if set_order is not None:
         return set_order
@@ -493,6 +521,7 @@ def _event_invalid(
     subfield: str | None = None,
     payload_field: str | None = None,
     schema_name: str | None = None,
+    item_index: int | None = None,
 ) -> PublicOperationError:
     # Only a stale frontier is fixed by rereading status; every other reason needs the event
     # payload corrected first, and retrying it unchanged would fail the same way.
@@ -516,7 +545,7 @@ def _event_invalid(
         )
     details: dict[str, str] = {"reason_code": reason_code}
     if event_index is not None:
-        pointer = _draft_pointer(event_index, subfield, payload_field)
+        pointer = _draft_pointer(event_index, subfield, payload_field, item_index)
         if pointer is not None:
             # Which draft failed is the difference between a one-line fix and re-deriving the
             # whole batch; a batch may carry up to MAX_EVENTS_PER_BATCH drafts.
@@ -671,6 +700,19 @@ def _validate_admission(
         if (known and item.draft.schema.name not in admitted) or (not known and not trusted_import):
             raise _event_invalid("event_family_not_admitted", event_index=index, subfield="schema")
         payload = item.draft.payload
+        if type(payload) is ObligationPublishedPayload and not trusted_import:
+            for position, requested in enumerate(payload.requested_items):
+                if (
+                    requested.item_kind is RequestedItemKind.COMMAND
+                    and requested_command_shape(requested.value) == "placeholder"
+                ):
+                    raise _event_invalid(
+                        "requested_command_placeholder",
+                        event_index=index,
+                        subfield="payload",
+                        payload_field="requested_items",
+                        item_index=position,
+                    )
         if type(payload) is EvidenceRecordedPayload and payload.digest_binding is not None:
             provenance = payload.digest_binding.provenance
             if not trusted_import and provenance is not EvidenceDigestProvenance.CALLER_ASSERTED:

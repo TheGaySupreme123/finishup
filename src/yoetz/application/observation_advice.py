@@ -136,7 +136,7 @@ _RULE_SUMMARIES: Final[Mapping[str, str]] = {
     "semantic_provider_attention": "AI-powered review needs the user to fix its provider",
     "semantic_claim_without_attempt": "AI-powered review claim lacks a recorded attempt",
     "install_into_yoetz_runtime": "A package install went into Yoetz's own runtime, not the task's",
-    "install_into_private_env": "A package install went into a private environment outside the workspace",
+    "install_into_private_env": "A package install went into an environment other than the task's interpreter",
     "write_outside_workspace": "A write landed outside the workspace",
 }
 
@@ -161,8 +161,9 @@ _RULE_DETAILS: Final[Mapping[str, str]] = {
         "and verify with that interpreter"
     ),
     "install_into_private_env": (
-        "The installer resolved to a virtual environment outside the workspace, which is not "
-        "delivered; make sure the deliverable runs with the interpreter the task names"
+        "The install went into another environment or a directory outside the workspace, not "
+        "the task's interpreter, so the deliverable will not see it; install into the task's "
+        "interpreter and verify with it"
     ),
     "write_outside_workspace": (
         "A file outside the workspace is not part of the delivered change; keep requested "

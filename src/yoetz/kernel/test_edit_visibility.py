@@ -23,6 +23,7 @@ from yoetz.domain.events import (
     ActionRecordedPayload,
     DecisionRecordedPayload,
     RequestedItemKind,
+    RequestedItemRole,
 )
 from yoetz.domain.receipts import (
     PREEXISTING_TEST_BASELINE_UNKNOWN_GAP,
@@ -446,7 +447,9 @@ def _statement_requested_files(
         values.update(
             item.value
             for item in payload.requested_items
-            if item.item_kind is RequestedItemKind.FILE
+            # A declared input (#1002) is read, not asked to change, so it never justifies an
+            # edit. A ``directory`` item never does either: only the exact file counts.
+            if item.item_kind is RequestedItemKind.FILE and item.role is not RequestedItemRole.INPUT
         )
     return frozenset(values)
 

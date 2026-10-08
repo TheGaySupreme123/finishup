@@ -861,6 +861,8 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         "receipt_json_shape_invalid",
         "redaction_target_required",
         "ref_mirror_mismatch",
+        # Issue #977: the message names the requested item and the exact repair.
+        "requested_command_placeholder",
         "response_fields_invalid",
         "runtime_attempt_evidence_json_shape_invalid",
         "semantic_provenance_json_shape_invalid",

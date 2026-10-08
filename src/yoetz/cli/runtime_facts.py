@@ -3,14 +3,33 @@
 The hook process sees each tool call's input before it drops the text. Three facts that matter
 for delivery are reduced here to closed tokens and nothing else crosses into the envelope:
 
-* ``install_target`` — where a Python package install resolved its interpreter:
-  ``yoetz_runtime`` (Yoetz's own private runtime, the interpreter running this hook),
-  ``workspace_env`` (an environment inside the workspace), ``private_env`` (another virtual
-  environment outside the workspace), ``system`` (any other interpreter) or ``unresolved``.
-  Resolution uses this hook process's ``PATH``, which is the host's environment; a shell that
-  changes ``PATH`` before the install can resolve differently, so the fact is a disclosure.
+* ``install_target`` — where a Python package install lands, judged against the *task
+  interpreter*: ``yoetz_runtime`` (Yoetz's own private runtime, the interpreter running this
+  hook), ``workspace_env`` (an environment, or a ``--target``/``--prefix``/``--root`` directory,
+  inside the workspace), ``private_env`` (a non-task location: another virtual environment, a
+  ``--target``/``--prefix``/``--root`` directory outside the workspace, ``pipx``, or an
+  interpreter outside any virtual environment when the task interpreter is one), ``system`` (the
+  task interpreter itself, or a non-task interpreter this hook cannot tell apart from it) or
+  ``unresolved``.
+
+  Yoetz records no task interpreter at setup or session start, so the task interpreter is
+  resolved at observation time as the first ``python3`` and the first ``python`` on this hook
+  process's ``PATH`` that are not under Yoetz's own runtime. The host spawns the hook with the
+  agent's environment, so these are what the agent's shell runs as ``python``; a shell that
+  changes ``PATH`` (or activates an environment) before the install can resolve differently, so
+  the fact is a disclosure. Interpreters compare by environment root: the parent of the
+  executable's directory, resolving directory links only. The executable's own link is never
+  followed, so a virtual environment's ``python`` (a link to its base interpreter) stays that
+  environment's. Only the existence of ``pyvenv.cfg`` is read. ``--user`` installs into the user
+  site of the interpreter running pip, which that (non-virtual-environment) interpreter imports
+  for the same user, and pip refuses it inside a virtual environment, so it classifies as that
+  interpreter.
 * ``write_scope`` — ``outside_workspace`` when an edit tool names a file outside the workspace
-  root, or a shell command redirects or ``tee``s into an absolute path outside it.
+  root, or a shell command redirects or ``tee``s into an absolute path outside it. A scratch
+  write into a temporary directory (``/tmp``, ``/var/tmp``, ``/dev/shm``, their macOS
+  ``/private`` aliases, the per-user macOS ``/var/folders/<a>/<b>/T`` directory, or this
+  process's own temporary directory) is not a misplaced deliverable and claims nothing. Paths are
+  normalized lexically first, so ``/tmp/../etc/x`` is ``/etc/x``.
 * ``effective_user`` — ``root`` or ``non_root``: the effective user this hook process (spawned by
   the host beside the agent's commands) runs as. It says nothing about the delivery environment.
 
@@ -20,6 +39,7 @@ No path, command text or environment value is returned, stored or logged.
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -59,6 +79,19 @@ _HEREDOC: Final = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _PATCH_PATH: Final = re.compile(r"^\*\*\* (?:Add File|Update File|Move to): (.+)$", re.MULTILINE)
 _REDIRECT_OPERATORS: Final = frozenset({">", ">>", ">|", "&>", "&>>"})
 _SHELL_TOOLS: Final = frozenset({"Bash", "bash", "Shell", "shell", "exec_command", "local_shell"})
+_LOCATION_FLAGS: Final = ("--target", "-t", "--prefix", "--root")
+# Scratch roots every supported OS reserves for temporary files (issue E6, tb4n1: 28 of 33
+# attempts flagged only `/tmp` logs). `/dev/` stays wholly exempt below for device targets.
+_TEMP_ROOTS: Final = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/dev/shm")
+# macOS per-user temporary directory: `/var/folders/<a>/<b>/T` (the `C` cache sibling is not
+# temporary). `/var` is a symlink to `/private/var`, so both spellings name the same directory.
+_MACOS_USER_TEMP: Final = re.compile(r"^/(?:private/)?var/folders/[^/]+/[^/]+/T(?:/|$)")
+# WSL 2: the Windows per-user and system temporary directories as mounted under /mnt/<drive>.
+_WSL_WINDOWS_TEMP: Final = re.compile(
+    r"^/mnt/[a-z]/(?:users/[^/]+/appdata/local/temp|windows/temp)(?:/|$)", re.IGNORECASE
+)
+# The last component of an environment temp directory must name temporary space.
+_TEMP_NAME: Final = re.compile(r"te?mp|scratch", re.IGNORECASE)
 
 
 def _raw_command(tool_input: Mapping[str, JsonValue]) -> str | None:
@@ -87,17 +120,85 @@ def _segments(command: str) -> list[list[str]]:
     return [segment for segment in segments if segment]
 
 
+# Prefix-command options that take a separate operand (``sudo -u user``, ``env -u NAME``,
+# ``time -o file``); every other ``-x`` option of a prefix command takes none.
+_PREFIX_OPTIONS_WITH_OPERAND: Final = frozenset(
+    {"-u", "-g", "-C", "-D", "-R", "-T", "-h", "-p", "-r", "-t", "-U", "-o", "-f", "-S"}
+)
+
+
 def _strip_prefix(segment: list[str]) -> list[str]:
     index = 0
     while index < len(segment) and (
         _ASSIGNMENT.match(segment[index]) or segment[index] in _PREFIX_COMMANDS
     ):
+        prefix = segment[index] in _PREFIX_COMMANDS
         index += 1
+        # ``sudo -H -u builder pip install x``: skip the prefix command's own options.
+        while prefix and index < len(segment) and segment[index].startswith("-"):
+            option = segment[index]
+            index += 1
+            if option == "--":
+                break
+            if option in _PREFIX_OPTIONS_WITH_OPERAND and index < len(segment):
+                index += 1
     return segment[index:]
 
 
+def _runtime_prefix() -> str | None:
+    """Yoetz's own runtime root, or ``None`` when the hook runs from a system interpreter."""
+
+    runtime = os.path.normpath(os.path.abspath(sys.prefix))
+    # Only a virtual environment of its own is Yoetz's private runtime; a hook running from a
+    # system interpreter (prefix ``/usr``, ``/usr/local`` or ``/``) says nothing about installs.
+    if sys.prefix != sys.base_prefix and runtime not in {"/", "/usr", "/usr/local"}:
+        return runtime
+    return None
+
+
+def _under(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def _environment_root(path: str) -> str:
+    """The environment an executable belongs to: its directory's parent, via directory links."""
+
+    return os.path.dirname(os.path.realpath(os.path.dirname(path)))
+
+
+def _is_venv(root: str) -> bool:
+    """Whether ``root`` is a Python environment of its own: a venv or a conda environment."""
+
+    return os.path.isfile(os.path.join(root, "pyvenv.cfg")) or os.path.isdir(
+        os.path.join(root, "conda-meta")
+    )
+
+
+def _task_roots() -> frozenset[str]:
+    """Environment roots of the task interpreter: the agent's ``python3``/``python`` on ``PATH``.
+
+    Observation-time fallback by design: Yoetz records no task interpreter, so this takes the
+    first ``python3`` and the first ``python`` on this hook process's ``PATH`` (the agent's),
+    skipping Yoetz's own runtime. Empty when neither resolves.
+    """
+
+    runtime = _runtime_prefix()
+    roots: set[str] = set()
+    for name in ("python3", "python"):
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            if not directory:
+                continue
+            candidate = os.path.normpath(os.path.abspath(os.path.join(directory, name)))
+            if runtime is not None and _under(candidate, runtime):
+                continue
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                roots.add(_environment_root(candidate))
+                break
+    return frozenset(roots)
+
+
 def _interpreter_class(executable: str, workspace: str | None) -> str:
-    """Classify one interpreter or pip executable by where it lives. Never follows links."""
+    """Classify one interpreter or pip executable against the task interpreter."""
 
     if "/" not in executable:
         found = shutil.which(executable)
@@ -105,23 +206,53 @@ def _interpreter_class(executable: str, workspace: str | None) -> str:
             return "unresolved"
         executable = found
     path = os.path.normpath(os.path.abspath(executable))
-    if workspace is not None:
-        root = os.path.normpath(os.path.abspath(workspace))
-        if path == root or path.startswith(root.rstrip("/") + "/"):
-            return "workspace_env"
-    runtime = os.path.normpath(os.path.abspath(sys.prefix))
-    # Only a virtual environment of its own is Yoetz's private runtime; a hook running from a
-    # system interpreter (prefix ``/usr``, ``/usr/local`` or ``/``) says nothing about installs.
-    if (
-        sys.prefix != sys.base_prefix
-        and runtime not in {"/", "/usr", "/usr/local"}
-        and path.startswith(runtime.rstrip("/") + "/")
-    ):
+    if workspace is not None and _under(path, os.path.normpath(os.path.abspath(workspace))):
+        return "workspace_env"
+    runtime = _runtime_prefix()
+    if runtime is not None and _under(path, runtime):
         return "yoetz_runtime"
-    environment = os.path.dirname(os.path.dirname(path))
-    if os.path.isfile(os.path.join(environment, "pyvenv.cfg")):
+    if not os.path.exists(path):
+        return "unresolved"
+    environment = _environment_root(path)
+    task = _task_roots()
+    if environment in task:
+        return "system"
+    if _is_venv(environment):
+        return "private_env"
+    # Outside any virtual environment: a different site-packages than a virtual-environment task
+    # interpreter. Against a non-venv task interpreter (or none) a ``pip`` script's interpreter is
+    # unknowable without reading it (``/usr/local/bin/pip`` often serves ``/usr/bin/python3``).
+    if any(_is_venv(root) for root in task):
         return "private_env"
     return "system"
+
+
+def _location_option(options: list[str]) -> str | None:
+    """The operand of the first ``--target``/``-t``/``--prefix``/``--root`` option, if any."""
+
+    for index, option in enumerate(options):
+        for flag in _LOCATION_FLAGS:
+            if option == flag and index + 1 < len(options):
+                return options[index + 1]
+            if flag.startswith("--") and option.startswith(flag + "="):
+                return option.split("=", 1)[1]
+            # pip's short option also takes its operand attached: ``-t/opt/deps``.
+            if flag == "-t" and option.startswith("-t") and len(option) > 2:
+                return option[2:]
+    return None
+
+
+def _location_class(location: str, workspace: str | None) -> str:
+    """Classify an explicit install directory; inside the workspace is a vendoring choice."""
+
+    if location.startswith("~"):
+        location = os.path.expanduser(location)
+    if not location.startswith("/") or "$" in location:
+        return "unresolved"
+    path = os.path.normpath(location)
+    if workspace is not None and _under(path, os.path.normpath(os.path.abspath(workspace))):
+        return "workspace_env"
+    return "private_env"
 
 
 def _segment_target(segment: list[str], workspace: str | None) -> str | None:
@@ -130,12 +261,21 @@ def _segment_target(segment: list[str], workspace: str | None) -> str | None:
         return None
     head = os.path.basename(words[0])
     rest = words[1:]
+    pip_options: list[str] | None = None
     if _PIP_NAME.match(head) and "install" in rest[:2]:
-        return _interpreter_class(words[0], workspace)
-    if _PYTHON_NAME.match(head) and rest[:3] == ["-m", "pip", "install"]:
+        pip_options = rest[rest.index("install") + 1 :]
+    elif _PYTHON_NAME.match(head) and rest[:3] == ["-m", "pip", "install"]:
+        pip_options = rest[3:]
+    if pip_options is not None:
+        location = _location_option(pip_options)
+        if location is not None:
+            return _location_class(location, workspace)
         return _interpreter_class(words[0], workspace)
     if head == "uv" and rest[:2] == ["pip", "install"]:
         options = rest[2:]
+        location = _location_option(options)
+        if location is not None:
+            return _location_class(location, workspace)
         for flag in ("--python", "-p"):
             if flag in options:
                 position = options.index(flag)
@@ -206,9 +346,61 @@ def _write_targets(command: str) -> list[str]:
     return [target for target in targets if target.startswith("/")]
 
 
-def _shell_writes_outside(command: str, inside: Callable[[str], bool]) -> bool:
+def _process_temp_roots(workspace: str | None) -> tuple[str, ...]:
+    """This process's own temporary directory roots, from the environment only.
+
+    ``TMPDIR``, ``TEMP`` and ``TMP`` are read lexically and never probed: ``tempfile.gettempdir``
+    touches the filesystem, can fall back to the working directory and raises when no directory
+    is usable, and an exception here would drop every runtime fact for the event. These values
+    are host environment, so a root that is the filesystem root, contains the home directory, or
+    is or contains the workspace is never trusted as scratch space.
+    """
+
+    home = os.environ.get("HOME")
+    guarded = [posixpath.normpath(home)] if home and home.startswith("/") else []
+    if workspace is not None and workspace.startswith("/"):
+        guarded.append(posixpath.normpath(workspace))
+    candidates: set[str] = set()
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        raw = os.environ.get(name)
+        if not raw or not raw.startswith("/") or "\x00" in raw:
+            continue
+        normalized = posixpath.normpath(raw)
+        # Only a directory named as temporary space is trusted: a TMPDIR pointed at a
+        # deliverable location (``/results``) must not hide real writes there.
+        if _TEMP_NAME.search(posixpath.basename(normalized)) is None:
+            continue
+        candidates.add(normalized)
+    return tuple(
+        root
+        for root in sorted(candidates)
+        if root != "/" and not any(_under(path, root) for path in guarded)
+    )
+
+
+def _scratch_path(path: str, workspace: str | None = None) -> bool:
+    """Whether an absolute path lands in a temporary or device directory.
+
+    Normalized lexically first (never through the filesystem), so ``..`` cannot climb out of a
+    temporary root while still reading as inside it.
+    """
+
+    normalized = posixpath.normpath(path)
+    if normalized.startswith("//"):
+        normalized = "/" + normalized.lstrip("/")
+    if normalized.startswith("/dev/"):
+        return True
+    if _MACOS_USER_TEMP.match(normalized) or _WSL_WINDOWS_TEMP.match(normalized):
+        return True
+    return any(_under(normalized, root) for root in (*_TEMP_ROOTS, *_process_temp_roots(workspace)))
+
+
+def _shell_writes_outside(
+    command: str, inside: Callable[[str], bool], workspace: str | None = None
+) -> bool:
     return any(
-        not target.startswith("/dev/") and not inside(target) for target in _write_targets(command)
+        not _scratch_path(target, workspace) and not inside(target)
+        for target in _write_targets(command)
     )
 
 
@@ -260,7 +452,7 @@ def runtime_structural_facts(
     )
     if tool_name in _PATCH_TOOLS or tool_name in _EDIT_TOOLS:
         if workspace_locator is not None and any(
-            path.startswith("/") and not inside(path)
+            path.startswith("/") and not _scratch_path(path, workspace_locator) and not inside(path)
             for path in _edit_paths(tool_name, tool_input, payload)
         ):
             facts["write_scope"] = "outside_workspace"
@@ -273,7 +465,7 @@ def runtime_structural_facts(
     target = install_target_class(command, workspace_locator)
     if target is not None:
         facts["install_target"] = target
-    if workspace_locator is not None and _shell_writes_outside(command, inside):
+    if workspace_locator is not None and _shell_writes_outside(command, inside, workspace_locator):
         facts["write_scope"] = "outside_workspace"
     geteuid = getattr(os, "geteuid", None)
     if callable(geteuid):

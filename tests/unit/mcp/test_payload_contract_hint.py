@@ -53,7 +53,8 @@ def test_plan_revised_written_as_plan_published_names_the_revision_contract() ->
         },
     )
     assert (
-        "the plan_revised 1.0.0 payload requires plan_version, supersedes_plan_version, reason, "
+        "the plan_revised 1.0.0 payload is missing supersedes_plan_version, reason, and "
+        "obligation_changes; it requires plan_version, supersedes_plan_version, reason, "
         "summary, and obligation_changes" in message
     )
     assert "admitted keys are" in message
@@ -66,7 +67,8 @@ def test_decision_with_a_guessed_key_names_statement() -> None:
     message = _message(
         "decision_recorded", {"decision": _SECRET, "rationale": "r", "authority": "codex"}
     )
-    assert "the decision_recorded 1.0.0 payload requires statement, rationale, and authority" in (
-        message
+    assert (
+        "the decision_recorded 1.0.0 payload is missing statement; it requires statement, "
+        "rationale, and authority" in message
     )
     assert _SECRET not in message

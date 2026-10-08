@@ -1582,6 +1582,9 @@ def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
                             # admits it only when it byte-equals a catalogued payload property
                             # name, so MCP can name the field's one legal owner (issue #266).
                             "misplaced_field": exc.misplaced_field,
+                            # Schema-listed required names the instance lacks (frozen schema
+                            # vocabulary), so the hint names the absent key, not the whole list.
+                            "missing_fields": exc.missing_fields or None,
                         },
                     }
                 ],
@@ -1859,8 +1862,8 @@ class StatusRequestModel(PublicRequestModel):
         )
         if len(selectors) > 1:
             raise ValueError("selector_conflict")
-        if self.view in {"lineage", "project"} and self.filter is not None:
-            raise ValueError("status_filter_not_supported_for_view")
+        # A filter beside a view that admits none (lineage, project, results, ...) is refused by
+        # the schema's own ``not required`` rule below, which names /filter for the caller.
         if self.project_id is not None and self.view != "project":
             raise ValueError("selector_conflict")
         if self.correlation_id is not None and self.view != "lineage":
@@ -4404,8 +4407,13 @@ class StatusClosureReadinessModel(_ClosedModel):
 
 
 class StatusRequestedItemModel(_ClosedModel):
-    item_kind: Literal["url", "file", "command", "change", "source"]
+    # ``directory`` and ``role`` come from obligation_published 1.1.0 (#1002) and appear only on
+    # status-result 1.4.0; ``role`` is absent, never null, when the obligation declared none.
+    optional_non_null_fields = frozenset({"role"})
+
+    item_kind: Literal["url", "file", "command", "change", "source", "directory"]
     value: String0To1024 | OmittedContentModel
+    role: Literal["input", "output"] | None = None
 
     @model_validator(mode="after")
     def _validate_requested_item(self) -> StatusRequestedItemModel:
@@ -4431,10 +4439,11 @@ class StatusCommandAttemptModel(_ClosedModel):
 
 
 class StatusObligationItemModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"acceptance_criteria"})
+    optional_non_null_fields = frozenset({"acceptance_criteria", "acknowledged_not_done_reason"})
 
     obligation_id: ObligationIdWire
-    status: Literal["open", "resolved"]
+    # ``acknowledged_not_done`` (obligation_published 1.1.0, #1002) on status-result 1.4.0 only.
+    status: Literal["open", "resolved", "acknowledged_not_done"]
     description: String1To8192 | OmittedContentModel
     evidence_expectation: String1To8192 | OmittedContentModel
     source_refs: tuple[SubjectIdWire, ...]
@@ -4445,6 +4454,9 @@ class StatusObligationItemModel(_ClosedModel):
     unattempted_items: tuple[StatusRequestedItemModel, ...] = ()
     command_attempts: tuple[StatusCommandAttemptModel, ...] = ()
     acceptance_criteria: String1To8192 | OmittedContentModel | None = None
+    # The agent's own reason for ``acknowledged_not_done`` (#1002/#996), status-result 1.4.0 only,
+    # under the same obligation-text category as the description it explains.
+    acknowledged_not_done_reason: String1To8192 | OmittedContentModel | None = None
 
     @model_validator(mode="after")
     def _validate_obligation_item(self) -> StatusObligationItemModel:
@@ -4458,7 +4470,14 @@ class StatusObligationItemModel(_ClosedModel):
         unattempted = tuple((item.item_kind, item.value) for item in self.unattempted_items)
         if any(item not in requested for item in unattempted):
             raise ValueError("obligation_unattempted_item_mismatch")
-        for value in (self.description, self.evidence_expectation, self.acceptance_criteria):
+        if (self.acknowledged_not_done_reason is None) == (self.status == "acknowledged_not_done"):
+            raise ValueError("obligation_acknowledgement_reason_mismatch")
+        for value in (
+            self.description,
+            self.evidence_expectation,
+            self.acceptance_criteria,
+            self.acknowledged_not_done_reason,
+        ):
             if (
                 isinstance(value, OmittedContentModel)
                 and value.category is not DataCategory.OBLIGATION_TEXT
@@ -6072,9 +6091,11 @@ _STATUS_OBLIGATIONS_STRUCTURAL_POINTERS: Final = (
             "obligation_id",
             "revision_event_id",
             "requested_items/*/item_kind",
+            "requested_items/*/role",
             "source_refs/*",
             "status",
             "unattempted_items/*/item_kind",
+            "unattempted_items/*/role",
             "command_attempts/*/requested_item_index",
             "command_attempts/*/relation",
             "command_attempts/*/asserted_action_ids/*",
@@ -6082,6 +6103,7 @@ _STATUS_OBLIGATIONS_STRUCTURAL_POINTERS: Final = (
         ),
     )
     + _prefix_leaf_patterns("/page/items/*/acceptance_criteria", _OMITTED_CONTENT_LEAVES)
+    + _prefix_leaf_patterns("/page/items/*/acknowledged_not_done_reason", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/page/items/*/description", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/page/items/*/evidence_expectation", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/page/items/*/requested_items/*/value", _OMITTED_CONTENT_LEAVES)
@@ -6420,6 +6442,7 @@ _STATUS_CONTENT_RULES: Final[tuple[tuple[str, str, DataCategory], ...]] = (
     ("findings", "/page/items/*/challenge/snippet", DataCategory.FINDING_SUMMARY),
     ("findings", "/page/items/*/challenge/uncertainty", DataCategory.FINDING_SUMMARY),
     ("obligations", "/page/items/*/acceptance_criteria", DataCategory.OBLIGATION_TEXT),
+    ("obligations", "/page/items/*/acknowledged_not_done_reason", DataCategory.OBLIGATION_TEXT),
     ("obligations", "/page/items/*/description", DataCategory.OBLIGATION_TEXT),
     ("obligations", "/page/items/*/evidence_expectation", DataCategory.OBLIGATION_TEXT),
     ("obligations", "/page/items/*/requested_items/*/value", DataCategory.OBLIGATION_TEXT),
@@ -6598,7 +6621,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1431:  # +2: /observations_awaited (issue #1012)
+    if len(result) != 1437:  # L2 +14, L3 +2 (#1012), L6 +6 (#1002)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

@@ -87,6 +87,11 @@ from yoetz.cli.hook_io import (
 )
 from yoetz.cli.hook_timing import HookPassTiming, record_hook_pass_timing
 from yoetz.cli.runtime_facts import runtime_structural_facts
+from yoetz.domain.command_segments import (
+    COMMAND_COMPOSITIONS,
+    MAX_SEGMENT_COMMITMENTS,
+    command_segment_commitments,
+)
 from yoetz.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationContentChunk,
@@ -789,11 +794,28 @@ def command_commitment_for_payload(
     payload without a usable command argument yields ``None``.
     """
 
+    commitment = command_identity_fields_for_payload(payload, key_material).get(
+        "command_commitment"
+    )
+    return commitment if type(commitment) is str else None
+
+
+def command_identity_fields_for_payload(
+    payload: Mapping[str, JsonValue], key_material: bytes
+) -> dict[str, JsonValue]:
+    """The keyed command identity structural fields for one host command argument.
+
+    ``command_commitment`` commits to the whole normalized command; a compound, wrapped,
+    prefixed or redirected command also yields ``command_segment_commitments`` (sorted keyed
+    commitments to the simple commands it runs) and ``command_composition`` (#977), which match a
+    planned verification to one part of a composed run. Only keyed values leave this function.
+    """
+
     if not _is_command_tool(payload.get("tool_name")):
-        return None
+        return {}
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, Mapping):
-        return None
+        return {}
     nested = cast(Mapping[str, JsonValue], tool_input)
     for key in _COMMAND_ARGUMENT_KEYS:
         value = nested.get(key)
@@ -801,9 +823,35 @@ def command_commitment_for_payload(
             continue
         normalized = normalize_observed_command(value)
         if normalized is None:
-            return None
-        return observed_command_commitment(key_material, normalized)
-    return None
+            return {}
+        fields: dict[str, JsonValue] = {
+            "command_commitment": observed_command_commitment(key_material, normalized)
+        }
+        segments = command_segment_commitments(key_material, normalized)
+        if segments is not None:
+            fields["command_segment_commitments"] = list(segments[0])
+            fields["command_composition"] = segments[1]
+        return fields
+    return {}
+
+
+def _supplied_segment_fields(payload: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """Re-validate segment fields a host normalizer or the spool already computed (#977)."""
+
+    segments = payload.get("command_segment_commitments")
+    composition = payload.get("command_composition")
+    if not isinstance(segments, list | tuple) or composition not in COMMAND_COMPOSITIONS:
+        return {}
+    items = list(cast(list[JsonValue], segments))
+    if (
+        not 1 <= len(items) <= MAX_SEGMENT_COMMITMENTS
+        or any(
+            type(item) is not str or not _COMMAND_COMMITMENT_RE.fullmatch(item) for item in items
+        )
+        or items != sorted(set(cast(list[str], items)))
+    ):
+        return {}
+    return {"command_segment_commitments": items, "command_composition": composition}
 
 
 def _attach_command_commitment(
@@ -822,13 +870,12 @@ def _attach_command_commitment(
     if not _is_command_tool(payload.get("tool_name")):
         return
     try:
-        commitment = command_commitment_for_payload(
+        fields = command_identity_fields_for_payload(
             payload, LocalObservationStore(_state=_state).key_material()
         )
     except Exception:
         return
-    if commitment is not None:
-        structural["command_commitment"] = commitment
+    structural.update(fields)
 
 
 def _extract_structural(
@@ -858,6 +905,7 @@ def _extract_structural(
     supplied_commitment = payload.get("command_commitment")
     if type(supplied_commitment) is str and _COMMAND_COMMITMENT_RE.fullmatch(supplied_commitment):
         fields["command_commitment"] = supplied_commitment
+        fields.update(_supplied_segment_fields(payload))
     for key in (
         "correlation_id",
         "parent_tool_call_id",
@@ -1477,9 +1525,9 @@ def map_hook_payload_to_envelope(
         gaps.add(ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value)
     if "event_ordinal" not in structural:
         structural = JsonObject({**structural, "event_ordinal": event_ordinal})
-    command_commitment = command_commitment_for_payload(payload, key_material)
-    if command_commitment is not None:
-        structural = JsonObject({**structural, "command_commitment": command_commitment})
+    command_fields = command_identity_fields_for_payload(payload, key_material)
+    if command_fields:
+        structural = JsonObject({**structural, **command_fields})
     identity = _source_identity(event_name, payload, structural, event_ordinal=event_ordinal)
     commitment = hook_source_commitment(key_material, identity)
     return ObservationEnvelope(

@@ -171,7 +171,19 @@ unknown or hostile property names are never echoed. Closed reason tokens are:
 
 These object-rule tokens are projected only from checked-in schema metadata and validator kind —
 never from caller-controlled keys or free-form exception text. Unrecognized object rules degrade
-to a bounded generic `INVALID_REQUEST` without inventing field pointers.
+to a bounded generic `INVALID_REQUEST` without inventing field pointers. A root `if`/`then`
+`not required` rule (for example `status` `filter` beside a `view` that admits none) is reported
+as `extra_forbidden` at the forbidden field, which is read from the schema rule and named only when
+the request carries it.
+
+Authoring hints are hint text only; they never add `safe_details` keys. For a value rejected inside
+a draft payload, the hint follows the draft's own catalogued family and version (several families
+share a field name with different admitted shapes), names the admitted shape of an array member
+(`each limitation_refs entry admits values matching ^res_…`), states a payload array item's own
+`allOf` peer rule (`each obligation_changes entry with change superseded or waived requires
+reason`), names the absent keys of a payload `required` list before reciting it, and lists enums of
+up to 16 members. Checked-in sentences in the MCP error module cover contract facts a pattern only
+implies (which id kind a reference list names, `status` `limit`, `at_frontier`, and `filter`).
 
 For an `extra_forbidden` payload rejection whose unknown key is a known field with exactly one
 legal owning event family among the ordinary `publish_work` families, `safe_details` additionally
@@ -820,7 +832,27 @@ Key payload fields (minimum; full shapes in `src/yoetz/domain/events.py`):
   restatement only when its version is exactly the current version plus one; it replaces the
   effective refs and empty-scope reason. A duplicate root or version gap makes scope unreadable.
 - `obligation_published`: `obligation_id`, `description`, `evidence_expectation`, optional
-  `acceptance_criteria`, `requested_items`, `source_refs`.
+  `acceptance_criteria`, `requested_items`, `source_refs`. Each requested item is
+  `{item_kind, value}` with `item_kind` `url|file|command|change|source`.
+- `obligation_published/1.1.0` (issue #1002, ADR-033 decision 2): the same fields; a requested
+  item is `{item_kind, value, role?}`, `item_kind` adds `directory`, and the optional closed
+  `role` is `input|output` (`RequestedItemRole`), admitted only on `file` and `directory` items.
+  Absent `role` keeps the 1.0.0 meaning (a `file` item may be an input or an output). `status`
+  adds `acknowledged_not_done` (`ObligationStatus.ACKNOWLEDGED_NOT_DONE`) with
+  `acknowledged_not_done_reason` (1..4096 UTF-8 bytes, non-blank), required for that status and
+  forbidden otherwise; `resolution_evidence_refs` stays reserved to `resolved`. The version is a
+  pure function of the payload: 1.1.0 iff it carries a role, a `directory` item or
+  `acknowledged_not_done`, else 1.0.0; each version refuses the other's payloads, so released
+  `1.0.0` stays admitted and byte-identical. The reducer keeps the last effective status among
+  `open`, `acknowledged_not_done` and `resolved` (meaning fields must repeat; `resolved` is
+  terminal); consumers treat `acknowledged_not_done` as not resolved, like `open`, and status
+  `view=obligations` (status-result 1.4.0) shows the status and `acknowledged_not_done_reason`
+  under the `obligation_text` category, like the description. The unreleased event-draft 1.2.0 (and so `publish-work-request/1.2.0`) admits
+  the pair in place and excludes it from its opaque branch. `role: input` items never yield
+  requested-output facts; `role: output` items count as written; a `directory` holding no file is
+  absent. `yoetz.kernel.task_facts.declared_output_items(projection)` returns
+  `(obligation_id, item_index, item_kind, value)` for every effective obligation's `file` or
+  `directory` item with `role: output`, sorted by obligation id (ASCII) then index.
 - `action_recorded`: `action_id`, `action_kind` (`command`|`edit`|`research`|`review`|`other`),
   `description`, optional `command`, `subject_state` (see SubjectStateRef below).
 - `result_recorded`: `result_id`, `action_id`, `outcome` (`success`|`failure`|`partial`|
@@ -8273,7 +8305,11 @@ plan. Names and contracts:
   a hook-observed, non-`exploration`/`vcs` command result (an outcome-less result counts for
   corroboration but never triggers the rule) or captured output such a result links, at that
   result's frontier. Standalone captures, an edit's output and exploration or VCS output never
-  corroborate.
+  corroborate. Self-generated evidence stays admissible (#977 item 5, ADR-033; tb4n1 E7, #987):
+  the agent's own admissible `command` result outside the `exploration`/`vcs` runner classes (a
+  disclosed failing one included) or
+  `test_result`/`command_output` evidence published after the latest hook-observed edit also
+  satisfies the rule.
 - The unreleased local control 2.9.0 carries the fields in place and admits either
   privacy-policy wire version. A newer client meets an older running service at the schema-manifest
   digest in `control-hello` (`manifest_mismatch`, superseded through `yoetz service restart`), and a
@@ -8486,7 +8522,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `planned_verification_not_observed`, `planned_verification_failed`,
   `planned_verification_stale`, `edited_after_last_verification`, `requested_output_git_ignored`.
   Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
-  `planned_verification_unobservable`, `install_into_yoetz_runtime`, `install_into_private_env`,
+  `planned_verification_unobservable`, `planned_verification_agent_linked`, `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`, `verification_only_as_root`,
   `obligation_blocked_outside_agent_control`, `requested_output_ignored_by_repository`,
   `requested_output_unchanged`,
@@ -8499,6 +8535,29 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   composition with the local observation store key) lets `requested_command_identity(value)`
   compute `hmac-sha256:` over `normalize_observed_command(value)`, the identity a hook records as
   `omitted:<commitment>`. Without a registered key no planned-verification code is produced.
+  `requested_command_identities(value) -> (whole, segment identities, composition) | None` adds the planned
+  value's own segment commitments. An agent link (ADR-033 decision 1, #1003) also matches: a
+  cooperative `command` action whose `attempted_items` holds the exact value and whose
+  `causal_parents` names a hook-observed command action, attributed per obligation; the observed
+  run's outcome decides, and an item matched only that way adds the standing
+  `planned_verification_agent_linked` (`PLANNED_VERIFICATION_AGENT_LINKED_GAP`).
+- **Command segments (`domain/command_segments.py`, ADR-033 decision 1).**
+  `command_segments(normalized) -> CommandSegments(segments, composition) | None` splits a
+  normalized command into its simple commands (quote-aware; `None` when unsplittable or already
+  simple); `command_segment_commitments(key, normalized) -> (sorted commitments, composition) |
+  None` keys them, excludes the whole commitment and keeps at most `MAX_SEGMENT_COMMITMENTS` (32:
+  first and last 16 distinct in command order). `COMMAND_COMPOSITIONS` = `single`, `and_chain`,
+  `masked`. `requested_command_shape(value) -> "command" | "placeholder" | "prose"`. Hooks put
+  the result on the structural fields `command_segment_commitments` and `command_composition`
+  (control-request 2.9.0, hook spool, Codex session stream);
+  `kernel.observed_failures.observed_command_field(commitment, segments, composition)` writes the
+  action `command` field (`omitted:<identity>` unchanged for a simple command, else
+  `omitted:<identity> <composition> <segment>...`), `command_identity` reads only the leading
+  identity, and `command_segment_identities(command)` reads the suffix or returns `None`.
+- **Placeholder refusal.** `publish_work` refuses an `obligation_published` `command` item whose
+  value holds an unquoted `<name>` token with `EVENT_INVALID`, reason
+  `requested_command_placeholder`, field `/event_drafts/N/payload/requested_items/K/value`, and a
+  fixed corrective message; the trusted import channel is exempt.
 - **`acting_started(projection, observed, cooperative)`.** True after an observed edit, an observed
   run whose runner class is `test`, `lint`, `typecheck` or `build`, or any cooperative (MCP or local
   CLI) action. `cooperative_event_ids_from_records(records)` and `observed_event_ids_from_records`
@@ -8540,7 +8599,12 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `attempted_items` names exactly (`attempted_items_for_obligation(state, obligation,
   action_kind=ActionKind.EDIT)`), since a `file` item may name a read-only input. `work_integrity_findings(case, *, absent_outputs=)`
   raises `requested_item_never_attempted` with the fact `requested_output_absent`
-  (`REQUESTED_OUTPUT_ABSENT_FACT`) for each absent pair.
+  (`REQUESTED_OUTPUT_ABSENT_FACT`) for each absent pair that
+  `reportable_absent_outputs(case, absent)` keeps: an effective completion claim covers its
+  obligation (names it or names none), or `acting_started` and one of the agent's own (cooperative)
+  `edit`, `command` or `other` actions is attributed to it. A requested
+  directory is `changed` when any changed path lies beneath it; the root probes as `relative`
+  `.`, inside, and is changed by any change.
 - **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the
   absent-output fact, and skips blocked obligations. `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
@@ -8549,10 +8613,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
 - **Runtime structural fields.** The observation envelope and control-request 2.9.0
   `structural_payload` admit `install_target` (`yoetz_runtime|workspace_env|private_env|system|
   unresolved`), `write_scope` (`outside_workspace`) and `effective_user` (`root|non_root`),
-  produced only by `cli/runtime_facts.runtime_structural_facts`; `write_scope` excludes lexically
-  normalized targets under a temporary directory (`/tmp`, `/var/tmp`, `/dev/shm`, their `/private`
-  aliases, macOS `/var/folders/<a>/<b>/T`, the hook's own temp dir; tb4n1 E6).
-  `observed_action_description(...,
+  produced only by `cli/runtime_facts.runtime_structural_facts`, which judges `install_target`
+  against the task interpreter (the agent's `python3`/`python` on the hook's `PATH`; ADR-033
+  item 7). `observed_action_description(...,
   install_target=, write_outside_workspace=, effective_user=)` appends ` (install <class>)`,
   ` (write outside_workspace)`, ` (user <root|non_root>)` after the tool and runner suffixes;
   `observed_action_runtime_tokens(description)` reads them back. Observation advice 0.1.8 adds the

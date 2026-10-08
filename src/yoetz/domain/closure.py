@@ -249,7 +249,8 @@ async def prepare_closure(
             raise ValueError("closure_resolution_decision_required")
         for key in selection.obligation_ids:
             row = obligations[key]
-            if row["status"] != "open":
+            # acknowledged_not_done (#1002) is not resolved and may still be resolved.
+            if row["status"] == "resolved":
                 raise ValueError("closure_obligation_not_open")
             if row["unattempted_items"]:
                 raise ValueError("closure_unattempted_items")

@@ -161,15 +161,19 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_encoded_bytes": 5_000,
             }
         ),
+        # obligation_published 1.1.0 (#1002) adds one draft branch, its payload definition and the
+        # payload's evidence/result oneOf: +3 branches, +1 definition, and about 1.7 KB for that
+        # payload (directory kind, item role, acknowledged_not_done status and its reason). The
+        # branch cannot be shared with 1.0.0, which must keep refusing those additions.
         "publish-work-request": MappingProxyType(
             {
                 "max_oneof_nodes": 8,
-                "max_oneof_branches": 38,
+                "max_oneof_branches": 41,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 23,
+                "max_defs_count": 24,
                 "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 52_000,
+                "max_encoded_bytes": 54_000,
             }
         ),
         "check-request": MappingProxyType(

@@ -323,3 +323,52 @@ def test_no_submitted_value_reaches_a_reference_mirror_message() -> None:
 
     assert secret not in captured.value.message
     assert secret not in repr(captured.value.safe_details)
+
+
+def _obligation_with_commands(*values: str) -> tuple[_Request, object]:
+    draft, record = _record_draft("obligation_published")
+    payload = dict(cast(Mapping[str, JsonValue], draft["payload"]))
+    payload["requested_items"] = [
+        {"item_kind": "file", "value": "results.json"},
+        *({"item_kind": "command", "value": value} for value in values),
+    ]
+    draft["payload"] = payload
+    return draft, record
+
+
+def test_a_placeholder_command_item_is_refused_with_its_exact_location_and_repair() -> None:
+    """tb4n1: `python cracker.py <ciphertext_file>` could never match an observed run (#977)."""
+
+    broken, record = _obligation_with_commands("pytest -q", "python cracker.py <ciphertext_file>")
+
+    with pytest.raises(PublicOperationError) as captured:
+        prepare_publication(
+            _publish_model([cast(JsonValue, broken)], record),
+            channel=PublicationChannel.LOCAL_CLI,
+            app=cast(Application, _App()),
+        )
+
+    error = captured.value
+    assert error.code is PublicErrorCode.EVENT_INVALID
+    details = cast(Mapping[str, str], error.safe_details)
+    assert details["reason_code"] == "requested_command_placeholder"
+    assert details["field"] == "/event_drafts/0/payload/requested_items/2/value"
+    assert "placeholder" in error.message and "acceptance_criteria" in error.message
+    # The submitted value never reaches the public output.
+    assert "ciphertext_file" not in error.message
+    assert "ciphertext_file" not in repr(error.safe_details)
+
+
+@pytest.mark.parametrize(
+    "value", ["python cracker.py data/cipher.bin", "Broad GSEA CLI", "grep '<div>' index.html"]
+)
+def test_concrete_prose_or_quoted_angle_brackets_are_admitted(value: str) -> None:
+    repaired, record = _obligation_with_commands(value)
+
+    prepared = prepare_publication(
+        _publish_model([cast(JsonValue, repaired)], record),
+        channel=PublicationChannel.LOCAL_CLI,
+        app=cast(Application, _App()),
+    )
+
+    assert prepared.drafts[0].draft.schema.name == "obligation_published"

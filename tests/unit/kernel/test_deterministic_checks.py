@@ -353,7 +353,8 @@ def test_text_contract_digest_pins_every_rendered_wording_branch() -> None:
     assert "plan declares no obligation for the recorded task statement" in rendered
     assert "yoetz-no-material-work:evt_" in rendered
     assert "publish a NEW obligation_published" in rendered
-    assert "cites no hook-observed verification run" in rendered
+    assert "cites no verification made after the latest observed edit" in rendered
+    assert "self-generated evidence is admissible" in rendered
     assert "Observed run: result res_" in rendered
     assert "Gaps: missing_ref." in rendered
     assert "Evidence provenance is recorded history" in rendered

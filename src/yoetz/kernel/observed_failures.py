@@ -34,7 +34,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Final
+from typing import Final, cast
 
 from yoetz.domain.events import (
     AcceptedEvent,
@@ -56,6 +56,8 @@ __all__ = [
     "ObservedRunFacts",
     "classify_observed_runs",
     "command_identity",
+    "command_segment_identities",
+    "observed_command_field",
     "is_observed_run_record",
     "observed_event_ids_from_coverage",
     "observed_event_ids_from_records",
@@ -75,6 +77,11 @@ __all__ = [
 # installation-keyed commitment is an identity. ``omitted:structural`` carries none.
 COMMAND_IDENTITY_PREFIX: Final = "omitted:"
 _COMMITMENT_PATTERN: Final = re.compile(r"\Ahmac-sha256:[0-9a-f]{64}\Z", re.ASCII)
+# A compound, wrapped, prefixed or redirected observed command also carries, after its identity,
+# the closed composition token and the sorted keyed commitments to its simple commands (#977):
+# ``omitted:<identity> <composition> <segment> <segment> ...``. Commitments only, never text.
+_SEGMENT_COMPOSITIONS: Final = frozenset({"single", "and_chain", "masked"})
+_MAX_SEGMENT_IDENTITIES: Final = 32
 _FAILED_OUTCOMES: Final = frozenset({ResultOutcome.FAILURE, ResultOutcome.PARTIAL})
 _OBSERVED_RUN_FAMILIES: Final = frozenset({"action_recorded", "result_recorded"})
 # Hook materialization appends the host tool name to an observed action's description in this
@@ -144,15 +151,57 @@ class ObservedRun:
 def command_identity(command: object) -> str | None:
     """Return the keyed command commitment an observed action carries, or ``None``.
 
-    Only ``omitted:hmac-sha256:<hex>`` is an identity. Plain ``sha256`` digests are
-    dictionary-guessable for short commands and are never produced as identities, and
-    ``omitted:structural`` (every row recorded before command commitments existed) has none.
+    Only ``omitted:hmac-sha256:<hex>`` is an identity, optionally followed by the segment suffix
+    ``observed_command_field`` writes. Plain ``sha256`` digests are dictionary-guessable for
+    short commands and are never produced as identities, and ``omitted:structural`` (every row
+    recorded before command commitments existed) has none.
     """
 
     if type(command) is not str or not command.startswith(COMMAND_IDENTITY_PREFIX):
         return None
-    value = command.removeprefix(COMMAND_IDENTITY_PREFIX)
+    value = command.removeprefix(COMMAND_IDENTITY_PREFIX).split(" ", 1)[0]
     return value if _COMMITMENT_PATTERN.fullmatch(value) is not None else None
+
+
+def command_segment_identities(command: object) -> tuple[frozenset[str], str] | None:
+    """The segment commitments and composition an observed command carries, or ``None``.
+
+    ``None`` for a simple command (its whole identity is its only one), a legacy row, or a
+    suffix that is not exactly the closed form: a malformed suffix never widens a match.
+    """
+
+    if command_identity(command) is None:
+        return None
+    parts = cast(str, command).split(" ")
+    if len(parts) < 3 or parts[1] not in _SEGMENT_COMPOSITIONS:
+        return None
+    segments = parts[2:]
+    if len(segments) > _MAX_SEGMENT_IDENTITIES or any(
+        _COMMITMENT_PATTERN.fullmatch(item) is None for item in segments
+    ):
+        return None
+    return frozenset(segments), parts[1]
+
+
+def observed_command_field(
+    commitment: str, segments: tuple[str, ...] | None = None, composition: str | None = None
+) -> str:
+    """The ``command`` field of an observed command action for one keyed identity.
+
+    Without valid segments this is exactly ``omitted:<commitment>``, byte for byte what every
+    earlier ledger recorded, so simple commands keep their historical form.
+    """
+
+    base = f"{COMMAND_IDENTITY_PREFIX}{commitment}"
+    if (
+        _COMMITMENT_PATTERN.fullmatch(commitment) is None
+        or not segments
+        or composition not in _SEGMENT_COMPOSITIONS
+        or len(segments) > _MAX_SEGMENT_IDENTITIES
+        or any(_COMMITMENT_PATTERN.fullmatch(item) is None for item in segments)
+    ):
+        return base
+    return " ".join((base, composition, *sorted(set(segments))))
 
 
 def classify_observed_runs(runs: Iterable[ObservedRun]) -> Mapping[str, ObservedFailureState]:

@@ -708,6 +708,9 @@ def test_v25_observation_wire_tracks_domain_structural_keys_without_rewriting_v2
             "effective_user",
             # And the digest-only image facts (P3-2, issue #1013).
             "observed_images",
+            # And the keyed segment commitments of a composed command (#977).
+            "command_segment_commitments",
+            "command_composition",
         }
     )
     assert set(v25_properties) == expected_observation_keys
@@ -1371,6 +1374,24 @@ def _assert_v29_request_adds_only_command_commitment(
         "write_scope",
         "effective_user",
         "observed_images",
+        "command_segment_commitments",
+        "command_composition",
+    }
+    assert v29_fields["command_segment_commitments"] == {
+        "items": {
+            "maxLength": 76,
+            "minLength": 76,
+            "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+            "type": "string",
+        },
+        "maxItems": 32,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    assert v29_fields["command_composition"] == {
+        "enum": ["and_chain", "masked", "single"],
+        "type": "string",
     }
     image = v29_fields["observed_images"]
     assert image["maxItems"] == 8
@@ -1407,6 +1428,8 @@ def _assert_v29_request_adds_only_command_commitment(
         "write_scope",
         "effective_user",
         "observed_images",
+        "command_segment_commitments",
+        "command_composition",
     ):
         del _structural_properties(stripped)[added]
     assert {k: v for k, v in v28.items() if k != "$id"} == {

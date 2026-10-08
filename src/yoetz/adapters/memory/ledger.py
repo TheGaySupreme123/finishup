@@ -1231,6 +1231,8 @@ def _obligation_item(
     assert typed.payload is not None
     requested_items = tuple(
         {"item_kind": item.item_kind.value, "value": item.value}
+        if item.role is None
+        else {"item_kind": item.item_kind.value, "value": item.value, "role": item.role.value}
         for item in typed.payload.requested_items
     )
     unattempted_items = tuple(
@@ -1250,6 +1252,8 @@ def _obligation_item(
     )
     if typed.payload.acceptance_criteria is not None:
         values["acceptance_criteria"] = typed.payload.acceptance_criteria
+    if typed.payload.acknowledged_not_done_reason is not None:
+        values["acknowledged_not_done_reason"] = typed.payload.acknowledged_not_done_reason
     return StatusObligationItemModel.model_validate(values)
 
 
@@ -1730,7 +1734,8 @@ def _projection_items(
                 for key in scope_refs
                 if (record := projection.obligations.get(key)) is not None
                 and record.payload is not None
-                and record.payload.status.value == "open"
+                # acknowledged_not_done (#1002) is not resolved: listed like open.
+                and record.payload.status.value != "resolved"
             )
         )
         proof_state_cache: dict[tuple[int, int, str], ProjectionState | None] = {}
@@ -1776,7 +1781,8 @@ def _projection_items(
             else sum(
                 (record := projection.obligations.get(obligation)) is None
                 or record.payload is None
-                or record.payload.status.value == "open"
+                # acknowledged_not_done (#1002) is not resolved: counted like open.
+                or record.payload.status.value != "resolved"
                 for obligation in scope_refs
             )
         )
@@ -2611,8 +2617,13 @@ class MemoryLedgerAdapter:
                 assigned = item.assigned_actor_ids
                 keep = (
                     (query.filter.actor_id is None or query.filter.actor_id in assigned)
-                    and (query.filter.include_resolved is True or item.status == "open")
-                    and (query.filter.status is None or item.status == query.filter.status)
+                    # acknowledged_not_done (#1002) is not resolved: it is listed, and matches
+                    # the ``open`` filter, like an open obligation; its row shows its status.
+                    and (query.filter.include_resolved is True or item.status != "resolved")
+                    and (
+                        query.filter.status is None
+                        or (item.status == "resolved") == (query.filter.status == "resolved")
+                    )
                 )
             elif type(query.filter) is FindingsProjectionFilter:
                 assert type(item) is StatusFindingItemModel

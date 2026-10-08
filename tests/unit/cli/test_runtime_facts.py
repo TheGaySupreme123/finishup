@@ -82,7 +82,8 @@ def test_uv_variants(env: dict[str, Path]) -> None:
     assert _target(f"uv pip install --python={env['runtime']}/bin/python3 x", env) == (
         "yoetz_runtime"
     )
-    assert _target("uv pip install --python /some/venv/bin/python x", env) == "system"
+    # A named interpreter that does not exist resolves nothing.
+    assert _target("uv pip install --python /some/venv/bin/python x", env) == "unresolved"
     assert _target("uv pip install x", env) == "unresolved"
     assert _target("uv pip install --system x", env) == "system"
     assert _target("uv add x", env) == "workspace_env"
@@ -108,6 +109,102 @@ def test_non_install_commands_are_none(command: str, env: dict[str, Path]) -> No
 
 def test_unbalanced_quotes_do_not_raise(env: dict[str, Path]) -> None:
     assert _target("pip install 'x", env) is None
+
+
+# --- task interpreter (tb4n1 regressions) ------------------------------------------------------
+
+
+def _venv(root: Path, *names: str) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    for name in names:
+        _executable(root / "bin" / name)
+    return root
+
+
+@pytest.fixture
+def task_venv(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The image ships its task interpreter as a venv first on the agent's PATH (``/opt/venv``)."""
+
+    task = _venv(env["system"].parent / "opt" / "venv", "python", "python3", "pip")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(task / "bin"), str(env["system"] / "bin")]))
+    return task
+
+
+def test_bare_install_into_the_task_venv_is_no_fact(env: dict[str, Path], task_venv: Path) -> None:
+    assert _target("pip install x", env) == "system"
+    assert _target("python -m pip install x", env) == "system"
+    assert _target(f"{task_venv}/bin/pip install x", env) == "system"
+    assert _target(f"uv pip install --python {task_venv}/bin/python x", env) == "system"
+    # --user is that interpreter's own user site, not another environment.
+    assert _target("pip install --user x", env) == "system"
+
+
+def test_task_venv_reached_through_a_directory_link_is_the_task(
+    env: dict[str, Path], task_venv: Path
+) -> None:
+    alias = env["system"].parent / "venv-link"
+    alias.symlink_to(task_venv, target_is_directory=True)
+    assert _target(f"{alias}/bin/pip install x", env) == "system"
+
+
+def test_another_venv_by_explicit_path_is_private_env(
+    env: dict[str, Path], task_venv: Path
+) -> None:
+    telecom = _venv(env["system"].parent / "tmp" / "telecom_venv", "pip", "python")
+    sglang = _venv(env["system"].parent / "tmp" / "sglang-stream-tests312", "python")
+    assert _target(f"{telecom}/bin/pip install x", env) == "private_env"
+    assert _target(f"{sglang}/bin/python -m pip install x", env) == "private_env"
+
+
+def test_a_system_interpreter_beside_a_venv_task_is_private_env(
+    env: dict[str, Path], task_venv: Path
+) -> None:
+    assert _target(f"{env['system']}/bin/python3 -m pip install x", env) == "private_env"
+
+
+def test_a_system_task_interpreter_keeps_other_system_pips_unflagged(env: dict[str, Path]) -> None:
+    local = env["system"].parent / "usr-local"
+    _executable(local / "bin" / "pip")
+    # ``/usr/local/bin/pip`` usually serves ``/usr/bin/python3``; without reading it, no fact.
+    assert _target(f"{local}/bin/pip install x", env) == "system"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pip install --target /tmp/deps x",
+        "pip install -t /tmp/deps x",
+        "pip install --target=/tmp/deps x",
+        "python3 -m pip install --prefix /tmp/p x",
+        "pip install --root /tmp/r x",
+        "uv pip install --target /tmp/deps x",
+    ],
+)
+def test_install_location_outside_workspace_is_private_env(
+    command: str, env: dict[str, Path], task_venv: Path
+) -> None:
+    assert _target(command, env) == "private_env"
+
+
+def test_install_location_inside_workspace_or_unknown(env: dict[str, Path]) -> None:
+    assert _target(f"pip install --target {env['workspace']}/vendor x", env) == "workspace_env"
+    assert _target("pip install --target vendor x", env) == "unresolved"
+    assert _target("pip install --target $DEPS x", env) == "unresolved"
+
+
+def test_yoetz_runtime_stays_flagged_and_is_never_the_task(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The runtime first on PATH: bare pip is still Yoetz's runtime (``/opt/yr/bin/pip``).
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(env["runtime"] / "bin"), str(env["system"] / "bin")])
+    )
+    assert _target("pip install x", env) == "yoetz_runtime"
+    assert _target(f"{env['runtime']}/bin/pip install x", env) == "yoetz_runtime"
+    assert runtime_facts._task_roots() == frozenset(  # pyright: ignore[reportPrivateUsage]
+        {str(env["system"].resolve())}
+    )
 
 
 # --- runtime_structural_facts ------------------------------------------------------------------
@@ -163,15 +260,15 @@ def test_apply_patch_absolute_vs_relative(tmp_path: Path) -> None:
 
 def test_shell_redirect_scope(tmp_path: Path) -> None:
     assert (
-        _facts("Bash", {"command": "echo x > /tmp/elsewhere/y"}, tmp_path)["write_scope"]
+        _facts("Bash", {"command": "echo x > /opt/elsewhere/y"}, tmp_path)["write_scope"]
         == "outside_workspace"
     )
     assert (
-        _facts("Bash", {"command": "echo x >> /tmp/elsewhere/y"}, tmp_path)["write_scope"]
+        _facts("Bash", {"command": "echo x >> /opt/elsewhere/y"}, tmp_path)["write_scope"]
         == "outside_workspace"
     )
     assert (
-        _facts("Bash", {"command": "echo x | tee /tmp/elsewhere/y"}, tmp_path)["write_scope"]
+        _facts("Bash", {"command": "echo x | tee /opt/elsewhere/y"}, tmp_path)["write_scope"]
         == "outside_workspace"
     )
     for harmless in (
@@ -230,4 +327,161 @@ def test_a_system_interpreter_prefix_is_never_yoetz_runtime(
 
     monkeypatch.setattr(sys, "prefix", "/usr")
     monkeypatch.setattr(sys, "base_prefix", "/usr")
-    assert runtime_facts.install_target_class("/usr/bin/pip install x", None) == "system"
+    assert runtime_facts.install_target_class("/usr/bin/pip install x", None) != "yoetz_runtime"
+
+
+# --- temporary directories are scratch, not misplaced deliverables (E6, tb4n1) ------------------
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/tmp/build.log",
+        "/tmp/nested/dir/run.log",
+        "/private/tmp/x.log",
+        "/var/tmp/x.log",
+        "/private/var/tmp/x.log",
+        "/dev/shm/x",
+        "/var/folders/ab/cd1234/T/tmp.x/log.txt",
+        "/private/var/folders/ab/cd1234/T/log.txt",
+        "/tmp//double/slash.log",
+        "/tmp/./dot.log",
+    ],
+)
+def test_temporary_directory_writes_claim_no_scope(target: str, tmp_path: Path) -> None:
+    workspace = tmp_path / "work"
+    for command in (
+        f"python run.py > {target} 2>&1",
+        f"pytest -q 2>&1 | tee {target}",
+        f"cat > {target} <<'EOF'\nlog\nEOF",
+    ):
+        assert "write_scope" not in _facts("Bash", {"command": command}, workspace), command
+    for tool in ("Write", "Edit"):
+        assert _facts(tool, {"file_path": target}, workspace) == {}, tool
+    patch = f"*** Begin Patch\n*** Add File: {target}\n+hi\n*** End Patch\n"
+    assert _facts("apply_patch", {"command": patch}, workspace) == {}
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/tmp/../etc/passwd",
+        "/tmp/x/../../etc/hosts",
+        "/dev/shm/../../etc/x",
+        "/var/tmp/../lib/x",
+        "/var/folders/ab/cd/C/cache.db",
+        "/private/var/folders/ab/cd/T/../../../../etc/x",
+        "/tmpfoo/x.log",
+        "/opt/tmp/x.log",
+    ],
+)
+def test_climbing_out_of_a_temporary_root_still_counts(target: str, tmp_path: Path) -> None:
+    workspace = tmp_path / "work"
+    assert _facts("Bash", {"command": f"echo x > {target}"}, workspace) == {
+        "write_scope": "outside_workspace",
+        "effective_user": "root" if getattr(os, "geteuid")() == 0 else "non_root",
+    }
+    assert _facts("Write", {"file_path": target}, workspace) == {"write_scope": "outside_workspace"}
+
+
+def test_process_temp_dir_is_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A host TMPDIR outside every fixed temporary root (a cluster scratch volume, say).
+    scratch = "/srv/scratch-tmp"
+    monkeypatch.setenv("TMPDIR", scratch + "/")
+    monkeypatch.setenv("HOME", "/home/someone")
+    workspace = Path("/srv/work")
+    assert "write_scope" not in _facts(
+        "Bash", {"command": f"make > {scratch}/build.log"}, workspace
+    )
+    assert _facts("Write", {"file_path": f"{scratch}/../escape.txt"}, workspace) == {
+        "write_scope": "outside_workspace"
+    }
+
+
+@pytest.mark.parametrize("tmpdir", ["/", "/home", "/home/someone"])
+def test_a_temp_dir_that_contains_home_is_never_trusted(
+    tmpdir: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TMPDIR", tmpdir)
+    monkeypatch.setenv("HOME", "/home/someone")
+    workspace = Path("/srv/work")
+    assert _facts("Write", {"file_path": "/home/someone/notes.txt"}, workspace) == {
+        "write_scope": "outside_workspace"
+    }
+
+
+def test_temp_roots_never_probe_the_filesystem(monkeypatch: pytest.MonkeyPatch) -> None:
+    """L3 review: gettempdir probes, can fall back to cwd and raises when no dir is usable."""
+
+    import tempfile
+
+    def unusable() -> str:
+        raise FileNotFoundError("No usable temporary directory found")
+
+    monkeypatch.setattr(tempfile, "gettempdir", unusable)
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", "/home/someone")
+    workspace = Path("/srv/work")
+    facts = _facts("Bash", {"command": "make > /srv/elsewhere/build.log"}, workspace)
+    assert facts["write_scope"] == "outside_workspace"
+    assert "write_scope" not in _facts("Bash", {"command": "make > /tmp/build.log"}, workspace)
+
+
+@pytest.mark.parametrize("tmpdir", ["/srv/work", "/srv", "/srv/work/"])
+def test_a_temp_dir_that_is_or_contains_the_workspace_is_never_trusted(
+    tmpdir: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TMPDIR", tmpdir)
+    monkeypatch.setenv("HOME", "/home/someone")
+    workspace = Path("/srv/work")
+    assert _facts("Write", {"file_path": "/srv/other/out.txt"}, workspace) == {
+        "write_scope": "outside_workspace"
+    }
+
+
+# --- adversarial review follow-ups (E5, E6) -----------------------------------------------------
+
+
+def test_sudo_options_and_attached_target_are_read(env: dict[str, Path], task_venv: Path) -> None:
+    telecom = _venv(env["system"].parent / "tmp" / "telecom_venv", "pip", "python")
+    assert _target(f"sudo -H -u builder {telecom}/bin/pip install x", env) == "private_env"
+    assert _target("sudo -E pip install x", env) == "system"
+    assert _target("pip install -t/opt/deps x", env) == "private_env"
+
+
+def test_a_conda_environment_is_an_environment_of_its_own(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = env["system"].parent / "opt" / "conda"
+    (base / "conda-meta").mkdir(parents=True)
+    for name in ("python", "python3", "pip"):
+        _executable(base / "bin" / name)
+    other = base / "envs" / "scratch"
+    (other / "conda-meta").mkdir(parents=True)
+    _executable(other / "bin" / "pip")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(base / "bin"), str(env["system"] / "bin")]))
+    assert _target("pip install x", env) == "system"
+    assert _target(f"{other}/bin/pip install x", env) == "private_env"
+
+
+def test_a_temp_dir_not_named_as_temporary_space_is_never_trusted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A TMPDIR pointed at a deliverable directory (`/results`) must not hide writes there."""
+
+    monkeypatch.setenv("TMPDIR", "/results")
+    monkeypatch.setenv("HOME", "/home/someone")
+    workspace = Path("/srv/work")
+    assert _facts("Write", {"file_path": "/results/report.json"}, workspace) == {
+        "write_scope": "outside_workspace"
+    }
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["/mnt/c/Users/dev/AppData/Local/Temp/run.log", "/mnt/d/Windows/Temp/x.txt"],
+)
+def test_wsl_windows_temp_is_scratch(target: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", "/home/someone")
+    assert "write_scope" not in _facts("Write", {"file_path": target}, Path("/srv/work"))

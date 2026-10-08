@@ -336,7 +336,8 @@ def accepted_publication(
                 scope.plan_generation = None
                 return
             required = set(scope.required_refs)
-            if payload.get("status") == "open":
+            # acknowledged_not_done (#1002) is not resolved: still required, like open.
+            if payload.get("status") in {"open", "acknowledged_not_done"}:
                 required.add(obligation)
             elif payload.get("status") == "resolved":
                 required.discard(obligation)

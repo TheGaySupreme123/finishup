@@ -45,6 +45,8 @@ __all__ = [
 # present and valid, or that a whole payload is wrong when one key inside it is.
 _SAFE_LOCATION_SEGMENTS: Final = frozenset(
     {
+        # obligation_published 1.1.0 (#1002).
+        "acknowledged_not_done_reason",
         "context_digest",
         "detection_id",
         "membership_generation",
@@ -164,6 +166,8 @@ _SAFE_LOCATION_SEGMENTS: Final = frozenset(
         "requested_view",
         "resolution_evidence_refs",
         "result_id",
+        # obligation_published 1.1.0 requested-item role (#1002).
+        "role",
         "schema",
         "schema_name",
         "schema_version",
@@ -248,6 +252,14 @@ _EVENT_DRAFT_PAYLOAD_FIELD_POINTER: Final = re.compile(
 )
 # Payload pointers the unknown-key hint answers. Deeper pointers name their own admitted values.
 _EVENT_DRAFT_PAYLOAD_POINTER: Final = re.compile(r"/event_drafts/[0-9]{1,3}/payload", re.ASCII)
+_EVENT_DRAFT_NESTED_PAYLOAD_POINTER: Final = re.compile(
+    r"/event_drafts/[0-9]{1,3}/payload/[a-z]", re.ASCII
+)
+# ``/event_drafts/N/payload/<array>/<index>/<field>``: a member rule of a payload array item.
+_EVENT_DRAFT_PAYLOAD_ITEM_FIELD_POINTER: Final = re.compile(
+    r"/event_drafts/[0-9]{1,3}/payload/([a-z][a-z0-9_]{0,63})/[0-9]{1,3}/([a-z][a-z0-9_]{0,63})",
+    re.ASCII,
+)
 _REASON_CODE: Final = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
 # A closed registry of checked-in corrective sentences for facts that are true of the contract but
 # are not expressible as a JSON Schema keyword, so no hint built from the schema alone can state
@@ -257,6 +269,11 @@ _REASON_CODE: Final = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
 _CHECK_SCOPE_CORRECTION: Final = (
     "omit scope for the whole case, or send both claim_ids and obligation_ids as arrays of "
     "unique ids, where two empty arrays also mean the whole case"
+)
+_STATUS_FILTER_CORRECTION: Final = (
+    "filter is admitted only with view assignment, candidate_findings, evidence, findings, "
+    "history, obligations, or operation; omit filter for advice, compact, lineage, project, "
+    "results, and versions"
 )
 _CORRECTIVE_HINTS: Final[Mapping[tuple[str, str, str], tuple[str, tuple[str, ...]]]] = (
     MappingProxyType(
@@ -275,13 +292,59 @@ _CORRECTIVE_HINTS: Final[Mapping[tuple[str, str, str], tuple[str, tuple[str, ...
                 _CHECK_SCOPE_CORRECTION,
                 ("scope", "claim_ids", "obligation_ids"),
             ),
+            # tb4n1: six status calls sent limit "200"; the pattern alone reads as a regex puzzle.
+            ("status", "/limit", "invalid_type_or_value"): (
+                'limit is a decimal string from "1" to "100"; read further pages with cursor',
+                ("limit", "cursor"),
+            ),
+            # tb4n1: three status calls sent ``filter`` beside ``view`` results and got only the
+            # template pointer. ``_STATUS_FILTER_BY_VIEW`` in the protocol models is the source;
+            # a unit test keeps this sentence equal to it.
+            ("status", "/filter", "extra_forbidden"): (
+                _STATUS_FILTER_CORRECTION,
+                ("filter", "view"),
+            ),
+            # tb4n1: a ``sequence:head_digest`` frontier was sent where only the sequence goes.
+            ("status", "/at_frontier", "invalid_type_or_value"): (
+                'at_frontier is a ledger sequence alone as a decimal string such as "42", '
+                "without the head digest; omit at_frontier to read the current frontier",
+                ("at_frontier",),
+            ),
         }
     )
+)
+# Checked-in sentences for payload reference lists whose admitted id kind is a contract fact the
+# id pattern states only as a regex. Keyed by ``(family, field)``; the import-time gate below
+# checks that each named family declares every field its sentence mentions. tb4n1: 14 rejections
+# put evidence ids in ``limitation_refs`` or result ids in a result's ``evidence_refs``.
+_REFERENCE_LIST_CORRECTIONS: Final[Mapping[tuple[str, str], tuple[str, tuple[str, ...]]]] = (
+    MappingProxyType(
+        {
+            ("claim_recorded", "limitation_refs"): (
+                "limitation_refs names only non-success result ids (res_); cite evidence ids "
+                "(evd_) in supporting_refs",
+                ("limitation_refs", "supporting_refs"),
+            ),
+            ("result_recorded", "evidence_refs"): (
+                "a result's evidence_refs names only evidence ids (evd_); cite result ids (res_) "
+                "from a claim's supporting_refs or limitation_refs instead",
+                ("evidence_refs",),
+            ),
+            ("claim_recorded", "disputes_refs"): (
+                "disputes_refs names claim ids (clm_) or event ids (evt_); answer a finding "
+                "(fnd_) with the respond tool instead",
+                ("disputes_refs",),
+            ),
+        }
+    )
+)
+_EVENT_DRAFT_PAYLOAD_MEMBER_POINTER: Final = re.compile(
+    r"/event_drafts/[0-9]{1,3}/payload/([a-z][a-z0-9_]{0,63})/[0-9]{1,3}", re.ASCII
 )
 _MAX_VALIDATION_LOCATIONS: Final = 8
 # Bounded so the hint stays a hint: a long enum dump would bury the field locations it explains.
 _MAX_HINT_FIELDS: Final = 3
-_MAX_HINT_ENUM_MEMBERS: Final = 8
+_MAX_HINT_ENUM_MEMBERS: Final = 16
 # Schema-name unions (ordinary publish families) are larger than payload enums; keep a separate
 # bound so `/event_drafts/N` can name admitted families without dumping unbounded oneOf lists.
 _MAX_HINT_SCHEMA_NAMES: Final = 18
@@ -401,6 +464,23 @@ def _misplaced_field_from_validation_item(item: Mapping[str, object]) -> str | N
     return field if field in _SAFE_LOCATION_SEGMENTS else None
 
 
+def _missing_fields_from_validation_item(item: Mapping[str, object]) -> tuple[str, ...]:
+    """Return the schema-listed required names the validator found absent, allowlist-gated."""
+
+    ctx = item.get("ctx")
+    if not isinstance(ctx, Mapping):
+        return ()
+    names = cast(Mapping[object, object], ctx).get("missing_fields")
+    if type(names) is not tuple:
+        return ()
+    admitted: list[str] = []
+    for name in cast(tuple[object, ...], names):
+        if type(name) is not str or name not in _SAFE_LOCATION_SEGMENTS or name in admitted:
+            return ()
+        admitted.append(name)
+    return tuple(admitted[:_MAX_VALIDATION_LOCATIONS])
+
+
 def _conditional_requirement_from_validation_item(
     item: Mapping[str, object],
 ) -> tuple[str, str] | None:
@@ -483,6 +563,21 @@ def safe_validation_locations(exc: object) -> tuple[dict[str, str], ...]:
             if family is not None and family_version is not None:
                 entry["family"] = family
                 entry["family_version"] = family_version
+                missing_fields = _missing_fields_from_validation_item(source)
+                if missing_fields:
+                    entry["missing_fields"] = ",".join(missing_fields)
+        elif (
+            reason == "invalid_type_or_value"
+            and _EVENT_DRAFT_NESTED_PAYLOAD_POINTER.match(pointer) is not None
+        ):
+            # A value inside a payload (an id pattern in ``limitation_refs``): the family lets the
+            # hint walk the selected branch where several families share the field name with
+            # different admitted shapes (tb4n1: result_recorded ``evidence_refs``).
+            family = _family_from_validation_item(source)
+            family_version = _family_version_from_validation_item(source)
+            if family is not None and family_version is not None:
+                entry["family"] = family
+                entry["family_version"] = family_version
         elif reason == _CONDITIONAL_FIELD_REQUIRED_REASON:
             family = _family_from_validation_item(source)
             family_version = _family_version_from_validation_item(source)
@@ -542,6 +637,7 @@ def authoring_hint(
             *((text, (text, "")) for text in _object_rule_hint_parts(document, locations)),
             *_event_draft_hint_parts(document, locations),
             *((text, (text, "")) for text in _corrective_hint_parts(tool, locations)),
+            *((text, (text, "")) for text in _reference_list_hint_parts(locations)),
             *((text, (text, "")) for text in _required_peer_hint_parts(document, locations)),
         ]
         for text, key in keyed_parts:
@@ -561,7 +657,11 @@ def authoring_hint(
                 # schema-derived text above; the union node itself admits no values to name.
                 if reason in _SAFE_VALUE_ERROR_REASON_TOKENS:
                     continue
-                label, admitted, family = _hint_for_pointer(document, pointer)
+                label, admitted, family = _hint_for_pointer(
+                    document,
+                    pointer,
+                    preferred=_location_identity(location),
+                )
                 key = (label, admitted)
                 if not admitted or key in seen:
                     continue
@@ -765,10 +865,17 @@ def _family_payload_contract_hint_parts(
         )
         if not required or not admitted:
             continue
-        text = (
-            f"the {family} {family_version} payload requires {required}; "
-            f"admitted keys are {admitted}"
+        raw_missing = location.get("missing_fields")
+        missing = (
+            _format_required_list(cast(JsonValue, raw_missing.split(",")), prop_names)
+            if type(raw_missing) is str and raw_missing
+            else ""
         )
+        # Name the absent keys first: the whole required list alone left tb4n1 agents diffing
+        # it against a draft that already carried all but one of them.
+        subject = f"the {family} {family_version} payload"
+        lead = f"{subject} is missing {missing}; it requires" if missing else f"{subject} requires"
+        text = f"{lead} {required}; admitted keys are {admitted}"
         parts.append((text, (text, "")))
         if len(parts) >= _MAX_HINT_FIELDS:
             break
@@ -856,10 +963,24 @@ def _conditional_requirement_hint_parts(
         if location.get("reason") != _CONDITIONAL_FIELD_REQUIRED_REASON:
             continue
         pointer = location.get("field")
-        if (
-            type(pointer) is not str
-            or _EVENT_DRAFT_PAYLOAD_FIELD_POINTER.fullmatch(pointer) is None
-        ):
+        if type(pointer) is not str:
+            continue
+        item_match = _EVENT_DRAFT_PAYLOAD_ITEM_FIELD_POINTER.fullmatch(pointer)
+        if item_match is not None:
+            text = _array_item_conditional_text(
+                document,
+                location.get("family"),
+                location.get("family_version"),
+                item_match.group(1),
+                item_match.group(2),
+            )
+            if text is not None and text not in seen:
+                seen.add(text)
+                parts.append((text, (text, "")))
+                if len(parts) == _MAX_HINT_FIELDS:
+                    break
+            continue
+        if _EVENT_DRAFT_PAYLOAD_FIELD_POINTER.fullmatch(pointer) is None:
             continue
         required = pointer.rsplit("/", 1)[-1]
         payload = _payload_schema(
@@ -889,6 +1010,70 @@ def _conditional_requirement_hint_parts(
         if len(parts) == _MAX_HINT_FIELDS:
             break
     return parts
+
+
+def _array_item_conditional_text(
+    document: Mapping[str, JsonValue],
+    family: object,
+    family_version: object,
+    array: str,
+    missing: str,
+) -> str | None:
+    """State which const values of a payload array item require ``missing``.
+
+    tb4n1: 19 ``plan_revised`` rejections at ``obligation_changes/<n>/reason`` were answered with
+    only the template URI, because the peer rule lives in the item's own ``allOf`` and not on the
+    payload. Every name and value here is read from that frozen item schema.
+    """
+
+    if type(family) is not str or type(family_version) is not str:
+        return None
+    if array not in _SAFE_LOCATION_SEGMENTS or missing not in _SAFE_LOCATION_SEGMENTS:
+        return None
+    payload = _payload_schema(document, family, family_version)
+    if payload is None:
+        return None
+    properties = payload.get("properties")
+    if not isinstance(properties, Mapping):
+        return None
+    array_node = _resolve_local(document, cast(Mapping[str, JsonValue], properties).get(array))
+    if not isinstance(array_node, Mapping):
+        return None
+    item = _resolve_local(document, cast(Mapping[str, JsonValue], array_node).get("items"))
+    if not isinstance(item, Mapping):
+        return None
+    item_node = cast(Mapping[str, JsonValue], item)
+    item_properties = item_node.get("properties")
+    all_of = item_node.get("allOf")
+    if not isinstance(item_properties, Mapping) or not isinstance(all_of, list):
+        return None
+    prop_names = cast(Mapping[str, JsonValue], item_properties)
+    if missing not in prop_names:
+        return None
+    condition_field: str | None = None
+    values: list[str] = []
+    for rule in cast(list[JsonValue], all_of):
+        if not isinstance(rule, Mapping):
+            continue
+        if_node = cast(Mapping[str, JsonValue], rule).get("if")
+        then_node = cast(Mapping[str, JsonValue], rule).get("then")
+        if not isinstance(if_node, Mapping) or not isinstance(then_node, Mapping):
+            continue
+        then_required = cast(Mapping[str, JsonValue], then_node).get("required")
+        if not isinstance(then_required, list) or missing not in cast(list[object], then_required):
+            continue
+        condition = _if_const_condition(cast(Mapping[str, JsonValue], if_node), prop_names)
+        if condition is None:
+            continue
+        field, _, value = condition.partition(" ")
+        if condition_field is not None and field != condition_field:
+            return None
+        condition_field = field
+        if value not in values:
+            values.append(value)
+    if condition_field is None or not values:
+        return None
+    return f"each {array} entry with {condition_field} {' or '.join(values)} requires {missing}"
 
 
 def _selected_branch_requirement_text(
@@ -1068,6 +1253,29 @@ def _corrective_hint_parts(tool: str | None, locations: Sequence[Mapping[str, st
         text = entry[0]
         if text not in parts:
             parts.append(text)
+        if len(parts) == _MAX_HINT_FIELDS:
+            break
+    return parts
+
+
+def _reference_list_hint_parts(locations: Sequence[Mapping[str, str]]) -> list[str]:
+    """Return the checked-in id-kind sentence for a rejected payload reference-list member."""
+
+    parts: list[str] = []
+    for location in locations:
+        if location.get("reason") != "invalid_type_or_value":
+            continue
+        pointer = location.get("field", "")
+        match = (
+            _EVENT_DRAFT_PAYLOAD_MEMBER_POINTER.fullmatch(pointer) if type(pointer) is str else None
+        )
+        family = location.get("family")
+        if match is None or type(family) is not str:
+            continue
+        entry = _REFERENCE_LIST_CORRECTIONS.get((family, match.group(1)))
+        if entry is None or entry[0] in parts:
+            continue
+        parts.append(entry[0])
         if len(parts) == _MAX_HINT_FIELDS:
             break
     return parts
@@ -1273,10 +1481,28 @@ def _format_required_list(required: object, prop_names: Mapping[str, JsonValue])
     return ", ".join(names[:-1]) + f", and {names[-1]}"
 
 
+def _location_identity(location: Mapping[str, str]) -> tuple[str, str] | None:
+    """Return the validator-named ``(family, version)`` riding on one location, or None."""
+
+    family = location.get("family")
+    version = location.get("family_version")
+    if type(family) is not str or type(version) is not str:
+        return None
+    return (family, version)
+
+
 def _hint_for_pointer(
-    document: Mapping[str, JsonValue], pointer: str
+    document: Mapping[str, JsonValue],
+    pointer: str,
+    *,
+    preferred: tuple[str, str] | None = None,
 ) -> tuple[str, str, str | None]:
-    """Return ``(label, admitted_values, example_family_or_none)`` for one pointer."""
+    """Return ``(label, admitted_values, example_family_or_none)`` for one pointer.
+
+    ``preferred`` is the family and version the validator named for this location. It settles a
+    draft union whose branches all carry the field with different admitted shapes, so the hint
+    states the selected family's contract instead of nothing.
+    """
 
     raw_segments = pointer.removeprefix("/").split("/")
     if not raw_segments or raw_segments == [""]:
@@ -1303,7 +1529,7 @@ def _hint_for_pointer(
             continue
         # At a discriminated union, prefer the branch that can continue the remaining path.
         remaining = segments[index:]
-        selected = _select_union_branch(document, node, remaining)
+        selected = _select_union_branch(document, node, remaining, preferred=preferred)
         if selected is not None:
             branch_node, branch_family = selected
             if branch_family is not None:
@@ -1337,7 +1563,17 @@ def _hint_for_pointer(
     # carries them; the label is the missing information, so it must not read as a bare "family".
     if leaf.isdigit():
         admitted = _union_schema_names(document, node)
-        return ("schema.name", admitted, family) if admitted else ("", "", None)
+        if admitted:
+            return "schema.name", admitted, family
+        # An array member (``limitation_refs/0``) names the member shape under the array's own
+        # label: tb4n1 agents put evidence ids where only result ids are admitted and got nothing.
+        parent = raw_segments[-2] if len(raw_segments) >= 2 else ""
+        if not parent or parent.isdigit() or parent not in _SAFE_LOCATION_SEGMENTS:
+            return "", "", None
+        member = _admitted_values(node) or _plain_string_member(node)
+        if not member:
+            return "", "", None
+        return f"each {parent} entry", member, family
     admitted = _admitted_values(node)
     if not admitted and isinstance(node, Mapping):
         admitted = _union_schema_names(document, node)
@@ -1352,6 +1588,8 @@ def _select_union_branch(
     document: Mapping[str, JsonValue],
     node: JsonValue,
     remaining: Sequence[str | int],
+    *,
+    preferred: tuple[str, str] | None = None,
 ) -> tuple[JsonValue, str | None] | None:
     """Pick the oneOf/anyOf branch that can resolve the remaining pointer, if unique enough."""
 
@@ -1374,6 +1612,10 @@ def _select_union_branch(
     # Prefer a branch whose family const is known when several cover the path.
     if len(matches) == 1:
         return matches[0]
+    if preferred is not None:
+        for branch, family in matches:
+            if family == preferred[0] and _schema_version_const(document, branch) == preferred[1]:
+                return branch, family
     with_family = [item for item in matches if item[1] is not None]
     if len(with_family) == 1:
         return with_family[0]
@@ -1383,6 +1625,15 @@ def _select_union_branch(
     }
     if len(families) == 1 and len(admitted) == 1 and "" not in admitted:
         return with_family[0]
+    if len(families) == 1 and "" not in admitted:
+        # One family whose versions admit different values here (obligation_published 1.0.0 and
+        # 1.1.0 ``status``, #1002): name the newest version's contract, which a new draft uses.
+        def version_key(item: tuple[JsonValue, str | None]) -> tuple[int, ...]:
+            version = _schema_version_const(document, item[0]) or ""
+            parts = version.split(".")
+            return tuple(int(part) for part in parts) if all(p.isdigit() for p in parts) else ()
+
+        return max(with_family, key=version_key)
     # Ambiguous: stay on the union node so callers can name admitted schema names.
     return None
 
@@ -1553,6 +1804,20 @@ def _admitted_values(field: JsonValue) -> str:
     if type(raw_pattern) is str and len(raw_pattern) <= _MAX_HINT_PATTERN_CHARS:
         return f"values matching {raw_pattern}"
     return ""
+
+
+def _plain_string_member(field: JsonValue) -> str:
+    """Name a bounded plain-string array member, which has no enum, const, or pattern."""
+
+    if not isinstance(field, Mapping):
+        return ""
+    source = cast(Mapping[str, JsonValue], field)
+    if source.get("type") != "string":
+        return ""
+    bound = source.get("maxLength")
+    if type(bound) is int and bound > 0:
+        return f"a plain string of at most {bound} characters"
+    return "a plain string"
 
 
 def _has_example(document: Mapping[str, JsonValue]) -> bool:
@@ -1792,6 +2057,27 @@ def _check_locatable_required_names() -> None:
         for (registered_tool, _, _), (_, fields) in _CORRECTIVE_HINTS.items():
             if registered_tool == tool and not set(fields) <= declared:
                 raise RuntimeError("corrective_hint_names_unknown_field")
+    publish_schema = cast(JsonValue, descriptor_for("publish_work").input_schema)
+    for (family, field), (_, fields) in _REFERENCE_LIST_CORRECTIONS.items():
+        versions = [
+            version
+            for version in ("1.0.0", "1.1.0", "1.2.0")
+            if _payload_schema(cast(Mapping[str, JsonValue], publish_schema), family, version)
+        ]
+        declared_by_family: set[str] = set()
+        for version in versions:
+            payload = _payload_schema(
+                cast(Mapping[str, JsonValue], publish_schema), family, version
+            )
+            payload_properties = payload.get("properties") if payload is not None else None
+            if isinstance(payload_properties, Mapping):
+                declared_by_family.update(
+                    key
+                    for key in cast(Mapping[object, object], payload_properties)
+                    if type(key) is str
+                )
+        if field not in declared_by_family or not set(fields) <= _SAFE_LOCATION_SEGMENTS:
+            raise RuntimeError("reference_list_correction_names_unknown_field")
     registered_tools = {tool for tool, _, _ in _CORRECTIVE_HINTS}
     if not registered_tools <= {"start", "publish_work", "check", "respond", "status", "receipt"}:
         raise RuntimeError("corrective_hint_names_unknown_tool")
