@@ -198,6 +198,10 @@ def test_no_requested_item_finding_for_an_acknowledged_obligation() -> None:
 
     ledger = _ledger()
     ledger.edit()
+    # tb4n2 E4 (P1-7): an observed edit names no obligation, so "never attempted" waits for a
+    # completion claim (or work published on that obligation).
+    assert never_attempted(ledger) == set()
+    ledger.claim()
     assert {_OBLIGATION, _OTHER} <= never_attempted(ledger)
     _acknowledge(ledger)
     remaining = never_attempted(ledger)

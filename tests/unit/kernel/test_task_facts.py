@@ -243,6 +243,58 @@ def test_edited_after_last_verification_needs_a_prior_verification_run() -> None
     assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
 
 
+@pytest.mark.parametrize("scope", ["scratch", "yoetz_owned"])
+def test_scratch_and_yoetz_owned_edits_never_make_verification_stale(scope: str) -> None:
+    """ADR-042 (tb4n2 R4): pretrain D `/tmp/*.py` scratch, cad S `/app/yoetz_receipt.md`."""
+
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest -q"))
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.edit(write_scope=scope)
+    markers = _markers(ledger)
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    assert (PLANNED_VERIFICATION_STALE_GAP, _OBLIGATION) not in markers
+
+    # A workspace edit (no scope token) and a real outside-workspace edit still count.
+    ledger.edit()
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert (PLANNED_VERIFICATION_STALE_GAP, _OBLIGATION) in _markers(ledger)
+    outside = ObservedLedger()
+    outside.passes("pytest -q")
+    outside.edit(write_scope="outside_workspace")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(outside)
+
+
+def test_scratch_edit_alone_is_not_acting() -> None:
+    ledger = ObservedLedger()
+    ledger.edit(write_scope="scratch")
+    prefix = ledger.prefix
+    assert not acting_started(
+        replay(prefix),
+        observed_event_ids_from_records(prefix),
+        cooperative_event_ids_from_records(prefix),
+    )
+
+
+def test_python_module_test_run_clears_edited_after_verification() -> None:
+    """tb4n2 interleaved S (P1-2): `python -m pytest` after the last edit is a verification run.
+
+    The fact was false in the field: `python -m pytest` classified as `other`, and an early
+    `python build_model.py` classified as `build`, so the only "verification" predated the edits.
+    """
+
+    ledger = ObservedLedger()
+    ledger.passes("python /app/dev/build_model.py")
+    ledger.edit()
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    ledger.passes("python -m pytest -q /app/dev/test_cracker.py")
+    ledger.edit()
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    ledger.passes("python -m pytest -q /app/dev/test_cracker.py")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+
+
 def test_exploration_runs_are_not_verification_runs() -> None:
     ledger = ObservedLedger()
     ledger.passes("pytest -q")
@@ -587,14 +639,28 @@ def test_acting_starts_with_an_edit_a_published_action_or_a_verification_run() -
     ledger.passes("pytest -q")
     assert started(ledger)
 
-    published = ObservedLedger()
-    _planned(published, RequestedItem(RequestedItemKind.FILE, "out/report.json"))
-    published.append(
+    # tb4n2 E4 (P1-7): a published research action only reads; it is not acting.
+    researched = ObservedLedger()
+    _planned(researched, RequestedItem(RequestedItemKind.FILE, "out/report.json"))
+    researched.append(
         _ACTION_SCHEMA,
         ActionRecordedPayload(
             action_id("act_00000000-0000-4000-8000-000000000777"),
             ActionKind.RESEARCH,
             "Read the inputs.",
+        ),
+        observed=False,
+    )
+    assert not started(researched)
+
+    published = ObservedLedger()
+    _planned(published, RequestedItem(RequestedItemKind.FILE, "out/report.json"))
+    published.append(
+        _ACTION_SCHEMA,
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000778"),
+            ActionKind.EDIT,
+            "Write the report.",
         ),
         observed=False,
     )

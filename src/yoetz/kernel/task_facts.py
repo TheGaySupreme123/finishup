@@ -77,6 +77,7 @@ from yoetz.kernel.observed_failures import (
     command_segment_identities,
     observed_action_runner_class,
     observed_action_runtime_tokens,
+    observed_edit_counts,
     observed_event_ids_from_records,
 )
 from yoetz.kernel.plan_scope import current_plan_scope
@@ -214,6 +215,9 @@ STOP_GATE_TOKENS: Final = (
     PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     PLANNED_VERIFICATION_STALE_GAP,
+    # The work changed after the last verification-class run (tb4n2 P1-4b, ADR-042): only
+    # deliverable or workspace edits count, never scratch or Yoetz-owned writes.
+    EDITED_AFTER_LAST_VERIFICATION_GAP,
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
     # A blocker claimed on an open obligation and not yet confirmed (#985).
@@ -782,6 +786,17 @@ def _agent_linked_runs(
     }
 
 
+def _non_counting_edit(description: str) -> bool:
+    """An observed edit whose every path was scratch or Yoetz-owned (ADR-042, tb4n2 R4).
+
+    It changes nothing under test: it never advances the latest edit (so it never makes a planned
+    or recorded verification stale) and is not acting on the task. Deliverable, workspace and
+    real outside-workspace edits keep counting.
+    """
+
+    return not observed_edit_counts(description)
+
+
 def _observed_state(
     projection: ProjectionState,
     observed: frozenset[EventId],
@@ -804,7 +819,7 @@ def _observed_state(
         description = action.payload.description
         if action.payload.action_kind is ActionKind.EDIT:
             edits_with_result.add(str(payload.action_id))
-            if payload.outcome is ResultOutcome.FAILURE:
+            if payload.outcome is ResultOutcome.FAILURE or _non_counting_edit(description):
                 continue
             latest_edit = max(latest_edit or 0, result.source_frontier)
             edit_tokens.update(observed_action_runtime_tokens(description))
@@ -832,12 +847,17 @@ def _observed_state(
         if payload is None:
             continue
         if action.source_event_id in cooperative:
-            # A published action is the agent's own record of acting.
-            acting = True
+            # A published action is the agent's own record of acting; a research or review
+            # action only reads, so it is not acting (tb4n2 E4, P1-7: lake S got "no recorded
+            # attempt" after one research action).
+            if payload.action_kind not in {ActionKind.RESEARCH, ActionKind.REVIEW}:
+                acting = True
             continue
         if action.source_event_id not in observed:
             continue
         if payload.action_kind is ActionKind.EDIT and str(action_ref) not in edits_with_result:
+            if _non_counting_edit(payload.description):
+                continue
             # An observed edit whose outcome has not arrived yet still changed the state under
             # test as far as the observer can tell; a stated failure above never counts.
             latest_edit = max(latest_edit or 0, action.source_frontier)

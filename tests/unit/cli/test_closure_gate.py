@@ -89,6 +89,20 @@ def test_observation_pending_drops_only_observation_dependent_items() -> None:
     assert "draining" in mixed.text
 
 
+def test_edited_after_last_verification_gates_with_a_rerun_repair() -> None:
+    """tb4n2 P1-4b (ADR-042): verification not re-run after the last edit stops the agent once."""
+
+    token = "edited_after_last_verification"
+    assert token in STOP_GATE_TOKENS
+    gate = _gate(_readiness(actionable=(token,)))
+    assert gate is not None
+    assert gate.items == (token,)
+    assert "after your last verification run" in gate.text
+    assert "Run each planned verification after your last edit" in gate.text
+    # It depends on observed runs, so it is never used while observations are still draining.
+    assert _gate(_readiness(actionable=(token,)), pending=True) is None
+
+
 def test_malformed_readiness_does_not_gate() -> None:
     assert _gate(None) is None
     assert (
