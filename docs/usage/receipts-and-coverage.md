@@ -49,6 +49,12 @@ Read these together, never in isolation: the frontier, the verdict, the coverage
 disposition, evidence provenance, freshness, suppressed counts, and limitations. Derived Markdown is
 a human view of the same structured record.
 
+A limitation an earlier check reported and a later check no longer reports stays on the receipt as
+history: it appears under "Cleared earlier (historical)" with the frontier at which a check first
+stopped reporting it. A historical limitation is not a current limitation: it is not counted among
+the receipt's limitations and does not weaken the conclusion. In the JSON receipt its gap row
+carries `"status": "historical"` and `cleared_at_frontier`; a gap row without a status is current.
+
 Honest:
 
 > Yoetz found no local-check issue in the cooperatively published record at the stated frontier;

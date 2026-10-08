@@ -29,6 +29,7 @@ from yoetz.domain.receipts import (
     CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP,
     ReceiptDocument,
     ReceiptVersionSlice,
+    live_receipt_gap_codes,
     receipt_document_from_json,
     receipt_document_to_json,
     render_receipt_human,
@@ -637,10 +638,12 @@ def _context(
     # receives one task-global structural marker so many historical findings cannot exhaust the
     # receipt's bounded 64-gap surface.
     represented_codes = {gap.code for gap in gaps}
+    retained_only_codes: set[str] = set()
     for code in coverage.known_gaps:
         if code not in represented_codes:
             gaps.append(CaseGap(f"retained_finding_coverage:{code}", code, ()))
             represented_codes.add(code)
+            retained_only_codes.add(code)
     ordered_gaps = tuple(
         sorted(
             gaps,
@@ -667,7 +670,43 @@ def _context(
         lineage,
         check_suffix=check_suffix,
         records=records,
+        historical_gaps=_historical_gaps(records, check_record, retained_only_codes),
     )
+
+
+def _historical_gaps(
+    records: tuple[LedgerRecord, ...],
+    latest_check: LedgerRecord | None,
+    candidates: set[str],
+) -> tuple[tuple[str, Frontier], ...]:
+    """Name the retained-only gap codes a later recorded check cleared (issue #1017).
+
+    A code reaches the receipt only through a retained finding's coverage when neither the case
+    nor the latest check carries it. If an earlier ``check_recorded`` carried it and a later one
+    (through the latest tested check) no longer did, a later check cleared it: the receipt keeps
+    it as history, cleared at the subject frontier of the first check after the last one that
+    carried it. A code no recorded check ever carried stays live. Replay-only and deterministic.
+    """
+
+    if (
+        not candidates
+        or latest_check is None
+        or type(latest_check.payload) is not CheckRecordedPayload
+    ):
+        return ()
+    checks = tuple(
+        record.payload
+        for record in sorted(records, key=lambda record: record.ledger.ingestion_sequence)
+        if type(record.payload) is CheckRecordedPayload
+        and record.ledger.ingestion_sequence <= latest_check.ledger.ingestion_sequence
+    )
+    historical: list[tuple[str, Frontier]] = []
+    for code in sorted(candidates, key=str.encode):
+        carried = [index for index, check in enumerate(checks) if code in check.coverage.known_gaps]
+        if not carried or carried[-1] == len(checks) - 1:
+            continue
+        historical.append((code, checks[carried[-1] + 1].subject_frontier))
+    return tuple(historical)
 
 
 async def _accepted_receipt_event(
@@ -736,7 +775,10 @@ def _internal_result(
         request.include,
         document_json if request.format is ReceiptFormat.JSON else None,
         human,
-        document.coverage,
+        # Issue #1017: the result's coverage names live gaps only, so every surface that counts
+        # limitations from it skips gaps a later check cleared; the document keeps the full union
+        # and marks those gap rows ``historical``.
+        replace(document.coverage, known_gaps=live_receipt_gap_codes(document)),
         document.suppressed_finding_count,
         document.versions,
     )

@@ -5,8 +5,9 @@ Every case in the reviewed ``fixtures/receipts/*.case.json`` corpus that carries
 rendered through the real compact renderer (``render_receipt_compact``), and checked against the
 fixture's own frozen expectations: the exact compact sentence, the absence of every
 ``forbidden_claims``/``forbidden_content`` phrase, and an explicit limitations surface whenever
-coverage carries a gap or the document carries a redaction. Variants without a ``receipt_document``
-(rejected malformed inputs) must render no wording at all.
+coverage carries a live gap or the document carries a redaction. A gap a later check cleared
+(``historical``, issue #1017) stays visible in its own rendered section instead. Variants without a
+``receipt_document`` (rejected malformed inputs) must render no wording at all.
 """
 
 from __future__ import annotations
@@ -20,9 +21,13 @@ from yoetz.domain.receipts import (
     ReceiptConclusion,
     ReceiptDocument,
     ReceiptSectionKey,
+    historical_gap_line,
+    historical_receipt_gaps,
+    live_receipt_gap_codes,
     receipt_document_from_json,
     receipt_weakest_coverage,
     render_receipt_compact,
+    render_receipt_human,
 )
 from yoetz.domain.values import freeze_json
 
@@ -103,9 +108,10 @@ def test_conclusion_vocabulary_is_not_upgraded(fixture_loader: FixtureLoader) ->
         document = _decode(variant)
         raw_document = cast(dict[str, object], variant["receipt_document"])
         assert document.conclusion.value == raw_document["conclusion"], (path, name)
-        # A document whose known coverage still carries a gap can never claim the strongest
+        # A document whose known coverage still carries a live gap can never claim the strongest
         # (no-unresolved-deterministic-findings) conclusion without proof that nothing is missing.
-        if document.coverage.known_gaps:
+        # A gap a later check cleared is history and never bounds it (issue #1017).
+        if live_receipt_gap_codes(document):
             assert (
                 document.conclusion is not ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
             ), (
@@ -171,13 +177,19 @@ def test_limitations_and_redactions_are_spelled_out(fixture_loader: FixtureLoade
         )
         assert limitations is not None, (path, name)
 
-        if document.coverage.known_gaps:
-            for gap_code in document.coverage.known_gaps:
-                assert gap_code in limitations.body or gap_code in limitations.items, (
-                    path,
-                    name,
-                    gap_code,
-                )
+        for gap_code in live_receipt_gap_codes(document):
+            assert gap_code in limitations.body or gap_code in limitations.items, (
+                path,
+                name,
+                gap_code,
+            )
+        # A historical gap is never listed as a current limitation, and is always rendered in
+        # its own section in both human formats (issue #1017).
+        for gap in historical_receipt_gaps(document):
+            assert gap.code not in limitations.items, (path, name, gap.code)
+            for markdown in (True, False):
+                rendered = render_receipt_human(document, markdown=markdown)
+                assert historical_gap_line(gap, markdown=markdown) in rendered, (path, name)
         if document.redactions:
             assert "redact" in limitations.body.lower() or document.coverage.known_gaps, (
                 path,

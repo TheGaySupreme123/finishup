@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -82,6 +82,11 @@ __all__ = [
     "ReceiptDuplicateLink",
     "SELF_VERIFIED_SECTION_TITLE",
     "CHILD_SELF_VERIFIED_NOTE",
+    "HISTORICAL_GAPS_SECTION_TITLE",
+    "historical_gap_line",
+    "historical_gaps_from_wire",
+    "historical_receipt_gaps",
+    "live_receipt_gap_codes",
     "receipt_document_carries_terminal_sections",
     "CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP",
     "CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP",
@@ -113,6 +118,7 @@ __all__ = [
     "ReceiptChildOutcome",
     "ReceiptChildren",
     "ReceiptGap",
+    "ReceiptGapStatus",
     "ReceiptObligation",
     "ReceiptObligationStatus",
     "ReceiptRedaction",
@@ -597,6 +603,21 @@ class ReceiptDisclosure:
             raise ProtocolValueError("invalid_receipt_document")
 
 
+class ReceiptGapStatus(str, Enum):  # noqa: UP042 - exact wire enum base
+    """Whether a receipt gap still bounds the receipt (issue #1017, ADR-033).
+
+    ``historical`` marks a gap an earlier check carried that a later check no longer carries;
+    it stays on the record for honesty but never lowers the conclusion or counts as a current
+    limitation. Only ``historical`` is written on the wire; an absent status reads as ``live``.
+    """
+
+    LIVE = "live"
+    HISTORICAL = "historical"
+
+
+HISTORICAL_GAPS_SECTION_TITLE: Final = "Cleared earlier (historical)"
+
+
 class ReceiptObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
     OPEN = "open"
     RESOLVED = "resolved"
@@ -1045,6 +1066,10 @@ class ReceiptGap:
     code: str
     subject_refs: tuple[EventId | ObligationId | ClaimId, ...]
     detail: str | None = None
+    # Issue #1017: a gap a later check cleared stays visible as ``historical`` with the subject
+    # frontier of the first check that no longer carried it. Absent (live) keeps earlier bytes.
+    status: ReceiptGapStatus = ReceiptGapStatus.LIVE
+    cleared_at_frontier: Frontier | None = None
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_gap"
@@ -1058,6 +1083,17 @@ class ReceiptGap:
         object.__setattr__(self, "subject_refs", refs)
         if self.detail is not None:
             object.__setattr__(self, "detail", _bounded_text(self.detail, 1, 4096, invalid))
+        if type(self.status) is not ReceiptGapStatus:
+            raise ProtocolValueError(invalid)
+        if self.status is ReceiptGapStatus.HISTORICAL:
+            if type(self.cleared_at_frontier) is not Frontier:
+                raise ProtocolValueError(invalid)
+        elif self.cleared_at_frontier is not None:
+            raise ProtocolValueError(invalid)
+
+    @property
+    def live(self) -> bool:
+        return self.status is ReceiptGapStatus.LIVE
 
 
 @dataclass(frozen=True, slots=True)
@@ -1405,6 +1441,15 @@ class ReceiptDocument:
         for gap in cast(tuple[ReceiptGap, ...], gaps):
             if gap.code not in self.coverage.known_gaps:
                 raise ProtocolValueError("receipt_gap_not_in_coverage")
+        # Issue #1017: a historical gap is written only by the 1.3.0 artifact, and a code is
+        # either live or historical on one receipt, never both.
+        historical_codes = {gap.code for gap in cast(tuple[ReceiptGap, ...], gaps) if not gap.live}
+        if historical_codes and (
+            receipt_schema_version != "1.3.0"
+            or historical_codes
+            & {gap.code for gap in cast(tuple[ReceiptGap, ...], gaps) if gap.live}
+        ):
+            raise ProtocolValueError("invalid_receipt_gap")
 
 
 def _policy_version_from_json(value: object) -> PolicyVersionEntry:
@@ -1542,10 +1587,16 @@ def _gap_from_json(value: object) -> ReceiptGap:
     source = _closed_object(
         value,
         frozenset({"code", "subject_refs"}),
-        frozenset({"detail"}),
+        frozenset({"detail", "status", "cleared_at_frontier"}),
         invalid,
     )
     keys = frozenset(cast(tuple[str, ...], tuple(source)))
+    # Issue #1017: present only on a historical gap, together; absent reads as live.
+    historical = "status" in keys
+    if historical is not ("cleared_at_frontier" in keys) or (
+        historical and _field(source, "status", invalid) != ReceiptGapStatus.HISTORICAL.value
+    ):
+        raise ProtocolValueError(invalid)
     refs = tuple(
         _subject_ref(item, invalid)
         for item in _array(_field(source, "subject_refs", invalid), invalid)
@@ -1554,6 +1605,12 @@ def _gap_from_json(value: object) -> ReceiptGap:
         code=cast(str, _field(source, "code", invalid)),
         subject_refs=refs,
         detail=cast(str, _field(source, "detail", invalid)) if "detail" in keys else None,
+        status=ReceiptGapStatus.HISTORICAL if historical else ReceiptGapStatus.LIVE,
+        cleared_at_frontier=(
+            frontier_from_json(_field(source, "cleared_at_frontier", invalid))
+            if historical
+            else None
+        ),
     )
 
 
@@ -1959,6 +2016,9 @@ def _gap_to_json(value: ReceiptGap) -> dict[str, object]:
     result: dict[str, object] = {"code": value.code, "subject_refs": list(value.subject_refs)}
     if value.detail is not None:
         result["detail"] = value.detail
+    if value.cleared_at_frontier is not None:
+        result["status"] = value.status.value
+        result["cleared_at_frontier"] = _frontier_to_json(value.cleared_at_frontier)
     return result
 
 
@@ -2144,6 +2204,70 @@ def unresolved_findings_for_render(document: ReceiptDocument) -> tuple[Finding, 
     )
 
 
+def live_receipt_gap_codes(document: ReceiptDocument) -> tuple[str, ...]:
+    """Coverage gap codes that still bound this receipt, in coverage order (issue #1017).
+
+    A ``historical`` gap (a later check no longer carried it) stays in the document's coverage
+    and its gap rows, but it is never a current limitation, so counts and lists exclude it.
+    """
+
+    historical = {gap.code for gap in document.gaps if not gap.live}
+    return tuple(code for code in document.coverage.known_gaps if code not in historical)
+
+
+def historical_receipt_gaps(document: ReceiptDocument) -> tuple[ReceiptGap, ...]:
+    """The gap rows a later check cleared, in document order (issue #1017)."""
+
+    return tuple(gap for gap in document.gaps if not gap.live)
+
+
+def historical_gap_line(gap: ReceiptGap, *, markdown: bool) -> str:
+    """One fixed line for a historical gap: code, clearing frontier, and its fixed sentence."""
+
+    assert gap.cleared_at_frontier is not None
+    code = f"`{gap.code}`" if markdown else gap.code
+    line = f"- {code}: cleared at frontier {gap.cleared_at_frontier.sequence}."
+    sentence = check_time_change_gap_sentence(gap.code)
+    return line if sentence is None else f"{line} {sentence}"
+
+
+_WIRE_SEQUENCE_RE: Final = re.compile(r"^(?:0|[1-9][0-9]{0,18})$", re.ASCII)
+
+
+def historical_gaps_from_wire(document: object) -> tuple[tuple[str, str], ...]:
+    """``(code, cleared-at sequence)`` for each historical gap row of a receipt document wire.
+
+    For surfaces that hold only the JSON document (CLI, MCP summary). Each value is re-gated
+    against its closed shape; a malformed row is skipped, never echoed (issue #1017).
+    """
+
+    if not _is_actual_mapping(document):
+        return ()
+    raw_gaps = cast(Mapping[object, object], document).get("gaps")
+    if not isinstance(raw_gaps, (list, tuple)):
+        return ()
+    result: list[tuple[str, str]] = []
+    for raw in cast(Sequence[object], raw_gaps):
+        if not _is_actual_mapping(raw):
+            continue
+        row = cast(Mapping[object, object], raw)
+        code = row.get("code")
+        frontier = row.get("cleared_at_frontier")
+        if row.get("status") != ReceiptGapStatus.HISTORICAL.value or not _is_actual_mapping(
+            frontier
+        ):
+            continue
+        sequence = cast(Mapping[object, object], frontier).get("sequence")
+        if (
+            type(code) is str
+            and _GAP_CODE_RE.fullmatch(code) is not None
+            and type(sequence) is str
+            and _WIRE_SEQUENCE_RE.fullmatch(sequence) is not None
+        ):
+            result.append((code, sequence))
+    return tuple(result)
+
+
 def _waiver_for_render(document: ReceiptDocument) -> ReceiptResponse | None:
     for response in document.responses:
         if response.disposition is ResponseDisposition.WAIVED:
@@ -2206,6 +2330,22 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
         if section.coverage_note is not None:
             section_parts.append(section.coverage_note)
         parts.append("\n".join(section_parts))
+    historical = historical_receipt_gaps(document)
+    if historical:
+        heading = (
+            f"## {HISTORICAL_GAPS_SECTION_TITLE}" if markdown else HISTORICAL_GAPS_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "An earlier check carried these gaps and a later check no longer did. They "
+                    "stay on the record but are not current limitations and do not bound this "
+                    "receipt's conclusion.",
+                    *(historical_gap_line(gap, markdown=markdown) for gap in historical),
+                )
+            )
+        )
     if _receipt_document_artifact_version(document.versions) == "1.3.0":
         heading = "## Children" if markdown else "Children"
         child_parts = [heading]
@@ -2406,7 +2546,8 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
         raise ProtocolValueError("invalid_receipt_document")
     frontier = document.subject_frontier.sequence
     prefix = f"Yoetz receipt at frontier {frontier}: "
-    gap_codes = frozenset(gap.code for gap in document.gaps)
+    # Historical gaps (issue #1017) never select a compact limitation sentence.
+    gap_codes = frozenset(gap.code for gap in document.gaps if gap.live)
     unresolved = unresolved_findings_for_render(document)
 
     if "encryption_key_unavailable" in gap_codes:

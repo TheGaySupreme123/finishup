@@ -53,6 +53,7 @@ from yoetz.domain.receipts import (
     ReceiptDocument,
     ReceiptDuplicateLink,
     ReceiptGap,
+    ReceiptGapStatus,
     ReceiptObligation,
     ReceiptObligationStatus,
     ReceiptRedaction,
@@ -371,6 +372,10 @@ class ReceiptBuildContext:
     lineage: LineageEvaluation | None = None
     check_suffix: CheckSuffixClass | None = None
     records: tuple[LedgerRecord, ...] = ()
+    # Issue #1017: gap codes an earlier check carried and the latest check no longer carries,
+    # each with the subject frontier of the first check without it, sorted by code. They stay in
+    # ``coverage`` (retained findings still carry them) but never bound the conclusion.
+    historical_gaps: tuple[tuple[str, Frontier], ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -412,6 +417,28 @@ class ReceiptBuildContext:
         if self.gaps != ordered_gaps or len({gap.marker for gap in self.gaps}) != len(self.gaps):
             raise ValueError(_CONTEXT_INVALID)
         if set(self.coverage.known_gaps) != {gap.code for gap in self.gaps}:
+            raise ValueError(_CONTEXT_INVALID)
+        if (
+            type(self.historical_gaps) is not tuple
+            or any(
+                type(item) is not tuple
+                or len(item) != 2
+                or type(item[0]) is not str
+                or item[0] not in self.coverage.known_gaps
+                or type(item[1]) is not Frontier
+                or item[1].sequence > self.subject_frontier.sequence
+                for item in self.historical_gaps
+            )
+            or [item[0] for item in self.historical_gaps]
+            != sorted({item[0] for item in self.historical_gaps}, key=_ascii_key)
+            # Only a code that reached the receipt solely through retained-finding coverage can
+            # be history; a case, check or lineage gap with the same code is always live.
+            or any(
+                gap.marker != f"retained_finding_coverage:{gap.code}"
+                for gap in self.gaps
+                if gap.code in {item[0] for item in self.historical_gaps}
+            )
+        ):
             raise ValueError(_CONTEXT_INVALID)
         if (
             LEDGER_FRESHNESS_ORDER[self.coverage.ledger_freshness]
@@ -641,7 +668,11 @@ def _check_change_gap_text(context: ReceiptBuildContext, code: str) -> str | Non
     return f"{sentence} {len(affected)} resolved AI-powered {noun} rely on it: {listed}{more}."
 
 
-def _select_gaps(context: ReceiptBuildContext) -> tuple[ReceiptGap, ...]:
+def _select_gaps(
+    context: ReceiptBuildContext,
+    historical: Mapping[str, Frontier] | None = None,
+) -> tuple[ReceiptGap, ...]:
+    cleared = historical or {}
     plan_scope = current_plan_scope(
         context.projection.plans,
         context.projection.coverage_gaps,
@@ -689,6 +720,8 @@ def _select_gaps(context: ReceiptBuildContext) -> tuple[ReceiptGap, ...]:
                 or task_statement_gap_detail(gap.code)
                 or _check_change_gap_text(context, gap.code)
             ),
+            status=(ReceiptGapStatus.HISTORICAL if gap.code in cleared else ReceiptGapStatus.LIVE),
+            cleared_at_frontier=cleared.get(gap.code),
         )
         for gap in sorted(
             context.gaps,
@@ -949,10 +982,13 @@ def _conclusion(
     *,
     self_verified: bool = False,
     obligations_not_done: bool = False,
+    historical_codes: frozenset[str] = frozenset(),
 ) -> ReceiptConclusion:
     # One clean-compatible list for the receipt and the scoped deterministic verdict (#986).
     advisory_gaps = CLEAN_COMPATIBLE_GAPS
-    if _COMPLETION_SCOPE_GAPS & set(context.coverage.known_gaps):
+    # Issue #1017: a gap a later check cleared is history; only live gaps bound the conclusion.
+    live_codes = set(context.coverage.known_gaps) - historical_codes
+    if _COMPLETION_SCOPE_GAPS & live_codes:
         # These two closed gaps bound completion itself. Findings remain visible and actionable,
         # but they cannot make an empty completion scope read as sufficiently covered.
         return ReceiptConclusion.INSUFFICIENT_COVERAGE
@@ -1004,8 +1040,12 @@ def _conclusion(
         advisory_gaps = advisory_gaps | {SEMANTIC_REVIEW_NOT_REQUESTED_GAP}
     if (
         not executions_complete
-        or any(gap.code not in advisory_gaps for gap in context.gaps)
-        or (set(context.coverage.known_gaps) - advisory_gaps)
+        or any(
+            gap.code not in advisory_gaps
+            for gap in context.gaps
+            if gap.code not in historical_codes
+        )
+        or (live_codes - advisory_gaps)
     ):
         return ReceiptConclusion.INSUFFICIENT_COVERAGE
     return ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
@@ -1570,8 +1610,11 @@ def _sections(
     check_totals_text: str = "",
     acknowledged_obligations: frozenset[str] = frozenset(),
     review_not_required: bool = False,
+    historical_gap_codes: frozenset[str] = frozenset(),
 ) -> tuple[ReceiptSection, ...]:
-    gap_codes = coverage.known_gaps
+    # Issue #1017: the limitations section lists live gaps only; the human renderings list the
+    # historical ones (a later check cleared them) in their own section from the gap rows.
+    gap_codes = tuple(code for code in coverage.known_gaps if code not in historical_gap_codes)
     gap_texts = check_change_gap_texts or {}
     bodies: dict[ReceiptSectionKey, str] = {}
     items: dict[ReceiptSectionKey, tuple[str, ...]] = {}
@@ -1911,17 +1954,21 @@ def build_receipt(
     acknowledged_obligations = tuple(
         sorted(acknowledged_obligation_ids(context.projection), key=_ascii_key)
     )[:100]
+    # Issue #1017: only the 1.3.0 artifact can mark a gap historical; earlier artifacts keep
+    # every gap live, exactly as they were issued.
+    historical = dict(context.historical_gaps) if settles_rejections else {}
     conclusion = _conclusion(
         context,
         unresolved_actionable,
         self_verified=any(states_by_id[finding.finding_id].self_verified for finding in findings),
         obligations_not_done=bool(acknowledged_obligations),
+        historical_codes=frozenset(historical),
     )
     obligations = _select_obligations(context, findings)
     responses = _select_responses(context, frozenset(finding.finding_id for finding in findings))
     claim_refs = _select_claim_refs(context, findings)
     evidence_refs = _select_evidence_refs(context, claim_refs, obligations, responses)
-    gaps = _select_gaps(context)
+    gaps = _select_gaps(context, historical)
     children = _receipt_children(context.lineage)
     (
         retained_findings,
@@ -1958,7 +2005,8 @@ def build_receipt(
         check_change_gap_texts={
             code: text
             for code in context.coverage.known_gaps
-            if (text := _check_change_gap_text(context, code)) is not None
+            if code not in historical
+            and (text := _check_change_gap_text(context, code)) is not None
         },
         include=include,
         conclusion=conclusion,
@@ -1971,6 +2019,7 @@ def build_receipt(
         claim_refs=claim_refs,
         evidence_refs=evidence_refs,
         coverage=context.coverage,
+        historical_gap_codes=frozenset(historical),
         redactions=redactions,
         plan_scope=current_plan_scope(
             context.projection.plans,

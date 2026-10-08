@@ -6598,7 +6598,9 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
         ("disposition", "evidence_refs/*", "finding_id", "waiver_expiry", "waiver_scope"),
     )
     + _prefix_leaf_patterns("/document/responses/*/finding_frontier", FRONTIER_LEAVES)
-    + _prefix_leaf_patterns("/document/gaps/*", ("code", "subject_refs/*"))
+    + _prefix_leaf_patterns("/document/gaps/*", ("code", "status", "subject_refs/*"))
+    # Issue #1017: the frontier a later check cleared a historical gap at.
+    + _prefix_leaf_patterns("/document/gaps/*/cleared_at_frontier", FRONTIER_LEAVES)
     + _prefix_leaf_patterns("/document/redactions/*", ("category", "count", "reason"))
     + _prefix_leaf_patterns("/document/sections/*", ("key",))
     + (
@@ -6860,7 +6862,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1463:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24
+    if len(result) != 1466:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, #1017 +3
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

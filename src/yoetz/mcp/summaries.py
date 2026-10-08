@@ -15,6 +15,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
     check_time_change_gap_sentence,
+    historical_gaps_from_wire,
 )
 from yoetz.domain.review_input_render import (
     has_agent_suppliable_missing,
@@ -1746,8 +1747,24 @@ def summary_for_receipt(envelope: object) -> str:
     )
     remaining -= len(withheld_clause.encode("ascii"))
     gap_clause = _bounded_list_clause("gap codes: ", gap_codes, byte_budget=remaining)
+    remaining -= len(gap_clause.encode("ascii"))
+    # Issue #1017: the result coverage counts live gaps only; gaps a later check cleared are
+    # named apart (JSON document; markdown/text carry them in human_text).
+    historical_clause = _bounded_list_clause(
+        "cleared earlier (historical, not limitations): ",
+        tuple(
+            f"{code} at {sequence}" for code, sequence in historical_gaps_from_wire(typed_document)
+        ),
+        byte_budget=remaining,
+    )
     return _bounded(
-        prefix + redacted_clause + obligation_clause + withheld_clause + gap_clause + suffix
+        prefix
+        + redacted_clause
+        + obligation_clause
+        + withheld_clause
+        + gap_clause
+        + historical_clause
+        + suffix
     )
 
 
