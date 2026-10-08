@@ -6598,7 +6598,10 @@ publication of it with `open` or `resolved` takes it back, and the obligations v
 `yoetz-verification-limit:<obligation id>` (issue #995, ADR-033) adds the standing code
 `assumption_disclosed` or `verification_limit_disclosed`; it never blocks or resolves anything,
 and superseding the decision withdraws it. `finding_premise_disputed` (D7a) discloses
-acknowledged findings the review says the task requires; the Stop gate asks about them once. Every recorded page gap
+acknowledged findings the review says the task requires; the Stop gate asks about them once. The
+optional `acknowledged_obligation_count` counts acknowledged obligations without truncation;
+`open_obligation_count` never includes them. The Stop gate challenges each acknowledged obligation
+once (`acknowledgement_recheck`), and the closing review lists them in its blocker question. Every recorded page gap
 is classified by its base code through `yoetz.kernel.closure_readiness.GAP_CLASSIFICATION`. A live
 lineage token from the catalog comparison is disclosed only when a recorded evaluation already
 carries its code (`live_lineage_blockers`; `lineage_child_read_gap` is recorded as

@@ -215,7 +215,8 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   an unacknowledged receipt-blocking finding, `check_in_progress` (recover the running check's
   result through `status view=operation`), `check_not_recorded` or `check_not_applicable` (run a
   check after the material change), or an actionable gap such as `completion_plan_not_claimed`.
-- `ready_with_limitations`: nothing further to do. Every remaining condition is a
+- `ready_with_limitations`: nothing further to do. (An obligation you acknowledged as not done
+  is still challenged once at Stop: do it unless it is genuinely impossible.) Every remaining condition is a
   `standing_limitations` code this host, profile or privacy policy always has (or a disclosure
   you recorded, such as `assumption_disclosed`), or an item in `acknowledged_not_done` (a finding
   or an obligation you recorded as not done). Request
@@ -247,8 +248,10 @@ Supersede the decision (`supersedes_event_id`) to withdraw it. For an open oblig
 will not do, after repair, republish it on `obligation_published` 1.1.0 with the same meaning
 fields, `status: "acknowledged_not_done"` and an `acknowledged_not_done_reason`: the honest last
 resort, never a blocker. It leaves `obligations_open`, readiness lists it in
-`acknowledged_not_done`, and the receipt discloses it as not done and never reads clean. A later
-publication of it with `open` (or `resolved` with evidence) takes it back.
+`acknowledged_not_done`, a Stop challenges it once and the closing review tests it against the
+task, and the receipt discloses it as not done and never reads clean. Republishing it on
+`obligation_published` 1.0.0 with `open` (or `resolved` with evidence) takes it back; a resolved
+obligation stays resolved.
 
 `blocking_conditions` still names everything that bounds the conclusion; `coverage_gaps_declared`
 there is a disclosure, not a task. Never treat a standing limitation as work, and never describe

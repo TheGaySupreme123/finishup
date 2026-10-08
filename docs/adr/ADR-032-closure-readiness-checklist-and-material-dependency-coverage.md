@@ -341,3 +341,15 @@ agent that would not finish one obligation had no honest exit except a `yoetz-bl
    confirmed blocked) and none is unreadable, and it appears once, under `acknowledged_not_done`.
    The Stop gate then names no number for open obligations. A resolved obligation stays final:
    a later acknowledgement or reopening is refused.
+8. **Review follow-ups (2026-10-07).** An acknowledgement is challenged like a blocker: the Stop
+   gate asks once per acknowledged obligation (closed item `acknowledgement_recheck`, keys
+   `ack:<obligation id>` plus `ack-count:<n>` beyond the listed ids, in the blocker re-check
+   memory and caps, also on an active Stop), and the closing review's blocker question lists
+   acknowledged obligations for the reviewer to test against the task statement. The gate offers
+   acknowledgement only inside a blocker re-check, as the last resort after repair. Status
+   readiness carries `acknowledged_obligation_count` (untruncated; `open_obligation_count` never
+   includes them), and the CLI, MCP summary, receipt outstanding-work section and check totals
+   count an acknowledged obligation once, apart from open ones (check totals keep their closed
+   keys: the remainder of `declared` is rendered as acknowledged). Publishing `open` or
+   `resolved` on 1.1.0 is refused with a hint naming 1.0.0. Residual: `status view=obligations`
+   shows an acknowledged obligation as `open` with no marker; L6 owns that view and adds the reason.
