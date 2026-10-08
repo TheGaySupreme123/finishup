@@ -1002,6 +1002,12 @@ def _conclusion(
         # disclosure. A check without the field (older builds, or a route that required review)
         # keeps it blocking.
         advisory_gaps = advisory_gaps | {SEMANTIC_REVIEW_NOT_REQUESTED_GAP}
+    if context.check_suffix is CheckSuffixClass.RESPONSES_ONLY:
+        # Issue #1021 (tb4n2 P1-4a): only the agent's answers to that check's own findings
+        # followed it. They change no work the check read, and the finding states above already
+        # reflect them, so the earlier-frontier note is a disclosure here, not a coverage bound.
+        # Observations or other later material keep it blocking.
+        advisory_gaps = advisory_gaps | {CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP}
     if (
         not executions_complete
         or any(gap.code not in advisory_gaps for gap in context.gaps)

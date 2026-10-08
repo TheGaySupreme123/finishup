@@ -573,9 +573,11 @@ This replaces the earlier statement in this ADR that the receipt cannot apply th
 1. **Record.** `check-recorded` 1.4.0 and `check-result` 1.4.0 (both unreleased, additive in
    place) gain the optional boolean `semantic_route_required`. A check's route required review
    when the check asked for it (`mode: semantic_required`) or the effective verification policy is
-   `semantic: required`, whatever mode the caller chose and whatever route profile served it (a
-   strict MCP process that cannot dispatch a required review still ran on a route that required
-   one). The writer emits the field only as `false`, on a route that did not require review; a
+   `semantic: required`, whatever mode the caller chose. *Amended 2026-10-08 (issue #1021,
+   [ADR-040](ADR-040-reviewer-disagreement-and-route-derived-review.md)):* an explicitly
+   deterministic-only route (the strict MCP route the owner registered) did not require review
+   unless the check asked for `semantic_required`; a strict process with Codex registration drift
+   (#537) still follows the policy. The writer emits the field only as `false`, on a route that did not require review; a
    requiring route omits it. Checks on a requiring route and every check an older build wrote
    therefore keep their exact bytes, and replay reads them as before.
 2. **Receipt.** The receipt conclusion treats `semantic_review_not_requested` as clean-compatible

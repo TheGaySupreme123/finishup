@@ -3673,18 +3673,52 @@ def _sorted_verdicts(
 
 
 def semantic_route_required(
-    mode: str | None, policy_semantic: Literal["disabled", "optional", "required"]
+    mode: str | None,
+    policy_semantic: Literal["disabled", "optional", "required"],
+    *,
+    route_profile: Literal["policy", "strict"] = "policy",
+    route_drift: bool = False,
 ) -> bool:
     """Whether a check's route required AI-powered review (issue #986, owner decision E2).
 
-    True when the check asked for it (``semantic_required``) or the verification policy requires
-    it, whatever mode the caller chose and whatever route profile served the call: a strict MCP
-    process that cannot dispatch a required review still ran on a route that required one. Only
-    a check on a route that did not require review records ``semantic_route_required: false``;
-    there ``semantic_review_not_requested`` is a disclosure that does not bound the receipt.
+    True when the check asked for it (``semantic_required``), whatever route served the call.
+    Otherwise an explicitly deterministic-only route (the owner registered the strict MCP route,
+    which can never dispatch AI-powered review) did not require one, whatever the verification
+    policy says (issue #1021, owner decision tb4n2 P0-8): that owner chose local checks for this
+    host. A strict process serving a host whose applied route is ``policy``
+    (``route_drift``, issue #537) is stale, not an owner choice, so the policy still decides.
+    On the policy route, a ``required`` verification policy requires review. Only a check on a
+    route that did not require review records ``semantic_route_required: false``; there
+    ``semantic_review_not_requested`` is a disclosure that does not bound the receipt.
     """
 
-    return mode == "semantic_required" or policy_semantic == "required"
+    if mode == "semantic_required":
+        return True
+    if route_profile == "strict" and not route_drift:
+        return False
+    return policy_semantic == "required"
+
+
+def _recorded_route_required(
+    mode: str | None,
+    policy_semantic: Literal["disabled", "optional", "required"],
+    *,
+    route_profile: Literal["policy", "strict"],
+    host_profile: McpHostProfile,
+    _state: Path | None,
+) -> Literal[False] | None:
+    """The recorded ``semantic_route_required`` value: ``False`` or omitted (issue #986).
+
+    Only a route that did not require review is written; a requiring route keeps today's bytes.
+    """
+
+    drift = route_profile == "strict" and _strict_ceiling_route_drift(
+        host_profile=host_profile, _state=_state
+    )
+    required = semantic_route_required(
+        mode, policy_semantic, route_profile=route_profile, route_drift=drift
+    )
+    return None if required else False
 
 
 def full_check_gaps_clean(known_gaps: Iterable[str], totals: Mapping[str, object]) -> bool:
@@ -4661,13 +4695,12 @@ async def execute_check_commit(
             "semantic_redacted_values": semantic_result.semantic_redacted_values,
             # Issue #986: record the route, never block on it here. Only a route that did not
             # require review is written (``False``); a requiring route keeps today's bytes.
-            "semantic_route_required": (
-                None
-                if semantic_route_required(
-                    request.mode,
-                    app.verification_policy.semantic,
-                )
-                else False
+            "semantic_route_required": _recorded_route_required(
+                request.mode,
+                app.verification_policy.semantic,
+                route_profile=route_profile,
+                host_profile=host_profile,
+                _state=_state,
             ),
             "review_input_manifest": recorded_manifest,
             "totals": build_check_totals(
