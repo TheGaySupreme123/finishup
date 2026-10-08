@@ -83,6 +83,7 @@ from yoetz.application.check_change import (
     capture_check_time_change,
     check_change_shown_files,
     check_time_change_selected,
+    declared_output_paths,
     recover_check_time_change,
 )
 from yoetz.application.coordination import (
@@ -114,7 +115,10 @@ from yoetz.application.lineage_recovery import (
     observed_activity_renewal,
     observed_host_session_binding,
 )
-from yoetz.application.missing_for_assessment import unsuppliable_missing_kinds
+from yoetz.application.missing_for_assessment import (
+    check_change_binary_paths,
+    unsuppliable_missing_kinds,
+)
 from yoetz.application.observation_advice import (
     ObservationAdviceContextBuilder,
     stable_advice_finding_id,
@@ -4939,6 +4943,8 @@ def _privacy_gated_semantic_evaluator(
                             port=change_capture,
                             clock=clock,
                             request_id=frozen.lease.operation_id,
+                            # Declared deliverables first, so a clipped packet keeps them.
+                            priority_paths=declared_output_paths(frozen.case.projection),
                         )
             test_edit_gaps = (
                 ()
@@ -5100,6 +5106,11 @@ def _privacy_gated_semantic_evaluator(
             packet_edit_paths = captured_edit_paths(
                 frozen.case, captured_content, captured_content_scope
             )
+            # tb4n2 A11: files Git found binary in the check-time change, for classifying a
+            # suffix-less binary a reviewer names as Yoetz's limit. In process only.
+            packet_binary_paths = check_change_binary_paths(
+                None if check_change.change is None else check_change.change.capture
+            )
             trimmed_prior = set(_packet_view_gaps(packet_view))
             # The packet's coverage also carries task-level ledger gaps (plan drift, completion
             # scope, unreadable events). The reviewer still sees them in the packet and the check
@@ -5202,6 +5213,7 @@ def _privacy_gated_semantic_evaluator(
                     case_settled_finding_refs=packet_settled_refs,
                     case_citable_refs=packet_citable_refs,
                     case_captured_edit_paths=packet_edit_paths,
+                    case_binary_paths=packet_binary_paths,
                     case_workspace_root=workspace_root,
                     check_change_files=check_change_files,
                     review_input_manifest=input_manifest,
@@ -5576,6 +5588,7 @@ def _privacy_gated_semantic_evaluator(
                     case_settled_finding_refs=packet_settled_refs,
                     case_citable_refs=packet_citable_refs,
                     case_captured_edit_paths=packet_edit_paths,
+                    case_binary_paths=packet_binary_paths,
                     case_workspace_root=workspace_root,
                     check_change_files=check_change_files,
                     continuation=continuation,

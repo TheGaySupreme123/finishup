@@ -266,8 +266,18 @@ class ChangeCapturePort(Protocol):
         """Return HEAD's commit, or the empty tree for a repository with no commit yet."""
         ...
 
-    def capture(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeCapture:
-        """Render the change from ``base`` (or HEAD when ``None``) to the working tree."""
+    def capture(
+        self,
+        workspace: str,
+        base: TaskChangeBase | None,
+        *,
+        priority_paths: tuple[str, ...] = (),
+    ) -> CheckChangeCapture:
+        """Render the change from ``base`` (or HEAD when ``None``) to the working tree.
+
+        ``priority_paths`` names the task's declared deliverables; their files are rendered ahead
+        of every other file (tb4n2 R7). They order the change only, never widen what is read.
+        """
         ...
 
     def capture_metadata(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeMetadata:

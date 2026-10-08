@@ -274,8 +274,9 @@ started before this version, the commit at its first check) — committed and un
 tracked files, plus untracked files Git does not ignore — from the repository the check's own
 connection named (only when that directory is the repository's own working tree: a repository whose
 Git settings point its working tree elsewhere is not read), and shows it to the reviewer first, with
-a header naming every changed file. It covers edits made by scripts and commits that no hook
-captured. Because the starting point is a commit, uncommitted or untracked work that was already in
+a header naming every changed file. Files you declared as outputs come first, then small files,
+then the rest, so when the change is cut for room your deliverables are kept and scratch files go
+first. It covers edits made by scripts and commits that no hook captured. Because the starting point is a commit, uncommitted or untracked work that was already in
 your working tree when the task started is included too. Git hooks, helpers, filters and network
 access are off while it is read, credential-like text is redacted, and each part still passes the
 never-send check. Files named like credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and

@@ -318,6 +318,47 @@ def _requested_relative_path(root: Path, value: str) -> bytes | None:
     return encoded
 
 
+# A file whose rendered section is at most this large is ranked right after the declared
+# deliverables (tb4n2 R7, P1-11): a 12-byte ``requirements.txt`` costs the packet almost nothing,
+# so it is never clipped behind a large scratch file.
+_SMALL_SECTION_BYTES: Final = 4_096
+
+
+def _priority_paths(root: Path, values: tuple[str, ...]) -> tuple[bytes, ...]:
+    """The root-relative forms of the declared deliverables under ``root``, bounded and sorted.
+
+    Lexical, like ``_requested_relative_path``: nothing is opened or stat-ed. The root itself is
+    dropped (a declared whole workspace orders nothing), as is any value outside the root.
+    """
+
+    if type(values) is not tuple:
+        return ()
+    located = {
+        relative
+        for value in values[:_MAX_REQUESTED_PATH_PROBES]
+        if (relative := _requested_relative_path(root, value)) is not None
+        and relative != _ROOT_RELATIVE
+    }
+    return tuple(sorted(located))
+
+
+def _prioritised(path: bytes, priority: tuple[bytes, ...]) -> bool:
+    """Whether ``path`` is a declared deliverable or lies under a declared directory."""
+
+    bare = path.rstrip(b"/")
+    return any(bare == item or bare.startswith(item + b"/") for item in priority)
+
+
+def _section_rank(section: _Section, priority: tuple[bytes, ...]) -> tuple[int, bytes]:
+    """Order of a section in the rendered change: deliverables, small files, then the rest."""
+
+    if _prioritised(section.path, priority):
+        return (0, section.path)
+    if section.text is not None and len(section.text) <= _SMALL_SECTION_BYTES:
+        return (1, section.path)
+    return (2, section.path)
+
+
 def _safe_relative(path: bytes) -> bool:
     return (
         bool(path)
@@ -461,7 +502,21 @@ class GitChangeCaptureAdapter:
         # is still part of its change when HEAD later gains commits.
         return TaskChangeBase(object_format, head or _EMPTY_TREES[object_format])
 
-    def capture(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeCapture:
+    def capture(
+        self,
+        workspace: str,
+        base: TaskChangeBase | None,
+        *,
+        priority_paths: tuple[str, ...] = (),
+    ) -> CheckChangeCapture:
+        """Render the change; ``priority_paths`` are the task's declared deliverables (tb4n2 R7).
+
+        A file at or under one of them is read, budgeted and rendered ahead of every other file,
+        then come small files, then the rest in path order, so a reviewer packet clipped for room
+        never drops a deliverable behind scratch files. The paths only order the change: they
+        never widen what is read, and a value outside the repository is ignored.
+        """
+
         # One deadline bounds the whole capture: every Git call gets at most what is left of it.
         # Assembly may use its first part; the rest is kept for the closing stability check.
         started = time.monotonic()
@@ -471,9 +526,10 @@ class GitChangeCaptureAdapter:
         self._refuse_unsafe_config(pinned, assembly)
         self._refuse_unsafe_object_store(pinned)
         object_format = self._object_format(pinned, assembly)
+        priority = _priority_paths(pinned.root, priority_paths)
         for _ in range(_CAPTURE_ATTEMPTS):
             try:
-                return self._capture_once(pinned, object_format, base, assembly, deadline)
+                return self._capture_once(pinned, object_format, base, assembly, deadline, priority)
             except _ChangedDuringCapture:
                 if _expired(assembly):
                     break
@@ -794,6 +850,7 @@ class GitChangeCaptureAdapter:
         base: TaskChangeBase | None,
         assembly: float,
         deadline: float,
+        priority: tuple[bytes, ...] = (),
     ) -> CheckChangeCapture:
         packs = self._refuse_unsafe_object_store(pinned)
         head = self._rev(pinned, "HEAD^{commit}", assembly)
@@ -810,11 +867,11 @@ class GitChangeCaptureAdapter:
             base_kind, base_id = "head", head
         else:
             base_kind, base_id = "empty", _EMPTY_TREES[object_format]
-        tracked = self._tracked_sections(pinned, object_format, base_id, assembly)
+        tracked = self._tracked_sections(pinned, object_format, base_id, assembly, priority)
         untracked = _UntrackedRead(0, [], True, None, (), {})
         if not _expired(assembly):
             try:
-                untracked = self._untracked_sections(pinned, assembly)
+                untracked = self._untracked_sections(pinned, assembly, priority)
             except ChangeCaptureUnavailable as exc:
                 if not _ran_out(exc, assembly):
                     raise
@@ -822,7 +879,9 @@ class GitChangeCaptureAdapter:
         # count is a lower bound, and the tracked change above still stands.
         self._verify_stable(pinned, base_id, tracked, untracked, head, index, packs, deadline)
         sections = [*tracked.sections, *untracked.sections]
-        sections.sort(key=lambda item: item.path)
+        # Declared deliverables first, then small files, then the rest (tb4n2 R7, P1-11): the
+        # body budget and every later packet cut keep the head of this order.
+        sections.sort(key=lambda item: _section_rank(item, priority))
         return self._render(
             base_kind,
             base_id,
@@ -1174,6 +1233,7 @@ class GitChangeCaptureAdapter:
         object_format: Literal["sha1", "sha256"],
         base_id: str,
         deadline: float,
+        priority: tuple[bytes, ...] = (),
     ) -> _TrackedRead:
         try:
             _, raw = self._git(
@@ -1270,7 +1330,13 @@ class GitChangeCaptureAdapter:
                 if section.text is None and section.omitted is None:
                     section.omitted = "unreadable"
         else:
-            self._per_file_diffs(pinned, base_id, sections, deadline)
+            # Declared deliverables take the per-file read budget first (tb4n2 R7).
+            self._per_file_diffs(
+                pinned,
+                base_id,
+                sorted(sections, key=lambda item: not _prioritised(item.path, priority)),
+                deadline,
+            )
         self._verify_section_objects(pinned, object_format, entries, sections, identities, deadline)
         return read
 
@@ -1487,15 +1553,23 @@ class GitChangeCaptureAdapter:
             raise ChangeCaptureUnavailable("unsupported_repository") from None
         return listing, False
 
-    def _untracked_sections(self, pinned: _Workspace, deadline: float) -> _UntrackedRead:
-        """Return the untracked total, their sections, and whether the listing was cut short."""
+    def _untracked_sections(
+        self, pinned: _Workspace, deadline: float, priority: tuple[bytes, ...] = ()
+    ) -> _UntrackedRead:
+        """Return the untracked total, their sections, and whether the listing was cut short.
+
+        Declared deliverables (``priority``) are read first, so the untracked file limit and the
+        deadline never skip one behind scratch files.
+        """
 
         excludes = self._repository_excludes_file(pinned, deadline)
         if excludes is None:
             excludes = _global_excludes_file(deadline)
         config = ("-c", f"core.excludesFile={excludes}") if excludes is not None else ()
         listing, listing_truncated = self._untracked_listing(pinned, config, deadline)
-        paths = sorted(path for path in _nul_fields(listing))
+        paths = sorted(
+            _nul_fields(listing), key=lambda path: (not _prioritised(path, priority), path)
+        )
         sections: list[_Section] = []
         identities: dict[bytes, _Identity | None] = {}
         for index, path in enumerate(paths):
