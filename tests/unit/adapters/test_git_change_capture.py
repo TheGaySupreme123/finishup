@@ -291,7 +291,8 @@ def test_links_are_named_but_never_followed(tmp_path: Path) -> None:
 
 def test_oversized_files_are_left_out_whole_and_the_rest_is_still_shown(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
-    (repository / "a_generated.txt").write_text("x" * 200_000 + "\n", encoding="utf-8")
+    # Over the per-file read bound (232 KiB since issue #983), so it is named, never read.
+    (repository / "a_generated.txt").write_text("x" * 300_000 + "\n", encoding="utf-8")
     (repository / "big.lock").write_text(
         "".join(f"line {index}\n" for index in range(40_000)), encoding="utf-8"
     )
@@ -309,6 +310,21 @@ def test_oversized_files_are_left_out_whole_and_the_rest_is_still_shown(tmp_path
     assert "  A a_generated.txt untracked; not shown: too large for this capture" in text
     assert "  A big.lock (+40000 -0) not shown: the capture reached its size" in text
     assert "line 39999" not in text
+
+
+def test_a_large_new_source_file_is_shown_whole(tmp_path: Path) -> None:
+    # Issue #983: a ~140 KiB untracked deliverable was named only above the old 64 KiB read bound.
+    repository = _repository(tmp_path)
+    source = "".join(f"TABLE_{index} = [{', '.join(['1234'] * 20)}]\n" for index in range(1_100))
+    assert 128 * 1024 < len(source) < 160 * 1024
+    (repository / "cracker.py").write_text(source, encoding="utf-8")
+
+    capture = GitChangeCaptureAdapter().capture(os.fspath(repository), None)
+
+    text = _text(capture)
+    assert not capture.truncated and capture.omitted_files == 0
+    assert "+TABLE_1099 = [" in text
+    assert "not shown" not in text
 
 
 def test_binary_untracked_file_is_described_not_embedded(tmp_path: Path) -> None:

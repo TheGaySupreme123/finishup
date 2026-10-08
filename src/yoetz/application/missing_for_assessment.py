@@ -2,8 +2,10 @@
 
 The reviewer may name only refs its packet carried. Yoetz, not the reviewer, decides whether the
 agent can supply each item: a kind the effective review selection or channel can never carry, or a
-target the owner redacted, is ``structurally_unavailable_on_this_host``; everything else is
-``agent_suppliable``. A later review sees the earlier request beside what was recorded since, and
+target the owner redacted, is ``structurally_unavailable_on_this_host``; content the packet cannot
+show (an unsupported data type such as an image or binary file, content clipped or omitted for
+packet room) is a ``yoetz_limit_*`` class (tb4n1 D1, #983);
+everything else is ``agent_suppliable``. Only ``agent_suppliable`` is ever agent work. A later review sees the earlier request beside what was recorded since, and
 an item re-requested after it was supplied is dropped unless the reviewer cites that new material.
 "Supplied" is judged per named target: only new material directly tied to that target counts
 (its run, exact command, file path, or a correction of it), so a record that relates only to
@@ -28,7 +30,9 @@ from yoetz.domain.events import (
     ActionRecordedPayload,
     ClaimRecordedPayload,
     ClaimRecordedPayloadV1_1,
+    EvidenceContentAvailability,
     EvidenceDigestProvenance,
+    EvidenceDigestSubject,
     EvidenceRecordedPayload,
     MissingForAssessmentItem,
     PlanPublishedPayload,
@@ -44,22 +48,101 @@ from yoetz.domain.receipts import (
     SEMANTIC_MISSING_ITEMS_REJECTED_GAP,
     SEMANTIC_MISSING_NON_CONVERGENT_GAP,
     SEMANTIC_MISSING_UNAVAILABLE_GAP,
+    SEMANTIC_MISSING_YOETZ_LIMIT_GAP,
 )
 from yoetz.domain.values import EventId
+from yoetz.kernel.delivered_set import item_role
 from yoetz.kernel.deterministic_checks import DeterministicCase
 from yoetz.kernel.projections import PendingMissingForAssessment, ProjectionState
+from yoetz.kernel.task_facts import effective_obligations
 from yoetz.ports.semantic import SemanticJudgment
 from yoetz.protocol.models import MISSING_FOR_ASSESSMENT_KINDS, DataCategory
 
 __all__ = [
+    "YOETZ_LIMIT_PACKET_ROOM",
+    "YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE",
     "MissingItemsReview",
+    "observed_image_evidence",
     "review_missing_for_assessment",
     "supplied_since",
+    "unsupported_data_type",
     "unsuppliable_missing_kinds",
 ]
 
 AGENT_SUPPLIABLE: Final = "agent_suppliable"
 STRUCTURALLY_UNAVAILABLE: Final = "structurally_unavailable_on_this_host"
+# Yoetz's own review limits (tb4n1 D1, issue #983): content the packet cannot show is never work
+# for the agent. The agent verifies such an item itself and the receipt discloses the limit; it
+# must never split, move, shrink, stash, delete, git-add or git-ignore its work to fit the packet.
+YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE: Final = "yoetz_limit_unsupported_data_type"
+YOETZ_LIMIT_PACKET_ROOM: Final = "yoetz_limit_packet_room"
+# Content the review packet never carries: images, documents, archives, CAD and other binary
+# formats. Matched on the file name a target records, case-insensitively.
+_UNSUPPORTED_SUFFIXES: Final = frozenset(
+    {
+        ".7z",
+        ".avif",
+        ".bin",
+        ".blend",
+        ".bmp",
+        ".bz2",
+        ".class",
+        ".db",
+        ".dll",
+        ".docx",
+        ".dwg",
+        ".dxf",
+        ".dylib",
+        ".exe",
+        ".fcstd",
+        ".gif",
+        ".gz",
+        ".h5",
+        ".heic",
+        ".ico",
+        ".iges",
+        ".igs",
+        ".jar",
+        ".jpeg",
+        ".jpg",
+        ".mid",
+        ".midi",
+        ".mp3",
+        ".mp4",
+        ".mxl",
+        ".npy",
+        ".npz",
+        ".o",
+        ".onnx",
+        ".parquet",
+        ".pdf",
+        ".pickle",
+        ".pkl",
+        ".png",
+        ".pptx",
+        ".pt",
+        ".pth",
+        ".pyc",
+        ".safetensors",
+        ".so",
+        ".sqlite",
+        ".step",
+        ".stl",
+        ".stp",
+        ".tar",
+        ".tgz",
+        ".tif",
+        ".tiff",
+        ".wasm",
+        ".wav",
+        ".webp",
+        ".xls",
+        ".xlsx",
+        ".xz",
+        ".zip",
+        ".zst",
+    }
+)
 # How many refs recorded since the request the next packet names per item, newest first.
 _MAX_SUPPLIED_REFS: Final = 4
 # Which recorded families can answer each missing kind. ``output_results`` are results that
@@ -395,7 +478,7 @@ class _Links:
                 if type(plan) is PlanRevisedPayload and plan.supersedes_plan_version == plan_version
             )
             return frozenset(found)
-        return frozenset(found | self._material(self._subject(target)))
+        return frozenset(found | self._material(self.subject(target)))
 
     def _new_cited(self, refs: Iterable[object]) -> set[str]:
         return {
@@ -441,7 +524,7 @@ class _Links:
         )
         return _Subject(frozenset({ref}), frozenset() if key is None else frozenset({key}), paths)
 
-    def _subject(self, target: str) -> _Subject:
+    def subject(self, target: str) -> _Subject:
         """The runs and paths an action, result or evidence target names (older rows only)."""
 
         projection = self.projection
@@ -548,7 +631,7 @@ class _Links:
             )
         subject = _NO_SUBJECT
         for ref in support:
-            subject = subject | self._subject(str(ref))
+            subject = subject | self.subject(str(ref))
         found = self._material(subject)
         for ref, correction in self.new_claims.items():
             replaced = (
@@ -810,6 +893,9 @@ def review_missing_for_assessment(
     citable_refs: frozenset[str] | None = None,
     captured_edit_paths: Mapping[str, frozenset[str]] | None = None,
     workspace_root: str | None = None,
+    packet_limited_refs: frozenset[str] = frozenset(),
+    privacy_withheld_refs: frozenset[str] = frozenset(),
+    change_clipped: bool = False,
 ) -> MissingItemsReview:
     """Fence what the reviewer named to the packet it was shown and classify who can supply it.
 
@@ -823,6 +909,15 @@ def review_missing_for_assessment(
     (``semantic_missing_already_supplied``), so the same request cannot loop; only new material
     directly tied to a target answers it (see ``_Links``; ``captured_edit_paths`` as in
     ``supplied_since``). Every kept item is recorded with Yoetz's own availability class.
+
+    Content the packet cannot show is Yoetz's own limit, never agent work (tb4n1 D1, #983): a
+    target whose recorded file is an image or other binary format
+    (``yoetz_limit_unsupported_data_type``); a target the packet named but could not carry whole
+    (``packet_limited_refs``), or a diff request while the check-time change was clipped for room
+    (``change_clipped``) (``yoetz_limit_packet_room``). The agent verifies such content itself;
+    the receipt discloses the limit. An unanswered repeat stays the agent's work with
+    ``semantic_missing_non_convergent``; the review round itself stops after one retry
+    (``kernel.review_round``).
     """
 
     if judgment.conclusion != "insufficient_packet":
@@ -846,6 +941,10 @@ def review_missing_for_assessment(
     )
     redacted = _redacted_refs(projection)
     shown = allowed if citable_refs is None else allowed & citable_refs
+    paths_of = _TargetFiles(
+        _Links.of(projection, _ALL_ROWS, observed, captured_edit_paths or {}, workspace_root),
+        captured_edit_paths or {},
+    )
     gaps: set[str] = set()
     kept: dict[tuple[str, tuple[str, ...]], str] = {}
     for entry in judgment.missing_for_assessment:
@@ -872,17 +971,24 @@ def review_missing_for_assessment(
             continue
         availability = (
             STRUCTURALLY_UNAVAILABLE
-            if entry.kind in unsuppliable_kinds or set(refs) & redacted
-            else AGENT_SUPPLIABLE
+            if entry.kind in unsuppliable_kinds or set(refs) & (redacted | privacy_withheld_refs)
+            else _yoetz_limit(
+                entry.kind,
+                refs,
+                paths_of,
+                packet_limited_refs=packet_limited_refs,
+                change_clipped=change_clipped,
+            )
         )
         if matching_prior and availability == AGENT_SUPPLIABLE:
             # The reviewer named only an earlier target set and no directly related publication
-            # answered it.  Keep the item actionable, but disclose that another identical check
-            # will not converge by itself; a genuinely new target is intentionally excluded by
-            # the subset test above.
+            # answered it. It stays the agent's work (a run never recorded is still owed), with
+            # the non-convergent disclosure; the review round itself stops after the one retry
+            # (``review_round_stopped``, tb4n1 D3). A genuinely new target is intentionally
+            # excluded by the subset test above.
             gaps.add(SEMANTIC_MISSING_NON_CONVERGENT_GAP)
         key = (entry.kind, refs)
-        if kept.get(key) != STRUCTURALLY_UNAVAILABLE:
+        if kept.get(key, AGENT_SUPPLIABLE) == AGENT_SUPPLIABLE:
             kept[key] = availability
     items = tuple(
         MissingForAssessmentItem(kind=kind, target_refs=refs, availability=availability)
@@ -899,8 +1005,177 @@ def review_missing_for_assessment(
             SEMANTIC_MISSING_AGENT_SUPPLIABLE_GAP
             if item.availability == AGENT_SUPPLIABLE
             else SEMANTIC_MISSING_UNAVAILABLE_GAP
+            if item.availability == STRUCTURALLY_UNAVAILABLE
+            else SEMANTIC_MISSING_YOETZ_LIMIT_GAP
         )
     return MissingItemsReview(items, frozenset(gaps))
+
+
+# Read every recorded row as "older" when only a target's files are wanted, never its answers.
+_ALL_ROWS: Final = 2**62
+
+
+@dataclass(frozen=True, slots=True)
+class _TargetFiles:
+    """The file names a target records: evidence references and captured edit paths.
+
+    Used only to recognise content the packet never carries by its file type; the names are
+    compared lexically and never resolved or opened.
+    """
+
+    links: _Links
+    captured: Mapping[str, frozenset[str]]
+
+    def __call__(self, target: str) -> frozenset[str]:
+        projection = self.links.projection
+        # An ``evt_`` target names the event that recorded a row; resolve it to that row's own
+        # id, and read the file names any plan, task statement or obligation text mentions.
+        refs = {target}
+        names: set[str] = set()
+        for family in (
+            projection.actions,
+            projection.results,
+            projection.evidence,
+            projection.claims,
+            projection.obligations,
+        ):
+            for key, row in family.items():
+                if str(row.source_event_id) == target:
+                    refs.add(str(key))
+        for ref in tuple(refs):
+            names.update(path for path, _certain in self.links.subject(ref).paths)
+            names.update(self.captured.get(ref, frozenset()))
+            names.update(self._evidence_names(ref))
+        return frozenset(name for name in names if name)
+
+    def requested_files(self, target: str) -> frozenset[str] | None:
+        """The requested output files in scope of a plan, statement or obligation target.
+
+        Used only for an ``other`` item (a requirement the reviewer could not see, such as
+        cad-model's "the schematic itself is unavailable"). An obligation target scopes its own
+        requested ``file`` items; a plan or statement target scopes every effective obligation's.
+        ``None`` when the target is none of these. Items the agent marked as inputs never count.
+        Prose is never scanned: a file a statement only mentions may be an input.
+        """
+
+        projection = self.links.projection
+        obligations = [
+            row
+            for key, row in projection.obligations.items()
+            if target in {str(key), str(row.source_event_id)}
+        ]
+        if not obligations:
+            if not any(str(row.source_event_id) == target for row in projection.plans.values()):
+                return None
+            obligations = [projection.obligations[key] for key in effective_obligations(projection)]
+        return frozenset(
+            item.value
+            for row in obligations
+            if row.payload is not None and not row.redacted
+            for item in row.payload.requested_items
+            if getattr(item.item_kind, "value", item.item_kind) == "file"
+            and item_role(item) != "input"
+        )
+
+    def _evidence_names(self, target: str) -> set[str]:
+        names: set[str] = set()
+        projection = self.links.projection
+        evidence_refs = {target}
+        for row in projection.results.values():
+            payload = row.payload
+            if payload is not None and target in {
+                str(payload.action_id),
+                *(str(ref) for ref in payload.evidence_refs),
+            }:
+                evidence_refs.update(str(ref) for ref in payload.evidence_refs)
+        for ref, row in projection.evidence.items():
+            if str(ref) in evidence_refs and row.payload is not None and not row.redacted:
+                reference = row.payload.reference
+                if reference is not None and "://" not in reference:
+                    names.add(reference.strip())
+                names.update(self.captured.get(str(ref), frozenset()))
+        return names
+
+    def observed_image(self, target: str) -> bool:
+        """Whether the target is, or cites, a hook-observed image kept as a digest only.
+
+        A host image tool result is recorded as service-stamped ``artifact_bytes`` evidence with
+        ``digest_only`` availability (L3 P3-2): its pixels never reach the packet, so a reviewer
+        request for it is an unsupported data type, never agent work.
+        """
+
+        projection = self.links.projection
+        refs = {target}
+        for row in projection.results.values():
+            payload = row.payload
+            if payload is not None and str(payload.action_id) == target:
+                refs.update(str(ref) for ref in payload.evidence_refs)
+        return any(
+            str(ref) in refs and observed_image_evidence(row.payload)
+            for ref, row in projection.evidence.items()
+        )
+
+
+def observed_image_evidence(payload: object) -> bool:
+    """Whether an evidence payload is a hook-observed image kept as a digest only (L3 P3-2)."""
+
+    if type(payload) is not EvidenceRecordedPayload:
+        return False
+    binding = payload.digest_binding
+    return (
+        binding is not None
+        and binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED
+        and binding.subject is EvidenceDigestSubject.ARTIFACT_BYTES
+        and binding.content_availability is not EvidenceContentAvailability.CAPTURED
+        and (payload.description or "").startswith("Observed image")
+    )
+
+
+def unsupported_data_type(name: str) -> bool:
+    """Whether a recorded file name is a type the review packet never carries (by suffix)."""
+
+    return _unsupported_data_type(name)
+
+
+def _unsupported_data_type(name: str) -> bool:
+    base = name.rstrip("/").rsplit("/", 1)[-1].lower()
+    dot = base.rfind(".")
+    return dot > 0 and base[dot:] in _UNSUPPORTED_SUFFIXES
+
+
+def _only_unsupported_outputs(refs: tuple[str, ...], paths_of: _TargetFiles) -> bool:
+    """Every requested output file in the targets' scope is a type the packet never carries.
+
+    One text deliverable in scope (missing or unshown) keeps the item the agent's work: the
+    reviewer may be asking for exactly that file (satb's unwritten score, an unwritten script).
+    """
+
+    scoped = [files for ref in refs if (files := paths_of.requested_files(ref)) is not None]
+    names = {name for files in scoped for name in files}
+    return bool(names) and all(_unsupported_data_type(name) for name in names)
+
+
+def _yoetz_limit(
+    kind: str,
+    refs: tuple[str, ...],
+    paths_of: _TargetFiles,
+    *,
+    packet_limited_refs: frozenset[str],
+    change_clipped: bool,
+) -> str:
+    """Whether Yoetz's own packet, not the agent, is why the reviewer could not see the item."""
+
+    if (
+        any(_unsupported_data_type(name) for ref in refs for name in paths_of(ref))
+        or any(paths_of.observed_image(ref) for ref in refs)
+        or (kind == "other" and _only_unsupported_outputs(refs, paths_of))
+    ):
+        return YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE
+    if set(refs) & packet_limited_refs:
+        return YOETZ_LIMIT_PACKET_ROOM
+    if kind == "current_diff_for_path" and change_clipped:
+        return YOETZ_LIMIT_PACKET_ROOM
+    return AGENT_SUPPLIABLE
 
 
 def _answered(

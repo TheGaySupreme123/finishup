@@ -318,6 +318,7 @@ def test_a_non_semantic_gap_weakens_every_proof_class(gap: str) -> None:
         "semantic_review_not_configured",
         "semantic_relevance_review_not_run",
         "optional_semantic_review_blocked_by_policy",
+        "semantic_review_skipped_insufficient_packet",
         # The check-time change is AI-powered review input only (ADR-031).
         *sorted(CHECK_TIME_CHANGE_GAPS),
     ),
@@ -813,6 +814,12 @@ def test_snapshot_rejects_a_null_resolution_key() -> None:
     ],
 )
 def test_resolution_explains_only_disqualifying_semantic_gaps(gap: str) -> None:
+    """Without an explicit reviewer ruling these gaps block AI-powered proof.
+
+    ``semantic_review_refs_reduced`` stays here deliberately: only an explicit ``fixed`` ruling
+    tolerates it (issue #976 D4, ``test_a_fixed_ruling_resolves_despite_citations_the_fence_reduced``).
+    """
+
     from yoetz.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
@@ -1665,6 +1672,97 @@ def test_silence_never_closes_an_ai_finding_over_excerpts_the_budget_cut() -> No
         assert blockers == (*extra, "coverage:content_unselected")
     # Local proof never depended on the reviewer or on what the packet carried.
     assert _resolves(_finding(), silent) is True
+
+
+@pytest.mark.parametrize(
+    "gap", ["write_outside_workspace", "obligation_blocked_outside_agent_control"]
+)
+def test_task_facts_about_the_work_never_bound_a_fixed_ruling(gap: str) -> None:
+    """Issue #1000 (tb4n1 interleaved-vigenere): the reviewer ruled its finding fixed, but the
+    later check carried ``write_outside_workspace``, a fact about where the agent wrote, not about
+    what the reviewer was shown, and the finding stayed open."""
+
+    from yoetz.kernel.finding_resolution import resolution_blockers
+
+    finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    coverage = _coverage(gaps=(gap,), semantic=True, freshness=LedgerFreshness.PARTIAL)
+    check = _ruled(
+        _check(semantic=_SEMANTIC_OK, coverage=coverage),
+        (1, "fixed"),
+        conclusion="no_material_discrepancy",
+    )
+    assert (
+        resolution_blockers(finding, 4, check, frozenset(), proof_state=_changed_state(check)) == ()
+    )
+    assert _resolves(finding, check) is True
+    # Only an explicit ``fixed`` ruling tolerates them: a review silent on the finding, or one
+    # ruling it otherwise, keeps the task fact blocking its absence proof.
+    for rulings, extra in (
+        ((), ()),
+        (((1, "still_present"),), ("reviewer_verdict_still_present",)),
+    ):
+        check = _ruled(
+            _check(semantic=_SEMANTIC_OK, coverage=coverage),
+            *rulings,
+            conclusion="no_material_discrepancy",
+        )
+        assert resolution_blockers(
+            finding, 4, check, frozenset(), proof_state=_changed_state(check)
+        ) == (*extra, f"coverage:{gap}")
+        assert _resolves(finding, check) is False
+
+
+def test_a_fixed_ruling_resolves_despite_citations_the_fence_reduced() -> None:
+    """TB4 tb4n1 music-harmony / interleaved-vigenere (issue #976, D4).
+
+    The reviewer ruled its own finding ``fixed`` on cited material recorded after it, but the same
+    review cited an unsent ref elsewhere, so the check carries ``semantic_review_refs_reduced``
+    (with the budget-cut excerpts every long session has). The gap says the reviewer cited more
+    than it was shown, not that it saw less: the explicit ruling resolves the finding. Without a
+    ``fixed`` ruling the gap still blocks (see the disqualifying-gap test above).
+    """
+
+    from yoetz.kernel.finding_resolution import resolution_blockers
+
+    finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    reduced = _coverage(
+        gaps=("content_unselected", "semantic_review_refs_reduced"),
+        semantic=True,
+        freshness=LedgerFreshness.PARTIAL,
+    )
+    for conclusion in ("no_material_discrepancy", "challenges_returned"):
+        check = _ruled(
+            _check(semantic=_SEMANTIC_OK, coverage=reduced), (1, "fixed"), conclusion=conclusion
+        )
+        state = _changed_state(check)
+        assert resolution_blockers(finding, 4, check, frozenset(), proof_state=state) == ()
+        assert _resolves(finding, check) is True
+    # Silence or any other ruling keeps the reduction disqualifying for AI-powered proof.
+    for rulings, extra in (
+        ((), ()),
+        (((1, "withdrawn"),), ()),
+        (((1, "still_present"),), ("reviewer_verdict_still_present",)),
+    ):
+        check = _ruled(
+            _check(semantic=_SEMANTIC_OK, coverage=reduced),
+            *rulings,
+            conclusion="no_material_discrepancy",
+        )
+        blockers = resolution_blockers(
+            finding, 4, check, frozenset(), proof_state=_changed_state(check)
+        )
+        assert blockers == (
+            *extra,
+            "coverage:content_unselected",
+            "coverage:semantic_review_refs_reduced",
+        )
+    # A fixed ruling never bypasses a re-raise or the material-change rule.
+    fixed = _ruled(
+        _check(semantic=_SEMANTIC_OK, coverage=reduced),
+        (1, "fixed"),
+        conclusion="no_material_discrepancy",
+    )
+    assert _resolves(finding, fixed, changed=False) is False
 
 
 @pytest.mark.parametrize(

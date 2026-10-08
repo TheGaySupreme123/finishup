@@ -164,7 +164,7 @@ from yoetz.application.semantic_case import (
     SemanticPacketView,
     build_semantic_case,
     captured_edit_paths,
-    check_time_change_parts_carried,
+    check_time_change_bytes_carried,
     semantic_case_packet_view,
     semantic_case_to_candidate_context,
     sent_ledger_refs,
@@ -3303,6 +3303,14 @@ def _map_egress_to_final(
                 if projection is None
                 else sent_ledger_refs(result.disclosure, projection)
             ),
+            case_withheld_refs=(
+                None
+                if result.disclosure is None
+                else result.disclosure.withheld - result.disclosure.privacy_withheld
+            ),
+            case_privacy_withheld_refs=(
+                frozenset() if result.disclosure is None else result.disclosure.privacy_withheld
+            ),
             semantic_withheld_item_ids=withheld_item_ids,
             semantic_redacted_values=_egress_redacted_values(result),
             provider_input_manifest=(
@@ -3717,6 +3725,9 @@ def _judgment_to_response_json(judgment: object) -> dict[str, CanonicalJsonValue
         }
         if item.snippet is not None:
             challenge["snippet"] = item.snippet
+        # Emitted only when present, so earlier stored judgments keep their bytes (issue #980).
+        if item.restates is not None:
+            challenge["restates"] = item.restates
         challenges.append(challenge)
     body: dict[str, CanonicalJsonValue] = {
         "conclusion": judgment.conclusion,
@@ -3805,6 +3816,9 @@ def _judgment_from_response_json(value: object) -> object:
             snippet = row.get("snippet")
             if snippet is not None and type(snippet) is not str:
                 raise ValueError("semantic_response_judgment_invalid")
+            restates = row.get("restates")
+            if restates is not None and type(restates) is not str:
+                raise ValueError("semantic_response_judgment_invalid")
             challenges.append(
                 ReviewerChallenge(
                     kind,
@@ -3816,6 +3830,7 @@ def _judgment_from_response_json(value: object) -> object:
                     cast(ReviewerNextStep, next_step),
                     cast(str, row["uncertainty"]),
                     snippet,
+                    restates,
                 )
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -3936,6 +3951,16 @@ async def _publish_semantic_response_object(
         # What the sent packet carried (#904), so a recovered selection records the same fact.
         body["disclosed_content_refs"] = cast(
             CanonicalJsonValue, sorted(evaluation.case_included_refs, key=str.encode)
+        )
+    if evaluation.case_withheld_refs is not None:
+        # tb4n1 D1: refs the sent packet named but withheld for room or policy, so a recovered
+        # check classifies a reviewer's missing item the same way.
+        body["withheld_content_refs"] = cast(
+            CanonicalJsonValue, sorted(evaluation.case_withheld_refs, key=str.encode)
+        )
+    if evaluation.case_privacy_withheld_refs:
+        body["privacy_withheld_content_refs"] = cast(
+            CanonicalJsonValue, sorted(evaluation.case_privacy_withheld_refs, key=str.encode)
         )
     if evaluation.semantic_withheld_item_ids:
         # Keep only bounded opaque identities in the durable response.  Matched bytes and source
@@ -4085,6 +4110,18 @@ async def _recover_response_evaluation(
         refs = cast(list[object], raw_disclosed)
         if all(type(ref) is str for ref in refs):
             disclosed = frozenset(cast(list[str], refs))
+    withheld_refs: frozenset[str] | None = None
+    raw_withheld = body.get("withheld_content_refs")
+    if type(raw_withheld) is list:
+        withheld_list = cast(list[object], raw_withheld)
+        if all(type(ref) is str for ref in withheld_list):
+            withheld_refs = frozenset(cast(list[str], withheld_list))
+    privacy_refs: frozenset[str] = frozenset()
+    raw_privacy = body.get("privacy_withheld_content_refs")
+    if type(raw_privacy) is list:
+        privacy_list = cast(list[object], raw_privacy)
+        if all(type(ref) is str for ref in privacy_list):
+            privacy_refs = frozenset(cast(list[str], privacy_list))
     provider_manifest = None
     provider_manifest_failure: str | None = None
     raw_provider_manifest = body.get("provider_input_manifest")
@@ -4141,6 +4178,8 @@ async def _recover_response_evaluation(
         judgment=judgment,
         provenance=provenance,
         case_included_refs=disclosed,
+        case_withheld_refs=withheld_refs,
+        case_privacy_withheld_refs=privacy_refs,
         semantic_withheld_item_ids=withheld_item_ids,
         semantic_redacted_values=redacted_values,
         provider_input_manifest=provider_manifest,
@@ -5054,6 +5093,7 @@ def _privacy_gated_semantic_evaluator(
             # prior-finding rows envelope bounding removed are disclosed like any other cut.
             packet_view = semantic_case_packet_view(semantic_case)
             packet_prior_refs = packet_view.prior_finding_refs
+            packet_settled_refs = packet_view.settled_finding_refs
             packet_citable_refs = packet_view.citable_refs
             # Issue #907: which paths each captured edit records, compared in process only so a
             # repeated request for a captured edit can converge on a fresh diff of that path.
@@ -5086,8 +5126,9 @@ def _privacy_gated_semantic_evaluator(
                     check_change_files = await check_change_shown_files(
                         runtime,
                         check_change.change,
-                        review_selection,
-                        check_time_change_parts_carried(
+                        # Bytes, not parts: the planned selection may split the change into
+                        # smaller parts, or cut its first part to the room left (issue #983).
+                        check_time_change_bytes_carried(
                             semantic_case, withheld_categories=withheld
                         ),
                     )
@@ -5158,6 +5199,7 @@ def _privacy_gated_semantic_evaluator(
                     ),
                     unsuppliable_missing_kinds=unsuppliable,
                     case_prior_finding_refs=packet_prior_refs,
+                    case_settled_finding_refs=packet_settled_refs,
                     case_citable_refs=packet_citable_refs,
                     case_captured_edit_paths=packet_edit_paths,
                     case_workspace_root=workspace_root,
@@ -5456,6 +5498,8 @@ def _privacy_gated_semantic_evaluator(
                 provenance = None
                 continuation = None
                 disclosed: frozenset[str] | None = None
+                withheld_refs: frozenset[str] | None = None
+                privacy_refs: frozenset[str] = frozenset()
                 semantic_withheld_item_ids: tuple[str, ...] = ()
                 semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
                 provider_manifest = None
@@ -5471,6 +5515,8 @@ def _privacy_gated_semantic_evaluator(
                         provenance = evaluation.provenance
                         # What the exact sent packet carried, from the selected attempt (#904).
                         disclosed = evaluation.case_included_refs
+                        withheld_refs = evaluation.case_withheld_refs
+                        privacy_refs = evaluation.case_privacy_withheld_refs
                         provider_manifest = evaluation.provider_input_manifest
                         provider_manifest_failure = evaluation.provider_input_manifest_failure
                         provider_input_text_by_ref = evaluation.provider_input_text_by_ref
@@ -5520,11 +5566,14 @@ def _privacy_gated_semantic_evaluator(
                     case_content_over_item_limit=over_item_limit,
                     case_reference_scope_reduced=reference_scope_reduced,
                     case_included_refs=disclosed,
+                    case_withheld_refs=withheld_refs,
+                    case_privacy_withheld_refs=privacy_refs,
                     semantic_withheld_item_ids=semantic_withheld_item_ids,
                     semantic_redacted_values=semantic_redacted_values,
                     case_content_gaps=combined_content_gaps,
                     unsuppliable_missing_kinds=unsuppliable,
                     case_prior_finding_refs=packet_prior_refs,
+                    case_settled_finding_refs=packet_settled_refs,
                     case_citable_refs=packet_citable_refs,
                     case_captured_edit_paths=packet_edit_paths,
                     case_workspace_root=workspace_root,

@@ -42,6 +42,7 @@ from yoetz.ports.change_capture import (
     TASK_CHANGE_BASE_MEDIA_TYPE,
     ChangeCapturePort,
     ChangeCaptureUnavailable,
+    ChangeLineCounts,
     CheckChangeCapture,
     CheckChangeMetadata,
     CheckWorkspaceSource,
@@ -129,8 +130,7 @@ class CheckChangeOutcome:
 async def check_change_shown_files(
     runtime: TaskRuntime,
     change: CheckTimeChange,
-    selection: ReviewSelectionPolicy,
-    admitted_parts: int,
+    shown_bytes: int,
 ) -> CheckChangeShownFiles:
     """Keyed commitments to the changed files one review packet carried (ADR-031).
 
@@ -143,7 +143,7 @@ async def check_change_shown_files(
     says it is incomplete. A recovered job derives the same commitments from its stored object.
     """
 
-    files = check_time_change_shown_files(change.capture, selection, admitted_parts)
+    files = check_time_change_shown_files(change.capture, shown_bytes)
     complete = len(files) <= MAX_CHECK_CHANGE_SHOWN_FILES
     base = change.capture.base_commit.encode("ascii")
     fully: set[str] = set()
@@ -597,12 +597,14 @@ async def requested_output_states(
         entry.path for entry in capture.entries if entry.untracked or entry.status.startswith("A")
     }
     states = dict(unverified)
+    relatives: dict[tuple[ObligationId, int], str] = {}
     for (obligation, index, _value), result in zip(bounded, probes, strict=True):
         if type(result) is not RequestedPathProbe:
             continue
         if result.location == "outside" or result.relative is None:
             states[(obligation, index)] = RequestedOutputState("outside")
             continue
+        relatives[(obligation, index)] = result.relative
         listed = _changed_at_or_under(result.relative, changed)
         exists = result.exists
         if (obligation, index) in directories and exists and result.holds_file is False:
@@ -627,7 +629,130 @@ async def requested_output_states(
             # A requested directory whose files the change deleted was deleted, not left absent.
             deleted=result.relative != "." and _changed_at_or_under(result.relative, deleted),
         )
-    return states
+    return await _with_declared_line_counts(
+        projection=projection,
+        capture=capture,
+        source=source,
+        port=port,
+        states=states,
+        relatives=relatives,
+        request_id=request_id,
+    )
+
+
+async def _with_declared_line_counts(
+    *,
+    projection: ProjectionState,
+    capture: CheckChangeMetadata,
+    source: CheckWorkspaceSource,
+    port: object,
+    states: dict[tuple[ObligationId, int], RequestedOutputState],
+    relatives: dict[tuple[ObligationId, int], str],
+    request_id: str,
+) -> dict[tuple[ObligationId, int], RequestedOutputState]:
+    """Add the ADR-035 line counts to each declared delivered file the change modified.
+
+    Runs only when such a file exists, through the adapter's bounded, metadata-only line-count
+    read. ``undeclared_lines_added`` sums the net lines the change added to files outside the
+    declared delivered set (a declared ``directory`` covers the files beneath it). A read that
+    fails leaves the counts ``None``, so the content-moved disclosure is simply not raised.
+    """
+
+    from yoetz.kernel.delivered_set import declared_delivered_items
+
+    count = getattr(port, "count_change_lines", None)
+    probe = getattr(port, "probe_requested_paths", None)
+    if not callable(count) or not callable(probe) or not capture.base_commit:
+        return states
+    modified = {entry.path for entry in capture.entries if entry.status == "M"}
+    declared = declared_delivered_items(projection)
+    candidates = [
+        (obligation, index)
+        for obligation, index, kind, _value in declared
+        if kind == "file"
+        and (obligation, index) in relatives
+        and relatives[(obligation, index)] in modified
+        and states[(obligation, index)].exists is True
+        and not states[(obligation, index)].deleted
+    ]
+    if not candidates:
+        return states
+    declared_files = {
+        relatives[(obligation, index)]
+        for obligation, index, _kind, _value in declared
+        if (obligation, index) in relatives
+    }
+    # Only a literal directory path below the root is declared; a malformed value or the root
+    # itself would mark every file as declared or fail the probe.
+    directory_values = tuple(
+        value
+        for _obligation, _index, kind, value in declared
+        if kind == "directory" and _plain_path(value) and value.strip("/.") != ""
+    )[:_MAX_REQUESTED_OUTPUT_PROBES]
+    base_paths = tuple(sorted({relatives[item] for item in candidates}))
+    try:
+        directories: tuple[str, ...] = ()
+        if directory_values:
+            raw_directories = await asyncio.to_thread(
+                cast(Callable[[str, tuple[str, ...]], object], probe),
+                source.workspace,
+                directory_values,
+            )
+            if type(raw_directories) is not tuple:
+                raise TypeError("requested_path_probe_invalid")
+            directories = tuple(
+                result.relative
+                for result in cast(tuple[object, ...], raw_directories)
+                if type(result) is RequestedPathProbe and result.relative is not None
+            )
+        raw_counts = await asyncio.to_thread(
+            cast(Callable[[str, str, tuple[str, ...]], object], count),
+            source.workspace,
+            capture.base_commit,
+            base_paths,
+        )
+        if type(raw_counts) is not ChangeLineCounts or len(raw_counts.base_lines) != len(
+            base_paths
+        ):
+            raise TypeError("change_line_counts_invalid")
+    except ChangeCaptureUnavailable:
+        return states
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component=_COMPONENT,
+            operation="declared_output_line_count_failed",
+            request_id=request_id,
+        )
+        return states
+
+    def is_declared(path: str) -> bool:
+        return path in declared_files or any(
+            path.startswith(directory + "/") for directory in directories
+        )
+
+    undeclared_added = 0
+    lost_by_path: dict[str, int | None] = {}
+    for row in raw_counts.changed:
+        if row.added is None or row.removed is None:
+            if row.path in base_paths:
+                lost_by_path[row.path] = None
+            continue
+        if row.path in base_paths:
+            lost_by_path[row.path] = row.removed - row.added
+        elif not is_declared(row.path):
+            undeclared_added += max(0, row.added - row.removed)
+    base_by_path = dict(zip(base_paths, raw_counts.base_lines, strict=True))
+    annotated = dict(states)
+    for item in candidates:
+        path = relatives[item]
+        annotated[item] = replace(
+            states[item],
+            base_lines=base_by_path.get(path),
+            lines_lost=lost_by_path.get(path),
+            undeclared_lines_added=undeclared_added,
+        )
+    return annotated
 
 
 def _changed_at_or_under(relative: str, changed: set[str]) -> bool:

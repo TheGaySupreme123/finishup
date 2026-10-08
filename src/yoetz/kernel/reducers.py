@@ -113,6 +113,12 @@ __all__ = [
 ]
 
 _MAX_SQLITE_SIGNED_INTEGER: Final = 2**63 - 1
+# Responses that dispute a finding and count as rebuttals (TB4 tb4n1 D7). ``self_verified`` is
+# compared by its wire value so this fold reads ledgers written before and after that
+# disposition exists.
+_REBUTTAL_DISPOSITION_VALUES: Final = frozenset(
+    {ResponseDisposition.REJECTED.value, "self_verified"}
+)
 # A v1.1 completion claim must disclose every relevant typed non-success result. An `unknown`
 # outcome is not upgraded into a typed partial or failure (ADR-025 decision 3), so it is never
 # required -- but it is limiting to the local limitation policy, so `limitation_refs` also
@@ -1372,6 +1378,18 @@ def reduce_event(
                 if payload is None
                 else _projection_record(accepted, cast(ResponseRecordedPayload, payload))
             )
+            rebutted = findings.get(key)
+            if (
+                payload is not None
+                and rebutted is not None
+                and cast(ResponseRecordedPayload, payload).disposition.value
+                in _REBUTTAL_DISPOSITION_VALUES
+            ):
+                # Every rebuttal is counted, not only the latest response (TB4 tb4n1 D7): the
+                # next review packet carries the count beside the reviewer's last verdict. A
+                # ``self_verified`` answer (the agent repaired the item and verified it itself,
+                # because Yoetz could not prove it) also disputes the reviewer's standing claim.
+                findings[key] = replace(rebutted, rebuttal_count=rebutted.rebuttal_count + 1)
         elif family == "coordination_context_recorded":
             if accepted.event_id in coordination_contexts:
                 raise _corrupt()

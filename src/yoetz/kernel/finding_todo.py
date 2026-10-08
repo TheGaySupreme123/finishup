@@ -29,10 +29,17 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
-from yoetz.domain.findings import FINDING_KIND_TRAITS, ResponseDisposition
+from yoetz.domain.findings import (
+    FINDING_KIND_TRAITS,
+    Finding,
+    FindingKind,
+    FindingOrigin,
+    ResponseDisposition,
+)
 from yoetz.domain.values import FindingId
 from yoetz.kernel.finding_resolution import finding_is_resolved
 from yoetz.kernel.projections import ProjectionState
+from yoetz.kernel.task_facts import blocker_declarations
 
 __all__ = [
     "DEFAULT_FINDING_ATTEMPT_BUDGET",
@@ -42,7 +49,13 @@ __all__ = [
     "FindingTodo",
     "FindingTodoCounts",
     "FindingTodoState",
+    "PREMISE_CHALLENGE_KINDS",
+    "PREMISE_DISPUTE_BLOCKER_CITED",
+    "PREMISE_DISPUTE_GIVE_UP_RERAISED",
     "finding_blocks_receipt",
+    "is_premise_challenge",
+    "premise_dispute_basis",
+    "standing_premise_disputes",
     "finding_todo",
     "finding_todo_state",
     "todo_counts",
@@ -89,6 +102,9 @@ class FindingTodo:
     state: FindingTodoState
     review_rounds: int
     attempt_budget: int
+    # An ``acknowledged_not_done`` premise challenge the reviewer still disputes (TB4 tb4n1 D7a);
+    # see ``premise_dispute_basis``. Never changes the state.
+    premise_disputed: bool = False
 
     @property
     def budget_reached(self) -> bool:
@@ -143,7 +159,93 @@ def finding_todo(
     budget = _validated_budget(attempt_budget)
     record = state.findings.get(finding_id)
     rounds = 0 if record is None else record.review_rounds
-    return FindingTodo(finding_id, finding_todo_state(state, finding_id), rounds, budget)
+    todo_state = finding_todo_state(state, finding_id)
+    disputed = (
+        todo_state is FindingTodoState.ACKNOWLEDGED_NOT_DONE
+        and premise_dispute_basis(state, finding_id) is not None
+    )
+    return FindingTodo(finding_id, todo_state, rounds, budget, disputed)
+
+
+# A premise challenge (TB4 tb4n1 D7a): the reviewer says a stated requirement is not delivered or
+# never attempted and asks the agent to do it (``act``). These are the reviewer's answer to an
+# agent concluding the outcome is impossible, infeasible or blocked (cargo, pretrain).
+PREMISE_CHALLENGE_KINDS: Final = frozenset(
+    {FindingKind.TASK_REQUIREMENT_UNMET, FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED}
+)
+
+
+def is_premise_challenge(finding: Finding) -> bool:
+    """Whether *finding* is an AI-powered challenge to the premise that the outcome is out of reach."""
+
+    return (
+        finding.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+        and finding.kind in PREMISE_CHALLENGE_KINDS
+        and finding.challenge is not None
+        and finding.challenge.requested_next_step == "act"
+    )
+
+
+# Why a premise dispute stands (``premise_dispute_basis``), as closed tokens.
+PREMISE_DISPUTE_BLOCKER_CITED: Final = "blocker_cited"
+PREMISE_DISPUTE_GIVE_UP_RERAISED: Final = "give_up_reraised"
+
+
+def premise_dispute_basis(state: ProjectionState, finding_id: FindingId) -> str | None:
+    """Why the reviewer still disputes the premise of an acknowledged finding, or ``None`` (D7a).
+
+    A deterministic, structural rule over recorded refs; no prose is read. The item must be
+    ``acknowledged_not_done`` (the agent gave up; ``self_verified`` says it repaired the item, so
+    it is never a premise dispute) and a premise challenge (``is_premise_challenge``: an
+    AI-powered ``task_requirement_unmet`` or ``requested_item_never_attempted`` asking the agent to
+    ``act``). It then needs one recorded anchor:
+
+    * ``blocker_cited``: the finding's subject refs name a readable, unsuperseded
+      ``yoetz-blocker:<kind>`` decision (its ``evt_`` id) or an obligation such a decision declares
+      blocked: the reviewer challenged the agent's blocker itself.
+    * ``give_up_reraised``: after the agent's ``acknowledged_not_done`` answer, a review re-raised
+      the same concern (``settled_reraise_count``, recorded by ``apply_check_rulings`` from a
+      ``still_present``/``answered_not_fixed`` ruling a restatement put on the item): the reviewer
+      disputes the give-up.
+
+    A premise challenge acknowledged with neither anchor is not flagged: the reviewer never
+    disputed the stop, so the acknowledgement stands alone (still final and receipt-blocking).
+    """
+
+    if finding_todo_state(state, finding_id) is not FindingTodoState.ACKNOWLEDGED_NOT_DONE:
+        return None
+    record = state.findings.get(finding_id)
+    if record is None or record.payload is None or not is_premise_challenge(record.payload):
+        return None
+    cited = frozenset(str(ref) for ref in record.payload.subject_refs)
+    if cited:
+        for obligation, declaration in blocker_declarations(state).items():
+            if str(obligation) in cited or str(declaration.decision_event_id) in cited:
+                return PREMISE_DISPUTE_BLOCKER_CITED
+    if record.settled_reraise_count:
+        return PREMISE_DISPUTE_GIVE_UP_RERAISED
+    return None
+
+
+def standing_premise_disputes(
+    state: ProjectionState, finding_ids: Iterable[FindingId] | None = None
+) -> tuple[FindingId, ...]:
+    """Acknowledged premise challenges the reviewer still disputes (TB4 tb4n1 D7a).
+
+    ``acknowledged_not_done`` keeps its meaning ("I will not do it") and stays final. But when the
+    reviewer challenged the agent's give-up itself, the acknowledgement does not settle the
+    dispute; ``premise_dispute_basis`` is the exact structural rule. These items are returned in
+    finding-id order so a readiness or Stop surface can show them once as standing disputes.
+    Nothing here changes a to-do state, blocks a check, or closes anything; the receipt already
+    keeps every ``acknowledged_not_done`` item receipt-blocking.
+    """
+
+    candidates = state.findings if finding_ids is None else finding_ids
+    return tuple(
+        key
+        for key in sorted(candidates, key=str.encode)
+        if finding_todo(state, key).premise_disputed
+    )
 
 
 def finding_blocks_receipt(state: ProjectionState, finding_id: FindingId) -> bool:

@@ -46,6 +46,7 @@ from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS, PLAN_DRIFT_GAPS
 from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.reducers import invalidates_recorded_check
+from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS,
     OBLIGATION_BLOCKED_GAP,
@@ -219,9 +220,12 @@ GAP_CLASSIFICATION: Final[Mapping[str, GapClass]] = MappingProxyType(
         # supply is agent work; the rest disclose how the review was bounded.
         "semantic_missing_agent_suppliable": _A,
         "semantic_missing_structurally_unavailable": _S,
+        "semantic_missing_yoetz_limit": _S,  # tb4n1 D1: Yoetz cannot show it; self-verify
         "semantic_missing_already_supplied": _S,
         "semantic_missing_items_rejected": _S,
         "semantic_missing_non_convergent": _S,
+        # tb4n1 D3: the reviewer twice could not assess the same content; the round stopped.
+        "semantic_review_skipped_insufficient_packet": _S,
         "semantic_provider_input_manifest_missing": _S,
         "semantic_provider_input_manifest_invalid": _S,
         "semantic_provider_input_manifest_parse_failed": _S,
@@ -598,6 +602,17 @@ def _check_applicability(
     return "applicable"
 
 
+def _review_round_stopped(payload: CheckRecordedPayload) -> bool:
+    """A check that skipped the AI-powered review because the packet twice could not show the
+    content the reviewer needed (tb4n1 D3). Another review cannot assess more, so neither a
+    current review nor a closing review is demanded again; the gap discloses the limit."""
+
+    return (
+        payload.semantic_status is SemanticStatus.NOT_REQUESTED
+        and "semantic_review_skipped_insufficient_packet" in payload.coverage.known_gaps
+    )
+
+
 def _semantic_review_current(
     records: tuple[LedgerRecord, ...], limitations: frozenset[FindingId]
 ) -> bool:
@@ -609,11 +624,12 @@ def _semantic_review_current(
 
     for record in reversed(records):
         payload = record.payload
-        if (
-            record.schema.name != "check_recorded"
-            or type(payload) is not CheckRecordedPayload
-            or payload.semantic_status is not SemanticStatus.SUCCEEDED
-        ):
+        if record.schema.name != "check_recorded" or type(payload) is not CheckRecordedPayload:
+            continue
+        if _review_round_stopped(payload):
+            # Current only while the round is still stopped: an edit since re-arms the review.
+            return review_round_stopped(records)
+        if payload.semantic_status is not SemanticStatus.SUCCEEDED:
             continue
         return not any(
             invalidates_recorded_check(
@@ -683,6 +699,8 @@ def _closing_review_facts(
         status = payload.semantic_status
         if status in _UNDELIVERABLE_SEMANTIC_STATUSES:
             return True, used
+        if _review_round_stopped(payload):
+            return review_round_stopped(records), used
         if status is not SemanticStatus.SUCCEEDED:
             continue
         manifest = payload.review_input_manifest

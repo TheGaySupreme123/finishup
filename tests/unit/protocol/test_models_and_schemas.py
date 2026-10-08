@@ -309,7 +309,7 @@ _STATUS_PAGE_DEF_BY_VIEW_FOR_TEST: tuple[tuple[str, str], ...] = (
     ("versions", "versions_page"),
 )
 _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
-    ("check", None): 370,
+    ("check", None): 371,
     ("publish_work", None): 57,
     ("receipt", None): 280,
     ("respond", None): 53,
@@ -321,7 +321,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("status", "compact"): 57,
     ("status", "evidence"): 19,
     ("status", "findings"): 125,
-    ("status", "history"): 62,
+    ("status", "history"): 63,
     ("status", "lineage"): 16,
     ("status", "obligations"): 39,
     ("status", "operation"): 48,
@@ -1276,7 +1276,8 @@ def test_protocol_models_public_exports_are_closed() -> None:
         MAX_PROJECTION_POINTER_BYTES MAX_REASON_BYTES MAX_SEMANTIC_ITEM_BYTES
         MAX_SEMANTIC_CASE_BYTES MAX_REVIEW_TEXT_BYTES MAX_REVIEW_TIMELINE_ITEMS
         MAX_REVIEW_ASSESSMENTS MAX_REVIEW_CHANGE_OBSERVATIONS MAX_REVIEW_EXCERPTS
-        MAX_REVIEW_OMISSIONS MAX_REVIEW_CHALLENGES MAX_TASK_STATEMENT_BYTES PROTOCOL_VERSION
+        MAX_REVIEW_OMISSIONS MAX_REVIEW_OMISSION_TOTAL MAX_REVIEW_CHALLENGES
+        MAX_TASK_STATEMENT_BYTES PROTOCOL_VERSION
         ActorAssertionModel
         ActorType CheckRequest CheckRequestModel CheckResult CheckResultModel CheckScopeModel
         ClientInfoModel ClientKind CoverageModel DataCategory FrontierModel IntegrationKind
@@ -2485,7 +2486,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     rules = cast(tuple[Any, ...], getattr(models, "_RESULT_LEAF_RULES"))
 
     derived_patterns = _derived_result_success_patterns(catalog)
-    assert len(derived_patterns) == 1410
+    assert len(derived_patterns) == 1412
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2494,7 +2495,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert derived_counts == _EXPECTED_RESULT_PATTERN_COUNTS
 
     assert type(rules) is tuple
-    assert len(rules) == 1437
+    assert len(rules) == 1439
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {
@@ -2503,7 +2504,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1410
+    assert len(registry_patterns) == 1412
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)
@@ -3200,7 +3201,7 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     root = resources.files("yoetz").joinpath("resources", "schemas")
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
-    assert sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_680
+    assert sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_686
 
 
 def test_schema_name_derivation_and_version_maps_are_exact() -> None:

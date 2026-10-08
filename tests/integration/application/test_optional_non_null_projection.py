@@ -277,7 +277,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (StatusCompactItemModel, frozenset({"latest_check_test_edits"})),
     (StatusFindingsPageModel, frozenset({"attempt_budget"})),
     (StatusHistoryItemV14Model, frozenset({"review_input_manifest"})),
-    (ReviewInputManifestModel, frozenset({"review_phase"})),
+    (ReviewInputManifestModel, frozenset({"review_phase", "omitted_item_total"})),
     (StatusObligationItemModel, frozenset({"acceptance_criteria", "acknowledged_not_done_reason"})),
     (StatusRequestedItemModel, frozenset({"role"})),
     (StatusObservedRunModel, frozenset({"tool_name", "command_commitment", "exit_status"})),
@@ -952,6 +952,11 @@ async def test_review_input_manifest_omits_unset_review_phase() -> None:
     assert model.review_phase is None
     final = ReviewInputManifestModel.model_validate({**payload, "review_phase": "final"})
     assert final.model_dump(mode="json", by_alias=True)["review_phase"] == "final"
+    # Issue #976: the omission total is optional in place, absent on older manifests.
+    assert "omitted_item_total" not in dumped
+    assert model.omitted_item_total is None
+    total = ReviewInputManifestModel.model_validate({**payload, "omitted_item_total": 173})
+    assert total.model_dump(mode="json", by_alias=True)["omitted_item_total"] == 173
 
 
 @pytest.mark.parametrize(
@@ -1538,6 +1543,9 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "test_nested_multi_agent_results_omit_unset_fields"
     )
     covered["ReviewInputManifestModel", "review_phase"] = (
+        "test_review_input_manifest_omits_unset_review_phase"
+    )
+    covered["ReviewInputManifestModel", "omitted_item_total"] = (
         "test_review_input_manifest_omits_unset_review_phase"
     )
     covered["StatusOperationPageModel", "semantic_withheld_items"] = (

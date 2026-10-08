@@ -78,6 +78,8 @@ __all__ = [
     "AGENT_ACTIONABLE_TASK_FACT_GAPS",
     "BLOCKER_KINDS",
     "BLOCKER_MARKER",
+    "DECLARED_OUTPUT_CONTENT_MOVED_GAP",
+    "DECLARED_OUTPUT_REMOVED_GAP",
     "EDITED_AFTER_LAST_VERIFICATION_GAP",
     "INSTALL_INTO_PRIVATE_ENV_GAP",
     "INSTALL_INTO_YOETZ_RUNTIME_GAP",
@@ -134,6 +136,11 @@ REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP: Final = "requested_output_ignored_by
 REQUESTED_OUTPUT_UNCHANGED_GAP: Final = "requested_output_unchanged"
 REQUESTED_OUTPUT_OUTSIDE_WORKSPACE_GAP: Final = "requested_output_outside_workspace"
 REQUESTED_OUTPUT_UNVERIFIED_GAP: Final = "requested_output_unverified"
+# A declared deliverable deleted or renamed away (ADR-035; computed in ``kernel.delivered_set``).
+DECLARED_OUTPUT_REMOVED_GAP: Final = "declared_output_removed"
+# Content that left a declared deliverable for an undeclared file in the same change (ADR-035):
+# a non-blocking disclosure, never a Stop-gate token.
+DECLARED_OUTPUT_CONTENT_MOVED_GAP: Final = "declared_output_content_moved"
 
 # Facts the agent removes by its own action: run the planned verification after the last edit
 # (or correct the requested item to the command it runs), or stop excluding a requested output.
@@ -144,6 +151,7 @@ AGENT_ACTIONABLE_TASK_FACT_GAPS: Final = frozenset(
         PLANNED_VERIFICATION_STALE_GAP,
         EDITED_AFTER_LAST_VERIFICATION_GAP,
         REQUESTED_OUTPUT_GIT_IGNORED_GAP,
+        DECLARED_OUTPUT_REMOVED_GAP,
     }
 )
 # Disclosures: recorded history (an install or write already happened), a heuristic the
@@ -164,6 +172,7 @@ STANDING_TASK_FACT_GAPS: Final = frozenset(
         REQUESTED_OUTPUT_OUTSIDE_WORKSPACE_GAP,
         REQUESTED_OUTPUT_UNVERIFIED_GAP,
         REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP,
+        DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     }
 )
 TASK_FACT_GAPS: Final = AGENT_ACTIONABLE_TASK_FACT_GAPS | STANDING_TASK_FACT_GAPS
@@ -178,6 +187,7 @@ STOP_GATE_TOKENS: Final = (
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     PLANNED_VERIFICATION_STALE_GAP,
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
+    DECLARED_OUTPUT_REMOVED_GAP,
 )
 
 BLOCKER_MARKER: Final = "yoetz-blocker"
@@ -720,6 +730,11 @@ class RequestedOutputState:
     from the task base), and ``deleted`` (a tracked file the change deletes).
     ``ignored_by_task`` is true when the ignoring rule is ``.git/info/exclude`` (a local exclude
     that never travels with the repository) or a ``.gitignore`` the task's own change created.
+
+    For a declared delivered file the change modified (ADR-035), a bounded line-count read may
+    add ``base_lines`` (its lines in the task base), ``lines_lost`` (lines removed minus lines
+    added by the change) and ``undeclared_lines_added`` (net lines the same change added to files
+    outside the declared delivered set; a lower bound). Each is ``None`` when not read.
     """
 
     location: str
@@ -728,6 +743,9 @@ class RequestedOutputState:
     changed: bool | None = None
     deleted: bool = False
     ignored_by_task: bool = False
+    base_lines: int | None = None
+    lines_lost: int | None = None
+    undeclared_lines_added: int | None = None
 
     def __post_init__(self) -> None:
         if self.location not in {"inside", "outside", "unverified"}:

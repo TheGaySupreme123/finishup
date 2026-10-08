@@ -83,6 +83,7 @@ __all__ = [
     "MAX_REVIEW_CHANGE_OBSERVATIONS",
     "MAX_REVIEW_EXCERPTS",
     "MAX_REVIEW_OMISSIONS",
+    "MAX_REVIEW_OMISSION_TOTAL",
     "MAX_REVIEW_TEXT_BYTES",
     "MAX_TASK_STATEMENT_BYTES",
     "MAX_REVIEW_TIMELINE_ITEMS",
@@ -232,6 +233,9 @@ MAX_REVIEW_CHANGE_OBSERVATIONS: Final = 32
 # (issue #907 Phase 1b).
 MAX_REVIEW_EXCERPTS: Final = 64
 MAX_REVIEW_OMISSIONS: Final = 64
+# The true count of distinct omissions behind a review input manifest's capped listed count
+# (issue #976): far above anything a bounded ledger case produces, so it never saturates.
+MAX_REVIEW_OMISSION_TOTAL: Final = 1_048_576
 MAX_REVIEW_CHALLENGES: Final = 3
 # JSON Schema ``maxLength`` counts Unicode code points, while the durable AI-powered review contract
 # bounds review prose by UTF-8 bytes. Four bytes is the largest UTF-8 encoding of one valid
@@ -256,7 +260,12 @@ MISSING_FOR_ASSESSMENT_KINDS: Final = frozenset(
     }
 )
 MISSING_ITEM_AVAILABILITIES: Final = frozenset(
-    {"agent_suppliable", "structurally_unavailable_on_this_host"}
+    {
+        "agent_suppliable",
+        "structurally_unavailable_on_this_host",
+        "yoetz_limit_packet_room",
+        "yoetz_limit_unsupported_data_type",
+    }
 )
 GENESIS_PREDECESSOR_DIGEST: Final = "genesis"
 MAX_PROJECTION_CONTENT_LEAVES: Final = 512
@@ -2204,7 +2213,10 @@ type MissingForAssessmentKindWire = Literal[
     "verification_output",
 ]
 type MissingItemAvailabilityWire = Literal[
-    "agent_suppliable", "structurally_unavailable_on_this_host"
+    "agent_suppliable",
+    "structurally_unavailable_on_this_host",
+    "yoetz_limit_packet_room",
+    "yoetz_limit_unsupported_data_type",
 ]
 
 ProviderReviewTextWire = Annotated[
@@ -2230,6 +2242,8 @@ class ProviderChallengeModel(_ClosedModel):
     # One verbatim quote supporting the challenge. The check fence validates that it is an
     # exact substring of a packet item linked to one of cited_refs (issue #906 Part 2).
     snippet: ProviderReviewTextWire | None = None
+    # The earlier finding this challenge restates (issue #980), from prior_finding_refs.
+    restates: ProviderFindingIdWire | None = None
 
     @model_validator(mode="after")
     def _validate_challenge_invariants(self) -> ProviderChallengeModel:
@@ -2272,7 +2286,7 @@ class ProviderVerifiedItemModel(_ClosedModel):
 
 # Issue #905: one ruling per earlier AI-powered finding the packet's prior-findings section
 # carries. ``withdrawn`` accepts the main agent's rejection; ``unassessable`` speaks only for its
-# own finding. The section carries at most eight findings.
+# own finding. The section carries at most sixteen findings (issue #976).
 type PriorFindingVerdictWire = Literal[
     "fixed",
     "still_present",
@@ -2280,7 +2294,7 @@ type PriorFindingVerdictWire = Literal[
     "unassessable",
     "withdrawn",
 ]
-MAX_PRIOR_FINDING_VERDICTS: Final = 8
+MAX_PRIOR_FINDING_VERDICTS: Final = 16
 ProviderFindingIdWire = Annotated[
     str,
     Field(pattern=r"^fnd_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
@@ -3234,7 +3248,8 @@ class ReviewInputSectionModel(_ClosedModel):
         "not_selected",
     ]
     source_refs: tuple[String1To256, ...] = Field(max_length=16)
-    item_ids: tuple[String1To256, ...] = Field(max_length=64)
+    # The prior-findings section lists up to sixteen findings' rows (issue #976).
+    item_ids: tuple[String1To256, ...] = Field(max_length=128)
     omitted_refs: tuple[String1To256, ...] = Field(max_length=16)
     omission_reasons: tuple[
         Literal[
@@ -3272,7 +3287,7 @@ class ReviewInputMissingModel(_ClosedModel):
 
 
 class ReviewInputManifestModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"review_phase"})
+    optional_non_null_fields = frozenset({"review_phase", "omitted_item_total"})
 
     schema_: Literal["yoetz.review-input-manifest/1"] = Field(alias="schema")
     specification: ReviewInputSectionModel
@@ -3284,7 +3299,10 @@ class ReviewInputManifestModel(_ClosedModel):
     missing_inputs: tuple[ReviewInputMissingModel, ...] = Field(max_length=8)
     selected_item_count: int = Field(ge=0, le=304)
     selected_excerpt_bytes: int = Field(ge=0, le=MAX_SEMANTIC_CASE_BYTES)
+    # Omission rows the manifest's packet lists, capped at MAX_REVIEW_OMISSIONS.
     omitted_item_count: int = Field(ge=0, le=MAX_REVIEW_OMISSIONS)
+    # Issue #976 (tb4n1 D11), optional in place: every distinct omission before that cap.
+    omitted_item_total: int | None = Field(default=None, ge=0, le=MAX_REVIEW_OMISSION_TOTAL)
     # Issue #976: the review phase the packet's question set named (closing review = final).
     review_phase: Literal["routine", "final"] | None = None
 
@@ -5396,6 +5414,7 @@ _REVIEW_INPUT_MANIFEST_LEAVES: Final = (
     "missing_inputs/*/supplied_refs/*",
     "missing_inputs/*/target_refs/*",
     "omitted_item_count",
+    "omitted_item_total",
     "phase",
     "prior_finding_context/content_bytes",
     "prior_finding_context/content_digest",
@@ -6621,7 +6640,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1437:  # L2 +14, L3 +2 (#1012), L6 +6 (#1002)
+    if len(result) != 1439:  # L2 +14, L3 +2 (#1012), L6 +6 (#1002), L5 +2 (#976)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

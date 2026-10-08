@@ -1324,7 +1324,9 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   `review_summary` under a fixed header saying they are advisory and unverified (issue #976);
 - `semantic_review_refs_reduced` — a reviewer item cited refs the sent packet did not carry: a
   challenge keeps only its sent refs and stands on them, a verified row is dropped (it reads as
-  support, so it may not rest on unsent material) (issue #976);
+  support, so it may not rest on unsent material) (issue #976). It blocks absence proof of an
+  AI-powered finding except under that review's own explicit, admitted `fixed` ruling on the
+  finding: the gap means the reviewer cited more than it was shown, not that it saw less;
 - `semantic_review_snippet_invalid` — a reviewer quote could not be proved against the exact safe
   provider-bound text of the rows it cites, including after response recovery without the
   ephemeral text index. The quote is removed from a kept challenge, a verified row is dropped, and
@@ -4059,7 +4061,10 @@ closed pair `routine | final` (`yoetz.ports.semantic_budget`).
 `select_semantic_budget_profile(projection, *, final_review=False)` returns `final` when the frozen
 projection holds an effective, readable `completion` claim or the check request carries
 `final_review: true` (the closing review, issue #976), and `routine` otherwise. The review input
-manifest records the selected phase as the optional `review_phase`. The selected value is frozen as
+manifest records the selected phase as the optional `review_phase`, and beside its capped
+`omitted_item_count` (listed rows, at most 64) the optional `omitted_item_total`
+(`MAX_REVIEW_OMISSION_TOTAL`, 1,048,576): every distinct omission before the cap, never fewer than
+the rows listed. The selected value is frozen as
 `execution.budget_profile` in the `yoetz.semantic-case/2` snapshot. An absent key reads as
 `final`, and any other value is `semantic_execution_invalid`. It is exposed to the provider
 factory only for the duration of one physical dispatch, and dispatches outside a check see
@@ -7838,11 +7843,33 @@ hook-captured tool output: authorship is the service-stamped envelope fact, carr
 case as `observation_event_ids`, the observation-authored events recorded after the request, emitted
 only when non-empty so other cases keep their bytes; and a result answers `verification_output` only
 when it carries output (linked evidence or a summary). Yoetz classifies each kept item as
-`agent_suppliable` or `structurally_unavailable_on_this_host` (a kind the effective review selection
-or channel can never carry, or a redacted target), adding `semantic_missing_agent_suppliable` and
-`semantic_missing_structurally_unavailable`. These are check limitations, never findings, and weigh
+`agent_suppliable`, `structurally_unavailable_on_this_host` (a kind the effective review selection
+or channel can never carry, or a redacted target) or a Yoetz limit (`yoetz_limit_unsupported_data_type`,
+`yoetz_limit_packet_room`; ADR-006, issue #983), adding `semantic_missing_agent_suppliable`,
+`semantic_missing_structurally_unavailable` or `semantic_missing_yoetz_limit`. Only
+`agent_suppliable` is ever agent work. After two `insufficient_packet` reviews in a row with no edit
+since, or four since the task's last assessed review, checks other than `semantic_required` skip the AI-powered review and disclose the standing gap
+`semantic_review_skipped_insufficient_packet` (`kernel/review_round.py`). These are check limitations, never findings, and weigh
 on finding resolution exactly like the `semantic_packet_insufficient` they ride beside: a local
 issue is still proven absent, and a `fixed` ruling (#905) still resolves its own finding.
+
+Image and binary files in the packet (ADR-006, issues #983, #1004; no new wire field). No bytes or
+pixels of such a file ever leave the machine. An evidence row that records one (a hook-observed
+image, or a row whose `reference` names an unsupported file type and records the file itself) is
+carried as an `evidence_excerpt` that begins `[Yoetz: the agent referenced an image or binary file
+at <path> (evidence <evd>); it was not sent and its content is not assessable from this packet]`
+(an observed image has no path: `[Yoetz: an image was observed (evidence <evd>); it was not sent
+and its content is not assessable from this packet]`). The path keeps only ASCII letters, digits,
+space and `._/+@~=,-` (others become `_`) and at most 160 characters. Agent-authored excerpt text
+never begins a line like a label: such a line is prefixed `(agent text) `, and the reviewer
+trusts a label only as an excerpt's first line naming that excerpt's own `source_ref`. The newest 16 (`MAX_BINARY_NOTICES` in
+`application.semantic_case`) are reserved excerpt room. A row whose `reference` names such a file
+and which carries text (`command_output`, `test_result`, `other` or captured output) is labelled
+`[Yoetz: agent-rendered text of <path> (evidence <evd>); the binary file itself is not sent]`. Both
+appear in the manifest's `caller_evidence` section. The predicates are
+`application.missing_for_assessment.unsupported_data_type(name)` and
+`observed_image_evidence(payload)`. A rendering recorded after a missing-item request for the
+binary's row answers it under the path rule above.
 
 The unreleased `check_recorded` 1.3.0 is extended in place with the optional
 `missing_for_assessment` (kind, target refs, availability; no reviewer prose; 1–8 items, only beside
@@ -7962,11 +7989,46 @@ A cited `fnd_` in a challenge resolves to that finding's subjects when it is a l
 the same check or a readable recorded finding inside the frozen fence; only already-recorded
 findings are kept as `relates_to`, so a link never names a finding that was ranked away.
 
+A provider challenge may name the finding it restates (`restates`, provider-judgment `1.2.0`,
+optional; issue #980). It folds only when the challenge's `finding_kind` equals the named
+finding's kind. A carried readable open AI-powered finding (one of `prior_finding_refs`): the
+challenge mints nothing; the check records `answered_not_fixed` (the agent had answered) or
+`still_present` on that finding, citing the challenge's refs, and appends the challenge's summary
+and message to `review_summary` under a fixed header naming the id. A carried settled finding (a
+`yoetz.settled-finding/1` row; `SemanticPacketView.settled_finding_refs`, passed to
+`validate_semantic_judgment(settled_finding_refs=)`): the challenge mints nothing and a
+`still_present` ruling is recorded on the final item, which the reducer counts in
+`settled_reraise_count` (no round, never reopened). Any other target (another kind, a resolved or
+final item, an uncarried finding) yields a new finding whose `relates_to` names it and records no
+ruling on it. A `restates` is never
+counted in `semantic_review_refs_reduced`; an id outside the fence is ignored.
+
+Dialogue projection facts (TB4 tb4n1 D7): a finding row counts the agent's `rejected` and
+`self_verified` responses (`rebuttal_count`), keeps the newest admitted ruling
+(`last_reviewer_verdict`), and counts re-raises recorded after the agent settled it
+(`settled_reraise_count`, rulings `still_present`/`answered_not_fixed` on an item whose latest
+response is `acknowledged_not_done` or `self_verified`); all are replay-derived, emitted in
+projection snapshots only when set, and carried on the `yoetz.prior-finding/1` /
+`yoetz.settled-finding/1` rows when set. `kernel.finding_todo.premise_dispute_basis(state,
+finding_id) -> "blocker_cited" | "give_up_reraised" | None` and
+`standing_premise_disputes(state, finding_ids=None)` (`FindingTodo.premise_disputed`) flag an
+`acknowledged_not_done` AI-powered `task_requirement_unmet`/`requested_item_never_attempted`
+finding that asked the agent to `act` only with a recorded anchor: its subject refs cite a
+readable, unsuperseded `yoetz-blocker` decision or an obligation it blocks, or
+`settled_reraise_count > 0`. The acknowledgement stays final; the dispute is for readiness or
+Stop surfaces.
+
+The prior-findings section also carries, after the open findings and inside the same bounds,
+non-rulable `yoetz.settled-finding/1` rows (item ids `settled-finding-<ref>`, prose
+`settled-finding-summary-<ref>` and `settled-finding-response-<ref>`) for readable, unresolved
+AI-powered findings the agent settled; they never enter `prior_finding_refs`, a ruling on one is
+set aside, and one that does not fit adds no `semantic_prior_findings_over_limit`.
+
 The review packet (`outbound-case` `1.2.0`) adds the `prior_finding` section,
-`review_packet.prior_finding_item_ids` (every row of the section, at most 56) and
+`review_packet.prior_finding_item_ids` (every row of the section, at most 112) and
 `review_packet.prior_finding_refs` (the ruling unit: each carried finding's `finding_ref` exactly
-once, newest first, at most 8, listed only while its structural row is carried). It carries the newest readable, unresolved AI-powered
-findings (at most 8, 48 KiB of item content, and only case capacity the other sections leave;
+once, newest first, at most 16, listed only while its structural row is carried). It carries the newest readable, unresolved AI-powered
+findings (at most 16, 96 KiB of item content (issue #976; 8 and 48 KiB before), and only case capacity the other sections leave;
 outside the timeline's 64 rows, so hook rows never crowd it out). Under egress-envelope pressure its
 rows are removed first, oldest finding first, before any other bounding step, so the section never
 displaces work content; removed rows count in `catalog_dropped_count` and add
@@ -7986,7 +8048,8 @@ section existed. A finding recorded without challenge fields is disclosed throug
 record is complete for its version, and nothing it lacks was lost.
 
 The provider judgment is `provider-judgment` `1.1.0`: every conclusion branch requires
-`prior_finding_verdicts` (0–8 of `{finding_id, verdict, cited_refs, note}`; `verdict` ∈
+`prior_finding_verdicts` (0–8 of `{finding_id, verdict, cited_refs, note}`, 0–16 in the unreleased
+`1.2.0` extended in place for issue #976; `verdict` ∈
 `fixed|still_present|answered_not_fixed|unassessable|withdrawn`), for the Codex app-server,
 Responses and Chat Completions cells alike (the prompt-only Chat Completions shape names it too).
 The reviewer returns exactly one ruling per `finding_ref` in `review_packet.prior_finding_refs`,
@@ -8001,7 +8064,7 @@ the prior-findings rows and `citable_refs` of the packet the reviewer was actual
 on a readable open finding the packet did not carry is recorded as `unassessable`); admitted
 rulings are recorded as
 the optional `check_recorded` `1.3.0` field `prior_finding_verdicts` (`{finding_id, verdict,
-cited_refs}`, 1–8, ASCII-sorted by finding id, never the note; unreleased 1.3.0 extended in place),
+cited_refs}`, 1–16 (issue #976), ASCII-sorted by finding id, never the note; unreleased 1.3.0 extended in place),
 present only when at least one ruling was admitted, so a check without rulings keeps its bytes
 (issue #907's optional `missing_for_assessment` shares the version the same way).
 `semantic_prior_verdicts_unsupported` discloses dropped or reduced rulings and, like
@@ -8155,8 +8218,9 @@ Wire (the earlier checklist fields remain available in their original versions):
   that way beside this continuation. When only standing or structurally unavailable limits remain,
   `overall_next.status` is
   `ready_with_limitations` and `acknowledged_incomplete_endpoint: receipt` keeps the supported
-  coverage-limited receipt path explicit. A `structurally_unavailable_on_this_host` item remains
-  a disclosed limitation; it does not become an impossible-to-do action.
+  coverage-limited receipt path explicit. A `structurally_unavailable_on_this_host` or
+  `yoetz_limit_*` item remains a disclosed limitation the agent verifies itself; it does not become
+  an impossible-to-do action, and it is never a blocker.
 - Stable identity: a challenge whose kind matches a recorded AI-powered finding, whose subject
   set is exactly that finding's (the receipt's issue key), and none of whose subjects was recorded
   after that finding (the evidence fingerprint) is a restatement. A narrower or wider challenge is
@@ -8469,10 +8533,17 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   parts with ids `change-check-time-NNN`, section `excerpt`, category `repository_excerpt`, source
   kind `diff`, source ref `check-time-change`, linked to effective claims and obligations (else the
   latest plan), each prefixed `[Yoetz check-time change, part i of n]`. Each part is at most
-  `min(max_excerpt_bytes, max_total_excerpt_bytes, 4 KiB, item bound)` bytes, marker included.
-  `_check_time_change_reservation(selection, first_part_bytes)` returns the share admitted before
-  other excerpts (half the excerpt count, at least one, and half the total bytes rounded up to the
-  first part); leftovers backfill after every other excerpt. The case digest binds the object
+  `min(max_excerpt_bytes, max_total_excerpt_bytes, item bound)` bytes, marker included (16 KiB
+  under Expanded; issue #983). `_check_time_change_reservation(selection, first_part_bytes)`
+  returns the share admitted before other excerpts (half the excerpt count, at least one, and half
+  the total bytes rounded up to the first part). Leftover parts take the room the reserved excerpt
+  ranks (current diff, latest verification, prior-finding context) leave, ahead of older edit
+  hunks and unreserved or superseded excerpts; any still left backfill after every other excerpt.
+  When a narrowed case leaves less room than one whole part, the first part is cut to that room
+  (at least 256 change bytes, on a line end where one lies in its second half) and prefixed
+  `[Yoetz check-time change, part 1 of n, cut to the packet's room]`; nothing follows it and
+  `check_time_change_truncated` is disclosed (issue #983).
+  Untracked files are read up to `MAX_CHECK_CHANGE_TEXT_BYTES` less the header budget (232 KiB). The case digest binds the object
   identity, content digest, base, flags, admitted part count and any unavailability reason; a case
   without a selected change keeps its historical digest input.
 - **Unavailability reasons.** `CheckChangeOutcome.reason` and the builder's reason are keys of
@@ -8488,21 +8559,24 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   puts in the gap's `detail` and the limitations section body (so JSON, markdown and text receipts
   carry it), `render_human_check` and `render_human_status` print after the gap list, and the MCP
   check summary appends when it fits the 512-byte bound.
-- **Shown files.** `check_time_change_shown_files(capture, selection, admitted_parts)` returns each
-  `diff --git` section of the stored change that reached the admitted parts, whether it arrived
+- **Shown files.** `check_time_change_shown_files(capture, shown_bytes)` returns each
+  `diff --git` section of the stored change that reached its leading `shown_bytes`, whether it arrived
   whole and without a `[REDACTED]` marker, the section bytes that arrived, the markers among them,
   whether the whole section arrived, and where the first shown marker starts. The identity is the
   section's first line plus `\0binary` for a `Binary files ` line and `\0deleted` for a `deleted
-  file mode ` line. `admitted_parts` is `check_time_change_parts_carried(case,
-  withheld_categories=)`: the unbroken run of parts from the first whose catalog rows
-  `bounded_case_envelope(case)` kept, or 0 when the policy withholds `repository_excerpt`.
-  `check_change_shown_files(runtime, change, selection, admitted_parts)` commits each through
+  file mode ` line. `shown_bytes` is `check_time_change_bytes_carried(case,
+  withheld_categories=)`: the change bytes (marker lines excluded) of
+  `check_time_change_parts_carried(case, withheld_categories=)`, the unbroken run of parts from the
+  first whose catalog rows `bounded_case_envelope(case)` kept, or 0 when the policy withholds
+  `repository_excerpt`. Counting bytes keeps the record exact whatever part size a planned
+  selection chose and when the first part was cut (issue #983).
+  `check_change_shown_files(runtime, change, shown_bytes)` commits each through
   `runtime.objects.commitment_for(..., CHANGE_CAPTURE)` over the domain
   `yoetz/check-change-shown-file/v1`, the base commit and that identity. Each partially shown file
   also gets `view_commitment`, the same key over `yoetz/check-change-shown-view/v1`, the base
   commit, the identity and `CheckTimeChangeShownFile.view`: the length-prefixed shown length, the
   whole-section flag, every marker offset, and every hunk's offset and header line within the shown
-  bytes. The view is never stored; it is derived from the same `admitted_parts`, so envelope
+  bytes. The view is never stored; it is derived from the same `shown_bytes`, so envelope
   minimization cannot desynchronize it from the accounting. `CheckChangeCapture` and
   `yoetz.check-change/1` carry `base_commit`. The composition passes it to
   `FinalSemanticEvaluation.check_change_files`, and `commit_check_if_current(...,
@@ -8520,16 +8594,19 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   the effective plan. `markers` pair a code with its obligation (`<code>:<obligation id>` in the
   frozen case) or `None`. Agent-actionable (`AGENT_ACTIONABLE_TASK_FACT_GAPS`):
   `planned_verification_not_observed`, `planned_verification_failed`,
-  `planned_verification_stale`, `edited_after_last_verification`, `requested_output_git_ignored`.
-  Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
+  `planned_verification_stale`, `edited_after_last_verification`, `requested_output_git_ignored`,
+  `declared_output_removed` (ADR-035). Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
   `planned_verification_unobservable`, `planned_verification_agent_linked`, `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`, `verification_only_as_root`,
   `obligation_blocked_outside_agent_control`, `requested_output_ignored_by_repository`,
+  `declared_output_content_moved` (ADR-035),
   `requested_output_unchanged`,
   `requested_output_outside_workspace`, `requested_output_unverified`. Each code is classified
   once in `GAP_CLASSIFICATION`; standing ones are advisory for the check verdict, the receipt
   conclusion and `DETERMINISTIC_SCOPED_STANDING_GAPS`, and every task-fact code is tolerated by a
-  local absence proof. `build_deterministic_case` and the compact status gaps add them beside the
+  local absence proof; `write_outside_workspace` and `obligation_blocked_outside_agent_control`
+  are also tolerated by an AI-powered absence proof under an explicit, admitted `fixed` ruling on
+  that finding, never when the review is silent on it (issue #1000). `build_deterministic_case` and the compact status gaps add them beside the
   plan-drift signals.
 - **Planned-verification identity.** `register_command_identity_key(key)` (the service calls it at
   composition with the local observation store key) lets `requested_command_identity(value)`
@@ -8605,6 +8682,28 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `edit`, `command` or `other` actions is attributed to it. A requested
   directory is `changed` when any changed path lies beneath it; the root probes as `relative`
   `.`, inside, and is changed by any change.
+- **Declared delivered set (ADR-035, issue #1005).** `kernel/delivered_set.py`:
+  `declared_delivered_items(projection) -> tuple[(obligation, item index, item kind, value), ...]`
+  is every effective, unblocked obligation's requested item of kind `file` or `directory` whose
+  `role` is `output` (a role-less 1.0.0 item never counts). `declared_output_removed(projection,
+  states) -> tuple[ObligationId, ...]` names the obligations whose declared item has an `inside`
+  `RequestedOutputState` with `exists=False` and either `deleted=True` (deleted, or renamed away,
+  by the check-time change) or an `edit` action of the session naming it (written, then moved). `_requested_output_inputs` in `application/check.py` adds the closed gap
+  `declared_output_removed` (`DECLARED_OUTPUT_REMOVED_GAP`, defined in `kernel/task_facts.py`) to
+  the check's task-fact gaps. It is agent-actionable, a `STOP_GATE_TOKENS` entry, and has a fixed
+  `TASK_FACT_GAP_SENTENCES` sentence. `content_moved_declared_items(projection, states) ->
+  tuple[(obligation, item index), ...]` names declared items whose state carries
+  `base_lines`, `lines_lost` and `undeclared_lines_added` with `lines_lost >= 20`
+  (`CONTENT_MOVED_MIN_LINES`), `2 * lines_lost >= base_lines` and
+  `2 * undeclared_lines_added >= lines_lost`; the check then adds the standing disclosure
+  `declared_output_content_moved` (`DECLARED_OUTPUT_CONTENT_MOVED_GAP`), never a Stop-gate token.
+  `requested_output_states` fills those fields only for a declared `file` the change modifies
+  (`M`), through the optional adapter method `count_change_lines(workspace, base_commit,
+  base_paths) -> ChangeLineCounts(changed: tuple[ChangeLineCount(path, added, removed,
+  untracked), ...], base_lines, truncated)` (`ports/change_capture.py`): numstat for tracked
+  changes, newline counts of untracked non-ignored files (bounded, no link followed, no
+  credential-named or binary file), base line counts for the named paths; numbers only, nothing
+  stored. A declared `directory` covers the files beneath it.
 - **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the
   absent-output fact, and skips blocked obligations. `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
@@ -8625,11 +8724,13 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `obligations_open`, `receipt_findings_unresolved`, `closing_review_required`,
   `planned_verification_failed`,
   `planned_verification_not_observed`, `planned_verification_stale`,
-  `requested_output_git_ignored`. `closure_gate_from_readiness(readiness, frontier_sequence=,
+  `requested_output_git_ignored`, `declared_output_removed`. `closure_gate_from_readiness(readiness, frontier_sequence=,
   frontier_digest=, observation_pending=, reasked_blockers=) -> ClosureGate(identity, text, items,
   blocker_keys) | None` also fires, in `action_required` or `ready_with_limitations`, for a
   `blocked_obligations` pair whose `<obligation id>:<kind>` key is not in `reasked_blockers`. It adds
-  the item `BLOCKER_RECHECK_ITEM` (`blocker_recheck`) and names each obligation and kind once.
+  the item `BLOCKER_RECHECK_ITEM` (`blocker_recheck`) and names each obligation and kind once. When
+  the gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the
+  text carries one informational note; that code alone never fires the gate.
   `read_closure_gate(...)` reads compact status and raises `ClosureGateUnavailable` when it cannot;
   `closure_gate_already_delivered` / `record_closure_gate_delivered(..., blocker_keys=)` keep the
   owner-only `observation/closure-gate.json` once-per-frontier memory, and

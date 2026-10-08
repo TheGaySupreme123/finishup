@@ -44,6 +44,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
+    SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
     ReceiptChildFinding,
     ReceiptChildOutcome,
     ReceiptChildren,
@@ -1650,6 +1651,12 @@ def _sections(
         )
         if check_sentence:
             gap_body = f"{check_sentence} Coverage is limited by: {', '.join(gap_codes)}."
+        elif not_requested and SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP in gap_codes:
+            gap_body = (
+                "AI-powered review was skipped: the reviewer twice in a row, or four times since "
+                "the last assessed review, could not assess the review packet (a Yoetz limit). "
+                f"Coverage is limited by: {', '.join(gap_codes)}."
+            )
         elif not_requested:
             gap_body = (
                 "AI-powered review was not requested (local-only check). "

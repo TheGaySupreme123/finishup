@@ -200,3 +200,61 @@ def test_task_fact_gap_codes_reach_packet_known_gaps() -> None:
     assert set(gaps) <= set(semantic.packet.coverage.known_gaps)
     clean = _build(_case_with_material(), ReviewContextProfile.EXPANDED)
     assert not set(gaps) & set(clean.packet.coverage.known_gaps)
+
+
+async def test_a_round_stopped_after_one_retry_never_calls_the_reviewer() -> None:
+    """tb4n1 D3: after two insufficient-packet reviews in a row, the check skips the reviewer."""
+
+    from yoetz.protocol.models import SemanticStatus
+
+    calls: list[object] = []
+
+    async def seam(*args: object, **kwargs: object) -> object:
+        calls.append(args)
+        return object()
+
+    request, runtime = _check_inputs()
+    result = await _semantic_evaluation(
+        cast(Any, SimpleNamespace(evaluate_semantic_check=seam)),
+        request,
+        runtime,
+        cast(Any, object()),
+        (),
+        route_profile="policy",
+        round_stopped=True,
+    )
+    assert calls == []
+    assert result.status is SemanticStatus.NOT_REQUESTED
+
+
+async def test_the_round_stop_reads_the_frozen_ledger_prefix_and_spares_required_checks() -> None:
+    """tb4n1 D3: the stop is decided from recorded checks; ``semantic_required`` always reviews."""
+
+    from unit.kernel.test_review_round import _check  # pyright: ignore[reportPrivateUsage]
+    from yoetz.application.check import (
+        _review_round_stopped_at,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    records = (_check("insufficient_packet"), _check("insufficient_packet"))
+    seen: list[object] = []
+
+    async def load_events(session_id: object, *, through: int) -> Any:
+        seen.append(through)
+        for record in records:
+            yield record
+
+    runtime = SimpleNamespace(session_id="ses", ledger=SimpleNamespace(load_events=load_events))
+    frozen = SimpleNamespace(case=SimpleNamespace(frontier=SimpleNamespace(sequence=7)))
+    for mode, expected in (
+        ("semantic_if_configured", True),
+        ("semantic_required", False),
+        ("deterministic_only", False),
+    ):
+        request = SimpleNamespace(mode=mode, request_id="req_test")
+        assert (
+            await _review_round_stopped_at(
+                cast(Any, runtime), cast(Any, request), cast(Any, frozen)
+            )
+            is expected
+        )
+    assert seen == [7]

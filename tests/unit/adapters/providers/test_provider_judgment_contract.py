@@ -284,6 +284,10 @@ def test_request_schema_root_is_an_object_never_a_union() -> None:
                 # Conditional snippet requirements are expressed with allOf on the active
                 # verified-item contract; the base property is intentionally optional.
                 optional: set[str] = {"snippet"} if path.endswith("ProviderVerifiedItem") else set()
+                # ``restates`` (issue #980) is an optional link; strict output still sends it as
+                # a required nullable field (``strict_output_schema``).
+                if path.endswith("ProviderChallenge"):
+                    optional.add("restates")
                 assert set(properties) - optional == set(required), path
             for key, value in source.items():
                 if key in {"properties", "$defs"}:
@@ -916,12 +920,13 @@ def test_a_malformed_or_surplus_ruling_is_dropped_and_counted_not_fatal() -> Non
                 **_judgment(),
                 "prior_finding_verdicts": [
                     _ruling(verdict="unassessable", finding_id=_finding(number))
-                    for number in range(1, 10)
+                    for number in range(1, 18)
                 ],
             },
         )
     )
-    assert len(surplus.prior_finding_verdicts) == 8
+    # Sixteen rulings, one per carried earlier finding (issue #976).
+    assert len(surplus.prior_finding_verdicts) == 16
     assert surplus.prior_finding_verdicts_dropped == 1
 
 

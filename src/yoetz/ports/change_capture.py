@@ -36,6 +36,8 @@ __all__ = [
     "ChangeCaptureUnavailable",
     "CheckChangeCapture",
     "CheckChangeMetadata",
+    "ChangeLineCount",
+    "ChangeLineCounts",
     "ChangeMetadataEntry",
     "CheckWorkspaceSource",
     "TaskChangeBase",
@@ -310,6 +312,69 @@ class RequestedPathProbe:
         if (self.location == "inside") is (self.relative is None):
             raise _invalid()
         if self.holds_file is not None and self.exists is not True:
+            raise _invalid()
+
+
+_MAX_LINE_COUNT: Final = 1 << 40
+
+
+def _line_count(value: object) -> bool:
+    return value is None or (type(value) is int and 0 <= value <= _MAX_LINE_COUNT)
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeLineCount:
+    """Line counts for one changed file in the check-time change (ADR-035).
+
+    ``added``/``removed`` are Git's numstat counts for a tracked file, or the line count of an
+    untracked file with ``removed=0``; ``None`` when the file is binary, too large, or could not be
+    read safely. ``path`` is root-relative, compared in process only and never stored.
+    """
+
+    path: str = field(repr=False)
+    added: int | None
+    removed: int | None
+    untracked: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.path) is not str
+            or not self.path
+            or any(char in self.path for char in "\x00\r\n")
+        ):
+            raise _invalid()
+        if not _line_count(self.added) or not _line_count(self.removed):
+            raise _invalid()
+        if type(self.untracked) is not bool:
+            raise _invalid()
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeLineCounts:
+    """A bounded, metadata-only line-count read of the check-time change (ADR-035).
+
+    ``changed`` holds counts for the changed files that fit the read; ``truncated`` is true when
+    some changed or untracked file was left out, so any total is a lower bound. ``base_lines``
+    holds, in the order the caller named them, the line count of each requested path in the base
+    (``None`` when absent from the base, binary, or unreadable). No content leaves the adapter.
+    """
+
+    changed: tuple[ChangeLineCount, ...]
+    base_lines: tuple[int | None, ...]
+    truncated: bool
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.changed) is not tuple
+            or len(self.changed) > _MAX_FILE_COUNT
+            or any(type(item) is not ChangeLineCount for item in self.changed)
+        ):
+            raise _invalid()
+        if type(self.base_lines) is not tuple or not all(
+            _line_count(item) for item in self.base_lines
+        ):
+            raise _invalid()
+        if type(self.truncated) is not bool:
             raise _invalid()
 
 

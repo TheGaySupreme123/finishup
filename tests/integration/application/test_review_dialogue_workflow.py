@@ -962,3 +962,80 @@ async def test_a_checklist_read_failure_never_strands_the_committed_check(
     assert checked.outcome == "committed"
     assert checked.finding_checklist is None
     assert _semantic(checked).finding_id in _live_projection(session.app).findings
+
+
+def _re_raise_first_finding(frozen: FrozenCase) -> SemanticJudgment:
+    """The reviewer answers the agent's rebuttal by re-raising and naming the finding (#980)."""
+
+    projection = frozen.case.projection
+    finding = next(
+        key
+        for key, row in projection.findings.items()
+        if row.payload is not None and row.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+    )
+    obligation = next(iter(projection.obligations))
+    challenge = replace(
+        _challenge(str(obligation), summary="The verification is still not attempted"),
+        restates=str(finding),
+    )
+    return SemanticJudgment("challenges_returned", (challenge,))
+
+
+def _no_discrepancy(_frozen: FrozenCase) -> SemanticJudgment:
+    return SemanticJudgment("no_material_discrepancy", ())
+
+
+async def test_every_rebuttal_and_the_reviewers_answer_reach_the_next_review() -> None:
+    """TB4 tb4n1 D5/D7b: a re-raise of a rebutted finding stays one item, and the next packet
+    shows how often the agent rebutted it and what the reviewer last ruled."""
+
+    seed = 3300
+    reviewer = _Reviewer([_challenge_obligation, _re_raise_first_finding, _no_discrepancy])
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    rebutted = await session.app.respond(
+        RespondRequest.model_validate(
+            _respond_wire(session, at, at, raised, seed + 20, "rejected", "Already attempted.")
+        )
+    )
+    second = await _check(session, frontier_json(rebutted.result_frontier), seed + 30)
+    # No new finding: the re-raise was recorded on the rebutted item, which stays open.
+    assert not [
+        finding
+        for finding in second.findings
+        if finding.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+        and finding.finding_id != raised.finding_id
+    ]
+    live = _live_projection(session.app)
+    semantic_ids = [
+        key
+        for key, row in live.findings.items()
+        if row.payload is not None and row.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+    ]
+    assert semantic_ids == [raised.finding_id]
+    record = live.findings[raised.finding_id]
+    assert (record.review_rounds, record.rebuttal_count) == (1, 1)
+    assert record.last_reviewer_verdict == "answered_not_fixed"
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.OPEN
+
+    after = frontier_json(second.result_frontier)
+    again = await session.app.respond(
+        RespondRequest.model_validate(
+            _respond_wire(session, after, at, raised, seed + 40, "rejected", "Still attempted.")
+        )
+    )
+    await _check(session, frontier_json(again.result_frontier), seed + 50)
+    structural = next(
+        item
+        for item in reviewer.cases[2].items
+        if item.item_id == f"prior-finding-{raised.finding_id}"
+    )
+    row = cast(Mapping[str, JsonValue], strict_json_parse(structural.content))
+    assert row["rebuttal_count"] == 2
+    assert row["last_reviewer_verdict"] == "answered_not_fixed"
+    assert row["review_rounds"] == 1
+    assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
+        _live_projection(session.app)
+    )

@@ -404,6 +404,87 @@ def test_envelope_pressure_removes_the_oldest_prior_findings_before_any_work_con
     assert len(canonical_encode(cast(JsonValue, envelope))) <= MAX_EGRESS_ENVELOPE_BYTES
 
 
+def test_settled_rows_leave_before_any_open_finding_and_never_set_the_gap() -> None:
+    """Round-3 review: settled rows carry newer times, so oldest-first dropped open ones first."""
+
+    from yoetz.application.semantic_case import (
+        _drop_prior_finding_rows,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
+    from yoetz.protocol.canonical import canonical_encode
+
+    def row(item_id: str, source: str) -> dict[str, JsonValue]:
+        return {"item_id": item_id, "section": "prior_finding", "source_ref": source}
+
+    open_ref, settled_ref = str(fnd(1)), str(fnd(2))
+    envelope: dict[str, JsonValue] = {
+        "item_catalog": [
+            row(f"prior-finding-{open_ref}", open_ref),
+            row(f"settled-finding-{settled_ref}", settled_ref),
+            row(f"settled-finding-summary-{settled_ref}", settled_ref),
+        ],
+        "review_packet": {
+            "coverage": {"known_gaps": []},
+            "prior_finding_item_ids": [f"prior-finding-{open_ref}"],
+            "prior_finding_refs": [open_ref],
+        },
+        "filler": "",
+    }
+    base = len(canonical_encode(cast(JsonValue, envelope)))
+    envelope["filler"] = "x" * (MAX_EGRESS_ENVELOPE_BYTES - base + 40)
+
+    assert _drop_prior_finding_rows(envelope) == 2
+    kept = [
+        cast(Mapping[str, JsonValue], item)["item_id"]
+        for item in cast(list[JsonValue], envelope["item_catalog"])
+    ]
+    assert kept == [f"prior-finding-{open_ref}"]
+    packet = cast(Mapping[str, JsonValue], envelope["review_packet"])
+    assert packet["prior_finding_refs"] == [open_ref]
+    assert cast(Mapping[str, JsonValue], packet["coverage"])["known_gaps"] == []
+
+
+def test_the_oldest_settled_finding_leaves_first() -> None:
+    """Final review: catalog rows are oldest first, so the newest settlement stays nameable."""
+
+    from yoetz.application.semantic_case import (
+        _drop_prior_finding_rows,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
+    from yoetz.protocol.canonical import canonical_encode
+
+    older, newer = str(fnd(1)), str(fnd(2))
+    envelope: dict[str, JsonValue] = {
+        "item_catalog": [
+            {
+                "item_id": f"settled-finding-{older}",
+                "section": "prior_finding",
+                "source_ref": older,
+            },
+            {
+                "item_id": f"settled-finding-{newer}",
+                "section": "prior_finding",
+                "source_ref": newer,
+            },
+        ],
+        "review_packet": {
+            "coverage": {"known_gaps": []},
+            "prior_finding_item_ids": [],
+            "prior_finding_refs": [],
+        },
+        "filler": "",
+    }
+    base = len(canonical_encode(cast(JsonValue, envelope)))
+    envelope["filler"] = "x" * (MAX_EGRESS_ENVELOPE_BYTES - base + 20)
+
+    assert _drop_prior_finding_rows(envelope) == 1
+    kept = [
+        cast(Mapping[str, JsonValue], item)["item_id"]
+        for item in cast(list[JsonValue], envelope["item_catalog"])
+    ]
+    assert kept == [f"settled-finding-{newer}"]
+
+
 _REDUCTION_KEYS = (
     "assessment_links_stripped_count",
     "catalog_dropped_count",
@@ -538,6 +619,46 @@ def test_answered_local_finding_reaches_the_reviewer_as_non_rulable_context() ->
     assert str(fnd(7)) not in case.packet.prior_finding_refs
 
 
+def test_a_settled_finding_is_carried_nameable_but_never_rulable() -> None:
+    """Issue #980 (cargo 5, pretrain 11): a finding the agent answered ``acknowledged_not_done``
+    was dropped from the packet, so the reviewer could not name it in ``restates`` and every
+    re-raise minted a new id. It is carried as a non-rulable ``yoetz.settled-finding/1`` row the
+    packet view reports as nameable, after the open findings and inside the section bounds."""
+
+    from yoetz.application.semantic_case import semantic_case_packet_view
+
+    settled = finding_record(_semantic(7), 11)
+    answer = ResponseRecordedPayload(
+        finding_id=fnd(7),
+        finding_frontier=FRONTIER,
+        disposition=ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
+        reason="No single tour satisfies the MTOW limit.",
+    )
+    case = _build(
+        _numba_case(
+            extra_findings={fnd(7): settled},
+            extra_responses={fnd(7): record(answer, 17)},
+        )
+    )
+    structural = _row(case, f"settled-finding-{fnd(7)}")
+    assert structural["rulable"] is False
+    assert structural["schema"] == "yoetz.settled-finding/1"
+    assert structural["disposition"] == "acknowledged_not_done"
+    texts = {item.item_id: item.content.decode("utf-8") for item in case.items}
+    assert "MTOW" in texts[f"settled-finding-response-{fnd(7)}"]
+    assert f"prior-finding-{fnd(7)}" not in case.packet.prior_finding_item_ids
+    assert str(fnd(7)) not in case.packet.prior_finding_refs
+    view = semantic_case_packet_view(case)
+    assert view.settled_finding_refs == frozenset({str(fnd(7))})
+    assert str(fnd(7)) not in view.prior_finding_refs
+    # The open findings keep their place ahead of it.
+    ids = list(case.packet.prior_finding_item_ids)
+    assert all(
+        ids.index(f"settled-finding-{fnd(7)}") > ids.index(f"prior-finding-{ref}")
+        for ref in case.packet.prior_finding_refs
+    )
+
+
 def test_unanswered_local_finding_is_not_carried() -> None:
     local = finding_record(_semantic(7, origin=FindingOrigin.DETERMINISTIC), 11)
     case = _build(_numba_case(extra_findings={fnd(7): local}))
@@ -622,3 +743,54 @@ def test_closing_review_with_one_withheld_item_keeps_a_valid_final_manifest() ->
     reasons = cast(list[JsonValue], section["omission_reasons"])
     assert "redacted_never_send" in reasons
     assert "never_send_heuristic" not in reasons
+
+
+def test_twelve_open_reviewer_findings_are_all_carried() -> None:
+    """TB4 tb4n1 D10 (issue #976): eight was the cap, and six attempts dropped open findings.
+
+    A task with twelve open reviewer findings, each with full challenge prose, carries every one
+    of them to the next reviewer, in the case and in the bytes the provider receives, and the
+    rulable list names each once, newest first.
+    """
+
+    extra = {
+        fnd(number): finding_record(_semantic(number, challenge=_CHALLENGE), 20 + number)
+        for number in range(3, 13)
+    }
+    case = _build(_numba_case(extra))
+
+    expected = tuple(str(fnd(number)) for number in range(12, 0, -1))
+    assert case.packet.prior_finding_refs == expected
+    assert SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP not in case.packet.coverage.known_gaps
+    payload = cast(
+        Mapping[str, JsonValue],
+        strict_json_parse(
+            semantic_case_to_prepared_payload(case, {item.item_id for item in case.items})
+        ),
+    )
+    packet = cast(Mapping[str, JsonValue], payload["review_packet"])
+    assert packet["prior_finding_refs"] == list(expected)
+
+
+def test_over_the_limit_the_newest_open_findings_win_and_terminal_ones_never_compete() -> None:
+    """Issue #976: past sixteen, the newest open findings are carried; a terminal one is never."""
+
+    extra: dict[FindingId, FindingProjectionRecord] = {
+        fnd(number): finding_record(_semantic(number, challenge=_CHALLENGE), 20 + number)
+        for number in range(3, 3 + MAX_PRIOR_FINDINGS)
+    }
+    # The newest finding is final (acknowledged_not_done): it is history, not a live question.
+    newest = 3 + MAX_PRIOR_FINDINGS
+    extra[fnd(newest)] = finding_record(_semantic(newest, challenge=_CHALLENGE), 90)
+    done = ResponseRecordedPayload(
+        finding_id=fnd(newest),
+        finding_frontier=FRONTIER,
+        disposition=ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
+        reason="The package index is unreachable from this sandbox; not done.",
+    )
+    case = _build(_numba_case(extra, {fnd(newest): record(done, 91)}))
+
+    carried = case.packet.prior_finding_refs
+    assert len(carried) == MAX_PRIOR_FINDINGS == 16
+    assert str(fnd(newest)) not in carried
+    assert carried == tuple(str(fnd(number)) for number in range(newest - 1, 2, -1))

@@ -128,7 +128,9 @@ __all__ = [
     "SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP",
     "SEMANTIC_MISSING_ITEMS_REJECTED_GAP",
     "SEMANTIC_MISSING_NON_CONVERGENT_GAP",
+    "SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP",
     "SEMANTIC_MISSING_UNAVAILABLE_GAP",
+    "SEMANTIC_MISSING_YOETZ_LIMIT_GAP",
     "SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES",
     "SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP",
     "SEMANTIC_PROVIDER_INPUT_MANIFEST_MISMATCH_GAP",
@@ -243,12 +245,22 @@ SEMANTIC_REVIEW_REFS_REDUCED_GAP: Final = "semantic_review_refs_reduced"
 # pointed outside the packet and was dropped. None of them is a finding or a clean review.
 SEMANTIC_MISSING_AGENT_SUPPLIABLE_GAP: Final = "semantic_missing_agent_suppliable"
 SEMANTIC_MISSING_UNAVAILABLE_GAP: Final = "semantic_missing_structurally_unavailable"
+# tb4n1 D1 (#983): the reviewer named content Yoetz's own packet cannot show (an unsupported data
+# type, or content clipped or omitted for packet room). Never agent work; the agent self-verifies.
+SEMANTIC_MISSING_YOETZ_LIMIT_GAP: Final = "semantic_missing_yoetz_limit"
 SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP: Final = "semantic_missing_already_supplied"
 SEMANTIC_MISSING_ITEMS_REJECTED_GAP: Final = "semantic_missing_items_rejected"
 # A later review named the same target again without a directly related agent publication.  This
 # is a bounded non-convergence disclosure, not proof that a new target was supplied or that the
 # reviewer was wrong; the next step is to publish the named relationship or stop rechecking.
 SEMANTIC_MISSING_NON_CONVERGENT_GAP: Final = "semantic_missing_non_convergent"
+# tb4n1 D3: the reviewer twice in a row (the request and its one retry, no edit since), or four
+# times since the last assessed review, could not assess the packet, so the check runs without the
+# AI-powered review instead of looping on a packet that cannot show the work
+# (``kernel/review_round.py``). A Yoetz limit, never agent work; the receipt discloses it.
+SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
+    "semantic_review_skipped_insufficient_packet"
+)
 # A successful provider call can still lose the exact post-admission input manifest.  Keep the
 # failure reason closed and coverage-bounded so a composed manifest is never presented as what the
 # provider received.  These are internal provenance facts surfaced as ordinary receipt gaps.
@@ -439,6 +451,18 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " Yoetz did not read it."
         ),
         "requested_output_unverified": ("Requested output files could not be read at check time."),
+        "declared_output_removed": (
+            "A declared delivered file was deleted or renamed away in the checked change. Restore"
+            " the delivered file, or correct the requested item if the task asked for the"
+            " deletion: Yoetz review limits never justify moving, splitting or deleting"
+            " deliverables."
+        ),
+        "declared_output_content_moved": (
+            "A declared delivered file lost most of its lines while files outside the declared"
+            " delivered set changed or hold about as many lines (untracked files may predate the"
+            " task): content may have moved out of a delivered file into an undelivered one."
+            " Check that the deliverable still works where the task delivers it."
+        ),
         "install_into_yoetz_runtime": (
             "A package install resolved to Yoetz's own runtime interpreter, not the task's."
         ),

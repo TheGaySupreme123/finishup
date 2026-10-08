@@ -54,6 +54,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_MISSING_ITEMS_REJECTED_GAP,
     SEMANTIC_MISSING_NON_CONVERGENT_GAP,
     SEMANTIC_MISSING_UNAVAILABLE_GAP,
+    SEMANTIC_MISSING_YOETZ_LIMIT_GAP,
     SEMANTIC_PACKET_INSUFFICIENT_GAP,
     SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP,
     SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP,
@@ -70,6 +71,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
     SEMANTIC_REVIEW_REFS_REDUCED_GAP,
+    SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
 )
@@ -96,7 +98,11 @@ from yoetz.kernel.projections import (
     is_observation_limitation_kind,
     observation_finding_event_ids,
 )
-from yoetz.kernel.task_facts import TASK_FACT_GAPS
+from yoetz.kernel.task_facts import (
+    OBLIGATION_BLOCKED_GAP,
+    TASK_FACT_GAPS,
+    WRITE_OUTSIDE_WORKSPACE_GAP,
+)
 from yoetz.protocol.coverage import LedgerFreshness
 from yoetz.protocol.models import SemanticReason, SemanticStatus
 from yoetz.protocol.policy_packs import (
@@ -105,6 +111,7 @@ from yoetz.protocol.policy_packs import (
 )
 
 __all__ = [
+    "AGENT_SETTLED_DISPOSITION_VALUES",
     "CAPTURE_FAILURE_GAPS",
     "REVIEW_SELECTION_GAPS",
     "SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS",
@@ -136,6 +143,7 @@ _INSUFFICIENT_PACKET_GAPS: Final = frozenset(
         SEMANTIC_MISSING_ITEMS_REJECTED_GAP,
         SEMANTIC_MISSING_NON_CONVERGENT_GAP,
         SEMANTIC_MISSING_UNAVAILABLE_GAP,
+        SEMANTIC_MISSING_YOETZ_LIMIT_GAP,
     }
 )
 
@@ -176,6 +184,9 @@ CAPTURE_FAILURE_GAPS: Final = frozenset(
 _SEMANTIC_ONLY_GAPS: Final = frozenset(
     {
         SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
+        # The review round was skipped because the last two completed reviews could not assess
+        # the same content (TB4 tb4n1 D3): it says nothing about a local pack.
+        SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
         SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
         SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
         OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
@@ -825,7 +836,22 @@ def prior_finding_verdict(check: CheckRecordedPayload, finding: Finding) -> str 
 # ``insufficient_packet`` answer nor excerpts the count or byte budget cut (``content_unselected``,
 # ledger or captured) weaken that ruling. Silence never gets this tolerance, so a selection gap
 # still blocks closing an AI-powered finding by not returning it.
-_FIXED_RULING_TOLERATED_GAPS: Final = _INSUFFICIENT_PACKET_GAPS | frozenset({"content_unselected"})
+#
+# ``semantic_review_refs_reduced`` joins them (TB4 tb4n1, issue #976): the fence removed a
+# citation of a ref that was not sent from some reviewer item, so the reviewer cited more than it
+# was shown; it does not mean the review saw less. The ``fixed`` ruling itself is admitted only
+# with every cited ref intact and fenced to what was sent (``_admit_prior_verdicts``), so the
+# reduction can never be the ruling's own basis. Without an explicit ``fixed`` ruling the gap
+# keeps blocking AI-powered proof.
+_FIXED_RULING_TOLERATED_GAPS: Final = _INSUFFICIENT_PACKET_GAPS | frozenset(
+    {"content_unselected", SEMANTIC_REVIEW_REFS_REDUCED_GAP}
+)
+
+
+# Task-fact gaps an explicit ``fixed`` ruling tolerates on its own finding (issue #1000).
+_TASK_FACT_GAPS_TOLERATED_WHEN_FIXED: Final = frozenset(
+    {WRITE_OUTSIDE_WORKSPACE_GAP, OBLIGATION_BLOCKED_GAP}
+)
 
 
 def _prior_verdict_effect(
@@ -834,8 +860,9 @@ def _prior_verdict_effect(
     """How an explicit per-finding ruling bears on this finding's absence proof (issue #905).
 
     ``fixed`` is the reviewer judging this finding on material recorded after it, so a
-    whole-packet ``insufficient_packet`` (and its coverage marker) and excerpts the packet's
-    budget cut (``content_unselected``, issue #907) no longer veto it; every
+    whole-packet ``insufficient_packet`` (and its coverage marker), excerpts the packet's
+    budget cut (``content_unselected``, issue #907) and citations of unsent refs the fence removed
+    from reviewer items (``semantic_review_refs_reduced``, issue #976) no longer veto it; every
     other rule still applies, including freshness, material change and the issue not being
     returned again. ``withdrawn`` (the reviewer accepting the agent's rejection) keeps the
     ordinary rules here, under which an assessable review that does not re-raise a finding over
@@ -1123,6 +1150,14 @@ def resolution_blockers(
         ruled_fixed, verdict_reasons, verdict_tolerated = _prior_verdict_effect(finding, check)
         reasons.extend(verdict_reasons)
         tolerated |= verdict_tolerated
+        if ruled_fixed:
+            # Task facts about where the agent wrote and which obligations it declared blocked
+            # describe the work, never what the reviewer was shown, so they cannot bound an
+            # explicit, cited ``fixed`` ruling; they stay on the receipt (issue #1000; tb4n1
+            # interleaved-vigenere kept a finding the reviewer ruled fixed open on
+            # write_outside_workspace). A silent review keeps them blocking: a review that did
+            # not rule on the finding never said the work they describe repaired it.
+            tolerated = tolerated | _TASK_FACT_GAPS_TOLERATED_WHEN_FIXED
         if prior_finding_verdict(check, finding) is None and gaps & _ASSESSMENT_INCOMPLETE_GAPS:
             # The review may never have seen this finding (the prior-findings section left it out)
             # or a ruling on it may have been dropped. Either way it was not assessed, so silence
@@ -1807,6 +1842,13 @@ def apply_check_resolution(
 OPEN_REVIEW_VERDICTS: Final = frozenset({"answered_not_fixed", "still_present", "unassessable"})
 
 
+# The agent's terminal answers to a finding (issue #980). ``self_verified`` is compared by wire
+# value so this fold reads ledgers written before and after that disposition exists.
+AGENT_SETTLED_DISPOSITION_VALUES: Final = frozenset({"acknowledged_not_done", "self_verified"})
+# Rulings that say the concern is still there; on a settled item they record a re-raise.
+_RERAISE_VERDICTS: Final = frozenset({"still_present", "answered_not_fixed"})
+
+
 def apply_check_rulings(
     findings: dict[FindingId, FindingProjectionRecord],
     responses: Mapping[FindingId, ProjectionRecord[ResponseRecordedPayload]],
@@ -1821,7 +1863,8 @@ def apply_check_rulings(
     ``withdrawn`` ruling on an AI-powered finding whose latest readable response is ``rejected``
     latches ``rejection_accepted``; the reviewer accepted the agent's reasoned rejection. Final
     rows (resolved, ``rejection_accepted``, ``acknowledged_not_done``) never change, and nothing
-    here resolves or reopens a finding.
+    here resolves or reopens a finding. Every admitted ruling on a readable AI-powered finding also
+    becomes its ``last_reviewer_verdict`` (TB4 tb4n1 D7).
 
     One check can reach two terminal outcomes for the same rejected finding: an assessable review
     over changed state that does not return it satisfies the absence proof, so
@@ -1834,6 +1877,16 @@ def apply_check_rulings(
     """
 
     rulings = {item.finding_id: item.verdict for item in check.prior_finding_verdicts}
+    for ruled_id, ruling in rulings.items():
+        ruled = findings.get(ruled_id)
+        if (
+            ruled is not None
+            and ruled.payload is not None
+            and ruled.payload.origin is not FindingOrigin.DETERMINISTIC
+        ):
+            # The reviewer's newest answer on this item, carried to the next packet beside the
+            # agent's rebuttal count (TB4 tb4n1 D7). It is a dialogue fact, never a proof.
+            findings[ruled_id] = replace(ruled, last_reviewer_verdict=ruling)
     touched = frozenset(check.returned_finding_ids) | frozenset(rulings)
     for current_id in sorted(touched, key=str.encode):
         record = findings.get(current_id)
@@ -1857,18 +1910,32 @@ def apply_check_rulings(
                 rejection_accepted_by_check_event_id=check_event_id,
             )
             continue
+        settled = (
+            latest is not None
+            and latest.payload is not None
+            and latest.payload.disposition.value in AGENT_SETTLED_DISPOSITION_VALUES
+        )
+        if (
+            settled
+            and record is not None
+            and record.payload is not None
+            and record.payload.origin is not FindingOrigin.DETERMINISTIC
+            and rulings.get(current_id) in _RERAISE_VERDICTS
+        ):
+            # The reviewer re-raised the same concern after the agent's terminal answer (issue
+            # #980): recorded on the item, never a new round and never a reopening.
+            findings[current_id] = replace(
+                record, settled_reraise_count=record.settled_reraise_count + 1
+            )
+            continue
         if (
             record is None
             or record.payload is None
             or record.resolved_by_check_event_id is not None
             or record.rejection_accepted_by_check_event_id is not None
-            # ``acknowledged_not_done`` is final too: a later return of the same local issue, or a
-            # stray ruling, is not a new round on it.
-            or (
-                latest is not None
-                and latest.payload is not None
-                and latest.payload.disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE
-            )
+            # ``acknowledged_not_done`` (and ``self_verified``) is final too: a later return of
+            # the same local issue, or a stray ruling, is not a new round on it.
+            or settled
         ):
             continue
         finding = record.payload

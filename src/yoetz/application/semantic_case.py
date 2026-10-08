@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Final, Literal, NamedTuple, cast
@@ -22,7 +22,11 @@ from yoetz.application.check import (
     case_coverage,
     run_deterministic_policies,
 )
-from yoetz.application.missing_for_assessment import supplied_since
+from yoetz.application.missing_for_assessment import (
+    observed_image_evidence,
+    supplied_since,
+    unsupported_data_type,
+)
 from yoetz.domain.events import (
     MAX_PRIOR_FINDING_LISTED_REFS,
     ActionKind,
@@ -101,6 +105,7 @@ from yoetz.kernel.deterministic_checks import (
     DeterministicCase,
     FrozenHistoryEvent,
 )
+from yoetz.kernel.finding_resolution import AGENT_SETTLED_DISPOSITION_VALUES
 from yoetz.kernel.finding_todo import FindingTodoState, finding_todo_state
 from yoetz.kernel.lineage import LineageEvaluation
 from yoetz.kernel.projections import (
@@ -113,8 +118,10 @@ from yoetz.ports.change_capture import CHECK_CHANGE_MEDIA_TYPE, CheckChangeCaptu
 from yoetz.ports.objects import ObjectKind, ObjectRef
 from yoetz.ports.semantic import (
     MAX_PRIOR_FINDING_ITEMS,
+    MAX_REVIEW_INPUT_SECTION_ITEMS,
     MAX_SEMANTIC_CASE_ITEMS,
     MAX_SEMANTIC_ITEM_SUBJECT_REFS,
+    SETTLED_FINDING_ITEM_PREFIX,
     ChangeObservation,
     ExcerptDigestProvenance,
     MissingForAssessmentKind,
@@ -143,6 +150,7 @@ from yoetz.protocol.canonical import (
 )
 from yoetz.protocol.coverage import LedgerFreshness, coverage_to_json
 from yoetz.protocol.models import (
+    MAX_REVIEW_OMISSION_TOTAL,
     MAX_REVIEW_OMISSIONS,
     MAX_REVIEW_TEXT_BYTES,
     MAX_REVIEW_TIMELINE_ITEMS,
@@ -161,6 +169,7 @@ __all__ = [
     "TASK_STATEMENT_ITEM_ID",
     "CHECK_TIME_CHANGE_ITEM_PREFIX",
     "CheckTimeChangeShownFile",
+    "check_time_change_bytes_carried",
     "check_time_change_parts_carried",
     "check_time_change_shown_files",
     "CapturedContentScope",
@@ -233,8 +242,10 @@ _PACKET_ID_LIST_KEYS: Final = (
     "timeline_item_ids",
 )
 # The prior-findings section (issue #905) has its own bounds, outside the timeline's 64 rows.
-MAX_PRIOR_FINDINGS: Final = 8
-MAX_PRIOR_FINDING_SECTION_BYTES: Final = 48 * 1024
+# Sixteen findings in 96 KiB (TB4 tb4n1 D10, issue #976: eight dropped open findings in six
+# attempts); the section still takes only the room the case bounds leave.
+MAX_PRIOR_FINDINGS: Final = 16
+MAX_PRIOR_FINDING_SECTION_BYTES: Final = 96 * 1024
 # Answers to local findings carried beside them (issue #976); they share the section's bounds.
 MAX_LOCAL_FINDING_ANSWERS: Final = 4
 # Refs listed per structural row; the full counts travel beside them.
@@ -601,6 +612,11 @@ class CheckTimeChange:
 CHECK_TIME_CHANGE_ITEM_PREFIX: Final = "change-check-time-"
 _CHECK_TIME_CHANGE_SOURCE_REF: Final = "check-time-change"
 _CHECK_TIME_CHANGE_MARKER: Final = "[Yoetz check-time change, part {index} of {count}]\n"
+# The first part cut to the room a narrowed case leaves (issue #983): the reviewer still reads the
+# change's leading bytes, and the cut is disclosed as a truncated change.
+_CHECK_TIME_CHANGE_CUT_MARKER: Final = (
+    "[Yoetz check-time change, part {index} of {count}, cut to the packet's room]\n"
+)
 _CHECK_TIME_CHANGE_MIN_CHUNK: Final = 256
 
 
@@ -613,8 +629,11 @@ def _check_time_change_reservation(
     to the service-captured change first. The byte share is rounded up to the change's first part,
     so a recipe whose total budget carries one part always admits it ahead of every other excerpt
     (a part is never larger than that total, see ``_check_time_change_part_limit``). Room it does
-    not use stays with the other excerpts; its parts left over after every other excerpt backfill
-    whatever the recipe still has free.
+    not use stays with the other excerpts. Its parts left over then take every byte and slot the
+    reserved excerpt classes (the newest captured edit per path, the latest verification runs and
+    finding repair evidence) leave, ahead of older edit hunks and general tool output (issue #983):
+    the service's own capture is the current state of those hunks, and a planned case narrows the
+    lower-ranked excerpts before the change.
     """
 
     return (
@@ -624,11 +643,17 @@ def _check_time_change_reservation(
 
 
 def _check_time_change_part_limit(selection: ReviewSelectionPolicy) -> int:
-    # A part never exceeds the recipe's whole excerpt budget, so one part always fits it.
+    """The largest check-time change part, marker included (issue #983).
+
+    A part is an excerpt, so it takes the recipe's per-excerpt bound (16 KiB under the Expanded
+    preset) like every other excerpt, not the 4 KiB bound of a structural prose item. Fewer,
+    larger parts also spend less of the case on per-item rows. A part never exceeds the recipe's
+    whole excerpt budget, so one part always fits it.
+    """
+
     return min(
         selection.max_excerpt_bytes,
         selection.max_total_excerpt_bytes,
-        MAX_REVIEW_TEXT_BYTES,
         MAX_SEMANTIC_ITEM_BYTES,
     )
 
@@ -657,14 +682,48 @@ def _check_time_change_chunks(text: bytes, part_limit: int) -> tuple[bytes, ...]
         if len(rest) <= chunk_limit:
             chunks.append(rest)
             break
-        window = rest[:chunk_limit]
-        cut = window.rfind(b"\n") + 1
-        if cut < chunk_limit // 2:
-            # One very long line: cut on a UTF-8 boundary instead of a line boundary.
-            cut = len(window.decode("utf-8", errors="ignore").encode("utf-8"))
+        cut = _check_time_change_cut(rest, chunk_limit)
         chunks.append(rest[:cut])
         rest = rest[cut:]
     return tuple(chunks)
+
+
+def _check_time_change_cut(rest: bytes, chunk_limit: int) -> int:
+    """Where a slice of at most ``chunk_limit`` bytes of ``rest`` ends, preferring a line end."""
+
+    window = rest[:chunk_limit]
+    cut = window.rfind(b"\n") + 1
+    if cut < chunk_limit // 2:
+        # One very long line: cut on a UTF-8 boundary instead of a line boundary.
+        cut = len(window.decode("utf-8", errors="ignore").encode("utf-8"))
+    return cut
+
+
+def _check_time_change_cut_part(
+    part: str, index: int, count: int, room: int
+) -> tuple[str, bool] | None:
+    """Part ``index`` (one-based) cut to ``room`` bytes with the cut marker, or ``None`` (#983).
+
+    The marker line is replaced and the change bytes are cut on a line end where one lies in the
+    second half of the room, so the part still starts exactly where the uncut part starts and the
+    shown-file record counts exactly the bytes it carries. The flag says the part was cut.
+    """
+
+    _, _, chunk = part.partition("\n")
+    raw = chunk.encode("utf-8")
+    cut_marker = _CHECK_TIME_CHANGE_CUT_MARKER.format(index=index, count=count)
+    chunk_limit = room - len(cut_marker.encode("ascii"))
+    if chunk_limit < _CHECK_TIME_CHANGE_MIN_CHUNK:
+        return None
+    if len(raw) <= chunk_limit:
+        return part, False
+    return cut_marker + raw[: _check_time_change_cut(raw, chunk_limit)].decode("utf-8"), True
+
+
+def _check_time_change_part_chunk_bytes(content: bytes) -> int:
+    """The change bytes one part item carries: everything after its marker line."""
+
+    return len(content) - (content.index(b"\n") + 1)
 
 
 _CHECK_TIME_CHANGE_FILE_START: Final = re.compile(rb"^diff --git ", re.MULTILINE)
@@ -721,28 +780,32 @@ class CheckTimeChangeShownFile(NamedTuple):
 
 def check_time_change_shown_files(
     capture: CheckChangeCapture,
-    selection: ReviewSelectionPolicy,
-    admitted_parts: int,
+    shown_bytes: int,
 ) -> tuple[CheckTimeChangeShownFile, ...]:
     """Each changed file whose diff reached the packet, and how much of it (ADR-031).
 
     A file is its ``diff --git`` section of the stored change. Its identity is that section's
     first line plus its change kind (a binary or a deleted file), so a file whose kind changed
     between two checks never matches itself. It was shown when any of its bytes lie in the
-    ``admitted_parts`` parts the packet carried, and fully shown when the whole section did and it
+    leading ``shown_bytes`` the packet carried, and fully shown when the whole section did and it
     holds no redaction marker. Each also carries the section bytes that reached the packet
     (markers included), the ``[REDACTED]`` markers among them, whether the whole section reached
     it, and where the first shown marker starts (the shown length without one). Files the change lists
-    only in its header (not shown) are not returned. The answer is a pure function of the stored
-    object, the selection and the admitted part count, so a recovered job derives the same files.
+    only in its header (not shown) are not returned.
+
+    ``shown_bytes`` is the length of the change's leading bytes the packet carried
+    (``check_time_change_bytes_carried``). Counting bytes rather than parts keeps the record exact
+    when a narrowed case splits its parts smaller or cuts its first part to the room left (issue
+    #983). The answer is a pure function of the stored object and that count, so a recovered job
+    derives the same files.
     """
 
-    if type(capture) is not CheckChangeCapture or type(admitted_parts) is not int:
+    if (
+        type(capture) is not CheckChangeCapture
+        or type(shown_bytes) is not int
+        or not 0 <= shown_bytes <= len(capture.text)
+    ):
         raise ValueError("semantic_case_check_change_invalid")
-    chunks = _check_time_change_chunks(capture.text, _check_time_change_part_limit(selection))
-    if not 0 <= admitted_parts <= len(chunks):
-        raise ValueError("semantic_case_check_change_invalid")
-    shown_bytes = sum(len(chunk) for chunk in chunks[:admitted_parts])
     text = capture.text
     starts = [match.start() for match in _CHECK_TIME_CHANGE_FILE_START.finditer(text)]
     files: list[CheckTimeChangeShownFile] = []
@@ -1808,6 +1871,14 @@ class _ExcerptCandidate:
     verification_action: str | None = None
     verification_run: str | None = None
     structural_only: bool = False
+    # An image or binary file the packet never carries, named by this row (issue #983).
+    binary_notice: bool = False
+
+
+# Offered (free slots, free bytes); returns the items and refs it admitted in that room.
+type _LowerRankAdmission = Callable[
+    [int, int], tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1941,6 +2012,77 @@ def _verification_identities(
         for evidence_ref in payload.evidence_refs:
             by_evidence[str(evidence_ref)] = run
     return by_evidence, by_result
+
+
+# Image and binary files (TB4 tb4n1 D6, issues #983 and #1004). The packet is text: their bytes
+# and pixels never travel. A row that records one is carried as a notice that the agent referenced
+# the file and it was not sent (the reference is the agent's, unverified; only a hook-observed
+# image is "observed"), and an agent's text rendering of one (``pdftotext``, a CAD property dump,
+# ``file`` or ``identify`` output recorded with the file's path as its ``reference``) is labelled as
+# the agent's rendering, never as the file. Both labels are plain text inside the excerpt, so no new
+# wire field is needed; the newest notices are reserved room, bounded.
+_BINARY_NOTICE_MARKER: Final = (
+    "[Yoetz: the agent referenced an image or binary file at {path} (evidence {ref}); "
+    "it was not sent and its content is not assessable from this packet]\n"
+)
+_OBSERVED_IMAGE_NOTICE_MARKER: Final = (
+    "[Yoetz: an image was observed (evidence {ref}); "
+    "it was not sent and its content is not assessable from this packet]\n"
+)
+_BINARY_RENDERING_MARKER: Final = (
+    "[Yoetz: agent-rendered text of {path} (evidence {ref}); the binary file itself is not sent]\n"
+)
+MAX_BINARY_NOTICES: Final = 16
+_MAX_MARKER_PATH_CHARS: Final = 160
+# A path in a Yoetz label keeps only these characters; any other becomes ``_``, so an agent's
+# ``reference`` can never close the label or forge an evidence id inside it.
+_MARKER_PATH_UNSAFE: Final = re.compile(r"[^A-Za-z0-9._/+@~=, -]")
+# Agent-authored excerpt text never starts a line the way a Yoetz label does (issue #983): such a
+# line is prefixed, so only Yoetz writes a line that begins ``[Yoetz``.
+_AGENT_TEXT_PREFIX: Final = "(agent text) "
+_FORGED_LABEL_LINE: Final = re.compile(r"^([ \t]*)(?=\[[Yy][Oo][Ee][Tt][Zz])", re.MULTILINE)
+
+
+def _neutralised_agent_text(text: str) -> str:
+    """``text`` with every line that begins like a Yoetz label marked as the agent's own."""
+
+    return _FORGED_LABEL_LINE.sub(lambda match: match.group(1) + _AGENT_TEXT_PREFIX, text)
+
+
+def _marker_path(reference: str) -> str:
+    """The agent's ``reference`` as it may appear in a Yoetz label: safe characters, bounded."""
+
+    folded = _MARKER_PATH_UNSAFE.sub("_", " ".join(reference.split()))
+    if len(folded) > _MAX_MARKER_PATH_CHARS:
+        folded = folded[: _MAX_MARKER_PATH_CHARS - 3] + "..."
+    return folded
+
+
+def _binary_file_label(
+    ref: str, payload: EvidenceRecordedPayload, *, captured: bool
+) -> tuple[str, bool] | None:
+    """The label for a row that records an image or binary file, and whether it is a notice.
+
+    A hook-observed image (L3 P3-2) and a row whose ``reference`` names such a file and records
+    the file itself (an artifact, or its bytes' digest) are notices: the file was not sent. A row
+    that names such a file but carries text (captured output, or the agent's own command output,
+    test or other description) is the agent's rendering of it. The path is compared lexically,
+    never opened, and enters the label only through ``_marker_path``.
+    """
+
+    if observed_image_evidence(payload):
+        return _OBSERVED_IMAGE_NOTICE_MARKER.format(ref=ref), True
+    reference = (payload.reference or "").strip()
+    if not reference or "://" in reference or not unsupported_data_type(reference):
+        return None
+    path = _marker_path(reference)
+    binding = payload.digest_binding
+    file_itself = payload.evidence_kind is EvidenceKind.ARTIFACT or (
+        binding is not None and binding.subject is EvidenceDigestSubject.ARTIFACT_BYTES
+    )
+    if captured or (not file_itself and payload.description):
+        return _BINARY_RENDERING_MARKER.format(path=path, ref=ref), False
+    return _BINARY_NOTICE_MARKER.format(path=path, ref=ref), True
 
 
 def _evidence_candidates(
@@ -2090,13 +2232,25 @@ def _evidence_candidates(
                 ).decode("utf-8")
         else:
             text = payload.description or payload.reference
+        if text:
+            # The agent's text (its description, reference or captured tool output) never begins
+            # a line the way a Yoetz label does.
+            text = _neutralised_agent_text(text)
+        split_diff = captured_group is not None and excerpt_kind == "diff"
+        binary = (
+            None
+            if split_diff
+            else _binary_file_label(ref, payload, captured=captured_group is not None)
+        )
+        if binary is not None:
+            # The label leads the excerpt, so a head-and-tail clip always keeps it.
+            text = binary[0] + (text or "")
         if text is None or not text:
             omissions.append(
                 _omit(ref, DataCategory.EVIDENCE_EXCERPT, excerpt_kind, "not_recorded")
             )
             continue
         encoded = text.encode("utf-8")
-        split_diff = captured_group is not None and excerpt_kind == "diff"
         clipped = False
         if split_diff:
             # Split authenticated code, not freeform claim prose, into independently bounded
@@ -2105,10 +2259,16 @@ def _evidence_candidates(
             parts: list[str] = []
             remaining = encoded
             while remaining and len(parts) <= selection.max_excerpts:
-                part = remaining[:part_limit].decode("utf-8", errors="ignore")
+                # A part that would begin mid-line like a Yoetz label is marked as well.
+                prefix = (
+                    _AGENT_TEXT_PREFIX
+                    if _FORGED_LABEL_LINE.match(remaining[:16].decode("utf-8", errors="ignore"))
+                    else ""
+                )
+                part = remaining[: part_limit - len(prefix)].decode("utf-8", errors="ignore")
                 if not part:
                     break
-                parts.append(part)
+                parts.append(prefix + part)
                 remaining = remaining[len(part.encode("utf-8")) :]
             clipped = bool(remaining)
         else:
@@ -2182,6 +2342,7 @@ def _evidence_candidates(
                     and payload.strength is EvidenceImmutability.METADATA_ONLY
                     and payload.content_digest is None
                 ),
+                binary_notice=binary is not None and binary[1],
             )
         )
     return candidates
@@ -2198,6 +2359,7 @@ def _select_targeted_excerpts(
     captured_group_leader: Mapping[str, str],
     excerpt_byte_budget: int,
     excerpt_count_budget: int | None = None,
+    before_lower_ranks: _LowerRankAdmission | None = None,
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -2208,6 +2370,10 @@ def _select_targeted_excerpts(
     then by link class; older runs of the same command come last. Older hunks and runs are marked
     ``superseded_by``. Every excerpt still holds exactly one
     recorded source or one part of one capture.
+
+    ``before_lower_ranks`` is offered the slots and bytes the reserved classes (current diff,
+    latest verification, finding repair evidence) leave, once, before any older edit hunk or
+    unreserved excerpt is considered; what it admits is listed at that rank (issue #983).
     """
 
     repair_refs = repair_evidence_refs(projection, allowed)
@@ -2269,6 +2435,7 @@ def _select_targeted_excerpts(
             linked = tuple(item for item in linked if item in allowed)
             if not linked:
                 continue
+            command = _neutralised_agent_text(command)
             encoded = command.encode("utf-8")
             clipped = len(encoded) > excerpt_limit
             candidates.append(
@@ -2317,6 +2484,7 @@ def _select_targeted_excerpts(
             )[:16]
             if not linked:
                 continue
+            summary = _neutralised_agent_text(summary)
             encoded = summary.encode("utf-8")
             clipped = len(encoded) > excerpt_limit
             verification = verification_by_result.get(ref)
@@ -2417,6 +2585,16 @@ def _select_targeted_excerpts(
         if candidate.source_kind == "command" and candidate.source_ref in reserved_actions:
             reserved_runs.add(index)
 
+    # The newest notices that an image or binary file exists and was not sent are short and are
+    # what keeps a reviewer from asking for content no packet can carry (#983): reserved, bounded.
+    binary_notices = set(
+        sorted(
+            (index for index, candidate in enumerate(candidates) if candidate.binary_notice),
+            key=recency,
+            reverse=True,
+        )[:MAX_BINARY_NOTICES]
+    )
+
     def rank(index: int) -> tuple[int, int, int, int, bytes, bytes]:
         candidate = candidates[index]
         linked = bool(candidate.identity_refs & linked_subjects)
@@ -2424,7 +2602,7 @@ def _select_targeted_excerpts(
             klass = _RANK_CURRENT_DIFF
         elif index in reserved_runs:
             klass = _RANK_LATEST_VERIFICATION
-        elif candidate.identity_refs & repair_refs:
+        elif candidate.identity_refs & repair_refs or index in binary_notices:
             klass = _RANK_PRIOR_FINDING_CONTEXT
         elif index in superseded_by:
             klass = _RANK_OLDER_EDIT if candidate.edit_paths is not None else _RANK_SUPERSEDED
@@ -2455,8 +2633,25 @@ def _select_targeted_excerpts(
         if excerpt_count_budget is None
         else max(0, min(selection.max_excerpts, excerpt_count_budget))
     )
+    lower_ranks_offered = before_lower_ranks is None
+
+    def offer_lower_rank_room() -> None:
+        nonlocal excerpt_bytes_used, lower_ranks_offered
+        lower_ranks_offered = True
+        if before_lower_ranks is None:
+            return
+        admitted_items, admitted_refs = before_lower_ranks(
+            max(0, excerpt_count_limit - len(targeted)),
+            max(0, excerpt_byte_budget - excerpt_bytes_used),
+        )
+        items.extend(admitted_items)
+        targeted.extend(admitted_refs)
+        excerpt_bytes_used += sum(ref.content_bytes for ref in admitted_refs)
+
     for index in sorted(range(len(candidates)), key=rank):
         candidate = candidates[index]
+        if not lower_ranks_offered and rank(index)[0] >= _RANK_OLDER_EDIT:
+            offer_lower_rank_room()
         admitted_before = len(targeted)
         truncated = candidate.clipped
         admitted_item_ids: list[str] = []
@@ -2517,6 +2712,8 @@ def _select_targeted_excerpts(
         if truncated and len(targeted) > admitted_before:
             gaps.add("truncated_payload")
             truncated_item_ids.update(admitted_item_ids)
+    if not lower_ranks_offered:
+        offer_lower_rank_room()
     return _ExcerptSelection(
         items=tuple(items),
         targeted=tuple(targeted),
@@ -2613,6 +2810,15 @@ def _prior_finding_items(
         body["relates_to"] = related
     if payload.challenge is not None:
         body["requested_next_step"] = payload.challenge.requested_next_step
+    # The dialogue so far (TB4 tb4n1 D7): how many times the agent rebutted this finding, the
+    # reviewer's newest ruling on it, and the review rounds it has been left open. Emitted only
+    # when set, so a finding without dialogue keeps its earlier row bytes.
+    if record.rebuttal_count:
+        body["rebuttal_count"] = record.rebuttal_count
+    if record.last_reviewer_verdict is not None:
+        body["last_reviewer_verdict"] = record.last_reviewer_verdict
+    if record.review_rounds:
+        body["review_rounds"] = record.review_rounds
     if response_record is not None and response is None:
         body["response"] = {"visibility": "redacted_never_send"}
     elif response_record is not None and response is not None:
@@ -2741,7 +2947,123 @@ def _prior_findings_section(
         answers += 1
         byte_budget -= size
         items.extend(rows)
+    # Findings the agent settled (issue #980): nameable in ``restates``, never rulable, so a
+    # re-raise of a concern the agent gave up on is recorded on that item instead of minted again.
+    # They take only what the open findings left of the same 16-finding / 96 KiB bounds, newest
+    # first. One that does not fit is not a truncation of the rulable section: the reviewer can
+    # still rule on every open finding, and an unnamed re-raise becomes a new finding as before.
+    for ref, record in _settled_finding_candidates(projection, allowed):
+        rows = _settled_finding_items(ref, record, projection, allowed, include_prose=include_prose)
+        size = sum(item.content_bytes for item in rows)
+        if (
+            carried >= MAX_PRIOR_FINDINGS
+            or len(rows) > item_budget - len(items)
+            or size > byte_budget
+        ):
+            continue
+        carried += 1
+        byte_budget -= size
+        items.extend(rows)
     return items, omissions, truncated
+
+
+def _settled_finding_candidates(
+    projection: ProjectionState, allowed: frozenset[str]
+) -> list[tuple[str, FindingProjectionRecord]]:
+    """Readable, unresolved AI-powered findings the agent settled, newest answer first (#980).
+
+    Settled means the agent's latest readable answer is ``acknowledged_not_done`` or
+    ``self_verified`` (matched by wire value). They are final and never re-reviewed, but the
+    reviewer must be able to name one when it raises the same concern again.
+    """
+
+    rows: list[tuple[int, str, FindingProjectionRecord]] = []
+    for key, record in projection.findings.items():
+        payload = record.payload
+        ref = str(key)
+        if (
+            payload is None
+            or record.redacted
+            or record.resolved_by_check_event_id is not None
+            or payload.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
+            or ref not in allowed
+        ):
+            continue
+        response = projection.responses.get(key)
+        if (
+            response is None
+            or response.redacted
+            or response.payload is None
+            or response.payload.disposition.value not in AGENT_SETTLED_DISPOSITION_VALUES
+        ):
+            continue
+        rows.append((response.source_frontier, ref, record))
+    rows.sort(key=lambda row: (-row[0], row[1].encode("ascii")))
+    return [(ref, record) for _order, ref, record in rows]
+
+
+def _settled_finding_items(
+    ref: str,
+    record: FindingProjectionRecord,
+    projection: ProjectionState,
+    allowed: frozenset[str],
+    *,
+    include_prose: bool,
+) -> list[SemanticCaseItem]:
+    """One settled finding as a non-rulable row, plus its headline and the agent's reason."""
+
+    payload = record.payload
+    response = projection.responses.get(finding_id_value(ref))
+    assert payload is not None and response is not None and response.payload is not None
+    subjects: list[JsonValue] = [str(item) for item in payload.subject_refs if str(item) in allowed]
+    body: dict[str, JsonValue] = {
+        "disposition": response.payload.disposition.value,
+        "finding_kind": payload.kind.value,
+        "finding_ref": ref,
+        "recorded_sequence": record.source_frontier,
+        "response_sequence": response.source_frontier,
+        "rulable": False,
+        "schema": "yoetz.settled-finding/1",
+        "subject_ref_count": len(payload.subject_refs),
+        "subject_refs": subjects[:_MAX_PRIOR_FINDING_LISTED_REFS],
+    }
+    if record.settled_reraise_count:
+        body["settled_reraise_count"] = record.settled_reraise_count
+    prose: list[tuple[str, str]] = []
+    if include_prose:
+        prose.append(("summary", payload.summary))
+        if response.payload.reason is not None:
+            prose.append(("response", response.payload.reason))
+        body["text_item_ids"] = {
+            field: f"{SETTLED_FINDING_ITEM_PREFIX}{field}-{ref}" for field, _text in prose
+        }
+    text, _omitted = _bounded_json(body)
+    items = [
+        _content_item(
+            item_id=f"{SETTLED_FINDING_ITEM_PREFIX}{ref}",
+            section="prior_finding",
+            category=DataCategory.BOUNDED_STRUCTURAL_METADATA,
+            source_kind="finding",
+            source_ref=ref,
+            linked_subject_refs=(ref,),
+            occurred_order=response.source_frontier,
+            text=text,
+        )
+    ]
+    for field, value in prose:
+        items.append(
+            _content_item(
+                item_id=f"{SETTLED_FINDING_ITEM_PREFIX}{field}-{ref}",
+                section="prior_finding",
+                category=DataCategory.FINDING_SUMMARY,
+                source_kind="finding",
+                source_ref=ref,
+                linked_subject_refs=(ref,),
+                occurred_order=response.source_frontier,
+                text=value,
+            )
+        )
+    return items
 
 
 def _local_answer_candidates(
@@ -3681,6 +4003,7 @@ def _build_semantic_case_once(
     check_change_parts: tuple[str, ...] = ()
     check_change_links: tuple[str, ...] = ()
     check_change_admitted = 0
+    check_change_cut = False
     if check_time_change_unavailable:
         capture_gap_set.add(CHECK_TIME_CHANGE_UNAVAILABLE_GAP)
         if check_time_change_unavailable_reason is not None:
@@ -3702,22 +4025,36 @@ def _build_semantic_case_once(
                 change.text, _check_time_change_part_limit(selection)
             )
 
-    def admit_check_time_change(slot_limit: int, byte_limit: int) -> None:
-        """Admit the next check-time change parts within one budget share (ADR-031)."""
+    def check_time_change_parts(
+        slot_limit: int, byte_limit: int
+    ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
+        """The next check-time change parts within one share of the room (ADR-031, #983)."""
 
-        nonlocal excerpt_bytes_used, check_change_admitted
-        slots_used = 0
+        nonlocal check_change_admitted, check_change_cut
+        admitted_items: list[SemanticCaseItem] = []
+        admitted_refs: list[TargetedExcerptRef] = []
         bytes_used = 0
-        while check_change_admitted < len(check_change_parts):
+        part_limit = _check_time_change_part_limit(selection)
+        while (
+            not check_change_cut
+            and check_change_admitted < len(check_change_parts)
+            and len(admitted_refs) < slot_limit
+        ):
             part = check_change_parts[check_change_admitted]
             size = len(part.encode("utf-8"))
-            if (
-                slots_used >= slot_limit
-                or bytes_used + size > byte_limit
-                or len(targeted) >= selection.max_excerpts
-                or excerpt_bytes_used + size > total_excerpt_budget
-            ):
-                return
+            if bytes_used + size > byte_limit:
+                if check_change_admitted:
+                    break
+                # A narrowed case (its excerpt budget planned below the channel ceiling) can leave
+                # less room than one whole part. The change under review still outranks every
+                # recorded excerpt, so its first part is cut to the room instead of yielding it
+                # to them (issue #983); nothing follows a cut part.
+                cut = _check_time_change_cut_part(
+                    part, 1, len(check_change_parts), byte_limit - bytes_used
+                )
+                if cut is None:
+                    break
+                part, check_change_cut = cut
             item = _content_item(
                 item_id=f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{check_change_admitted + 1:03d}",
                 section="excerpt",
@@ -3731,9 +4068,10 @@ def _build_semantic_case_once(
                 occurred_order=0,
                 text=part,
                 over_limit=over_limit,
+                limit=part_limit,
             )
-            items.append(item)
-            targeted.append(
+            admitted_items.append(item)
+            admitted_refs.append(
                 TargetedExcerptRef(
                     excerpt_item_id=item.item_id,
                     source_kind="diff",
@@ -3744,10 +4082,21 @@ def _build_semantic_case_once(
                     content_bytes=item.content_bytes,
                 )
             )
-            excerpt_bytes_used += item.content_bytes
-            slots_used += 1
             bytes_used += item.content_bytes
             check_change_admitted += 1
+        return tuple(admitted_items), tuple(admitted_refs)
+
+    def admit_check_time_change(slot_limit: int, byte_limit: int) -> None:
+        """Admit the next parts within one share and what the whole budget still has free."""
+
+        nonlocal excerpt_bytes_used
+        admitted_items, admitted_refs = check_time_change_parts(
+            min(slot_limit, max(0, selection.max_excerpts - len(targeted))),
+            min(byte_limit, max(0, total_excerpt_budget - excerpt_bytes_used)),
+        )
+        items.extend(admitted_items)
+        targeted.extend(admitted_refs)
+        excerpt_bytes_used += sum(ref.content_bytes for ref in admitted_refs)
 
     if "targeted_excerpts" in sections and selection.max_excerpts > 0:
         # The service-captured change takes its reserved share first; see
@@ -3758,7 +4107,9 @@ def _build_semantic_case_once(
                 len(check_change_parts[0].encode("utf-8")) if check_change_parts else 0,
             )
         )
-        # Recorded excerpts then fill what the change left, most valuable first (#907).
+        # Recorded excerpts then fill what the change left, most valuable first (#907). The
+        # change's remaining parts take the room the reserved classes leave, ahead of older edit
+        # hunks and general output (#983), so a planned case narrows those first.
         excerpts = _select_targeted_excerpts(
             projection=projection,
             allowed=allowed,
@@ -3769,6 +4120,7 @@ def _build_semantic_case_once(
             captured_group_leader=captured_group_leader,
             excerpt_count_budget=selection.max_excerpts - len(targeted),
             excerpt_byte_budget=(max(0, total_excerpt_budget - excerpt_bytes_used)),
+            before_lower_ranks=check_time_change_parts if check_change_parts else None,
         )
         items.extend(excerpts.items)
         targeted.extend(excerpts.targeted)
@@ -3778,7 +4130,7 @@ def _build_semantic_case_once(
         truncated_item_ids.update(excerpts.truncated_item_ids)
         excerpt_bytes_used += sum(ref.content_bytes for ref in excerpts.targeted)
 
-        # Parts the reservation could not hold backfill whatever budget the others left.
+        # Parts still left backfill whatever budget every other excerpt left.
         admit_check_time_change(selection.max_excerpts, selection.max_total_excerpt_bytes)
 
     if check_time_change is not None:
@@ -3791,7 +4143,7 @@ def _build_semantic_case_once(
                     "no_linked_subject" if not check_change_links else "no_packet_room"
                 )
             )
-        elif check_change_admitted < len(check_change_parts):
+        elif check_change_admitted < len(check_change_parts) or check_change_cut:
             capture_gap_set.add(CHECK_TIME_CHANGE_TRUNCATED_GAP)
             truncated_item_ids.update(
                 ref.excerpt_item_id
@@ -3924,8 +4276,11 @@ def _build_semantic_case_once(
         )
     )
     changes.sort(key=lambda item: tuple(ref.encode("ascii") for ref in item.subject_refs))
+    # Every distinct omission, before the listed rows are capped: the manifest reports this true
+    # total beside the capped listed count, which otherwise saturates (issue #976, tb4n1 D11).
+    omission_universe = set(omissions)
     omissions = sorted(
-        set(omissions),
+        omission_universe,
         key=lambda item: (
             item.subject_ref.encode("ascii"),
             item.category.value.encode("ascii"),
@@ -3980,6 +4335,7 @@ def _build_semantic_case_once(
             if item.item_id == f"prior-finding-{item.source_ref}"
         ]
         if prior_omissions:
+            omission_universe.update(prior_omissions)
             omissions = sorted(
                 set([*omissions, *prior_omissions]),
                 key=lambda item: (
@@ -4124,6 +4480,7 @@ def _build_semantic_case_once(
         sections=sections,
         items=items,
         omissions=omissions,
+        omitted_item_total=len(omission_universe),
         task_statement_ids=task_statement_ids,
         task_statement_gaps=task_statement_gaps,
         recorded_statement=recorded_statement,
@@ -4501,6 +4858,11 @@ def review_input_manifest_to_json(manifest: ReviewInputManifest) -> dict[str, Js
             for item in manifest.missing_inputs
         ],
         "omitted_item_count": manifest.omitted_item_count,
+        **(
+            {}
+            if manifest.omitted_item_total is None
+            else {"omitted_item_total": manifest.omitted_item_total}
+        ),
         "phase": manifest.phase,
         "prior_finding_context": _review_input_section_to_json(manifest.prior_finding_context),
         **({} if manifest.review_phase is None else {"review_phase": manifest.review_phase}),
@@ -4602,6 +4964,7 @@ def review_input_manifest(
     task_statement_gaps: frozenset[str] | set[str],
     recorded_statement: object | None,
     pending_missing: object | None,
+    omitted_item_total: int | None = None,
     supplied_missing: Sequence[Sequence[str]] = (),
     prior_finding_refs: Sequence[str] = (),
     check_time_change_selected: bool = False,
@@ -4614,7 +4977,8 @@ def review_input_manifest(
     This is a structural view of the case after selection. It intentionally receives already
     selected ``SemanticCaseItem`` values and omission rows, never a provider body or a live
     workspace. The statement's digest/length/revision are included even though its prose remains
-    in the separately authorized task-statement item.
+    in the separately authorized task-statement item. ``omitted_item_total`` is every distinct
+    omission before the listed rows were capped (never fewer than the rows listed).
     """
 
     typed_statement = recorded_statement
@@ -4882,6 +5246,12 @@ def review_input_manifest(
         MAX_REVIEW_OMISSIONS,
         len(omissions),
     )
+    omitted_total = min(
+        MAX_REVIEW_OMISSION_TOTAL,
+        max(
+            omitted_item_count, len(omissions) if omitted_item_total is None else omitted_item_total
+        ),
+    )
     return ReviewInputManifest(
         schema="yoetz.review-input-manifest/1",
         specification=statement,
@@ -4893,6 +5263,7 @@ def review_input_manifest(
         selected_item_count=len(items),
         selected_excerpt_bytes=sum(item.content_bytes for item in excerpt_items),
         omitted_item_count=omitted_item_count,
+        omitted_item_total=omitted_total,
         review_phase=review_phase,
     )
 
@@ -5507,6 +5878,18 @@ def _provider_bound_input_manifest(
     projected["selected_item_count"] = len(content_rows)
     projected["selected_excerpt_bytes"] = total_excerpt_bytes
     projected["omitted_item_count"] = min(MAX_REVIEW_OMISSIONS, len(omission_rows))
+    composed_listed = composed.get("omitted_item_count")
+    composed_total = composed.get("omitted_item_total")
+    if type(composed_total) is int and type(composed_listed) is int:
+        # The composed total, plus every row egress added beyond the rows the composed case
+        # listed (content withheld or trimmed after composition); never below the rows listed.
+        projected["omitted_item_total"] = min(
+            MAX_REVIEW_OMISSION_TOTAL,
+            max(
+                len(omission_rows),
+                composed_total + max(0, len(omission_rows) - composed_listed),
+            ),
+        )
     admitted_refs = {
         cast(str, row["source_ref"]) for row in content_rows if type(row.get("source_ref")) is str
     }
@@ -5595,7 +5978,7 @@ def _decode_review_input_manifest(
     body = cast(Mapping[str, object], raw)
     if (
         any(type(key) is not str for key in body)
-        or frozenset(body) - {"review_phase"} != _REVIEW_INPUT_MANIFEST_KEYS
+        or frozenset(body) - {"review_phase", "omitted_item_total"} != _REVIEW_INPUT_MANIFEST_KEYS
         or body.get("review_phase", "routine") not in {"routine", "final"}
     ):
         return None
@@ -5627,7 +6010,7 @@ def _decode_review_input_manifest(
         ):
             return None
         source_refs = _tuple_strings(section.get("source_refs"), maximum=16)
-        item_ids = _tuple_strings(section.get("item_ids"), maximum=64)
+        item_ids = _tuple_strings(section.get("item_ids"), maximum=MAX_REVIEW_INPUT_SECTION_ITEMS)
         omitted_refs = _tuple_strings(section.get("omitted_refs"), maximum=16)
         omission_reasons = _tuple_strings(section.get("omission_reasons"), maximum=8)
         if (
@@ -5698,10 +6081,12 @@ def _decode_review_input_manifest(
     selected_item_count = body.get("selected_item_count")
     selected_excerpt_bytes = body.get("selected_excerpt_bytes")
     omitted_item_count = body.get("omitted_item_count")
+    omitted_item_total = body.get("omitted_item_total")
     if (
         type(selected_item_count) is not int
         or type(selected_excerpt_bytes) is not int
         or type(omitted_item_count) is not int
+        or (omitted_item_total is not None and type(omitted_item_total) is not int)
     ):
         return None
     try:
@@ -5717,6 +6102,7 @@ def _decode_review_input_manifest(
             selected_item_count=selected_item_count,
             selected_excerpt_bytes=selected_excerpt_bytes,
             omitted_item_count=omitted_item_count,
+            omitted_item_total=omitted_item_total,
             review_phase=cast(Literal["routine", "final"] | None, body.get("review_phase")),
         )
     except KeyError, TypeError, ValueError:
@@ -5742,6 +6128,9 @@ class ReviewPacketDisclosure:
     carried: frozenset[str]
     withheld: frozenset[str]
     payload_events: frozenset[str]
+    # tb4n1 D1: the subset of ``withheld`` an owner privacy rule withheld (policy, never-send),
+    # so a reviewer request for it is a privacy limit, not packet room.
+    privacy_withheld: frozenset[str] = frozenset()
     # Metadata emitted from the exact provider-bound packet after privacy admission and
     # minimization.  This is kept separate from the composed manifest so a receipt cannot
     # accidentally report pre-admission selection as provider delivery.
@@ -5770,6 +6159,11 @@ class ReviewPacketDisclosureResult:
             raise ValueError("review_packet_disclosure_failure_invalid")
         if self.failure is None and self.disclosure is None:
             raise ValueError("review_packet_disclosure_result_invalid")
+
+
+_PRIVACY_OMISSION_REASONS: Final = frozenset(
+    {"withheld_by_policy", "redacted_never_send", "never_send_heuristic"}
+)
 
 
 def review_packet_disclosure(prepared: bytes) -> ReviewPacketDisclosure | None:
@@ -5820,12 +6214,15 @@ def review_packet_disclosure_result(prepared: bytes) -> ReviewPacketDisclosureRe
     omission_rows = omissions_raw if type(omissions_raw) is list else []
     omitted: set[str] = set()
     withheld: set[str] = set()
+    privacy_withheld: set[str] = set()
     for row in cast(list[JsonValue], omission_rows):
         if not isinstance(row, dict) or type(subject := row.get("subject_ref")) is not str:
             continue
         omitted.add(subject)
         if row.get("reason") != "not_recorded":
             withheld.add(subject)
+        if row.get("reason") in _PRIVACY_OMISSION_REASONS:
+            privacy_withheld.add(subject)
     carried: set[str] = set()
     payload_events: set[str] = set()
     finding_rows: set[str] = set()
@@ -5982,6 +6379,7 @@ def review_packet_disclosure_result(prepared: bytes) -> ReviewPacketDisclosureRe
     disclosure = ReviewPacketDisclosure(
         carried=kept,
         withheld=frozenset(withheld & frontier),
+        privacy_withheld=frozenset(privacy_withheld & frontier),
         payload_events=frozenset(payload_events) & kept,
         provider_input_manifest=provider_manifest,
         provider_input_text_by_ref=MappingProxyType(
@@ -6165,7 +6563,8 @@ def _sync_prior_finding_refs(packet_obj: dict[str, JsonValue]) -> None:
 
 
 def _drop_prior_finding_rows(envelope: dict[str, JsonValue]) -> int:
-    """Remove prior-finding rows, oldest finding first, until the envelope fits (issue #905).
+    """Remove prior-finding rows until the envelope fits (issue #905): settled findings first,
+    then open findings oldest first.
 
     The dialogue section yields before any work content: every other row keeps exactly the
     bounding it had without the section. A finding's rows leave together, its ids leave the
@@ -6173,20 +6572,30 @@ def _drop_prior_finding_rows(envelope: dict[str, JsonValue]) -> int:
     """
 
     rows = _catalog_rows(envelope)
-    order: list[str] = []
+    order: list[tuple[bool, str]] = []
     for row in rows:
         source = row.get("source_ref")
-        if row.get("section") == "prior_finding" and type(source) is str and source not in order:
-            order.append(source)
+        item_id = row.get("item_id")
+        if row.get("section") == "prior_finding" and type(source) is str:
+            settled = type(item_id) is str and item_id.startswith(SETTLED_FINDING_ITEM_PREFIX)
+            if (settled, source) not in order:
+                order.append((settled, source))
+    # Settled findings are context only: every one leaves before any open finding does, and only
+    # an open finding's loss weakens a silent review (``semantic_prior_findings_over_limit``).
+    # The catalog lists rows oldest first (section, then occurrence), so the oldest settled one
+    # leaves first; the most recently settled is the one a reviewer is most likely to raise again.
+    order.sort(key=lambda entry: not entry[0])
     dropped = 0
     packet_obj = envelope.get("review_packet")
-    for source in order:
+    for settled, source in order:
         if len(canonical_encode(cast(JsonValue, envelope))) <= MAX_EGRESS_ENVELOPE_BYTES:
             break
         removed = {
             cast(str, row.get("item_id"))
             for row in rows
-            if row.get("section") == "prior_finding" and row.get("source_ref") == source
+            if row.get("section") == "prior_finding"
+            and row.get("source_ref") == source
+            and str(row.get("item_id", "")).startswith(SETTLED_FINDING_ITEM_PREFIX) == settled
         }
         rows = [row for row in rows if row.get("item_id") not in removed]
         envelope["item_catalog"] = cast(JsonValue, rows)
@@ -6200,7 +6609,7 @@ def _drop_prior_finding_rows(envelope: dict[str, JsonValue]) -> int:
                 )
             _sync_prior_finding_refs(packet_obj)
             coverage = packet_obj.get("coverage")
-            if isinstance(coverage, dict):
+            if not settled and isinstance(coverage, dict):
                 gaps = coverage.get("known_gaps")
                 if type(gaps) is list and SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP not in gaps:
                     coverage["known_gaps"] = cast(
@@ -6364,6 +6773,9 @@ class SemanticPacketView:
     citable_refs: frozenset[str]
     # Envelope bounding removed prior-finding rows the case had admitted.
     prior_findings_trimmed: bool
+    # Findings the agent settled whose non-rulable row survived bounding: nameable in
+    # ``restates``, never ruled on (issue #980).
+    settled_finding_refs: frozenset[str] = frozenset()
 
 
 def semantic_case_packet_view(case: SemanticCase) -> SemanticPacketView:
@@ -6387,8 +6799,18 @@ def semantic_case_packet_view(case: SemanticCase) -> SemanticPacketView:
         if item.section == "prior_finding" and item.item_id == f"prior-finding-{item.source_ref}"
     )
     prior = frozenset(ref for ref in carried if f"prior-finding-{ref}" in catalogued)
+    settled = frozenset(
+        item.source_ref
+        for item in case.items
+        if item.section == "prior_finding"
+        and item.item_id == f"{SETTLED_FINDING_ITEM_PREFIX}{item.source_ref}"
+        and item.item_id in catalogued
+    )
     return SemanticPacketView(
-        prior, frozenset(case.frontier_refs | case.local_check_refs), prior != carried
+        prior,
+        frozenset(case.frontier_refs | case.local_check_refs),
+        prior != carried,
+        settled,
     )
 
 
@@ -6422,6 +6844,28 @@ def check_time_change_parts_carried(
     while carried < admitted and f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{carried + 1:03d}" in catalogued:
         carried += 1
     return carried
+
+
+def check_time_change_bytes_carried(
+    case: SemanticCase, *, withheld_categories: Sequence[str] = ()
+) -> int:
+    """How many leading bytes of the stored change the provider-facing envelope carries (ADR-031).
+
+    The change bytes of the unbroken run of parts ``check_time_change_parts_carried`` counts, each
+    part's marker line excluded. This is what ``check_time_change_shown_files`` takes: it stays
+    exact whatever part size a narrowed selection chose and when the first part was cut to the
+    room left (issue #983), and it is a pure function of the frozen case and the withheld
+    categories, so a recovered job derives the same count.
+    """
+
+    carried = check_time_change_parts_carried(case, withheld_categories=withheld_categories)
+    by_id = {item.item_id: item for item in case.items}
+    return sum(
+        _check_time_change_part_chunk_bytes(
+            by_id[f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}"].content
+        )
+        for index in range(1, carried + 1)
+    )
 
 
 def semantic_case_to_candidate_context(
