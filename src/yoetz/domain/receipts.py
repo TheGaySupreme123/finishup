@@ -423,8 +423,12 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
     {
         "planned_verification_not_observed": (
             "A planned verification (an obligation's requested command) was not matched to an"
-            " observed run, whole or as one part of a composed command; run it as recorded or"
-            " correct the requested command."
+            " observed run, whole or as one part of a composed command. Run it as recorded; if"
+            " you ran it exactly, check the requested command string. If a script or another"
+            " command ran it for you, link that run: publish `action_recorded` (kind `command`)"
+            " with the planned command's exact value in `attempted_items` and the observed run's"
+            " action event id (`status view=history`) in `causal_parents`. The link is disclosed"
+            " as your equivalence; the observed outcome still decides."
         ),
         "planned_verification_failed": (
             "A planned verification command failed on its latest observed run."
