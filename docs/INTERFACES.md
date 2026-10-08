@@ -8209,8 +8209,8 @@ not.
 
 Restatement matching (`_restated_finding`) tries the exact subject set first, then the same kind
 over `_concern_key`: claims mapped to their current superseding claim, and only the obligation set
-when both sides name obligations; non-claim, non-obligation refs must still be no newer than the
-earlier finding. Before any effective completion claim an AI-powered
+when both sides name obligations; every ref but a claim must still be no newer than the earlier
+finding, or than the agent's reasoned rejection when nothing after that rejection is cited. Before any effective completion claim an AI-powered
 `requested_item_never_attempted` challenge is dropped and counted under the rejection reason
 `routine_completeness`.
 

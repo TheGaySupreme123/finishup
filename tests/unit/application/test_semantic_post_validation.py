@@ -1869,7 +1869,7 @@ def test_payments_claim_churn_folds_one_concern_into_one_finding() -> None:
                 ObligationPublishedPayload(
                     obl(1), "Correct notifications", "receiver deduplicates", ObligationStatus.OPEN
                 ),
-                13,  # re-stated after the finding: an obligation update is not new material
+                3,
             )
         },
         claims=claims,
@@ -1945,3 +1945,59 @@ def test_pre_work_never_attempted_challenges_are_dropped_until_work_is_claimed()
         expected_frontier=claimed.frontier,
     )
     assert len(after.candidates) == 1
+
+
+def test_a_reply_citing_material_between_the_finding_and_the_rebuttal_folds_into_the_dispute() -> (
+    None
+):
+    """Codex review round 1: material recorded before the rejection is what the agent answered.
+
+    Finding at 5, a result at 6, the reasoned rejection at 8: a reply naming the finding and
+    citing that result brings nothing newer than the rebuttal, so it folds as the dispute.
+    """
+
+    base = _formal_crypto_case()
+    middle = record(ResultRecordedPayload(res(3), act(3), ResultOutcome.SUCCESS, summary="mid"), 6)
+    case = replace(
+        base,
+        projection=replace(base.projection, results={**base.projection.results, res(3): middle}),
+        allowed_ids=base.allowed_ids | {res(3), evt(6)},
+        coverage_by_ref={**base.coverage_by_ref, res(3): BASE_COVERAGE, evt(6): BASE_COVERAGE},
+    )
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "challenges_returned", (_formal_crypto_reraise(str(fnd(1)), str(res(3))),)
+        ),
+        case,
+    )
+    assert review.candidates == ()
+    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+        (str(fnd(1)), "disputed_after_rebuttal")
+    ]
+    named = _formal_crypto_review(
+        SemanticJudgment(
+            "challenges_returned",
+            (_formal_crypto_reraise(str(clm(1)), str(obl(1)), restates=str(fnd(1))),),
+        ),
+        case,
+    )
+    # A final dispute never tells the agent to answer it.
+    assert "citing nothing newer" in named.review_summary
+    assert "answer it there" not in named.review_summary
+
+
+def test_a_newer_restatement_outranks_a_stale_ruling_in_the_same_review() -> None:
+    """Codex review round 1: a stale still_present and a named restatement citing a failure
+    recorded after the rebuttal; the newer sighting keeps the item open."""
+
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "challenges_returned",
+            (_formal_crypto_reraise(str(clm(1)), str(obl(1)), str(res(2)), restates=str(fnd(1))),),
+            (_verdict(1, "still_present", str(clm(1))),),
+        )
+    )
+    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+        (str(fnd(1)), "answered_not_fixed")
+    ]
+    assert "answer it there" in review.review_summary

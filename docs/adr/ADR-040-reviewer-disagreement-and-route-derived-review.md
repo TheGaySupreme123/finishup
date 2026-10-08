@@ -91,9 +91,10 @@ because a finding is open; disagree through `respond` (`rejected` with a reason,
 
 `_restated_finding` keeps the exact subject-set match first. Failing that, it matches the same
 finding kind over a normalized key (`_concern_key`): each claim maps to the claim currently
-superseding it, and when both sides name obligations the key is the obligation set alone.
-Re-published claims and obligation status updates are not new material; every other subject ref
-(events, evidence, results, actions) must still be no newer than the earlier finding.
+superseding it, and when both sides name obligations the key is the obligation set alone. A
+re-published claim is not new material; every other subject ref (obligations included, as on the
+exact path) must be no newer than the earlier finding, or than the agent's reasoned rejection when
+the challenge cites nothing recorded after that rejection.
 
 ### 5. No AI-powered "never attempted" before any completion claim (issue #1020)
 

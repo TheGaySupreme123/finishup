@@ -2891,6 +2891,12 @@ _RE_RAISED_HEADER: Final = (
     "Reviewer re-raised earlier findings (recorded on that finding, which stays open; answer it "
     "there):"
 )
+# Issue #1020: a repeat over the agent's reasoned rejection with nothing newer.
+_DISPUTED_HEADER: Final = (
+    "Reviewer repeated findings you rejected with a reason, citing nothing newer (recorded as "
+    "disputed_after_rebuttal: final and disclosed on the receipt; no answer is needed, and never "
+    "withdraw working deliverables over them):"
+)
 
 
 def _bounded_review_text(text: str) -> str:
@@ -2903,19 +2909,28 @@ def _bounded_review_text(text: str) -> str:
 
 
 def _summary_with_re_raised(
-    summary: str, re_raised: tuple[tuple[FindingId, ReviewerChallenge], ...]
+    summary: str,
+    re_raised: tuple[tuple[FindingId, ReviewerChallenge], ...],
+    disputed: frozenset[FindingId] = frozenset(),
 ) -> str:
     """Append the reviewer's words on each restated finding to the review summary (issue #980).
 
     A challenge that names the earlier finding it restates is recorded on that finding as a
     ruling, so no new finding carries its text; the summary does, under a header naming the item.
+    A repeat recorded as ``disputed_after_rebuttal`` (issue #1020) is final and needs no answer,
+    so it goes under its own header that says so instead of asking for one.
     """
 
     if not re_raised:
         return summary
-    lines = [summary, "", _RE_RAISED_HEADER]
-    for restated, challenge in re_raised:
-        lines.append(f"- {restated}: {challenge.summary} {challenge.message_to_main_agent}")
+    lines = [summary]
+    open_items = [item for item in re_raised if item[0] not in disputed]
+    final_items = [item for item in re_raised if item[0] in disputed]
+    for header, items in ((_RE_RAISED_HEADER, open_items), (_DISPUTED_HEADER, final_items)):
+        if items:
+            lines.extend(("", header))
+            for restated, challenge in items:
+                lines.append(f"- {restated}: {challenge.summary} {challenge.message_to_main_agent}")
     return _bounded_review_text("\n".join(lines))
 
 
@@ -3580,7 +3595,20 @@ def validate_semantic_judgment(
         verdicts_unsupported,
         restatements,
         verdicts_set_aside,
-        _summary_with_re_raised(review_summary, tuple(re_raised)),
+        _summary_with_re_raised(
+            review_summary,
+            tuple(re_raised),
+            frozenset(
+                restated
+                for restated, _challenge in re_raised
+                if (
+                    (ruling := admitted.get(str(restated))) is not None
+                    and ruling.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT
+                )
+                or finding_todo_state(case.projection, restated)
+                is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+            ),
+        ),
         judgment.verified,
         snippets_rejected,
         fence.refs_reduced,
@@ -3710,17 +3738,24 @@ def _record_restatement(
     if earlier is None:
         if len(admitted) >= MAX_RECORDED_VERDICTS:
             return False, False
-        cited = tuple(sorted(refs, key=str.encode))[:_MAX_RULING_CITED_REFS]
+        kept = tuple(sorted(refs, key=str.encode))[:_MAX_RULING_CITED_REFS]
         recorded: str = verdict
         if _disputed_after_rebuttal(case, restated, verdict, (*refs, *cited)):
             # Issue #1020: the same concern raised again over the agent's reasoned rejection,
             # with nothing newer, is the standing disagreement, not another round.
             recorded = DISPUTED_AFTER_REBUTTAL_VERDICT
-        admitted[key] = PriorFindingVerdictRecord(restated, recorded, cited)
+        admitted[key] = PriorFindingVerdictRecord(restated, recorded, kept)
         return True, False
     if earlier.verdict in {"fixed", "withdrawn"}:
         admitted[key] = PriorFindingVerdictRecord(restated, "unassessable", ())
         return True, True
+    if earlier.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT and not _disputed_after_rebuttal(
+        case, restated, verdict, (*refs, *cited)
+    ):
+        # Issue #1020: the same review also restated it with material newer than the rebuttal;
+        # that newer sighting outranks the stale ruling, so the item stays open.
+        kept = tuple(sorted(refs, key=str.encode))[:_MAX_RULING_CITED_REFS]
+        admitted[key] = PriorFindingVerdictRecord(restated, verdict, kept)
     return True, False
 
 
@@ -3775,9 +3810,10 @@ def _restated_finding(
     churn (issue #1020, tb4n2 payments P1-10: four ids for one concern). Both subject sets are
     normalized by ``_concern_key``: a claim maps to the claim that currently supersedes it, and
     when both sides name obligations the concern is those obligations (re-published claims and
-    event refs do not make a new concern). Every ref but claims and obligations is still held to
-    the "nothing newer than the finding" rule; a re-published claim or an obligation status
-    update is not new material about the concern.
+    event refs do not make a new concern). Every ref but claims is still held to the "nothing
+    newer than the finding" rule, exactly as on the exact path: a re-published claim is not new
+    material, but a revised obligation is. Over a reasoned rejection that nothing newer
+    answers, the bound is the rejection rather than the finding.
 
     A ``verified_resolved`` row is never a target: done stays done, and the reviewer finding the
     problem again after that proof is a #458 successor, minted and blocking. Suppressing it would
@@ -3818,14 +3854,19 @@ def _restated_finding(
             and not _disputed_after_rebuttal(case, key, "still_present", (*refs, *cited))
         ):
             continue
-        held = (
-            wanted
-            if exact
-            else frozenset(ref for ref in wanted if ref[:4] not in _BOOKKEEPING_PREFIXES)
+        held = wanted if exact else frozenset(ref for ref in wanted if not ref.startswith("clm_"))
+        # Issue #1020: over the agent's reasoned rejection, material recorded before that
+        # rejection is what the agent already answered; only material after it is new.
+        rebuttal = _reasoned_rejection_frontier(case.projection, key)
+        bound = (
+            rebuttal
+            if rebuttal is not None
+            and rebuttal > record.source_frontier
+            and not _cites_material_after(case, (*refs, *cited), rebuttal)
+            else record.source_frontier
         )
         if not all(
-            (sequence := _ref_sequence(case, ref)) is not None
-            and sequence <= record.source_frontier
+            (sequence := _material_sequence(case, ref)) is not None and sequence <= bound
             for ref in held
         ):
             continue
@@ -3838,6 +3879,7 @@ def _restated_finding(
 
 # The refs that are the agent's bookkeeping around a concern rather than material about it: a
 # claim is re-published and an obligation re-stated without changing the concern (issue #1020).
+# Used by the dispute rule; restatement matching still holds obligations to the freshness rule.
 _BOOKKEEPING_PREFIXES: Final = frozenset({"clm_", "obl_"})
 
 
