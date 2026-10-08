@@ -92,6 +92,7 @@ from yoetz.protocol.models import (
     StatusProjectDetectionModel,
     StatusProjectPageModel,
     StatusRequest,
+    StatusRequestedItemModel,
     StatusResultItemModel,
     StatusSemanticProgressModel,
     StatusStructuralSubjectStateModel,
@@ -277,7 +278,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (StatusFindingsPageModel, frozenset({"attempt_budget"})),
     (StatusHistoryItemV14Model, frozenset({"review_input_manifest"})),
     (ReviewInputManifestModel, frozenset({"review_phase"})),
-    (StatusObligationItemModel, frozenset({"acceptance_criteria"})),
+    (StatusObligationItemModel, frozenset({"acceptance_criteria", "acknowledged_not_done_reason"})),
+    (StatusRequestedItemModel, frozenset({"role"})),
     (StatusObservedRunModel, frozenset({"tool_name", "command_commitment", "exit_status"})),
     (StatusResultItemModel, frozenset({"observed_run"})),
     (
@@ -645,6 +647,8 @@ async def test_obligation_without_acceptance_criteria_projects(view: str) -> Non
     assert projected["ok"] is True
     obligation = _obligation_from_projected(projected, view)
     assert "acceptance_criteria" not in obligation
+    # Issue #997: only an acknowledged_not_done obligation carries its reason.
+    assert "acknowledged_not_done_reason" not in obligation
     assert obligation["description"] == (
         "Publish without manufacturing a null acceptance_criteria leaf."
     )
@@ -1333,6 +1337,7 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
             },
             ("semantic_withheld_items", "semantic_redacted_values"),
         ),
+        (StatusRequestedItemModel, {"item_kind": "file", "value": "out.txt"}, ("role",)),
         (
             SemanticRedactedValueModel,
             {"item_id": "item-1", "disposition": "value_replaced", "lines": [3]},
@@ -1455,6 +1460,10 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         ("StatusObligationItemModel", "acceptance_criteria"): (
             "test_obligation_without_acceptance_criteria_projects"
         ),
+        ("StatusObligationItemModel", "acknowledged_not_done_reason"): (
+            "test_obligation_without_acceptance_criteria_projects"
+        ),
+        ("StatusRequestedItemModel", "role"): ("test_nested_multi_agent_results_omit_unset_fields"),
         # Issue #914: tests/conformance/protocol/test_status_evidence_author_fixture.py
         ("StatusEvidenceItemModel", "publication_channel"): (
             "test_rows_from_earlier_03_builds_still_validate_without_a_channel"
