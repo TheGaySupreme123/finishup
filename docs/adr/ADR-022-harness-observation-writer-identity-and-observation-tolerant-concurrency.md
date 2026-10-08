@@ -283,6 +283,16 @@ unsupported claims and unbounded duplicate findings.
     outbox row remains pending. It does not acknowledge the already-committed core append alone,
     because doing so could permanently lose the authoritative correction; a repaired or rebuilt
     projection lets the same row replay and finish idempotently.
+    Amendment (issue #1019, tb4n2): a Codex hook advances its session generation at every
+    `SessionStart`, including the `compact` start after a context compaction, while the session
+    stream's generation follows the rollout file, which compaction does not rotate. The call
+    identity includes the generation, so a completed stream command first looks for its hook
+    call in the other recent generations of the same host session and task (at most 16). It
+    materializes under that generation only when exactly one such hook action exists in the task
+    ledger, it carries the same keyed command identity, and it holds no explicit outcome except
+    one this completion itself recorded; otherwise the stream keeps its own generation. The
+    reverse order (a stream completion delivered before a post-compaction hook call) still
+    records two actions.
 
 16. `obs-ledger/1.4.0` carries trusted observation-content manifests into ledger materialization.
     A manifest binds the encrypted object envelope plus the SHA-256 digest and byte count of its
