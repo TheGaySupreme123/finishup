@@ -1352,10 +1352,11 @@ def _binary_capture(text: bytes = _BINARY_CHANGE) -> CheckChangeCapture:
 
 
 def test_the_check_time_change_names_its_binary_files() -> None:
-    """Git's binary marks, read from the header and the diff; quoted and diff-body lines skipped."""
+    """Git's binary marks, read from the header and the diff; quoted names decoded, diff-body
+    lines skipped."""
 
     assert check_change_binary_paths(_binary_capture()) == frozenset(
-        {"bin/firmware", "old tool", "solver", "a.out", "x and b/y"}
+        {"bin/firmware", "old tool", "solver", "a.out", "x and b/y", "café"}
     )
     assert check_change_binary_paths(None) == frozenset()
 

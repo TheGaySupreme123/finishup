@@ -1299,8 +1299,9 @@ def check_change_binary_paths(capture: CheckChangeCapture | None) -> frozenset[s
     Lets a suffix-less binary (a compiled ``solver``, ``a.out``, a firmware blob) count as a type
     the packet never carries, without the classifier reading any file: Git's NUL-byte heuristic
     already ran when the change was captured. Read from the header's ``(binary)`` entries and the
-    diff's ``Binary files`` lines. A C-quoted path (non-ASCII or control bytes), or one the header
-    cut short, is skipped rather than guessed, so it stays classified by its suffix alone.
+    diff's ``Binary files`` lines. A C-quoted path (non-ASCII or control bytes) is decoded the way
+    Git encoded it; a malformed quote, or a path the header cut short, is skipped rather than
+    guessed, so it stays classified by its suffix alone.
     """
 
     if capture is None:
@@ -1312,7 +1313,13 @@ def check_change_binary_paths(capture: CheckChangeCapture | None) -> frozenset[s
     for line in header.decode("utf-8", errors="replace").split("\n"):
         match = _CHANGE_LISTED_BINARY.match(line)
         if match is not None:
-            paths.add(match.group(1))
+            listed = match.group(1)
+            if listed.startswith('"'):
+                unquoted = _git_unquote(listed)
+                if unquoted is not None and unquoted[1] == len(listed):
+                    paths.add(unquoted[0])
+            else:
+                paths.add(listed)
     if end >= 0:
         for match in _CHANGE_BINARY_LINE.finditer(text, end):
             paths.update(_binary_line_paths(match.group(1).decode("utf-8", errors="replace")))
@@ -1323,13 +1330,101 @@ def check_change_binary_paths(capture: CheckChangeCapture | None) -> frozenset[s
     )
 
 
+_GIT_ESCAPES: Final[Mapping[str, int]] = {
+    "a": 7,
+    "b": 8,
+    "t": 9,
+    "n": 10,
+    "v": 11,
+    "f": 12,
+    "r": 13,
+    '"': 34,
+    "\\": 92,
+}
+
+
+def _git_unquote(text: str) -> tuple[str, int] | None:
+    """Decode one C-quoted Git path at the start of ``text``: ``(path, characters consumed)``.
+
+    ``core.quotePath=true`` (which the capture forces) quotes a non-ASCII or control-byte name as
+    ``"r\\303\\251sum\\303\\251"``. ``None`` when the quoting is malformed or the bytes are not
+    UTF-8, so such a name stays classified by its suffix alone.
+    """
+
+    if not text.startswith('"'):
+        return None
+    raw = bytearray()
+    index = 1
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            try:
+                return raw.decode("utf-8"), index + 1
+            except UnicodeDecodeError:
+                return None
+        if char != "\\":
+            raw.extend(char.encode("utf-8"))
+            index += 1
+            continue
+        escape = text[index + 1 : index + 2]
+        if escape in _GIT_ESCAPES:
+            raw.append(_GIT_ESCAPES[escape])
+            index += 2
+            continue
+        octal = text[index + 1 : index + 4]
+        if len(octal) == 3 and all(digit in "01234567" for digit in octal):
+            raw.append(int(octal, 8) & 0xFF)
+            index += 4
+            continue
+        return None
+    return None
+
+
+def _quoted_binary_line_paths(operands: str) -> tuple[str, ...] | None:
+    """The paths of a ``Binary files`` line where Git quoted at least one operand; else ``None``."""
+
+    if '"' not in operands:
+        return None
+    values: list[str] = []
+    rest = operands
+    for position in range(2):
+        if rest.startswith('"'):
+            decoded = _git_unquote(rest)
+            if decoded is None:
+                return ()
+            value, consumed = decoded
+            rest = rest[consumed:]
+        else:
+            cut = rest.find(" and ") if position == 0 else len(rest)
+            if cut < 0:
+                return ()
+            value, rest = rest[:cut], rest[cut:]
+        values.append(value)
+        if position == 0:
+            if not rest.startswith(" and "):
+                return ()
+            rest = rest[len(" and ") :]
+    if rest:
+        return ()
+    paths = tuple(
+        value[2:]
+        for value, prefix in zip(values, ("a/", "b/"), strict=True)
+        if value != "/dev/null" and value.startswith(prefix)
+    )
+    return paths
+
+
 def _binary_line_paths(operands: str) -> tuple[str, ...]:
     """The paths of one ``Binary files <a> and <b>`` line; empty when it cannot be split surely.
 
     An unquoted path may itself hold `` and b/``, so a two-sided line is split only where both
-    operands name the same path, or where exactly one split exists.
+    operands name the same path, or where exactly one split exists. A quoted operand (a
+    non-ASCII or control-byte name) is decoded the way Git encoded it.
     """
 
+    quoted = _quoted_binary_line_paths(operands)
+    if quoted is not None:
+        return quoted
     if operands.startswith("/dev/null and b/"):
         return (operands.removeprefix("/dev/null and b/"),)
     if operands.startswith("a/") and operands.endswith(" and /dev/null"):
