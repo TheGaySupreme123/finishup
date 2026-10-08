@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import Final, cast
 
@@ -628,6 +628,7 @@ async def requested_output_states(
             changed=True if listed else (None if capture.truncated else False),
             # A requested directory whose files the change deleted was deleted, not left absent.
             deleted=result.relative != "." and _changed_at_or_under(result.relative, deleted),
+            size_bytes=result.size_bytes if exists is True else None,
         )
     return await _with_declared_line_counts(
         projection=projection,
@@ -770,3 +771,105 @@ def _changed_at_or_under(relative: str, changed: set[str]) -> bool:
         return True
     prefix = relative.rstrip("/") + "/"
     return any(path.startswith(prefix) for path in changed)
+
+
+_MAX_REFERENCE_DELIVERABLES: Final = 16
+_MAX_REFERENCE_CANDIDATES: Final = 1_024
+
+
+async def count_undeclared_references(
+    *,
+    projection: ProjectionState,
+    capture: CheckChangeMetadata | None,
+    source: CheckWorkspaceSource | None,
+    port: object | None,
+    states: Mapping[tuple[ObligationId, int], RequestedOutputState],
+    blocked: Iterable[ObligationId] | None,
+    request_id: str,
+) -> int:
+    """How many declared deliverables name a file the change created but no item declares.
+
+    tb4n2 R2 (ADR-035 amendment, ``deliverable_references_undeclared_file``). The candidates are
+    the files the check-time change created (untracked, or added with status ``A``) minus every
+    declared ``file``/``directory`` value of any role (a declared directory covers the files
+    beneath it); pre-existing tracked files are never candidates. The adapter's bounded local
+    read of each declared source deliverable returns a count only. Any failure is ``0``: the
+    disclosure is simply not raised.
+    """
+
+    from yoetz.kernel.delivered_set import undeclared_reference_inputs
+
+    count = getattr(port, "count_undeclared_references", None)
+    probe = getattr(port, "probe_requested_paths", None)
+    if capture is None or source is None or not callable(count) or not callable(probe):
+        return 0
+    created = {
+        entry.path for entry in capture.entries if entry.untracked or entry.status.startswith("A")
+    }
+    if not created:
+        return 0
+    deliverables, declared = undeclared_reference_inputs(projection, states, blocked=blocked)
+    deliverables = tuple(value for value in deliverables if _plain_path(value))
+    if not deliverables:
+        return 0
+    values = tuple(
+        dict.fromkeys((*deliverables, *(value for value in declared if _plain_path(value))))
+    )[:_MAX_REQUESTED_OUTPUT_PROBES]
+    try:
+        raw_probes = await asyncio.to_thread(
+            cast(Callable[[str, tuple[str, ...]], object], probe), source.workspace, values
+        )
+        if type(raw_probes) is not tuple or len(cast(tuple[object, ...], raw_probes)) != len(
+            values
+        ):
+            raise TypeError("requested_path_probe_invalid")
+        relatives: dict[str, str] = {}
+        for value, result in zip(values, cast(tuple[object, ...], raw_probes), strict=True):
+            if type(result) is RequestedPathProbe and result.relative is not None:
+                relatives[value] = result.relative
+        if "." in relatives.values():
+            # The root itself is declared: every created file is part of the delivery.
+            return 0
+        covered = set(relatives.values())
+
+        def is_declared(path: str) -> bool:
+            return path in covered or any(path.startswith(root + "/") for root in covered)
+
+        targets = tuple(
+            dict.fromkeys(relatives[value] for value in deliverables if value in relatives)
+        )[:_MAX_REFERENCE_DELIVERABLES]
+        candidates = tuple(
+            sorted(path for path in created if _plain_relative(path) and not is_declared(path))
+        )[:_MAX_REFERENCE_CANDIDATES]
+        if not targets or not candidates:
+            return 0
+        found: object = await asyncio.to_thread(
+            cast(Callable[[str, tuple[str, ...], tuple[str, ...]], object], count),
+            source.workspace,
+            targets,
+            candidates,
+        )
+        if type(found) is not int or found < 0:
+            raise TypeError("undeclared_reference_count_invalid")
+        return found
+    except ChangeCaptureUnavailable:
+        return 0
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component=_COMPONENT,
+            operation="undeclared_reference_read_failed",
+            request_id=request_id,
+        )
+        return 0
+
+
+def _plain_relative(path: str) -> bool:
+    """Whether a change entry path is a plain root-relative path the reference read accepts."""
+
+    return (
+        bool(path)
+        and not path.startswith("/")
+        and not any(char in path for char in "\x00\r\n")
+        and all(part not in {"", ".", ".."} for part in path.split("/"))
+    )

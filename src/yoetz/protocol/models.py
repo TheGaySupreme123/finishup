@@ -4412,7 +4412,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     # on the unreleased 1.4.0 wire so a result shaped by an earlier 0.3 build still validates; it
     # is then absent as a whole, never partially present and never null.
     state: Literal["action_required", "ready", "ready_with_limitations", "unknown"] | None = None
-    gap_classification_version: Literal["1", "2", "3", "4"] | None = None
+    gap_classification_version: Literal["1", "2", "3", "4", "5", "6"] | None = None
     agent_actionable: tuple[ReadinessItemWire, ...] | None = None
     standing_limitations: tuple[CodeWire, ...] | None = None
     acknowledged_not_done: tuple[AcknowledgedItemIdWire, ...] | None = None

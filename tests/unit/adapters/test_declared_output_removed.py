@@ -293,3 +293,78 @@ def test_line_count_read_skips_cr_lf_paths_and_stops_at_its_budget(
     bounded = adapter.count_change_lines(os.fspath(repository), commit, ())
     assert bounded.truncated
     assert len([item for item in bounded.changed if item.untracked]) < 2
+
+
+def _resolved(*values: str) -> ProjectionState:
+    from yoetz.domain.values import evidence_id
+
+    ledger = ObservedLedger()
+    items = tuple(RequestedItem(RequestedItemKind.FILE, value) for value in values)
+    for status, refs in (
+        (ObligationStatus.OPEN, ()),
+        (
+            ObligationStatus.RESOLVED,
+            (evidence_id("evd_00000000-0000-4000-8000-000000000009"),),
+        ),
+    ):
+        ledger.append(
+            EventSchema("obligation_published", "1.0.0"),
+            ObligationPublishedPayload(
+                obligation_id=_OBLIGATION,
+                description="Deliver the outputs",
+                evidence_expectation="The files",
+                status=status,
+                requested_items=items,
+                resolution_evidence_refs=refs,
+            ),
+            observed=False,
+        )
+        if status is ObligationStatus.OPEN:
+            ledger.append(
+                EventSchema("plan_published", "1.0.0"),
+                PlanPublishedPayload(1, "Plan", (_OBLIGATION,)),
+                observed=False,
+            )
+    return replay(ledger.prefix)
+
+
+def test_formal_crypto_new_deliverable_emptied_after_resolution(tmp_path: Path) -> None:
+    """tb4n2 formal-crypto S: solve.sage written (14.9 KB), resolved, then ``write_bytes(b'')``."""
+
+    from yoetz.kernel.delivered_set import emptied_declared_items
+
+    repository = _repository(tmp_path, {"README.md": "Task\n"})
+    base = GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
+    deliverable = repository / "solve.sage"
+    deliverable.write_text("x = 1\n" * 2_500, encoding="utf-8")
+    projection = _resolved(os.fspath(deliverable))
+    states = _states(repository, base, projection)
+    assert states[(_OBLIGATION, 0)].size_bytes == 15_000  # type: ignore[attr-defined]
+    assert emptied_declared_items(projection, states) == ()  # type: ignore[arg-type]
+
+    deliverable.write_bytes(b"")
+    states = _states(repository, base, projection)
+    assert states[(_OBLIGATION, 0)].size_bytes == 0  # type: ignore[attr-defined]
+    assert emptied_declared_items(projection, states) == ((_OBLIGATION, 0),)  # type: ignore[arg-type]
+
+    # Restoring the deliverable clears the fact at the next check.
+    deliverable.write_text("x = 1\n", encoding="utf-8")
+    assert emptied_declared_items(projection, _states(repository, base, projection)) == ()  # type: ignore[arg-type]
+
+
+def test_a_tracked_deliverable_truncated_in_place_is_emptied(tmp_path: Path) -> None:
+    from yoetz.kernel.delivered_set import emptied_declared_items
+
+    repository, base = _cracker(tmp_path)
+    (repository / "cracker.py").write_text("def crack(): ...\n", encoding="utf-8")
+    projection = _resolved("cracker.py")
+    states = _states(repository, base, projection)
+    assert emptied_declared_items(projection, states) == ((_OBLIGATION, 0),)  # type: ignore[arg-type]
+
+
+def test_a_symlinked_deliverable_reports_no_size(tmp_path: Path) -> None:
+    repository = _repository(tmp_path, {"README.md": "Task\n"})
+    (tmp_path / "elsewhere").write_bytes(b"")
+    (repository / "out.txt").symlink_to(tmp_path / "elsewhere")
+    probes = GitChangeCaptureAdapter().probe_requested_paths(os.fspath(repository), ("out.txt",))
+    assert probes[0].size_bytes is None

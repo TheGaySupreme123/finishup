@@ -471,6 +471,16 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " task): content may have moved out of a delivered file into an undelivered one."
             " Check that the deliverable still works where the task delivers it."
         ),
+        "declared_output_emptied": (
+            "A declared delivered file you wrote earlier is now empty or holds a small fraction of"
+            " its earlier size. Deliver it and disclose its limits, unless the task asked for it"
+            " to be empty."
+        ),
+        "deliverable_references_undeclared_file": (
+            "A declared delivered source file names a workspace file that is not a declared output"
+            " or input; a grader may receive only the declared files. Embed it, rebuild it at"
+            " runtime, or disclose the dependency."
+        ),
         "install_into_yoetz_runtime": (
             "A package install resolved to Yoetz's own runtime interpreter, not the task's."
         ),

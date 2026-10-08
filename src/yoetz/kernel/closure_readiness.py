@@ -112,8 +112,11 @@ __all__ = [
 # ``compound_outcome_unavailable`` became a standing limitation. "3": the standing readiness code
 # ``finding_self_verified`` (issue #984, ADR-034) was added. "4": the standing disclosure codes
 # ``assumption_disclosed`` and ``verification_limit_disclosed`` (issue #995, ADR-033) and
-# ``finding_premise_disputed`` (issue #984, D7a) were added.
-GAP_CLASSIFICATION_VERSION: Final = "4"
+# ``finding_premise_disputed`` (issue #984, D7a) were added. "5" is reserved for the review lane's
+# ``finding_disputed_after_rebuttal`` (tb4n2 R1). "6": the agent-actionable task fact
+# ``declared_output_emptied`` and the standing disclosure ``deliverable_references_undeclared_file``
+# (tb4n2 R2, issue #1022, ADR-035) were added.
+GAP_CLASSIFICATION_VERSION: Final = "6"
 # Issue #984 (ADR-034): a current finding the agent answered ``self_verified``. Yoetz could not
 # prove the repair; the agent verified it itself. Disclosed, never agent work.
 FINDING_SELF_VERIFIED_GAP: Final = "finding_self_verified"

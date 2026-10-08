@@ -26,6 +26,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -45,6 +46,7 @@ from yoetz.adapters.git_subject_state import (
 )
 from yoetz.ports.change_capture import (
     MAX_CHECK_CHANGE_TEXT_BYTES,
+    MAX_PROBED_FILE_SIZE,
     ChangeBaseKind,
     ChangeCaptureUnavailable,
     ChangeLineCount,
@@ -289,6 +291,33 @@ _ROOT_RELATIVE: Final = b"."
 # files once this many bytes were read in one call; what it skips makes the result a lower bound.
 _MAX_LINE_COUNT_FILE_BYTES: Final = 8 * 1024 * 1024
 _MAX_LINE_COUNT_TOTAL_BYTES: Final = 64 * 1024 * 1024
+# The undeclared-reference read (tb4n2 R2, ADR-035 amendment) opens at most this many declared
+# deliverables per check and reads at most this many bytes from the start of each; it compares
+# one-line quoted string literals with at most this many created-file paths.
+_MAX_REFERENCE_DELIVERABLES: Final = 16
+_MAX_REFERENCE_FILE_BYTES: Final = 256 * 1024
+_MAX_REFERENCE_CANDIDATES: Final = 1_024
+# A basename shorter than this is too common (``a.py``, ``x``) to count as a reference by itself.
+_MIN_REFERENCE_BASENAME: Final = 5
+_SOURCE_SUFFIXES: Final = frozenset(
+    {
+        b".py",
+        b".sh",
+        b".bash",
+        b".js",
+        b".mjs",
+        b".cjs",
+        b".ts",
+        b".rb",
+        b".pl",
+        b".r",
+        b".R",
+        b".jl",
+        b".lua",
+        b".php",
+    }
+)
+_STRING_LITERAL: Final = re.compile(rb'"([^"\n]{1,1024})"|\'([^\'\n]{1,1024})\'|`([^`\n]{1,1024})`')
 
 
 def _requested_relative_path(root: Path, value: str) -> bytes | None:
@@ -570,6 +599,14 @@ class GitChangeCaptureAdapter:
                     None if identity == _BLOCKED else identity is not None,
                     None if path in unknown else path in ignored,
                     holds_file=holds_file[path],
+                    size_bytes=(
+                        identity[3]
+                        if identity is not None
+                        and identity != _BLOCKED
+                        and stat.S_ISREG(identity[0])
+                        and identity[3] <= MAX_PROBED_FILE_SIZE
+                        else None
+                    ),
                     ignore_source=(
                         None
                         if source is None
@@ -698,6 +735,62 @@ class GitChangeCaptureAdapter:
             in_base = {os.fsdecode(path): added for path, added, _ in _numstat_rows(numbers)}
             base_lines = [in_base.get(path) for path in base_paths]
         return ChangeLineCounts(tuple(changed), tuple(base_lines), truncated)
+
+    def count_undeclared_references(
+        self, workspace: str, deliverables: tuple[str, ...], candidates: tuple[str, ...]
+    ) -> int:
+        """Count declared deliverables whose source names a created but undeclared file.
+
+        tb4n2 R2 (ADR-035 amendment): a delivered ``cracker.py`` loaded model files the agent
+        created and never declared, so the graded deliverable failed. ``deliverables`` and
+        ``candidates`` are root-relative paths. Each deliverable with a source-code suffix (or no
+        suffix and a ``#!`` first line) is read from the start, at most
+        ``_MAX_REFERENCE_FILE_BYTES``, one component at a time without following a link, never
+        when credential-named, multiply linked or binary. It counts when a one-line quoted string
+        literal equals a candidate path, ends with ``/`` and the candidate path, or equals a
+        candidate basename of at least ``_MIN_REFERENCE_BASENAME`` bytes. Only the count leaves
+        this method; no path or content is returned, logged or stored. A point-in-time read that
+        feeds a non-blocking disclosure only.
+        """
+
+        if (
+            type(deliverables) is not tuple
+            or type(candidates) is not tuple
+            or len(deliverables) > _MAX_REFERENCE_DELIVERABLES
+            or len(candidates) > _MAX_REFERENCE_CANDIDATES
+            or any(
+                type(path) is not str or not _safe_relative(os.fsencode(path))
+                for path in (*deliverables, *candidates)
+            )
+        ):
+            raise ChangeCaptureUnavailable("unsupported_repository")
+        if not deliverables or not candidates:
+            return 0
+        deadline = time.monotonic() + self._deadline_seconds
+        pinned = self._open(workspace, deadline)
+        paths = frozenset(os.fsencode(path) for path in candidates)
+        names = frozenset(
+            name
+            for path in paths
+            if len(name := path.rsplit(b"/", 1)[-1]) >= _MIN_REFERENCE_BASENAME
+        )
+        found = 0
+        for deliverable in deliverables:
+            if _expired(deadline):
+                break
+            path = os.fsencode(deliverable)
+            name = path.rsplit(b"/", 1)[-1]
+            suffix = os.path.splitext(name)[1]
+            if _credential_name(path) or (suffix and suffix not in _SOURCE_SUFFIXES):
+                continue
+            content = _read_prefix_beneath(pinned.descriptor, path, _MAX_REFERENCE_FILE_BYTES)
+            if content is None or b"\0" in content[:_BINARY_PROBE_BYTES]:
+                continue
+            if not suffix and not content.startswith(b"#!"):
+                continue
+            if _references_any(content, paths, names):
+                found += 1
+        return found
 
     def capture_metadata(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeMetadata:
         """Return changed-path facts without reading file or blob content.
@@ -1840,6 +1933,59 @@ def _read_beneath(
     finally:
         for descriptor in reversed(opened):
             os.close(descriptor)
+
+
+def _read_prefix_beneath(root_descriptor: int, path: bytes, limit: int) -> bytes | None:
+    """Read at most ``limit`` bytes from the start of ``path`` under the root, or ``None``.
+
+    Opened one component at a time from the validated root descriptor without following a link,
+    like ``_read_beneath``; only a singly linked regular file the current user owns is read.
+    """
+
+    parts = path.split(b"/")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    opened: list[int] = []
+    current = root_descriptor
+    try:
+        for part in parts[:-1]:
+            current = os.open(part, directory_flags, dir_fd=current)
+            opened.append(current)
+        descriptor = os.open(parts[-1], file_flags, dir_fd=current)
+        opened.append(descriptor)
+        facts = os.fstat(descriptor)
+        expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+        if not stat.S_ISREG(facts.st_mode) or facts.st_uid != expected_uid or facts.st_nlink != 1:
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while total < limit:
+            chunk = os.read(descriptor, min(_READ_CHUNK, limit - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
+
+
+def _references_any(content: bytes, paths: frozenset[bytes], names: frozenset[bytes]) -> bool:
+    """Whether a one-line quoted literal in ``content`` names one of ``paths`` (see caller)."""
+
+    for match in _STRING_LITERAL.finditer(content):
+        literal = match.group(1) or match.group(2) or match.group(3) or b""
+        if literal in paths or literal in names:
+            return True
+        start = literal.find(b"/")
+        while start != -1:
+            if literal[start + 1 :] in paths:
+                return True
+            start = literal.find(b"/", start + 1)
+    return False
 
 
 def _identity(facts: os.stat_result) -> _Identity:
