@@ -40,6 +40,7 @@ from yoetz.domain.events import (
     PlanRevisedPayload,
     RequestedItem,
     RequestedItemKind,
+    RequestedItemRole,
     ResponseDisposition,
     ResponseRecordedPayload,
     ResultOutcome,
@@ -62,6 +63,7 @@ from yoetz.domain.values import (
 from yoetz.kernel.deterministic_checks import (
     REQUESTED_OUTPUT_ABSENT_FACT,
     CaseGap,
+    DeterministicCase,
     render_deterministic_finding_text,
     run_deterministic_policies,
 )
@@ -187,13 +189,17 @@ def test_completion_with_open_obligations_and_waiver_nontrigger() -> None:
 
 
 def _unrelated_action(number: int) -> ActionRecordedPayload:
-    """A published action on another obligation: the agent has started acting (#977)."""
+    """A published task-wide action that attempts another item: acting on every obligation.
+
+    tb4n2 E4 (P1-7): "never attempted" needs work on *this* obligation, so the action names no
+    obligation (a global action covers every one) rather than another obligation.
+    """
 
     return ActionRecordedPayload(
         action_id=act(number),
         action_kind=ActionKind.EDIT,
-        description="Work on another obligation",
-        obligation_refs=(obl(99),),
+        description="Work on the task",
+        obligation_refs=(),
         attempted_items=("other-item",),
     )
 
@@ -235,12 +241,101 @@ def test_identical_requested_items_require_obligation_scoped_attempt() -> None:
         actions={act(1): record(scoped, 4)},
     )
 
-    findings = [
-        assessment
-        for assessment in run_deterministic_policies(case, WORK_INTEGRITY_POLICY_PACK).assessments
-        if assessment.candidate.kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
-    ]
-    assert [assessment.candidate.subject_refs for assessment in findings] == [(obl(2),)]
+    def findings(case: DeterministicCase) -> list[tuple[object, ...]]:
+        return [
+            assessment.candidate.subject_refs
+            for assessment in run_deterministic_policies(
+                case, WORK_INTEGRITY_POLICY_PACK
+            ).assessments
+            if assessment.candidate.kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
+        ]
+
+    # tb4n2 E4 (P1-7): work on the first obligation is not work on the second, so the second's
+    # item is not "never attempted" until a completion claim names it (no global "started").
+    assert findings(case) == []
+    claim = ClaimRecordedPayload(
+        claim_id=clm(1),
+        claim_kind=ClaimKind.COMPLETION,
+        statement="Complete",
+        supporting_refs=(),
+        obligation_refs=(obl(1), obl(2)),
+    )
+    claimed = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={
+            obl(1): obligation_record(first, 2),
+            obl(2): obligation_record(second, 3),
+        },
+        actions={act(1): record(scoped, 4)},
+        claims={clm(1): record(claim, 5)},
+    )
+    assert findings(claimed) == [(obl(2),)]
+
+
+def test_input_role_items_are_never_reported_unattempted() -> None:
+    """tb4n2 E4 (P1-7): formal S ``/root/data``, interleaved D sample inputs.
+
+    An obligation whose only requested item is ``role: input`` is read by the task, never
+    delivered, so neither work on it nor a completion claim makes it "never attempted". An
+    output-role sibling on the same obligation still is.
+    """
+
+    reads = ObligationPublishedPayload(
+        obligation_id=obl(1),
+        description="Read the samples",
+        evidence_expectation="Typed evidence",
+        status=ObligationStatus.OPEN,
+        requested_items=(
+            RequestedItem(RequestedItemKind.FILE, "/root/data", RequestedItemRole.INPUT),
+        ),
+    )
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    claim = ClaimRecordedPayload(
+        claim_id=clm(1),
+        claim_kind=ClaimKind.COMPLETION,
+        statement="Complete",
+        supporting_refs=(),
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(reads, 2)},
+        actions={act(9): record(_unrelated_action(9), 3)},
+        claims={clm(1): record(claim, 4)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(case)
+
+    mixed = replace(
+        reads,
+        requested_items=(
+            *reads.requested_items,
+            RequestedItem(RequestedItemKind.FILE, "/app/out.json", RequestedItemRole.OUTPUT),
+        ),
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(mixed, 2)},
+        actions={act(9): record(_unrelated_action(9), 3)},
+        claims={clm(1): record(claim, 4)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in _kinds(case)
+
+
+def test_research_alone_never_reports_an_item_unattempted() -> None:
+    """tb4n2 E4 (P1-7): lake S got "no recorded attempt" after one research action."""
+
+    obligation = _open_obligation(1, requested="item-1")
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    research = ActionRecordedPayload(
+        action_id=act(9),
+        action_kind=ActionKind.RESEARCH,
+        description="Read the inputs",
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(obligation, 2)},
+        actions={act(9): record(research, 3)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(case)
 
 
 def test_requested_item_on_carried_revision_uses_effective_plan_scope() -> None:

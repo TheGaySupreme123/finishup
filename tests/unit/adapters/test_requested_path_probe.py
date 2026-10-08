@@ -452,3 +452,36 @@ def test_roles_and_directories_at_check_time(tmp_path: Path) -> None:
         (repository / "src" / "rtl" / name).write_text("module m; endmodule\n", encoding="utf-8")
     (repository / "kept.txt").write_text("rewritten\n", encoding="utf-8")
     assert facts() == ((), ())
+
+
+def test_a_line_break_file_name_keeps_requested_output_facts_live(tmp_path: Path) -> None:
+    """#1019 (tb4n2 rs-archive D): one probe file named ``a\\nq`` no longer darkens the facts.
+
+    Before the fix the whole metadata read failed, so every requested output was unverified for
+    the rest of the task. Now the odd name is skipped and counted, and the outputs stay live.
+    """
+
+    repository = _repository(tmp_path)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    probes = repository / "probes"
+    probes.mkdir()
+    (probes / "a\nq").write_bytes(b"probe\n")
+    (repository / "report.json").write_text("{}\n", encoding="utf-8")
+    capture = adapter.capture_metadata(os.fspath(repository), base)
+    assert capture.unrepresentable_files == 1
+    assert capture.truncated is True
+    projection = _projection("report.json", "missing.json", edited=("report.json",))
+    states = asyncio.run(
+        requested_output_states(
+            projection=projection,
+            capture=capture,
+            source=CheckWorkspaceSource(os.fspath(repository), "hmac-sha256:" + "0" * 64),
+            port=adapter,
+            request_id="req_00000000-0000-4000-8000-000000001019",
+        )
+    )
+    assert states[(_OBLIGATION, 0)].changed is True
+    assert states[(_OBLIGATION, 1)].exists is False
+    absent, _markers = requested_output_facts(projection, states, blocked=())
+    assert absent == ((_OBLIGATION, 1),)

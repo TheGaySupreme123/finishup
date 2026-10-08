@@ -593,3 +593,16 @@ This replaces the earlier statement in this ADR that the receipt cannot apply th
    the serving route requires and can dispatch review.
 4. **Surfaces.** The CLI check rendering and the MCP check summary add a short clause when the
    field is `false`; guidance states that a local-only check blocks only where review is required.
+
+## Amendment (2026-10-08): finer stale rule and a gate token for edits after verification (#1018)
+
+ADR-042 refines decisions here without replacing them. An observed edit whose every path is scratch
+(a temporary root outside the workspace) or Yoetz's own material (a saved receipt or export, Yoetz state,
+the packaged Yoetz trees) carries `write_scope` `scratch` or `yoetz_owned` and never advances the
+latest edit, so it never makes `planned_verification_stale` or `edited_after_last_verification`
+fire and is not acting. `python -m pytest` and the other verification modules are verification
+runs; an interpreter-run script is never a build by its file name. `edited_after_last_verification`
+joins `STOP_GATE_TOKENS` and the observation-dependent set. `requested_item_never_attempted` never
+names a `role: input` item and waits for a completion claim or published work on that obligation;
+a research action is not acting. Task facts that do not bear on a finding no longer refuse
+`respond self_verified` (ADR-034); readiness and the gate stay task-wide.

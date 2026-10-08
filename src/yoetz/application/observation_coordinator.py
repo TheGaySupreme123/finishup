@@ -63,6 +63,8 @@ from yoetz.application.observation_materialize import (
     PairedActionLink,
     approved_check_author,
     canonical_logical_identity,
+    codex_stream_call_generation_links,
+    materialize_capture_handoff_retirement,
     materialize_observation_envelope,
     materialize_observation_inspection_snapshot,
     materialize_observation_outcome_correction,
@@ -222,6 +224,9 @@ _ADVICE_FINDING_KIND_BY_RULE: Final = MappingProxyType(
 )
 
 _LEGACY_UNPAIRED_REPLAY_PROFILE: Final = "legacy-paired-replay"
+# How many recent hook generations a post-compaction stream completion may search for its
+# hook call (#1019). Each Codex SessionStart (compact, resume, clear) is one generation.
+_CODEX_GENERATION_ALIAS_WINDOW: Final = 16
 _CAPTURED_CONTENT_MEDIA_TYPE: Final = "application/vnd.yoetz.observation-content+json"
 # This is the coordinator-side upper-bound guard for the central local-store
 # reservation. Keep it equal to the local capture fence: the reservation is
@@ -1629,6 +1634,61 @@ class ObservationCoordinator:
             return False
         return True
 
+    async def _publish_capture_handoff_retirement(
+        self,
+        runtime: TaskRuntime,
+        ticket: ObservationCaptureTicket,
+        reason: CaptureHandoffRetirementReason,
+    ) -> bool:
+        """Put one retiring handoff on its own task's coverage (issue #1019, tb4n2 N-4).
+
+        Called after the local loss account and *before* the ticket is tombstoned: the ledger
+        marker is the durable disclosure, so it must exist before the ticket stops being listed
+        for reconciliation. Only the ticket's own task receives it, keyed by the ticket identity,
+        so a retry after an interrupted retirement appends nothing new. Returns ``False`` when the
+        marker is not durable yet but could become so (a retryable or unexpected failure); the
+        caller then leaves the ticket pending, and the next reconciliation pass (the READY sweep or
+        a CHECK preflight) publishes it again. A ledger that terminally refuses the marker (a
+        non-retryable typed refusal, an operation conflict, or no writer) can never hold it, so
+        the retirement proceeds rather than holding capture pressure forever; that refusal is
+        recorded in service diagnostics.
+        """
+
+        if ticket.task_id != runtime.task_id:
+            return False
+        try:
+            ticket_id = observation_capture_ticket_id(ticket)
+            batch = materialize_capture_handoff_retirement(
+                task_id=runtime.task_id,
+                ticket_id=ticket_id,
+                reason=reason.value,
+                observed_at=timestamp_from_datetime(self.clock.now_utc()),
+            )
+            digest = canonical_digest(
+                JsonObject(
+                    {
+                        "format": "yoetz.capture-handoff-retirement-report/1",
+                        "task_id": runtime.task_id,
+                        "ticket_id": ticket_id,
+                    }
+                )
+            )
+            if runtime.writer_id is None:
+                return True
+            await self._append_structural_batch(runtime, batch, digest)
+            return True
+        except Exception as exc:
+            terminal = (isinstance(exc, PublicOperationError) and not exc.retryable) or isinstance(
+                exc, ProtocolValueError | ValueError
+            )
+            if not isinstance(exc, PublicOperationError) or not exc.retryable:
+                record_unexpected_exception_without_raising(
+                    exc,
+                    component="application.observation_coordinator",
+                    operation="capture_handoff_retirement_publish_failed",
+                )
+            return terminal
+
     async def _retire_stranded_capture_handoff(
         self,
         workspace: str,
@@ -1673,6 +1733,10 @@ class ObservationCoordinator:
                 if not await self._record_capture_handoff_retirement(
                     workspace, ticket, stage=stage, reason=reason
                 ):
+                    return
+                if not await self._publish_capture_handoff_retirement(runtime, ticket, reason):
+                    # The disclosure is not durable yet: keep the ticket listed so a later
+                    # reconciliation pass retires it and publishes the marker.
                     return
                 await self._retire_capture_ticket(workspace, runtime, store, ticket)
         except Exception as exc:
@@ -1818,6 +1882,9 @@ class ObservationCoordinator:
                 reason=reason,
                 quarantine_reason=quarantine_reason,
             ):
+                continue
+            if not await self._publish_capture_handoff_retirement(runtime, ticket, reason):
+                # Not durable yet: the ticket stays listed and the next pass retries.
                 continue
             await self._retire_capture_ticket(current_workspace, runtime, store, ticket)
             retired += 1
@@ -2963,7 +3030,22 @@ class ObservationCoordinator:
                         # admitted for this envelope; retryable coordination keeps it durable.
                         for ticket in (staged_ticket, capture_staging_ticket):
                             if ticket is not None and ticket.state in {"staging", "pending"}:
-                                await self._retire_capture_ticket(workspace, runtime, store, ticket)
+                                # Account and disclose before the tombstone (#1019): a ticket
+                                # whose marker is not durable yet stays listed, so a later
+                                # reconciliation pass retires it and publishes the marker.
+                                if await self._record_capture_handoff_retirement(
+                                    workspace,
+                                    ticket,
+                                    stage=CaptureHandoffRetirementStage.STRUCTURAL_REFUSED,
+                                    reason=CaptureHandoffRetirementReason.TERMINAL_REFUSAL,
+                                ) and await self._publish_capture_handoff_retirement(
+                                    runtime,
+                                    ticket,
+                                    CaptureHandoffRetirementReason.TERMINAL_REFUSAL,
+                                ):
+                                    await self._retire_capture_ticket(
+                                        workspace, runtime, store, ticket
+                                    )
                                 break
                         # A matched handoff this delivery never staged (content
                         # blocked or unauthorized) is stranded as well (#836).
@@ -3008,6 +3090,12 @@ class ObservationCoordinator:
                 # failed, so re-run the idempotent materialize/append to repair it.
                 # If any step raises, the broad guard below turns it into a
                 # retryable rejection so the outbox keeps the entry pending.
+                # A post-compaction stream completion materializes under its hook call's
+                # generation so the pair folds into one action (#1019). The ingested
+                # envelope is restored before verification and advice.
+                ingested_envelope = envelope
+                stage = "generation_align"
+                envelope = await self._align_codex_stream_generation(runtime, workspace, envelope)
                 batch = materialize_observation_envelope(
                     envelope,
                     task_id=runtime.task_id,
@@ -3398,6 +3486,7 @@ class ObservationCoordinator:
                                             correction_result,
                                         )
 
+                envelope = ingested_envelope
                 stage = "verification"
                 await self._enqueue_verification(
                     runtime,
@@ -4145,6 +4234,110 @@ class ObservationCoordinator:
                 lineage_frontier=lineage_frontier,
             )
         )
+
+    async def _align_codex_stream_generation(
+        self,
+        runtime: TaskRuntime,
+        workspace: str,
+        envelope: ObservationEnvelope,
+    ) -> ObservationEnvelope:
+        """Bind a post-compaction stream completion to its hook call's generation (#1019).
+
+        The hook generation advances at every Codex ``SessionStart`` (including the
+        ``compact`` start); the stream generation follows the rollout file. After a
+        compaction the two differ, so the completion would mint a second command action
+        beside the hook call's UNKNOWN one. Rebind only when every guard holds: the same
+        task ledger (the ids are task-scoped), the same workspace lane and host session,
+        the same host call id, exactly one other-generation hook action in this task, the
+        same keyed command identity on that action, and no explicit outcome on it except
+        one this completion itself recorded (an idempotent retry). Anything else keeps the
+        stream's own generation, which is the pre-fix behavior.
+        """
+
+        own_generation = envelope.cursor.source_generation
+        own = codex_stream_call_generation_links(
+            envelope, task_id=runtime.task_id, generations=(own_generation,)
+        )
+        if len(own) != 1:
+            return envelope
+        lookup = getattr(getattr(runtime, "ledger", None), "projected_action_event", None)
+        current = getattr(self.local, "current_session_generation", None)
+        if not callable(lookup) or not callable(current):
+            return envelope
+        projected = cast(Callable[[str], Awaitable[str | None]], lookup)
+        if await projected(own[0].action_id) == own[0].action_event_id:
+            return envelope
+        hook_generation = await self._local(
+            partial(
+                cast(Callable[[str, str], int], current),
+                workspace,
+                envelope.session_commitment,
+            )
+        )
+        if type(hook_generation) is not int or isinstance(hook_generation, bool):
+            return envelope
+        top = max(hook_generation, own_generation)
+        candidates = tuple(
+            generation
+            for generation in range(top, max(0, top - _CODEX_GENERATION_ALIAS_WINDOW), -1)
+            if generation != own_generation
+        )
+        matches = [
+            link
+            for link in codex_stream_call_generation_links(
+                envelope, task_id=runtime.task_id, generations=candidates
+            )
+            if await projected(link.action_id) == link.action_event_id
+        ]
+        if len(matches) != 1:
+            return envelope
+        match = matches[0]
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        if (
+            projection is None
+            or type(projection.state) is not ProjectionState
+            or projection.lag != 0
+            or projection.rebuild_required
+        ):
+            return envelope
+        action_record = projection.state.actions.get(action_id(match.action_id))
+        action_payload = action_record.payload if action_record is not None else None
+        if (
+            action_payload is None
+            or action_payload.action_kind is not ActionKind.COMMAND
+            or action_payload.command is None
+            or action_payload.command.split(" ", 1)[0] != match.command_identity
+        ):
+            return envelope
+        aligned = replace(
+            envelope, cursor=replace(envelope.cursor, source_generation=match.generation)
+        )
+        # Results this completion itself mints under the aligned identity: its core result
+        # (when it lands before the hook's post) and its outcome correction. A retry finds
+        # them already recorded; any other explicit outcome on the hook call fails closed.
+        own_results = {
+            str(item.draft.payload.result_id)
+            for item in materialize_observation_envelope(aligned, task_id=runtime.task_id).drafts
+            if type(item.draft.payload) is ResultRecordedPayload
+        } | {
+            str(item.draft.payload.result_id)
+            for item in materialize_observation_outcome_correction(
+                aligned, task_id=runtime.task_id
+            ).drafts
+            if type(item.draft.payload) is ResultRecordedPayload
+        }
+        for result_key, record in projection.state.results.items():
+            payload = record.payload
+            if (
+                payload is not None
+                and str(payload.action_id) == match.action_id
+                and payload.outcome is not ResultOutcome.UNKNOWN
+                and str(result_key) not in own_results
+            ):
+                return envelope
+        return aligned
 
     async def _plan_action_link(
         self,

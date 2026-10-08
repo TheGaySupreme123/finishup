@@ -2382,3 +2382,50 @@ async def test_application_check_attaches_only_a_supplied_wait_outcome(
     assert isinstance(attached, CheckCommitResult)
     assert attached.observations_awaited == complete
     assert replace(attached, observations_awaited=None) == canned
+
+
+class _UnrepresentablePathCapturePort(_MetadataOnlyCapturePort):
+    def capture_metadata(self, workspace: str, base: object) -> CheckChangeMetadata:
+        return CheckChangeMetadata(
+            base="task_start",
+            entries=self.entries,
+            tracked_files=0,
+            untracked_files=len(self.entries) + 1,
+            omitted_files=1,
+            truncated=True,
+            base_commit="a" * 40,
+            unrepresentable_files=1,
+        )
+
+
+@pytest.mark.anyio
+async def test_a_skipped_line_break_path_is_disclosed_by_code_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1019: the capture stays usable; the check names the skipped path's class, never it."""
+
+    from yoetz.domain.receipts import (
+        CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
+        CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
+        check_time_change_gap_sentence,
+    )
+    from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
+
+    app = _App()
+    app.change_capture = _UnrepresentablePathCapturePort(
+        (ChangeMetadataEntry("A", "out.txt", untracked=True),)
+    )
+    app.start_catalog = _StructuralStartCatalog()
+    source = CheckWorkspaceSource("/workspace", "hmac-sha256:" + "a" * 64)
+    monkeypatch.setattr(check_module, "current_check_workspace_source", lambda: source)
+
+    result = await execute_check_commit(app, _request(max_findings="4"))
+
+    assert CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP in result.coverage.known_gaps
+    assert CHECK_TIME_CHANGE_UNAVAILABLE_GAP not in result.coverage.known_gaps
+    assert (
+        GAP_CLASSIFICATION[CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP]
+        is GapClass.STANDING_LIMITATION
+    )
+    sentence = check_time_change_gap_sentence(CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP)
+    assert sentence is not None and "line break" in sentence

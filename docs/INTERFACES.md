@@ -1382,6 +1382,11 @@ when that recipe selected the change:
 - `check_time_change_truncated` — a changed file (named in the change's header), a part of the
   change, or untracked names beyond the listing bound did not reach the reviewer;
 - `check_time_change_redacted` — credential-like spans were replaced before storage and review.
+- `check_time_change_path_unrepresentable` — the check's local, metadata-only read of changed
+  paths skipped at least one path whose name holds a carriage return or line feed (issue #1019).
+  The read stays usable: each skipped path counts as omitted, the listing is marked truncated, and
+  a requested file it could not list stays unproven rather than unchanged. A standing limitation,
+  classed with the other check-time codes; never a finding, and the path is never recorded.
 
 Post-validation fences each challenge independently: a rejected challenge costs only itself, the
 challenges beside it still become findings, and the drop is declared through this gap. A judgment
@@ -2074,11 +2079,11 @@ semantic_case_content_over_item_limit|semantic_case_finding_refs_over_limit|
 semantic_prior_findings_over_limit|semantic_prior_verdicts_unsupported|
 semantic_restatements_suppressed|check_time_change_unavailable|
 check_time_change_base_unavailable|check_time_change_truncated|
-check_time_change_redacted`) plus the evidence-strength
+check_time_change_redacted|check_time_change_path_unrepresentable`) plus the evidence-strength
 codes
 (`evidence_content_digest_only|evidence_content_withheld|evidence_digest_subject_legacy_unknown`)
-and the host-observation codes (`captured_object_unavailable|content_unselected|
-host_outcome_unavailable|unpaired_event`), plus the review-selection code
+and the host-observation codes (`captured_object_unavailable|capture_handoff_retired|
+content_unselected|host_outcome_unavailable|unpaired_event`), plus the review-selection code
 `semantic_reference_scope_reduced` (#904): the local-check case is not reduced, so a bounded
 AI-powered review packet is not a limitation of local proof. Those host and selection codes remain
 receipt coverage limitations; the host codes only stop vetoing local absence proof because local
@@ -2896,7 +2901,12 @@ retryable `service_unavailable`). A send failure the transport itself did not cl
 bounded protocol reason `transport_failed`, whose public code is `SERVICE_UNAVAILABLE` and which
 never carries raw exception text, a path, or peer data. Both peers share the one write helper, so a
 failed response write is classified the same way; the daemon records it as a bounded
-`control_response_write` diagnostic and ends that call rather than reporting a malformed frame. A
+`control_response_write` diagnostic and ends that call rather than reporting a malformed frame.
+That record carries only bounded structural context so an abandoned write can be attributed
+(tb4n2 NEW-8, issue #1019): `control_method` (the closed wire method), `client_kind` (the
+handshake kind: `cli`, `mcp_bridge` or `ui`), `duration_ms` (dispatch start to the failed write)
+and `request_id` only when the body carries a valid public `req_` id; never the body, the rpc id or
+peer data. A
 caller whose valid request could not be written is therefore never told `INVALID_REQUEST`, and every
 pending future failed by the resulting connection teardown — including the future of the call whose
 own write failed — is consumed, so a failed send emits no unhandled-future report.
@@ -3590,7 +3600,10 @@ the same way. The CLI prints a partial page in full and exits 40 with the count 
 Both audit adapters project stored network
 egress receipts as well as local disclosure receipts, so a completed subscription review is
 retrievable by its recorded receipt ID and listable by `channel`, `provider_id`, or
-`endpoint_profile_id`.
+`endpoint_profile_id`. A network receipt may also name its closed `origin_operation`
+(`semantic_check`, `observation_advice` or `credential_probe`; egress-receipt 1.1.0, ADR-009
+tb4n2 amendment), derived from its purpose and reserved structural item ids and omitted when not
+recognized, so a recurring blocked receipt can be traced to the operation that asked for it.
 
 A receipt's `purpose` has two owners, and they are deliberately not the same grammar. Anything
 crossing the privacy-policy boundary — every network egress receipt, every
@@ -4857,6 +4870,23 @@ Claude Code or Cursor hook delivers a queued Codex or other-host row without a p
 service resolves that row's profile from its own ticket, instead of refusing it as the terminal
 `content_capture_profile_mismatch`.
 
+Every retirement of a handoff (any `CaptureHandoffRetirementReason`) also appends one
+service-authenticated marker to the ticket's own task ledger, keyed by the ticket identity, whose
+coverage carries `capture_handoff_retired` (issue #1019), including a ticket a terminal store
+refusal retires. The marker and its fixed sentence claim only that the captured content is not
+available; for a refused or quarantined row the call's own record may be missing too, and its own
+codes disclose that. The marker is appended before the ticket is
+tombstoned: a retryable or unexpected append failure leaves the ticket pending, and the next
+reconciliation pass (READY sweep or check preflight) publishes it and only then retires the ticket,
+counting the loss once. A ledger that terminally refuses the marker (a non-retryable typed refusal,
+an operation conflict, or a route without a writer) can never hold it, so that retirement proceeds
+without the marker and the refusal is recorded in service diagnostics. The marker names the closed retirement
+reason only, never a path or content, and another task never receives it. The code is a standing
+limitation with a fixed sentence: deterministic proof and a clean deterministic conclusion tolerate
+it, because local packs never read native captured bytes, and an AI-powered finding treats it as a
+capture baseline (tolerated only when the raising review ran under it too). The workspace
+`content_capture_unavailable` flag in observation status is unchanged and remains workspace-wide.
+
 `content_capture_pending` means encrypted staging is durable while structural ledger ingest is still
 pending. It is separate from `operation_pending`, which is generic observation back-pressure and
 makes no claim that content was retained. Up to 512 `staging`/`pending` tickets may be outstanding
@@ -5298,6 +5328,18 @@ reclaims counted separately), first/last receipt times, and `quarantine_detail_e
 when that save evicts nothing and leaves one-eighth of the state budget free. Merely landing under
 the cap cannot clear the same loss it just recorded; the durable gap history remains after recovery,
 and renewed shedding reactivates it (issue #310).
+
+An unexpected exception in a hook pass, or in the legacy synchronous spool writer, is recorded as
+`observe_<exception class>` in `hook_diagnostics.reasons`, using the service's reviewed closed
+exception-class vocabulary (`observe_exception_value_error`, `observe_exception_os_error`, ...).
+An unlisted class, including an unreviewed subclass of a listed one, collapses to
+`observe_exception_unavailable`; no class name, message, path or command is kept. The bare
+`observe` reason is still admitted for older rows. The drain preflight is split by stage:
+`drain_connect_timeout` (the service connect ran past its preflight bound),
+`drain_connect_failed` (the connect raised), and `native_content_stage_failed` (the encrypted
+native-content handoff raised; the rows stay pending and the content keeps
+`content_capture_unavailable`). `drain_preflight_failed` now names only a failed local outbox read
+before the connect, and is still admitted for older rows (tb4n2 N-3, issue #1019).
 
 Public ingest failures use their `retryable` contract and the stage that refused the request.
 A non-retryable `SESSION_CONFLICT` while acquiring the task runtime becomes `mapping_missing`:
@@ -8914,26 +8956,52 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   (`DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP`), never a Stop-gate token or finding; any failure
   is `0`.
 - **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the
-  absent-output fact, and skips blocked obligations. `RecordedPolicyVersionWire`,
+  absent-output fact, and skips blocked obligations. Since ADR-042 an item is reported only once a
+  completion claim names its obligation or a published producing action names that obligation (or
+  none), never for a `role: input` item; a published research or review action is not acting.
+- **Task-fact scope (`kernel/task_fact_scope.py`, ADR-042).**
+  `finding_obligation_scope(state, finding_id) -> frozenset[ObligationId]`,
+  `task_fact_bears_on_finding(code, *, state, finding_id, markers) -> bool` and
+  `scoped_resolution_reasons(reasons, *, state, finding_id, records) -> tuple[str, ...]` (drops the
+  `coverage:<task fact>` reasons that do not bear on the finding; never empties the list).
+  `self_verification_refusal` applies it; readiness, the Stop gate and resolution stay task-wide.
+- **Runner class.** `domain/observation_selection.command_runner_class` classifies
+  `python -m <module>` by module (pytest/unittest/nose2/tox/nox/doctest `test`, mypy/pyright
+  `typecheck`, ruff/flake8/pylint/pyflakes/pycodestyle `lint`, build/compileall `build`) and never
+  counts an interpreter-run script as `build` by its name (ADR-042). `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
   `work-integrity/0.3.0`; `POLICY_PACK_GENERATIONS` gains the `research-evidence/0.2.0` +
   `work-integrity/0.2.0` generation.
 - **Runtime structural fields.** The observation envelope and control-request 2.9.0
   `structural_payload` admit `install_target` (`yoetz_runtime|workspace_env|private_env|system|
-  unresolved`), `write_scope` (`outside_workspace`) and `effective_user` (`root|non_root`),
+  unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned`; ADR-042: `scratch` and
+  `yoetz_owned` name an edit whose every path is a temp root outside the workspace or Yoetz's own material) and
+  `effective_user` (`root|non_root`),
   produced only by `cli/runtime_facts.runtime_structural_facts`, which judges `install_target`
   against the task interpreter (the agent's `python3`/`python` on the hook's `PATH`; ADR-033
   item 7). `observed_action_description(...,
-  install_target=, write_outside_workspace=, effective_user=)` appends ` (install <class>)`,
-  ` (write outside_workspace)`, ` (user <root|non_root>)` after the tool and runner suffixes;
-  `observed_action_runtime_tokens(description)` reads them back. Observation advice 0.1.8 adds the
+  install_target=, write_outside_workspace=, effective_user=, write_scope=)` appends
+  ` (install <class>)`, ` (write outside_workspace|scratch|yoetz_owned)`, ` (user <root|non_root>)`
+  after the tool and runner suffixes; `observed_action_runtime_tokens(description)` reads them
+  back and `observed_edit_counts(description)` is `False` only for a `scratch`/`yoetz_owned` edit,
+  which never advances the latest edit or counts as acting (ADR-042). The Codex session stream
+  names a `FileChange` item's `write_scope` from its own paths (never `outside_workspace`). A Yoetz
+  MCP tool (`mcp__yoetz__*`, `mcp__plugin_yoetz_*__*`) always materializes as action kind `other`.
+  `domain/write_scope.py`: `classify_write_path(path, *, workspace, inside, owned_roots) ->
+  workspace|outside_workspace|scratch|yoetz_owned`, `edit_write_scope(classes) -> str | None`,
+  `scratch_overlap(path)`, `yoetz_artifact_name(path)`;
+  `kernel.task_facts.non_counting_edits_exempt(projection) -> frozenset[str]` names the exempt write
+  tokens per class (deliverables win: no `write scratch` exemption when a requested non-input item
+  is under or contains a fixed temp root; no `write yoetz_owned` exemption when one has a receipt
+  name or a requested non-input directory exists). Observation advice 0.1.8 adds the
   advice-only rule codes `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`.
 - **Closure gate (`cli/closure_gate.py`).** `STOP_GATE_TOKENS` (in `kernel/task_facts.py`) are
   `obligations_open`, `receipt_findings_unresolved`, `closing_review_required`,
   `planned_verification_failed`,
   `planned_verification_not_observed`, `planned_verification_stale`,
-  `requested_output_git_ignored`, `declared_output_removed`, `declared_output_emptied`. `closure_gate_from_readiness(readiness, frontier_sequence=,
+  `edited_after_last_verification` (ADR-042; observation-dependent like the planned-verification
+  tokens), `requested_output_git_ignored`, `declared_output_removed`, `declared_output_emptied`. `closure_gate_from_readiness(readiness, frontier_sequence=,
   frontier_digest=, observation_pending=, reasked_blockers=) -> ClosureGate(identity, text, items,
   blocker_keys) | None` also fires, in `action_required` or `ready_with_limitations`, for a
   `blocked_obligations` pair whose `<obligation id>:<kind>` key is not in `reasked_blockers`. It adds

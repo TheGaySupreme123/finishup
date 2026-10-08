@@ -194,6 +194,12 @@ content-returning read needed its own decision. This is that decision, for exact
    review input only, so they never weaken local absence proof. A check whose connection named no
    workspace has nothing to read and reports no check-time code; its review is the review of the
    time before this decision.
+   Amendment (issue #1019, tb4n2): the local metadata-only read that structural accounting and
+   requested-output facts use skips any changed path whose name holds a carriage return or line
+   feed (Git allows both; a NUL never reaches a `-z` field) instead of failing the whole read. It
+   counts each skipped path in `omitted_files` (so the read is `truncated`) and in
+   `unrepresentable_files`, and the check records `check_time_change_path_unrepresentable`, a
+   standing limitation with its own fixed sentence. The path itself is never logged or recorded.
 9. **AI-powered finding resolution compares the files each review was shown.** A completed review
    whose packet carried the change records, on its `check_recorded` 1.3.0 event, keyed commitments
    to the changed files it carried. What it carried is counted from the bounded provider envelope,

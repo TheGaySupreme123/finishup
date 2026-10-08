@@ -86,6 +86,8 @@ __all__ = [
     "CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP",
     "CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP",
     "CHECK_TIME_CHANGE_GAPS",
+    "CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP",
+    "CAPTURE_HANDOFF_RETIRED_GAP",
     "CHECK_TIME_CHANGE_REDACTED_GAP",
     "CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP",
     "CHECK_TIME_CHANGE_TRUNCATED_GAP",
@@ -331,6 +333,15 @@ CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP: Final = "check_time_change_base_unavaila
 CHECK_TIME_CHANGE_TRUNCATED_GAP: Final = "check_time_change_truncated"
 # Credential-like spans were replaced before the change was stored or offered for review.
 CHECK_TIME_CHANGE_REDACTED_GAP: Final = "check_time_change_redacted"
+# The check's local read of which paths changed skipped at least one path whose name holds a
+# carriage return or line feed (issue #1019). The read stays usable but is marked incomplete, so
+# a requested file it could not list stays unproven rather than unchanged. Never names the path.
+CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP: Final = "check_time_change_path_unrepresentable"
+# Native content staged for one observed host call of this task was retired before its structural
+# row could attach it (issue #1019, tb4n2 N-4): its captured bytes are missing, and for a refused
+# or quarantined row the call's structural record may be missing as well. A standing limitation
+# of host capture, never a finding; local packs never read captured bytes.
+CAPTURE_HANDOFF_RETIRED_GAP: Final = "capture_handoff_retired"
 # Why the change was unavailable, as one closed code beside ``check_time_change_unavailable``:
 # ``check_time_change_unavailable_<reason>``. Each maps to one fixed sentence; neither carries a
 # path, Git output or any other user-controlled text. A check recorded before reasons existed
@@ -382,6 +393,7 @@ CHECK_TIME_CHANGE_GAPS: Final = frozenset(
         CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP,
         CHECK_TIME_CHANGE_TRUNCATED_GAP,
         CHECK_TIME_CHANGE_REDACTED_GAP,
+        CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
         *CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
     }
 )
@@ -403,6 +415,18 @@ def check_time_change_gap_sentence(code: str) -> str | None:
             "An AI-powered finding was resolved against a raising review recorded before file "
             "view commitments existed, so only the lengths and counts of what each review saw "
             "were compared, not where redactions and hunks lay."
+        )
+    if code == CAPTURE_HANDOFF_RETIRED_GAP:
+        return (
+            "Captured content for at least one observed call of this task was discarded before"
+            " it could be attached, so that content is not available here; depending on why it"
+            " was discarded, the call's own record may be missing too."
+        )
+    if code == CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP:
+        return (
+            "The check's read of changed files skipped at least one file whose name contains a"
+            " line break, so a requested file it could not list is reported as unproven, not"
+            " as unchanged."
         )
     if code not in CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS:
         return TASK_FACT_GAP_SENTENCES.get(code)

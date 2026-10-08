@@ -13,6 +13,7 @@ from yoetz.domain.events import (
     EvidenceKind,
     ObligationChangeKind,
     ObligationStatus,
+    RequestedItemRole,
     ResponseDisposition,
     ResultOutcome,
 )
@@ -54,6 +55,7 @@ from yoetz.kernel.observed_failures import (
     ObservedFailureState,
     observed_action_is_exploratory,
     observed_action_runner_class,
+    observed_edit_counts,
     observed_event_ids_from_coverage,
     observed_failure_states,
 )
@@ -68,6 +70,7 @@ from yoetz.kernel.task_facts import (
     acting_started,
     confirmed_blocked_obligation_ids,
     cooperative_event_ids_from_coverage,
+    non_counting_edits_exempt,
 )
 from yoetz.protocol.policy_packs import WORK_INTEGRITY_POLICY_ID, WORK_INTEGRITY_POLICY_VERSION
 
@@ -320,8 +323,13 @@ def _requested_item_findings(
         reportable = _completion_claim_covers(case, obligation_ref) or (
             started and _obligation_acted_on(case, obligation_ref)
         )
-        unattempted = started and any(
-            item.value not in attempted for item in payload.requested_items
+        # tb4n2 E4 (P1-7): an item the obligation only reads (``role: input``) is never "not
+        # attempted", and "never attempted" waits for work on *this* obligation (or a completion
+        # claim naming it), never for any action anywhere in the task.
+        unattempted = reportable and any(
+            item.value not in attempted
+            for item in payload.requested_items
+            if getattr(item, "role", None) is not RequestedItemRole.INPUT
         )
         absent = reportable and any(
             (obligation_ref, index) in absent_outputs
@@ -526,6 +534,7 @@ def _observed_verification_facts(
     """
 
     observed = observed_event_ids_from_coverage(case.coverage_by_ref)
+    exempt = non_counting_edits_exempt(case.projection)
     latest_edit: int | None = None
     for action in case.projection.actions.values():
         payload = action.payload
@@ -533,6 +542,9 @@ def _observed_verification_facts(
             payload is not None
             and action.source_event_id in observed
             and payload.action_kind is ActionKind.EDIT
+            # A scratch or Yoetz-owned write (a saved receipt) changes nothing a claim's
+            # verification covered (ADR-042, tb4n2 R4: cad S, lake D).
+            and observed_edit_counts(payload.description, exempt)
         ):
             latest_edit = max(latest_edit or 0, action.source_frontier)
     runs: dict[str, int] = {}

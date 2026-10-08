@@ -253,3 +253,13 @@ row carries `self_verified_finding_count`, so status agrees with the parent rece
 `self_verified` it is final, not agent work and never clean (readiness standing code
 `finding_disputed_after_rebuttal`; receipt `disputed_after_rebuttal_finding_ids`); like
 `rejection_accepted` it is latched by a check and cleared when that check is redacted.
+
+## Amendment (2026-10-08): task facts are scoped per finding (#1018, ADR-042)
+
+A `coverage:<code>` resolution reason whose code is a task fact no longer refuses `self_verified`
+when that fact does not bear on the finding (`kernel.task_fact_scope`): an obligation-scoped fact
+about another obligation, or the task-wide `edited_after_last_verification` on a finding that is not
+about verification or evidence. When such a fact is the only reason left it still refuses (the
+agent clears it by doing that work). Closure readiness, the Stop gate and finding resolution keep
+every task fact task-wide. tb4n2 interleaved S: two review findings were refused only because of an
+(also false, ADR-042 decision 5) edited-after-verification fact.

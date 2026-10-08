@@ -238,7 +238,9 @@ at all, and `unknown` means read status again once it is readable.
 
 Local checks also report facts about the task's own work: a planned verification command (an
 obligation's requested command) that was not matched to an observed run, failed on its latest
-run, or last ran before your latest edit. A run matches when it is the planned command or
+run, or last ran before your latest edit; an edit to the work after your last test, lint,
+typecheck or build run stops you once at Stop. Edits under a temporary directory outside your workspace and a
+Yoetz receipt you saved never count as edits for these facts. A run matches when it is the planned command or
 contains it as one part, such as `cd /app && pytest -q && git diff --check`, `pytest -q > log
 2>&1`, `time pytest -q`, or a line of a `bash <<'EOF'` script; when the run combined other
 commands, its outcome counts for the planned command only if an `&&` chain succeeded. A requested

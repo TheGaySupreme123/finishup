@@ -3944,10 +3944,19 @@ async def test_failed_response_write_is_a_recorded_transport_fact_not_frame_inva
     record_bounded = daemon_module.record_bounded_event_without_raising
 
     def capture(
-        *, component: str, operation: str, reason: str, request_id: str | None = None
+        *,
+        component: str,
+        operation: str,
+        reason: str,
+        request_id: str | None = None,
+        context: Mapping[str, object] | None = None,
     ) -> str:
         correlation_id = record_bounded(
-            component=component, operation=operation, reason=reason, request_id=request_id
+            component=component,
+            operation=operation,
+            reason=reason,
+            request_id=request_id,
+            context=context,
         )
         recorded.append((component, operation, reason, correlation_id))
         written.set()
@@ -3995,6 +4004,24 @@ async def test_failed_response_write_is_a_recorded_transport_fact_not_frame_inva
     )
     found = lookup_diagnostic_records(correlation_id, root=tmp_path)
     assert [entry["reason"] for entry in found] == ["connection_failed"]
+    # tb4n2 NEW-8: the abandoned write names its closed method, client kind, elapsed time and
+    # public request id, and nothing from the body.
+    (entry,) = found
+    assert entry["control_method"] == "start"
+    assert entry["client_kind"] == "cli"
+    assert type(entry["duration_ms"]) is int and entry["duration_ms"] >= 0
+    assert entry["request_id"] == request.body.request_id  # type: ignore[union-attr]
+    assert set(entry) <= {
+        "timestamp",
+        "correlation_id",
+        "component",
+        "operation",
+        "reason",
+        "request_id",
+        "duration_ms",
+        "control_method",
+        "client_kind",
+    }
     assert [context.get("message") for context in contexts] == []
 
 

@@ -6,7 +6,8 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
 
 * it continues only for ``STOP_GATE_TOKENS`` in ``agent_actionable``: open obligations, an
   unacknowledged receipt-blocking finding, and the task facts the agent can repair (a planned
-  verification not observed, failing or stale; a requested output Git would not deliver);
+  verification not observed, failing or stale; an edit to the work after the last verification
+  run, ADR-042; a requested output Git would not deliver);
 * once per ledger frontier and session: a second Stop at the same frontier passes, so an agent
   that cannot or will not act is never trapped;
 * an obligation a recorded blocker decision names (authority, consent, credentials, an
@@ -51,6 +52,7 @@ from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
+    EDITED_AFTER_LAST_VERIFICATION_GAP,
     PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     PLANNED_VERIFICATION_STALE_GAP,
@@ -111,6 +113,7 @@ _OBSERVATION_DEPENDENT: Final = frozenset(
         PLANNED_VERIFICATION_FAILED_GAP,
         PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
         PLANNED_VERIFICATION_STALE_GAP,
+        EDITED_AFTER_LAST_VERIFICATION_GAP,
     }
 )
 # The C4 readiness token for a recorded blocker the agent has not yet confirmed after being
@@ -149,6 +152,10 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP: "a planned verification never seen run as recorded",
     PLANNED_VERIFICATION_FAILED_GAP: "a planned verification failed on its latest run",
     PLANNED_VERIFICATION_STALE_GAP: "a planned verification last ran before your latest edit",
+    EDITED_AFTER_LAST_VERIFICATION_GAP: (
+        "you edited the work after your last verification run: re-run the verification you"
+        " planned (or the tests you last ran) on the final state"
+    ),
     REQUESTED_OUTPUT_GIT_IGNORED_GAP: "a requested output is git-ignored, so a diff omits it",
     DECLARED_OUTPUT_REMOVED_GAP: (
         "a declared delivered file was deleted or renamed away; restore the delivered file, or"
@@ -211,7 +218,7 @@ _OBLIGATION_SHORT_TEXT: Final = (
 )
 # Every host clips the Stop text at 2,000 characters; the gate stays under that whole.
 _MAX_TEXT_CHARS: Final = 2_000
-_DRAIN_TEXT: Final = "(Observations were still draining; planned-verification facts unused.)"
+_DRAIN_TEXT: Final = "(Observations were still draining; verification facts unused.)"
 # A re-check names at most this many blocked obligations; the rest are counted.
 _MAX_NAMED_BLOCKERS: Final = 3
 # F3: the gate names at most this many result ids a completion claim must disclose.

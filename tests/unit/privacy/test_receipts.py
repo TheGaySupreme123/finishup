@@ -143,6 +143,7 @@ def test_network_receipt_has_complete_frozen_schema_shape() -> None:
         "request_commitment",
         "withheld_item_ids",
         "withheld_item_reason",
+        "origin_operation",
     }
 
 

@@ -214,6 +214,7 @@ from yoetz.domain.observation import (
     observation_capture_ticket_id,
 )
 from yoetz.domain.privacy import (
+    OBSERVATION_ADVICE_PACKET_ITEM_ID,
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -6516,7 +6517,7 @@ async def provide_service_ready_context(
             provider_binding=binding,
             items=(
                 CandidateContextItem(
-                    "observation-advice-packet",
+                    OBSERVATION_ADVICE_PACKET_ITEM_ID,
                     DataCategory.BOUNDED_STRUCTURAL_METADATA,
                     repository_scope,
                     "/observation-advice",

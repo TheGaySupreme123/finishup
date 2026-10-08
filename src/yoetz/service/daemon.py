@@ -518,6 +518,20 @@ def _read_projection_incident_key(
     )
 
 
+def _structural_request_id(body: object) -> str | None:
+    """Return a call body's public ``req_`` id, or ``None``; never raises (tb4n2 NEW-8)."""
+
+    try:
+        value: object = (
+            cast(Mapping[str, object], body).get("request_id")
+            if isinstance(body, dict)
+            else cast(object, getattr(body, "request_id", None))
+        )
+        return validate_id(IdKind.REQUEST, value) if isinstance(value, str) else None
+    except Exception:
+        return None
+
+
 class _Listener(Protocol):
     async def accept(self) -> ControlStream: ...
 
@@ -1812,6 +1826,7 @@ class ServiceDaemon:
         request: ControlCallRequest,
         write_lock: asyncio.Lock,
     ) -> None:
+        call_started = time.monotonic()
         if session.repository_privacy_context is None:
             result = await self.dispatch(
                 session.client_kind,
@@ -1849,10 +1864,19 @@ class ServiceDaemon:
             # failure: record the bounded reason and end the call so the daemon reports neither
             # `frame_invalid` nor an unretrieved task exception (issue #678). The read side sees
             # the same dead stream and finalizes the connection.
+            # Bounded structural context makes an abandoned write attributable (tb4n2 NEW-8):
+            # the closed wire method, the handshake client kind, the call's elapsed time and its
+            # public `req_` id when it has one. Never the body, the peer or the rpc id.
             record_bounded_event_without_raising(
                 component="service.daemon",
                 operation="control_response_write",
                 reason=exc.reason,
+                request_id=_structural_request_id(request.body),
+                context={
+                    "control_method": request.method.value,
+                    "client_kind": session.client_kind.value,
+                    "duration_ms": max(0, int((time.monotonic() - call_started) * 1_000)),
+                },
             )
             return
         if request.method is ControlMethod.SERVICE_STOP and result.outcome == "ok":

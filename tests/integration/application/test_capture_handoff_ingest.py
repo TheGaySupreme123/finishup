@@ -12,7 +12,7 @@ import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -52,6 +52,8 @@ class _Lane:
     coordinator: ObservationCoordinator
     capture: ObservationIngestRequest
     structural: ObservationIngestRequest
+    ledger: Any = None
+    runtime: Any = None
 
     def ticket(self) -> ObservationCaptureTicket | None:
         return self.observation.load_capture_ticket(
@@ -92,8 +94,8 @@ async def _lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Lane:
         _session_commitment,
         local,
         observation,
-        _ledger,
-        _runtime,
+        ledger,
+        runtime,
         coordinator,
         client,
         connect,
@@ -136,6 +138,8 @@ async def _lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Lane:
         coordinator,
         capture,
         structural,
+        ledger,
+        runtime,
     )
 
 
@@ -280,4 +284,177 @@ async def test_capture_staged_while_its_row_is_in_flight_is_retired_at_commit(
     assert lane.reservations() == 0
     (entry,) = lane.retirements()
     assert entry["stage"] == "structural_committed"
+    lane.coordinator.close()
+
+
+async def _case_gaps(lane: _Lane, seed: int) -> tuple[str, ...]:
+    from integration.application.test_native_capture_pipeline import (
+        _ZERO_DIGEST,  # pyright: ignore[reportPrivateUsage]
+        _ids,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.kernel.deterministic_checks import case_coverage
+    from yoetz.ports.ledger import FrozenCase
+    from yoetz.protocol.ids import IdKind
+
+    frontier = await lane.ledger.load_frontier()
+    frozen = await lane.ledger.freeze_case(
+        lane.runtime.session_id,
+        lane.runtime.writer_id,
+        frontier.sequence,
+        _ids(IdKind.REQUEST, seed),
+        _ZERO_DIGEST,
+    )
+    assert isinstance(frozen, FrozenCase)
+    return case_coverage(frozen.case).known_gaps
+
+
+@pytest.mark.anyio
+async def test_a_retired_handoff_puts_its_disclosure_on_its_own_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1019 (tb4n2 N-4): a retirement is no longer visible only in a workspace ring buffer.
+
+    The retiring task's coverage carries ``capture_handoff_retired`` once, through one marker
+    keyed by the ticket; a replay of the same row adds no second marker, and another task's
+    runtime never receives it.
+    """
+
+    from yoetz.domain.observation import CaptureHandoffRetirementReason
+
+    lane = await _lane(tmp_path, monkeypatch)
+    ticket = await lane.stage()
+
+    def fenced(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(lane.local, "content_capture_authority_is_current", fenced)
+    result = await lane.coordinator.ingest_request(lane.structural)
+    assert result.disposition is ObservationIngestDisposition.ACCEPTED
+    assert len(lane.retirements()) == 1
+
+    assert "capture_handoff_retired" in await _case_gaps(lane, 41)
+    frontier = (await lane.ledger.load_frontier()).sequence
+    await lane.coordinator._publish_capture_handoff_retirement(  # pyright: ignore[reportPrivateUsage]
+        lane.runtime, ticket, CaptureHandoffRetirementReason.CONTENT_NOT_ADMITTED
+    )
+    assert (await lane.ledger.load_frontier()).sequence == frontier
+
+    class _OtherTask:
+        task_id = "tsk_00000000-0000-4000-8000-0000000010ff"
+
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError("another task's runtime must not be written: " + name)
+
+    await lane.coordinator._publish_capture_handoff_retirement(  # pyright: ignore[reportPrivateUsage]
+        cast(Any, _OtherTask()), ticket, CaptureHandoffRetirementReason.CONTENT_NOT_ADMITTED
+    )
+    assert (await lane.ledger.load_frontier()).sequence == frontier
+    lane.coordinator.close()
+
+
+@pytest.mark.anyio
+async def test_a_consumed_handoff_leaves_no_retirement_disclosure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A task whose handoff was attached normally carries no ``capture_handoff_retired``."""
+
+    lane = await _lane(tmp_path, monkeypatch)
+    await lane.stage()
+    result = await lane.coordinator.ingest_request(lane.structural)
+    assert result.disposition is ObservationIngestDisposition.ACCEPTED
+    assert lane.retirements() == ()
+    assert "capture_handoff_retired" not in await _case_gaps(lane, 42)
+    lane.coordinator.close()
+
+
+@pytest.mark.anyio
+async def test_an_interrupted_retirement_disclosure_is_retried_not_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1019 review: the marker is durable before the ticket stops being reconcilable.
+
+    A failed marker append leaves the ticket pending (and counted once); the next
+    reconciliation pass publishes the marker and only then retires the ticket.
+    """
+
+    from yoetz.application import observation_coordinator as coordinator_module
+
+    lane = await _lane(tmp_path, monkeypatch)
+    await lane.stage()
+
+    def fenced(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(lane.local, "content_capture_authority_is_current", fenced)
+    original = ObservationCoordinator._append_structural_batch  # pyright: ignore[reportPrivateUsage]
+    failures: list[object] = []
+
+    async def interrupted(*_args: object, **_kwargs: object) -> object:
+        failures.append(_args)
+        raise RuntimeError("ledger append interrupted")
+
+    def quiet(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(lane.coordinator, "_append_structural_batch", interrupted)
+    monkeypatch.setattr(coordinator_module, "record_unexpected_exception_without_raising", quiet)
+    result = await lane.coordinator.ingest_request(lane.structural)
+    assert result.disposition is ObservationIngestDisposition.ACCEPTED
+    assert len(failures) == 1
+    pending = lane.ticket()
+    assert pending is not None and pending.state == "pending"
+    # While the ticket is pending a new check is not admitted, so no check can miss the loss.
+    with pytest.raises(PublicOperationError):
+        await _case_gaps(lane, 43)
+
+    # The row is gone and the handoff aged out: the next pass retries the disclosure.
+    monkeypatch.setattr(
+        lane.coordinator,
+        "_append_structural_batch",
+        original.__get__(lane.coordinator, ObservationCoordinator),
+    )
+    lane.acknowledge_structural_row()
+
+    def aged(_ticket: ObservationCaptureTicket) -> int:
+        return 10**12
+
+    monkeypatch.setattr(lane.coordinator, "_capture_handoff_age_ms", aged)
+    assert await lane.coordinator.reconcile_task_capture_handoffs(lane.runtime) == 1
+    retired = lane.ticket()
+    assert retired is not None and retired.state == "revoked"
+    assert "capture_handoff_retired" in await _case_gaps(lane, 44)
+    assert len(lane.retirements()) == 1  # the loss is counted once across both passes
+    lane.coordinator.close()
+
+
+@pytest.mark.anyio
+async def test_a_terminal_store_refusal_still_discloses_the_retired_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1019 review: a ``cursor_stale`` refusal tombstones the staged ticket only after the
+    task-ledger marker is durable; the refused call's record is not claimed anywhere."""
+
+    from yoetz.domain.observation import ObservationIngestResult
+    from yoetz.domain.receipts import (
+        CAPTURE_HANDOFF_RETIRED_GAP,
+        check_time_change_gap_sentence,
+    )
+
+    lane = await _lane(tmp_path, monkeypatch)
+    await lane.stage()
+
+    async def stale(*_args: object, **_kwargs: object) -> ObservationIngestResult:
+        return ObservationIngestResult(ObservationIngestDisposition.REJECTED, "cursor_stale", None)
+
+    monkeypatch.setattr(lane.observation, "ingest", stale)
+    result = await lane.coordinator.ingest_request(lane.structural)
+    assert result.disposition is ObservationIngestDisposition.REJECTED
+    retired = lane.ticket()
+    assert retired is not None and retired.state == "revoked"
+    (entry,) = lane.retirements()
+    assert (entry["stage"], entry["reason"]) == ("structural_refused", "terminal_refusal")
+    assert CAPTURE_HANDOFF_RETIRED_GAP in await _case_gaps(lane, 45)
+    sentence = check_time_change_gap_sentence(CAPTURE_HANDOFF_RETIRED_GAP)
+    assert sentence is not None
+    assert "still recorded" not in sentence and "may be missing" in sentence
     lane.coordinator.close()

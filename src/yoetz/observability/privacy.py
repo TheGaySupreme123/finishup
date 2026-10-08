@@ -288,6 +288,10 @@ _LOG_FIELDS: Final = frozenset(
         "semantic_excerpt_ceiling_rounds",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
+        # Closed control-plane identity of an abandoned response write (tb4n2 NEW-8): the wire
+        # method enum value and the handshake client kind, never a body or a peer identity.
+        "control_method",
+        "client_kind",
     }
 )
 _MANIFEST_FIELDS: Final = frozenset(
@@ -353,6 +357,8 @@ _TOKEN_FIELDS: Final = frozenset(
         "startup_reason_code",
         "capability_probe_id",
         "semantic_conclusion",
+        "control_method",
+        "client_kind",
     }
 )
 _VERSION_FIELDS: Final = frozenset(

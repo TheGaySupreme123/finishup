@@ -283,6 +283,30 @@ unsupported claims and unbounded duplicate findings.
     outbox row remains pending. It does not acknowledge the already-committed core append alone,
     because doing so could permanently lose the authoritative correction; a repaired or rebuilt
     projection lets the same row replay and finish idempotently.
+    Amendment (issue #1019, tb4n2): a Codex hook advances its session generation at every
+    `SessionStart`, including the `compact` start after a context compaction, while the session
+    stream's generation follows the rollout file, which compaction does not rotate. The call
+    identity includes the generation, so a completed stream command first looks for its hook
+    call in the other recent generations of the same host session and task (at most 16). It
+    materializes under that generation only when exactly one such hook action exists in the task
+    ledger, it carries the same keyed command identity, and it holds no explicit outcome except
+    one this completion itself recorded; otherwise the stream keeps its own generation. The
+    reverse order (a stream completion delivered before a post-compaction hook call) still
+    records two actions.
+    Amendment (issue #1019, tb4n2 N-4): a retired native content handoff is disclosed on its own
+    task. Each retirement appends one marker, keyed by the ticket identity, to the ticket's task
+    ledger with the standing gap `capture_handoff_retired`; it never reaches another task and
+    names no path or content. Local proof and clean deterministic conclusions tolerate it, and
+    AI-powered findings treat it as a capture baseline. The marker is appended before the ticket is
+    tombstoned; a retryable or unexpected failure leaves the ticket pending for the next
+    reconciliation pass, so an interrupted publication is retried, not lost. Only a ledger that
+    terminally refuses the marker (or a route without a writer) lets the retirement proceed
+    without it, recorded in service diagnostics, so capture pressure is never held forever. The workspace-level
+    `content_capture_unavailable` flag in observation status stays a lifetime workspace flag:
+    the local store records it without a task (`note_coverage_gap` takes only the workspace, and
+    the status query names no task), so scoping it would need a task-keyed gap store and a
+    status query that resolves the current host session's task. The per-task marker is the
+    task-scoped signal instead.
 
 16. `obs-ledger/1.4.0` carries trusted observation-content manifests into ledger materialization.
     A manifest binds the encrypted object envelope plus the SHA-256 digest and byte count of its
@@ -875,6 +899,12 @@ owner decided: start the clock after connecting, spool durably, and finish the d
    task's rows remain (ADR-033 decision 5). Claude Code and Cursor ordinary profiles drain at
    Stop too; they no longer defer a contentless Stop pass. SessionEnd keeps its 0.15 s teardown
    slice under the three-second host clamp.
+
+4. **Drain and pass failures name their stage (tb4n2 N-3, issue #1019).** A drain preflight
+   records `drain_connect_timeout`, `drain_connect_failed` or `native_content_stage_failed`
+   instead of one `drain_preflight_failed` for both the connect and the content handoff; an
+   unexpected pass exception records `observe_<exception class>` from the service's reviewed
+   closed vocabulary instead of the bare `observe`. The old tokens stay admitted for older rows.
 
 Not changed: `check` does not wait for hook rows (a mid-session check can still be current as
 of an earlier frontier); local content cannot be spooled when the service is unreachable,

@@ -26,6 +26,7 @@ from yoetz.domain.observation import (
 )
 from yoetz.domain.observation_budget import AdmissionLossCause
 from yoetz.domain.values import JsonObject, JsonValue, validate_commitment
+from yoetz.observability.exception_reasons import EXCEPTION_REASON_TOKENS, exception_reason
 from yoetz.ports.control_reasons import CONTROL_ERROR_REASONS
 from yoetz.protocol.ids import IdKind, validate_id
 
@@ -36,6 +37,7 @@ except ImportError:  # pragma: no cover - supported hook hosts are POSIX
 
 __all__ = [
     "hook_diagnostic_summary",
+    "observe_exception_reason",
     "record_hook_diagnostic",
     "record_hook_timing",
     "record_store_lock_event",
@@ -73,7 +75,13 @@ _REASONS: Final = frozenset(
         *("control_" + reason for reason in _CONTROL_REASONS),
         "drain_diagnostic_unavailable",
         "invalid_session",
+        # Pre-tb4n2 rows: an unexpected hook-pass exception with no class. New passes record
+        # `observe_<exception class>` below instead (tb4n2 N-3a).
         "observe",
+        # An unexpected exception in a hook pass, named by the service's reviewed closed
+        # exception-class vocabulary (`observe_exception_value_error`, ...). An unlisted class
+        # collapses to `observe_exception_unavailable`; no class name a caller controls is kept.
+        *("observe_" + token for token in EXCEPTION_REASON_TOKENS),
         "outbox_overflow",
         # The closed admission dimension that refused a non-replayable input,
         # recorded beside `outbox_overflow` so a loss range is diagnosable
@@ -89,7 +97,13 @@ _REASONS: Final = frozenset(
         "timeout",
         "drain_budget_exhausted",
         "drain_lease_contended",
+        # Pre-tb4n2 rows conflated the service connect with native-content staging. New rows name
+        # the stage: the connect timed out or failed, content staging raised, or (still
+        # `drain_preflight_failed`) the local outbox read before the connect raised (tb4n2 N-3b).
         "drain_preflight_failed",
+        "drain_connect_timeout",
+        "drain_connect_failed",
+        "native_content_stage_failed",
         # A structural defect in the buffered admission account refused this
         # hook's pre-flush. Before this token the failure reached the outer
         # handler as the bare `observe` reason, so a permanently wedged flush
@@ -346,6 +360,12 @@ def record_hook_diagnostic(
     ):
         row["candidate_count"] = candidate_count
     _append_row(row, _state=_state)
+
+
+def observe_exception_reason(failure: BaseException) -> str:
+    """Return the closed hook reason for an unexpected exception in a hook pass (tb4n2 N-3a)."""
+
+    return "observe_" + exception_reason(failure)
 
 
 def _store_lock_phase_valid(value: object) -> bool:

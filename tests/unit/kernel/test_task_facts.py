@@ -17,6 +17,7 @@ from yoetz.domain.events import (
     PlanPublishedPayload,
     RequestedItem,
     RequestedItemKind,
+    RequestedItemRole,
     ResultOutcome,
 )
 from yoetz.domain.values import EventId, ObligationId, action_id, actor_id, obligation_id
@@ -89,8 +90,11 @@ def _planned(
     obligation: ObligationId = _OBLIGATION,
     status: ObligationStatus = ObligationStatus.OPEN,
 ) -> None:
+    versioned = any(
+        item.role is not None or item.item_kind is RequestedItemKind.DIRECTORY for item in items
+    )
     ledger.append(
-        _OBLIGATION_SCHEMA,
+        EventSchema("obligation_published", "1.1.0") if versioned else _OBLIGATION_SCHEMA,
         ObligationPublishedPayload(
             obligation_id=obligation,
             description="Synthetic obligation",
@@ -240,6 +244,123 @@ def test_edited_after_last_verification_needs_a_prior_verification_run() -> None
     ledger.edit()
     assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
     ledger.fail("pytest -q")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+
+
+@pytest.mark.parametrize("scope", ["scratch", "yoetz_owned"])
+def test_scratch_and_yoetz_owned_edits_never_make_verification_stale(scope: str) -> None:
+    """ADR-042 (tb4n2 R4): pretrain D `/tmp/*.py` scratch, cad S `/app/yoetz_receipt.md`."""
+
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest -q"))
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.edit(write_scope=scope)
+    markers = _markers(ledger)
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    assert (PLANNED_VERIFICATION_STALE_GAP, _OBLIGATION) not in markers
+
+    # A workspace edit (no scope token) and a real outside-workspace edit still count.
+    ledger.edit()
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert (PLANNED_VERIFICATION_STALE_GAP, _OBLIGATION) in _markers(ledger)
+    outside = ObservedLedger()
+    outside.passes("pytest -q")
+    outside.edit(write_scope="outside_workspace")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(outside)
+
+
+def test_a_deliverable_the_rule_could_call_scratch_keeps_every_edit_counting() -> None:
+    """Codex review round 1: a declared output under /tmp takes precedence over the exemption."""
+
+    ledger = ObservedLedger()
+    _planned(ledger, RequestedItem(RequestedItemKind.FILE, "/tmp/out/results.json"))
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.edit(write_scope="scratch")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
+def test_a_declared_output_directory_keeps_a_saved_receipt_counting() -> None:
+    """Codex review round 2: a receipt saved into a declared output directory changes it."""
+
+    ledger = ObservedLedger()
+    _planned(
+        ledger,
+        RequestedItem(RequestedItemKind.DIRECTORY, "/app/output", RequestedItemRole.OUTPUT),
+    )
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.edit(write_scope="yoetz_owned")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    # Scratch under /tmp stays exempt: the declared directory does not overlap a temp root.
+    other = ObservedLedger()
+    _planned(
+        other,
+        RequestedItem(RequestedItemKind.DIRECTORY, "/app/output", RequestedItemRole.OUTPUT),
+    )
+    _plan(other, _OBLIGATION)
+    other.passes("pytest -q")
+    other.edit(write_scope="scratch")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(other)
+
+
+def test_a_declared_file_in_a_yoetz_tree_keeps_yoetz_owned_edits_counting() -> None:
+    """Codex review round 3: a requested output the rule could call Yoetz-owned wins."""
+
+    ledger = ObservedLedger()
+    _planned(
+        ledger,
+        RequestedItem(
+            RequestedItemKind.FILE, "/app/.agents/skills/yoetz/SKILL.md", RequestedItemRole.OUTPUT
+        ),
+    )
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.edit(write_scope="yoetz_owned")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
+def test_non_executing_pytest_never_clears_staleness() -> None:
+    ledger = ObservedLedger()
+    ledger.passes("pytest -q")
+    ledger.edit()
+    ledger.passes("python -m pytest --version")
+    ledger.passes("pytest --collectonly")
+    ledger.passes("python -m pytest --fixtures-per-test")
+    ledger.passes("uv run --script build_model.py")
+    ledger.passes("python -m unittest --help")
+    ledger.passes("uv -q run python -m pytest --collectonly")
+    ledger.passes("uv run python /app/dev/build_model.py")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
+def test_scratch_edit_alone_is_not_acting() -> None:
+    ledger = ObservedLedger()
+    ledger.edit(write_scope="scratch")
+    prefix = ledger.prefix
+    assert not acting_started(
+        replay(prefix),
+        observed_event_ids_from_records(prefix),
+        cooperative_event_ids_from_records(prefix),
+    )
+
+
+def test_python_module_test_run_clears_edited_after_verification() -> None:
+    """tb4n2 interleaved S (P1-2): `python -m pytest` after the last edit is a verification run.
+
+    The fact was false in the field: `python -m pytest` classified as `other`, and an early
+    `python build_model.py` classified as `build`, so the only "verification" predated the edits.
+    """
+
+    ledger = ObservedLedger()
+    ledger.passes("python /app/dev/build_model.py")
+    ledger.edit()
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    ledger.passes("python -m pytest -q /app/dev/test_cracker.py")
+    ledger.edit()
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    ledger.passes("python -m pytest -q /app/dev/test_cracker.py")
     assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
 
 
@@ -587,14 +708,28 @@ def test_acting_starts_with_an_edit_a_published_action_or_a_verification_run() -
     ledger.passes("pytest -q")
     assert started(ledger)
 
-    published = ObservedLedger()
-    _planned(published, RequestedItem(RequestedItemKind.FILE, "out/report.json"))
-    published.append(
+    # tb4n2 E4 (P1-7): a published research action only reads; it is not acting.
+    researched = ObservedLedger()
+    _planned(researched, RequestedItem(RequestedItemKind.FILE, "out/report.json"))
+    researched.append(
         _ACTION_SCHEMA,
         ActionRecordedPayload(
             action_id("act_00000000-0000-4000-8000-000000000777"),
             ActionKind.RESEARCH,
             "Read the inputs.",
+        ),
+        observed=False,
+    )
+    assert not started(researched)
+
+    published = ObservedLedger()
+    _planned(published, RequestedItem(RequestedItemKind.FILE, "out/report.json"))
+    published.append(
+        _ACTION_SCHEMA,
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000778"),
+            ActionKind.EDIT,
+            "Write the report.",
         ),
         observed=False,
     )

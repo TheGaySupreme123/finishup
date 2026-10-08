@@ -29,7 +29,11 @@ for delivery are reduced here to closed tokens and nothing else crosses into the
   write into a temporary directory (``/tmp``, ``/var/tmp``, ``/dev/shm``, their macOS
   ``/private`` aliases, the per-user macOS ``/var/folders/<a>/<b>/T`` directory, or this
   process's own temporary directory) is not a misplaced deliverable and claims nothing. Paths are
-  normalized lexically first, so ``/tmp/../etc/x`` is ``/etc/x``.
+  normalized lexically first, so ``/tmp/../etc/x`` is ``/etc/x``. An edit tool whose every
+  path is scratch (a temporary directory outside the workspace) reports ``scratch``, and one whose
+  every path is Yoetz's own material (a saved ``yoetz_receipt.*``/``yoetz_export.*``, Yoetz's state
+  or isolation root, ``.agents/plugins/yoetz``, ``.agents/skills/yoetz``) reports ``yoetz_owned``
+  (``domain.write_scope``, ADR-042): neither makes an earlier verification stale.
 * ``effective_user`` — ``root`` or ``non_root``: the effective user this hook process (spawned by
   the host beside the agent's commands) runs as. It says nothing about the delivery environment.
 
@@ -38,8 +42,8 @@ No path, command text or environment value is returned, stored or logged.
 
 from __future__ import annotations
 
+import contextlib
 import os
-import posixpath
 import re
 import shlex
 import shutil
@@ -47,6 +51,7 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import Final, cast
 
+from yoetz.domain.write_scope import classify_write_path, edit_write_scope, scratch_path
 from yoetz.protocol.canonical import JsonValue
 
 __all__ = [
@@ -76,22 +81,12 @@ _EDIT_TOOLS: Final = frozenset(
 )
 _EDIT_PATH_KEYS: Final = ("file_path", "path", "target_file", "filePath", "notebook_path")
 _HEREDOC: Final = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-_PATCH_PATH: Final = re.compile(r"^\*\*\* (?:Add File|Update File|Move to): (.+)$", re.MULTILINE)
+_PATCH_PATH: Final = re.compile(
+    r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", re.MULTILINE
+)
 _REDIRECT_OPERATORS: Final = frozenset({">", ">>", ">|", "&>", "&>>"})
 _SHELL_TOOLS: Final = frozenset({"Bash", "bash", "Shell", "shell", "exec_command", "local_shell"})
 _LOCATION_FLAGS: Final = ("--target", "-t", "--prefix", "--root")
-# Scratch roots every supported OS reserves for temporary files (issue E6, tb4n1: 28 of 33
-# attempts flagged only `/tmp` logs). `/dev/` stays wholly exempt below for device targets.
-_TEMP_ROOTS: Final = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/dev/shm")
-# macOS per-user temporary directory: `/var/folders/<a>/<b>/T` (the `C` cache sibling is not
-# temporary). `/var` is a symlink to `/private/var`, so both spellings name the same directory.
-_MACOS_USER_TEMP: Final = re.compile(r"^/(?:private/)?var/folders/[^/]+/[^/]+/T(?:/|$)")
-# WSL 2: the Windows per-user and system temporary directories as mounted under /mnt/<drive>.
-_WSL_WINDOWS_TEMP: Final = re.compile(
-    r"^/mnt/[a-z]/(?:users/[^/]+/appdata/local/temp|windows/temp)(?:/|$)", re.IGNORECASE
-)
-# The last component of an environment temp directory must name temporary space.
-_TEMP_NAME: Final = re.compile(r"te?mp|scratch", re.IGNORECASE)
 
 
 def _raw_command(tool_input: Mapping[str, JsonValue]) -> str | None:
@@ -346,53 +341,24 @@ def _write_targets(command: str) -> list[str]:
     return [target for target in targets if target.startswith("/")]
 
 
-def _process_temp_roots(workspace: str | None) -> tuple[str, ...]:
-    """This process's own temporary directory roots, from the environment only.
-
-    ``TMPDIR``, ``TEMP`` and ``TMP`` are read lexically and never probed: ``tempfile.gettempdir``
-    touches the filesystem, can fall back to the working directory and raises when no directory
-    is usable, and an exception here would drop every runtime fact for the event. These values
-    are host environment, so a root that is the filesystem root, contains the home directory, or
-    is or contains the workspace is never trusted as scratch space.
-    """
-
-    home = os.environ.get("HOME")
-    guarded = [posixpath.normpath(home)] if home and home.startswith("/") else []
-    if workspace is not None and workspace.startswith("/"):
-        guarded.append(posixpath.normpath(workspace))
-    candidates: set[str] = set()
-    for name in ("TMPDIR", "TEMP", "TMP"):
-        raw = os.environ.get(name)
-        if not raw or not raw.startswith("/") or "\x00" in raw:
-            continue
-        normalized = posixpath.normpath(raw)
-        # Only a directory named as temporary space is trusted: a TMPDIR pointed at a
-        # deliverable location (``/results``) must not hide real writes there.
-        if _TEMP_NAME.search(posixpath.basename(normalized)) is None:
-            continue
-        candidates.add(normalized)
-    return tuple(
-        root
-        for root in sorted(candidates)
-        if root != "/" and not any(_under(path, root) for path in guarded)
-    )
-
-
 def _scratch_path(path: str, workspace: str | None = None) -> bool:
-    """Whether an absolute path lands in a temporary or device directory.
+    """Whether an absolute path lands in a temporary or device directory (``domain.write_scope``)."""
 
-    Normalized lexically first (never through the filesystem), so ``..`` cannot climb out of a
-    temporary root while still reading as inside it.
-    """
+    return scratch_path(path, workspace)
 
-    normalized = posixpath.normpath(path)
-    if normalized.startswith("//"):
-        normalized = "/" + normalized.lstrip("/")
-    if normalized.startswith("/dev/"):
-        return True
-    if _MACOS_USER_TEMP.match(normalized) or _WSL_WINDOWS_TEMP.match(normalized):
-        return True
-    return any(_under(normalized, root) for root in (*_TEMP_ROOTS, *_process_temp_roots(workspace)))
+
+def _owned_roots() -> tuple[str, ...]:
+    """Yoetz's own state directory, when this hook process can name it without failing."""
+
+    roots: list[str] = []
+    with contextlib.suppress(Exception):
+        from yoetz.config.paths import isolated_root, state_dir
+
+        isolated = isolated_root()
+        if isolated is not None:
+            roots.append(str(isolated))
+        roots.append(str(state_dir()))
+    return tuple(roots)
 
 
 def _shell_writes_outside(
@@ -451,11 +417,23 @@ def runtime_structural_facts(
         hint in lowered for hint in ("shell", "exec", "terminal")
     )
     if tool_name in _PATCH_TOOLS or tool_name in _EDIT_TOOLS:
-        if workspace_locator is not None and any(
-            path.startswith("/") and not _scratch_path(path, workspace_locator) and not inside(path)
+        # Classify every written path (tb4n2 R4, ADR-042): only an edit whose every path is
+        # scratch (temp roots outside the workspace) or Yoetz-owned (a saved receipt, Yoetz state, the
+        # packaged Yoetz trees) is named so; it never makes an earlier verification stale.
+        owned = _owned_roots()
+        scope = edit_write_scope(
+            classify_write_path(
+                path,
+                workspace=workspace_locator,
+                inside=(
+                    None if workspace_locator is None or not path.startswith("/") else inside(path)
+                ),
+                owned_roots=owned,
+            )
             for path in _edit_paths(tool_name, tool_input, payload)
-        ):
-            facts["write_scope"] = "outside_workspace"
+        )
+        if scope is not None:
+            facts["write_scope"] = scope
         return facts
     if not is_shell:
         return facts

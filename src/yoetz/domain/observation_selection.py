@@ -17,6 +17,7 @@ import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final, Literal, cast
 
 from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
@@ -506,7 +507,27 @@ def _routine_shell_facts(payload: Mapping[str, CanonicalJsonValue]) -> _RoutineF
     return _RoutineFacts(True, "routine_shell")
 
 
+# Flags that make a verifier report on itself instead of verifying anything.
+_INFORMATION_FLAGS: Final = frozenset({"--help", "-h", "--version", "-V"})
+_VERIFYING_CLASSES: Final = frozenset({"test", "lint", "typecheck", "build"})
+
+
 def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
+    """``_classify_argv`` with information-only invocations demoted (Codex review round 3).
+
+    ``python -m unittest --help`` or ``ruff --version`` verifies nothing, so it never counts as a
+    verification run.
+    """
+
+    runner = _classify_argv(argv)
+    if runner in _VERIFYING_CLASSES and any(
+        argument in _INFORMATION_FLAGS for argument in argv[1:]
+    ):
+        return "other"
+    return runner
+
+
+def _classify_argv(argv: list[str]) -> RunnerClass | None:
     if not argv:
         return None
     if "/" in argv[0] or "\\" in argv[0]:
@@ -514,6 +535,11 @@ def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
     command = argv[0].rsplit("/", 1)[-1].casefold()
     if command in _SHELL_WRAPPERS and len(argv) >= 3 and _SHELL_COMMAND_FLAG_RE.fullmatch(argv[1]):
         return command_runner_class({"command": argv[2]})
+    wrapped = _run_wrapper_target(command, argv)
+    if wrapped is not None:
+        # ``uv run python build_model.py`` is the wrapped command, classified on its own; the
+        # wrapper's name never makes a script a build or a test (ADR-042).
+        return _runner_class_for_argv(wrapped)
     if command == "rg" and any(
         argument.partition("=")[0].casefold() in _RG_PRE_OPTIONS
         or argument.casefold().startswith("--pre")
@@ -528,6 +554,18 @@ def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
         return "other"
     if command in {"cat", "cut", "find", "grep", "head", "less", "ls", "pwd", "rg", "tail", "wc"}:
         return "exploration"
+    if command in {"pytest", "py.test"} and _non_executing_test_run(argv[1:]):
+        return "other"
+    module = _python_module(command, argv)
+    if module is not None:
+        if module == "pytest" and _non_executing_test_run(argv):
+            # ``python -m pytest --version`` or ``--collect-only`` runs no test.
+            return "other"
+        # ``python -m pytest`` is a test run exactly like ``pytest`` (tb4n2 interleaved S: every
+        # ``python -m pytest`` counted as ``other``, so a passing post-edit run never cleared
+        # ``edited_after_last_verification``). Only a closed set of verification modules is named;
+        # any other module stays ``other``.
+        return _PYTHON_VERIFICATION_MODULES.get(module, "other")
     lowered = {argument.casefold() for argument in argv[1:]}
     joined = " ".join(argv).casefold()
     if command in {"git", "hg", "svn"}:
@@ -565,9 +603,153 @@ def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
         marker in joined for marker in (" typecheck", " type-check", "mypy", "pyright", "tsc")
     ):
         return "typecheck"
+    if command in _INTERPRETERS or _PYTHON_NAME_RE.fullmatch(command) is not None:
+        if "build" in lowered:
+            # ``python setup.py build``: an explicit build subcommand, not a file name.
+            return "build"
+        # A script an interpreter runs is the agent's own program, never a build because its
+        # file name contains "build" (tb4n2 interleaved S: ``python build_model.py`` was the
+        # only "verification" run of the task, so the edited-after-verification fact stuck).
+        return "other"
     if "build" in joined:
         return "build"
     return "other"
+
+
+_PYTHON_NAME_RE: Final = re.compile(r"^python(?:[0-9]+(?:\.[0-9]+)?)?$", re.ASCII)
+_INTERPRETERS: Final = frozenset({"node", "deno", "bun", "ruby", "perl", "php", "rscript", "sage"})
+# Python options that take a separate operand before ``-m`` (``python -X dev -m pytest``).
+_PYTHON_OPTIONS_WITH_OPERAND: Final = frozenset({"-X", "-W", "-Q"})
+_PYTHON_VERIFICATION_MODULES: Final[Mapping[str, RunnerClass]] = MappingProxyType(
+    {
+        "pytest": "test",
+        "unittest": "test",
+        "nose2": "test",
+        "tox": "test",
+        "nox": "test",
+        "doctest": "test",
+        "mypy": "typecheck",
+        "pyright": "typecheck",
+        "ruff": "lint",
+        "flake8": "lint",
+        "pylint": "lint",
+        "pyflakes": "lint",
+        "pycodestyle": "lint",
+        "build": "build",
+        "compileall": "build",
+    }
+)
+
+
+# Options that make pytest report on itself or collect without running a test.
+_PYTEST_NON_EXECUTING: Final = frozenset(
+    {
+        "--version",
+        "-V",
+        "-h",
+        "--help",
+        "--collect-only",
+        "--collectonly",
+        "--co",
+        "--fixtures",
+        "--funcargs",
+        "--fixtures-per-test",
+        "--markers",
+        "--setup-only",
+        "--setup-plan",
+    }
+)
+# Project runners whose ``run`` subcommand executes the command that follows.
+_RUN_WRAPPERS: Final = frozenset({"uv", "poetry", "pipenv", "pdm", "hatch", "rye"})
+_RUN_SCRIPT_OPTIONS: Final = frozenset({"--script", "-s", "--gui-script"})
+# ``uv run`` options that take a separate value (``uv run --with numpy python x.py``).
+_RUN_OPTIONS_WITH_VALUE: Final = frozenset(
+    {
+        "--with",
+        "-w",
+        "--with-editable",
+        "--with-requirements",
+        "--python",
+        "-p",
+        "--project",
+        "--directory",
+        "--env-file",
+        "--extra",
+        "--group",
+        "--only-group",
+        "--no-group",
+        "--package",
+        "--index",
+        "--index-url",
+        "--default-index",
+        "--extra-index-url",
+        "--find-links",
+        "-f",
+        "--index-strategy",
+        "--config-setting",
+        "-C",
+        "--resolution",
+        "--prerelease",
+        "--exclude-newer",
+        "--link-mode",
+        "--cache-dir",
+        "--color",
+        "--config-file",
+        "-e",
+        "--env",
+    }
+)
+
+
+def _non_executing_test_run(arguments: list[str]) -> bool:
+    return any(argument in _PYTEST_NON_EXECUTING for argument in arguments)
+
+
+def _run_wrapper_target(command: str, argv: list[str]) -> list[str] | None:
+    """The command a ``uv run``/``poetry run`` style wrapper executes, or ``None``."""
+
+    if command not in _RUN_WRAPPERS:
+        return None
+    # Global options may precede ``run`` (``uv -q run ...``, ``uv --directory x run ...``).
+    index = 1
+    while index < len(argv) and argv[index].startswith("-"):
+        index += 2 if argv[index] in _RUN_OPTIONS_WITH_VALUE else 1
+    if index >= len(argv) or argv[index] != "run":
+        return None
+    index += 1
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--":
+            index += 1
+            break
+        if not argument.startswith("-"):
+            break
+        if argument in _RUN_SCRIPT_OPTIONS:
+            # ``uv run --script build_model.py`` runs the agent's own script.
+            return ["script"]
+        index += 2 if argument in _RUN_OPTIONS_WITH_VALUE else 1
+    return argv[index:] or None
+
+
+def _python_module(command: str, argv: list[str]) -> str | None:
+    """The ``-m`` module a Python interpreter runs, or ``None`` when *argv* runs no module."""
+
+    if _PYTHON_NAME_RE.fullmatch(command) is None:
+        return None
+    index = 1
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "-m":
+            return argv[index + 1].split(".", 1)[0] if index + 1 < len(argv) else None
+        if argument.startswith("-m") and len(argument) > 2:
+            return argument[2:].split(".", 1)[0]
+        if argument in _PYTHON_OPTIONS_WITH_OPERAND:
+            index += 2
+            continue
+        if not argument.startswith("-") or argument in {"-c", "-"}:
+            return None
+        index += 1
+    return None
 
 
 def _raw_command(payload: Mapping[str, CanonicalJsonValue]) -> str | None:

@@ -276,6 +276,7 @@ class ObservedLedger:
         write_outside_workspace: bool = False,
         effective_user: str | None = None,
         runner: str | None = None,
+        write_scope: str | None = None,
     ) -> ResultId:
         """Record one tool call as the coordinator materializes it: action, then result."""
 
@@ -316,6 +317,7 @@ class ObservedLedger:
                     install_target=install_target,
                     write_outside_workspace=write_outside_workspace,
                     effective_user=effective_user,
+                    write_scope=write_scope,
                 ),
                 command=recorded,
                 subject_state=subject_state,
@@ -386,6 +388,7 @@ class ObservedLedger:
         *,
         subject_state: SubjectStateRef | None = None,
         write_outside_workspace: bool = False,
+        write_scope: str | None = None,
     ) -> ResultId:
         """An observed apply_patch/edit capture; Codex states its exit code (#883)."""
 
@@ -395,6 +398,7 @@ class ObservedLedger:
             kind=ActionKind.EDIT,
             subject_state=subject_state,
             write_outside_workspace=write_outside_workspace,
+            write_scope=write_scope,
         )
 
     def claim(

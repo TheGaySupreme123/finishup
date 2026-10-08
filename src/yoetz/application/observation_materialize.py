@@ -50,6 +50,7 @@ from yoetz.domain.observation import (
     validate_observed_images,
 )
 from yoetz.domain.observation_loss import ObservationSelectionLoss
+from yoetz.domain.receipts import CAPTURE_HANDOFF_RETIRED_GAP
 from yoetz.domain.values import (
     Actor,
     ActorType,
@@ -65,6 +66,7 @@ from yoetz.domain.values import (
     object_id,
     result_id,
 )
+from yoetz.domain.write_scope import WRITE_SCOPES
 from yoetz.kernel.observed_failures import observed_action_description, observed_command_field
 from yoetz.ports.integrations import observation_pairing_contract
 from yoetz.protocol.canonical import request_digest
@@ -353,17 +355,24 @@ class _RuntimeDescriptionFacts(TypedDict, total=False):
     install_target: str | None
     write_outside_workspace: bool
     effective_user: str | None
+    write_scope: str | None
 
 
 def _runtime_description_facts(structural: Mapping[str, JsonValue]) -> _RuntimeDescriptionFacts:
-    """The closed runtime tokens (#977) the observed action description carries."""
+    """The closed runtime tokens (#977) the observed action description carries.
+
+    ``write_scope`` also names an edit whose every path was scratch or Yoetz-owned (ADR-042);
+    the kernel never lets such an edit make an earlier verification stale.
+    """
 
     install = structural.get("install_target")
     user = structural.get("effective_user")
+    scope = structural.get("write_scope")
     return {
         "install_target": install if type(install) is str else None,
-        "write_outside_workspace": structural.get("write_scope") == "outside_workspace",
+        "write_outside_workspace": scope == "outside_workspace",
         "effective_user": user if type(user) is str else None,
+        "write_scope": scope if type(scope) is str and scope in WRITE_SCOPES else None,
     }
 
 
@@ -395,10 +404,25 @@ def _omitted_command(structural: Mapping[str, JsonValue]) -> str:
     return "omitted:structural"
 
 
+def _yoetz_mcp_tool(lowered: str) -> bool:
+    """Whether a lower-cased host tool name is a server-qualified Yoetz MCP tool."""
+
+    if not lowered.startswith("mcp__"):
+        return False
+    server, separator, _tool = lowered[len("mcp__") :].partition("__")
+    return bool(separator) and "yoetz" in server.split("_")
+
+
 def _action_kind(tool: str | None) -> ActionKind:
     if tool is None:
         return ActionKind.OTHER
     lowered = tool.lower()
+    if _yoetz_mcp_tool(lowered):
+        # Yoetz's own MCP tools (``mcp__yoetz__check``, ``mcp__plugin_yoetz_yoetz__receipt``)
+        # record and read the ledger; they never change the work under test, so they are never an
+        # edit or a command whatever their name contains (ADR-042, tb4n2 R4). Another server's
+        # tool keeps the name rules below: ``mcp__fs__edit_file`` may really edit a file.
+        return ActionKind.OTHER
     if lowered in _FILE_TOOLS or "edit" in lowered or "patch" in lowered:
         return ActionKind.EDIT
     if lowered in _COMMAND_TOOLS or "shell" in lowered or "exec" in lowered:
@@ -944,6 +968,65 @@ def materialize_selection_loss(
         coverage,
         PublicationChannel.HOOK_OBSERVED,
         (ObservationGapCode.OBSERVATION_INPUT_LOSS.value,),
+        None,
+    )
+
+
+def materialize_capture_handoff_retirement(
+    *, task_id: str, ticket_id: str, reason: str, observed_at: Timestamp
+) -> MaterializedObservationBatch:
+    """Publish one task-scoped marker for a retired native content handoff (issue #1019).
+
+    The staged content of one observed call could not be attached to its structural row. The
+    marker carries ``capture_handoff_retired`` on this task's coverage and names only the closed
+    retirement reason; the ticket identity is a digest, and no path or content is recorded.
+    """
+
+    identity = "capture-handoff-retired:" + ticket_id
+    version = "capture-handoff-retirement/1.0.0"
+    payload = EvidenceRecordedPayload(
+        evidence_id(
+            stable_observation_id(
+                kind=IdKind.EVIDENCE,
+                task_id=task_id,
+                source_identity=identity,
+                mapping_version=version,
+                role="retirement_evidence",
+            )
+        ),
+        EvidenceKind.OTHER,
+        EvidenceImmutability.METADATA_ONLY,
+        observed_at,
+        description=(
+            "Captured content staged for one observed call was retired before it could be"
+            " attached, so it is not available; this marker does not show whether the call's"
+            " own record was committed. Retirement reason: " + reason + "."
+        ),
+    )
+    coverage = replace(
+        coverage_for_channel(PublicationChannel.HOOK_OBSERVED),
+        authorship_assurance=AuthorshipAssurance.SERVICE_AUTHENTICATED,
+        artifact_observation=ArtifactObservation.PUBLISHED_ONLY,
+        known_gaps=(CAPTURE_HANDOFF_RETIRED_GAP,),
+    )
+    item = _draft(
+        event=stable_observation_id(
+            kind=IdKind.EVENT,
+            task_id=task_id,
+            source_identity=identity,
+            mapping_version=version,
+            role="retirement_event",
+        ),
+        schema_name="evidence_recorded",
+        occurred_at=observed_at,
+        payload=payload,
+        role="capture_handoff_retired",
+    )
+    return MaterializedObservationBatch(
+        (item,),
+        coverage,
+        PublicationChannel.HOOK_OBSERVED,
+        (CAPTURE_HANDOFF_RETIRED_GAP,),
         None,
     )
 
@@ -1920,6 +2003,85 @@ def paired_action_linked_roles(draft_roles: tuple[str, ...]) -> tuple[str, ...]:
     """Return the role set a batch has once its canonical paired action is linked."""
 
     return tuple(role for role in draft_roles if role != PAIRED_ACTION_ROLE)
+
+
+@dataclass(frozen=True, slots=True)
+class CodexCallGenerationLink:
+    """The paired action one Codex stream command completion names in one generation.
+
+    ``command_identity`` is the base ``omitted:<commitment>`` command identity the
+    completion carries; an aliasing caller compares it with the committed action.
+    """
+
+    generation: int
+    action_id: str
+    action_event_id: str
+    command_identity: str
+
+
+def codex_stream_call_generation_links(
+    envelope: ObservationEnvelope,
+    *,
+    task_id: str,
+    generations: tuple[int, ...],
+) -> tuple[CodexCallGenerationLink, ...]:
+    """Return the paired-call action identities a stream completion would name per generation.
+
+    A Codex hook advances its session generation at every ``SessionStart``, including the
+    ``compact`` start after a context compaction, while the session stream's generation follows
+    the rollout file, which compaction does not rotate. The pair's action identity includes the
+    generation, so after a compaction a stream completion no longer names its hook call (#1019).
+    This returns the candidate identities for the given generations so the coordinator can find
+    the hook call. Only a completed, paired Codex stream command with a host call id and a keyed
+    command commitment qualifies; every other envelope returns ``()``.
+    """
+
+    if type(envelope) is not ObservationEnvelope:
+        return ()
+    structural = cast(Mapping[str, JsonValue], envelope.structural_payload)
+    if (
+        envelope.source is not ObservationSource.CODEX_SESSION_STREAM
+        or not stream_event_is_completed_tool(envelope.event_kind, structural)
+        or ObservationGapCode.UNPAIRED_EVENT.value in envelope.gap_codes
+    ):
+        return ()
+    pairing_mode, correlation_kind = _pairing_contract(envelope, structural)
+    if pairing_mode != "paired":
+        return ()
+    correlation = _correlation(structural, correlation_kind=correlation_kind)
+    commitment = structural.get("command_commitment")
+    family = _action_kind(_tool_name(structural))
+    if correlation is None or type(commitment) is not str or family is not ActionKind.COMMAND:
+        return ()
+    links: list[CodexCallGenerationLink] = []
+    for generation in generations:
+        if type(generation) is not int or isinstance(generation, bool) or generation < 1:
+            continue
+        aliased = replace(envelope, cursor=replace(envelope.cursor, source_generation=generation))
+        source = _materialization_call_source(
+            aliased, phase="pre", correlation=correlation, family=family.value
+        )
+        links.append(
+            CodexCallGenerationLink(
+                generation,
+                stable_observation_id(
+                    kind=IdKind.ACTION,
+                    task_id=task_id,
+                    source_identity=source,
+                    mapping_version=MATERIALIZATION_MAPPING_VERSION,
+                    role="action",
+                ),
+                stable_observation_id(
+                    kind=IdKind.EVENT,
+                    task_id=task_id,
+                    source_identity=source,
+                    mapping_version=MATERIALIZATION_MAPPING_VERSION,
+                    role="action_event",
+                ),
+                observed_command_field(commitment),
+            )
+        )
+    return tuple(links)
 
 
 def _logical_identity_digest(components: tuple[str, ...]) -> str:

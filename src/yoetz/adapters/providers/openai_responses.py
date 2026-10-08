@@ -164,6 +164,9 @@ PACKET_GAP_GLOSSARY: Final[Mapping[str, str]] = MappingProxyType(
     {
         "captured_object_unavailable": "a captured object could not be read back for this packet",
         "content_capture_unavailable": "host content capture was unavailable for that input",
+        "capture_handoff_retired": (
+            "host content staged for one call was never attached, so that call's content is absent"
+        ),
         "content_redacted": "retained content was redacted before it could be sent",
         "content_unselected": "retained content was not selected into this packet",
         "event_payload_unavailable": "a ledger event's payload could not be read",

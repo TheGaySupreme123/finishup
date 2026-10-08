@@ -38,6 +38,7 @@ from yoetz.domain.values import (
     validate_sha256_digest,
     writer_id,
 )
+from yoetz.domain.write_scope import WRITE_SCOPES
 from yoetz.protocol.canonical import canonical_digest, canonical_encode
 from yoetz.protocol.coverage import Coverage, coverage_from_json, coverage_to_json
 from yoetz.protocol.errors import PROTOCOL_REASON_CODES, ProtocolValueError
@@ -354,7 +355,7 @@ _RUNTIME_FACT_VALUES: Final = {
     "install_target": frozenset(
         {"yoetz_runtime", "workspace_env", "private_env", "system", "unresolved"}
     ),
-    "write_scope": frozenset({"outside_workspace"}),
+    "write_scope": WRITE_SCOPES,
     "effective_user": frozenset({"root", "non_root"}),
     "command_composition": frozenset({"single", "and_chain", "masked"}),
 }

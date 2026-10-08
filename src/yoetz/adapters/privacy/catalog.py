@@ -26,6 +26,7 @@ from yoetz.domain.privacy import (
     DisclosureProposal,
     EgressAuthorization,
     EgressChannel,
+    EgressOriginOperation,
     EgressReceipt,
     ForbiddenDataKind,
     HumanPrivacyDecision,
@@ -199,6 +200,9 @@ def _receipt_bytes(receipt: LocalDisclosureReceipt | EgressReceipt) -> bytes:
             scan.pop("not_run_reason", None)
         encoded.pop("withheld_item_ids", None)
         encoded.pop("withheld_item_reason", None)
+    if encoded.get("origin_operation", "") is None:
+        # Absent unless named (tb4n2 N-5), so every row written before the field keeps its bytes.
+        encoded.pop("origin_operation")
     return canonical_encode(cast(JsonValue, encoded))
 
 
@@ -411,6 +415,11 @@ def _network_receipt_from_bytes(data: bytes) -> EgressReceipt:
         dispatch_id=cast(str | None, source.get("dispatch_id")),
         dispatch_started_at=None if started is None else parse_rfc3339_millis(started),
         request_commitment=request_commitment,
+        origin_operation=(
+            None
+            if source.get("origin_operation") is None
+            else EgressOriginOperation(cast(str, source["origin_operation"]))
+        ),
     )
 
 

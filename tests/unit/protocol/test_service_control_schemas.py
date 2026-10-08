@@ -1408,7 +1408,11 @@ def _assert_v29_request_adds_only_command_commitment(
         "enum": ["private_env", "system", "unresolved", "workspace_env", "yoetz_runtime"],
         "type": "string",
     }
-    assert v29_fields["write_scope"] == {"enum": ["outside_workspace"], "type": "string"}
+    # ADR-042 (tb4n2 R4): an edit whose every path is scratch or Yoetz-owned is named so.
+    assert v29_fields["write_scope"] == {
+        "enum": ["outside_workspace", "scratch", "yoetz_owned"],
+        "type": "string",
+    }
     assert v29_fields["effective_user"] == {"enum": ["non_root", "root"], "type": "string"}
     assert v29_fields["runner_class"] == {
         "enum": ["build", "compound", "exploration", "lint", "other", "test", "typecheck", "vcs"],

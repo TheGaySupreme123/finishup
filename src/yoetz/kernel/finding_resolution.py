@@ -44,6 +44,7 @@ from yoetz.domain.findings import (
 )
 from yoetz.domain.receipts import (
     CHECK_TIME_CHANGE_GAPS,
+    CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
@@ -255,6 +256,9 @@ _EVIDENCE_STRENGTH_GAPS: Final = frozenset(
 _HOST_OBSERVATION_GAPS: Final = frozenset(
     {
         "captured_object_unavailable",
+        # A native content handoff retired before its row attached it (issue #1019): local packs
+        # never read captured bytes. A refused or quarantined row is disclosed by its own codes.
+        "capture_handoff_retired",
         # Capture-time redaction of a high-confidence secret shape (issue #982). Privacy filtering
         # exists for content leaving the machine; local packs judge event payloads, never the
         # captured bytes it replaced, so it stays a receipt disclosure and never vetoes local
@@ -1778,7 +1782,9 @@ def first_task_statement_sequence_of(records: tuple[LedgerRecord, ...]) -> int |
 
 # Codes that imply a check-time change reached the packet in part: without ``unavailable`` they
 # mean parts were carried.
+# The local structural read's skipped-path disclosure (issue #1019) says nothing about the packet.
 _CHECK_TIME_CHANGE_CARRIED_GAPS: Final = CHECK_TIME_CHANGE_GAPS - {
+    CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
     *CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
 }

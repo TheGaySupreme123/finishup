@@ -21,7 +21,9 @@ later check). The proof rules themselves are unchanged.
     ``subject_outside_checked_scope`` (the check did not cover it; run a full check);
   - ``no_material_change_since_finding`` (nothing changed since the finding);
   - any ``coverage:<code>`` whose ``GAP_CLASSIFICATION`` class is agent-actionable,
-    route-dependent or unknown (only a *standing* code is a Yoetz limit, so a new standing code
+    route-dependent or unknown, except a task fact that does not bear on this finding
+    (``kernel.task_fact_scope``, tb4n2 P1-2: an obligation-scoped fact about another obligation,
+    or ``edited_after_last_verification`` on a finding that is not about verification) (only a *standing* code is a Yoetz limit, so a new standing code
     becomes self-verifiable as soon as ``kernel/closure_readiness.py`` classifies it);
   - ``issue_returned_again`` for a deterministic finding (the rule fired again);
   - for an AI-powered finding, ``issue_returned_again``, ``reviewer_verdict_still_present`` or
@@ -50,6 +52,7 @@ from yoetz.domain.values import FindingId
 from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
 from yoetz.kernel.finding_resolution import finding_resolution_attempt
 from yoetz.kernel.projections import ProjectionState
+from yoetz.kernel.task_fact_scope import scoped_resolution_reasons
 from yoetz.protocol.models import SemanticStatus
 
 __all__ = [
@@ -237,14 +240,13 @@ def _attempt_reasons(
 ) -> tuple[str, ...]:
     """The resolution reasons eligibility reads for *finding_id*, and the refusal names.
 
-    The one seam for per-finding scoping of task-wide ``coverage:`` codes (tb4n2 R4): at merge it
-    becomes ``kernel.task_fact_scope.scoped_resolution_reasons(reasons, state=state,
-    finding_id=finding_id, records=records)``, so a refusal never names an unrelated task fact.
-    Until then the recorded reasons are returned unchanged.
+    The one seam for per-finding scoping of task-wide ``coverage:`` codes (tb4n2 R4/P1-2): task
+    facts about unrelated obligations (or a task-wide edit-after-verification fact on a finding that
+    is not about verification) are dropped, so eligibility and the refusal's ``blocking_reasons``
+    read the same scoped reasons and a refusal never names an unrelated task fact.
     """
 
-    del state, finding_id, records
-    return reasons
+    return scoped_resolution_reasons(reasons, state=state, finding_id=finding_id, records=records)
 
 
 def _evaluate(

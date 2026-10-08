@@ -1810,6 +1810,12 @@ def _egress_receipt_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     definitions = cast(dict[str, JsonValue], document["$defs"])
     reason_schema = cast(dict[str, JsonValue], definitions["privacy_reason"])
     _extend_receipt_schema_fields(document, reason_schema=reason_schema)
+    # The closed operation that asked for this network disclosure (tb4n2 N-5). Optional: rows
+    # written before it, and a disclosure whose producer is not recognized, omit it.
+    properties["origin_operation"] = {
+        "enum": ["credential_probe", "observation_advice", "semantic_check"],
+        "type": "string",
+    }
     document["title"] = "Yoetz egress receipt 1.1.0"
     return document
 
@@ -6697,11 +6703,15 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         }
         # Closed runtime facts the hook derives at the host boundary (#977): where a package
         # install resolved its interpreter, an edit outside the workspace, the effective user.
+        # ``write_scope`` also names an edit whose every path is scratch or Yoetz-owned (ADR-042).
         fields["install_target"] = {
             "enum": ["private_env", "system", "unresolved", "workspace_env", "yoetz_runtime"],
             "type": "string",
         }
-        fields["write_scope"] = {"enum": ["outside_workspace"], "type": "string"}
+        fields["write_scope"] = {
+            "enum": ["outside_workspace", "scratch", "yoetz_owned"],
+            "type": "string",
+        }
         fields["effective_user"] = {"enum": ["non_root", "root"], "type": "string"}
         # Digest-only facts for image tool results the hook saw (P3-2, issue #1013): the
         # decoded image's SHA-256 and byte count, a sniffed media type, and header dimensions.

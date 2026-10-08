@@ -52,6 +52,7 @@ from yoetz.domain.privacy import (
     ReceiptSecretScanStage,
     ReceiptTransformations,
     ReviewSelectionPolicy,
+    egress_origin_operation,
     external_review_credential_heuristic,
 )
 from yoetz.domain.receipts import (
@@ -2447,6 +2448,9 @@ class PrivacyCoordinator:
             reason,
             1,
             withheld_item_ids=withheld_item_ids,
+            origin_operation=egress_origin_operation(
+                candidate.purpose, (item.item_id for item in candidate.items)
+            ),
         )
         try:
             await self._audit.complete_decision(reservation.privacy_proposal_id, receipt)

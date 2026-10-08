@@ -866,3 +866,21 @@ reviewer only, and status shows it before any check. Decisions:
   under it carries the standing-limitation gap `semantic_review_credential_heuristic_disabled`. It
   is an owner disclosure choice, never agent work, and it weakens neither proof class.
 - The behaviour is service-side and identical on Codex, Claude Code and Cursor.
+
+## Egress receipt origin amendment (2026-10-08, issue #1019, tb4n2 N-5)
+
+tb4n2 recorded recurring `blocked_by_policy` / `insufficient_approved_context` semantic-review
+receipts on one `bounded_structural_metadata` item with no way to name the operation behind them.
+
+- Every network egress receipt (egress-receipt 1.1.0, still unreleased, edited in place) may carry
+  `origin_operation`, a closed token: `semantic_check` (an AI-powered review of a `check`),
+  `observation_advice` (the background observation-advice supervisor, #619) or
+  `credential_probe` (the credential ceremony's probe). It is derived, never asserted by a caller:
+  from the purpose plus the reserved structural item id each producer puts in its case
+  (`review-packet`, `observation-advice-packet`). An unrecognized shape omits the field, and a
+  receipt stored before it keeps its exact bytes. `privacy receipts get/list` return it; 1.0.0
+  receipts cannot carry it.
+- The n2 receipts are `observation_advice`: its single advice packet is not a review-packet
+  envelope, so the semantic-review assembly fails closed to insufficient approved context on every
+  attempt. Suppressing those attempts, or admitting the advice packet, is a separate decision (a
+  disclosure-shape change), recorded on issue #1019 and not made here.
