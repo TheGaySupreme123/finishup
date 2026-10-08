@@ -8381,6 +8381,24 @@ Wire (the earlier checklist fields remain available in their original versions):
   `no_unresolved_deterministic_findings`) and `premise_disputed_finding_ids` (a subset of
   `acknowledged_not_done_finding_ids`), each present only when non-empty, ids and closed tokens
   only, each with its own markdown/text section.
+- `receipt-document` `1.3.0` (issue #1017, ADR-032 amendment of 2026-10-08): a `gaps` row may
+  carry `status: "historical"` with `cleared_at_frontier` (a frontier object); both appear
+  together and only on a historical row, and an absent status reads as `live`, so earlier receipts
+  decode unchanged. Domain: `ReceiptGap.status` (`ReceiptGapStatus.LIVE` | `HISTORICAL`) and
+  `ReceiptGap.cleared_at_frontier`. A row is historical when its code reached the receipt only
+  through a retained finding's coverage (`retained_finding_coverage:<code>`), an earlier
+  `check_recorded` through the latest tested check carried it, and that latest check does not;
+  `cleared_at_frontier` is the subject frontier of the first check after the last one that carried
+  it (`application/receipt._historical_gaps`, replay-only). A code is never both live and
+  historical on one receipt, and only the 1.3.0 artifact writes the field. The document's
+  `coverage.known_gaps` keeps the full union (retained findings still carry the code); the receipt
+  conclusion (`kernel/receipt_builder._conclusion`), the limitations section and the compact
+  sentence consider live gaps only, and the receipt *result*'s top-level `coverage.known_gaps`
+  names live gaps only (`domain/receipts.live_receipt_gap_codes`), so the CLI "Limitations" line,
+  the MCP receipt summary count and the terminal interface never count a historical gap. Markdown
+  and text add a "Cleared earlier (historical)" section (`historical_gap_line`: code, clearing
+  frontier, and the code's fixed sentence); the CLI JSON rendering and the MCP summary name them
+  apart (`historical_gaps_from_wire`).
 - `receipt-document` `1.3.0`: optional `acknowledged_not_done_finding_ids` and
   `rejection_accepted_finding_ids` (sorted, 1–100, each a carried finding; absent when empty). The
   markdown and text renderings add "Acknowledged, not done" and "Rejection accepted" sections that

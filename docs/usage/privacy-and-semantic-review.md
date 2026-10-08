@@ -274,8 +274,13 @@ started before this version, the commit at its first check) — committed and un
 tracked files, plus untracked files Git does not ignore — from the repository the check's own
 connection named (only when that directory is the repository's own working tree: a repository whose
 Git settings point its working tree elsewhere is not read), and shows it to the reviewer first, with
-a header naming every changed file. It covers edits made by scripts and commits that no hook
-captured. Because the starting point is a commit, uncommitted or untracked work that was already in
+a header naming every changed file. Files you declared as outputs come first, then small files,
+then the rest, so when the change is cut for room your deliverables are kept and scratch files go
+first. It covers edits made by scripts and commits that no hook captured. A declared output that
+lives outside the repository (for example `/output/result.json`) is never read by Yoetz itself; when
+the case already holds a capture of it (output a hook recorded, or evidence the agent published
+that names it), that capture is carried with the same priority as the change, under the same
+redaction and never-send checks, and listed in the review input like every other excerpt. Because the starting point is a commit, uncommitted or untracked work that was already in
 your working tree when the task started is included too. Git hooks, helpers, filters and network
 access are off while it is read, credential-like text is redacted, and each part still passes the
 never-send check. Files named like credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and

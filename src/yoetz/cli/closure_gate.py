@@ -149,7 +149,11 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
         "the closing review has not run since your last change: run `check` with"
         " `final_review: true` (a recorded blocker does not waive it)"
     ),
-    PLANNED_VERIFICATION_NOT_OBSERVED_GAP: "a planned verification never seen run as recorded",
+    PLANNED_VERIFICATION_NOT_OBSERVED_GAP: (
+        "a planned verification never seen run as recorded; run it, or link the run that"
+        " executed it (`causal_parents` = its action event id; see"
+        " request-templates#publish-work-action)"
+    ),
     PLANNED_VERIFICATION_FAILED_GAP: "a planned verification failed on its latest run",
     PLANNED_VERIFICATION_STALE_GAP: "a planned verification last ran before your latest edit",
     EDITED_AFTER_LAST_VERIFICATION_GAP: (

@@ -11,8 +11,9 @@ service-authenticated values; missing material becomes an omission.
 from __future__ import annotations
 
 import hashlib
+import posixpath
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Final, Literal, NamedTuple, cast
@@ -23,6 +24,7 @@ from yoetz.application.check import (
     run_deterministic_policies,
 )
 from yoetz.application.missing_for_assessment import (
+    check_change_binary_paths,
     observed_image_evidence,
     supplied_since,
     unsupported_data_type,
@@ -121,6 +123,7 @@ from yoetz.kernel.projections import (
 from yoetz.kernel.task_facts import (
     acknowledged_obligation_ids,
     blocker_declarations,
+    effective_obligations,
     open_effective_obligations,
 )
 from yoetz.ports.change_capture import CHECK_CHANGE_MEDIA_TYPE, CheckChangeCapture
@@ -205,6 +208,8 @@ __all__ = [
     "ReviewPacketDisclosureResult",
     "review_input_manifest",
     "review_input_manifest_to_json",
+    "declared_output_capture_order",
+    "declared_output_capture_refs",
     "repair_evidence_refs",
     "SemanticPacketView",
     "semantic_case_packet_view",
@@ -1862,6 +1867,160 @@ def _match_assessments(
     return tuple(matched)
 
 
+# Declared outputs outside the workspace (tb4n2 R7, P1-15): the check-time change never holds
+# them, so their captured evidence is reserved instead. Bounded per output and in total.
+_MAX_DECLARED_OUTPUT_CAPTURES: Final = 8
+_CLAIM_LINKED_CAPTURES_PER_OUTPUT: Final = 2
+_DECLARED_OUTPUT_CAPTURES_PER_OUTPUT: Final = 3
+# Sorts a reserved declared-output row ahead of every recency key (``-occurred_order``).
+_DECLARED_ORDER_OFFSET: Final = 2**62
+_DECLARED_OUTPUT_KINDS: Final = frozenset({"file", "directory"})
+
+
+def _outside_workspace(value: str, workspace_root: str | None) -> str | None:
+    """The normalised absolute ``value`` when it lies outside ``workspace_root``; else ``None``.
+
+    Lexical only: nothing is opened or resolved. A relative value is inside by definition, and
+    without a known root nothing can be called outside.
+    """
+
+    if workspace_root is None or not value.startswith("/") or "\x00" in value:
+        return None
+    root = posixpath.normpath(workspace_root)
+    path = posixpath.normpath(value)
+    if path == root or path.startswith(root.rstrip("/") + "/"):
+        return None
+    return path
+
+
+def _names_output(reference: str, output: str) -> bool:
+    if not reference.startswith("/") or "://" in reference:
+        return False
+    path = posixpath.normpath(reference.strip())
+    return path == output or path.startswith(output.rstrip("/") + "/")
+
+
+def declared_output_capture_refs(
+    projection: ProjectionState, allowed: frozenset[str], workspace_root: str | None
+) -> frozenset[str]:
+    """The set form of ``declared_output_capture_order``."""
+
+    return frozenset(declared_output_capture_order(projection, allowed, workspace_root))
+
+
+def declared_output_capture_order(
+    projection: ProjectionState, allowed: frozenset[str], workspace_root: str | None
+) -> tuple[str, ...]:
+    """Evidence that records a declared ``role: output`` item lying outside the workspace.
+
+    tb4n2 R7 (P1-15, cargo-flight-dispatch ``/output/flight_plan.json``): the check-time change
+    reads only the repository, so a deliverable the task places elsewhere reached the reviewer
+    only if a hook capture of it happened to win general excerpt room. The evidence selected
+    here is reserved beside the current diff instead: evidence whose own reference names the
+    output, evidence of a result whose action lists the output among its attempted items, and,
+    per output, the newest two content-bearing captures an effective claim on the declaring
+    obligation cites. At most three rows per output (newest first) and eight in all, taken
+    round-robin across outputs so one deliverable's repeats never crowd out another's. This is relevance selection only: every selected row still passes the
+    content consent, capture authentication, redaction and never-send checks of any excerpt.
+    """
+
+    outputs: list[tuple[str, str]] = []
+    for obligation in effective_obligations(projection):
+        record = projection.obligations.get(obligation)
+        if record is None or record.payload is None or record.redacted:
+            continue
+        for item in record.payload.requested_items:
+            if (
+                getattr(item.item_kind, "value", item.item_kind) not in _DECLARED_OUTPUT_KINDS
+                or getattr(getattr(item, "role", None), "value", None) != "output"
+            ):
+                continue
+            outside = _outside_workspace(item.value, workspace_root)
+            if outside is not None:
+                outputs.append((str(obligation), outside))
+    if not outputs:
+        return ()
+    evidence = {
+        str(key): row
+        for key, row in projection.evidence.items()
+        if str(key) in allowed and row.payload is not None and not row.redacted
+    }
+    results = {
+        str(key): row
+        for key, row in projection.results.items()
+        if row.payload is not None and not row.redacted
+    }
+
+    def frontier(ref: str) -> int:
+        return evidence[ref].source_frontier
+
+    def result_evidence(result_ref: str) -> set[str]:
+        row = results.get(result_ref)
+        if row is None or row.payload is None:
+            return set()
+        return {str(ref) for ref in row.payload.evidence_refs if str(ref) in evidence}
+
+    attempted: dict[str, set[str]] = {}
+    for result_ref, row in results.items():
+        assert row.payload is not None
+        action = projection.actions.get(row.payload.action_id)
+        if action is None or action.payload is None or action.redacted:
+            continue
+        for value in action.payload.attempted_items:
+            attempted.setdefault(value, set()).update(result_evidence(result_ref))
+    claims = [
+        claim.payload
+        for _, claim in effective_claim_items(projection)
+        if claim.payload is not None and not claim.redacted
+    ]
+
+    def newest(refs: Iterable[str]) -> list[str]:
+        return sorted(set(refs), key=lambda ref: (-frontier(ref), ref.encode("ascii")))
+
+    per_output: list[list[str]] = []
+    for obligation, output in outputs:
+        exact = {
+            ref
+            for ref, row in evidence.items()
+            if row.payload is not None
+            and row.payload.reference is not None
+            and _names_output(row.payload.reference, output)
+        }
+        for value, refs in attempted.items():
+            if _names_output(value, output):
+                exact.update(refs)
+        cited: set[str] = set()
+        for claim in claims:
+            if obligation not in {
+                *(str(ref) for ref in claim.obligation_refs),
+                *(str(ref) for ref in claim.supporting_refs),
+            }:
+                continue
+            for ref in claim.supporting_refs:
+                value = str(ref)
+                cited.update({value} & evidence.keys())
+                cited.update(result_evidence(value))
+        captured = [
+            ref
+            for ref in newest(cited - exact)
+            if (payload := evidence[ref].payload) is not None
+            and payload.captured_object_id is not None
+        ]
+        per_output.append(
+            (newest(exact) + captured[:_CLAIM_LINKED_CAPTURES_PER_OUTPUT])[
+                :_DECLARED_OUTPUT_CAPTURES_PER_OUTPUT
+            ]
+        )
+    # Round-robin over outputs, newest first within each, so many captures of one deliverable
+    # never take every reserved row from another (Codex review round 2).
+    selected: dict[str, None] = {}
+    for depth in range(_DECLARED_OUTPUT_CAPTURES_PER_OUTPUT):
+        for refs in per_output:
+            if depth < len(refs) and len(selected) < _MAX_DECLARED_OUTPUT_CAPTURES:
+                selected.setdefault(refs[depth])
+    return tuple(selected)
+
+
 def repair_evidence_refs(projection: ProjectionState, allowed: frozenset[str]) -> frozenset[str]:
     """Select readable evidence linked by responses to in-scope, unresolved findings.
 
@@ -2138,8 +2297,34 @@ def _marker_path(reference: str) -> str:
     return folded
 
 
+def _known_binary(reference: str, binary_paths: frozenset[str], workspace_root: str | None) -> bool:
+    """Whether ``reference`` names a file the check-time change marked binary (tb4n2 R7, P1-12).
+
+    The change lists repository-relative paths; an absolute reference counts only under the
+    workspace root. Lexical only: the path is never opened or resolved.
+    """
+
+    if not binary_paths or not reference or "://" in reference or "\x00" in reference:
+        return False
+    if reference.startswith("/"):
+        if workspace_root is None:
+            return False
+        root = posixpath.normpath(workspace_root).rstrip("/") + "/"
+        path = posixpath.normpath(reference)
+        if not path.startswith(root):
+            return False
+        reference = path[len(root) :]
+    relative = posixpath.normpath(reference)
+    return relative in binary_paths
+
+
 def _binary_file_label(
-    ref: str, payload: EvidenceRecordedPayload, *, captured: bool
+    ref: str,
+    payload: EvidenceRecordedPayload,
+    *,
+    captured: bool,
+    binary_paths: frozenset[str] = frozenset(),
+    workspace_root: str | None = None,
 ) -> tuple[str, bool] | None:
     """The label for a row that records an image or binary file, and whether it is a notice.
 
@@ -2153,7 +2338,14 @@ def _binary_file_label(
     if observed_image_evidence(payload):
         return _OBSERVED_IMAGE_NOTICE_MARKER.format(ref=ref), True
     reference = (payload.reference or "").strip()
-    if not reference or "://" in reference or not unsupported_data_type(reference):
+    if (
+        not reference
+        or "://" in reference
+        or not (
+            unsupported_data_type(reference)
+            or _known_binary(reference, binary_paths, workspace_root)
+        )
+    ):
         return None
     path = _marker_path(reference)
     binding = payload.digest_binding
@@ -2178,9 +2370,12 @@ def _evidence_candidates(
     verification_by_evidence: Mapping[str, _VerificationRun],
     omissions: list[ReviewOmission],
     gaps: set[str],
+    binary_paths: frozenset[str] = frozenset(),
+    workspace_root: str | None = None,
 ) -> list[_ExcerptCandidate]:
     candidates: list[_ExcerptCandidate] = []
-    admitted_capture_digests: set[bytes] = set()
+    # Each admitted capture's bytes digest, mapped to its candidate's index.
+    admitted_capture_digests: dict[bytes, int] = {}
     for evidence_id, record in sorted(
         projection.evidence.items(),
         key=lambda pair: (pair[1].source_frontier, str(pair[0]).encode("ascii")),
@@ -2243,16 +2438,24 @@ def _evidence_candidates(
             continue
         digest_provenance: ExcerptDigestProvenance | None = None
         text: str | None
+        capture_digest: bytes | None = None
         if captured_group is not None:
             capture_digest = hashlib.sha256(captured_group.content).digest()
-            if capture_digest in admitted_capture_digests:
+            survivor = admitted_capture_digests.get(capture_digest)
+            if survivor is not None:
                 # Identical retained bytes (for example a patch captured by an older build
-                # on both its pre- and post-tool events) are one excerpt, not two.
+                # on both its pre- and post-tool events) are one excerpt, not two. The kept
+                # excerpt answers for this row too, so a link or reservation naming this row
+                # (a claim citing the later capture of a declared output, tb4n2 R7) still holds.
+                candidates[survivor] = replace(
+                    candidates[survivor],
+                    identity_refs=candidates[survivor].identity_refs
+                    | frozenset({ref, *(captured_group.evidence_refs)}),
+                )
                 omissions.append(
                     _omit(ref, DataCategory.EVIDENCE_EXCERPT, excerpt_kind, "not_selected")
                 )
                 continue
-            admitted_capture_digests.add(capture_digest)
             # The service-authenticated inner bytes are the only source that may populate a
             # captured AI-powered review excerpt. Their digest provenance is retained separately
             # from the digest of the selection-clipped item below.
@@ -2320,7 +2523,13 @@ def _evidence_candidates(
         binary = (
             None
             if split_diff
-            else _binary_file_label(ref, payload, captured=captured_group is not None)
+            else _binary_file_label(
+                ref,
+                payload,
+                captured=captured_group is not None,
+                binary_paths=binary_paths,
+                workspace_root=workspace_root,
+            )
         )
         if binary is not None:
             # The label leads the excerpt, so a head-and-tail clip always keeps it.
@@ -2394,6 +2603,8 @@ def _evidence_candidates(
             failed_edit, paths = _captured_edit_paths(captured_group.content)
             edit_paths = None if failed_edit else paths
         verification = verification_by_evidence.get(ref)
+        if capture_digest is not None:
+            admitted_capture_digests[capture_digest] = len(candidates)
         candidates.append(
             _ExcerptCandidate(
                 source_ref=ref,
@@ -2440,6 +2651,9 @@ def _select_targeted_excerpts(
     excerpt_byte_budget: int,
     excerpt_count_budget: int | None = None,
     before_lower_ranks: _LowerRankAdmission | None = None,
+    declared_output_refs: tuple[str, ...] = (),
+    binary_paths: frozenset[str] = frozenset(),
+    workspace_root: str | None = None,
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -2454,10 +2668,16 @@ def _select_targeted_excerpts(
     ``before_lower_ranks`` is offered the slots and bytes the reserved classes (current diff,
     latest verification, finding repair evidence) leave, once, before any older edit hunk or
     unreserved excerpt is considered; what it admits is listed at that rank (issue #983).
+
+    ``declared_output_refs`` (``declared_output_capture_refs``) rank with the current diff: they
+    are the current state of a deliverable the check-time change cannot hold (tb4n2 R7).
     """
 
     repair_refs = repair_evidence_refs(projection, allowed)
-    linked_subjects: set[str] = set(repair_refs)
+    linked_subjects: set[str] = set(repair_refs) | set(declared_output_refs)
+    # Admission follows the round-robin order across outputs, never plain recency, so newer
+    # captures of one deliverable cannot take every slot from another (Codex review round 3).
+    declared_position = {ref: index for index, ref in enumerate(declared_output_refs)}
     for finding in findings:
         linked_subjects.update(str(ref) for ref in finding.subject_refs)
     for claim_id, _ in effective_claim_items(projection):
@@ -2495,6 +2715,8 @@ def _select_targeted_excerpts(
         verification_by_evidence=verification_by_evidence,
         omissions=omissions,
         gaps=gaps,
+        binary_paths=binary_paths,
+        workspace_root=workspace_root,
     )
 
     # Optional command excerpts from actions when expanded selection allows exact commands.
@@ -2678,6 +2900,19 @@ def _select_targeted_excerpts(
     def rank(index: int) -> tuple[int, int, int, int, bytes, bytes]:
         candidate = candidates[index]
         linked = bool(candidate.identity_refs & linked_subjects)
+        declared = [
+            declared_position[ref] for ref in candidate.identity_refs if ref in declared_position
+        ]
+        if declared:
+            # Ahead of the current diff's other rows, in the reservation's own order.
+            return (
+                _RANK_CURRENT_DIFF,
+                0,
+                min(declared) - _DECLARED_ORDER_OFFSET,
+                0,
+                candidate.source_ref.encode("ascii"),
+                candidate.item_base.encode("ascii"),
+            )
         if index in current_diffs:
             klass = _RANK_CURRENT_DIFF
         elif index in reserved_runs:
@@ -4224,6 +4459,13 @@ def _build_semantic_case_once(
             excerpt_count_budget=selection.max_excerpts - len(targeted),
             excerpt_byte_budget=(max(0, total_excerpt_budget - excerpt_bytes_used)),
             before_lower_ranks=check_time_change_parts if check_change_parts else None,
+            declared_output_refs=declared_output_capture_order(projection, allowed, workspace_root),
+            # A suffix-less binary the change marked (a compiled ``solver``) gets the same
+            # "not sent" notice as a named binary type (tb4n2 P1-12).
+            binary_paths=check_change_binary_paths(
+                None if check_time_change is None else check_time_change.capture
+            ),
+            workspace_root=workspace_root,
         )
         items.extend(excerpts.items)
         targeted.extend(excerpts.targeted)

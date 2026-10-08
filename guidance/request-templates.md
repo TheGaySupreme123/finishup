@@ -475,6 +475,39 @@ The `attempted_items` entry above repeats the obligation template's
 `requested_items[0].value` byte for byte. Publish it on the action that attempted the item —
 including a failed attempt — so the receipt can account for every requested item.
 
+When a script or another command ran the planned command for you, the observed run does not
+match the requested value and `planned_verification_not_observed` stays. Link that run instead:
+an `action_recorded` of kind `command` whose `attempted_items` holds the planned command's exact
+value and whose `causal_parents` names the observed run's action event id (find it with `status`
+`view: "history"`; replace the example id below).
+Use this only when a script ran the planned command; the receipt shows the link as unverified
+equivalence.
+
+```json
+{
+  "protocol_version": "0.1", "schema_version": "1.0.0",
+  "request_id": "req_00000000-0000-4000-8000-000000000015",
+  "session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
+  "event_drafts": [{
+    "event_id": "evt_00000000-0000-4000-8000-000000000015",
+    "schema": {"name": "action_recorded", "version": "1.0.0"},
+    "occurred_at": "2026-01-01T00:00:00.000Z",
+    "causal_parents": ["evt_00000000-0000-4000-8000-000000000014"],
+    "payload": {
+      "action_id": "act_00000000-0000-4000-8000-000000000015",
+      "action_kind": "command", "command": "pytest -q",
+      "description": "Replace with how the observed run executed the planned command",
+      "attempted_items": ["pytest -q"]
+    },
+    "artifact_refs": [], "evidence_refs": []
+  }],
+  "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
+  "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
+}
+```
+
 ## `publish_work`: result
 
 ```json

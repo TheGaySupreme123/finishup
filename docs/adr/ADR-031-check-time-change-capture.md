@@ -170,6 +170,17 @@ content-returning read needed its own decision. This is that decision, for exact
    cut is disclosed as `check_time_change_truncated` (issue #983). The shown-file record counts the
    change bytes the carried parts hold, never a part count, so it stays exact whatever part size a
    narrowed selection chose. `_check_time_change_reservation` is the single seam for this share.
+   Inside the change, files are ordered by what the task delivers, not by path (tb4n2 R7, issue
+   #1016): files at or under a requested `role: output` item come first (then requested files with
+   no role, an `obligation_published` 1.0.0 deliverable), then files whose rendered section is at
+   most 4 KiB, then the rest, each group in path order. The same order decides which untracked
+   files the untracked-file limit reads (sized by a metadata-only stat of up to 4096 paths) and
+   which tracked files the object-verification budget covers first. Before a tracked file's diff
+   is read (the per-file fallback when the whole diff is too large), "small" means at most 64
+   changed lines by Git's numstat, since its byte size is not yet known. A cut change or a
+   narrowed packet therefore keeps the deliverables and drops scratch first. Declared outputs
+   outrank role-less requested files. The declared paths only order the change; they never widen
+   what is read.
 7. **Frozen with the job.** The object's pointer, or the fact that it was unavailable, is frozen
    into the job's semantic-case object. A recovered or resumed job reloads exactly that object and
    never re-reads a working tree that has since moved, so the case digest is unchanged. The object

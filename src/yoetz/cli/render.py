@@ -11,6 +11,7 @@ from yoetz.domain.findings import SELF_VERIFIED_GUIDANCE
 from yoetz.domain.receipts import (
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     check_time_change_gap_sentence,
+    historical_gaps_from_wire,
     semantic_redacted_value_text,
 )
 from yoetz.domain.review_input_render import (
@@ -813,10 +814,18 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     lines = [f"Conclusion: {result.conclusion}"]
     if result.human_text is not None:
         lines.append(_projected_text(result.human_text))
+    # The result's coverage names live gaps only (issue #1017); a JSON receipt also lists the
+    # gaps a later check cleared, apart, and markdown/text carry them in ``human_text``.
     limitations = tuple(result.coverage.known_gaps)
     lines.append("Limitations: " + (", ".join(limitations) if limitations else "none declared"))
     document = result.document
     if isinstance(document, Mapping):
+        historical = historical_gaps_from_wire(document)
+        if historical:
+            lines.append(
+                "Cleared earlier (historical, not a current limitation): "
+                + ", ".join(f"{code} (cleared at frontier {seq})" for code, seq in historical)
+            )
         withheld = _semantic_withheld_item_lines(document)
         if withheld:
             lines.extend(withheld)

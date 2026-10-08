@@ -59,6 +59,7 @@ from yoetz.ports.runtime import TaskRuntime
 from yoetz.protocol.canonical import JsonValue
 
 __all__ = [
+    "declared_output_paths",
     "CheckChangeOutcome",
     "capture_structural_check_change",
     "capture_check_time_change",
@@ -316,9 +317,17 @@ def _redacted(capture: CheckChangeCapture) -> CheckChangeCapture:
 
 
 def _capture_redacted(
-    port: ChangeCapturePort, workspace: str, base: TaskChangeBase | None
+    port: ChangeCapturePort,
+    workspace: str,
+    base: TaskChangeBase | None,
+    priority_paths: tuple[str, ...] = (),
 ) -> CheckChangeCapture:
-    capture = port.capture(workspace, base)
+    # A port without deliverable ordering (an embedded or test port) keeps its own order.
+    capture = (
+        port.capture(workspace, base, priority_paths=priority_paths)
+        if priority_paths
+        else port.capture(workspace, base)
+    )
     if type(capture) is not CheckChangeCapture:
         raise TypeError("check_change_capture_invalid")
     return _redacted(capture)
@@ -332,8 +341,12 @@ async def capture_check_time_change(
     port: ChangeCapturePort,
     clock: ClockPort,
     request_id: str,
+    priority_paths: tuple[str, ...] = (),
 ) -> CheckChangeOutcome:
-    """Capture, redact and store one check's change; every failure is a disclosed absence."""
+    """Capture, redact and store one check's change; every failure is a disclosed absence.
+
+    ``priority_paths`` are the declared deliverables (``declared_output_paths``), rendered first.
+    """
 
     if type(source) is not CheckWorkspaceSource:
         raise TypeError("check_workspace_source_invalid")
@@ -355,7 +368,9 @@ async def capture_check_time_change(
     try:
         # Capture and every redaction pass run off the event loop: a parser-sized change needs
         # dozens of full scans, which would otherwise stall every other connection for seconds.
-        capture = await asyncio.to_thread(_capture_redacted, port, source.workspace, base)
+        capture = await asyncio.to_thread(
+            _capture_redacted, port, source.workspace, base, priority_paths
+        )
         ref = await _store(runtime, encode_check_change(capture), CHECK_CHANGE_MEDIA_TYPE, clock)
         return CheckChangeOutcome(CheckTimeChange(ref, capture))
     except ChangeCaptureUnavailable as exc:
@@ -520,6 +535,31 @@ def _plain_path(value: str) -> bool:
     """
 
     return bool(value) and _NOT_A_PLAIN_PATH.search(value) is None
+
+
+def declared_output_paths(projection: ProjectionState) -> tuple[str, ...]:
+    """The requested file and directory values the check-time change renders first (tb4n2 R7).
+
+    ``role: output`` items come first, then requested files with no role (an
+    ``obligation_published`` 1.0.0 item names a deliverable too); declared inputs never count.
+    Only plain literal paths are kept, deduplicated in obligation order and bounded like the
+    requested-output probe. The values only order the change; nothing here is stored.
+    """
+
+    declared: list[str] = []
+    unroled: list[str] = []
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for item in payload.requested_items:
+            if item.item_kind not in _PROBED_KINDS or not _plain_path(item.value):
+                continue
+            if item.role is RequestedItemRole.OUTPUT:
+                declared.append(item.value)
+            elif item.role is None:
+                unroled.append(item.value)
+    return tuple(dict.fromkeys((*declared, *unroled)))[:_MAX_REQUESTED_OUTPUT_PROBES]
 
 
 async def requested_output_states(

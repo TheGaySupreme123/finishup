@@ -374,3 +374,24 @@ classification table and `GAP_CLASSIFICATION_VERSION` are unchanged: the code st
 requires and can dispatch review. The scoped-local-verdict allowlist above is unchanged; the
 receipt's tolerance of the code is decided from the applicable check's recorded route, never from
 live configuration, so replay is stable. Details: ADR-033, amendment of 2026-10-08.
+
+## Amendment (2026-10-08): a gap a later check cleared is history, not a limitation (#1017)
+
+Owner decision (tb4n2 audit A-4): **keep cleared gaps in the receipt, but mark them historical.**
+In tb4n2, receipts listed `planned_verification_not_observed` and `planned_verification_stale`
+after the latest check had stopped carrying them: a still-current retained finding stamped by an
+earlier check carried the code in its own coverage, and the #912 fold surfaced it as a
+`retained_finding_coverage:<code>` gap that bounded the conclusion. The fold itself stays (the
+document coverage still never drops a representable gap), but a receipt gap row now has a status.
+A code is `historical` when it reached the receipt only through retained-finding coverage, an
+earlier `check_recorded` carried it, and the latest tested check does not; the row records
+`cleared_at_frontier`, the subject frontier of the first check after the last one that carried it.
+Everything else stays `live`, including a code no recorded check ever carried. The derivation reads
+only recorded checks, so replay is stable. A historical gap never lowers the conclusion, is never
+listed as a current limitation or counted in the result's coverage, and is rendered in its own
+"Cleared earlier (historical)" section; only the unreleased `receipt-document` 1.3.0 artifact writes
+it, and earlier artifacts keep every gap live exactly as issued. A parent's lineage snapshot of a
+child applies the same rule: a retained-only code the child's latest tested check cleared is left
+out of the child's snapshot coverage, so a cleared child gap never bounds the parent as
+`lineage_child_coverage_gap`. Classification and `GAP_CLASSIFICATION_VERSION` are unchanged. Field
+names: `docs/INTERFACES.md`.

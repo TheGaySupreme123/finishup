@@ -106,3 +106,26 @@ async def test_structural_capture_does_not_fallback_to_legacy_content_port() -> 
     )
 
     assert result == (None, "metadata_unavailable")
+
+
+def test_declared_deliverables_reach_the_port_and_a_plain_port_keeps_working() -> None:
+    """tb4n2 R7: the ordering hint is passed only when there is one, so older ports still work."""
+
+    _capture_redacted = getattr(check_change_module, "_capture_redacted")
+    seen: list[tuple[str, ...]] = []
+
+    class OrderingPort:
+        def capture(
+            self, workspace: str, base: object, *, priority_paths: tuple[str, ...] = ()
+        ) -> CheckChangeCapture:
+            seen.append(priority_paths)
+            return _capture(b"diff --git a/a.py b/a.py\n+print('kept')\n")
+
+    class PlainPort:
+        def capture(self, workspace: str, base: object) -> CheckChangeCapture:
+            return _capture(b"diff --git a/a.py b/a.py\n+print('kept')\n")
+
+    _capture_redacted(OrderingPort(), "/repo", None, ("out.json",))
+    _capture_redacted(PlainPort(), "/repo", None)
+
+    assert seen == [("out.json",)]

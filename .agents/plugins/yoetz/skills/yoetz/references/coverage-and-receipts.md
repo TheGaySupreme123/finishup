@@ -311,6 +311,8 @@ Default agent-context policy can project verification output (findings, obligati
 
 Read the receipt's frontier, verdict, coverage vector, finding disposition, evidence provenance, freshness, suppressed counts, and limitations together. Derived Markdown is a human view of the same structured record. Only a current recorded check can bound final wording. Receipts are frontier-bound: they do not upgrade caller-asserted event timestamps into service-checked event time.
 
+A receipt gap row with `status: "historical"` and `cleared_at_frontier` (markdown/text: "Cleared earlier (historical)") was reported by an earlier check and not by a later one. It is history, not a current limitation: it is not counted in the result's coverage and does not lower the conclusion, so do not report it as an open limitation. A gap row without a status is current.
+
 Permitted: “Within the cooperatively published record at frontier 12, no local-check issue was
 returned. The provider review was not requested and artifact observation remained published-only.”
 

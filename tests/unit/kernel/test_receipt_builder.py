@@ -2393,3 +2393,205 @@ def test_check_event_route_record_round_trips_and_old_events_replay_unchanged() 
         )
     with pytest.raises(ValueError):
         replace(old, semantic_route_required=cast(Any, 0))
+
+
+# Issue #1017 (owner decision, audit A-4): a gap an earlier check carried that a later check no
+# longer carries stays on the receipt as ``historical`` and never lowers the conclusion. Mirrors the
+# tb4n2 cargo-flight-dispatch receipt, where a retained finding's coverage carried
+# ``planned_verification_not_observed`` after the latest check had cleared it.
+_CLEARED_GAP = "planned_verification_not_observed"
+_CLEARED_AT = Frontier(1, _DIGEST)
+
+
+def _historical_receipt(*, historical: bool, schema_version: str = "1.3.0") -> ReceiptDocument:
+    check = _check(CheckVerdict.NO_ISSUE_DETECTED, _coverage())
+    context = _context(
+        check=check,
+        coverage=_coverage(gaps=(_CLEARED_GAP,)),
+        gaps=(CaseGap(f"retained_finding_coverage:{_CLEARED_GAP}", _CLEARED_GAP, ()),),
+    )
+    if historical:
+        context = replace(context, historical_gaps=((_CLEARED_GAP, _CLEARED_AT),))
+    versions = replace(
+        _versions(),
+        schema_versions=(SchemaVersionEntry("receipts/receipt-document", schema_version),),
+    )
+    return build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        versions,
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+
+
+def test_cleared_gap_is_historical_and_never_lowers_the_conclusion() -> None:
+    from yoetz.domain.receipts import (
+        HISTORICAL_GAPS_SECTION_TITLE,
+        ReceiptGapStatus,
+        historical_receipt_gaps,
+        live_receipt_gap_codes,
+    )
+    from yoetz.protocol.canonical import JsonValue
+    from yoetz.protocol.schemas import validate_schema_instance
+
+    receipt = _historical_receipt(historical=True)
+    # The conclusion equals a receipt that never carried the gap at all.
+    baseline = _build(_context(check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage())))
+    assert baseline.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    assert receipt.conclusion is baseline.conclusion
+    # The document keeps the full coverage union; the gap row says it is history.
+    assert receipt.coverage.known_gaps == (_CLEARED_GAP,)
+    (gap,) = receipt.gaps
+    assert (gap.code, gap.status, gap.cleared_at_frontier) == (
+        _CLEARED_GAP,
+        ReceiptGapStatus.HISTORICAL,
+        _CLEARED_AT,
+    )
+    assert historical_receipt_gaps(receipt) == (gap,)
+    assert live_receipt_gap_codes(receipt) == ()
+    # The limitations section lists no current limitation.
+    sections = {section.key: section for section in receipt.sections}
+    limitations = sections[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE]
+    assert limitations.items == ()
+    assert _CLEARED_GAP not in limitations.body
+
+    wire = receipt_document_to_json(receipt)
+    wire_gap = cast(dict[str, Any], wire["gaps"][0])  # pyright: ignore[reportIndexIssue]
+    assert wire_gap["status"] == "historical"
+    assert wire_gap["cleared_at_frontier"] == {"sequence": "1", "head_digest": _DIGEST}
+    validate_schema_instance("receipt-document", "1.3.0", cast(JsonValue, wire))
+    assert receipt_document_from_json(wire) == receipt
+
+    markdown = render_receipt_human(receipt, markdown=True)
+    text = render_receipt_human(receipt, markdown=False)
+    assert f"## {HISTORICAL_GAPS_SECTION_TITLE}" in markdown
+    assert f"- `{_CLEARED_GAP}`: cleared at frontier 1; no action needed." in markdown
+    assert f"\n{HISTORICAL_GAPS_SECTION_TITLE}\n" in text
+    assert f"- {_CLEARED_GAP}: cleared at frontier 1; no action needed." in text
+    # The live repair sentence is never repeated for a cleared gap (Codex review round 3).
+    assert "causal_parents" not in markdown.split(HISTORICAL_GAPS_SECTION_TITLE, 1)[1]
+    assert "not current limitations" in text
+    compact = render_receipt_compact(receipt)
+    assert "no unresolved local findings were recorded" in compact
+
+
+def test_gap_the_latest_check_still_carries_stays_live() -> None:
+    from yoetz.domain.receipts import HISTORICAL_GAPS_SECTION_TITLE, ReceiptGapStatus
+
+    receipt = _historical_receipt(historical=False)
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    (gap,) = receipt.gaps
+    assert (gap.status, gap.cleared_at_frontier) == (ReceiptGapStatus.LIVE, None)
+    wire_gap = cast(dict[str, Any], receipt_document_to_json(receipt)["gaps"][0])  # pyright: ignore[reportIndexIssue]
+    assert "status" not in wire_gap and "cleared_at_frontier" not in wire_gap
+    sections = {section.key: section for section in receipt.sections}
+    assert sections[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE].items == (_CLEARED_GAP,)
+    assert HISTORICAL_GAPS_SECTION_TITLE not in render_receipt_human(receipt, markdown=True)
+
+
+def test_earlier_receipt_artifact_keeps_every_gap_live() -> None:
+    from yoetz.domain.receipts import ReceiptGapStatus
+
+    receipt = _historical_receipt(historical=True, schema_version="1.0.0")
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    assert all(gap.status is ReceiptGapStatus.LIVE for gap in receipt.gaps)
+
+
+def test_historical_gap_context_must_name_a_known_gap() -> None:
+    context = _context(check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()))
+    with pytest.raises(ValueError, match="receipt_build_context_invalid"):
+        replace(context, historical_gaps=((_CLEARED_GAP, _CLEARED_AT),))
+
+
+def _check_record(sequence: int, gaps: tuple[str, ...]) -> Any:
+    payload = replace(
+        _check(CheckVerdict.NO_ISSUE_DETECTED, _coverage(gaps=gaps)),
+        subject_frontier=Frontier(sequence, _DIGEST),
+    )
+    return SimpleNamespace(payload=payload, ledger=SimpleNamespace(ingestion_sequence=sequence))
+
+
+def test_application_names_the_first_check_that_no_longer_carried_the_gap() -> None:
+    from yoetz.application.receipt import (
+        _historical_gaps,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    other = SimpleNamespace(payload=None, ledger=SimpleNamespace(ingestion_sequence=4))
+    first = _check_record(3, (_CLEARED_GAP, "unpaired_event"))
+    second = _check_record(5, (_CLEARED_GAP,))
+    clearing = _check_record(8, ())
+    latest = _check_record(11, ())
+    records = cast(Any, (first, other, second, clearing, latest))
+    # Cleared at the subject frontier of the first check after the last one that carried it.
+    assert _historical_gaps(records, latest, {_CLEARED_GAP}) == (
+        (_CLEARED_GAP, Frontier(8, _DIGEST)),
+    )
+    # A code the latest check still carries stays live; one no check ever carried stays live.
+    carrying = _check_record(11, (_CLEARED_GAP,))
+    assert _historical_gaps(cast(Any, (first, carrying)), carrying, {_CLEARED_GAP}) == ()
+    assert _historical_gaps(records, latest, {"cursor_stale"}) == ()
+    # Checks after the latest tested check never decide; no latest check, nothing historical.
+    assert _historical_gaps(cast(Any, (first, latest, clearing)), first, {_CLEARED_GAP}) == ()
+    assert _historical_gaps(records, None, {_CLEARED_GAP}) == ()
+    # Deterministic: replaying the same records gives the same answer in any input order.
+    assert _historical_gaps(cast(Any, tuple(reversed(records))), latest, {_CLEARED_GAP}) == (
+        (_CLEARED_GAP, Frontier(8, _DIGEST)),
+    )
+
+
+def test_result_coverage_and_every_surface_count_live_gaps_only() -> None:
+    from yoetz.application.receipt import (
+        _internal_result,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.cli.render import render_human_receipt
+    from yoetz.domain.receipts import historical_gaps_from_wire
+    from yoetz.mcp.summaries import summary_for_receipt
+    from yoetz.protocol.models import CoverageModel, ReceiptFormat, ReceiptSuccessModel
+
+    receipt = _historical_receipt(historical=True)
+    for output_format in (ReceiptFormat.JSON, ReceiptFormat.MARKDOWN, ReceiptFormat.TEXT):
+        request = SimpleNamespace(
+            format=output_format,
+            request_id="req_00000000-0000-4000-8000-000000000001",
+            redaction_profile=ReceiptRedactionProfile.FULL_LOCAL,
+            include=ReceiptInclude.FULL,
+        )
+        result = _internal_result(
+            cast(Any, request),
+            receipt,
+            cast(Any, SimpleNamespace(object_id="obj_00000000-0000-4000-8000-000000000001")),
+            "sha256:" + "3" * 64,
+            _FRONTIER,
+        )
+        # The result's coverage names no current limitation; the document keeps the union.
+        assert result.coverage.known_gaps == ()
+        assert receipt.coverage.known_gaps == (_CLEARED_GAP,)
+        envelope = result.as_json()
+        summary = summary_for_receipt(envelope)
+        assert "coverage limitations: 0;" in summary
+        assert f"gap codes: {_CLEARED_GAP}" not in summary
+        fields: dict[str, Any] = {
+            **envelope,
+            "coverage": CoverageModel.model_validate(envelope["coverage"]),
+        }
+        success = ReceiptSuccessModel.model_construct(**fields)
+        cli = render_human_receipt(success)
+        assert "Limitations: none declared" in cli
+        if output_format is ReceiptFormat.JSON:
+            assert historical_gaps_from_wire(envelope["document"]) == ((_CLEARED_GAP, "1"),)
+            assert f"cleared earlier (historical, not limitations): {_CLEARED_GAP} at 1;" in (
+                summary
+            )
+            assert (
+                f"Cleared earlier (historical, not a current limitation): {_CLEARED_GAP} "
+                "(cleared at frontier 1)"
+            ) in cli
+        else:
+            assert f"{_CLEARED_GAP}" in cast(str, result.human_text)
+            assert "Cleared earlier (historical)" in cli
+    # A malformed wire row is skipped, never echoed.
+    assert historical_gaps_from_wire({"gaps": [{"code": "x y", "status": "historical"}]}) == ()

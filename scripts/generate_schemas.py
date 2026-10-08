@@ -5055,6 +5055,17 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
         "uniqueItems": True,
     }
     _add_semantic_redacted_values(definitions, properties, min_items=1)
+    # Issue #1017: a gap a later check cleared stays on the record as ``historical`` with the
+    # subject frontier of the first check that no longer carried it. Both fields appear together
+    # and only on a historical gap; an absent status reads as live, so earlier bytes are kept.
+    receipt_gap = cast(dict[str, JsonValue], definitions["receipt_gap"])
+    gap_properties = cast(dict[str, JsonValue], receipt_gap["properties"])
+    gap_properties["status"] = {"const": "historical"}
+    gap_properties["cleared_at_frontier"] = _lineage_frontier_schema()
+    receipt_gap["dependentRequired"] = {
+        "cleared_at_frontier": ["status"],
+        "status": ["cleared_at_frontier"],
+    }
     required = cast(list[JsonValue], document["required"])
     if "children" not in required:
         required.append("children")
