@@ -5295,6 +5295,18 @@ when that save evicts nothing and leaves one-eighth of the state budget free. Me
 the cap cannot clear the same loss it just recorded; the durable gap history remains after recovery,
 and renewed shedding reactivates it (issue #310).
 
+An unexpected exception in a hook pass, or in the legacy synchronous spool writer, is recorded as
+`observe_<exception class>` in `hook_diagnostics.reasons`, using the service's reviewed closed
+exception-class vocabulary (`observe_exception_value_error`, `observe_exception_os_error`, ...).
+An unlisted class, including an unreviewed subclass of a listed one, collapses to
+`observe_exception_unavailable`; no class name, message, path or command is kept. The bare
+`observe` reason is still admitted for older rows. The drain preflight is split by stage:
+`drain_connect_timeout` (the service connect ran past its preflight bound),
+`drain_connect_failed` (the connect raised), and `native_content_stage_failed` (the encrypted
+native-content handoff raised; the rows stay pending and the content keeps
+`content_capture_unavailable`). `drain_preflight_failed` now names only a failed local outbox read
+before the connect, and is still admitted for older rows (tb4n2 N-3, issue #1019).
+
 Public ingest failures use their `retryable` contract and the stage that refused the request.
 A non-retryable `SESSION_CONFLICT` while acquiring the task runtime becomes `mapping_missing`:
 the envelope stays pending so a later drain can recover its lifecycle mapping, subject to the

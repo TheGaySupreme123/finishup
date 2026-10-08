@@ -876,6 +876,12 @@ owner decided: start the clock after connecting, spool durably, and finish the d
    Stop too; they no longer defer a contentless Stop pass. SessionEnd keeps its 0.15 s teardown
    slice under the three-second host clamp.
 
+4. **Drain and pass failures name their stage (tb4n2 N-3, issue #1019).** A drain preflight
+   records `drain_connect_timeout`, `drain_connect_failed` or `native_content_stage_failed`
+   instead of one `drain_preflight_failed` for both the connect and the content handoff; an
+   unexpected pass exception records `observe_<exception class>` from the service's reviewed
+   closed vocabulary instead of the bare `observe`. The old tokens stay admitted for older rows.
+
 Not changed: `check` does not wait for hook rows (a mid-session check can still be current as
 of an earlier frontier); local content cannot be spooled when the service is unreachable,
 because the hook holds no vault key.

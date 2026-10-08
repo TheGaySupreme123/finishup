@@ -63,6 +63,7 @@ from yoetz.cli.closure_gate import (
     standing_advice_withheld,
 )
 from yoetz.cli.hook_diagnostics import (
+    observe_exception_reason,
     record_hook_diagnostic,
     record_hook_timing,
     record_store_lock_event,
@@ -2604,13 +2605,25 @@ async def _stage_content_without_lease(
 
     staged: set[str] = set()
     client: _HookDrainClient | None = None
+    # The stage that raised names the closed reason (tb4n2 N-3b): the local outbox read keeps
+    # `drain_preflight_failed`, the connect is `drain_connect_timeout` / `drain_connect_failed`
+    # and the content handoff is `native_content_stage_failed`.
+    failure_reason = "drain_preflight_failed"
     try:
         all_pending = store.list_pending_outbox_rows(workspace_commitment)
         if all_pending:
             connector = cast(HookDrainConnector, _connect_service()) if connect is None else connect
             timeout = _drain_connect_timeout(deadline, monotonic)
             if timeout > 0:
-                client = await asyncio.wait_for(connector(ControlClientKind.CLI), timeout=timeout)
+                failure_reason = "drain_connect_failed"
+                try:
+                    client = await asyncio.wait_for(
+                        connector(ControlClientKind.CLI), timeout=timeout
+                    )
+                except TimeoutError:
+                    failure_reason = "drain_connect_timeout"
+                    raise
+                failure_reason = "native_content_stage_failed"
                 started = monotonic()
                 budget = budget_seconds
                 if deadline is not None:
@@ -2627,7 +2640,7 @@ async def _stage_content_without_lease(
                 )
                 staged = set() if result is None else result
     except Exception:
-        record_hook_diagnostic("drain_preflight_failed", event_name, _state=_state)
+        record_hook_diagnostic(failure_reason, event_name, _state=_state)
     finally:
         if any(source not in staged for source in content_by_source_identity):
             with contextlib.suppress(Exception):
@@ -2704,8 +2717,16 @@ async def _drain_outbox_leased(
             connector(ControlClientKind.CLI),
             timeout=preflight_remaining,
         )
-    except Exception:
-        record_hook_diagnostic("drain_preflight_failed", event_name, _state=_state)
+    except Exception as failure:
+        # A connect that ran out of its preflight bound is told apart from one the service
+        # refused or that failed outright (tb4n2 N-3b).
+        record_hook_diagnostic(
+            "drain_connect_timeout"
+            if isinstance(failure, TimeoutError)
+            else "drain_connect_failed",
+            event_name,
+            _state=_state,
+        )
         if content_by_source_identity:
             store.note_coverage_gap(
                 workspace_commitment,
@@ -2725,16 +2746,27 @@ async def _drain_outbox_leased(
     # capture_only never advances the cursor or ledger.
     staged_content_sources: set[str] = set()
     if content_by_source_identity:
-        staged_result = await _stage_native_content(
-            client,
-            store,
-            workspace_commitment=workspace_commitment,
-            all_pending=all_pending,
-            content_by_source_identity=content_by_source_identity,
-            content_capture_profile=content_capture_profile,
-            remaining=lambda: budget_seconds - (monotonic() - started),
-            _state=_state,
-        )
+        try:
+            staged_result = await _stage_native_content(
+                client,
+                store,
+                workspace_commitment=workspace_commitment,
+                all_pending=all_pending,
+                content_by_source_identity=content_by_source_identity,
+                content_capture_profile=content_capture_profile,
+                remaining=lambda: budget_seconds - (monotonic() - started),
+                _state=_state,
+            )
+        except Exception:
+            # The rows stay pending for the next owner; only this pass's transient content is
+            # lost, and it keeps the explicit gap (tb4n2 N-3b).
+            record_hook_diagnostic("native_content_stage_failed", event_name, _state=_state)
+            with contextlib.suppress(Exception):
+                store.note_coverage_gap(
+                    workspace_commitment,
+                    ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
+                )
+            staged_result = None
         if staged_result is None:
             with contextlib.suppress(Exception):
                 await client.close()
@@ -6083,7 +6115,9 @@ def handle_observe(
             with contextlib.suppress(BaseException):
                 _stderr_line("hook_observe_degraded: observe; observation durability unknown")
             with contextlib.suppress(BaseException):
-                record_hook_diagnostic("observe", event_name or "observe", _state=_state)
+                record_hook_diagnostic(
+                    observe_exception_reason(failure), event_name or "observe", _state=_state
+                )
         if session_end_uncommitted:
             with contextlib.suppress(BaseException):
                 _report_session_end_unrecorded("SessionEnd", _state=_state)
@@ -7737,9 +7771,9 @@ def handle_spool(
                 payload=spool_payload,
             )
             timing.outcome = "ingested"
-    except Exception:
+    except Exception as failure:
         timing.outcome = "failed"
-        record_hook_diagnostic("observe", event, _state=_state)
+        record_hook_diagnostic(observe_exception_reason(failure), event, _state=_state)
     finally:
         with contextlib.suppress(Exception):
             hook_io.stdout_json({}, stdout)

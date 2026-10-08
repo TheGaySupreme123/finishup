@@ -1926,6 +1926,13 @@ with the host's ordinary fail-open output, does not retain that input, and recor
 under `store_lock_events` in `yoetz observe status`); holds of one second or more are recorded
 as `store_lock_long_hold`. Neither is reported as `observe` or `workspace_unconsented`.
 
+An unexpected exception in a pass is recorded as `observe_<exception class>`
+(`observe_exception_value_error`, `observe_exception_os_error`, or
+`observe_exception_unavailable` for an unlisted class), never with its message. A drain whose
+preflight fails names the stage: `drain_connect_timeout`, `drain_connect_failed`, or
+`native_content_stage_failed`; `drain_preflight_failed` is left for a failed local outbox read
+and for rows written before tb4n2 (see INTERFACES).
+
 For shared-store measurements and the remaining native-host coverage boundary, see
 [the performance runbook](observation-selection-performance.md).
 

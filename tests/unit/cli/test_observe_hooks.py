@@ -3099,7 +3099,7 @@ async def test_drain_preflight_failure_skips_rows_and_records_diagnostic(tmp_pat
     )
     assert store.list_pending_outbox_rows(workspace)[0].attempts == 0
     diagnostics = (tmp_path / "observation/hook-diagnostics.jsonl").read_text()
-    assert '"reason":"drain_preflight_failed"' in diagnostics
+    assert '"reason":"drain_connect_failed"' in diagnostics
 
 
 @pytest.mark.anyio
