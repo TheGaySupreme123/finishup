@@ -14,7 +14,7 @@ grants no runtime, credential, disclosure or destructive-action authority.
 `STOP_GATE_TOKENS`), `src/yoetz/kernel/policies/work_integrity.py`,
 `src/yoetz/domain/observation_selection.py` (`_runner_class_for_argv`),
 `src/yoetz/kernel/task_fact_scope.py`, `src/yoetz/kernel/self_verification.py`,
-`src/yoetz/cli/closure_gate.py`, `guidance/receipt.md`, `skills/codex/yoetz/SKILL.md`.
+`src/yoetz/cli/closure_gate.py`, `guidance/receipt.md`.
 **Relates to:** ADR-022 (observation authorship), ADR-033 (task facts and the Stop-time closure
 gate), ADR-034 (`respond self_verified`), ADR-035 (declared delivered set).
 
@@ -117,8 +117,9 @@ did not stop the agent:
    state", followed by the existing "Run each planned verification after your last edit" repair.
    The once-per-frontier and active-Stop rules of ADR-033 are unchanged: an active Stop still never
    continues the agent for ordinary items.
-9. **The receipt is not a workspace file.** Guidance (`receipt.md`) and the Codex skill tell the
-   agent never to save the receipt into the workspace or an output directory; decision 1 makes a
+9. **The receipt is not a workspace file.** Guidance (`receipt.md`) tells the agent never to save
+   the receipt into the workspace or an output directory (the Codex skill has no room under its
+   8 KiB mandatory budget, so it relies on that page); decision 1 makes a
    saved receipt a non-counting write even when an agent does.
 
 ## Consequences
