@@ -4868,7 +4868,12 @@ service resolves that row's profile from its own ticket, instead of refusing it 
 
 Every retirement of a handoff (any `CaptureHandoffRetirementReason`) also appends one
 service-authenticated marker to the ticket's own task ledger, keyed by the ticket identity, whose
-coverage carries `capture_handoff_retired` (issue #1019). The marker names the closed retirement
+coverage carries `capture_handoff_retired` (issue #1019). The marker is appended before the ticket is
+tombstoned: a retryable or unexpected append failure leaves the ticket pending, and the next
+reconciliation pass (READY sweep or check preflight) publishes it and only then retires the ticket,
+counting the loss once. A ledger that terminally refuses the marker (a non-retryable typed refusal,
+an operation conflict, or a route without a writer) can never hold it, so that retirement proceeds
+without the marker and the refusal is recorded in service diagnostics. The marker names the closed retirement
 reason only, never a path or content, and another task never receives it. The code is a standing
 limitation with a fixed sentence: deterministic proof and a clean deterministic conclusion tolerate
 it, because local packs never read native captured bytes, and an AI-powered finding treats it as a

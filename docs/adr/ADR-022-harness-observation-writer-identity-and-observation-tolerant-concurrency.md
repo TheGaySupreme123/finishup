@@ -297,7 +297,11 @@ unsupported claims and unbounded duplicate findings.
     task. Each retirement appends one marker, keyed by the ticket identity, to the ticket's task
     ledger with the standing gap `capture_handoff_retired`; it never reaches another task and
     names no path or content. Local proof and clean deterministic conclusions tolerate it, and
-    AI-powered findings treat it as a capture baseline. The workspace-level
+    AI-powered findings treat it as a capture baseline. The marker is appended before the ticket is
+    tombstoned; a retryable or unexpected failure leaves the ticket pending for the next
+    reconciliation pass, so an interrupted publication is retried, not lost. Only a ledger that
+    terminally refuses the marker (or a route without a writer) lets the retirement proceed
+    without it, recorded in service diagnostics, so capture pressure is never held forever. The workspace-level
     `content_capture_unavailable` flag in observation status stays a lifetime workspace flag:
     the local store records it without a task (`note_coverage_gap` takes only the workspace, and
     the status query names no task), so scoping it would need a task-keyed gap store and a
