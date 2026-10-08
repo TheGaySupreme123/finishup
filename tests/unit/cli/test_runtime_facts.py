@@ -356,10 +356,12 @@ def test_temporary_directory_writes_claim_no_scope(target: str, tmp_path: Path) 
         f"cat > {target} <<'EOF'\nlog\nEOF",
     ):
         assert "write_scope" not in _facts("Bash", {"command": command}, workspace), command
+    # An edit tool's scratch write claims no outside scope; it is named ``scratch`` so it never
+    # makes an earlier verification stale (ADR-042, tb4n2 R4).
     for tool in ("Write", "Edit"):
-        assert _facts(tool, {"file_path": target}, workspace) == {}, tool
+        assert _facts(tool, {"file_path": target}, workspace) == {"write_scope": "scratch"}, tool
     patch = f"*** Begin Patch\n*** Add File: {target}\n+hi\n*** End Patch\n"
-    assert _facts("apply_patch", {"command": patch}, workspace) == {}
+    assert _facts("apply_patch", {"command": patch}, workspace) == {"write_scope": "scratch"}
 
 
 @pytest.mark.parametrize(
@@ -484,4 +486,4 @@ def test_a_temp_dir_not_named_as_temporary_space_is_never_trusted(
 )
 def test_wsl_windows_temp_is_scratch(target: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", "/home/someone")
-    assert "write_scope" not in _facts("Write", {"file_path": target}, Path("/srv/work"))
+    assert _facts("Write", {"file_path": target}, Path("/srv/work")) == {"write_scope": "scratch"}

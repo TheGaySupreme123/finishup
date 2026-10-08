@@ -66,6 +66,7 @@ from yoetz.domain.values import (
     object_id,
     result_id,
 )
+from yoetz.domain.write_scope import WRITE_SCOPES
 from yoetz.kernel.observed_failures import observed_action_description, observed_command_field
 from yoetz.ports.integrations import observation_pairing_contract
 from yoetz.protocol.canonical import request_digest
@@ -354,17 +355,24 @@ class _RuntimeDescriptionFacts(TypedDict, total=False):
     install_target: str | None
     write_outside_workspace: bool
     effective_user: str | None
+    write_scope: str | None
 
 
 def _runtime_description_facts(structural: Mapping[str, JsonValue]) -> _RuntimeDescriptionFacts:
-    """The closed runtime tokens (#977) the observed action description carries."""
+    """The closed runtime tokens (#977) the observed action description carries.
+
+    ``write_scope`` also names an edit whose every path was scratch or Yoetz-owned (ADR-042);
+    the kernel never lets such an edit make an earlier verification stale.
+    """
 
     install = structural.get("install_target")
     user = structural.get("effective_user")
+    scope = structural.get("write_scope")
     return {
         "install_target": install if type(install) is str else None,
-        "write_outside_workspace": structural.get("write_scope") == "outside_workspace",
+        "write_outside_workspace": scope == "outside_workspace",
         "effective_user": user if type(user) is str else None,
+        "write_scope": scope if type(scope) is str and scope in WRITE_SCOPES else None,
     }
 
 
@@ -396,10 +404,25 @@ def _omitted_command(structural: Mapping[str, JsonValue]) -> str:
     return "omitted:structural"
 
 
+def _yoetz_mcp_tool(lowered: str) -> bool:
+    """Whether a lower-cased host tool name is a server-qualified Yoetz MCP tool."""
+
+    if not lowered.startswith("mcp__"):
+        return False
+    server, separator, _tool = lowered[len("mcp__") :].partition("__")
+    return bool(separator) and "yoetz" in server.split("_")
+
+
 def _action_kind(tool: str | None) -> ActionKind:
     if tool is None:
         return ActionKind.OTHER
     lowered = tool.lower()
+    if _yoetz_mcp_tool(lowered):
+        # Yoetz's own MCP tools (``mcp__yoetz__check``, ``mcp__plugin_yoetz_yoetz__receipt``)
+        # record and read the ledger; they never change the work under test, so they are never an
+        # edit or a command whatever their name contains (ADR-042, tb4n2 R4). Another server's
+        # tool keeps the name rules below: ``mcp__fs__edit_file`` may really edit a file.
+        return ActionKind.OTHER
     if lowered in _FILE_TOOLS or "edit" in lowered or "patch" in lowered:
         return ActionKind.EDIT
     if lowered in _COMMAND_TOOLS or "shell" in lowered or "exec" in lowered:

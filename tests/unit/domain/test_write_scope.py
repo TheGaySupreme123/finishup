@@ -1,0 +1,94 @@
+"""Write classification for the finer stale rule (ADR-042, tb4n2 R4, issue #1018)."""
+
+from __future__ import annotations
+
+import pytest
+
+from yoetz.adapters.integrations.codex_session_stream import _file_change_write_scope
+from yoetz.application.observation_materialize import _action_kind
+from yoetz.domain.events import ActionKind
+from yoetz.domain.write_scope import classify_write_path, edit_write_scope
+
+
+def _inside(path: str) -> bool:
+    return path == "/app" or path.startswith("/app/")
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/app/solve.py", "workspace"),
+        ("/app/output/flight_plan.json", "workspace"),
+        ("/app/DATA_RECOVERY.md", "workspace"),
+        ("relative/x.py", "workspace"),
+        ("/tmp/solve_remap.py", "scratch"),
+        ("/var/tmp/x", "scratch"),
+        ("/app/run.log", "scratch"),
+        ("/app/yoetz_receipt.md", "yoetz_owned"),
+        ("/app/output/yoetz_receipt.json", "yoetz_owned"),
+        ("/app/.agents/skills/yoetz/SKILL.md", "yoetz_owned"),
+        ("/srv/state/yoetz/ledger.sqlite", "yoetz_owned"),
+        ("/usr/lib/python3/site-packages/lightning/x.py", "outside_workspace"),
+        ("/opt/logs/x.log", "outside_workspace"),
+        ("/tmp/../etc/passwd", "outside_workspace"),
+    ],
+)
+def test_classify_write_path(path: str, expected: str) -> None:
+    inside = _inside(path) if path.startswith("/") else None
+    assert (
+        classify_write_path(
+            path, workspace="/app", inside=inside, owned_roots=("/srv/state/yoetz",)
+        )
+        == expected
+    )
+
+
+def test_a_workspace_under_a_temporary_root_is_still_the_workspace() -> None:
+    assert classify_write_path("/tmp/work/a.py", workspace="/tmp/work", inside=True) == "workspace"
+    assert classify_write_path("/tmp/work/a.log", workspace="/tmp/work", inside=True) == "scratch"
+
+
+@pytest.mark.parametrize(
+    ("classes", "scope"),
+    [
+        ((), None),
+        (("workspace",), None),
+        (("scratch",), "scratch"),
+        (("scratch", "yoetz_owned"), "yoetz_owned"),
+        (("scratch", "workspace"), None),
+        (("scratch", "outside_workspace"), "outside_workspace"),
+        (("workspace", "outside_workspace"), "outside_workspace"),
+    ],
+)
+def test_edit_write_scope_counts_any_real_path(classes: tuple[str, ...], scope: str | None) -> None:
+    assert edit_write_scope(classes) == scope  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("tool", "kind"),
+    [
+        ("mcp__yoetz__check", ActionKind.OTHER),
+        ("mcp__yoetz__publish_work", ActionKind.OTHER),
+        ("mcp__plugin_yoetz_yoetz__receipt", ActionKind.OTHER),
+        ("mcp__fs__edit_file", ActionKind.EDIT),
+        ("apply_patch", ActionKind.EDIT),
+        ("file_change", ActionKind.EDIT),
+        ("Bash", ActionKind.COMMAND),
+    ],
+)
+def test_yoetz_mcp_tools_are_never_edits_or_commands(tool: str, kind: ActionKind) -> None:
+    assert _action_kind(tool) is kind
+
+
+def test_codex_stream_file_change_names_only_non_counting_scopes() -> None:
+    # Rollout mapping form and `codex exec --json` list form.
+    assert _file_change_write_scope({"/tmp/a.py": {"type": "add"}}) == "scratch"
+    assert _file_change_write_scope([{"path": "/app/yoetz_receipt.md"}]) == "yoetz_owned"
+    assert _file_change_write_scope({"/app/cracker.py": {"type": "update"}}) is None
+    assert (
+        _file_change_write_scope({"/tmp/a.py": {"type": "add"}, "/app/b.py": {"type": "add"}})
+        is None
+    )
+    assert _file_change_write_scope({"/tmp/a": {"type": "update", "move_path": "/app/a"}}) is None
+    assert _file_change_write_scope(None) is None
+    assert _file_change_write_scope({}) is None

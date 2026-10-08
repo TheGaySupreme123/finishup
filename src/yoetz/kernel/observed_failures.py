@@ -51,6 +51,8 @@ from yoetz.protocol.coverage import Coverage, PublicationChannel
 
 __all__ = [
     "COMMAND_IDENTITY_PREFIX",
+    "NON_COUNTING_WRITE_TOKENS",
+    "observed_edit_counts",
     "ObservedFailureState",
     "ObservedRun",
     "ObservedRunFacts",
@@ -102,13 +104,22 @@ INSTALL_TARGET_CLASSES: Final = frozenset(
 )
 _RUNTIME_SUFFIX_RE: Final = re.compile(
     r" \((install (?:yoetz_runtime|workspace_env|private_env|system|unresolved)"
-    r"|write outside_workspace|user (?:root|non_root))\)\Z",
+    r"|write (?:outside_workspace|scratch|yoetz_owned)|user (?:root|non_root))\)\Z",
     re.ASCII,
 )
 RUNTIME_SUFFIX_TOKENS: Final = frozenset(
     {f"install {name}" for name in INSTALL_TARGET_CLASSES}
-    | {"write outside_workspace", "user root", "user non_root"}
+    | {
+        "write outside_workspace",
+        "write scratch",
+        "write yoetz_owned",
+        "user root",
+        "user non_root",
+    }
 )
+# Edit runtime tokens that name a write which changes nothing under test (ADR-042, tb4n2 R4):
+# every path the edit named was scratch (temp roots, ``*.log``) or Yoetz's own material.
+NON_COUNTING_WRITE_TOKENS: Final = frozenset({"write scratch", "write yoetz_owned"})
 
 
 class ObservedFailureState(str, Enum):  # noqa: UP042 - stable closed token
@@ -354,6 +365,7 @@ def observed_action_description(
     install_target: str | None = None,
     write_outside_workspace: bool = False,
     effective_user: str | None = None,
+    write_scope: str | None = None,
 ) -> str:
     """Append bounded host facts to an observed action description, when known.
 
@@ -368,8 +380,10 @@ def observed_action_description(
         result = f"{result} (runner {runner_class})"
     if install_target in INSTALL_TARGET_CLASSES:
         result = f"{result} (install {install_target})"
-    if write_outside_workspace is True:
+    if write_outside_workspace is True or write_scope == "outside_workspace":
         result = f"{result} (write outside_workspace)"
+    elif write_scope in {"scratch", "yoetz_owned"}:
+        result = f"{result} (write {write_scope})"
     if effective_user in {"root", "non_root"}:
         result = f"{result} (user {effective_user})"
     return result
@@ -392,6 +406,18 @@ def observed_action_runtime_tokens(description: str) -> frozenset[str]:
     ``user root|non_root``) ``observed_action_description`` wrote."""
 
     return _split_runtime_suffixes(description)[1]
+
+
+def observed_edit_counts(description: str) -> bool:
+    """Whether an observed edit can change the work under test (ADR-042, tb4n2 R4).
+
+    ``False`` only for an edit whose every path was scratch (temp roots, ``*.log``) or Yoetz's own
+    material (``write scratch`` / ``write yoetz_owned``): it never makes an earlier verification
+    stale and is not acting on the task. Deliverable, workspace and real outside-workspace edits,
+    and every edit recorded before the class existed, count.
+    """
+
+    return not (observed_action_runtime_tokens(description) & NON_COUNTING_WRITE_TOKENS)
 
 
 def observed_action_tool(description: str) -> str | None:
