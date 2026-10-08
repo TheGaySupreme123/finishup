@@ -62,6 +62,7 @@ __all__ = [
     "MAX_RECORDED_VERDICTS",
     "MAX_RELATED_FINDING_IDS",
     "PRIOR_FINDING_VERDICTS",
+    "DISPUTED_AFTER_REBUTTAL_VERDICT",
     "REVIEWER_NEXT_STEPS",
     "CandidateFinding",
     "CheckVerdict",
@@ -1016,8 +1017,22 @@ class Finding:
 # The reviewer's closed per-finding rulings (issue #905). ``fixed`` proves nothing on its own:
 # post-validation admits it only with cited material recorded after the finding, and finding
 # resolution still applies the freshness and material-change rules.
+#
+# ``disputed_after_rebuttal`` (issue #1020, ADR-040) is recorded by Yoetz, never sent by the
+# reviewer: the reviewer kept an AI-powered finding open (``still_present``,
+# ``answered_not_fixed`` or ``unassessable``) after the agent rejected it with a reason, citing
+# no material recorded after that rejection. It latches the final, non-blocking to-do state
+# ``disputed_after_rebuttal``.
+DISPUTED_AFTER_REBUTTAL_VERDICT: Final = "disputed_after_rebuttal"
 PRIOR_FINDING_VERDICTS: Final = frozenset(
-    {"fixed", "still_present", "answered_not_fixed", "unassessable", "withdrawn"}
+    {
+        "fixed",
+        "still_present",
+        "answered_not_fixed",
+        "unassessable",
+        "withdrawn",
+        DISPUTED_AFTER_REBUTTAL_VERDICT,
+    }
 )
 MAX_RECORDED_VERDICTS: Final = 16
 

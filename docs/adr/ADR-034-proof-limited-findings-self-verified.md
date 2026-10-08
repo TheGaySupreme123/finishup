@@ -244,3 +244,12 @@ breaks the link; redacting every breaking check restores it.
 `finding_self_verified` when an accepted child holds self-verified findings, and the status lineage
 row carries `self_verified_finding_count`, so status agrees with the parent receipt's
 `insufficient_coverage` (ADR-027).
+
+## Amendment (2026-10-08, issue #1020): `disputed_after_rebuttal`
+
+[ADR-040](ADR-040-reviewer-disagreement-and-route-derived-review.md) adds a sixth to-do state,
+`disputed_after_rebuttal`: the reviewer kept an AI-powered finding open after the agent's reasoned
+`rejected` answer and cited nothing recorded after it. Yoetz records it, not the agent. Like
+`self_verified` it is final, not agent work and never clean (readiness standing code
+`finding_disputed_after_rebuttal`; receipt `disputed_after_rebuttal_finding_ids`); like
+`rejection_accepted` it is latched by a check and cleared when that check is redacted.

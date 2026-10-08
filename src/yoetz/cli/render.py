@@ -194,6 +194,8 @@ _CHECKBOX: Final = {
     "rejection_accepted": "[-]",
     # Issue #984: final, disclosed, not resolved by Yoetz.
     "self_verified": "[s]",
+    # Issue #1020: final, disclosed standing disagreement; not agent work.
+    "disputed_after_rebuttal": "[d]",
 }
 _CHECKLIST_NEXT_TEXT: Final = {
     "work_open_findings": (
@@ -245,6 +247,11 @@ def _render_checklist(
         + f", verified {counts.verified_resolved}, not done {counts.acknowledged_not_done}, "
         f"rejection accepted {counts.rejection_accepted}"
         + (f", self-verified {counts.self_verified}" if int(counts.self_verified) else "")
+        + (
+            f", disputed after rebuttal {counts.disputed_after_rebuttal}"
+            if counts.disputed_after_rebuttal is not None and int(counts.disputed_after_rebuttal)
+            else ""
+        )
     )
     total = sum(
         int(value)
@@ -254,6 +261,7 @@ def _render_checklist(
             counts.acknowledged_not_done,
             counts.rejection_accepted,
             counts.self_verified,
+            counts.disputed_after_rebuttal or "0",
         )
     )
     if total > len(checklist.items):

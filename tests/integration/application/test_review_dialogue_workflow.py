@@ -987,7 +987,14 @@ def _no_discrepancy(_frozen: FrozenCase) -> SemanticJudgment:
 
 async def test_every_rebuttal_and_the_reviewers_answer_reach_the_next_review() -> None:
     """TB4 tb4n1 D5/D7b: a re-raise of a rebutted finding stays one item, and the next packet
-    shows how often the agent rebutted it and what the reviewer last ruled."""
+    shows the agent's rebuttal and how the dialogue ended.
+
+    Issue #1020 (ADR-040): the re-raise cites only the obligation, recorded before the agent's
+    reasoned rejection, so it is the standing disagreement ``disputed_after_rebuttal``: final, no
+    review round, no further answer accepted, and carried to the next packet as a nameable,
+    non-rulable settled row with the agent's rebuttal."""
+
+    from yoetz.application.semantic_case import SETTLED_FINDING_ITEM_PREFIX
 
     seed = 3300
     reviewer = _Reviewer([_challenge_obligation, _re_raise_first_finding, _no_discrepancy])
@@ -1001,7 +1008,7 @@ async def test_every_rebuttal_and_the_reviewers_answer_reach_the_next_review() -
         )
     )
     second = await _check(session, frontier_json(rebutted.result_frontier), seed + 30)
-    # No new finding: the re-raise was recorded on the rebutted item, which stays open.
+    # No new finding: the re-raise was recorded on the rebutted item.
     assert not [
         finding
         for finding in second.findings
@@ -1016,26 +1023,31 @@ async def test_every_rebuttal_and_the_reviewers_answer_reach_the_next_review() -
     ]
     assert semantic_ids == [raised.finding_id]
     record = live.findings[raised.finding_id]
-    assert (record.review_rounds, record.rebuttal_count) == (1, 1)
-    assert record.last_reviewer_verdict == "answered_not_fixed"
-    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.OPEN
+    assert (record.review_rounds, record.rebuttal_count) == (0, 1)
+    assert record.last_reviewer_verdict == "disputed_after_rebuttal"
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.DISPUTED_AFTER_REBUTTAL
 
     after = frontier_json(second.result_frontier)
-    again = await session.app.respond(
-        RespondRequest.model_validate(
-            _respond_wire(session, after, at, raised, seed + 40, "rejected", "Still attempted.")
+    with pytest.raises(PublicOperationError) as terminal:
+        await session.app.respond(
+            RespondRequest.model_validate(
+                _respond_wire(session, after, at, raised, seed + 40, "rejected", "Still attempted.")
+            )
         )
-    )
-    await _check(session, frontier_json(again.result_frontier), seed + 50)
+    assert terminal.value.safe_details is not None
+    assert terminal.value.safe_details["reason_code"] == "finding_terminal"
+    await _check(session, after, seed + 50)
     structural = next(
         item
         for item in reviewer.cases[2].items
-        if item.item_id == f"prior-finding-{raised.finding_id}"
+        if item.item_id == f"{SETTLED_FINDING_ITEM_PREFIX}{raised.finding_id}"
     )
     row = cast(Mapping[str, JsonValue], strict_json_parse(structural.content))
-    assert row["rebuttal_count"] == 2
-    assert row["last_reviewer_verdict"] == "answered_not_fixed"
-    assert row["review_rounds"] == 1
+    assert row["disposition"] == "rejected"
+    assert row["rulable"] is False
+    assert not any(
+        item.item_id == f"prior-finding-{raised.finding_id}" for item in reviewer.cases[2].items
+    )
     assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
         _live_projection(session.app)
     )
@@ -1315,3 +1327,132 @@ async def test_self_verified_is_refused_while_a_complete_review_still_sees_the_i
     assert len(_records(session.app)) == count
     live = _live_projection(session.app)
     assert finding_todo_state(live, raised.finding_id) is FindingTodoState.OPEN
+
+
+async def test_formal_crypto_repeat_over_a_reasoned_rebuttal_is_a_standing_disagreement() -> None:
+    """Issue #1020 (ADR-040, TB4 tb4n2 formal-crypto S): the reviewer repeats a finding the agent
+    rejected with a reason, citing nothing newer. Yoetz records ``disputed_after_rebuttal``: final,
+    not agent work, never a review round, and named on every surface; the receipt discloses it
+    and cannot read clean."""
+
+    from yoetz.cli.render import render_human_check, render_human_status
+    from yoetz.mcp.summaries import summary_for_status
+    from yoetz.protocol.models import (
+        CheckFindingChecklistModel,
+        CheckSuccessModel,
+        CoverageModel,
+        StatusResultModel,
+        StatusSuccessModel,
+    )
+
+    seed = 4100
+    reviewer = _Reviewer(
+        [_challenge_obligation, _still_present_first_finding, _still_present_first_finding]
+    )
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    rejected = await session.app.respond(
+        RespondRequest.model_validate(
+            _respond_wire(
+                session,
+                at,
+                at,
+                raised,
+                seed + 20,
+                "rejected",
+                "Fixed benchmark parameters bound the input domain; the general case holds there.",
+            )
+        )
+    )
+    second = await _check(session, frontier_json(rejected.result_frontier), seed + 30)
+
+    live = _live_projection(session.app)
+    check_row = [row for row in _records(session.app) if row.schema.name == "check_recorded"][-1]
+    recorded = cast(CheckRecordedPayload, check_row.payload)
+    assert [item.verdict for item in recorded.prior_finding_verdicts] == ["disputed_after_rebuttal"]
+    record = live.findings[raised.finding_id]
+    assert record.disputed_after_rebuttal_by_check_event_id == check_row.event_id
+    assert record.review_rounds == 0
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+    assert "Disputed after rebuttal" in finding_resolution_explanation(
+        live, raised.finding_id, _records(session.app)
+    )
+    assert receipt_blocking_finding_count(live) == 0
+
+    checklist = second.finding_checklist
+    assert checklist is not None
+    row = next(item for item in checklist.items if item.finding_id == raised.finding_id)
+    assert row.todo_state == "disputed_after_rebuttal"
+    assert checklist.counts.disputed_after_rebuttal == 1
+    assert checklist.next == "request_receipt"
+    wire = check_internal_json(second)
+    checked = CheckSuccessModel.model_construct(
+        verdict="no_issue_detected",
+        semantic_status="succeeded",
+        semantic_reason="semantic_completed",
+        semantic_provenance=None,
+        findings=(),
+        suppressed_count="0",
+        finding_checklist=CheckFindingChecklistModel.model_validate(wire["finding_checklist"]),
+        children=None,
+        advisory_notes=(),
+        coverage=CoverageModel.model_construct(known_gaps=()),
+    )
+    human_check = render_human_check(checked)
+    assert f"[d] F-1 {raised.finding_id} disputed_after_rebuttal" in human_check
+    assert "disputed after rebuttal 1" in human_check
+
+    # A further repeat changes nothing: still final, still no round.
+    third = await _check(session, frontier_json(second.result_frontier), seed + 40)
+    live = _live_projection(session.app)
+    assert live.findings[raised.finding_id].review_rounds == 0
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+
+    status_body: dict[str, JsonValue] = {
+        **request_base(protocol_id("req_", seed + 60)),
+        "session_id": session.session_id,
+        "writer_id": session.writer_id,
+        "view": "findings",
+        "limit": "100",
+    }
+    status = await session.app.status(StatusRequest.model_validate(status_body))
+    assert isinstance(status.page, StatusFindingsPageModel)
+    status_row = next(item for item in status.page.items if item.finding_id == raised.finding_id)
+    assert status_row.todo_state == "disputed_after_rebuttal"
+    assert status_row.resolved is False
+    projected = await project_case(
+        session.app,
+        ProjectionCase("status/findings-terminal", ControlMethod.STATUS, status_body, status),
+        seed + 65,
+    )
+    success = StatusResultModel.model_validate(projected).root
+    assert isinstance(success, StatusSuccessModel)
+    assert f"[d] F-1 {raised.finding_id} disputed_after_rebuttal" in render_human_status(success)
+    assert "disputed after rebuttal 1" in summary_for_status(projected)
+
+    after = frontier_json(third.result_frontier)
+    with pytest.raises(PublicOperationError) as terminal:
+        await session.app.respond(
+            RespondRequest.model_validate(
+                _respond_wire(
+                    session, after, at, raised, seed + 70, "acknowledged_not_done", "Giving up."
+                )
+            )
+        )
+    assert terminal.value.safe_details is not None
+    assert terminal.value.safe_details["reason_code"] == "finding_terminal"
+
+    json_receipt = await _receipt(session, after, seed + 80, "json")
+    document = cast(Mapping[str, JsonValue], json_receipt.document)
+    assert document["disputed_after_rebuttal_finding_ids"] == [raised.finding_id]
+    assert document["conclusion"] != "no_unresolved_deterministic_findings"
+    for fmt in ("markdown", "text"):
+        rendered = await _receipt(session, after, seed + 81 + len(fmt), fmt)
+        human = cast(str, rendered.human_text)
+        assert "Disputed after rebuttal" in human
+        assert raised.finding_id in human
+    assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
+        _live_projection(session.app)
+    )

@@ -640,3 +640,62 @@ def test_rebuttals_and_the_last_reviewer_verdict_are_recorded_and_round_trip() -
     assert decoded == state
     with pytest.raises(ValueError, match="invalid_projection_state"):
         replace(counted, last_reviewer_verdict="maybe")
+
+
+# --- disputed_after_rebuttal (issue #1020, ADR-040, TB4 tb4n2 formal-crypto) --------------------
+
+
+def test_disputed_after_rebuttal_latches_only_on_a_readable_rejection() -> None:
+    findings = {
+        fnd(1): finding_record(_semantic(1), 4),
+        fnd(2): finding_record(_semantic(2), 4),
+    }
+    responses = {
+        fnd(1): _response(1, ResponseDisposition.REJECTED),
+        fnd(2): _response(2, ResponseDisposition.ACKNOWLEDGED),
+    }
+    check = _check(rulings=((1, "disputed_after_rebuttal"), (2, "disputed_after_rebuttal")))
+    apply_check_rulings(findings, responses, check, evt(9))
+    assert findings[fnd(1)].disputed_after_rebuttal_by_check_event_id == evt(9)
+    assert findings[fnd(1)].review_rounds == 0  # a standing disagreement is not another round
+    assert findings[fnd(2)].disputed_after_rebuttal_by_check_event_id is None
+    state = _state(dict(findings), dict(responses))
+    assert finding_todo_state(state, fnd(1)) is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+    assert FindingTodoState.DISPUTED_AFTER_REBUTTAL in TERMINAL_TODO_STATES
+    assert finding_blocks_receipt(state, fnd(1)) is False
+    assert finding_is_resolved(state, fnd(1)) is False
+    assert todo_counts(state, (fnd(1), fnd(2))).disputed_after_rebuttal == 1
+    # Further repeats of the dispute never count rounds or change the latch.
+    apply_check_rulings(findings, responses, _check(rulings=((1, "still_present"),)), evt(10))
+    assert findings[fnd(1)].review_rounds == 0
+    assert findings[fnd(1)].disputed_after_rebuttal_by_check_event_id == evt(9)
+
+
+def test_disputed_after_rebuttal_never_upgrades_and_redaction_drops_the_latch() -> None:
+    latched = replace(
+        finding_record(_semantic(1), 4), disputed_after_rebuttal_by_check_event_id=evt(9)
+    )
+    findings = {fnd(1): latched}
+    clean = _check()
+    object.__setattr__(clean, "suppressed_count", 0)
+    apply_check_resolution(findings, clean, evt(12))
+    assert findings[fnd(1)].resolved_by_check_event_id is None, "no upgrade out of terminal"
+    reopen_findings_resolved_by(findings, frozenset({evt(9)}))
+    assert findings[fnd(1)].disputed_after_rebuttal_by_check_event_id is None
+    responses = {fnd(1): _response(1, ResponseDisposition.REJECTED)}
+    assert finding_todo_state(_state(dict(findings), responses), fnd(1)) is FindingTodoState.OPEN
+
+
+def test_disputed_after_rebuttal_round_trips_and_stays_absent_until_set() -> None:
+    plain = finding_record(_semantic(1), 4)
+    disputed = replace(
+        finding_record(_semantic(2), 5), disputed_after_rebuttal_by_check_event_id=evt(9)
+    )
+    state = _state({fnd(1): plain, fnd(2): disputed})
+    snapshot = projection_snapshot(state)
+    rows = snapshot["findings"]
+    assert isinstance(rows, dict)
+    assert "disputed_after_rebuttal_by_check_event_id" not in rows[fnd(1)]  # type: ignore[operator]
+    decoded = projection_from_snapshot(snapshot)
+    assert decoded == state
+    assert canonical_encode(projection_snapshot(decoded)) == canonical_encode(snapshot)

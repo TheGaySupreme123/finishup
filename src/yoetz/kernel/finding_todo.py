@@ -11,13 +11,19 @@ only, so status, check, receipts and ``respond`` all agree:
   review withdrew it. It no longer blocks a receipt but stays disclosed. When the withdrawing
   review would also have proved the item absent, the explicit ruling wins: the item is
   ``rejection_accepted``, not ``verified_resolved``.
+- ``disputed_after_rebuttal`` (issue #1020, ADR-040): the agent rejected an AI-powered finding
+  with a reason, and a later review kept it open (``still_present``, ``answered_not_fixed`` or
+  ``unassessable``) without citing anything recorded after that rejection. Yoetz records the
+  standing disagreement instead of letting the reviewer repeat a demand it no longer supports:
+  the item is not agent work and does not block a receipt or fire the Stop gate, but it stays
+  disclosed and keeps the receipt conclusion at best ``insufficient_coverage``.
 - ``self_verified`` (issue #984, ADR-034): the agent repaired it, Yoetz could not prove the repair
   because of its own limits, and the agent verified it itself with a reason and its own recorded
   evidence (admission: ``kernel/self_verification.py``). It is not agent work and no longer counts
   as receipt-blocking, but it is never resolved: it stays disclosed and keeps the receipt
   conclusion at best ``insufficient_coverage``.
 
-The last four are terminal: no transition leaves them, and ``respond`` refuses to record anything
+Every state but ``open`` is terminal: no transition leaves them, and ``respond`` refuses to record anything
 further on a terminal item. New evidence about the same problem becomes a new finding. The
 transition table is kept as data in ``TODO_TRANSITIONS``.
 
@@ -91,6 +97,7 @@ class FindingTodoState(str, Enum):  # noqa: UP042 - exact wire enum base
     ACKNOWLEDGED_NOT_DONE = "acknowledged_not_done"
     REJECTION_ACCEPTED = "rejection_accepted"
     SELF_VERIFIED = "self_verified"
+    DISPUTED_AFTER_REBUTTAL = "disputed_after_rebuttal"
 
 
 TERMINAL_TODO_STATES: Final = frozenset(
@@ -99,6 +106,7 @@ TERMINAL_TODO_STATES: Final = frozenset(
         FindingTodoState.ACKNOWLEDGED_NOT_DONE,
         FindingTodoState.REJECTION_ACCEPTED,
         FindingTodoState.SELF_VERIFIED,
+        FindingTodoState.DISPUTED_AFTER_REBUTTAL,
     }
 )
 
@@ -119,6 +127,11 @@ TODO_TRANSITIONS: Final[tuple[tuple[FindingTodoState, str, FindingTodoState], ..
         FindingTodoState.OPEN,
         "respond_self_verified_with_reason_and_evidence_on_proof_limited_item",
         FindingTodoState.SELF_VERIFIED,
+    ),
+    (
+        FindingTodoState.OPEN,
+        "reviewer_keeps_open_without_newer_material_after_reasoned_rejection",
+        FindingTodoState.DISPUTED_AFTER_REBUTTAL,
     ),
 )
 
@@ -146,6 +159,7 @@ class FindingTodoCounts:
     rejection_accepted: int = 0
     budget_reached: int = 0
     self_verified: int = 0
+    disputed_after_rebuttal: int = 0
 
 
 def _validated_budget(attempt_budget: int) -> int:
@@ -208,6 +222,11 @@ def _own_todo_state(state: ProjectionState, finding_id: FindingId) -> FindingTod
         and disposition is ResponseDisposition.REJECTED
     ):
         return FindingTodoState.REJECTION_ACCEPTED
+    if (
+        record.disputed_after_rebuttal_by_check_event_id is not None
+        and disposition is ResponseDisposition.REJECTED
+    ):
+        return FindingTodoState.DISPUTED_AFTER_REBUTTAL
     return FindingTodoState.OPEN
 
 
@@ -350,9 +369,9 @@ def standing_premise_disputes(
 def finding_blocks_receipt(state: ProjectionState, finding_id: FindingId) -> bool:
     """Whether a current actionable finding keeps a receipt from reading clean.
 
-    ``rejection_accepted`` and ``self_verified`` (issue #984) are the unresolved states that stop
-    blocking; both stay disclosed, and ``self_verified`` still keeps the receipt conclusion from
-    reading clean. ``acknowledged_not_done`` keeps blocking: it is never clean. A linked
+    ``rejection_accepted``, ``self_verified`` (issue #984) and ``disputed_after_rebuttal``
+    (issue #1020) are the unresolved states that stop blocking; all stay disclosed, and the last
+    two still keep the receipt conclusion from reading clean. ``acknowledged_not_done`` keeps blocking: it is never clean. A linked
     ``duplicate_of`` item (issue #996) blocks unless its own proof resolved it or it inherited
     ``self_verified``; counters name it by ``duplicate_counting_id``.
     """
@@ -366,6 +385,7 @@ def finding_blocks_receipt(state: ProjectionState, finding_id: FindingId) -> boo
         FindingTodoState.VERIFIED_RESOLVED,
         FindingTodoState.REJECTION_ACCEPTED,
         FindingTodoState.SELF_VERIFIED,
+        FindingTodoState.DISPUTED_AFTER_REBUTTAL,
     }
 
 
@@ -388,4 +408,5 @@ def todo_counts(
         rejection_accepted=values[FindingTodoState.REJECTION_ACCEPTED],
         budget_reached=reached,
         self_verified=values[FindingTodoState.SELF_VERIFIED],
+        disputed_after_rebuttal=values[FindingTodoState.DISPUTED_AFTER_REBUTTAL],
     )

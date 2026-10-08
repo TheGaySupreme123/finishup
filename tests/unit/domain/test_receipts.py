@@ -154,6 +154,7 @@ def test_receipt_document_is_frozen_and_exactly_shaped() -> None:
         "acknowledged_not_done_finding_ids",
         "rejection_accepted_finding_ids",
         "self_verified_finding_ids",
+        "disputed_after_rebuttal_finding_ids",
         "duplicate_finding_links",
         "semantic_withheld_items",
         "semantic_redacted_values",
@@ -289,6 +290,38 @@ def test_self_verified_ids_get_their_own_section_and_never_read_clean() -> None:
     with pytest.raises(ProtocolValueError) as exc_info:
         receipt_document_from_json(clean)
     _assert_reason(exc_info, "invalid_receipt_conclusion")
+
+
+def test_disputed_after_rebuttal_ids_get_their_own_section_and_never_read_clean() -> None:
+    """Issue #1020 (ADR-040): a standing reviewer disagreement is disclosed, never clean."""
+
+    wire = _terminal_artifact("insufficient_coverage")
+    findings = cast(list[dict[str, Any]], wire["findings"])
+    finding = cast(str, findings[0]["finding_id"])
+    wire["disputed_after_rebuttal_finding_ids"] = [finding]
+    document = receipt_document_from_json(wire)
+    assert document.disputed_after_rebuttal_finding_ids == (finding,)
+    encoded = receipt_document_to_json(document)
+    assert encoded["disputed_after_rebuttal_finding_ids"] == [finding]
+    assert receipt_document_from_json(encoded) == document
+    for markdown in (True, False):
+        rendered = render_receipt_human(document, markdown=markdown)
+        assert "Disputed after rebuttal" in rendered
+        assert "The reviewer and the agent disagree" in rendered
+        assert f"- {finding}" in rendered
+    assert finding not in {item.finding_id for item in unresolved_findings_for_render(document)}
+
+    clean = _terminal_artifact("no_unresolved_deterministic_findings")
+    clean["disputed_after_rebuttal_finding_ids"] = [finding]
+    with pytest.raises(ProtocolValueError) as exc_info:
+        receipt_document_from_json(clean)
+    _assert_reason(exc_info, "invalid_receipt_conclusion")
+    # A finding is in at most one terminal section.
+    both = _terminal_artifact("insufficient_coverage")
+    both["disputed_after_rebuttal_finding_ids"] = [finding]
+    both["self_verified_finding_ids"] = [finding]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(both)
 
 
 def test_disclosed_assumptions_round_trip_with_ids_and_kind_only() -> None:

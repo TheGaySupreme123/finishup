@@ -64,9 +64,12 @@ A clean `deterministic_only` check is **not** an implementation review. When mod
 `deterministic_only`, or AI-powered review status is `not_requested`, the coverage includes
 `semantic_review_not_requested`. A clean result means “no issue detected within deterministic
 coverage”; it does not remove that limitation from the receipt. Where AI-powered review is not
-required (it is optional or off), the check records `semantic_route_required: false` and the
-limitation is disclosed without keeping the receipt from a clean conclusion; where review is
-required, it still keeps the receipt at `insufficient_coverage`. The receipt leads with its scope,
+required (it is optional or off, or the owner connected this host for local checks only), the check
+records `semantic_route_required: false` and the limitation is disclosed without keeping the
+receipt from a clean conclusion; where review is required, it still keeps the receipt at
+`insufficient_coverage`. If the only things recorded after your last check are your answers to
+that check's findings, the receipt notes that the check is current as of an earlier point but that
+note alone does not keep it from a clean conclusion. The receipt leads with its scope,
 review status and material limitations, followed by the finding count and frozen check totals.
 
 Omit `mode` to retain the configured verification default. Use `semantic_if_configured` only when
@@ -250,6 +253,16 @@ being your work and never counts as receipt-blocking, but it is never resolved: 
 lists `finding_self_verified` as a standing limitation, the receipt names it in its own
 "Self-verified by the agent; Yoetz could not prove the repair" section, and the receipt's
 conclusion is at best `insufficient_coverage`. A Yoetz limit is never a `yoetz-blocker`.
+
+Findings are advisory. When you disagree, respond `rejected` with your reasoning. If the review
+then repeats the finding without citing anything recorded after your answer, Yoetz records the
+final state `disputed_after_rebuttal`: the reviewer and you disagree, it is not your work, nothing
+asks you about it again, and `respond` records nothing more on it. It is never clean either:
+closure readiness lists `finding_disputed_after_rebuttal` as a standing limitation, the receipt
+names it in a "Disputed after rebuttal" section, and the conclusion is at best
+`insufficient_coverage`. A review that brings something new is still a finding you answer. Never
+empty, shorten or delete a working deliverable because a finding is open; deliver it and disclose
+its limits.
 
 Three more things the receipt discloses in their own sections, by id only:
 

@@ -35,6 +35,7 @@ from yoetz.domain.events import (
     ResponseRecordedPayload,
 )
 from yoetz.domain.findings import (
+    DISPUTED_AFTER_REBUTTAL_VERDICT,
     SELF_VERIFIED_GUIDANCE,
     Finding,
     FindingKind,
@@ -1495,6 +1496,18 @@ def _finding_resolution_explanation(
             f"check {finding_record.rejection_accepted_by_check_event_id} withdrew it. The item "
             "is final and no longer blocks the receipt, which still lists it."
         )
+    if (
+        finding_record.disputed_after_rebuttal_by_check_event_id is not None
+        and disposition is ResponseDisposition.REJECTED
+        and not finding_is_resolved(state, finding_id)
+    ):
+        return (
+            "Disputed after rebuttal: the agent rejected this AI-powered finding with a reason "
+            f"and check {finding_record.disputed_after_rebuttal_by_check_event_id} kept it open "
+            "without citing anything recorded after that rejection. The item is final, is not "
+            "agent work and does not block; the receipt lists it as a standing disagreement and "
+            "cannot read clean."
+        )
     superseded = _superseded_coordination_context(state, finding_record.payload)
     if finding_is_resolved(state, finding_id):
         resolving = finding_record.resolved_by_check_event_id
@@ -1887,8 +1900,11 @@ def apply_check_resolution(
         if (
             record.payload is None
             or record.resolved_by_check_event_id is not None
-            # A terminal ``rejection_accepted`` item never upgrades to resolved (issue #905).
+            # A terminal ``rejection_accepted`` item never upgrades to resolved (issue #905), nor
+            # does a ``disputed_after_rebuttal`` one (issue #1020): the reviewer still holds it, so
+            # a later review that merely stops naming it is not proof it is gone.
             or record.rejection_accepted_by_check_event_id is not None
+            or record.disputed_after_rebuttal_by_check_event_id is not None
             or current_id in check.returned_finding_ids
         ):
             continue
@@ -1963,8 +1979,11 @@ def apply_check_rulings(
     round: a local finding the check returned again over a later subject, or an AI-powered finding
     the reviewer ruled ``still_present``, ``answered_not_fixed`` or ``unassessable``. A
     ``withdrawn`` ruling on an AI-powered finding whose latest readable response is ``rejected``
-    latches ``rejection_accepted``; the reviewer accepted the agent's reasoned rejection. Final
-    rows (resolved, ``rejection_accepted``, ``acknowledged_not_done``) never change, and nothing
+    latches ``rejection_accepted``; the reviewer accepted the agent's reasoned rejection. A
+    ``disputed_after_rebuttal`` ruling (recorded by Yoetz, issue #1020) on such a finding latches
+    ``disputed_after_rebuttal`` and counts no round. Final rows (resolved,
+    ``rejection_accepted``, ``disputed_after_rebuttal``, ``acknowledged_not_done``) never change,
+    and nothing
     here resolves or reopens a finding. Every admitted ruling on a readable AI-powered finding also
     becomes its ``last_reviewer_verdict`` (TB4 tb4n1 D7).
 
@@ -2036,6 +2055,7 @@ def apply_check_rulings(
             or record.payload is None
             or record.resolved_by_check_event_id is not None
             or record.rejection_accepted_by_check_event_id is not None
+            or record.disputed_after_rebuttal_by_check_event_id is not None
             # ``acknowledged_not_done`` (and ``self_verified``) is final too: a later return of
             # the same local issue, or a stray ruling, is not a new round on it.
             or settled
@@ -2053,6 +2073,12 @@ def apply_check_rulings(
             continue
         if verdict in OPEN_REVIEW_VERDICTS:
             findings[current_id] = replace(record, review_rounds=record.review_rounds + 1)
+        elif verdict == DISPUTED_AFTER_REBUTTAL_VERDICT and _readable_rejection(latest):
+            # Issue #1020 (ADR-040): the reviewer kept the item open after the agent's reasoned
+            # rejection and cited nothing newer. Final and non-blocking, never a review round.
+            findings[current_id] = replace(
+                record, disputed_after_rebuttal_by_check_event_id=check_event_id
+            )
         elif verdict == "withdrawn" and _readable_rejection(latest):
             findings[current_id] = replace(
                 record, rejection_accepted_by_check_event_id=check_event_id
@@ -2135,7 +2161,8 @@ def reopen_findings_resolved_by(
     The proof is the proving check and, for a resolution that qualified only through it, the
     raising check whose recorded reduced scope supplied the baseline (issue #904). A redacted
     raising check also no longer supplies that fallback to any later check. The same holds
-    for a ``rejection_accepted`` latch whose withdrawing check was redacted. A redacted
+    for a ``rejection_accepted`` latch whose withdrawing check was redacted, and for a
+    ``disputed_after_rebuttal`` latch whose recording check was redacted (issue #1020). A redacted
     raising check likewise leaves the check-time change files unknown (ADR-031), and a
     resolution that tolerated check-time limits only through those files is dropped with it.
     """
@@ -2156,6 +2183,8 @@ def reopen_findings_resolved_by(
             record = replace(record, reduced_scope_raising_check_event_id=None)
         if record.rejection_accepted_by_check_event_id in event_ids:
             record = replace(record, rejection_accepted_by_check_event_id=None)
+        if record.disputed_after_rebuttal_by_check_event_id in event_ids:
+            record = replace(record, disputed_after_rebuttal_by_check_event_id=None)
         # Issue #996: a full replay of the redacted ledger never saw the breaking check.
         if event_ids & set(record.duplicate_link_broken_by_check_event_ids):
             record = replace(

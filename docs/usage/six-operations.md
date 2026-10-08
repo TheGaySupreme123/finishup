@@ -188,7 +188,8 @@ cannot prove after a later check because of its own limits: say how you verified
 not your work any more, and keeps the receipt at best `insufficient_coverage`; Yoetz refuses it
 with `finding_not_rechecked` before a later check, or `finding_not_proof_limited` while that check
 still sees the issue. A finding that is already `verified_resolved`, `acknowledged_not_done`,
-`self_verified` or `rejection_accepted` is final: `respond` records nothing and answers
+`self_verified`, `rejection_accepted` or `disputed_after_rebuttal` (the review repeated a finding
+you rejected with a reason without citing anything newer; disclosed, not your work) is final: `respond` records nothing and answers
 `finding_terminal`. `duplicate_of` is only for a genuine restatement of the same issue (same origin
 and kind) as an earlier finding you answered: name it in `duplicate_of_finding_id`. Linking never
 resolves the new finding; it stays open until its own check proves it absent, needs no separate

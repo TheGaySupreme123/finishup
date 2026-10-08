@@ -83,6 +83,7 @@ __all__ = [
     "ACKNOWLEDGED_NOT_DONE",
     "AGENT_READINESS_CONDITIONS",
     "ASSUMPTION_DISCLOSED_GAP",
+    "FINDING_DISPUTED_AFTER_REBUTTAL_GAP",
     "FINDING_PREMISE_DISPUTED_GAP",
     "premise_disputed_finding_ids",
     "VERIFICATION_LIMIT_DISCLOSED_GAP",
@@ -112,8 +113,12 @@ __all__ = [
 # ``compound_outcome_unavailable`` became a standing limitation. "3": the standing readiness code
 # ``finding_self_verified`` (issue #984, ADR-034) was added. "4": the standing disclosure codes
 # ``assumption_disclosed`` and ``verification_limit_disclosed`` (issue #995, ADR-033) and
-# ``finding_premise_disputed`` (issue #984, D7a) were added.
-GAP_CLASSIFICATION_VERSION: Final = "4"
+# ``finding_premise_disputed`` (issue #984, D7a) were added. "5": the standing disclosure code
+# ``finding_disputed_after_rebuttal`` (issue #1020, ADR-040) was added.
+GAP_CLASSIFICATION_VERSION: Final = "5"
+# Issue #1020 (ADR-040): a current AI-powered finding the reviewer repeated over the agent's
+# reasoned rejection without newer material. A standing disagreement; never agent work.
+FINDING_DISPUTED_AFTER_REBUTTAL_GAP: Final = "finding_disputed_after_rebuttal"
 # Issue #984 (ADR-034): a current finding the agent answered ``self_verified``. Yoetz could not
 # prove the repair; the agent verified it itself. Disclosed, never agent work.
 FINDING_SELF_VERIFIED_GAP: Final = "finding_self_verified"
@@ -331,6 +336,9 @@ GAP_CLASSIFICATION: Final[Mapping[str, GapClass]] = MappingProxyType(
         # Acknowledged-not-done findings the reviewer says the task requires (D7a). Final
         # answers, so standing; the Stop gate asks about them once.
         FINDING_PREMISE_DISPUTED_GAP: _S,
+        # Findings the reviewer repeated over the agent's reasoned rejection with nothing newer
+        # (issue #1020). Final and disclosed; the agent already answered, nothing removes it.
+        FINDING_DISPUTED_AFTER_REBUTTAL_GAP: _S,
         # -- Lineage (ADR-027). Child work, child verification and a check that has not covered
         # the latest manifest are actionable; unreadable, restricted or terminal child facts are
         # disclosures. A manifest that trails the catalog is refreshed by the service, so, like
@@ -567,6 +575,9 @@ class ClosureReadinessFacts:
     # Issue #984: current findings in the terminal ``self_verified`` state. Not agent work (they
     # never count as receipt-blocking); readiness discloses them as ``finding_self_verified``.
     self_verified_finding_ids: tuple[FindingId, ...] = ()
+    # Issue #1020: current findings in the final ``disputed_after_rebuttal`` state. Not agent
+    # work; readiness discloses them as ``finding_disputed_after_rebuttal``.
+    disputed_after_rebuttal_finding_ids: tuple[FindingId, ...] = ()
     # F3: every result id a whole-task completion claim recorded now must name in
     # ``limitation_refs`` (``kernel.claim_limitations``, the reducer's rule), sorted. Status
     # lists them before the claim so the first claim is accepted.
@@ -599,6 +610,7 @@ class ClosureReadinessFacts:
             self.receipt_blocking_finding_ids,
             self.acknowledged_finding_ids,
             self.self_verified_finding_ids,
+            self.disputed_after_rebuttal_finding_ids,
             self.acknowledged_obligation_ids,
             self.open_obligation_ids,
             self.blocked_obligation_ids,
@@ -891,6 +903,11 @@ def closure_readiness_facts(
         for finding in current
         if finding_todo_state(state, finding.finding_id) is FindingTodoState.SELF_VERIFIED
     }
+    disputed = {
+        finding.finding_id
+        for finding in current
+        if finding_todo_state(state, finding.finding_id) is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+    }
     # The receipt's applicability rule reads the same observation-limitation set (issue #911).
     limitations = observation_limitation_finding_ids(state, records)
     # #997: an acknowledged obligation is never open work here, whichever counting regime the
@@ -926,6 +943,7 @@ def closure_readiness_facts(
         closing_review_current=closing_current,
         semantic_review_used=review_used,
         self_verified_finding_ids=tuple(sorted(self_verified, key=str.encode)),
+        disputed_after_rebuttal_finding_ids=tuple(sorted(disputed, key=str.encode)),
         limitation_refs_required=tuple(
             required_limitation_ids_for_projection(state, observed_event_ids_from_records(records))
         ),
@@ -1065,6 +1083,8 @@ def derive_closure_readiness(
         )
         if facts.premise_disputed_finding_ids:
             standing.add(FINDING_PREMISE_DISPUTED_GAP)
+        if facts.disputed_after_rebuttal_finding_ids:
+            standing.add(FINDING_DISPUTED_AFTER_REBUTTAL_GAP)
     acknowledged: tuple[str, ...] = ()
     if facts is not None:
         acknowledged = tuple(

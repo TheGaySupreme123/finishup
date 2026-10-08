@@ -627,7 +627,9 @@ def test_rulings_without_cited_material_or_a_rejection_to_accept_are_unassessabl
     assert [(str(item.finding_id), item.verdict) for item in review.verdicts] == [
         (str(fnd(1)), "unassessable"),
         (str(fnd(2)), "unassessable"),
-        (str(fnd(3)), "unassessable"),
+        # Issue #1020: fnd(3) was rejected with a reason; an unassessable ruling citing nothing
+        # newer is the standing disagreement, not another open round.
+        (str(fnd(3)), "disputed_after_rebuttal"),
     ]
     # Two reduced, one outside the fence; an honest unassessable is not counted.
     assert review.verdicts_unsupported == 3
@@ -1606,3 +1608,340 @@ def test_a_re_raise_of_an_acknowledged_finding_is_recorded_on_it_not_minted() ->
         assert len(minted.candidates) == 1
         assert minted.candidates[0].related_finding_ids == (fnd(1),)
         assert minted.verdicts == () and minted.refs_reduced == 0
+
+
+# --- Disagreement after a reasoned rebuttal (issue #1020, ADR-040, TB4 tb4n2 R1) ----------------
+#
+# formal-crypto S (tb4n2): the reviewer raised ``task_requirement_unmet`` ("short known samples
+# cannot reconstruct longer targets"), the agent rejected it with a reasoned rebuttal, and three
+# closing reviews repeated it citing nothing newer than that rejection. The agent then emptied a
+# working solver. A held-open ruling over a reasoned rejection with no newer cited material is
+# now recorded as ``disputed_after_rebuttal``: final, non-blocking, disclosed.
+
+
+def _formal_crypto_case(
+    *, reason: str | None = "Sixteen known blocks suffice under fixed benchmark parameters."
+) -> DeterministicCase:
+    from builders.policy_cases import claim_record, obligation_record
+    from yoetz.domain.events import (
+        ClaimKind,
+        ClaimRecordedPayload,
+        ObligationPublishedPayload,
+        ObligationStatus,
+    )
+    from yoetz.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
+
+    kind = FindingKind.TASK_REQUIREMENT_UNMET
+    policy_id, policy_version = finding_policy_identity(kind)
+    finding = replace(
+        _recorded_semantic_finding(1, str(clm(1)), str(obl(1))),
+        kind=kind,
+        priority=FINDING_KIND_TRAITS[kind][0],
+        policy_id=policy_id,
+        policy_version=policy_version,
+        summary="Short known samples cannot reconstruct longer targets.",
+    )
+    disposition = (
+        ResponseDisposition.REJECTED if reason is not None else ResponseDisposition.ACKNOWLEDGED
+    )
+    rebuttal = ResponseRecordedPayload(
+        finding_id=fnd(1),
+        finding_frontier=FRONTIER,
+        disposition=disposition,
+        reason=reason,
+    )
+    return make_case(
+        obligations={
+            obl(1): obligation_record(
+                ObligationPublishedPayload(
+                    obl(1), "Write solve.sage", "solver passes", ObligationStatus.OPEN
+                ),
+                2,
+            )
+        },
+        claims={
+            clm(1): claim_record(
+                ClaimRecordedPayload(clm(1), ClaimKind.COMPLETION, "solve.sage works", ()), 4
+            )
+        },
+        results={
+            res(1): record(
+                ResultRecordedPayload(res(1), act(1), ResultOutcome.SUCCESS, summary="old"), 3
+            ),
+            res(2): record(
+                ResultRecordedPayload(res(2), act(2), ResultOutcome.FAILURE, summary="new"), 12
+            ),
+        },
+        findings={fnd(1): finding_record(finding, 5)},
+        responses={fnd(1): record(rebuttal, 8)},
+    )
+
+
+def _formal_crypto_review(
+    judgment: SemanticJudgment, case: DeterministicCase | None = None
+) -> SemanticJudgmentReview:
+    current = _formal_crypto_case() if case is None else case
+    return validate_semantic_judgment(
+        current,
+        (),
+        judgment,
+        _provenance(),
+        expected_frontier=current.frontier,
+        prior_finding_refs=frozenset({str(fnd(1))}),
+    )
+
+
+@pytest.mark.parametrize("ruling", ["still_present", "answered_not_fixed", "unassessable"])
+def test_formal_crypto_held_open_ruling_over_a_rebuttal_is_a_standing_disagreement(
+    ruling: str,
+) -> None:
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "no_material_discrepancy", (), (_verdict(1, ruling, str(clm(1)), str(res(1))),)
+        )
+    )
+    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+        (str(fnd(1)), "disputed_after_rebuttal")
+    ]
+    assert review.verdicts_unsupported == 0
+
+
+def test_a_cite_free_still_present_over_a_rebuttal_is_disputed_not_unassessable() -> None:
+    review = _formal_crypto_review(
+        SemanticJudgment("no_material_discrepancy", (), (_verdict(1, "still_present"),))
+    )
+    assert _rulings(review) == [(str(fnd(1)), "disputed_after_rebuttal", ())]
+
+
+def test_material_newer_than_the_rebuttal_keeps_the_reviewers_ruling() -> None:
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "no_material_discrepancy", (), (_verdict(1, "still_present", str(res(2))),)
+        )
+    )
+    assert _rulings(review) == [(str(fnd(1)), "still_present", (str(res(2)),))]
+
+
+def test_no_reasoned_rejection_means_no_dispute() -> None:
+    acknowledged = _formal_crypto_case(reason=None)
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "no_material_discrepancy", (), (_verdict(1, "still_present", str(clm(1))),)
+        ),
+        acknowledged,
+    )
+    assert _rulings(review) == [(str(fnd(1)), "still_present", (str(clm(1)),))]
+
+
+def test_a_ruling_on_an_unshown_rejected_finding_stays_unassessable() -> None:
+    case = _formal_crypto_case()
+    review = validate_semantic_judgment(
+        case,
+        (),
+        SemanticJudgment(
+            "no_material_discrepancy", (), (_verdict(1, "still_present", str(clm(1))),)
+        ),
+        _provenance(),
+        expected_frontier=case.frontier,
+        prior_finding_refs=frozenset(),  # the reviewer never saw the rebuttal
+    )
+    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+        (str(fnd(1)), "unassessable")
+    ]
+
+
+def _formal_crypto_reraise(*refs: str, restates: str | None = None) -> ReviewerChallenge:
+    return replace(
+        _challenge(*refs, summary="Short known samples cannot reconstruct longer targets"),
+        finding_kind=FindingKind.TASK_REQUIREMENT_UNMET,
+        requested_next_step="act",
+        restates=restates,
+    )
+
+
+def test_formal_crypto_re_raises_without_newer_material_fold_into_the_dispute() -> None:
+    """The same concern raised again (named, unnamed, or replying to the rejection) folds."""
+
+    for challenge in (
+        _formal_crypto_reraise(str(clm(1)), str(obl(1)), restates=str(fnd(1))),
+        _formal_crypto_reraise(str(clm(1)), str(obl(1))),
+        _formal_crypto_reraise(str(fnd(1))),
+    ):
+        review = _formal_crypto_review(SemanticJudgment("challenges_returned", (challenge,)))
+        assert review.candidates == ()
+        assert review.restatements_suppressed == 1
+        assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+            (str(fnd(1)), "disputed_after_rebuttal")
+        ]
+
+
+def test_a_re_raise_with_material_newer_than_the_rebuttal_is_still_raised() -> None:
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "challenges_returned",
+            (_formal_crypto_reraise(str(clm(1)), str(obl(1)), str(res(2)), restates=str(fnd(1))),),
+        )
+    )
+    # Named restatement with newer material: recorded on the item as the reviewer's ruling.
+    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+        (str(fnd(1)), "answered_not_fixed")
+    ]
+
+
+def _disputed_case() -> DeterministicCase:
+    base = _formal_crypto_case()
+    disputed = replace(
+        base.projection.findings[fnd(1)], disputed_after_rebuttal_by_check_event_id=evt(9)
+    )
+    return replace(
+        base,
+        projection=replace(base.projection, findings={fnd(1): disputed}),
+    )
+
+
+def test_a_disputed_finding_is_final_and_its_restatement_is_folded_without_a_ruling() -> None:
+    case = _disputed_case()
+    rulings = _formal_crypto_review(
+        SemanticJudgment(
+            "no_material_discrepancy", (), (_verdict(1, "still_present", str(clm(1))),)
+        ),
+        case,
+    )
+    assert rulings.verdicts == ()
+    assert rulings.verdicts_set_aside == 1
+    for challenge in (
+        _formal_crypto_reraise(str(clm(1)), str(obl(1)), restates=str(fnd(1))),
+        _formal_crypto_reraise(str(clm(1)), str(obl(1))),
+    ):
+        review = _formal_crypto_review(SemanticJudgment("challenges_returned", (challenge,)), case)
+        assert review.candidates == ()
+        assert review.restatements_suppressed == 1
+        assert review.verdicts == ()
+    # Newer material than the rebuttal is a new sighting: minted, linked to the dispute.
+    newer = _formal_crypto_review(
+        SemanticJudgment(
+            "challenges_returned",
+            (_formal_crypto_reraise(str(obl(1)), str(res(2)), restates=str(fnd(1))),),
+        ),
+        case,
+    )
+    assert len(newer.candidates) == 1
+    assert newer.candidates[0].related_finding_ids == (fnd(1),)
+
+
+# --- Restatement folding across claim churn (issue #1020, tb4n2 payments P1-10) -----------------
+
+
+def test_payments_claim_churn_folds_one_concern_into_one_finding() -> None:
+    """payments S (tb4n2) minted four ids for one concern: each re-published completion claim
+    changed the subject set. The same kind over the same obligation is one concern."""
+
+    from builders.policy_cases import claim_record, obligation_record
+    from yoetz.domain.events import (
+        ClaimKind,
+        ClaimRecordedPayload,
+        ObligationPublishedPayload,
+        ObligationStatus,
+    )
+    from yoetz.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
+
+    kind = FindingKind.TASK_REQUIREMENT_UNMET
+    policy_id, policy_version = finding_policy_identity(kind)
+    earlier = replace(
+        _recorded_semantic_finding(1, str(clm(1)), str(evt(30)), str(obl(1))),
+        kind=kind,
+        priority=FINDING_KIND_TRAITS[kind][0],
+        policy_id=policy_id,
+        policy_version=policy_version,
+        summary="Actual-pipeline notification correctness remains unverified",
+    )
+    claims = {
+        clm(1): claim_record(
+            ClaimRecordedPayload(clm(1), ClaimKind.COMPLETION, "done", ()),
+            4,
+            superseded_by_claim_id=clm(2),
+        ),
+        clm(2): claim_record(ClaimRecordedPayload(clm(2), ClaimKind.COMPLETION, "done", ()), 11),
+    }
+    case = make_case(
+        obligations={
+            obl(1): obligation_record(
+                ObligationPublishedPayload(
+                    obl(1), "Correct notifications", "receiver deduplicates", ObligationStatus.OPEN
+                ),
+                13,  # re-stated after the finding: an obligation update is not new material
+            )
+        },
+        claims=claims,
+        findings={fnd(1): finding_record(earlier, 5)},
+        extra_refs=(evt(30),),
+    )
+    churned = replace(
+        _challenge(str(clm(2)), str(obl(1)), summary="Notification correctness remains unmet"),
+        finding_kind=kind,
+    )
+    review = validate_semantic_judgment(
+        case,
+        (),
+        SemanticJudgment("challenges_returned", (churned,)),
+        _provenance(),
+        expected_frontier=case.frontier,
+    )
+    assert review.candidates == ()
+    assert review.restatements_suppressed == 1
+    assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+        (str(fnd(1)), "still_present")
+    ]
+    # Another kind on the same obligation is a different concern.
+    other = validate_semantic_judgment(
+        case,
+        (),
+        SemanticJudgment(
+            "challenges_returned", (replace(churned, finding_kind=FindingKind.CODE_DEFECT),)
+        ),
+        _provenance(),
+        expected_frontier=case.frontier,
+    )
+    assert len(other.candidates) == 1
+
+
+# --- No AI-powered "never attempted" before any completion claim (issue #1020, tb4n2 P1-7) ------
+
+
+def test_pre_work_never_attempted_challenges_are_dropped_until_work_is_claimed() -> None:
+    from builders.policy_cases import claim_record
+    from yoetz.application.check import SEMANTIC_REJECTED_ROUTINE_COMPLETENESS
+    from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
+
+    never = replace(
+        _challenge(str(obl(1)), summary="Requested solver never attempted"),
+        finding_kind=FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED,
+        requested_next_step="act",
+    )
+    pre_work = make_case(extra_refs=(obl(1),))
+    review = validate_semantic_judgment(
+        pre_work,
+        (),
+        SemanticJudgment("challenges_returned", (never,)),
+        _provenance(),
+        expected_frontier=pre_work.frontier,
+    )
+    assert review.candidates == ()
+    assert review.rejected_by_reason == ((SEMANTIC_REJECTED_ROUTINE_COMPLETENESS, 1),)
+
+    claimed = make_case(
+        claims={
+            clm(1): claim_record(
+                ClaimRecordedPayload(clm(1), ClaimKind.COMPLETION, "all done", ()), 4
+            )
+        },
+        extra_refs=(obl(1),),
+    )
+    after = validate_semantic_judgment(
+        claimed,
+        (),
+        SemanticJudgment("challenges_returned", (never,)),
+        _provenance(),
+        expected_frontier=claimed.frontier,
+    )
+    assert len(after.candidates) == 1
