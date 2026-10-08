@@ -324,39 +324,82 @@ def _requested_relative_path(root: Path, value: str) -> bytes | None:
 _SMALL_SECTION_BYTES: Final = 4_096
 
 
-def _priority_paths(root: Path, values: tuple[str, ...]) -> tuple[bytes, ...]:
-    """The root-relative forms of the declared deliverables under ``root``, bounded and sorted.
+# How many untracked paths are stat-ed (metadata only) to rank small files ahead of the untracked
+# file limit; paths past this bound keep path order after the ranked ones.
+_MAX_UNTRACKED_ORDER_STATS: Final = 4_096
 
-    Lexical, like ``_requested_relative_path``: nothing is opened or stat-ed. The root itself is
-    dropped (a declared whole workspace orders nothing), as is any value outside the root.
+
+def _priority_paths(root: Path, values: tuple[str, ...]) -> tuple[bytes, ...]:
+    """The root-relative forms of the declared deliverables under ``root``, in the given order.
+
+    The caller lists ``role: output`` items before role-less ones and that order is kept: an
+    earlier entry outranks a later one. Lexical, like ``_requested_relative_path``: nothing is
+    opened or stat-ed. The root itself is dropped (a declared whole workspace orders nothing), as
+    is any value outside the root; a duplicate keeps its first place.
     """
 
     if type(values) is not tuple:
         return ()
-    located = {
+    located = (
         relative
         for value in values[:_MAX_REQUESTED_PATH_PROBES]
         if (relative := _requested_relative_path(root, value)) is not None
         and relative != _ROOT_RELATIVE
-    }
-    return tuple(sorted(located))
+    )
+    return tuple(dict.fromkeys(located))
 
 
-def _prioritised(path: bytes, priority: tuple[bytes, ...]) -> bool:
-    """Whether ``path`` is a declared deliverable or lies under a declared directory."""
+def _priority_tier(path: bytes, priority: tuple[bytes, ...]) -> int | None:
+    """The index of the first declared deliverable ``path`` is or lies under; else ``None``."""
 
     bare = path.rstrip(b"/")
-    return any(bare == item or bare.startswith(item + b"/") for item in priority)
+    for index, item in enumerate(priority):
+        if bare == item or bare.startswith(item + b"/"):
+            return index
+    return None
 
 
-def _section_rank(section: _Section, priority: tuple[bytes, ...]) -> tuple[int, bytes]:
+def _section_rank(section: _Section, priority: tuple[bytes, ...]) -> tuple[int, int, bytes]:
     """Order of a section in the rendered change: deliverables, small files, then the rest."""
 
-    if _prioritised(section.path, priority):
-        return (0, section.path)
+    tier = _priority_tier(section.path, priority)
+    if tier is not None:
+        return (0, tier, section.path)
     if section.text is not None and len(section.text) <= _SMALL_SECTION_BYTES:
-        return (1, section.path)
-    return (2, section.path)
+        return (1, 0, section.path)
+    return (2, 0, section.path)
+
+
+def _untracked_order(
+    pinned: _Workspace, paths: list[bytes], priority: tuple[bytes, ...], deadline: float
+) -> list[bytes]:
+    """Untracked paths in read order: deliverables, then small files, then the rest (tb4n2 R7).
+
+    The untracked file limit keeps the head of this order, so a 12-byte ``requirements.txt`` is
+    never left unread behind hundreds of large scratch files. Sizes come from the link-free
+    metadata walk of at most ``_MAX_UNTRACKED_ORDER_STATS`` paths (in path order) before the
+    deadline; nothing is opened, and an unknown size ranks as large.
+    """
+
+    ordered = sorted(paths)
+    sizes: dict[bytes, int] = {}
+    for path in ordered[:_MAX_UNTRACKED_ORDER_STATS]:
+        if _expired(deadline):
+            break
+        if path.endswith(b"/") or not _safe_relative(path) or _credential_name(path):
+            continue
+        identity = _path_identity(pinned.descriptor, path)
+        if identity is not None and identity != _BLOCKED and stat.S_ISREG(identity[0]):
+            sizes[path] = identity[3]
+
+    def rank(path: bytes) -> tuple[int, int, bytes]:
+        tier = _priority_tier(path, priority)
+        if tier is not None:
+            return (0, tier, path)
+        size = sizes.get(path)
+        return (1 if size is not None and size <= _SMALL_SECTION_BYTES else 2, 0, path)
+
+    return sorted(ordered, key=rank)
 
 
 def _safe_relative(path: bytes) -> bool:
@@ -1334,7 +1377,7 @@ class GitChangeCaptureAdapter:
             self._per_file_diffs(
                 pinned,
                 base_id,
-                sorted(sections, key=lambda item: not _prioritised(item.path, priority)),
+                sorted(sections, key=lambda item: _section_rank(item, priority)[:2]),
                 deadline,
             )
         self._verify_section_objects(pinned, object_format, entries, sections, identities, deadline)
@@ -1567,9 +1610,7 @@ class GitChangeCaptureAdapter:
             excludes = _global_excludes_file(deadline)
         config = ("-c", f"core.excludesFile={excludes}") if excludes is not None else ()
         listing, listing_truncated = self._untracked_listing(pinned, config, deadline)
-        paths = sorted(
-            _nul_fields(listing), key=lambda path: (not _prioritised(path, priority), path)
-        )
+        paths = _untracked_order(pinned, _nul_fields(listing), priority, deadline)
         sections: list[_Section] = []
         identities: dict[bytes, _Identity | None] = {}
         for index, path in enumerate(paths):

@@ -122,12 +122,41 @@ def test_declared_deliverable_is_read_ahead_of_the_untracked_file_limit(
 
 def test_priority_paths_outside_the_root_or_the_root_itself_order_nothing(tmp_path: Path) -> None:
     priority_paths: Any = getattr(capture_module, "_priority_paths")
-    prioritised: Any = getattr(capture_module, "_prioritised")
+    priority_tier: Any = getattr(capture_module, "_priority_tier")
     root = tmp_path / "repo"
     assert priority_paths(root, (os.fspath(root), "/output/x.json", "../up")) == ()
-    assert priority_paths(root, ("b/c.py", os.fspath(root / "a"), "b/c.py")) == (
-        b"a",
-        b"b/c.py",
+    assert priority_paths(root, ("b/c.py", os.fspath(root / "a"), "b/c.py")) == (b"b/c.py", b"a")
+    assert priority_tier(b"a/x.py", (b"b", b"a")) == 1
+    assert priority_tier(b"ab/x.py", (b"a",)) is None
+
+
+def test_explicit_outputs_outrank_role_less_requested_files(tmp_path: Path) -> None:
+    """Codex review round 1: an unroled ``a_legacy.txt`` must not take an output's budget."""
+
+    repository = _repository(tmp_path)
+    (repository / "a_legacy.txt").write_text("legacy\n" * 9_000, encoding="utf-8")
+    (repository / "z_result.py").write_text("RESULT = 1\n" * 6_000, encoding="utf-8")
+
+    capture = GitChangeCaptureAdapter(_max_text_bytes=96 * 1024).capture(
+        os.fspath(repository), None, priority_paths=("z_result.py", "a_legacy.txt")
     )
-    assert prioritised(b"a/x.py", (b"a",))
-    assert not prioritised(b"ab/x.py", (b"a",))
+
+    text = _text(capture)
+    body = text.split("End of header. The unified diff follows.\n", 1)[1]
+    assert body.startswith("diff --git a/z_result.py b/z_result.py")
+
+
+def test_small_untracked_files_are_read_ahead_of_the_untracked_file_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review round 1: size ranking must govern which untracked files are read at all."""
+
+    repository = _repository(tmp_path)
+    for index in range(6):
+        (repository / f"a_scratch_{index}.txt").write_text("x" * 9_000 + "\n", encoding="utf-8")
+    (repository / "requirements.txt").write_text("numpy==2.1\n", encoding="utf-8")
+    monkeypatch.setattr(capture_module, "_MAX_UNTRACKED_FILES", 3)
+
+    text = _text(GitChangeCaptureAdapter().capture(os.fspath(repository), None))
+
+    assert "+numpy==2.1" in text
