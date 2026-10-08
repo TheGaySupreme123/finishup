@@ -50,6 +50,7 @@ from yoetz.domain.observation import (
     validate_observed_images,
 )
 from yoetz.domain.observation_loss import ObservationSelectionLoss
+from yoetz.domain.receipts import CAPTURE_HANDOFF_RETIRED_GAP
 from yoetz.domain.values import (
     Actor,
     ActorType,
@@ -944,6 +945,64 @@ def materialize_selection_loss(
         coverage,
         PublicationChannel.HOOK_OBSERVED,
         (ObservationGapCode.OBSERVATION_INPUT_LOSS.value,),
+        None,
+    )
+
+
+def materialize_capture_handoff_retirement(
+    *, task_id: str, ticket_id: str, reason: str, observed_at: Timestamp
+) -> MaterializedObservationBatch:
+    """Publish one task-scoped marker for a retired native content handoff (issue #1019).
+
+    The staged content of one observed call could not be attached to its structural row. The
+    marker carries ``capture_handoff_retired`` on this task's coverage and names only the closed
+    retirement reason; the ticket identity is a digest, and no path or content is recorded.
+    """
+
+    identity = "capture-handoff-retired:" + ticket_id
+    version = "capture-handoff-retirement/1.0.0"
+    payload = EvidenceRecordedPayload(
+        evidence_id(
+            stable_observation_id(
+                kind=IdKind.EVIDENCE,
+                task_id=task_id,
+                source_identity=identity,
+                mapping_version=version,
+                role="retirement_evidence",
+            )
+        ),
+        EvidenceKind.OTHER,
+        EvidenceImmutability.METADATA_ONLY,
+        observed_at,
+        description=(
+            "Captured content staged for one observed call was retired before it could be"
+            " attached; the call's structural record stands. Retirement reason: " + reason + "."
+        ),
+    )
+    coverage = replace(
+        coverage_for_channel(PublicationChannel.HOOK_OBSERVED),
+        authorship_assurance=AuthorshipAssurance.SERVICE_AUTHENTICATED,
+        artifact_observation=ArtifactObservation.PUBLISHED_ONLY,
+        known_gaps=(CAPTURE_HANDOFF_RETIRED_GAP,),
+    )
+    item = _draft(
+        event=stable_observation_id(
+            kind=IdKind.EVENT,
+            task_id=task_id,
+            source_identity=identity,
+            mapping_version=version,
+            role="retirement_event",
+        ),
+        schema_name="evidence_recorded",
+        occurred_at=observed_at,
+        payload=payload,
+        role="capture_handoff_retired",
+    )
+    return MaterializedObservationBatch(
+        (item,),
+        coverage,
+        PublicationChannel.HOOK_OBSERVED,
+        (CAPTURE_HANDOFF_RETIRED_GAP,),
         None,
     )
 

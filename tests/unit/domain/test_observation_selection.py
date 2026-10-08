@@ -169,3 +169,27 @@ def test_command_runner_class_is_closed_and_conservative(command: str, expected:
         command_runner_class({"tool_name": "exec_command", "tool_input": {"cmd": command}})
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    ("command", "runner"),
+    [
+        ("python -m pytest -q /app/dev/test_cracker.py", "test"),
+        ("python3 -m pytest", "test"),
+        ("python3.12 -X dev -m pytest -q", "test"),
+        ("python -m unittest discover", "test"),
+        ("python -m mypy src", "typecheck"),
+        ("python -m ruff check .", "lint"),
+        ("python -m build", "build"),
+        ("python setup.py build", "build"),
+        ("python -m http.server", "other"),
+        ("python /app/dev/build_model.py", "other"),
+        ("node build.js", "other"),
+        ("make build", "build"),
+        ("pytest -q", "test"),
+    ],
+)
+def test_python_module_runs_and_build_named_scripts(command: str, runner: str) -> None:
+    """tb4n2 interleaved S (P1-2): `python -m pytest` is a test run; `build_model.py` is not a build."""
+
+    assert command_runner_class({"command": command}) == runner

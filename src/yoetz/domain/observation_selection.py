@@ -17,6 +17,7 @@ import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final, Literal, cast
 
 from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
@@ -528,6 +529,13 @@ def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
         return "other"
     if command in {"cat", "cut", "find", "grep", "head", "less", "ls", "pwd", "rg", "tail", "wc"}:
         return "exploration"
+    module = _python_module(command, argv)
+    if module is not None:
+        # ``python -m pytest`` is a test run exactly like ``pytest`` (tb4n2 interleaved S: every
+        # ``python -m pytest`` counted as ``other``, so a passing post-edit run never cleared
+        # ``edited_after_last_verification``). Only a closed set of verification modules is named;
+        # any other module stays ``other``.
+        return _PYTHON_VERIFICATION_MODULES.get(module, "other")
     lowered = {argument.casefold() for argument in argv[1:]}
     joined = " ".join(argv).casefold()
     if command in {"git", "hg", "svn"}:
@@ -565,9 +573,63 @@ def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
         marker in joined for marker in (" typecheck", " type-check", "mypy", "pyright", "tsc")
     ):
         return "typecheck"
+    if command in _INTERPRETERS or _PYTHON_NAME_RE.fullmatch(command) is not None:
+        if "build" in lowered:
+            # ``python setup.py build``: an explicit build subcommand, not a file name.
+            return "build"
+        # A script an interpreter runs is the agent's own program, never a build because its
+        # file name contains "build" (tb4n2 interleaved S: ``python build_model.py`` was the
+        # only "verification" run of the task, so the edited-after-verification fact stuck).
+        return "other"
     if "build" in joined:
         return "build"
     return "other"
+
+
+_PYTHON_NAME_RE: Final = re.compile(r"^python(?:[0-9]+(?:\.[0-9]+)?)?$", re.ASCII)
+_INTERPRETERS: Final = frozenset({"node", "deno", "bun", "ruby", "perl", "php", "rscript", "sage"})
+# Python options that take a separate operand before ``-m`` (``python -X dev -m pytest``).
+_PYTHON_OPTIONS_WITH_OPERAND: Final = frozenset({"-X", "-W", "-Q"})
+_PYTHON_VERIFICATION_MODULES: Final[Mapping[str, RunnerClass]] = MappingProxyType(
+    {
+        "pytest": "test",
+        "unittest": "test",
+        "nose2": "test",
+        "tox": "test",
+        "nox": "test",
+        "doctest": "test",
+        "mypy": "typecheck",
+        "pyright": "typecheck",
+        "ruff": "lint",
+        "flake8": "lint",
+        "pylint": "lint",
+        "pyflakes": "lint",
+        "pycodestyle": "lint",
+        "build": "build",
+        "compileall": "build",
+    }
+)
+
+
+def _python_module(command: str, argv: list[str]) -> str | None:
+    """The ``-m`` module a Python interpreter runs, or ``None`` when *argv* runs no module."""
+
+    if _PYTHON_NAME_RE.fullmatch(command) is None:
+        return None
+    index = 1
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "-m":
+            return argv[index + 1].split(".", 1)[0] if index + 1 < len(argv) else None
+        if argument.startswith("-m") and len(argument) > 2:
+            return argument[2:].split(".", 1)[0]
+        if argument in _PYTHON_OPTIONS_WITH_OPERAND:
+            index += 2
+            continue
+        if not argument.startswith("-") or argument in {"-c", "-"}:
+            return None
+        index += 1
+    return None
 
 
 def _raw_command(payload: Mapping[str, CanonicalJsonValue]) -> str | None:
