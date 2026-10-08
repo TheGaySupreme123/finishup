@@ -38,9 +38,14 @@ from yoetz.domain.findings import (
 )
 from yoetz.domain.values import FindingId, Frontier, evidence_id
 from yoetz.kernel.closure_readiness import closure_readiness_facts
-from yoetz.kernel.finding_resolution import apply_check_rulings, reopen_findings_resolved_by
+from yoetz.kernel.finding_resolution import (
+    apply_check_rulings,
+    finding_is_resolved,
+    reopen_findings_resolved_by,
+)
 from yoetz.kernel.finding_todo import (
     FindingTodoState,
+    duplicate_counting_id,
     duplicate_link_target,
     duplicate_root,
     finding_blocks_receipt,
@@ -273,38 +278,76 @@ def test_the_payload_carries_the_target_only_for_duplicate_of_and_rides_1_1_0() 
 
 
 @pytest.mark.parametrize(
-    ("target", "answer", "expected"),
+    ("target", "answer", "root_state", "duplicate_state"),
     (
-        (None, None, FindingTodoState.OPEN),
+        (None, None, FindingTodoState.OPEN, FindingTodoState.OPEN),
+        # Resolution and an accepted rejection are never inherited (B1): a distinct finding must
+        # not read clean through somebody else's proof.
         (
             finding_record(_finding(1), 4, resolved_by_check_event_id=evt(9)),
             None,
             FindingTodoState.VERIFIED_RESOLVED,
-        ),
-        (None, _answer(1, ResponseDisposition.SELF_VERIFIED), FindingTodoState.SELF_VERIFIED),
-        (
-            None,
-            _answer(1, ResponseDisposition.ACKNOWLEDGED_NOT_DONE),
-            FindingTodoState.ACKNOWLEDGED_NOT_DONE,
+            FindingTodoState.OPEN,
         ),
         (
             replace(finding_record(_finding(1), 4), rejection_accepted_by_check_event_id=evt(9)),
             _answer(1, ResponseDisposition.REJECTED),
             FindingTodoState.REJECTION_ACCEPTED,
+            FindingTodoState.OPEN,
+        ),
+        # The never-clean final answers are inherited.
+        (
+            None,
+            _answer(1, ResponseDisposition.SELF_VERIFIED),
+            FindingTodoState.SELF_VERIFIED,
+            FindingTodoState.SELF_VERIFIED,
+        ),
+        (
+            None,
+            _answer(1, ResponseDisposition.ACKNOWLEDGED_NOT_DONE),
+            FindingTodoState.ACKNOWLEDGED_NOT_DONE,
+            FindingTodoState.ACKNOWLEDGED_NOT_DONE,
         ),
     ),
 )
-def test_a_linked_duplicate_inherits_every_state_of_the_earlier_finding(
+def test_a_linked_duplicate_inherits_only_never_clean_states(
     target: FindingProjectionRecord | None,
     answer: ProjectionRecord[ResponseRecordedPayload] | None,
-    expected: FindingTodoState,
+    root_state: FindingTodoState,
+    duplicate_state: FindingTodoState,
 ) -> None:
     state = _pair(target, answer)
     assert duplicate_link_target(state, fnd(2)) == fnd(1)
-    assert finding_todo_state(state, fnd(1)) is expected
-    assert finding_todo_state(state, fnd(2)) is expected
-    # Never cleaner than the earlier finding: it blocks exactly when the earlier one does.
-    assert finding_blocks_receipt(state, fnd(2)) is finding_blocks_receipt(state, fnd(1))
+    assert finding_todo_state(state, fnd(1)) is root_state
+    assert finding_todo_state(state, fnd(2)) is duplicate_state
+    assert finding_is_resolved(state, fnd(2)) is False
+    if root_state in {FindingTodoState.VERIFIED_RESOLVED, FindingTodoState.REJECTION_ACCEPTED}:
+        # The open duplicate counts on its own, never hidden behind the settled earlier one.
+        assert finding_blocks_receipt(state, fnd(2)) is True
+        assert duplicate_counting_id(state, fnd(2)) == fnd(2)
+        assert receipt_blocking_finding_count(state) == 1
+        assert closure_readiness_facts(state, ()).receipt_blocking_finding_ids == (fnd(2),)
+
+
+def test_a_link_to_a_different_kind_or_origin_never_holds() -> None:
+    other_kind = replace(_finding(1), kind=FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE)
+    findings = {fnd(1): finding_record(other_kind, 4), fnd(2): finding_record(_finding(2), 6)}
+    state = _state(findings, {fnd(2): _link(2, 1)})
+    assert duplicate_link_target(state, fnd(2)) is None
+    assert fnd(2) in unanswered_finding_ids(state, ())
+    semantic = {
+        fnd(1): finding_record(_semantic(1, subject=1), 4),
+        fnd(2): finding_record(_finding(2), 6),
+    }
+    assert duplicate_link_target(_state(semantic, {fnd(2): _link(2, 1)}), fnd(2)) is None
+
+
+def test_a_non_actionable_earlier_finding_never_names_an_actionable_duplicate() -> None:
+    # Admission refuses a different kind; the counting rule still never hides an actionable
+    # duplicate behind a non-actionable root.
+    state = _pair()
+    assert duplicate_counting_id(state, fnd(2)) == fnd(1)
+    assert duplicate_counting_id(state, fnd(1)) == fnd(1)
 
 
 def test_an_open_pair_counts_once_and_needs_one_answer() -> None:
@@ -358,6 +401,8 @@ def test_a_chain_formed_later_resolves_to_its_root_and_a_redacted_root_drops_the
     unlinked = _state(redacted, responses)
     assert duplicate_link_target(unlinked, fnd(2)) is None
     assert finding_todo_state(unlinked, fnd(2)) is FindingTodoState.OPEN
+    # A redacted root leaves the duplicate needing its own answer.
+    assert fnd(2) in unanswered_finding_ids(unlinked, ())
 
 
 def test_a_link_to_a_later_finding_never_holds() -> None:
@@ -383,7 +428,7 @@ def test_a_later_check_that_raises_the_issue_again_breaks_the_link(
     state = _pair()
     findings = dict(state.findings)
     apply_check_rulings(findings, state.responses, check, evt(15))
-    assert (findings[fnd(2)].duplicate_link_broken_by_check_event_id == evt(15)) is breaks
+    assert (findings[fnd(2)].duplicate_link_broken_by_check_event_ids == (evt(15),)) is breaks
     after = _state(findings, dict(state.responses))
     assert (duplicate_link_target(after, fnd(2)) is None) is breaks
     if breaks:
@@ -399,7 +444,7 @@ def test_a_local_rule_firing_again_on_the_same_subject_breaks_the_link() -> None
     }
     responses = {fnd(2): _link(2, 1)}
     apply_check_rulings(findings, responses, _check(returned=(fnd(1),)), evt(15))
-    assert findings[fnd(2)].duplicate_link_broken_by_check_event_id == evt(15)
+    assert findings[fnd(2)].duplicate_link_broken_by_check_event_ids == (evt(15),)
 
 
 def test_an_ai_powered_issue_key_alone_never_breaks_a_link() -> None:
@@ -410,20 +455,27 @@ def test_an_ai_powered_issue_key_alone_never_breaks_a_link() -> None:
     }
     responses = {fnd(3): _link(3, 1)}
     apply_check_rulings(findings, responses, _check(returned=(fnd(1), fnd(2))), evt(15))
-    assert findings[fnd(3)].duplicate_link_broken_by_check_event_id is None
+    assert findings[fnd(3)].duplicate_link_broken_by_check_event_ids == ()
 
 
-def test_the_break_latch_round_trips_and_redacting_its_check_clears_it() -> None:
+def test_redacting_one_breaking_check_keeps_the_link_broken_while_another_remains() -> None:
+    """S1: the break is recomputed from every remaining readable check, as a full replay is."""
+
     state = _pair()
     findings = dict(state.findings)
     apply_check_rulings(findings, state.responses, _check(returned=(fnd(2),)), evt(15))
+    apply_check_rulings(findings, state.responses, _check(rulings=((2, "still_present"),)), evt(16))
+    assert findings[fnd(2)].duplicate_link_broken_by_check_event_ids == (evt(15), evt(16))
     broken = _state(findings, dict(state.responses))
     snapshot = projection_snapshot(broken)
     rows = snapshot["findings"]
     assert isinstance(rows, dict)
-    assert "duplicate_link_broken_by_check_event_id" not in rows[fnd(1)]  # type: ignore[operator]
+    assert "duplicate_link_broken_by_check_event_ids" not in rows[fnd(1)]  # type: ignore[operator]
     decoded = projection_from_snapshot(snapshot)
     assert decoded == broken
     assert canonical_encode(projection_snapshot(decoded)) == canonical_encode(snapshot)
     reopen_findings_resolved_by(findings, frozenset({evt(15)}))
-    assert findings[fnd(2)].duplicate_link_broken_by_check_event_id is None
+    assert findings[fnd(2)].duplicate_link_broken_by_check_event_ids == (evt(16),)
+    assert duplicate_link_target(_state(findings, dict(state.responses)), fnd(2)) is None
+    reopen_findings_resolved_by(findings, frozenset({evt(16)}))
+    assert duplicate_link_target(_state(findings, dict(state.responses)), fnd(2)) == fnd(1)

@@ -342,7 +342,6 @@ _FINDING_RESOLUTION_EVENT_FIELDS: Final = (
     "rejection_accepted_by_check_event_id",
     "reduced_scope_raising_check_event_id",
     "resolution_raising_check_event_id",
-    "duplicate_link_broken_by_check_event_id",
 )
 
 
@@ -382,11 +381,12 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     by ``resolved_by_check_event_id`` qualified only through its recorded reduced scope. Redacting
     it reopens the finding exactly like redacting the proving check: unreadable proof is no proof.
 
-    ``duplicate_link_broken_by_check_event_id`` (issue #996) names the first later check that
-    raised this finding's issue again (returned it, or the reviewer ruled it ``still_present`` or
-    ``answered_not_fixed``) while its latest response was ``duplicate_of``. From then on the
-    ``duplicate_of`` link no longer applies: the finding needs its own answer
-    (``kernel/finding_todo.py``). Redacting that check clears it, as a full replay would.
+    ``duplicate_link_broken_by_check_event_ids`` (issue #996) names, in fold order, every later
+    check that raised this finding's issue again (returned it, or the reviewer ruled it
+    ``still_present`` or ``answered_not_fixed``) while its latest response was ``duplicate_of``.
+    While any remains, the ``duplicate_of`` link no longer applies: the finding needs its own
+    answer (``duplicate_link_holds``). Redacting one of those checks removes only that id, exactly
+    as a full replay of the remaining readable checks would.
     """
 
     resolved_by_check_event_id: EventId | None = None
@@ -397,7 +397,7 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     resolution_depends_on_check_event_ids: tuple[EventId, ...] = ()
     reduced_scope_raising_check_event_id: EventId | None = None
     resolution_raising_check_event_id: EventId | None = None
-    duplicate_link_broken_by_check_event_id: EventId | None = None
+    duplicate_link_broken_by_check_event_ids: tuple[EventId, ...] = ()
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -430,6 +430,16 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
             if len(set(ids)) != len(ids) or len(ids) > MAX_CHECK_CHANGE_RAISING_CHECKS:
                 raise _invalid()
             object.__setattr__(self, name, ids)
+        breaks = self.duplicate_link_broken_by_check_event_ids
+        if type(breaks) is not tuple:
+            raise _invalid()
+        try:
+            break_ids = tuple(event_id(item) for item in cast(tuple[object, ...], breaks))
+        except ValueError as exc:
+            raise _invalid() from exc
+        if len(set(break_ids)) != len(break_ids):
+            raise _invalid()
+        object.__setattr__(self, "duplicate_link_broken_by_check_event_ids", break_ids)
         files = self.check_change_raised_files
         if files is not None and (
             not self.check_change_raising_check_event_ids
@@ -1072,32 +1082,63 @@ def unanswered_finding_ids(
     response work would leave an agent that repaired before answering with a readiness item it
     can never clear (pilot blocker).
 
-    A ``duplicate_of`` answer (issue #996) answers the finding while its link holds: the earlier
-    finding it names carries the work, so the pair is counted once. Once a later check broke the
-    link, that answer no longer applies and the finding needs its own answer again.
+    A ``duplicate_of`` answer (issue #996) answers the finding only while its link holds
+    (``duplicate_link_holds``). Once a later check broke the link, or the earlier finding became
+    unreadable, that answer no longer applies and the finding needs its own answer again.
     """
 
     limitations = observation_limitation_finding_ids(state, records)
     return frozenset(
         key
         for key, record in state.findings.items()
-        if (key not in state.responses or _duplicate_link_broken(state, key, record))
+        if (key not in state.responses or _duplicate_answer_lapsed(state, key))
         and key not in limitations
         and not (record.payload is not None and record.resolved_by_check_event_id is not None)
     )
 
 
-def _duplicate_link_broken(
-    state: ProjectionState, key: FindingId, record: FindingProjectionRecord
-) -> bool:
-    """A ``duplicate_of`` answer a later check broke no longer answers the finding (#996)."""
+def duplicate_link_holds(state: ProjectionState, key: FindingId) -> FindingId | None:
+    """The earlier finding a holding ``duplicate_of`` answer links *key* to (issue #996).
+
+    ``None`` unless the finding is readable, its latest readable response is ``duplicate_of``, no
+    remaining readable check broke the link, and the named finding is readable, recorded earlier,
+    and reports the same origin and kind. The earlier-only rule keeps every chain finite.
+    """
+
+    record = state.findings.get(key)
+    response = state.responses.get(key)
+    if (
+        record is None
+        or record.payload is None
+        or record.duplicate_link_broken_by_check_event_ids
+        or response is None
+        or response.payload is None
+        or response.payload.disposition is not ResponseDisposition.DUPLICATE_OF
+    ):
+        return None
+    target = response.payload.duplicate_of_finding_id
+    target_record = None if target is None else state.findings.get(target)
+    if (
+        target is None
+        or target_record is None
+        or target_record.payload is None
+        or target_record.source_frontier >= record.source_frontier
+        or target_record.payload.origin is not record.payload.origin
+        or target_record.payload.kind is not record.payload.kind
+    ):
+        return None
+    return target
+
+
+def _duplicate_answer_lapsed(state: ProjectionState, key: FindingId) -> bool:
+    """A ``duplicate_of`` answer whose link no longer holds answers nothing (#996)."""
 
     response = state.responses.get(key)
     return (
-        record.duplicate_link_broken_by_check_event_id is not None
-        and response is not None
+        response is not None
         and response.payload is not None
         and response.payload.disposition is ResponseDisposition.DUPLICATE_OF
+        and duplicate_link_holds(state, key) is None
     )
 
 
@@ -1176,9 +1217,9 @@ def _record_snapshot(record: _ProjectionRecordLike) -> dict[str, JsonValue]:
         if record.resolution_raising_check_event_id is not None:
             result["resolution_raising_check_event_id"] = record.resolution_raising_check_event_id
         # Issue #996: emitted only when a check broke a ``duplicate_of`` link.
-        if record.duplicate_link_broken_by_check_event_id is not None:
-            result["duplicate_link_broken_by_check_event_id"] = (
-                record.duplicate_link_broken_by_check_event_id
+        if record.duplicate_link_broken_by_check_event_ids:
+            result["duplicate_link_broken_by_check_event_ids"] = list(
+                record.duplicate_link_broken_by_check_event_ids
             )
     return result
 
@@ -1472,6 +1513,7 @@ def _record_from_snapshot(
                 "check_change_raising_check_event_ids",
                 "check_change_raised_files",
                 "resolution_depends_on_check_event_ids",
+                "duplicate_link_broken_by_check_event_ids",
             }
         )
     else:
@@ -1567,6 +1609,7 @@ def _record_from_snapshot(
             "check_change_raising_check_event_ids",
             "check_change_raised_files",
             "resolution_depends_on_check_event_ids",
+            "duplicate_link_broken_by_check_event_ids",
         ):
             if name in source and source[name] is None:
                 raise _invalid()
@@ -1612,8 +1655,8 @@ def _record_from_snapshot(
             resolution_raising_check_event_id=cast(
                 EventId | None, source.get("resolution_raising_check_event_id")
             ),
-            duplicate_link_broken_by_check_event_id=cast(
-                EventId | None, source.get("duplicate_link_broken_by_check_event_id")
+            duplicate_link_broken_by_check_event_ids=event_ids(
+                "duplicate_link_broken_by_check_event_ids"
             ),
         )
     return ProjectionRecord(

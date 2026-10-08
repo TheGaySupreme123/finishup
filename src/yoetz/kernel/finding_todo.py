@@ -21,16 +21,14 @@ The last four are terminal: no transition leaves them, and ``respond`` refuses t
 further on a terminal item. New evidence about the same problem becomes a new finding. The
 transition table is kept as data in ``TODO_TRANSITIONS``.
 
-A ``duplicate_of`` answer (issue #996, ADR-034 amendment) adds no state of its own. While its link
-holds (``duplicate_link_target``), the duplicate's state is *derived* from the earlier finding it
-names, following any chain to its root: ``verified_resolved``, ``self_verified``,
-``acknowledged_not_done`` and ``rejection_accepted`` are inherited, and an open root leaves the
-duplicate open but needing no answer of its own; one repair or answer on the root covers both,
-and readiness counts the pair once (``duplicate_root``). A duplicate is never cleaner than its
-root: only its own qualifying check can otherwise prove it absent. The link breaks for good when
-a later check raises the duplicate's own issue again (``finding_resolution._break_duplicate_links``)
-or the root becomes unreadable; the duplicate then reverts to its own state and needs its own
-answer. ``duplicate_of`` is never terminal by itself.
+A ``duplicate_of`` answer (issue #996, ADR-034 amendment) adds no state of its own and never
+makes a finding read clean. While its link holds (``duplicate_link_target``) the duplicate inherits
+only the earlier finding's never-clean final answers (``self_verified``, ``acknowledged_not_done``);
+otherwise it stays ``open`` but answered, and only its own qualifying check resolves it. An open
+pair counts once in readiness (``duplicate_counting_id``). The link breaks while any later
+readable check raised the duplicate's own issue again
+(``finding_resolution._break_duplicate_links``), or when the earlier finding becomes unreadable;
+the duplicate then needs its own answer. ``duplicate_of`` is never terminal by itself.
 
 ``review_rounds`` counts later checks that assessed an item and left it open. The owner's attempt
 budget (``verification.finding_attempt_budget``, default 5) only changes what Yoetz asks for next:
@@ -49,7 +47,7 @@ from typing import Final
 from yoetz.domain.findings import FINDING_KIND_TRAITS, ResponseDisposition
 from yoetz.domain.values import FindingId
 from yoetz.kernel.finding_resolution import finding_is_resolved
-from yoetz.kernel.projections import ProjectionState
+from yoetz.kernel.projections import ProjectionState, duplicate_link_holds
 
 __all__ = [
     "DEFAULT_FINDING_ATTEMPT_BUDGET",
@@ -59,6 +57,8 @@ __all__ = [
     "FindingTodo",
     "FindingTodoCounts",
     "FindingTodoState",
+    "INHERITED_TODO_STATES",
+    "duplicate_counting_id",
     "duplicate_link_target",
     "duplicate_root",
     "finding_blocks_receipt",
@@ -138,38 +138,22 @@ def _validated_budget(attempt_budget: int) -> int:
 
 
 def duplicate_link_target(state: ProjectionState, finding_id: FindingId) -> FindingId | None:
-    """The earlier finding *finding_id* is linked to by a holding ``duplicate_of`` answer (#996).
+    """The earlier finding a holding ``duplicate_of`` answer links *finding_id* to (#996).
 
-    ``None`` unless the finding is readable, its latest readable response is ``duplicate_of``, no
-    later check broke the link, and the named finding is readable and recorded earlier. The
-    earlier-only rule makes every chain finite and acyclic.
+    See ``projections.duplicate_link_holds``: readable, earlier, same origin and kind, and no
+    remaining readable check broke the link.
     """
 
-    record = state.findings.get(finding_id)
-    if (
-        record is None
-        or record.payload is None
-        or record.duplicate_link_broken_by_check_event_id is not None
-    ):
-        return None
-    response = state.responses.get(finding_id)
-    if response is None or response.payload is None:
-        return None
-    target = response.payload.duplicate_of_finding_id
-    if response.payload.disposition is not ResponseDisposition.DUPLICATE_OF or target is None:
-        return None
-    target_record = state.findings.get(target)
-    if (
-        target_record is None
-        or target_record.payload is None
-        or target_record.source_frontier >= record.source_frontier
-    ):
-        return None
-    return target
+    return duplicate_link_holds(state, finding_id)
 
 
 def duplicate_root(state: ProjectionState, finding_id: FindingId) -> FindingId:
-    """The finding that answers for *finding_id*: itself, or the root of its holding links."""
+    """The end of *finding_id*'s holding links: itself, or the earlier finding it repeats.
+
+    ``respond`` refuses a link to a linked finding and a link from a finding that is already
+    linked to, so a holding chain has at most one hop; the loop is finite either way because
+    every link points to an earlier record.
+    """
 
     current = finding_id
     while (target := duplicate_link_target(state, current)) is not None:
@@ -177,19 +161,18 @@ def duplicate_root(state: ProjectionState, finding_id: FindingId) -> FindingId:
     return current
 
 
-def finding_todo_state(state: ProjectionState, finding_id: FindingId) -> FindingTodoState:
-    """The one shared to-do state of a recorded finding."""
+# The only states a linked duplicate inherits: the earlier finding's never-clean final answers.
+# Resolution and an accepted rejection are never inherited: only the duplicate's own proof or
+# ruling clears it (issue #996).
+INHERITED_TODO_STATES: Final = frozenset(
+    {FindingTodoState.SELF_VERIFIED, FindingTodoState.ACKNOWLEDGED_NOT_DONE}
+)
 
+
+def _own_todo_state(state: ProjectionState, finding_id: FindingId) -> FindingTodoState:
     record = state.findings.get(finding_id)
     if record is None or record.payload is None:
         return FindingTodoState.OPEN
-    root = duplicate_root(state, finding_id)
-    if root != finding_id:
-        # Issue #996: a holding ``duplicate_of`` link derives the state from its root. Only the
-        # duplicate's own qualifying check proof can read better than the root.
-        if finding_is_resolved(state, finding_id):
-            return FindingTodoState.VERIFIED_RESOLVED
-        return finding_todo_state(state, root)
     response = state.responses.get(finding_id)
     disposition = (
         None if response is None or response.payload is None else response.payload.disposition
@@ -211,6 +194,43 @@ def finding_todo_state(state: ProjectionState, finding_id: FindingId) -> Finding
     return FindingTodoState.OPEN
 
 
+def finding_todo_state(state: ProjectionState, finding_id: FindingId) -> FindingTodoState:
+    """The one shared to-do state of a recorded finding."""
+
+    own = _own_todo_state(state, finding_id)
+    root = duplicate_root(state, finding_id)
+    if root != finding_id and own is FindingTodoState.OPEN:
+        # Issue #996: a holding link inherits only the earlier finding's never-clean final
+        # answers. An open, resolved or rejection-accepted earlier finding leaves the duplicate
+        # open (answered): only its own qualifying proof resolves it.
+        inherited = _own_todo_state(state, root)
+        if inherited in INHERITED_TODO_STATES:
+            return inherited
+    return own
+
+
+def duplicate_counting_id(state: ProjectionState, finding_id: FindingId) -> FindingId:
+    """The id a readiness counter names *finding_id* by, so a linked pair counts once (#996).
+
+    The earlier finding, while the link holds, that finding is an actionable kind, and the
+    duplicate's state is the earlier finding's (both open, or an inherited final answer);
+    otherwise the duplicate itself, so an open duplicate is never hidden behind a resolved or
+    non-actionable earlier finding.
+    """
+
+    root = duplicate_root(state, finding_id)
+    if root == finding_id:
+        return finding_id
+    root_record = state.findings.get(root)
+    if root_record is None or root_record.payload is None:
+        return finding_id
+    if not FINDING_KIND_TRAITS[root_record.payload.kind][1]:
+        return finding_id
+    if finding_todo_state(state, finding_id) is not _own_todo_state(state, root):
+        return finding_id
+    return root
+
+
 def finding_todo(
     state: ProjectionState,
     finding_id: FindingId,
@@ -229,8 +249,8 @@ def finding_blocks_receipt(state: ProjectionState, finding_id: FindingId) -> boo
     ``rejection_accepted`` and ``self_verified`` (issue #984) are the unresolved states that stop
     blocking; both stay disclosed, and ``self_verified`` still keeps the receipt conclusion from
     reading clean. ``acknowledged_not_done`` keeps blocking: it is never clean. A linked
-    ``duplicate_of`` item (issue #996) blocks exactly when its root's state does; counters count it
-    once, under ``duplicate_root``.
+    ``duplicate_of`` item (issue #996) blocks unless its own proof resolved it or it inherited
+    ``self_verified``; counters name it by ``duplicate_counting_id``.
     """
 
     record = state.findings.get(finding_id)

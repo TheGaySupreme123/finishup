@@ -111,9 +111,11 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "cursor_project_mcp_invalid",
     "cursor_project_mcp_preview_required",
     "dependency_changed",
+    "duplicate_has_duplicates",
     "duplicate_link_broken",
     "duplicate_object_key",
     "duplicate_set_member",
+    "duplicate_target_different_issue",
     "duplicate_target_is_duplicate",
     "duplicate_target_not_earlier",
     "duplicate_target_same_finding",
@@ -368,7 +370,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
 )
 
 _REASON_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 311
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 313
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)
@@ -549,7 +551,9 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         "finding_not_proof_limited": "input_correction_new_identity",
         # Issue #996: name an earlier, readable, unlinked finding, or answer the finding another
         # way, under a new request identity.
+        "duplicate_has_duplicates": "input_correction_new_identity",
         "duplicate_link_broken": "input_correction_new_identity",
+        "duplicate_target_different_issue": "input_correction_new_identity",
         "duplicate_target_is_duplicate": "input_correction_new_identity",
         "duplicate_target_not_earlier": "input_correction_new_identity",
         "duplicate_target_same_finding": "input_correction_new_identity",

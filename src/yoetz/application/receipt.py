@@ -53,7 +53,6 @@ from yoetz.kernel.finding_resolution import (
 from yoetz.kernel.finding_todo import (
     FindingTodoState,
     duplicate_link_target,
-    duplicate_root,
     finding_todo_state,
 )
 from yoetz.kernel.lineage import evaluate_recorded_lineage
@@ -472,16 +471,8 @@ def _check_change_resolution_gaps(
     the receipt's 64-gap bound; the receipt builder names the affected findings, boundedly.
     """
 
-    # A linked duplicate (issue #996) reads resolved through the finding it duplicates, so that
-    # finding's resolution is disclosed too.
     affected = unverified_resolution_finding_ids(
-        projection,
-        (
-            item
-            for state in finding_states
-            if state.resolved
-            for item in {state.finding_id, duplicate_root(projection, state.finding_id)}
-        ),
+        projection, (state.finding_id for state in finding_states if state.resolved)
     )
     if not affected:
         return []

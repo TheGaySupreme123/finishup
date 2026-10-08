@@ -85,6 +85,7 @@ from yoetz.protocol.models import (
     StatusFindingItemModel,
     StatusFindingsPageModel,
     StatusHistoryItemV14Model,
+    StatusLineageChildModel,
     StatusObligationItemModel,
     StatusObservedRunModel,
     StatusOperationPageModel,
@@ -221,6 +222,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
         ),
     ),
     (ChildFindingSnapshotModel, frozenset({"resolution_event_id", "self_verified"})),
+    (StatusLineageChildModel, frozenset({"self_verified_finding_count"})),
     (ProjectTextRefModel, frozenset({"envelope_digest"})),
     (PublishWorkAcceptedEventModel, frozenset({"summary"})),
     (PublicErrorModel, frozenset({"safe_details"})),
@@ -1170,6 +1172,21 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
             ("resolution_event_id", "self_verified"),
         ),
         (
+            StatusLineageChildModel,
+            {
+                "task_id": protocol_id("tsk_", 2912),
+                "parent_task_id": protocol_id("tsk_", 2913),
+                "origin": "self_registered",
+                "acceptance": "accepted",
+                "work_state": "closed",
+                "session_health": "ended",
+                "depth": "1",
+                "rollup_state": "clean",
+                "blocking_conditions": (),
+            },
+            ("self_verified_finding_count",),
+        ),
+        (
             ChildDependencySnapshotModel,
             {
                 "child_task_id": protocol_id("tsk_", 2911),
@@ -1533,6 +1550,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     )
     for model, fields in (
         ("ChildFindingSnapshotModel", ("resolution_event_id", "self_verified")),
+        ("StatusLineageChildModel", ("self_verified_finding_count",)),
         (
             "ChildDependencySnapshotModel",
             ("child_frontier", "child_check_id", "child_receipt_id", "membership_generation"),

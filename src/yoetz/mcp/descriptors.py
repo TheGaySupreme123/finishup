@@ -1415,11 +1415,11 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
                 "because of a Yoetz limit, and you checked it yourself: reason says how, and "
                 "evidence_refs (at least one) cite your recorded evidence; it is final. "
                 "Acknowledged_not_done means you will not or cannot do it, is final, and is the "
-                "last resort. Duplicate_of links a finding that repeats an earlier finding you "
-                "already answered: name it in duplicate_of_finding_id; reason and evidence are "
-                "optional and it is not final. While the link holds the finding reads as the "
-                "earlier one does and needs no separate answer; a later check that raises its "
-                "issue again breaks the link. Provenance_disputed contests the finding's authorship "
+                "last resort. Duplicate_of is only for a restatement of the SAME issue (same origin "
+                "and kind) as an earlier finding you answered: name it in duplicate_of_finding_id; "
+                "reason and evidence are optional and it is not final. Linking never resolves the "
+                "new finding (its own check must); a later check that raises its issue again "
+                "breaks the link. Provenance_disputed contests the finding's authorship "
                 "or provenance premise rather than its conclusion. It, rejected and "
                 "acknowledged_not_done require reason and accept no waiver fields. Waived "
                 "requires reason and waiver_scope."
@@ -1427,8 +1427,8 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
         duplicate_of = properties.get("duplicate_of_finding_id")
         if isinstance(duplicate_of, dict):
             duplicate_of["description"] = (
-                "Only with duplicate_of: an earlier, readable finding of this task that names the "
-                "same issue and is not itself linked as a duplicate."
+                "Only with duplicate_of: an earlier, readable finding of this task with the same "
+                "origin and kind that names the same issue and is not itself linked."
             )
         finding_frontier = properties.get("finding_frontier")
         if isinstance(finding_frontier, dict):
@@ -1946,9 +1946,8 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "evidence ids; it is refused (finding_not_rechecked, finding_not_proof_limited) while "
         "no later check ran or Yoetz still sees the issue. A Yoetz limit is never a "
         "yoetz-blocker. Use acknowledged_not_done only if you truly will not or cannot do it. "
-        "If a new finding repeats an earlier one you already answered, respond duplicate_of with "
-        "duplicate_of_finding_id: one repair or answer on the earlier finding then covers both, "
-        "and it never makes a finding read cleaner than the earlier one. "
+        "Only if a new finding restates the SAME issue as an earlier one you answered, respond "
+        "duplicate_of with duplicate_of_finding_id; linking never resolves the new finding. "
         "This appends one "
         "finding-response record to the local Yoetz ledger; it does not publish to GitHub or run an "
         "AI-powered evaluation. It does not resolve other findings or establish that underlying work "
@@ -2105,7 +2104,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:f4e91ea5ae6138ca381d3a990340067b6e28a545340eec9c0ca4737a18f06166",
-                "respond": "sha256:e0bf0562523f8c56e3faff56d8a77e3e2ff42e64f8c226e5bd6b4631791488ae",
+                "respond": "sha256:cdac44bae4de573707ba1f1f5f5b12bb8391c7193c7260efc93c8181411ab71f",
                 "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:2d99f8dce9f7dca0f92d51550d2cf8585baed276f13f638103cba61a122bba23",
@@ -2117,7 +2116,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:3cd2326917a550c0a24f3e94c6141f41b1549107030154c3e5b29f46bfaef78b",
-                "respond": "sha256:e0bf0562523f8c56e3faff56d8a77e3e2ff42e64f8c226e5bd6b4631791488ae",
+                "respond": "sha256:cdac44bae4de573707ba1f1f5f5b12bb8391c7193c7260efc93c8181411ab71f",
                 "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:2d99f8dce9f7dca0f92d51550d2cf8585baed276f13f638103cba61a122bba23",
@@ -2128,8 +2127,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:9b47fea6e2073c77fcf0576aa541f0d269cb6191672edcd7f89be5a2cf67dedd",
-        "strict": "sha256:50d3520d2cfa39623025122bf28c0e43f11472d762ca10d53dfde57941e7c3f1",
+        "policy": "sha256:c811a933834e191ee76af6ab3a247478a316708738edcc9918376fb2bd14f62e",
+        "strict": "sha256:f47260c21c70157639d58aece98006a873f4f92f824663fdce93cf88aaf197f6",
     }
 )
 

@@ -3948,6 +3948,8 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                 "enum": ["active", "contact_lost", "ended"],
                 "type": "string",
             },
+            # Issue #984 (S2): present only when the accepted child has self-verified findings.
+            "self_verified_finding_count": {"$ref": "#/$defs/positive_uint"},
             "task_id": {"$ref": "#/$defs/task_id"},
             "work_state": {
                 "enum": ["abandoned", "cancelled", "closed", "open", "written_off"],

@@ -166,7 +166,11 @@ def test_no_disposition_marks_a_finding_resolved(disposition: ResponseDispositio
     assert [state.resolved for state in states] == [False], (
         f"{disposition.value} resolved the finding; the agent guidance promises it does not"
     )
-    assert unanswered_finding_count(projection, ()) == 0
+    # Issue #996: a duplicate_of answer whose earlier finding is not recorded here links to
+    # nothing, so it answers nothing.
+    assert unanswered_finding_count(projection, ()) == (
+        1 if disposition is ResponseDisposition.DUPLICATE_OF else 0
+    )
     # ``self_verified`` (issue #984) is never resolved, but it is not agent work: it leaves the
     # receipt-blocking count and keeps the conclusion from reading clean instead.
     expected = 0 if disposition is ResponseDisposition.SELF_VERIFIED else 1

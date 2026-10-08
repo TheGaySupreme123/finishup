@@ -268,12 +268,13 @@ Three more things the receipt discloses in their own sections, by id only:
   `finding_premise_disputed` and under "Not done although the review says the task requires it".
   A Stop asks you about it once.
 
-`duplicate_of` links a finding that repeats an earlier one you already answered (the same concern
-raised again as a new finding) to that earlier finding. It is not a final state of its own: while
-the link holds, the finding reads exactly as the earlier one does and is counted once with it, so
-one repair or answer covers both. It never reads cleaner than the earlier finding, and the receipt
-lists each link by ids in a "Linked duplicates" section. A later check that raises the finding
-again, or a review that says it is still present, breaks the link; it then needs its own answer.
+`duplicate_of` is only for a genuine restatement: a new finding of the same origin and kind that
+names the same issue as an earlier finding you already answered. It is not a final state of its own
+and never resolves the new finding: the finding stays open until its own check proves it absent,
+and it is counted once with the earlier finding meanwhile. It carries over only the earlier
+finding's never-clean answers (acknowledged not done, self-verified), and the receipt lists each
+link by ids in a "Linked duplicates" section. A later check that raises the finding again, or a
+review that says it is still present, breaks the link; it then needs its own answer.
 `rejection_accepted` no longer blocks the receipt's conclusion but is listed in its own "Rejection
 accepted" section. Both sections name finding ids only. A review that restates a recorded AI-powered
 finding without anything recorded since does not add a second item: it is seen again and suppressed,

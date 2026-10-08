@@ -2159,8 +2159,9 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                 (
                     heading,
                     "The agent linked these findings to an earlier finding that names the same "
-                    "issue. Each reads exactly as the earlier finding allows; a link never "
-                    "resolves a finding by itself.",
+                    "issue. A link never resolves a finding by itself: each stays open until its "
+                    "own check proves it absent, or carries the earlier finding's not-done or "
+                    "self-verified answer.",
                     *(
                         f"- {item.finding_id} duplicates {item.duplicate_of_finding_id}"
                         for item in document.duplicate_finding_links

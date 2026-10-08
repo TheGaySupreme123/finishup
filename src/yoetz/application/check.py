@@ -118,6 +118,7 @@ from yoetz.kernel.finding_resolution import (
 from yoetz.kernel.finding_todo import (
     DEFAULT_FINDING_ATTEMPT_BUDGET,
     FindingTodoState,
+    duplicate_link_target,
     finding_todo,
     finding_todo_state,
     todo_counts,
@@ -2875,10 +2876,11 @@ def _admit_prior_verdicts(
             # on it says nothing about the review's own findings and is only counted.
             set_aside += 1
             continue
-        if (
-            record.resolved_by_check_event_id is not None
-            or finding_todo_state(projection, record.payload.finding_id)
-            is not FindingTodoState.OPEN
+        if record.resolved_by_check_event_id is not None or (
+            finding_todo_state(projection, record.payload.finding_id) is not FindingTodoState.OPEN
+            # Issue #996: a linked duplicate only inherits a final state; the reviewer can
+            # still rule on it, and a still_present ruling breaks the link.
+            and duplicate_link_target(projection, record.payload.finding_id) is None
         ):
             # A terminal item is never re-reviewed, so no ruling on it is admitted.
             set_aside += 1
@@ -3244,6 +3246,10 @@ def _record_restatement(
     """
 
     todo = finding_todo_state(case.projection, restated)
+    if duplicate_link_target(case.projection, restated) is not None:
+        # Issue #996: a linked duplicate's final state is only inherited; a restatement of it is
+        # a still_present ruling that breaks the link, never a silent suppression.
+        todo = FindingTodoState.OPEN
     if todo is FindingTodoState.SELF_VERIFIED:
         return False, False
     if todo in {

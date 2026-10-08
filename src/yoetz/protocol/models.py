@@ -4707,6 +4707,8 @@ class StatusAdvicePageModel(_ClosedModel):
 class StatusLineageChildModel(_ClosedModel):
     """One direct child in the bounded lineage projection."""
 
+    optional_non_null_fields = frozenset({"self_verified_finding_count"})
+
     task_id: TaskIdWire
     parent_task_id: TaskIdWire
     origin: LineageOriginWire
@@ -4716,6 +4718,9 @@ class StatusLineageChildModel(_ClosedModel):
     depth: CanonicalPositiveUInt64Wire
     rollup_state: LineageRollupStateWire
     blocking_conditions: tuple[CodeWire, ...]
+    # Issue #984 (S2): how many of an accepted child's findings its agent self-verified; present
+    # only when positive. The parent receipt is then at best insufficient_coverage.
+    self_verified_finding_count: CanonicalPositiveUInt64Wire | None = None
 
     @model_validator(mode="after")
     def _validate_lineage_child(self) -> StatusLineageChildModel:
@@ -6287,6 +6292,7 @@ _STATUS_LINEAGE_STRUCTURAL_POINTERS: Final = (
     "/page/children/*/origin",
     "/page/children/*/parent_task_id",
     "/page/children/*/rollup_state",
+    "/page/children/*/self_verified_finding_count",
     "/page/children/*/session_health",
     "/page/children/*/task_id",
     "/page/children/*/work_state",
@@ -6354,6 +6360,7 @@ _STATUS_PROJECT_STRUCTURAL_POINTERS: Final = (
     "/page/lineage/children/*/origin",
     "/page/lineage/children/*/parent_task_id",
     "/page/lineage/children/*/rollup_state",
+    "/page/lineage/children/*/self_verified_finding_count",
     "/page/lineage/children/*/session_health",
     "/page/lineage/children/*/task_id",
     "/page/lineage/children/*/work_state",
@@ -6703,7 +6710,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1435:
+    if len(result) != 1437:
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

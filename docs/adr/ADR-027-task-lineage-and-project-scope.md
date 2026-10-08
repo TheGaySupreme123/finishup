@@ -282,6 +282,11 @@ than implementation notes.
    is not parent work and never blocks; on an accepted child it reads "self-verified by the
    child agent; Yoetz could not prove it" and holds the parent at best at
    `insufficient_coverage`.
+   Status agrees: the `view=lineage` child row carries `self_verified_finding_count` (present
+   only when positive), and parent status readiness lists the standing code
+   `finding_self_verified` while an accepted child holds one. The snapshot row's `resolved` reads
+   the same to-do predicate as the child's receipt, and a `duplicate_of` pair the child's
+   readiness counts once is one row (ADR-034 amendment 1).
    An accepted live child is an open gap and an accepted abandoned child is an incomplete gap.
    Lifecycle state is evaluated before informational annotation, so an informational finding
    cannot hide an open or incomplete child. The only informational kind,

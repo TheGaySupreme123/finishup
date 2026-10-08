@@ -1254,6 +1254,7 @@ async def _closure_readiness(
     lineage_gaps: tuple[str, ...] = (),
     semantic_review_required: bool = False,
     check_in_flight: bool = False,
+    lineage_self_verified: bool = False,
 ) -> StatusClosureReadinessModel:
     """Derive what currently bounds a completion conclusion, from the compact projection.
 
@@ -1351,6 +1352,7 @@ async def _closure_readiness(
         semantic_review_required=semantic_review_required,
         check_in_flight=check_in_flight,
         live_blockers=live_blockers,
+        lineage_self_verified=lineage_self_verified,
     )
     confirmations = dict(facts.blocked_obligation_confirmations)
     return StatusClosureReadinessModel(
@@ -1447,7 +1449,7 @@ async def _task_coverage(
 
 async def _lineage_readiness_gaps(
     app: Application, runtime: TaskRuntime, frontier: Frontier, request_id: str
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], bool]:
     """Compare accepted catalog children with recorded facts without opening child bundles.
 
     These are current advisory gaps only. Checks and receipts still replay service-stamped
@@ -1458,17 +1460,14 @@ async def _lineage_readiness_gaps(
 
     try:
         if not await app.start_catalog.list_child_task_ids(runtime.task_id):
-            return ()
+            return (), False
         snapshot = await lineage_status_page(app.start_catalog, runtime, frontier)
-        return tuple(
-            sorted(
-                {
-                    gap
-                    for child in snapshot.children
-                    if child.acceptance == "accepted"
-                    for gap in child.blocking_conditions
-                }
-            )
+        accepted = tuple(child for child in snapshot.children if child.acceptance == "accepted")
+        # Issue #984/#996 (S2): an accepted child with self-verified findings keeps the parent
+        # receipt at best insufficient_coverage, so readiness discloses it as standing.
+        return (
+            tuple(sorted({gap for child in accepted for gap in child.blocking_conditions})),
+            any(child.self_verified_finding_count is not None for child in accepted),
         )
     except Exception as exc:
         # A secondary read must neither strand operation recovery nor turn an unreadable
@@ -1480,7 +1479,7 @@ async def _lineage_readiness_gaps(
             operation="status_lineage_readiness_unavailable",
             request_id=request_id,
         )
-        return ("lineage_readiness_unavailable",)
+        return ("lineage_readiness_unavailable",), False
 
 
 async def execute_status(
@@ -1873,7 +1872,9 @@ async def execute_status(
             lag = raw_page.lag
             projection_version = raw_page.projection_version
             rebuild_state = raw_page.rebuild_state
-        lineage_gaps = await _lineage_readiness_gaps(app, runtime, frontier, request.request_id)
+        lineage_gaps, lineage_self_verified = await _lineage_readiness_gaps(
+            app, runtime, frontier, request.request_id
+        )
         if lineage_gaps:
             gaps = tuple(sorted(set(gaps) | set(lineage_gaps)))
             coverage = replace(
@@ -1891,6 +1892,7 @@ async def execute_status(
             compact_page,
             request.request_id,
             lineage_gaps=lineage_gaps,
+            lineage_self_verified=lineage_self_verified,
             semantic_review_required=_semantic_review_required(app, route_profile),
             check_in_flight=frontier == head and await _check_in_flight(runtime),
         )

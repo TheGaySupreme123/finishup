@@ -754,9 +754,9 @@ do not recheck unchanged state again. If you repaired it and Yoetz cannot prove 
 verify it yourself, record that evidence, and respond `self_verified` with how you verified it and
 the evidence ids; it then stops being your work and the receipt names it as self-verified. Respond
 `acknowledged_not_done` only if you truly will not or cannot do the work. A Yoetz limit is never a
-`yoetz-blocker`. If a new finding repeats one you already answered, respond `duplicate_of` with
-`duplicate_of_finding_id` set to the earlier finding instead of answering it again; one repair or
-answer on the earlier finding then covers both. Request the receipt and keep the final claim no stronger than
+`yoetz-blocker`. Only if a new finding restates the SAME issue as an earlier one you answered (same
+origin and kind), respond `duplicate_of` with `duplicate_of_finding_id` set to the earlier finding;
+linking never resolves the new finding, its own check must. Request the receipt and keep the final claim no stronger than
 its conclusion, coverage, freshness, receipt-blocking findings, and limitations. A local-check
 recheck can still qualify when only `captured_object_unavailable`, `content_unselected`,
 `host_outcome_unavailable`, or `unpaired_event` limits its case-wide host-observation coverage and

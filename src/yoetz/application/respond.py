@@ -408,6 +408,8 @@ DUPLICATE_TARGET_UNKNOWN: Final = "duplicate_target_unknown"
 DUPLICATE_TARGET_NOT_EARLIER: Final = "duplicate_target_not_earlier"
 DUPLICATE_TARGET_IS_DUPLICATE: Final = "duplicate_target_is_duplicate"
 DUPLICATE_LINK_BROKEN: Final = "duplicate_link_broken"
+DUPLICATE_TARGET_DIFFERENT_ISSUE: Final = "duplicate_target_different_issue"
+DUPLICATE_HAS_DUPLICATES: Final = "duplicate_has_duplicates"
 
 
 def _admit_duplicate_link(
@@ -415,12 +417,13 @@ def _admit_duplicate_link(
     finding_record: FindingProjectionRecord,
     projection: ProjectionState,
 ) -> None:
-    """Admit a ``duplicate_of`` link only to a readable, earlier, unlinked finding (issue #996).
+    """Admit a ``duplicate_of`` link only for a genuine restatement (issue #996).
 
-    The target is checked against the current projection; origins may differ. A target that is
-    itself linked as a duplicate is refused rather than silently re-pointed, so the recorded link
-    is always the one the agent named; the refusal names the finding to link to instead. A
-    finding whose earlier link a later check broke needs its own answer and cannot be re-linked.
+    The target must be a readable finding of this task, recorded earlier, with the same origin
+    and kind (the same issue; a different kind is a different issue), and not itself linked; the
+    refusal names the finding to link to instead. A finding that other findings already link to
+    cannot become a duplicate itself, so no chain forms through a later link. A finding whose
+    earlier link a later check broke needs its own answer and cannot be re-linked.
     """
 
     duplicate = finding_id(request.finding_id)
@@ -441,7 +444,7 @@ def _admit_duplicate_link(
             reason_code=DUPLICATE_TARGET_SAME_FINDING,
             field="/duplicate_of_finding_id",
         )
-    if finding_record.duplicate_link_broken_by_check_event_id is not None:
+    if finding_record.duplicate_link_broken_by_check_event_ids:
         raise _error(
             PublicErrorCode.INVALID_REQUEST,
             (
@@ -472,6 +475,32 @@ def _admit_duplicate_link(
             ),
             reason_code=DUPLICATE_TARGET_NOT_EARLIER,
             field="/duplicate_of_finding_id",
+        )
+    if (
+        target_record.payload.origin is not cast(Finding, finding_record.payload).origin
+        or target_record.payload.kind is not cast(Finding, finding_record.payload).kind
+    ):
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "duplicate_of links only a restatement of the same issue: the earlier finding "
+                "must have the same origin and kind. Answer this finding on its own."
+            ),
+            reason_code=DUPLICATE_TARGET_DIFFERENT_ISSUE,
+            field="/duplicate_of_finding_id",
+        )
+    if any(
+        other != duplicate and duplicate_link_target(projection, other) == duplicate
+        for other in projection.findings
+    ):
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "Other findings are linked as duplicates of this one, so it answers for them and "
+                "cannot become a duplicate itself. Answer it on its own."
+            ),
+            reason_code=DUPLICATE_HAS_DUPLICATES,
+            field="/finding_id",
         )
     root = duplicate_link_target(projection, target)
     if root is not None:

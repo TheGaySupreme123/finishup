@@ -87,9 +87,11 @@ cursor_project_mcp_command_invalid
 cursor_project_mcp_invalid
 cursor_project_mcp_preview_required
 dependency_changed
+duplicate_has_duplicates
 duplicate_link_broken
 duplicate_object_key
 duplicate_set_member
+duplicate_target_different_issue
 duplicate_target_is_duplicate
 duplicate_target_not_earlier
 duplicate_target_same_finding
@@ -509,7 +511,7 @@ def test_public_error_code_membership() -> None:
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
     source_values = cast(tuple[str, ...], getattr(errors_module, "_PROTOCOL_REASON_CODE_VALUES"))
     assert source_values == _EXPECTED_REASON_CODES
-    assert len(source_values) == 311
+    assert len(source_values) == 313
     assert source_values == tuple(sorted(source_values, key=str.encode))
     assert len(source_values) == len(set(source_values))
     assert PROTOCOL_REASON_CODES == frozenset(_EXPECTED_REASON_CODES)

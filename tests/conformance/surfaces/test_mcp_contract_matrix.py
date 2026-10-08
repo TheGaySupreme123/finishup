@@ -302,8 +302,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:9b47fea6e2073c77fcf0576aa541f0d269cb6191672edcd7f89be5a2cf67dedd",
-        "strict": "sha256:50d3520d2cfa39623025122bf28c0e43f11472d762ca10d53dfde57941e7c3f1",
+        "policy": "sha256:c811a933834e191ee76af6ab3a247478a316708738edcc9918376fb2bd14f62e",
+        "strict": "sha256:f47260c21c70157639d58aece98006a873f4f92f824663fdce93cf88aaf197f6",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -817,7 +817,7 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     assert "earlier" in cast(str, target["description"])
     assert "duplicate_of_finding_id" in rules
     assert "respond duplicate_of" in text
-    assert "never makes a finding read cleaner" in text
+    assert "linking never resolves the new finding" in text
 
 
 def test_guidance_resources_are_exact_and_static() -> None:

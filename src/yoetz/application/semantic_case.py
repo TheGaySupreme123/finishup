@@ -102,7 +102,11 @@ from yoetz.kernel.deterministic_checks import (
     DeterministicCase,
     FrozenHistoryEvent,
 )
-from yoetz.kernel.finding_todo import FindingTodoState, finding_todo_state
+from yoetz.kernel.finding_todo import (
+    FindingTodoState,
+    duplicate_link_target,
+    finding_todo_state,
+)
 from yoetz.kernel.lineage import LineageEvaluation
 from yoetz.kernel.projections import (
     EvidenceProjectionRecord,
@@ -2571,7 +2575,12 @@ def _prior_finding_candidates(
             or record.resolved_by_check_event_id is not None
             or payload.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
             or ref not in allowed
-            or finding_todo_state(projection, key) is not FindingTodoState.OPEN
+            or (
+                finding_todo_state(projection, key) is not FindingTodoState.OPEN
+                # Issue #996: a linked duplicate only inherits a final state; it stays in the
+                # packet so the reviewer can rule still_present and break a wrong link.
+                and duplicate_link_target(projection, key) is None
+            )
         ):
             continue
         rows.append((ref, record))

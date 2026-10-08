@@ -1967,14 +1967,15 @@ def _break_duplicate_links(
     check_event_id: EventId,
     rulings: Mapping[FindingId, str],
 ) -> None:
-    """Latch the first check that raises a linked duplicate's issue again (issue #996).
+    """Record every check that raises a linked duplicate's issue again (issue #996).
 
     A finding whose latest readable response is ``duplicate_of`` keeps its link until a later
     check says its own issue is still there: the check returned it again, returned a readable
     local finding with the same issue key (a deterministic rule fired again on the same subject),
-    or the reviewer ruled it ``still_present`` or ``answered_not_fixed``. The latch is permanent
-    for that finding: from then on it needs its own answer. An AI-powered issue key is too coarse
-    to stand for one issue, so only the finding's own id or ruling breaks its link.
+    or the reviewer ruled it ``still_present`` or ``answered_not_fixed``. Each such check is
+    recorded, so the link stays broken while any of them remains readable (redacting one removes
+    only its id, as a full replay would). An AI-powered issue key is too coarse to stand for one
+    issue, so only the finding's own id or ruling breaks its link.
     """
 
     returned_local_keys = {
@@ -1989,7 +1990,7 @@ def _break_duplicate_links(
         latest = responses.get(current_id)
         if (
             record.payload is None
-            or record.duplicate_link_broken_by_check_event_id is not None
+            or check_event_id in record.duplicate_link_broken_by_check_event_ids
             or latest is None
             or latest.payload is None
             or latest.payload.disposition is not ResponseDisposition.DUPLICATE_OF
@@ -2004,7 +2005,11 @@ def _break_duplicate_links(
             )
         ):
             findings[current_id] = replace(
-                record, duplicate_link_broken_by_check_event_id=check_event_id
+                record,
+                duplicate_link_broken_by_check_event_ids=(
+                    *record.duplicate_link_broken_by_check_event_ids,
+                    check_event_id,
+                ),
             )
 
 
@@ -2049,8 +2054,15 @@ def reopen_findings_resolved_by(
         if record.rejection_accepted_by_check_event_id in event_ids:
             record = replace(record, rejection_accepted_by_check_event_id=None)
         # Issue #996: a full replay of the redacted ledger never saw the breaking check.
-        if record.duplicate_link_broken_by_check_event_id in event_ids:
-            record = replace(record, duplicate_link_broken_by_check_event_id=None)
+        if event_ids & set(record.duplicate_link_broken_by_check_event_ids):
+            record = replace(
+                record,
+                duplicate_link_broken_by_check_event_ids=tuple(
+                    item
+                    for item in record.duplicate_link_broken_by_check_event_ids
+                    if item not in event_ids
+                ),
+            )
         if event_ids & set(record.check_change_raising_check_event_ids):
             record = replace(record, check_change_raised_files=None)
         findings[current_id] = record

@@ -660,8 +660,8 @@ async def test_a_live_lineage_blocker_is_never_promised_as_a_receipt_disclosure(
 
     session, _ = await _bandit_b("memory")
 
-    async def live_gaps(*_args: object) -> tuple[str, ...]:
-        return (token,)
+    async def live_gaps(*_args: object) -> tuple[tuple[str, ...], bool]:
+        return (token,), False
 
     monkeypatch.setattr(status_module, "_lineage_readiness_gaps", live_gaps)
     status = await session.status()
@@ -687,3 +687,23 @@ async def test_a_live_lineage_blocker_is_never_promised_as_a_receipt_disclosure(
         )
     )
     assert token not in receipt.coverage.known_gaps
+
+
+async def test_a_child_with_self_verified_findings_is_a_standing_status_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #984/#996 (S2): an accepted child's self-verified findings keep the parent receipt
+    at best insufficient_coverage, so parent status never reads plainly ready."""
+
+    session, _ = await _bandit_b("memory")
+
+    async def self_verified_child(*_args: object) -> tuple[tuple[str, ...], bool]:
+        return (), True
+
+    monkeypatch.setattr(status_module, "_lineage_readiness_gaps", self_verified_child)
+    readiness = (await session.status()).closure_readiness
+    assert readiness.standing_limitations is not None
+    assert "finding_self_verified" in readiness.standing_limitations
+    assert readiness.state != "ready"
+    assert readiness.agent_actionable is not None
+    assert "finding_self_verified" not in readiness.agent_actionable

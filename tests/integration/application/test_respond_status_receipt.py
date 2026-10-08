@@ -8595,8 +8595,54 @@ async def test_self_verified_answers_a_local_finding_only_observation_loss_keeps
     assert receipt.conclusion != "no_unresolved_deterministic_findings"
 
 
+async def _restate_claim(
+    app: Application,
+    started: StartInternalResult,
+    obligation_id: str,
+    frontier: Frontier | FrontierModel,
+    *,
+    seed: int,
+) -> PublishWorkInternalResult:
+    """Repeat the unsupported completion claim (tb4n1: the agent claimed done again)."""
+
+    result = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(frontier),
+                "event_drafts": (
+                    {
+                        "event_id": protocol_id("evt_", seed + 1),
+                        "schema": {"name": "claim_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:02:00.000Z",
+                        "causal_parents": (),
+                        "payload": {
+                            "claim_id": protocol_id("clm_", seed + 2),
+                            "claim_kind": "completion",
+                            "statement": "The exercise is complete, really.",
+                            "supporting_refs": (obligation_id,),
+                            "obligation_refs": (obligation_id,),
+                        },
+                        "artifact_refs": (),
+                        "evidence_refs": (),
+                    },
+                ),
+            }
+        )
+    )
+    assert type(result) is PublishWorkInternalResult
+    return result
+
+
 async def _check_again(
-    app: Application, started: StartInternalResult, frontier: Frontier | FrontierModel, seed: int
+    app: Application,
+    started: StartInternalResult,
+    frontier: Frontier | FrontierModel,
+    seed: int,
+    *,
+    max_findings: str = "3",
 ) -> CheckCommitResult:
     checked = await app.check(
         CheckRequest.model_validate(
@@ -8606,7 +8652,7 @@ async def _check_again(
                 "writer_id": started.writer_id,
                 "expected_frontier": _frontier(frontier),
                 "mode": "deterministic_only",
-                "max_findings": "3",
+                "max_findings": max_findings,
             }
         )
     )
@@ -8652,50 +8698,85 @@ def _row(page: StatusFindingsPageModel, finding: str) -> StatusFindingItemModel:
     return next(item for item in page.items if item.finding_id == finding)
 
 
-async def test_duplicate_of_admission_refuses_self_unknown_later_and_chained_targets() -> None:
-    """Issue #996: a link points back to an earlier, readable finding that is not itself a
-    duplicate. Origins and kinds may differ; field rules are enforced by the request schema."""
+async def _restated_completion_findings(
+    app: Application, *, restatements: int, seed_offset: int
+) -> tuple[StartInternalResult, CheckCommitResult, list[str], list[str]]:
+    """tb4n1: the agent claimed completion again over the same open obligation, so the same rule
+    raised the same kind of finding again under a new id each time."""
+
+    started, checked, obligation = await _bootstrap_finding(app, seed=9960, max_findings="10")
+    frontier: Frontier | FrontierModel = checked.result_frontier
+    for index in range(restatements):
+        published = await _restate_claim(
+            app, started, obligation, frontier, seed=10400 + 20 * index
+        )
+        frontier = published.result_frontier
+    rechecked = await _check_again(app, started, frontier, 10490, max_findings="10")
+    page = await _findings_view(app, started, seed_offset, include_resolved=True)
+    ordered = sorted(
+        page.items,
+        key=lambda item: int(item.finding_frontier.sequence) if item.finding_frontier else 0,
+    )
+    completion = [
+        item.finding_id for item in ordered if item.kind == "completion_with_open_obligations"
+    ]
+    other = [item.finding_id for item in ordered if item.kind != "completion_with_open_obligations"]
+    return started, rechecked, completion, other
+
+
+async def test_duplicate_of_admission_refuses_other_issues_and_chains() -> None:
+    """Issue #996: a link is admitted only for a genuine restatement: an earlier, readable
+    finding of the same origin and kind that is not itself linked, from a finding nothing links
+    to. Field rules are enforced by the request schema."""
 
     app, _runtime, _ = _build_app(seed_offset=61)
-    started, checked, _obligation = await _bootstrap_finding(app, seed=9960)
-    earliest, middle, latest = (item.finding_id for item in checked.findings)
+    started, checked, completion, other = await _restated_completion_findings(
+        app, restatements=3, seed_offset=10100
+    )
+    first, second, third, fourth = completion[:4]
     at = checked.result_frontier
 
-    assert await _refused_duplicate(app, started, at, middle, middle, 10101) == (
+    assert await _refused_duplicate(app, started, at, second, second, 10101) == (
         "duplicate_target_same_finding"
     )
     unknown = protocol_id("fnd_", 10102)
-    assert await _refused_duplicate(app, started, at, middle, unknown, 10103) == (
+    assert await _refused_duplicate(app, started, at, second, unknown, 10103) == (
         "duplicate_target_unknown"
     )
-    assert await _refused_duplicate(app, started, at, earliest, middle, 10104) == (
+    assert await _refused_duplicate(app, started, at, first, second, 10104) == (
         "duplicate_target_not_earlier"
     )
-    # The target is required with duplicate_of and refused with any other disposition.
-    missing = _duplicate_wire(started, at, middle, earliest, 10105)
+    # A different kind is a different issue, even on the same claim and obligation.
+    later_other = other[-1]
+    assert await _refused_duplicate(app, started, at, later_other, first, 10105) == (
+        "duplicate_target_different_issue"
+    )
+    missing = _duplicate_wire(started, at, second, first, 10106)
     del missing["duplicate_of_finding_id"]
     with pytest.raises(pydantic.ValidationError):
         RespondRequest.model_validate(missing)
-    stray = {**_duplicate_wire(started, at, middle, earliest, 10106), "disposition": "rejected"}
+    stray = {**_duplicate_wire(started, at, second, first, 10107), "disposition": "rejected"}
     stray["reason"] = "Not a duplicate."
     with pytest.raises(pydantic.ValidationError):
         RespondRequest.model_validate(stray)
 
     linked = await app.respond(
-        RespondRequest.model_validate(_duplicate_wire(started, at, middle, earliest, 10107))
+        RespondRequest.model_validate(_duplicate_wire(started, at, fourth, third, 10108))
     )
     assert linked.response.disposition == "duplicate_of"
-    assert linked.response.duplicate_of_finding_id == earliest
-    # A chain is refused rather than silently re-pointed: link to the root instead.
-    assert await _refused_duplicate(
-        app, started, linked.result_frontier, latest, middle, 10108
-    ) == ("duplicate_target_is_duplicate")
-    rooted = await app.respond(
-        RespondRequest.model_validate(
-            _duplicate_wire(started, linked.result_frontier, latest, earliest, 10109)
-        )
+    assert linked.response.duplicate_of_finding_id == third
+    frontier = linked.result_frontier
+    # Something links to the third finding, so it cannot become a duplicate itself.
+    assert await _refused_duplicate(app, started, frontier, third, first, 10109) == (
+        "duplicate_has_duplicates"
     )
-    assert rooted.response.duplicate_of_finding_id == earliest
+    # A linked target is refused rather than silently re-pointed.
+    again = await app.respond(
+        RespondRequest.model_validate(_duplicate_wire(started, frontier, second, first, 10110))
+    )
+    assert await _refused_duplicate(app, started, again.result_frontier, fourth, second, 10111) == (
+        "duplicate_target_is_duplicate"
+    )
 
 
 @pytest.mark.parametrize("ledger_backend", ("memory", "sqlite"))
@@ -8703,16 +8784,18 @@ async def test_duplicate_of_counts_once_inherits_state_and_breaks_on_re_raise(
     ledger_backend: Literal["memory", "sqlite"],
 ) -> None:
     """Issue #996 (tb4n1 D5/#980): a re-raised concern minted as a new finding is answered by
-    linking it to the earlier finding. The pair counts once in readiness, the duplicate reads
-    exactly as the earlier finding allows, and a later check that returns it again breaks the
-    link so it needs its own answer."""
+    linking it to the earlier finding. The pair counts once in readiness, the duplicate inherits
+    only the earlier finding's never-clean answer, and a later check that returns it again
+    breaks the link so it needs its own answer."""
 
     app, _runtime, _ = _build_app(seed_offset=62, ledger_backend=ledger_backend)
-    started, checked, _obligation = await _bootstrap_finding(app, seed=9980)
-    earliest, middle, _latest = (item.finding_id for item in checked.findings)
+    started, checked, completion, _other = await _restated_completion_findings(
+        app, restatements=1, seed_offset=10200
+    )
+    earliest, middle = completion[:2]
     before = await _compact_readiness(app, started, 10201)
-    assert before.unanswered_finding_count == "3"
-    assert before.receipt_blocking_finding_count == "3"
+    unanswered = int(cast(str, before.unanswered_finding_count))
+    blocking = int(cast(str, before.receipt_blocking_finding_count))
 
     linked = await app.respond(
         RespondRequest.model_validate(
@@ -8726,12 +8809,12 @@ async def test_duplicate_of_counts_once_inherits_state_and_breaks_on_re_raise(
     assert row.todo_state == "open"
     assert row.resolved is False
     linked_readiness = await _compact_readiness(app, started, 10204)
-    # One repair or answer on the earlier finding covers both: the pair counts once.
-    assert linked_readiness.unanswered_finding_count == "2"
-    assert linked_readiness.receipt_blocking_finding_count == "2"
+    # The duplicate is answered and, while both are open, the pair counts once.
+    assert linked_readiness.unanswered_finding_count == str(unanswered - 1)
+    assert linked_readiness.receipt_blocking_finding_count == str(blocking - 1)
     assert "receipt_findings_unresolved" in linked_readiness.blocking_conditions
 
-    # The earlier finding's final answer is inherited, never improved on.
+    # The earlier finding's never-clean final answer is inherited.
     ended = await app.respond(
         RespondRequest.model_validate(
             {
@@ -8783,7 +8866,7 @@ async def test_duplicate_of_counts_once_inherits_state_and_breaks_on_re_raise(
         frontier = rendered.result_frontier
 
     # A later check returns the duplicate's issue again: the link breaks for good.
-    again = await _check_again(app, started, frontier, 10212)
+    again = await _check_again(app, started, frontier, 10212, max_findings="10")
     assert middle in {item.finding_id for item in again.findings}
     page = await _findings_view(app, started, 10213, include_resolved=True)
     row = _row(page, middle)
@@ -8791,7 +8874,8 @@ async def test_duplicate_of_counts_once_inherits_state_and_breaks_on_re_raise(
     assert row.duplicate_of_finding_id is None
     assert row.todo_state == "open"
     broken = await _compact_readiness(app, started, 10214)
-    assert broken.unanswered_finding_count == "2"
+    # Its duplicate_of answer no longer applies: it needs its own answer again.
+    assert broken.unanswered_finding_count == str(unanswered - 1)
     assert await _refused_duplicate(
         app, started, again.result_frontier, middle, earliest, 10215
     ) == ("duplicate_link_broken")

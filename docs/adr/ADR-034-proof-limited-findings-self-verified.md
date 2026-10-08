@@ -198,35 +198,49 @@ deterministic duplicates, and restatements of a terminal item.
 
 - `respond` gains the disposition `duplicate_of` with a required `duplicate_of_finding_id`.
   `reason` and `evidence_refs` are optional; waiver fields are refused. It is not terminal.
-- Admission refuses, with typed reason codes, a target that is the same finding
-  (`duplicate_target_same_finding`), unknown or unreadable (`duplicate_target_unknown`), recorded
-  after this finding (`duplicate_target_not_earlier`), or itself linked as a duplicate
-  (`duplicate_target_is_duplicate`). Yoetz refuses a chained target instead of re-pointing it to
-  the root, so the recorded link is always the one the agent named; the refusal names the root.
-  A finding whose earlier link a check broke cannot be re-linked (`duplicate_link_broken`).
-  Differing origins or kinds are not refused.
-- While the link holds, the duplicate's to-do state is derived from the root of its links
-  (`kernel/finding_todo.duplicate_root`; a chain can still form when the target is linked later,
-  and it is finite because every link points to an earlier record). `verified_resolved`,
-  `self_verified`, `acknowledged_not_done` and `rejection_accepted` are inherited. An open root
-  leaves the duplicate open, but its answer is the root's: readiness counts the pair once in
-  `findings_unanswered` and `receipt_findings_unresolved`, naming the root.
-- The link breaks for good when a later check returns the duplicate again, returns a local
-  finding with its issue key (the rule fired again), or a review rules it `still_present` or
-  `answered_not_fixed`. An AI-powered issue key alone is too coarse to break a link. The break is
-  replay-derived (`duplicate_link_broken_by_check_event_id`, cleared if that check is redacted,
-  as a full replay would). The duplicate reverts to its own state, its `duplicate_of` answer no
-  longer counts, and it needs its own answer.
+- Admission accepts only a genuine restatement. It refuses, with typed reason codes, a target
+  that is the same finding (`duplicate_target_same_finding`), unknown or unreadable
+  (`duplicate_target_unknown`), recorded after this finding (`duplicate_target_not_earlier`), of a
+  different origin or kind (`duplicate_target_different_issue`: a different kind is a different
+  issue), or itself linked as a duplicate (`duplicate_target_is_duplicate`; Yoetz refuses rather
+  than re-pointing, and the refusal names the finding to link to). A finding other findings
+  already link to cannot become a duplicate itself (`duplicate_has_duplicates`), so no chain forms
+  through a later link. A finding whose link a check broke cannot be re-linked
+  (`duplicate_link_broken`).
+- A link holds while both findings are readable, the target is earlier with the same origin and
+  kind, and no remaining readable check broke it (`kernel/projections.duplicate_link_holds`).
+  While it holds the duplicate inherits only the earlier finding's never-clean final answers,
+  `self_verified` and `acknowledged_not_done`. It never inherits `verified_resolved` or
+  `rejection_accepted`: otherwise the duplicate stays `open` but answered, and only its own
+  qualifying check resolves it. Readiness counts an open (or inherited) pair once, naming the
+  earlier finding (`finding_todo.duplicate_counting_id`); an open duplicate of a resolved,
+  rejection-accepted or non-actionable earlier finding is counted on its own.
+- A linked duplicate stays in the next review's prior findings even when it inherited a final
+  state, with `duplicate_of_ref`, and rulings on it are admitted, so a reviewer can rule
+  `still_present` and break a wrong link.
+- The link breaks while any later readable check returned the duplicate again, returned a local
+  finding with its issue key (the rule fired again), or carried a `still_present` or
+  `answered_not_fixed` ruling on it. An AI-powered issue key alone is too coarse to break a link.
+  The projection records every such check (`duplicate_link_broken_by_check_event_ids`, emitted
+  only when non-empty); redacting one removes only its id, exactly as a full replay over the
+  remaining readable checks would. A broken link, or an earlier finding that became unreadable,
+  leaves the duplicate needing its own answer.
 - Status findings rows carry `duplicate_of_finding_id` exactly while the link holds. Receipts on
-  the 1.3.0 artifact list `duplicate_finding_links` by ids in a "Linked duplicates" section. The
-  next review's prior-finding row carries `duplicate_of_ref`, so the reviewer can break a wrong
-  link by ruling `still_present`.
+  the 1.3.0 artifact list `duplicate_finding_links` by ids in a "Linked duplicates" section.
+- Lineage (issue #996, B2): a child's frozen finding rows read `resolved` from the same to-do
+  predicate as the child's receipt, and a pair counted once by the child's readiness is one row,
+  so a self-verified pair rolls up to the parent once.
 
-**Honesty.** A duplicate never reads resolved unless its root was resolved by a qualifying check
-or its own qualifying check proved it absent. It never reads cleaner than its root, and the link
-never makes a receipt clean by itself: an open root keeps `unresolved_findings_remain`, and an
-inherited `self_verified` keeps the conclusion at best `insufficient_coverage`.
+**Honesty.** Linking never resolves a finding and never makes a receipt clean: a duplicate reads
+resolved only when its own qualifying check proved it absent. An open duplicate keeps
+`unresolved_findings_remain`; an inherited `acknowledged_not_done` keeps it blocking; an inherited
+`self_verified` keeps the conclusion at best `insufficient_coverage`.
 
 **Reverse path.** The link is not final. The agent can answer the duplicate with another
 disposition at any time while it is not in an inherited final state; a later check or a review
-breaks the link; redacting the breaking check restores it.
+breaks the link; redacting every breaking check restores it.
+
+**Status of self-verified children (S2).** Status readiness lists the standing code
+`finding_self_verified` when an accepted child holds self-verified findings, and the status lineage
+row carries `self_verified_finding_count`, so status agrees with the parent receipt's
+`insufficient_coverage` (ADR-027).

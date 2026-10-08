@@ -48,7 +48,7 @@ from yoetz.kernel.claims import completion_claim_present
 from yoetz.kernel.finding_resolution import finding_is_resolved
 from yoetz.kernel.finding_todo import (
     FindingTodoState,
-    duplicate_root,
+    duplicate_counting_id,
     finding_blocks_receipt,
     finding_todo_state,
 )
@@ -840,20 +840,20 @@ def closure_readiness_facts(
     # Same predicate as receipt_blocking_finding_count (``finding_todo.finding_blocks_receipt``): an
     # actionable finding kind that no later qualifying check resolved and that is not a terminal
     # ``rejection_accepted`` item (issue #905). A linked ``duplicate_of`` item (issue #996) is
-    # named by the finding that answers for it (``duplicate_root``), so a pair counts once.
+    # named by the finding that answers for it (``duplicate_counting_id``), so a pair counts once.
     blocking = {
-        duplicate_root(state, finding.finding_id)
+        duplicate_counting_id(state, finding.finding_id)
         for finding in current
         if finding_blocks_receipt(state, finding.finding_id)
     }
     acknowledged = {
-        duplicate_root(state, finding.finding_id)
+        duplicate_counting_id(state, finding.finding_id)
         for finding in current
         if finding_acknowledged_not_done(state, finding.finding_id)
         or finding_todo_state(state, finding.finding_id) is FindingTodoState.ACKNOWLEDGED_NOT_DONE
     }
     self_verified = {
-        duplicate_root(state, finding.finding_id)
+        duplicate_counting_id(state, finding.finding_id)
         for finding in current
         if finding_todo_state(state, finding.finding_id) is FindingTodoState.SELF_VERIFIED
     }
@@ -922,6 +922,7 @@ def derive_closure_readiness(
     semantic_review_required: bool,
     check_in_flight: bool = False,
     live_blockers: Iterable[str] = (),
+    lineage_self_verified: bool = False,
 ) -> ClosureReadinessSplit:
     """Split readiness into agent-actionable work, standing limitations and acknowledged items.
 
@@ -1019,7 +1020,9 @@ def derive_closure_readiness(
         if item not in actionable:
             actionable.append(item)
     standing.update(split.standing_limitations)
-    if facts is not None and facts.self_verified_finding_ids:
+    if (facts is not None and facts.self_verified_finding_ids) or lineage_self_verified:
+        # ``lineage_self_verified``: an accepted child holds self-verified findings (ADR-034,
+        # ADR-027). The parent receipt is then at best insufficient_coverage; status says so.
         standing.add(FINDING_SELF_VERIFIED_GAP)
     if facts is not None:
         # Issue #995: disclosed assumptions and verification limits never add or remove work.
