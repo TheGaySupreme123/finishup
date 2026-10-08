@@ -454,6 +454,7 @@ def _finding_states(projection: object) -> tuple[ReceiptFindingState, ...]:
                 acknowledged_not_done=todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE,
                 rejection_accepted=todo is FindingTodoState.REJECTION_ACCEPTED,
                 self_verified=todo is FindingTodoState.SELF_VERIFIED,
+                disputed_after_rebuttal=todo is FindingTodoState.DISPUTED_AFTER_REBUTTAL,
                 # Issue #996: the flags above are derived from the linked earlier finding.
                 duplicate_of_finding_id=duplicate_link_target(projection, item.finding_id),
             )

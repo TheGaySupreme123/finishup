@@ -549,7 +549,11 @@ _TERMINAL_ID_FIELDS: Final = (
     "acknowledged_not_done_finding_ids",
     "rejection_accepted_finding_ids",
     "self_verified_finding_ids",
+    "disputed_after_rebuttal_finding_ids",
 )
+# Issue #1020 (ADR-040): the agent rejected these with a reason and the reviewer repeated them
+# without citing anything newer. A standing disagreement, disclosed; never agent work.
+DISPUTED_AFTER_REBUTTAL_SECTION_TITLE: Final = "Disputed after rebuttal"
 SELF_VERIFIED_SECTION_TITLE: Final = "Self-verified by the agent; Yoetz could not prove the repair"
 # Issue #984 (ADR-034): how a child's self-verified finding reads on the parent receipt.
 CHILD_SELF_VERIFIED_NOTE: Final = "self-verified by the child agent; Yoetz could not prove it"
@@ -1233,6 +1237,9 @@ class ReceiptDocument:
     # Issue #984 (ADR-034): the agent repaired these and verified the repair itself because Yoetz
     # could not prove it. Disclosed by id in their own section; the conclusion is never clean.
     self_verified_finding_ids: tuple[FindingId, ...] = ()
+    # Issue #1020 (ADR-040): the reviewer repeated these after the agent's reasoned rejection
+    # without citing anything newer. Disclosed by id in their own section; never clean.
+    disputed_after_rebuttal_finding_ids: tuple[FindingId, ...] = ()
     # Issue #996: holding ``duplicate_of`` links of carried findings, sorted by finding id. Each
     # duplicate reads as its earlier finding allows; the link never resolves anything.
     duplicate_finding_links: tuple[ReceiptDuplicateLink, ...] = ()
@@ -1328,10 +1335,10 @@ class ReceiptDocument:
         if len(terminal_ids) != len(set(terminal_ids)):
             raise ProtocolValueError(invalid)
         if (
-            self.self_verified_finding_ids
-            and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
-        ):
-            # A repair only the agent verified never reads as clean (issue #984).
+            self.self_verified_finding_ids or self.disputed_after_rebuttal_finding_ids
+        ) and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS:
+            # A repair only the agent verified (issue #984), or a finding the reviewer still
+            # holds against the agent's rebuttal (issue #1020), never reads as clean.
             raise ProtocolValueError("invalid_receipt_conclusion")
         links = _validate_tuple(self.duplicate_finding_links, 0, 100, invalid)
         if any(type(value) is not ReceiptDuplicateLink for value in links):
@@ -1744,6 +1751,7 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
                 "duplicate_finding_links",
                 "rejection_accepted_finding_ids",
                 "self_verified_finding_ids",
+                "disputed_after_rebuttal_finding_ids",
                 "semantic_withheld_items",
                 "semantic_redacted_values",
                 "semantic_provenance",
@@ -1858,6 +1866,10 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         self_verified_finding_ids=tuple(
             finding_id(item)
             for item in _array(source.get("self_verified_finding_ids", ()), invalid)
+        ),
+        disputed_after_rebuttal_finding_ids=tuple(
+            finding_id(item)
+            for item in _array(source.get("disputed_after_rebuttal_finding_ids", ()), invalid)
         ),
         duplicate_finding_links=tuple(
             _duplicate_link_from_json(item, invalid)
@@ -2053,6 +2065,10 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
         result["rejection_accepted_finding_ids"] = list(document.rejection_accepted_finding_ids)
     if document.self_verified_finding_ids:
         result["self_verified_finding_ids"] = list(document.self_verified_finding_ids)
+    if document.disputed_after_rebuttal_finding_ids:
+        result["disputed_after_rebuttal_finding_ids"] = list(
+            document.disputed_after_rebuttal_finding_ids
+        )
     if document.duplicate_finding_links:
         result["duplicate_finding_links"] = [
             {"finding_id": item.finding_id, "duplicate_of_finding_id": item.duplicate_of_finding_id}
@@ -2129,13 +2145,18 @@ def resolved_finding_ids_for_render(document: ReceiptDocument) -> frozenset[str]
 def unresolved_findings_for_render(document: ReceiptDocument) -> tuple[Finding, ...]:
     """Current (not resolved) finding rows, in document order.
 
-    A ``rejection_accepted`` row (issue #905) or a ``self_verified`` row (issue #984) is
-    unresolved but settled: it has its own section and does not count here.
+    A ``rejection_accepted`` row (issue #905), a ``self_verified`` row (issue #984) or a
+    ``disputed_after_rebuttal`` row (issue #1020) is unresolved but settled: it has its own
+    section and does not count here.
     """
 
     resolved = resolved_finding_ids_for_render(document)
     settled = frozenset(
-        (*document.rejection_accepted_finding_ids, *document.self_verified_finding_ids)
+        (
+            *document.rejection_accepted_finding_ids,
+            *document.self_verified_finding_ids,
+            *document.disputed_after_rebuttal_finding_ids,
+        )
     )
     return tuple(
         finding
@@ -2267,6 +2288,24 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                     "its own recorded evidence, because Yoetz could not prove the repair. They "
                     "are not resolved by Yoetz and keep this receipt from reading clean.",
                     *(f"- {item}" for item in document.self_verified_finding_ids),
+                )
+            )
+        )
+    if document.disputed_after_rebuttal_finding_ids:
+        heading = (
+            f"## {DISPUTED_AFTER_REBUTTAL_SECTION_TITLE}"
+            if markdown
+            else DISPUTED_AFTER_REBUTTAL_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent rejected these AI-powered findings with a reason, and the reviewer "
+                    "kept them open without citing anything recorded after that rejection. The "
+                    "reviewer and the agent disagree; these are not agent work, are not resolved, "
+                    "and keep this receipt from reading clean.",
+                    *(f"- {item}" for item in document.disputed_after_rebuttal_finding_ids),
                 )
             )
         )
@@ -2530,6 +2569,14 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
             return (
                 prefix + f"coverage is insufficient. {count} {noun} self-verified by the agent; "
                 "Yoetz could not prove the repair."
+            )
+        if document.disputed_after_rebuttal_finding_ids:
+            count = len(document.disputed_after_rebuttal_finding_ids)
+            noun = "finding is" if count == 1 else "findings are"
+            return (
+                prefix + f"coverage is insufficient. {count} {noun} disputed: the agent "
+                "rejected them with a reason and the reviewer repeated them without newer "
+                "material."
             )
         child_self_verified = sum(
             item.self_verified for child in document.children.children for item in child.findings

@@ -67,3 +67,27 @@ def test_the_route_field_is_a_strict_boolean() -> None:
 )
 def test_route_required_review_definition(mode: str, policy: Any, required: bool) -> None:
     assert semantic_route_required(mode, policy) is required
+
+
+@pytest.mark.parametrize(
+    ("mode", "drift", "required"),
+    [
+        # Issue #1021 (owner decision tb4n2 P0-8): an explicitly deterministic-only (strict)
+        # route did not require review, even under a ``required`` verification policy.
+        ("deterministic_only", False, False),
+        ("semantic_if_configured", False, False),
+        (None, False, False),
+        # Asking for review still requires it on any route.
+        ("semantic_required", False, True),
+        # A strict process serving a host whose applied route is policy is stale, not an owner
+        # choice: the policy decides.
+        ("deterministic_only", True, True),
+    ],
+)
+def test_a_strict_route_does_not_require_review(
+    mode: str | None, drift: bool, required: bool
+) -> None:
+    assert (
+        semantic_route_required(mode, "required", route_profile="strict", route_drift=drift)
+        is required
+    )

@@ -1166,6 +1166,16 @@ the packet shows was done, unless material newer than the response shows the pro
 re-raise then cites that material and the earlier finding's `fnd_` id. Every provider cell sends
 the same instruction text; the Chat Completions cell only appends its output-shape suffix.
 
+**Only obtainable remedies (2026-10-08, issue #1020).** The instruction and the challenge and
+ruling glossaries ask only for repairs or artifacts the main agent can produce from the task
+statement, the workspace and the tools shown in the packet. A concern that only an unobtainable
+artifact (a hidden grader, benchmark generator, private specification or user answer) would settle
+is requested as `state_unresolved_limitation`, and an earlier finding resting on one is ruled
+`unassessable`, never `still_present`. The reviewer never recommends delivering less, emptying a
+file or withdrawing working code, and may approve a reasoned, disclosed fallback. The instruction
+also tells the reviewer that a re-raise of a rejected finding citing nothing newer than the
+rejection is recorded as `disputed_after_rebuttal`, a standing, non-blocking disagreement.
+
 **Citable prior findings.** A cited `fnd_` resolves to that finding's subject refs when it is one
 of this check's local findings or a readable recorded finding inside the frozen fence. Dropping a
 challenge that follows the prompt was a fence mismatch, not a reviewer error; the fence is not

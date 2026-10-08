@@ -38,6 +38,7 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [031](ADR-031-check-time-change-capture.md) | The service captures the check-time change as one reviewed object |
 | [032](ADR-032-closure-readiness-checklist-and-material-dependency-coverage.md) | Closure readiness as a checklist, and material-dependency coverage (proposed) |
 | [034](ADR-034-proof-limited-findings-self-verified.md) | Proof-limited findings: the `self_verified` respond disposition |
+| [040](ADR-040-reviewer-disagreement-and-route-derived-review.md) | Binding rules for reviewer disagreement (`disputed_after_rebuttal`); review requirement derived from the route |
 
 Unresolved gates are centralized in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md), not scattered
 through individual ADRs.

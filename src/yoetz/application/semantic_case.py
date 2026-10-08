@@ -3063,7 +3063,9 @@ def _settled_finding_candidates(
     """Readable, unresolved AI-powered findings the agent settled, newest answer first (#980).
 
     Settled means the agent's latest readable answer is ``acknowledged_not_done`` or
-    ``self_verified`` (matched by wire value). They are final and never re-reviewed, but the
+    ``self_verified`` (matched by wire value), or the item is ``disputed_after_rebuttal`` (a
+    reasoned ``rejected`` the reviewer repeated without newer material, issue #1020). They are
+    final and never re-reviewed, but the
     reviewer must be able to name one when it raises the same concern again.
     """
 
@@ -3084,7 +3086,13 @@ def _settled_finding_candidates(
             response is None
             or response.redacted
             or response.payload is None
-            or response.payload.disposition.value not in AGENT_SETTLED_DISPOSITION_VALUES
+            or (
+                response.payload.disposition.value not in AGENT_SETTLED_DISPOSITION_VALUES
+                # Issue #1020: a standing disagreement is final too; the reviewer sees the
+                # agent's rebuttal and can name it, but never rules on it again.
+                and finding_todo_state(projection, key)
+                is not FindingTodoState.DISPUTED_AFTER_REBUTTAL
+            )
         ):
             continue
         rows.append((response.source_frontier, ref, record))

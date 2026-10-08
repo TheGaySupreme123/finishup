@@ -3446,7 +3446,11 @@ class CheckChecklistItemModel(_ClosedModel):
 
 
 class CheckChecklistCountsModel(_ClosedModel):
+    # Issue #1020: present only when non-zero.
+    optional_non_null_fields = frozenset({"disputed_after_rebuttal"})
+
     acknowledged_not_done: CanonicalUInt64Wire
+    disputed_after_rebuttal: CanonicalUInt64Wire | None = None
     open: CanonicalUInt64Wire
     open_at_budget: CanonicalUInt64Wire
     rejection_accepted: CanonicalUInt64Wire
@@ -4122,7 +4126,12 @@ class StatusEvidencePageModel(_ClosedModel):
 
 
 FindingTodoStateLiteral = Literal[
-    "acknowledged_not_done", "open", "rejection_accepted", "self_verified", "verified_resolved"
+    "acknowledged_not_done",
+    "disputed_after_rebuttal",
+    "open",
+    "rejection_accepted",
+    "self_verified",
+    "verified_resolved",
 ]
 
 
@@ -4412,7 +4421,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     # on the unreleased 1.4.0 wire so a result shaped by an earlier 0.3 build still validates; it
     # is then absent as a whole, never partially present and never null.
     state: Literal["action_required", "ready", "ready_with_limitations", "unknown"] | None = None
-    gap_classification_version: Literal["1", "2", "3", "4"] | None = None
+    gap_classification_version: Literal["1", "2", "3", "4", "5"] | None = None
     agent_actionable: tuple[ReadinessItemWire, ...] | None = None
     standing_limitations: tuple[CodeWire, ...] | None = None
     acknowledged_not_done: tuple[AcknowledgedItemIdWire, ...] | None = None
@@ -5894,6 +5903,7 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
     + (
         "/finding_checklist/attempt_budget",
         "/finding_checklist/counts/acknowledged_not_done",
+        "/finding_checklist/counts/disputed_after_rebuttal",
         "/finding_checklist/counts/open",
         "/finding_checklist/counts/open_at_budget",
         "/finding_checklist/counts/rejection_accepted",
@@ -6554,6 +6564,7 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
             "rejection_accepted_finding_ids/*",
             "schema_version",
             "self_verified_finding_ids/*",
+            "disputed_after_rebuttal_finding_ids/*",
             "session_id",
             "suppressed_finding_count",
             "task_id",
@@ -6860,7 +6871,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1463:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24
+    if len(result) != 1465:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

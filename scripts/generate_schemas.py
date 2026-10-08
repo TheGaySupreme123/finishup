@@ -3011,6 +3011,7 @@ def _todo_state_schema() -> dict[str, JsonValue]:
     return {
         "enum": [
             "acknowledged_not_done",
+            "disputed_after_rebuttal",
             "open",
             "rejection_accepted",
             "self_verified",
@@ -3247,6 +3248,8 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                     name: {"$ref": "#/$defs/canonical_uint"}
                     for name in (
                         "acknowledged_not_done",
+                        # Issue #1020: optional, emitted only when non-zero.
+                        "disputed_after_rebuttal",
                         "open",
                         "open_at_budget",
                         "rejection_accepted",
@@ -4495,7 +4498,11 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
             },
             # "3" is the current table (#984 ``finding_self_verified``); "1" and "2" stay admitted
             # for a result an earlier 0.3 build shaped.
-            "gap_classification_version": {"enum": ["1", "2", "3", "4"], "type": "string"},
+            # "5" adds ``finding_disputed_after_rebuttal`` (#1020).
+            "gap_classification_version": {
+                "enum": ["1", "2", "3", "4", "5"],
+                "type": "string",
+            },
             "standing_limitations": {
                 "items": {"$ref": "#/$defs/code"},
                 "maxItems": 128,
@@ -4924,10 +4931,12 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     properties["children"] = {"$ref": "#/$defs/receipt_children"}
     # Issue #905 terminal states, disclosed by id; present only when non-empty.
     # Issue #984: self-verified items (the agent verified a repair Yoetz could not prove).
+    # Issue #1020: findings the reviewer repeated over the agent's reasoned rejection.
     for name in (
         "acknowledged_not_done_finding_ids",
         "rejection_accepted_finding_ids",
         "self_verified_finding_ids",
+        "disputed_after_rebuttal_finding_ids",
     ):
         properties[name] = {
             "items": {"$ref": "#/$defs/finding_id"},
@@ -5002,17 +5011,19 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
         "type": "array",
         "uniqueItems": True,
     }
-    # A repair only the agent verified never reads as clean (issue #984, ADR-034).
-    cast(list[JsonValue], document.setdefault("allOf", [])).append(
-        {
-            "if": {"required": ["self_verified_finding_ids"]},
-            "then": {
-                "properties": {
-                    "conclusion": {"not": {"const": "no_unresolved_deterministic_findings"}}
-                }
-            },
-        }
-    )
+    # A repair only the agent verified never reads as clean (issue #984, ADR-034), nor does a
+    # standing reviewer disagreement (issue #1020, ADR-040).
+    for name in ("self_verified_finding_ids", "disputed_after_rebuttal_finding_ids"):
+        cast(list[JsonValue], document.setdefault("allOf", [])).append(
+            {
+                "if": {"required": [name]},
+                "then": {
+                    "properties": {
+                        "conclusion": {"not": {"const": "no_unresolved_deterministic_findings"}}
+                    }
+                },
+            }
+        )
     # Issue #920: preserve only bounded opaque identities and the fixed heuristic reason in
     # receipt JSON. Empty arrays are omitted by the domain codec for historical byte stability.
     definitions["semantic_withheld_item"] = {

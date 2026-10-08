@@ -185,6 +185,7 @@ _TODO_STATES: Final = (
     "acknowledged_not_done",
     "rejection_accepted",
     "self_verified",
+    "disputed_after_rebuttal",
 )
 _CHECKLIST_NEXT: Final = frozenset({"decide_at_budget", "request_receipt", "work_open_findings"})
 _BUDGET: Final = re.compile(r"^(?:[1-9]|[1-4][0-9]|50)$", re.ASCII)
@@ -247,6 +248,7 @@ def _checklist_clause(rows: object, budget: object, next_step: object | None) ->
         + f", not done {counts['acknowledged_not_done']}"
         + f", rejection accepted {counts['rejection_accepted']}"
         + _self_verified_part(counts["self_verified"])
+        + _disputed_part(counts["disputed_after_rebuttal"])
         + (f", linked duplicates {linked}" if linked else "")
         + "; "
     )
@@ -259,6 +261,12 @@ def _self_verified_part(count: int) -> str:
     """Issue #984: named only when present, so every earlier summary keeps its exact bytes."""
 
     return f", self-verified {count}" if count else ""
+
+
+def _disputed_part(count: int) -> str:
+    """Issue #1020: named only when present, so every earlier summary keeps its exact bytes."""
+
+    return f", disputed after rebuttal {count}" if count else ""
 
 
 def _checklist_budget_cue(budget: object, next_step: object) -> str:
@@ -302,6 +310,10 @@ def _checklist_counts_clause(
         if type(raw_self_verified) is str and _ROUNDS.fullmatch(raw_self_verified)
         else 0
     )
+    raw_disputed = source.get("disputed_after_rebuttal", "0")
+    disputed = (
+        int(raw_disputed) if type(raw_disputed) is str and _ROUNDS.fullmatch(raw_disputed) else 0
+    )
     budget_text = budget if type(budget) is str and _BUDGET.fullmatch(budget) else None
     clause = (
         f"to-do: open {values['open']}"
@@ -314,6 +326,7 @@ def _checklist_counts_clause(
         + f", not done {values['acknowledged_not_done']}"
         + f", rejection accepted {values['rejection_accepted']}"
         + _self_verified_part(self_verified)
+        + _disputed_part(disputed)
         + "; "
     )
     if type(next_step) is str and next_step in _CHECKLIST_NEXT:

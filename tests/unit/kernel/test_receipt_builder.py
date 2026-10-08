@@ -688,13 +688,32 @@ def _earlier_frontier_limitations(check_suffix: CheckSuffixClass | None) -> tupl
         check_suffix=check_suffix,
     )
     receipt = _build(context)
-    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
     limitations = next(
         section.body
         for section in receipt.sections
         if section.key is ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
     )
     return limitations, receipt.conclusion.value
+
+
+@pytest.mark.parametrize(
+    ("check_suffix", "conclusion"),
+    [
+        # Issue #1021 (tb4n2 P1-4a): only answers to the check's own findings followed it, so the
+        # earlier-frontier note is a disclosure, not a coverage bound.
+        (CheckSuffixClass.RESPONSES_ONLY, ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS),
+        (CheckSuffixClass.OBSERVATIONS_ONLY, ReceiptConclusion.INSUFFICIENT_COVERAGE),
+        (CheckSuffixClass.MIXED, ReceiptConclusion.INSUFFICIENT_COVERAGE),
+        (None, ReceiptConclusion.INSUFFICIENT_COVERAGE),
+    ],
+)
+def test_a_responses_only_suffix_is_advisory_and_any_other_suffix_bounds(
+    check_suffix: CheckSuffixClass | None, conclusion: ReceiptConclusion
+) -> None:
+    limitations, value = _earlier_frontier_limitations(check_suffix)
+    assert value == conclusion.value
+    # Always disclosed, whatever the conclusion.
+    assert "Its verdict is current as of subject frontier 1, not frontier 2." in limitations
 
 
 def test_check_current_as_of_earlier_frontier_names_the_tested_frontier() -> None:

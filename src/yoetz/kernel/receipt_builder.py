@@ -202,6 +202,9 @@ class ReceiptFindingState:
     acknowledged_not_done: bool = False
     rejection_accepted: bool = False
     self_verified: bool = False
+    # Issue #1020 (ADR-040): the reviewer repeated it over the agent's reasoned rejection without
+    # newer material. Unresolved, not agent work; caps the conclusion like ``self_verified``.
+    disputed_after_rebuttal: bool = False
     # Issue #996: the earlier finding a holding ``duplicate_of`` link names. The flags above are
     # then the ones derived from it (``finding_todo``); the link is disclosed by ids.
     duplicate_of_finding_id: FindingId | None = None
@@ -222,10 +225,12 @@ class ReceiptFindingState:
             or type(self.acknowledged_not_done) is not bool
             or type(self.rejection_accepted) is not bool
             or type(self.self_verified) is not bool
+            or type(self.disputed_after_rebuttal) is not bool
             or self.resolved
             + self.acknowledged_not_done
             + self.rejection_accepted
             + self.self_verified
+            + self.disputed_after_rebuttal
             > 1
         ):
             raise ValueError(_CONTEXT_INVALID)
@@ -962,7 +967,8 @@ def _conclusion(
         return ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN
     if self_verified:
         # Issue #984 (ADR-034): only the agent verified these repairs; Yoetz could not prove
-        # them, so the receipt is at best ``insufficient_coverage``, never clean.
+        # them, so the receipt is at best ``insufficient_coverage``, never clean. The same holds
+        # for a ``disputed_after_rebuttal`` finding (issue #1020): the disagreement is unsettled.
         return ReceiptConclusion.INSUFFICIENT_COVERAGE
     if obligations_not_done:
         # Issue #997 (ADR-032 slice C): the agent acknowledged an obligation as not done, so the
@@ -1002,6 +1008,12 @@ def _conclusion(
         # disclosure. A check without the field (older builds, or a route that required review)
         # keeps it blocking.
         advisory_gaps = advisory_gaps | {SEMANTIC_REVIEW_NOT_REQUESTED_GAP}
+    if context.check_suffix is CheckSuffixClass.RESPONSES_ONLY:
+        # Issue #1021 (tb4n2 P1-4a): only the agent's answers to that check's own findings
+        # followed it. They change no work the check read, and the finding states above already
+        # reflect them, so the earlier-frontier note is a disclosure here, not a coverage bound.
+        # Observations or other later material keep it blocking.
+        advisory_gaps = advisory_gaps | {CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP}
     if (
         not executions_complete
         or any(gap.code not in advisory_gaps for gap in context.gaps)
@@ -1905,6 +1917,7 @@ def build_receipt(
         if not states_by_id[finding.finding_id].resolved
         and not (settles_rejections and states_by_id[finding.finding_id].rejection_accepted)
         and not (settles_rejections and states_by_id[finding.finding_id].self_verified)
+        and not (settles_rejections and states_by_id[finding.finding_id].disputed_after_rebuttal)
         and FINDING_KIND_TRAITS[finding.kind][1]
     )
     # Issue #997: obligations the agent acknowledged as not done (ADR-032 slice C).
@@ -1914,7 +1927,11 @@ def build_receipt(
     conclusion = _conclusion(
         context,
         unresolved_actionable,
-        self_verified=any(states_by_id[finding.finding_id].self_verified for finding in findings),
+        self_verified=any(
+            states_by_id[finding.finding_id].self_verified
+            or states_by_id[finding.finding_id].disputed_after_rebuttal
+            for finding in findings
+        ),
         obligations_not_done=bool(acknowledged_obligations),
     )
     obligations = _select_obligations(context, findings)
@@ -2078,6 +2095,18 @@ def build_receipt(
         if terminal_sections
         else ()
     )
+    disputed_ids = tuple(
+        sorted(
+            (
+                state.finding_id
+                for state in context.finding_states
+                if state.disputed_after_rebuttal and state.finding_id in retained_ids
+            ),
+            key=_ascii_key,
+        )
+        if terminal_sections
+        else ()
+    )
     duplicate_links = (
         tuple(
             ReceiptDuplicateLink(state.finding_id, state.duplicate_of_finding_id)
@@ -2116,6 +2145,7 @@ def build_receipt(
         acknowledged_not_done_finding_ids=acknowledged_not_done_ids,
         rejection_accepted_finding_ids=rejection_accepted_ids,
         self_verified_finding_ids=self_verified_ids,
+        disputed_after_rebuttal_finding_ids=disputed_ids,
         duplicate_finding_links=duplicate_links,
         # Issue #984 (D7a): the acknowledged findings whose premise the reviewer disputes.
         premise_disputed_finding_ids=tuple(

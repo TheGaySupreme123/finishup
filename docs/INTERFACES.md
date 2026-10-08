@@ -1281,8 +1281,10 @@ Shared structural gap codes for optional AI-powered relevance review (distinct f
 
 `semantic_route_required` (optional boolean on the unreleased `check-recorded` and `check-result`
 1.4.0) records whether the check's route required AI-powered review: the check asked for
-`semantic_required`, or the effective verification policy is `semantic: required`, whatever the
-route profile. Writers emit it only as `false`; a requiring route omits it, so those checks and
+`semantic_required`, or, on the policy route, the effective verification policy is `semantic:
+required`. An explicitly deterministic-only route (the strict MCP route) did not require review
+unless the check asked for it; a strict process with Codex registration drift (#537) follows the
+policy (issue #1021, ADR-040). Writers emit it only as `false`; a requiring route omits it, so those checks and
 every check an older build wrote keep their bytes and the blocking default.
 
 A `deterministic_only` check that follows a blocked or unavailable review carries that earlier
@@ -6727,9 +6729,10 @@ project views keep their own documented coverage.
 status success; on the unreleased status-result 1.4.0 wire the six checklist fields are optional
 as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null). Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
-`gap_classification_version` (`"4"` since issues #995 and #984 added the standing codes
-`assumption_disclosed`, `verification_limit_disclosed` and `finding_premise_disputed`; `"3"` added
-`finding_self_verified`; the wire still admits `"1"`–`"3"` from an earlier 0.3 build),
+`gap_classification_version` (`"5"` since issue #1020 added the standing code
+`finding_disputed_after_rebuttal`; `"4"` added `assumption_disclosed`,
+`verification_limit_disclosed` and `finding_premise_disputed` (issues #995, #984); `"3"` added
+`finding_self_verified`; the wire still admits `"1"`–`"4"` from an earlier 0.3 build),
 and three groups. `agent_actionable` lists, in order, the
 agent conditions present (`obligations_open`, `findings_unanswered`, `receipt_findings_unresolved`
 unless every receipt-blocking finding's latest response is `acknowledged_not_done`; a
@@ -8182,6 +8185,38 @@ readiness lists the standing code `finding_self_verified`; `receipt-document` `1
 invalid) and markdown/text render a "Self-verified by the agent; Yoetz could not prove the repair"
 section; the conclusion is at best `insufficient_coverage`. `check-result` `finding_checklist.counts`
 and the status findings view carry `self_verified` as a count and a `todo_state`.
+
+#### `disputed_after_rebuttal`: a standing reviewer disagreement (issue #1020, ADR-040)
+
+`disputed_after_rebuttal` is a recorded reviewer ruling and a final to-do state that Yoetz, not the
+reviewer or the agent, assigns. `_admit_prior_verdicts` records it in place of a `still_present`,
+`answered_not_fixed` or `unassessable` ruling on a shown AI-powered finding whose latest readable
+response is `rejected` with a non-blank reason, when the ruling cites no `evd_`/`res_`/`act_`/`evt_`
+material recorded after that response (findings, claims and obligations are not material). A
+challenge restating such a finding (by `restates`, the restatement key, or a reply naming it)
+records the same ruling. `apply_check_rulings` latches `disputed_after_rebuttal_by_check_event_id`
+on a readable rejection, counts no review round, and never lets a later check upgrade the row to
+`verified_resolved`; redacting the latching check clears the latch. The state is terminal
+(`respond` answers `finding_terminal`), not counted by `receipt_blocking_finding_count` or the
+Stop gate, carried to later packets as a non-rulable `yoetz.settled-finding/1` row, and never clean:
+closure readiness lists the standing code `finding_disputed_after_rebuttal`; `receipt-document`
+`1.3.0` carries `disputed_after_rebuttal_finding_ids` (1–100, a clean conclusion beside it is
+invalid) and markdown/text render a "Disputed after rebuttal" section; the conclusion is at best
+`insufficient_coverage`. `check-result` `finding_checklist.counts.disputed_after_rebuttal` is
+present only when non-zero; the status findings view carries the `todo_state`. `check-recorded`
+`1.3.0`/`1.4.0` `prior_finding_verdict.verdict` admits the value; the provider judgment schema does
+not.
+
+Restatement matching (`_restated_finding`) tries the exact subject set first, then the same kind
+over `_concern_key`: claims mapped to their current superseding claim, and only the obligation set
+when both sides name obligations; every ref but a claim must still be no newer than the earlier
+finding, or than the agent's reasoned rejection when nothing after that rejection is cited. Before any effective completion claim an AI-powered
+`requested_item_never_attempted` challenge is dropped and counted under the rejection reason
+`routine_completeness`.
+
+A receipt whose applicable check is followed only by responses to that check's own findings
+(`CheckSuffixClass.RESPONSES_ONLY`) treats `check_current_as_of_earlier_frontier` as a disclosure
+(issue #1021); any other later material keeps it bounding the conclusion.
 
 #### `duplicate_of`: a re-raised finding linked to an earlier one (issue #996, ADR-034 amendment)
 

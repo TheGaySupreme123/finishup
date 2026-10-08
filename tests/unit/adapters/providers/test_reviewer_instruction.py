@@ -392,3 +392,30 @@ def test_the_reviewer_reads_the_binary_notice_and_rendering_labels() -> None:
     assert "only when the evidence id it names equals that excerpt's own source ref" in _TEXT
     assert "prefixed with (agent text)" in _TEXT
     assert "never as the file itself" in _TEXT
+
+
+def test_reviewer_asks_only_for_obtainable_remedies() -> None:
+    """Issue #1020 (formal-crypto S): an impossible demand steered the agent into emptying a
+    working deliverable. The reviewer asks only for what the agent can produce, never for less."""
+
+    for rule in (
+        "Ask only for repairs or artifacts the main agent can produce from the task statement, "
+        "the workspace, and the tools shown in the packet.",
+        "Never demand a hidden grader, benchmark generator, private specification, user answer, "
+        "or any other artifact the packet shows the agent cannot obtain.",
+        "do not request act or provide_evidence: request state_unresolved_limitation, and rule "
+        "an earlier finding unassessable.",
+        "your ruling on that finding is unassessable, never still_present.",
+        "Never recommend delivering less, emptying a file, or withdrawing working code as a "
+        "remedy.",
+        "records a re-raise of a rejected finding that cites nothing newer than the rejection as "
+        "disputed_after_rebuttal",
+        "or rejected with a reason that you repeated without newer material, recorded as "
+        "disputed_after_rebuttal: return no prior_finding_verdicts entry for them either.",
+    ):
+        assert rule in _TEXT, rule
+    assert "agent cannot obtain" in _collapsed(CHALLENGE_FIELD_GLOSSARY["requested_next_step"])
+    assert "agent cannot obtain" in _collapsed(CHALLENGE_FIELD_GLOSSARY["uncertainty"])
+    assert "hidden grader" in _collapsed(CHALLENGE_FIELD_GLOSSARY["message_to_main_agent"])
+    verdict = _collapsed(openai_responses.VERDICT_FIELD_GLOSSARY["verdict"])
+    assert "never still_present then" in verdict

@@ -341,6 +341,7 @@ class DecisionProjectionRecord(ProjectionRecord[DecisionRecordedPayload]):
 _FINDING_RESOLUTION_EVENT_FIELDS: Final = (
     "resolved_by_check_event_id",
     "rejection_accepted_by_check_event_id",
+    "disputed_after_rebuttal_by_check_event_id",
     "reduced_scope_raising_check_event_id",
     "resolution_raising_check_event_id",
 )
@@ -361,6 +362,10 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     budget and never closes anything. ``rejection_accepted_by_check_event_id`` names the later
     check whose reviewer withdrew this AI-powered finding after the agent rejected it with a
     reason; it latches the terminal ``rejection_accepted`` state.
+    ``disputed_after_rebuttal_by_check_event_id`` (issue #1020, ADR-040) names the later check
+    that recorded the ruling ``disputed_after_rebuttal``: the reviewer kept this AI-powered finding
+    open after the agent rejected it with a reason and cited nothing recorded after that
+    rejection. It latches the final, non-blocking ``disputed_after_rebuttal`` state.
 
     The check-time change facts (ADR-031) are replay-derived from recorded checks, never from the
     finding's own payload. ``check_change_raising_check_event_ids`` names, in fold order, every
@@ -403,6 +408,7 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     resolved_by_check_event_id: EventId | None = None
     review_rounds: int = 0
     rejection_accepted_by_check_event_id: EventId | None = None
+    disputed_after_rebuttal_by_check_event_id: EventId | None = None
     check_change_raising_check_event_ids: tuple[EventId, ...] = ()
     check_change_raised_files: CheckChangeShownFiles | None = None
     resolution_depends_on_check_event_ids: tuple[EventId, ...] = ()
@@ -1222,6 +1228,11 @@ def _record_snapshot(record: _ProjectionRecordLike) -> dict[str, JsonValue]:
             result["rejection_accepted_by_check_event_id"] = (
                 record.rejection_accepted_by_check_event_id
             )
+        # Issue #1020: emitted only when set, so earlier snapshots keep their bytes.
+        if record.disputed_after_rebuttal_by_check_event_id is not None:
+            result["disputed_after_rebuttal_by_check_event_id"] = (
+                record.disputed_after_rebuttal_by_check_event_id
+            )
         # Likewise emitted only when set (ADR-031), so earlier snapshots keep their bytes.
         if record.check_change_raising_check_event_ids:
             result["check_change_raising_check_event_ids"] = list(
@@ -1688,6 +1699,9 @@ def _record_from_snapshot(
             review_rounds=cast(int, rounds),
             rejection_accepted_by_check_event_id=cast(
                 EventId | None, source.get("rejection_accepted_by_check_event_id")
+            ),
+            disputed_after_rebuttal_by_check_event_id=cast(
+                EventId | None, source.get("disputed_after_rebuttal_by_check_event_id")
             ),
             check_change_raising_check_event_ids=event_ids("check_change_raising_check_event_ids"),
             check_change_raised_files=raised_files,
