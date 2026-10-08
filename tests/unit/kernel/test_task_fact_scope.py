@@ -35,7 +35,7 @@ from yoetz.domain.findings import (
     FindingOrigin,
     finding_policy_identity,
 )
-from yoetz.domain.values import EventId, Frontier, ObligationId
+from yoetz.domain.values import EventId, Frontier
 from yoetz.kernel import self_verification
 from yoetz.kernel.finding_resolution import ResolutionAttempt
 from yoetz.kernel.projections import ProjectionState, empty_projection_state
@@ -168,11 +168,11 @@ def test_edited_after_verification_bears_only_on_verification_findings(
 
 def test_obligation_scoped_facts_bear_only_on_their_obligation() -> None:
     state = _state(_finding(FindingKind.TASK_REQUIREMENT_UNMET, (obl(1),)))
-    markers = (("planned_verification_stale", cast(ObligationId, obl(2))),)
+    markers = (("planned_verification_stale", obl(2)),)
     assert not task_fact_bears_on_finding(
         "planned_verification_stale", state=state, finding_id=fnd(1), markers=markers
     )
-    markers = (("planned_verification_stale", cast(ObligationId, obl(1))),)
+    markers = (("planned_verification_stale", obl(1)),)
     assert task_fact_bears_on_finding(
         "planned_verification_stale", state=state, finding_id=fnd(1), markers=markers
     )
@@ -213,7 +213,9 @@ def test_interleaved_s_review_finding_is_self_verifiable_despite_unrelated_stale
 
     reasons = ("reviewer_verdict_unassessable", _EALV, "coverage:semantic_review_refs_reduced")
     monkeypatch.setattr(
-        self_verification, "finding_resolution_attempt", lambda *_args: _attempt(reasons)
+        self_verification,
+        "finding_resolution_attempt",
+        lambda *_args: _attempt(reasons),  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType]
     )
     records = cast(tuple[LedgerRecord, ...], ())
     defect = _state(_finding(FindingKind.CODE_DEFECT, (obl(1),)))

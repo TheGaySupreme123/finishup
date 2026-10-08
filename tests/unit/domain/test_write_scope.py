@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.adapters.integrations.codex_session_stream import _file_change_write_scope
-from yoetz.application.observation_materialize import _action_kind
+from yoetz.adapters.integrations.codex_session_stream import (
+    _file_change_write_scope,  # pyright: ignore[reportPrivateUsage]
+)
+from yoetz.application.observation_materialize import (
+    _action_kind,  # pyright: ignore[reportPrivateUsage]
+)
 from yoetz.domain.events import ActionKind
 from yoetz.domain.write_scope import classify_write_path, edit_write_scope
 
