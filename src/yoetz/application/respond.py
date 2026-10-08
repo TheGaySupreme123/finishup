@@ -479,8 +479,9 @@ _BLOCKING_HINTS: Final[tuple[tuple[frozenset[str], str], ...]] = (
     ),
     (
         frozenset({"coverage:completion_plan_not_claimed"}),
-        "name every open plan obligation in the completion claim, or acknowledge the ones you"
-        " will not do (an acknowledged obligation may be left out of the claim)",
+        "the completion claim must name every plan obligation not acknowledged as not done:"
+        " finish and resolve the open ones before claiming them, and acknowledge the ones you"
+        " will not do and leave those out of the claim",
     ),
     (
         frozenset(

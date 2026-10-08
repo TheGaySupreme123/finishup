@@ -682,6 +682,12 @@ _OBLIGATION_TRANSITIONS: Final = frozenset(
         (ObligationStatus.OPEN, ObligationStatus.ACKNOWLEDGED_NOT_DONE),
         (ObligationStatus.ACKNOWLEDGED_NOT_DONE, ObligationStatus.OPEN),
         (ObligationStatus.ACKNOWLEDGED_NOT_DONE, ObligationStatus.RESOLVED),
+        # tb4n2 R2 (issue #1022, ADR-041): a resolution is no longer latched. When its
+        # deliverable no longer holds (an emptied output, an acceptance criterion its own output
+        # contradicts), the agent reopens it or acknowledges it as not done. Re-resolving a
+        # resolved obligation is still refused: a resolution is recorded once per transition.
+        (ObligationStatus.RESOLVED, ObligationStatus.OPEN),
+        (ObligationStatus.RESOLVED, ObligationStatus.ACKNOWLEDGED_NOT_DONE),
     }
 )
 
@@ -711,8 +717,8 @@ def _apply_obligation(
         # an acknowledged one reopened or resolved by a later publication (the reverse path).
         meaning_diffs = obligation_meaning_field_diffs(previous, payload)
         # ``acknowledged_not_done`` (obligation_published 1.1.0, #997/#1002) is not resolved; the
-        # last effective status wins among open, acknowledged_not_done and resolved, and resolved
-        # stays terminal.
+        # last effective status wins among open, acknowledged_not_done and resolved. A resolved
+        # obligation may be reopened or acknowledged (#1022), never re-resolved in place.
         valid_transition = (previous.status, payload.status) in _OBLIGATION_TRANSITIONS
         if not valid_transition or meaning_diffs:
             if meaning_diffs:

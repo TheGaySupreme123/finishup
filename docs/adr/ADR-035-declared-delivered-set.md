@@ -131,13 +131,17 @@ now re-derived from the current deliverable (ADR-041):
 - **Rule.** `emptied_declared_items` names a declared `file` of an obligation that is `resolved`,
   or that an effective completion claim names (never `acknowledged_not_done`), whose check-time
   state is `inside`, existing and not deleted, and which is a regular file of 0 bytes
-  (`size_bytes` from the same link-free metadata probe; no content read), or a tracked file of at
-  least `CONTENT_MOVED_MIN_LINES` task-base lines that kept fewer than a tenth of them and is not
-  the content-moved shape (that stays the standing disclosure above).
+  (`size_bytes` from the same link-free metadata probe; no content read) whose name is not
+  conventionally empty (`__init__.py`, `py.typed`, `.gitkeep`, `.keep`, `.nojekyll`), or a
+  tracked file of at least `CONTENT_MOVED_MIN_LINES` task-base lines that kept fewer than a tenth
+  of them, is not the content-moved shape (that stays the standing disclosure above), and no
+  other declared delivered item changed in the same change (a split into another declared
+  output is a refactor).
 - **Agent work.** `declared_output_emptied` is in `AGENT_ACTIONABLE_TASK_FACT_GAPS` and
   `STOP_GATE_TOKENS`. While it stands the obligation's `resolved` no longer counts as delivered;
-  the ledger is not rewritten. It clears at the next check once the file is restored, the
-  obligation is republished `open` or `acknowledged_not_done`, or a decision line
-  `yoetz-assumption:<obligation id>` discloses that the empty or short file is intended.
+  the ledger is not rewritten. It clears at the next check once the file is restored or the
+  obligation is republished `open` or `acknowledged_not_done` (the reducer admits both from
+  `resolved`, ADR-041). A disclosure line does not clear it: an unrelated assumption must never
+  hide an emptied deliverable.
 - **Limits.** An untracked file truncated to a non-zero size is not seen (no earlier size is
   stored); an unread size or line count never raises the fact.

@@ -50,8 +50,7 @@ three ways the closure path did the opposite:
    completion-claimed obligation is now 0 bytes or kept under a tenth of its task-base lines. While
    it stands the obligation's `resolved` is not counted as delivered ("reopened" by derivation;
    the ledger is never rewritten). Restoring the file, republishing the obligation `open` or
-   `acknowledged_not_done`, or a `yoetz-assumption:<obligation id>` line clears it at the next
-   check. `deliverable_references_undeclared_file` is the matching standing disclosure for a
+   `acknowledged_not_done` clears it at the next check (a disclosure line does not). `deliverable_references_undeclared_file` is the matching standing disclosure for a
    deliverable that names an undeclared file the change created.
 3. **One obligation version rule.** `domain.events.obligation_schema_admits(payload, version)`:
    1.0.0 refuses a `role`, a `directory` item and `acknowledged_not_done`; 1.1.0 is a superset
@@ -73,7 +72,12 @@ three ways the closure path did the opposite:
    the `yoetz-verification-limit:<obligation id>` exit. `public-error` 1.0.0 already admits an
    array detail value, so no schema version changes. `_attempt_reasons` is the single seam where
    per-finding scoping of task-wide coverage codes (tb4n2 R4) plugs in.
-6. **Wording.** The acknowledgement re-check names the reopen path on 1.1.0 (which keeps a role or
+6. **A resolution is not latched.** The reducer admits `resolved → open` and
+   `resolved → acknowledged_not_done` (meaning fields still repeat; `resolved → resolved` is still
+   refused), so the reopen and acknowledgement exits that `declared_output_emptied` and the Stop
+   gate name are actually available. Earlier ledgers never held such a transition (it was refused
+   at ingest), so replay is unchanged; a ledger holding one does not replay on an older build.
+7. **Wording.** The acknowledgement re-check names the reopen path on 1.1.0 (which keeps a role or
    directory item); the first-stop gate question asks the agent to compare each resolved
    obligation's `acceptance_criteria` with its final output and acknowledge, not resolve, one its
    own output contradicts (cargo D).
@@ -82,8 +86,10 @@ three ways the closure path did the opposite:
 
 - An agent that honestly acknowledges an obligation can close with an `insufficient_coverage`
   receipt instead of a refusal loop and a false "unresolved findings" receipt.
-- An emptied deliverable stops the agent once at Stop and blocks a clean receipt; a task that
-  truly wants an empty file says so with a disclosure line.
+- An emptied deliverable stops the agent once at Stop and blocks a clean receipt. Conventionally
+  empty names (`__init__.py`, `py.typed`, `.gitkeep`, `.keep`, `.nojekyll`) are exempt; another
+  deliverable a task truly wants empty keeps the fact standing (residual false positive, chosen
+  over letting an unrelated disclosure hide an emptied output).
 - Gap classification version "6" ("5" is the review lane's; status-result 1.4.0 admits both).
 - Residual: an untracked deliverable truncated to a non-zero size is not detected (no earlier size
   is stored); `deliverable_references_undeclared_file` is a literal-matching heuristic.

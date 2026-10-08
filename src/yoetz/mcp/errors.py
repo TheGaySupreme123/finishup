@@ -262,6 +262,10 @@ _OBLIGATION_V1_1_FEATURE_POINTER: Final = re.compile(
 _OBLIGATION_ITEM_POINTER: Final = re.compile(
     r"/event_drafts/[0-9]{1,3}/payload/requested_items/[0-9]{1,2}", re.ASCII
 )
+_OBLIGATION_ITEM_KEYS_HINT: Final = (
+    "a requested item admits only item_kind, value and role, and role only on"
+    " obligation_published 1.1.0 (on file and directory items)"
+)
 _OBLIGATION_VERSION_HINT: Final = (
     "obligation_published 1.0.0 admits no item role, no directory item and no"
     " acknowledged_not_done status: publish such an obligation as obligation_published 1.1.0,"
@@ -1276,8 +1280,12 @@ def _obligation_version_hint_parts(locations: Sequence[Mapping[str, str]]) -> li
             reason == _EXTRA_FORBIDDEN_REASON
             and _OBLIGATION_ITEM_POINTER.fullmatch(pointer) is not None
         )
-        if on_v1_0 or unknown_item_key:
+        if on_v1_0:
             return [_OBLIGATION_VERSION_HINT]
+        if unknown_item_key:
+            # The validator does not say which key or version, so state the item contract that
+            # is true for both: an unknown key is wrong everywhere, a role needs 1.1.0.
+            return [_OBLIGATION_ITEM_KEYS_HINT]
     return []
 
 

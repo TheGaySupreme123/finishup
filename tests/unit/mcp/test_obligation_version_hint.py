@@ -62,7 +62,9 @@ def test_a_1_1_0_feature_on_1_0_0_names_1_1_0(payload: dict[str, Any]) -> None:
     with pytest.raises(ValidationError) as caught:
         PublishWorkRequestModel.model_validate(_request(payload, "1.0.0"))
     hint = authoring_hint(_SCHEMA, safe_validation_locations(caught.value), tool="publish_work")
-    assert "publish such an obligation as obligation_published 1.1.0" in hint
+    # A role is reported as an unknown item key without its version, so the item contract names
+    # 1.1.0; a directory item or the acknowledged status names the version directly.
+    assert "obligation_published 1.1.0" in hint
     # The same body on 1.1.0 is admitted by the request schema.
     PublishWorkRequestModel.model_validate(_request(payload, "1.1.0"))
 
@@ -77,3 +79,14 @@ def test_a_plain_obligation_is_admitted_on_both_versions_and_other_errors_get_no
         PublishWorkRequestModel.model_validate(_request(missing, "1.0.0"))
     hint = authoring_hint(_SCHEMA, safe_validation_locations(caught.value), tool="publish_work")
     assert "obligation_published 1.1.0" not in hint
+
+
+def test_an_unknown_item_key_on_1_1_0_is_not_told_to_switch_versions() -> None:
+    """Codex review: an unsupported key on 1.1.0 gets the item contract, not a version switch."""
+
+    payload = {**_PAYLOAD, "requested_items": [{"item_kind": "file", "value": "a", "path": "a"}]}
+    with pytest.raises(ValidationError) as caught:
+        PublishWorkRequestModel.model_validate(_request(payload, "1.1.0"))
+    hint = authoring_hint(_SCHEMA, safe_validation_locations(caught.value), tool="publish_work")
+    assert "a requested item admits only item_kind, value and role" in hint
+    assert "publish such an obligation as" not in hint

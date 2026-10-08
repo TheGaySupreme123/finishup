@@ -846,8 +846,8 @@ Key payload fields (minimum; full shapes in `src/yoetz/domain/events.py`):
   one. Yoetz itself drafts the lowest admitting version (`obligation_schema_version`: 1.1.0 iff
   one of those is present), so released `1.0.0` stays admitted and byte-identical. Ledgers that
   hold a plain 1.1.0 obligation do not replay on a build older than this rule. The reducer keeps the last effective status among
-  `open`, `acknowledged_not_done` and `resolved` (meaning fields must repeat; `resolved` is
-  terminal); consumers treat `acknowledged_not_done` as not resolved, like `open`, and status
+  `open`, `acknowledged_not_done` and `resolved` (meaning fields must repeat; a `resolved`
+  obligation may be reopened `open` or acknowledged, never re-resolved in place; ADR-041); consumers treat `acknowledged_not_done` as not resolved, like `open`, and status
   `view=obligations` (status-result 1.4.0) shows the status and `acknowledged_not_done_reason`
   under the `obligation_text` category, like the description. The unreleased event-draft 1.2.0 (and so `publish-work-request/1.2.0`) admits
   the pair in place and excludes it from its opaque branch. `role: input` items never yield
@@ -8849,10 +8849,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `declared_output_content_moved` (`DECLARED_OUTPUT_CONTENT_MOVED_GAP`), never a Stop-gate token.
   `emptied_declared_items(projection, states) -> tuple[(obligation, item index), ...]` (ADR-041)
   names declared `file` items of an obligation that is `resolved` or named by an effective
-  completion claim (not `acknowledged_not_done`, not disclosed by `yoetz-assumption:`) whose
+  completion claim (not `acknowledged_not_done`) whose
   `inside` state exists, is not deleted, and has `size_bytes == 0` (`RequestedPathProbe.size_bytes`,
-  a regular file's size from the link-free probe), or `base_lines >= 20` with fewer than a tenth
-  kept and not the content-moved shape; the check adds the agent-actionable
+  a regular file's size from the link-free probe; never for `__init__.py`, `py.typed`, `.gitkeep`,
+  `.keep`, `.nojekyll`), or `base_lines >= 20` with fewer than a tenth kept, not the content-moved
+  shape, and no other declared delivered item changed; the check adds the agent-actionable
   `declared_output_emptied` (`DECLARED_OUTPUT_EMPTIED_GAP`), a Stop-gate token, under which the
   obligation's `resolved` no longer counts as delivered.
   `requested_output_states` fills those fields only for a declared `file` the change modifies

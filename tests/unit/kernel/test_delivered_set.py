@@ -582,9 +582,28 @@ def test_an_open_unclaimed_obligation_is_still_the_plan() -> None:
     assert emptied_declared_items(projection, {(_OBLIGATION, 0): _sized(0)}) == ()
 
 
-def test_an_assumption_disclosure_says_the_empty_file_is_intended() -> None:
-    projection = _resolved_projection(_file("/app/__init__.py"), assumption=True)
+def test_an_unrelated_assumption_never_hides_an_emptied_deliverable() -> None:
+    """Codex review: a best-effort disclosure must not disable the incomplete-work check."""
+
+    projection = _resolved_projection(_file("/app/cracker.py"), assumption=True)
+    assert emptied_declared_items(projection, {(_OBLIGATION, 0): _sized(0)}) == ((_OBLIGATION, 0),)
+
+
+def test_a_conventionally_empty_deliverable_is_never_emptied() -> None:
+    projection = _resolved_projection(_file("/app/pkg/__init__.py"))
     assert emptied_declared_items(projection, {(_OBLIGATION, 0): _sized(0)}) == ()
+
+
+def test_a_split_into_another_declared_output_is_not_truncation() -> None:
+    """Codex review: a 201-line file split into a second declared output is a refactor."""
+
+    projection = _resolved_projection(_file("/app/cracker.py"), _file("/app/english_model.py"))
+    wrapper = _sized(40, base_lines=201, lines_lost=199, undeclared_lines_added=0)
+    states = {(_OBLIGATION, 0): wrapper, (_OBLIGATION, 1): _sized(9_000)}
+    assert emptied_declared_items(projection, states) == ()
+    unchanged = RequestedOutputState("inside", exists=True, changed=False, size_bytes=9_000)
+    states[(_OBLIGATION, 1)] = unchanged
+    assert emptied_declared_items(projection, states) == ((_OBLIGATION, 0),)
 
 
 @pytest.mark.parametrize(

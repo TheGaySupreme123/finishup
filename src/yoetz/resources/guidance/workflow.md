@@ -269,8 +269,10 @@ fields, `status: "acknowledged_not_done"` and an `acknowledged_not_done_reason`:
 resort, never a blocker. It leaves `obligations_open`, readiness lists it in
 `acknowledged_not_done`, a Stop challenges it once and the closing review tests it against the
 task, and the receipt discloses it as not done and never reads clean. Republishing it with `open`
-(or `resolved` with evidence; 1.1.0 always works, and 1.0.0 only when it has no role or directory item) takes it back; a resolved
-obligation stays resolved.
+(or `resolved` with evidence; 1.1.0 always works, and 1.0.0 only when it has no role or directory item) takes it back. A resolved
+obligation whose work no longer holds (its deliverable was emptied, or your own output contradicts
+its acceptance criterion) is reopened the same way: republish it `open`, or
+`acknowledged_not_done` with the reason; resolving it again in place is refused.
 
 `blocking_conditions` still names everything that bounds the conclusion; `coverage_gaps_declared`
 there is a disclosure, not a task. Never treat a standing limitation as work, and never describe

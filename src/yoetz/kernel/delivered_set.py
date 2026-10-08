@@ -23,13 +23,14 @@ asked for the deletion.
 ``declared_output_emptied`` (tb4n2 R2, ADR-035 amendment) re-derives a resolved obligation from
 the current deliverable instead of trusting its latched status. It is raised when a declared
 ``file`` of an obligation that is ``resolved``, or that an effective completion claim names, is now
-an existing regular file of 0 bytes, or a tracked file that kept under a tenth of its (at least
-``CONTENT_MOVED_MIN_LINES``) task-base lines without the content-moved shape below. While it
+an existing regular file of 0 bytes (not a conventionally empty name such as ``__init__.py``), or
+a tracked file that kept under a tenth of its (at least ``CONTENT_MOVED_MIN_LINES``) task-base
+lines without the content-moved shape below and with no other declared output changed. While it
 stands that obligation is no longer counted as delivered: the fact is agent-actionable and a
-Stop-gate token. It clears at the next check once the file is restored, once the obligation is
-republished open or ``acknowledged_not_done``, or when a ``yoetz-assumption:<obligation id>``
-decision line discloses that the empty file is intended (formal-crypto S emptied its delivered
-``solve.sage`` after a finding, with six obligations still recorded resolved).
+Stop-gate token. It clears at the next check once the file is restored, or once the obligation is
+republished open or ``acknowledged_not_done``; a disclosure line never clears it (formal-crypto S
+emptied its delivered ``solve.sage`` after a finding, with six obligations still recorded
+resolved).
 
 ``declared_output_content_moved`` is the non-blocking disclosure for content moved out of a
 declared file that still exists (interleaved-vigenere). A bounded line-count read of the
@@ -57,7 +58,6 @@ from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_REMOVED_GAP,
     RequestedOutputState,
     blocked_obligations,
-    disclosure_declarations,
     effective_obligations,
 )
 
@@ -84,6 +84,10 @@ CONTENT_MOVED_MIN_LINES: Final = 20
 # The truncation rule of ``declared_output_emptied``: a tracked declared file that kept fewer than
 # one line in this many of its task-base lines.
 EMPTIED_KEPT_FRACTION: Final = 10
+# Files that are conventionally empty; a 0-byte one is never "emptied".
+_CONVENTIONALLY_EMPTY: Final = frozenset(
+    {"__init__.py", "py.typed", ".gitkeep", ".keep", ".nojekyll"}
+)
 
 
 def _wire(value: object) -> object:
@@ -251,36 +255,48 @@ def emptied_declared_items(
 ) -> tuple[tuple[ObligationId, int], ...]:
     """Declared delivered files of a delivered obligation that are now empty or truncated.
 
-    Only an ``inside`` state that exists, was not deleted, and is a regular file qualifies: 0
-    bytes, or ``base_lines >= CONTENT_MOVED_MIN_LINES`` with fewer than one line in
-    ``EMPTIED_KEPT_FRACTION`` kept and not the content-moved shape (moving content out of a
-    deliverable is the standing ``declared_output_content_moved`` disclosure instead). An unread
-    size or line count never raises it. An obligation the agent disclosed with
-    ``yoetz-assumption:<obligation id>`` is skipped: the agent said the shape is intended.
+    Only an ``inside`` state that exists, was not deleted, and is a regular file qualifies:
+
+    * 0 bytes, unless its name is conventionally empty (``__init__.py``, ``py.typed``,
+      ``.gitkeep``, ``.keep``, ``.nojekyll``);
+    * or truncated: ``base_lines >= CONTENT_MOVED_MIN_LINES`` with fewer than one line in
+      ``EMPTIED_KEPT_FRACTION`` kept, not the content-moved shape (the standing
+      ``declared_output_content_moved`` disclosure), and no *other* declared delivered item
+      changed in the same change: a split into another declared output is a refactor, and its
+      growth is not counted in ``undeclared_lines_added``, so it is never read as truncation.
+
+    An unread size or line count never raises it. Deliberately conservative: a wrong
+    agent-actionable fact would steer the agent away from finished work.
     """
 
     delivered = _delivered_obligations(projection)
     if not delivered:
         return ()
-    assumed = {
-        row.obligation_id for row in disclosure_declarations(projection) if row.kind == "assumption"
-    }
+    rows = declared_delivered_items(projection, blocked=blocked)
     emptied: list[tuple[ObligationId, int]] = []
-    for obligation, index, kind, _value in declared_delivered_items(projection, blocked=blocked):
-        if kind != "file" or obligation not in delivered or obligation in assumed:
+    for obligation, index, kind, value in rows:
+        if kind != "file" or obligation not in delivered:
             continue
         state = states.get((obligation, index))
         if state is None or state.location != "inside" or state.exists is not True or state.deleted:
             continue
         if state.size_bytes == 0:
-            emptied.append((obligation, index))
+            if value.rstrip("/").rsplit("/", 1)[-1] not in _CONVENTIONALLY_EMPTY:
+                emptied.append((obligation, index))
             continue
+        other_declared_changed = any(
+            other_value != value
+            and (other := states.get((other_obligation, other_index))) is not None
+            and other.changed is not False
+            for other_obligation, other_index, _other_kind, other_value in rows
+        )
         if (
             state.base_lines is not None
             and state.lines_lost is not None
             and state.base_lines >= CONTENT_MOVED_MIN_LINES
             and EMPTIED_KEPT_FRACTION * (state.base_lines - state.lines_lost) < state.base_lines
             and not _content_moved(state)
+            and not other_declared_changed
         ):
             emptied.append((obligation, index))
     return tuple(emptied)

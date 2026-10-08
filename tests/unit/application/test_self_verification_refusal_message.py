@@ -37,7 +37,7 @@ def test_the_message_names_the_tokens_a_next_step_per_family_and_the_limit_exit(
     assert "issue_returned_again" in message
     assert "coverage:completion_plan_not_claimed" in message
     assert "the check still sees the issue: repair it, then check" in message
-    assert "name every open plan obligation in the completion claim" in message
+    assert "must name every plan obligation not acknowledged as not done" in message
     assert "yoetz-verification-limit:<obligation id>" in message
     assert "Do not retry self_verified" in message
     _assert_bounded(message)

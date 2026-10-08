@@ -1910,7 +1910,9 @@ def public_error_for_obligation_resolution_mismatch(
             "open_to_resolved_only: this obligation is already resolved in the ledger, and a "
             "resolution is recorded once. Remove this obligation_published draft from the batch "
             "and retry the rest with a new request_id; status view obligations lists which "
-            f"obligations are still open. {guidance}"
+            "obligations are still open. If the resolved work no longer holds, republish it "
+            "with status open, or acknowledged_not_done with a reason on "
+            f"obligation_published/1.1.0, repeating every meaning field. {guidance}"
         )
     elif mismatch.invariant == "open_to_resolved_only":
         message = (
