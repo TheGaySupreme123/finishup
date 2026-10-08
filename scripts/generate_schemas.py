@@ -1810,6 +1810,12 @@ def _egress_receipt_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     definitions = cast(dict[str, JsonValue], document["$defs"])
     reason_schema = cast(dict[str, JsonValue], definitions["privacy_reason"])
     _extend_receipt_schema_fields(document, reason_schema=reason_schema)
+    # The closed operation that asked for this network disclosure (tb4n2 N-5). Optional: rows
+    # written before it, and a disclosure whose producer is not recognized, omit it.
+    properties["origin_operation"] = {
+        "enum": ["credential_probe", "observation_advice", "semantic_check"],
+        "type": "string",
+    }
     document["title"] = "Yoetz egress receipt 1.1.0"
     return document
 

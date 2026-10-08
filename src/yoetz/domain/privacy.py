@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
@@ -93,7 +93,10 @@ __all__ = [
     "ReceiptSecretScan",
     "ReceiptSecretScanStage",
     "ReceiptTransformations",
+    "OBSERVATION_ADVICE_PACKET_ITEM_ID",
+    "EgressOriginOperation",
     "REVIEW_PACKET_ITEM_ID",
+    "egress_origin_operation",
     "RequestCommitment",
     "ReviewContextProfile",
     "ReviewSelectionPolicy",
@@ -108,6 +111,8 @@ __all__ = [
 # Reserved item id for the structural review-packet envelope. Owned here rather than in the
 # application layer because the egress bound below is keyed on it.
 REVIEW_PACKET_ITEM_ID: Final = "review-packet"
+# Reserved item id for the background observation-advice packet (#619).
+OBSERVATION_ADVICE_PACKET_ITEM_ID: Final = "observation-advice-packet"
 
 MAX_EGRESS_ITEM_BYTES: Final = 16 * 1024
 # The structural review-packet envelope is one candidate item by transport, but it is not one
@@ -250,6 +255,36 @@ class EgressChannel(str, Enum):  # noqa: UP042 - durable enum
     CRASH_DIAGNOSTICS = "crash_diagnostics"
     UPDATE_CHECKS = "update_checks"
     CAPABILITY_TESTING = "capability_testing"
+
+
+class EgressOriginOperation(str, Enum):  # noqa: UP042 - durable enum
+    """The Yoetz operation that asked for one network disclosure (tb4n2 N-5).
+
+    Closed, so a receipt can name which operation minted it without carrying any request content.
+    """
+
+    SEMANTIC_CHECK = "semantic_check"
+    OBSERVATION_ADVICE = "observation_advice"
+    CREDENTIAL_PROBE = "credential_probe"
+
+
+def egress_origin_operation(purpose: str, item_ids: Iterable[str]) -> EgressOriginOperation | None:
+    """Name the operation behind one network disclosure from its purpose and reserved item ids.
+
+    Every producer marks its case with a reserved structural item id, so the origin is derived,
+    never asserted by a caller. An unrecognized shape returns ``None`` (the receipt omits it).
+    """
+
+    if purpose == "credential-probe":
+        return EgressOriginOperation.CREDENTIAL_PROBE
+    if purpose != "semantic-review":
+        return None
+    identities = frozenset(item_ids)
+    if REVIEW_PACKET_ITEM_ID in identities:
+        return EgressOriginOperation.SEMANTIC_CHECK
+    if OBSERVATION_ADVICE_PACKET_ITEM_ID in identities:
+        return EgressOriginOperation.OBSERVATION_ADVICE
+    return None
 
 
 class LocalDisclosureSink(str, Enum):  # noqa: UP042 - durable enum
@@ -2494,10 +2529,17 @@ class EgressReceipt:
     request_commitment: RequestCommitment | None = None
     withheld_item_ids: tuple[str, ...] = ()
     withheld_item_reason: Literal["never_send_heuristic"] | None = None
+    # The closed operation that asked for this disclosure (tb4n2 N-5); 1.1.0 only, optional so
+    # every receipt written before it keeps its exact bytes.
+    origin_operation: EgressOriginOperation | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not str or self.schema_version not in {"1.0.0", "1.1.0"}:
             raise _invalid()
+        if self.origin_operation is not None:
+            _enum(self.origin_operation, EgressOriginOperation)
+            if self.schema_version == "1.0.0":
+                raise _invalid()
         validate_id(IdKind.EGRESS_RECEIPT, self.receipt_id)
         validate_id(IdKind.REQUEST, self.request_id)
         validate_id(IdKind.PRIVACY_PROPOSAL, self.privacy_proposal_id)

@@ -319,6 +319,9 @@ def encode_privacy_receipt_view(view: PrivacyReceiptView) -> JsonObject:
     if isinstance(view, NetworkEgressReceiptView):
         network = view.receipt
         body["channel"] = network.channel.value
+        if network.origin_operation is not None:
+            # The closed operation that asked for this disclosure (tb4n2 N-5).
+            body["origin_operation"] = network.origin_operation.value
         destination = network.destination
         if isinstance(destination, ProviderBinding):
             body["destination"] = {

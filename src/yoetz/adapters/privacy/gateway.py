@@ -67,6 +67,7 @@ from yoetz.domain.privacy import (
     ReceiptSecretScanStage,
     ReceiptTransformations,
     RequestCommitment,
+    egress_origin_operation,
 )
 from yoetz.domain.values import validate_commitment, validate_sha256_digest
 from yoetz.observability.logging import (
@@ -965,6 +966,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
             1,
             authorization_id=authorization_id,
             withheld_item_ids=case.withheld_item_ids,
+            origin_operation=egress_origin_operation(case.purpose, case.included_item_ids),
         )
         # Every pre-dispatch refusal returns the same public shape (`unavailable`, no receipt id,
         # so the composition reports `receipt_persistence_unknown`). The exact closed reason is
@@ -1094,6 +1096,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
             dispatch_started_at=dispatch_started_at,
             request_commitment=RequestCommitment(PRIVACY_REQUEST_COMMITMENT_ALGORITHM, commitment),
             withheld_item_ids=case.withheld_item_ids,
+            origin_operation=egress_origin_operation(case.purpose, case.included_item_ids),
         )
 
     # -- local dispatch -------------------------------------------------------------------------

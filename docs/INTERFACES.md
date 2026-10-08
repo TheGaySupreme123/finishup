@@ -3596,7 +3596,10 @@ the same way. The CLI prints a partial page in full and exits 40 with the count 
 Both audit adapters project stored network
 egress receipts as well as local disclosure receipts, so a completed subscription review is
 retrievable by its recorded receipt ID and listable by `channel`, `provider_id`, or
-`endpoint_profile_id`.
+`endpoint_profile_id`. A network receipt may also name its closed `origin_operation`
+(`semantic_check`, `observation_advice` or `credential_probe`; egress-receipt 1.1.0, ADR-009
+tb4n2 amendment), derived from its purpose and reserved structural item ids and omitted when not
+recognized, so a recurring blocked receipt can be traced to the operation that asked for it.
 
 A receipt's `purpose` has two owners, and they are deliberately not the same grammar. Anything
 crossing the privacy-policy boundary — every network egress receipt, every
