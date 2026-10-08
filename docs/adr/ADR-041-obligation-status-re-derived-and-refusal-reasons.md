@@ -77,8 +77,12 @@ three ways the closure path did the opposite:
    refused), so the reopen and acknowledgement exits that `declared_output_emptied` and the Stop
    gate name are actually available. Earlier ledgers never held such a transition (it was refused
    at ingest), so replay is unchanged; a ledger holding one does not replay on an older build.
-7. **Wording.** The acknowledgement re-check names the reopen path on 1.1.0 (which keeps a role or
-   directory item); the first-stop gate question asks the agent to compare each resolved
+7. **An all-acknowledged claim can be withdrawn.** A completion claim whose every obligation is
+   now `acknowledged_not_done` claims nothing; its `claim_recorded/1.1.0` replacement may name no
+   obligation (the reducer's `scope_overlap_required` reads current obligation status).
+8. **Wording.** The acknowledgement re-check names the reopen path on 1.1.0 (which keeps a role or
+   directory item); the first-stop gate question (only when no obligation is open, so acknowledgement stays the
+   challenged last resort beside open work, #997) asks the agent to compare each resolved
    obligation's `acceptance_criteria` with its final output and acknowledge, not resolve, one its
    own output contradicts (cargo D).
 
