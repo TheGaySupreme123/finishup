@@ -9111,32 +9111,54 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   advice-only rule codes `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`.
 - **Closure gate (`cli/closure_gate.py`).** `STOP_GATE_TOKENS` (in `kernel/task_facts.py`) are
-  `obligations_open`, `receipt_findings_unresolved`, `closing_review_required`,
-  `planned_verification_failed`,
+  `obligations_open`, `receipt_findings_unresolved` (agent-work findings only),
+  `finding_rejection_awaiting_ruling` (a finding the agent rejected with a reason that awaits the
+  reviewer's ruling; the text sends the agent to `check` with `final_review: true` and never offers
+  acknowledgement), `closing_review_required`, `planned_verification_failed`,
   `planned_verification_not_observed`, `planned_verification_stale`,
   `edited_after_last_verification` (ADR-042; observation-dependent like the planned-verification
-  tokens), `requested_output_git_ignored`, `declared_output_removed`, `declared_output_emptied`. `closure_gate_from_readiness(readiness, frontier_sequence=,
-  frontier_digest=, observation_pending=, reasked_blockers=) -> ClosureGate(identity, text, items,
-  blocker_keys) | None` also fires, in `action_required` or `ready_with_limitations`, for a
-  `blocked_obligations` pair whose `<obligation id>:<kind>` key is not in `reasked_blockers`. It adds
-  the item `BLOCKER_RECHECK_ITEM` (`blocker_recheck`) and names each obligation and kind once. When
-  the gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the
-  text carries one informational note; that code alone never fires the gate.
+  tokens), `requested_output_git_ignored`, `declared_output_removed`, `declared_output_emptied`
+  (the last two are also voiced once per key on a Stop the host already continued, below).
+  `closure_gate_from_readiness(readiness, frontier_sequence=, frontier_digest=,
+  observation_pending=, reasked_blockers=, active_stop=) -> ClosureGate(identity, text, items,
+  blocker_keys) | None` asks the **re-checks `closure_readiness.rechecks` announces** (tb4n3 RC-8,
+  ADR-033 amendment): `Recheck {kind: acceptance | acknowledgement | blocker | premise, key,
+  subjects, rule, since_frontier}` with the keys `accept:<h8 of sorted resolved obligation ids>`,
+  `ack:<obligation id>`, `blocker:<obligation id>:<kind>`, `premise:<acknowledged count>`. Status,
+  `closure_prepare`, the CLI and the TUI show the same list; the gate never asks one status did
+  not announce, and a readiness without the list (a service older than the gate) announces none.
+  Items added: `BLOCKER_RECHECK_ITEM` (`blocker_recheck`), `ACKNOWLEDGEMENT_RECHECK_ITEM`,
+  `PREMISE_RECHECK_ITEM`, `ACCEPTANCE_RECHECK_ITEM` (`acceptance_recheck`). Delivery memory stays
+  client-side: `blocker_keys` holds the keys the gate asked (the historical field name): a blocker
+  as `<obligation id>:<kind>`, `ack:<obligation id>`, `premise:<n>`,
+  `accept:<h8>@<invite frontier>` and `emptied:<h8 of the declaring obligation items>`. An
+  `acknowledgement` whose `since_frontier` is later than the earliest acceptance invite this session
+  received answers that invite and is not asked (no invite-then-challenge). The acceptance sentence
+  is never composed beside open obligations, a rejected finding awaiting a ruling or a withdrawn
+  deliverable (it then stays unasked). `finding_counts` (`to_do`, `awaiting_ruling`,
+  `self_verify_eligible`) decides the finding count and whether `self_verified` is offered;
+  `awaiting_ruling_findings` and `fact_lineage` give the ids and rules the text names. When the
+  gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the text
+  carries one informational note; that code alone never fires the gate.
   `read_closure_gate(...)` reads compact status and raises `ClosureGateUnavailable` when it cannot;
   `closure_gate_already_delivered` / `record_closure_gate_delivered(..., blocker_keys=)` keep the
   owner-only `observation/closure-gate.json` once-per-frontier memory, and
-  `closure_gate_reasked_blockers(session_id)` reads the per-session re-asked keys in
+  `closure_gate_reasked_blockers(session_id)` reads the per-session asked keys in
   `observation/closure-gate-blockers.json` (at most 64 per session). Both decision functions take
-  `active_stop=` (#985): on a Stop the host already continued, only a not-yet-asked blocker key
-  can continue the agent. `closure_gate_turn_blocks(session_id)` / `reset_closure_gate_turn` keep
+  `active_stop=` (#985): on a Stop the host already continued, only an announced re-check not yet
+  asked (never `premise`) or a withdrawn deliverable (`declared_output_emptied` /
+  `declared_output_removed`) whose `emptied:<h8>` key was not yet asked can continue the agent.
+  `closure_gate_turn_blocks(session_id)` / `reset_closure_gate_turn` keep
   the per-turn count in `observation/closure-gate-turns.json`, capped at
   `MAX_GATE_BLOCKS_PER_TURN` (2); `record_closure_gate_delivered(..., active_stop=)` counts.
-  A `blocked_obligations` row with `confirmation: confirmed` is not re-asked, and
   `BLOCKER_UNCONFIRMED_TOKEN` (`obligation_blocker_unconfirmed`) is a gate item. Hook diagnostic
   reasons: `closure_gate_continued`, `closure_gate_blocker_rechecked`,
+  `closure_gate_acceptance_rechecked` (the extra Stop turn the acceptance re-read costs),
   `closure_gate_active_stop_rechecked`, `closure_gate_not_required`,
-  `closure_gate_repeat_suppressed`, `closure_gate_loop_guard` (an active Stop that emitted
-  nothing), `closure_gate_budget_exhausted`, `closure_gate_unavailable`. A route-less `status`
+  `closure_gate_repeat_suppressed`, `closure_gate_turn_end_after_continue` (an already-continued
+  Stop that emitted nothing: the normal end of a continued turn; this is the former
+  `closure_gate_loop_guard`, renamed because it guards no loop), `closure_gate_budget_exhausted`,
+  `closure_gate_unavailable`. A route-less `status`
   control call uses the route the same session's MCP bridge named on its last successful
   `status` or `check` (`service/session_routes.SessionRouteMemory`, owner-only
   `session-routes.json` in the service state directory, 256 sessions, last writer wins), else

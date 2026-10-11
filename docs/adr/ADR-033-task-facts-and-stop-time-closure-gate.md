@@ -237,8 +237,9 @@ agent must not be able to stop silently with known work left.
 
    Every outcome is a bounded hook diagnostic (`closure_gate_continued`,
    `closure_gate_blocker_rechecked`, `closure_gate_memory_unwritten` (amendment),
-   `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_loop_guard`,
-   `closure_gate_budget_exhausted`, `closure_gate_unavailable`) visible in `yoetz observe status`,
+   `closure_gate_not_required`, `closure_gate_repeat_suppressed`,
+   `closure_gate_turn_end_after_continue` (first recorded as `closure_gate_loop_guard`, renamed by
+   the 2026-10-11 amendment), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) visible in `yoetz observe status`,
    beside the Stop drain's own `stop_drain_complete` / `stop_drain_incomplete` (#994).
 6. **Per-host delivery.** Codex: `decision: block` with `reason` (its only model-visible Stop
    channel). Claude Code: `hookSpecificOutput.additionalContext` at Stop, the documented non-error
@@ -390,7 +391,8 @@ verdict on a blocker appears as a normal finding.
 
 TB4 run tb4n1 showed the gate was single-shot per Codex run: 35 of the 38 attempts that declared a
 blocker did so after the first gate, and their next Stop arrived with `stop_hook_active` set, so
-the hook recorded `closure_gate_loop_guard` without reading status and the re-check of decision 1
+the hook recorded the loop guard (`closure_gate_loop_guard`, now
+`closure_gate_turn_end_after_continue`) without reading status and the re-check of decision 1
 above never ran. Codex honours repeated Stop blocks within one turn (codex-rs `turn.rs` sets
 `stop_hook_active` once per turn and keeps honouring blocks; its test
 `stop_hook_can_block_multiple_times_in_same_turn` asserts it); the limit was Yoetz's own. The gate
@@ -408,7 +410,7 @@ and its text offered the blocker as the exit. The owner decided:
    unreadable or corrupt counter counts as the cap. On an active Stop the memory is written before the
    text is emitted; if it cannot be written, or status fails, the agent stops (fail open). The new
    diagnostic `closure_gate_active_stop_rechecked` joins `closure_gate_continued` and
-   `closure_gate_blocker_rechecked` when that happens; `closure_gate_loop_guard` is recorded only
+   `closure_gate_blocker_rechecked` when that happens; `closure_gate_turn_end_after_continue` is recorded only
    when an active Stop emitted nothing. A blocker row readiness reports as `confirmation:
    confirmed` (the agent re-published the same line in a later decision) is never re-asked, and
    the readiness token `obligation_blocker_unconfirmed` is a gate item like `obligations_open`.
@@ -615,3 +617,77 @@ joins `STOP_GATE_TOKENS` and the observation-dependent set. `requested_item_neve
 names a `role: input` item and waits for a completion claim or published work on that obligation;
 a research action is not acting. Task facts that do not bear on a finding no longer refuse
 `respond self_verified` (ADR-034); readiness and the gate stay task-wide.
+
+## Amendment (2026-10-11): the gate asks the re-checks readiness announces (tb4n3 RC-8, #1031)
+
+tb4n3 (28 real Codex runs) showed the gate as a token-triggered rider composer. The four re-checks
+(the acceptance re-read, the acknowledgement re-check, the blocker re-check and the premise ask) rode
+on other tokens, so (a) the A-12 acceptance sentence was never asked in about 70% of the attempts,
+because a gate only fired when another token was present, (b) the status directive said "Nothing
+further to do" and a gate then challenged an acknowledgement the gate's own acceptance sentence had
+invited in the same turn (ks S, cargo D), (c) a rejected finding awaiting the reviewer's ruling was
+answered with a push to acknowledge it (ks S), and (d) in formal-crypto S every Stop after the first
+was an already-continued Stop, whose items were never computed, so "never withdraw a working
+deliverable" was never shown to the agent that emptied its solver, while the premise and
+acknowledgement texts ("do that work unless it is genuinely impossible") sent it into 35 minutes of
+impossibility research. The owner decided:
+
+1. **One list of re-checks.** `closure_readiness.rechecks` (ADR-032 amendment, one closure verdict,
+   ADR-046) lists stateless candidates `{kind, key, subjects, rule, since_frontier}` for the four
+   kinds. Status, `closure_prepare`, the CLI, the TUI and the gate read that one list, and the status
+   directive names the items ("At Stop you will be asked once to re-read: ..."). The gate asks
+   exactly the announced re-checks and never one status did not announce: "Nothing further to do" is
+   not followed by an unannounced gate. Delivery memory stays client-side (decision 3 of the
+   original ADR): each key is asked once per session in `observation/closure-gate-blockers.json`
+   (a blocker as `<obligation id>:<kind>`, as before). A readiness without the list, from a service
+   older than the gate, announces none, so the gate asks none.
+2. **The A-12 acceptance re-read is its own item** (owner decision 6). Key `accept:<h8 of the sorted
+   resolved obligation ids>`, remembered as `accept:<h8>@<invite frontier>`. It is asked on a first
+   Stop and on an already-continued Stop (within the per-turn cap), once per resolved set; the extra
+   Stop turn it costs on a run that resolves obligations is accepted. It is not composed beside open
+   obligations (acknowledgement stays the challenged last resort, #997), beside a rejected finding
+   awaiting a ruling, or beside a withdrawn deliverable; it then stays unasked and is asked at a
+   later Stop. Its sentence gains the verification-limit branch: when the criteria can only be
+   checked outside this environment (a hidden verifier, a withheld artifact) and the agent did the
+   work, keep the obligation resolved and record `yoetz-verification-limit:<obligation id>`; "I
+   could not find it" never qualifies, so the pretrain S rescue is unchanged.
+3. **No invite-then-challenge.** An `acknowledgement` re-check whose `since_frontier` (the frontier
+   of the agent's current acknowledgement) is later than the earliest acceptance invite this session
+   received answers that invite and is not asked. An acknowledgement published before any invite is
+   challenged once, as before.
+4. **`finding_rejection_awaiting_ruling` is a gate token** (ADR-040 amendment: a finding the agent
+   rejected with a reason and no reviewer has ruled on). The text sends the agent to `check` with
+   `final_review: true`, names the findings and the frontier of the rejection, and never offers
+   acknowledgement; the acceptance invitation never appears beside it. `receipt_findings_unresolved`
+   counts agent-work findings only (`finding_counts.to_do - awaiting_ruling`), and `self_verified` is
+   offered only while `finding_counts.self_verify_eligible` is positive; otherwise the text names that
+   it is not accepted and points at `status view=findings`. A service that sends no counts keeps the
+   earlier wording.
+5. **A withdrawn deliverable is voiced on an active Stop** once per key. `declared_output_emptied`
+   and `declared_output_removed` bypass the active-Stop suppression, within `MAX_GATE_BLOCKS_PER_TURN`,
+   keyed `emptied:<h8 of the declaring obligation items>` (a path is never put in the key or the text;
+   an obligation item is one path), and recorded when a first-Stop gate voices them too. The text:
+   "You withdrew a deliverable that passed your tests; an empty file scores as no solution; restore it
+   and disclose its limits." with the rule and obligation ids from `fact_lineage` (ADR-045). "Passed
+   your tests" is said only when the lineage basis is `verified`; otherwise the deliverable "held
+   content".
+6. **The premise and acknowledgement texts keep the working deliverable.** Both gain "If you cannot
+   finish it, keep the working deliverable; acknowledgement never requires withdrawing or emptying
+   it." after the unchanged push to work, so the ack re-check still sends an agent that gave up back
+   to work (pretrain S) without teaching the formal-crypto S fallback.
+7. **Composition** stays on the bounded composer (ADR-043): every new sentence is a part with a
+   priority, the withdrawn-deliverable instruction is a required family instruction, the acceptance
+   sentence is the first optional sentence dropped, and a re-check whose whole sentence did not fit
+   is not recorded as asked.
+8. **Diagnostics.** `closure_gate_loop_guard` is renamed `closure_gate_turn_end_after_continue`: it is
+   the normal end of a continued turn, not a defect and not a loop guard. `closure_gate_acceptance_rechecked`
+   counts the extra Stop turns the acceptance re-read costs.
+9. **Hosts.** Codex, Claude Code and Cursor share the gate, its re-check list, texts and memory
+   (`handle_observe`, `handle_claude_observe`, `handle_cursor_observe`); the only difference is how
+   an already-continued Stop is detected (`stop_hook_active`; Cursor `loop_count > 0`), already
+   normalised to `active_stop`. Each runbook records "supported, same code path". No OS-specific path
+   is added; the memory files use POSIX `fcntl`, which WSL 2 provides.
+
+Cost and risk: one extra gate turn on a run that resolves obligations (owner decision 6); the
+per-turn cap of two still holds; a gate that reads a service older than itself asks no re-check
+until the service restarts onto the new build.
