@@ -41,6 +41,7 @@ from yoetz.domain.findings import (
     RankedFindings,
     ResponseDisposition,
     SemanticProvenance,
+    finding_demands_work,
     finding_from_json,
     finding_policy_identity,
     finding_to_json,
@@ -4258,6 +4259,30 @@ def _route_and_insufficiency(
     return required, insufficient
 
 
+def _full_check_is_complete(
+    known_gaps: Iterable[str],
+    totals: Mapping[str, object],
+    findings: Iterable[Finding],
+    *,
+    route_requires_review: bool,
+    review_succeeded: bool,
+    reviewer_reported_insufficiency: bool,
+) -> bool:
+    """Whether a full check may read ``complete``: clean gaps and no returned limit finding.
+
+    A returned finding that asks for no work is a coverage limit (a stale or incomplete ledger, a
+    reviewer's limitation request), so the check can never read complete beside it (ADR-046).
+    """
+
+    return full_check_gaps_clean(
+        known_gaps,
+        totals,
+        route_requires_review=route_requires_review,
+        review_succeeded=review_succeeded,
+        reviewer_reported_insufficiency=reviewer_reported_insufficiency,
+    ) and all(finding_demands_work(finding) for finding in findings)
+
+
 def full_check_gaps_clean(
     known_gaps: Iterable[str],
     totals: Mapping[str, object],
@@ -5169,17 +5194,15 @@ async def execute_check_commit(
             completeness = CheckCompleteness.REQUIRED_INCOMPLETE
         elif scoped_local_clean:
             completeness = CheckCompleteness.SCOPED_COMPLETE
-        elif (
-            not full_check_gaps_clean(
-                coverage.known_gaps,
-                build_check_totals(
-                    frozen.case, candidate_findings, test_edits=deterministic_test_edit_facts
-                ),
-                route_requires_review=route_requires_review,
-                review_succeeded=semantic_result.status is SemanticStatus.SUCCEEDED,
-                reviewer_reported_insufficiency=reviewer_reported_insufficiency,
-            )
-            or semantic_failed
+        elif semantic_failed or not _full_check_is_complete(
+            coverage.known_gaps,
+            build_check_totals(
+                frozen.case, candidate_findings, test_edits=deterministic_test_edit_facts
+            ),
+            candidate_findings,
+            route_requires_review=route_requires_review,
+            review_succeeded=semantic_result.status is SemanticStatus.SUCCEEDED,
+            reviewer_reported_insufficiency=reviewer_reported_insufficiency,
         ):
             completeness = CheckCompleteness.COVERAGE_INCOMPLETE
         else:

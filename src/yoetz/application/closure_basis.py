@@ -14,9 +14,11 @@ Status degrades to omitting the prediction (never to guessing one) when the case
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from dataclasses import dataclass, replace
+from typing import Final
 
-from yoetz.application.ledger_snapshot import projection_for_records
+from yoetz.application.ledger_snapshot import projection_for_records, trusted_projection_at
 from yoetz.domain.events import CheckRecordedPayload, LedgerRecord, is_observation_authored
 from yoetz.domain.receipts import (
     CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
@@ -49,7 +51,10 @@ from yoetz.protocol.coverage import LedgerFreshness, weakest
 __all__ = [
     "ClosureBasisUnavailable",
     "LoadedClosureBasis",
+    "check_change_resolution_gaps",
+    "clear_closure_basis_memo",
     "finding_states",
+    "historical_gaps",
     "load_closure_basis",
     "receipt_context",
 ]
@@ -71,13 +76,37 @@ class LoadedClosureBasis:
     basis: ClosureBasis
 
 
+# A tiny derivation memo (ADR-046). Status is read about once per write and ``closure_prepare``
+# reads one page per call at the same frontier, so building the deterministic case on every read
+# would multiply the cost of a long task. An entry is a pure function of the ledger prefix; it is
+# reused only while the adapter hands back the very projection object it was derived from (the
+# adapter replaces that object on any append, redaction or recovery), so it can never be stale.
+# It holds derived values for at most ``_MEMO_LIMIT`` frontiers and is not a source of truth.
+_MEMO_LIMIT: Final = 8
+_MEMO: OrderedDict[tuple[str, int, str], LoadedClosureBasis] = OrderedDict()
+
+
+def clear_closure_basis_memo() -> None:
+    """Forget every memoized basis (tests and diagnostics)."""
+
+    _MEMO.clear()
+
+
 async def load_closure_basis(runtime: TaskRuntime, frontier: Frontier) -> LoadedClosureBasis:
     """Build the receipt context and the closure basis at exactly ``frontier`` (read-only).
 
     The same reads the receipt makes: the accepted records through the frontier, the projection
-    the adapter vouches for (or a genesis replay), the case availability and the deterministic case.
+    the adapter vouches for (or a genesis replay), the case availability and the deterministic
+    case. Memoized per ``(session, frontier)`` while the adapter's projection object is unchanged.
     """
 
+    key = (runtime.session_id, frontier.sequence, frontier.head_digest)
+    trusted = await trusted_projection_at(runtime.ledger, runtime.session_id, frontier)
+    if trusted is not None:
+        hit = _MEMO.get(key)
+        if hit is not None and hit.projection is trusted:
+            _MEMO.move_to_end(key)
+            return hit
     records = tuple(
         [
             record
@@ -87,8 +116,10 @@ async def load_closure_basis(runtime: TaskRuntime, frontier: Frontier) -> Loaded
         ]
     )
     try:
-        projection = await projection_for_records(
-            runtime.ledger, runtime.session_id, frontier, records
+        projection = (
+            trusted
+            if trusted is not None
+            else await projection_for_records(runtime.ledger, runtime.session_id, frontier, records)
         )
     except ValueError as exc:
         raise ClosureBasisUnavailable("projection_replay_failed") from exc
@@ -109,7 +140,12 @@ async def load_closure_basis(runtime: TaskRuntime, frontier: Frontier) -> Loaded
         basis = closure_basis_from_context(context)
     except ValueError as exc:
         raise ClosureBasisUnavailable("closure_basis_invalid") from exc
-    return LoadedClosureBasis(projection, records, context, basis)
+    loaded = LoadedClosureBasis(projection, records, context, basis)
+    if trusted is not None:
+        _MEMO[key] = loaded
+        while len(_MEMO) > _MEMO_LIMIT:
+            _MEMO.popitem(last=False)
+    return loaded
 
 
 def finding_states(
@@ -141,7 +177,7 @@ def finding_states(
     return tuple(states)
 
 
-def _check_change_resolution_gaps(
+def check_change_resolution_gaps(
     projection: ProjectionState, finding_states: tuple[ReceiptFindingState, ...]
 ) -> list[CaseGap]:
     """Disclose resolutions that compared a legacy raising view by length only (R945-02).
@@ -286,7 +322,7 @@ def receipt_context(
         record = projection.findings[state.finding_id]
         assert record.payload is not None
         coverage = weakest(coverage, record.payload.coverage)
-    gaps.extend(_check_change_resolution_gaps(projection, states))
+    gaps.extend(check_change_resolution_gaps(projection, states))
 
     # Lineage is replay-only.  The coordinator may have read live children earlier, but a
     # receipt never does: it evaluates the aggregate manifest events already present in this
@@ -363,11 +399,11 @@ def receipt_context(
         check_suffix=check_suffix,
         records=records,
         check_standing=standing,
-        historical_gaps=_historical_gaps(records, check_record, retained_only_codes),
+        historical_gaps=historical_gaps(records, check_record, retained_only_codes),
     )
 
 
-def _historical_gaps(
+def historical_gaps(
     records: tuple[LedgerRecord, ...],
     latest_check: LedgerRecord | None,
     candidates: set[str],

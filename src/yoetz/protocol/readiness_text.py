@@ -22,6 +22,7 @@ __all__ = [
     "closure_counts_variants",
     "predicted_receipt_variants",
     "readiness_directive",
+    "reason_phrases",
 ]
 
 type ReadinessState = Literal["action_required", "ready", "ready_with_limitations", "unknown"]
@@ -275,3 +276,12 @@ def closure_counts_variants(finding_counts: object, obligation_counts: object) -
         sentence += (" " if sentence else "") + "Obligations " + "; ".join(obligations) + "."
     short = f"Findings {findings[0]}." if findings else ""
     return tuple(dict.fromkeys(item for item in (sentence, short) if item))
+
+
+def reason_phrases(reasons: object) -> tuple[str, ...]:
+    """One phrase per prediction reason, in order; unknown or malformed reasons are skipped."""
+
+    if not isinstance(reasons, (tuple, list)):
+        return ()
+    items = tuple(cast("tuple[object, ...] | list[object]", reasons))
+    return tuple(phrase for item in items if (phrase := _reason_phrase(item)) is not None)

@@ -7,7 +7,7 @@ import hashlib
 from dataclasses import dataclass, replace
 from typing import Final, Literal, Protocol, cast
 
-from yoetz.application.closure_basis import receipt_context
+from yoetz.application import closure_basis as _closure_basis
 from yoetz.application.ledger_snapshot import projection_for_records
 from yoetz.application.unit_of_work import (
     PreparedMutation,
@@ -93,6 +93,13 @@ from yoetz.protocol.models import (
 )
 
 __all__ = ["Application", "ReceiptInternalResult", "execute_receipt"]
+
+# The receipt context moved to ``application.closure_basis`` so status builds the same one
+# (ADR-046); the names the receipt always exposed stay importable from here.
+_finding_states = _closure_basis.finding_states
+_check_change_resolution_gaps = _closure_basis.check_change_resolution_gaps
+_historical_gaps = _closure_basis.historical_gaps
+_context = _closure_basis.receipt_context
 
 _RECEIPT_MEDIA_TYPE = "application/vnd.yoetz.receipt+json"
 _RECEIPT_REPLAY_MISMATCH_REASONS: Final = frozenset(
@@ -585,7 +592,7 @@ async def execute_receipt(app: Application, request: ReceiptRequest) -> ReceiptI
                 availability,
                 _projection_validated=True,
             )
-            context = receipt_context(projection, frontier, case, records)
+            context = _context(projection, frontier, case, records)
             now = app.clock.now_utc()
             document = build_receipt(
                 context,

@@ -50,10 +50,13 @@ from yoetz.domain.receipts import (
     ReceiptChildOutcome,
     ReceiptChildren,
     ReceiptConclusion,
+    ReceiptConclusionBasis,
+    ReceiptConclusionReason,
     ReceiptDisclosure,
     ReceiptDocument,
     ReceiptDuplicateLink,
     ReceiptGap,
+    ReceiptGapEffect,
     ReceiptGapStatus,
     ReceiptObligation,
     ReceiptObligationStatus,
@@ -107,7 +110,9 @@ from yoetz.kernel.closure_class import (
     FindingClosure,
     FindingClosureClass,
     ObligationClosure,
+    ObligationClosureClass,
     ReceiptEffect,
+    closure_counts,
     obligation_closures,
 )
 from yoetz.kernel.closure_readiness import premise_disputed_finding_ids
@@ -127,7 +132,7 @@ from yoetz.kernel.finding_resolution import (
     issue_key,
     unverified_resolution_finding_ids,
 )
-from yoetz.kernel.gap_effect import GapContext, judge_gaps
+from yoetz.kernel.gap_effect import GapContext, gap_effect, judge_gaps
 from yoetz.kernel.later_material import LaterMaterialClass, counted_later_material
 from yoetz.kernel.lineage import LineageEvaluation, LineageRollupState
 from yoetz.kernel.observed_failures import (
@@ -141,6 +146,7 @@ from yoetz.kernel.receipt_prediction import (
     AppliedCheck,
     ClosureBasis,
     LineageBasis,
+    PredictionConclusion,
     ReceiptPrediction,
     predict_receipt_conclusion,
 )
@@ -151,6 +157,7 @@ from yoetz.kernel.task_facts import (
 )
 from yoetz.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, PublicationChannel, weakest
 from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile, SemanticStatus
+from yoetz.protocol.readiness_text import reason_phrases
 
 __all__ = [
     "CheckSuffixClass",
@@ -861,6 +868,7 @@ def _later_material_text(context: ReceiptBuildContext, code: str) -> str | None:
 def _select_gaps(
     context: ReceiptBuildContext,
     historical: Mapping[str, Frontier] | None = None,
+    effects: Mapping[str, ReceiptGapEffect] | None = None,
 ) -> tuple[ReceiptGap, ...]:
     cleared = historical or {}
     plan_scope = current_plan_scope(
@@ -912,6 +920,7 @@ def _select_gaps(
             ),
             status=(ReceiptGapStatus.HISTORICAL if gap.code in cleared else ReceiptGapStatus.LIVE),
             cleared_at_frontier=cleared.get(gap.code),
+            effect=(None if effects is None or gap.code in cleared else effects.get(gap.code)),
         )
         for gap in sorted(
             context.gaps,
@@ -1940,6 +1949,8 @@ def _sections(
     review_not_required: bool = False,
     historical_gap_codes: frozenset[str] = frozenset(),
     omitted_rows_sentence: str = "",
+    closure_summary: _ClosureSummary | None = None,
+    gap_effects: Mapping[str, ReceiptGapEffect] | None = None,
 ) -> tuple[ReceiptSection, ...]:
     # Issue #1017: the limitations section lists live gaps only; the human renderings list the
     # historical ones (a later check cleared them) in their own section from the gap rows.
@@ -1949,25 +1960,49 @@ def _sections(
     items: dict[ReceiptSectionKey, tuple[str, ...]] = {}
     resolved_sentence = _resolved_history_sentence(len(resolved_finding_ids))
 
-    if conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS:
-        bodies[ReceiptSectionKey.SUMMARY] = (
-            f"No unresolved local findings were recorded at frontier {frontier.sequence}."
-            + resolved_sentence
-        )
-    elif conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE:
-        bodies[ReceiptSectionKey.SUMMARY] = (
-            f"Coverage is insufficient at frontier {frontier.sequence}." + resolved_sentence
-        )
+    if closure_summary is not None:
+        # ADR-046: one set of counters, the reasons behind the label, and the latest check's own
+        # counts under their own name (never beside the cumulative ones as a second counter).
+        lead = {
+            ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS: (
+                f"No unresolved local findings were recorded at frontier {frontier.sequence}."
+            ),
+            ReceiptConclusion.INSUFFICIENT_COVERAGE: (
+                f"Coverage is insufficient at frontier {frontier.sequence}."
+            ),
+            ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN: (
+                f"Unresolved findings remain at frontier {frontier.sequence}."
+            ),
+        }[conclusion]
+        bodies[ReceiptSectionKey.SUMMARY] = lead + resolved_sentence + closure_summary.sentences
+        if check_totals_text:
+            tested = (
+                "" if tested_subject_sequence is None else f" (frontier {tested_subject_sequence})"
+            )
+            bodies[ReceiptSectionKey.SUMMARY] += (
+                f" Latest check{tested} "
+                + check_totals_text.removeprefix("Totals: ").removeprefix("Totals ")
+            )
     else:
-        phrase = _count_phrase(
-            unresolved_actionable_count, "actionable finding", "actionable findings"
-        )
-        bodies[ReceiptSectionKey.SUMMARY] = (
-            f"{phrase[:1].upper() + phrase[1:]} remain unresolved at frontier {frontier.sequence}."
-            + resolved_sentence
-        )
-    if check_totals_text:
-        bodies[ReceiptSectionKey.SUMMARY] += " " + check_totals_text
+        if conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS:
+            bodies[ReceiptSectionKey.SUMMARY] = (
+                f"No unresolved local findings were recorded at frontier {frontier.sequence}."
+                + resolved_sentence
+            )
+        elif conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE:
+            bodies[ReceiptSectionKey.SUMMARY] = (
+                f"Coverage is insufficient at frontier {frontier.sequence}." + resolved_sentence
+            )
+        else:
+            phrase = _count_phrase(
+                unresolved_actionable_count, "actionable finding", "actionable findings"
+            )
+            bodies[ReceiptSectionKey.SUMMARY] = (
+                f"{phrase[:1].upper() + phrase[1:]} remain unresolved at frontier "
+                f"{frontier.sequence}." + resolved_sentence
+            )
+        if check_totals_text:
+            bodies[ReceiptSectionKey.SUMMARY] += " " + check_totals_text
     bodies[ReceiptSectionKey.SUMMARY] += omitted_rows_sentence
     # The summary's items are the resolved historical finding ids: the one place every include
     # level carries, so a renderer can always separate resolved rows from current ones.
@@ -2045,7 +2080,9 @@ def _sections(
         obligation.obligation_id for obligation in open_current
     )
 
-    actionable_count = unresolved_actionable_count
+    actionable_count = (
+        unresolved_actionable_count if closure_summary is None else closure_summary.unresolved
+    )
     if actionable_count == 0 and conclusion is not ReceiptConclusion.INSUFFICIENT_COVERAGE:
         bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS] = (
             "No findings remain open." + resolved_sentence
@@ -2063,6 +2100,8 @@ def _sections(
         bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS] = (
             f"{actionable_count} actionable findings remain unresolved." + resolved_sentence
         )
+    if closure_summary is not None and closure_summary.findings_note:
+        bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS] += " " + closure_summary.findings_note
     if resolution_explanations:
         for explanation in resolution_explanations:
             current = bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS]
@@ -2089,6 +2128,7 @@ def _sections(
         bodies[ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS] += " " + " ".join(attempt_explanations)
 
     if gap_codes:
+        limited_by = _limited_by(gap_codes, gap_effects)
         not_requested = SEMANTIC_REVIEW_NOT_REQUESTED_GAP in gap_codes
         not_run = (
             SEMANTIC_REVIEW_NOT_CONFIGURED_GAP in gap_codes
@@ -2113,17 +2153,16 @@ def _sections(
             gap_body = (
                 "AI-powered review was skipped: the reviewer twice in a row, or four times since "
                 "the last assessed review, could not assess the review packet (a Yoetz limit). "
-                f"Coverage is limited by: {', '.join(gap_codes)}."
+                f"Coverage is limited by: {limited_by}."
             )
         elif not_requested:
             gap_body = (
                 "AI-powered review was not requested (local-only check). "
-                f"Coverage is limited by: {', '.join(gap_codes)}."
+                f"Coverage is limited by: {limited_by}."
             )
         elif not_run:
             gap_body = (
-                "AI-powered relevance review was not run. "
-                f"Coverage is limited by: {', '.join(gap_codes)}."
+                f"AI-powered relevance review was not run. Coverage is limited by: {limited_by}."
             )
         elif OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP in gap_codes:
             # The strict ceiling blocked this process while the last install applied the
@@ -2138,10 +2177,10 @@ def _sections(
                 "re-run `yoetz integrate codex mcp preview` and "
                 "`yoetz integrate codex mcp install --route-profile policy`, then start a "
                 "fresh Codex process. "
-                f"Coverage is limited by: {', '.join(gap_codes)}."
+                f"Coverage is limited by: {limited_by}."
             )
         else:
-            gap_body = f"Coverage is limited by: {', '.join(gap_codes)}."
+            gap_body = f"Coverage is limited by: {limited_by}."
         if not_requested and review_not_required:
             # Issue #986 (owner decision E2): the applicable check's route did not require it.
             gap_body += (
@@ -2245,6 +2284,112 @@ def _sections(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _ClosureSummary:
+    """The Summary and Findings sentences of one receipt, from the one set of counters."""
+
+    sentences: str
+    unresolved: int
+    findings_note: str
+
+
+_DISCLOSED_BASIS_LABELS: Final[Mapping[str, str]] = {
+    "self_verified": "self-verified",
+    "disputed_after_rebuttal": "disputed after rebuttal",
+    "limitation_disclosed": "verification limit",
+    "acknowledged_not_done_bookkeeping": "acknowledged bookkeeping",
+    "rejected_review_unavailable": "rejection no reviewer can rule on",
+    "rejection_accepted": "rejection accepted",
+}
+
+
+def _plural(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def _closure_summary(basis: ClosureBasis, prediction: ReceiptPrediction) -> _ClosureSummary:
+    """Build the receipt's counters sentence from ``ClosureCounts`` (one source, no second counter)."""
+
+    counts = closure_counts(basis.findings, basis.obligations)
+    resolved = sum(
+        item.closure_class is ObligationClosureClass.RESOLVED for item in basis.obligations
+    )
+    seen: dict[FindingId, FindingClosure] = {}
+    for closure in basis.findings:
+        if closure.counts_as not in seen or closure.finding_id == closure.counts_as:
+            seen[closure.counts_as] = closure
+    breakdown: Counter[str] = Counter(
+        _DISCLOSED_BASIS_LABELS.get(closure.basis, closure.basis)
+        for closure in seen.values()
+        if closure.closure_class is FindingClosureClass.SETTLED_DISCLOSED
+    )
+    findings = f" Findings: {counts.findings_to_do} to do"
+    if counts.findings_awaiting_ruling:
+        findings += f" ({counts.findings_awaiting_ruling} awaiting a reviewer ruling)"
+    findings += f", {counts.findings_unmet} unmet (acknowledged requirement)"
+    findings += f", {counts.findings_disclosed} disclosed"
+    if breakdown:
+        findings += " (" + ", ".join(f"{n} {label}" for label, n in sorted(breakdown.items())) + ")"
+    if counts.findings_to_disclose:
+        findings += f", {counts.findings_to_disclose} to disclose"
+    findings += "."
+    obligations = (
+        f" Obligations: {resolved} resolved, {counts.obligations_open} open, "
+        f"{counts.obligations_acknowledged} acknowledged not done, "
+        f"{counts.obligations_disclosed} disclosed."
+    )
+    why = ""
+    if prediction.conclusion is not PredictionConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS:
+        phrases = reason_phrases(prediction.reasons)
+        if phrases:
+            more = prediction.reason_total - len(prediction.reasons)
+            why = (
+                f" Why {prediction.conclusion.value}: {', '.join(phrases)}"
+                + (f" (+{more} more)" if more > 0 else "")
+                + "."
+            )
+    notes: list[str] = []
+    if counts.findings_awaiting_ruling:
+        notes.append(
+            f"{_plural(counts.findings_awaiting_ruling, 'rejected finding awaits', 'rejected findings await')}"
+            " a reviewer ruling; the agent disputes "
+            f"{'it' if counts.findings_awaiting_ruling == 1 else 'them'} and the reviewer has not ruled."
+        )
+    if counts.findings_to_disclose:
+        notes.append(
+            f"{_plural(counts.findings_to_disclose, 'limitation', 'limitations')} the reviewer "
+            "asked the agent to state "
+            f"{'has' if counts.findings_to_disclose == 1 else 'have'} not been disclosed."
+        )
+    return _ClosureSummary(
+        findings + obligations + why,
+        counts.findings_to_do + counts.findings_unmet,
+        " ".join(notes),
+    )
+
+
+def _limited_by(gap_codes: tuple[str, ...], effects: Mapping[str, ReceiptGapEffect] | None) -> str:
+    """List the live gaps, naming apart the ones that only disclose (ADR-046).
+
+    A receipt that bounds on one gap and merely discloses five others used to list all six as
+    "limited by", so a reader could not tell which gap decided the label. Without recorded effects
+    (an artifact older than the effect rows) the list is the flat one it always was.
+    """
+
+    if effects is None or not all(code in effects for code in gap_codes):
+        return ", ".join(gap_codes)
+    bounding = [code for code in gap_codes if effects[code] is ReceiptGapEffect.BOUNDS]
+    disclosed = [code for code in gap_codes if effects[code] is ReceiptGapEffect.DISCLOSED]
+    if bounding and disclosed:
+        return (
+            f"{', '.join(bounding)} (these bound the conclusion). Also disclosed, not bounding "
+            f"the conclusion: {', '.join(disclosed)}"
+        )
+    if disclosed:
+        return f"{', '.join(disclosed)} (disclosed; none of these bounds the conclusion)"
+    return f"{', '.join(bounding)} (these bound the conclusion)"
+
+
 def _finding_keep_rank(
     finding: Finding,
     states_by_id: Mapping[FindingId, ReceiptFindingState],
@@ -2314,17 +2459,33 @@ def build_receipt(
     obligation_classes = tuple(
         obligation_closures(context.projection, records=context.records).values()
     )
-    prediction = predict_receipt_conclusion(
-        closure_basis_from_context(
-            context, terminal_sections=settles_rejections, obligations=obligation_classes
-        )
+    basis = closure_basis_from_context(
+        context, terminal_sections=settles_rejections, obligations=obligation_classes
     )
+    prediction = predict_receipt_conclusion(basis)
     conclusion = ReceiptConclusion(prediction.conclusion.value)
+    closure_summary = _closure_summary(basis, prediction) if settles_rejections else None
+    # The same judgment the conclusion used says, per live gap, whether it bounds or only
+    # discloses (ADR-046); an artifact older than the effect rows records none.
+    gap_context = _gap_context(context, frozenset(historical))
+    gap_effects: dict[str, ReceiptGapEffect] | None = (
+        {
+            gap.code: (
+                ReceiptGapEffect.BOUNDS
+                if gap_effect(gap.code, gap_context).kind.bounds
+                else ReceiptGapEffect.DISCLOSED
+            )
+            for gap in context.gaps
+            if gap.code not in historical
+        }
+        if settles_rejections
+        else None
+    )
     obligations = _select_obligations(context, findings)
     responses = _select_responses(context, frozenset(finding.finding_id for finding in findings))
     claim_refs = _select_claim_refs(context, findings)
     evidence_refs = _select_evidence_refs(context, claim_refs, obligations, responses)
-    gaps = _select_gaps(context, historical)
+    gaps = _select_gaps(context, historical, gap_effects)
     children, omitted_child_findings = _receipt_children(context.lineage)
     (
         retained_findings,
@@ -2513,6 +2674,8 @@ def build_receipt(
             else render_check_totals(context.applicable_check.totals)
         ),
         omitted_rows_sentence=_omitted_rows_sentence(omitted_rows),
+        closure_summary=closure_summary,
+        gap_effects=gap_effects,
     )
     suppressed_count = (
         0 if context.applicable_check is None else context.applicable_check.suppressed_count
@@ -2566,6 +2729,21 @@ def build_receipt(
         if terminal_sections
         else ()
     )
+    limitation_disclosed_ids = (
+        tuple(
+            sorted(
+                (
+                    closure.finding_id
+                    for closure in closures
+                    if closure.basis == "limitation_disclosed"
+                    and closure.finding_id in retained_ids
+                ),
+                key=_ascii_key,
+            )
+        )
+        if terminal_sections
+        else ()
+    )
     duplicate_links = (
         tuple(
             ReceiptDuplicateLink(state.finding_id, state.duplicate_of_finding_id)
@@ -2611,6 +2789,24 @@ def build_receipt(
             item
             for item in premise_disputed_finding_ids(context.projection)
             if item in acknowledged_not_done_ids
+        ),
+        limitation_disclosed_finding_ids=limitation_disclosed_ids,
+        conclusion_basis=(
+            None
+            if not settles_rejections
+            else ReceiptConclusionBasis(
+                tuple(
+                    ReceiptConclusionReason(
+                        reason.code,
+                        reason.rule,
+                        reason.count,
+                        reason.refs,
+                        reason.since_frontier,
+                    )
+                    for reason in prediction.reasons
+                ),
+                prediction.reason_total,
+            )
         ),
         acknowledged_not_done_obligation_ids=(
             acknowledged_obligations if terminal_sections else ()

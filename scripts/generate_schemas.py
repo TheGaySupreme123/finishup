@@ -5322,6 +5322,8 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
         "rejection_accepted_finding_ids",
         "self_verified_finding_ids",
         "disputed_after_rebuttal_finding_ids",
+        # tb4n3 RC-3 (ADR-046): a reviewer's limitation request the agent disclosed.
+        "limitation_disclosed_finding_ids",
     ):
         properties[name] = {
             "items": {"$ref": "#/$defs/finding_id"},
@@ -5398,7 +5400,11 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     }
     # A repair only the agent verified never reads as clean (issue #984, ADR-034), nor does a
     # standing reviewer disagreement (issue #1020, ADR-040).
-    for name in ("self_verified_finding_ids", "disputed_after_rebuttal_finding_ids"):
+    for name in (
+        "self_verified_finding_ids",
+        "disputed_after_rebuttal_finding_ids",
+        "limitation_disclosed_finding_ids",
+    ):
         cast(list[JsonValue], document.setdefault("allOf", [])).append(
             {
                 "if": {"required": [name]},
@@ -5443,6 +5449,50 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     receipt_gap["dependentRequired"] = {
         "cleared_at_frontier": ["status"],
         "status": ["cleared_at_frontier"],
+    }
+    # ADR-046: a live gap says whether it bounds the conclusion or is only disclosed; a clean
+    # conclusion beside a bounding gap is a contradiction the schema refuses.
+    gap_properties["effect"] = {"enum": ["bounds", "disclosed"], "type": "string"}
+    cast(list[JsonValue], receipt_gap.setdefault("allOf", [])).append(
+        {"if": {"required": ["status"]}, "then": {"not": {"required": ["effect"]}}}
+    )
+    # ADR-046: every rule behind the conclusion (the one that selected it first).
+    definitions["conclusion_reason"] = {
+        "additionalProperties": False,
+        "properties": {
+            "code": {"enum": list(_PREDICTION_REASON_CODES), "type": "string"},
+            "count": {"maximum": 9007199254740991, "minimum": 1, "type": "integer"},
+            "refs": {
+                "items": {
+                    "maxLength": 128,
+                    "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+                    "type": "string",
+                },
+                "maxItems": 3,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "rule": {
+                "enum": ["R1", "R10", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+                "type": "string",
+            },
+            "since_frontier": {"maximum": 9007199254740991, "minimum": 0, "type": "integer"},
+        },
+        "required": ["code", "count", "refs", "rule"],
+        "type": "object",
+    }
+    properties["conclusion_basis"] = {
+        "additionalProperties": False,
+        "properties": {
+            "reason_total": {"maximum": 9007199254740991, "minimum": 0, "type": "integer"},
+            "reasons": {
+                "items": {"$ref": "#/$defs/conclusion_reason"},
+                "maxItems": 8,
+                "type": "array",
+            },
+        },
+        "required": ["reason_total", "reasons"],
+        "type": "object",
     }
     required = cast(list[JsonValue], document["required"])
     if "children" not in required:

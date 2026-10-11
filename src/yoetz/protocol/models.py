@@ -6267,14 +6267,23 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         "/finding_checklist/counts/rejection_accepted",
         "/finding_checklist/counts/self_verified",
         "/finding_checklist/counts/verified_resolved",
+        # ADR-046: the five closure counters travel together.
+        "/finding_checklist/counts/to_do",
+        "/finding_checklist/counts/awaiting_ruling",
+        "/finding_checklist/counts/unmet",
+        "/finding_checklist/counts/disclosed",
+        "/finding_checklist/counts/to_disclose",
         "/finding_checklist/items/*/finding_id",
         "/finding_checklist/items/*/review_rounds",
         "/finding_checklist/items/*/todo_state",
+        "/finding_checklist/items/*/closure_class",
+        "/finding_checklist/items/*/closure_basis",
         "/finding_checklist/next",
     )
     + (
         "/overall_next/action",
         "/overall_next/acknowledged_incomplete_endpoint",
+        "/overall_next/predicted_conclusion",
         "/overall_next/status",
         "/overall_next/target_refs/*",
     )
@@ -6475,6 +6484,30 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "check_cause/material_class",
             "check_cause/rule",
             "check_cause/tool",
+            # ADR-046: closed tokens and counters only (the one closure verdict).
+            "finding_counts/to_do",
+            "finding_counts/awaiting_ruling",
+            "finding_counts/unmet",
+            "finding_counts/disclosed",
+            "finding_counts/to_disclose",
+            "finding_counts/self_verify_eligible",
+            "obligation_counts/open",
+            "obligation_counts/acknowledged",
+            "obligation_counts/disclosed",
+            "predicted_receipt/conclusion",
+            "predicted_receipt/reason_total",
+            "predicted_receipt/basis_frontier",
+            "predicted_receipt/provisional",
+            "predicted_receipt/reasons/*/code",
+            "predicted_receipt/reasons/*/rule",
+            "predicted_receipt/reasons/*/count",
+            "predicted_receipt/reasons/*/refs/*",
+            "predicted_receipt/reasons/*/since_frontier",
+            "rechecks/*/kind",
+            "rechecks/*/key",
+            "rechecks/*/subjects/*",
+            "rechecks/*/rule",
+            "rechecks/*/since_frontier",
         ),
     )
     # Closed state tokens only (issue #982).
@@ -6657,6 +6690,10 @@ _STATUS_FINDINGS_STRUCTURAL_POINTERS: Final = (
             "todo_state",
             "waiver_expiry",
             "waiver_scope",
+            # ADR-046: closed tokens only (who owes the next move, why, and the answers offered).
+            "closure_class",
+            "closure_basis",
+            "next_actions/*",
         ),
     )
     + _prefix_leaf_patterns("/page/items/*/coverage", _COVERAGE_LEAVES)
@@ -6709,6 +6746,8 @@ _STATUS_OBLIGATIONS_STRUCTURAL_POINTERS: Final = (
             "requested_items/*/role",
             "source_refs/*",
             "in_current_plan",
+            "closure_class",
+            "closure_basis",
             "status",
             "unattempted_items/*/item_kind",
             "unattempted_items/*/role",
@@ -6943,6 +6982,14 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
             "schema_version",
             "self_verified_finding_ids/*",
             "disputed_after_rebuttal_finding_ids/*",
+            # ADR-046: ids, closed codes and counters only.
+            "limitation_disclosed_finding_ids/*",
+            "conclusion_basis/reason_total",
+            "conclusion_basis/reasons/*/code",
+            "conclusion_basis/reasons/*/rule",
+            "conclusion_basis/reasons/*/count",
+            "conclusion_basis/reasons/*/refs/*",
+            "conclusion_basis/reasons/*/since_frontier",
             "session_id",
             "suppressed_finding_count",
             "task_id",
@@ -6987,7 +7034,7 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
         ("disposition", "evidence_refs/*", "finding_id", "waiver_expiry", "waiver_scope"),
     )
     + _prefix_leaf_patterns("/document/responses/*/finding_frontier", FRONTIER_LEAVES)
-    + _prefix_leaf_patterns("/document/gaps/*", ("code", "status", "subject_refs/*"))
+    + _prefix_leaf_patterns("/document/gaps/*", ("code", "effect", "status", "subject_refs/*"))
     # Issue #1017: the frontier a later check cleared a historical gap at.
     + _prefix_leaf_patterns("/document/gaps/*/cleared_at_frontier", FRONTIER_LEAVES)
     + _prefix_leaf_patterns("/document/redactions/*", ("category", "count", "reason"))
@@ -7252,8 +7299,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1482
-    ):  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +5, tb4n3 LO +9
+        len(result) != 1526
+    ):  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +44
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

@@ -1286,6 +1286,11 @@ def _check_cause_model(
     )
 
 
+_CHECK_ABSENCE_CODES: Final = frozenset(
+    {"check_not_recorded", "check_not_applicable", "check_payload_unavailable"}
+)
+
+
 async def _closure_basis_or_none(
     runtime: TaskRuntime, frontier: Frontier, request_id: str | None
 ) -> LoadedClosureBasis | None:
@@ -1487,6 +1492,25 @@ async def _closure_readiness(
         # Recorded gaps (the ones a receipt folds) are classified; live lineage tokens that no
         # recorded evaluation carries yet cannot be promised as receipt disclosures (#913).
         gap_markers = tuple(page.gaps)
+        loaded = await _closure_basis_or_none(runtime, frontier, request_id)
+        if loaded is not None:
+            # The receipt folds gaps status does not read off the compact row (a retained finding's
+            # coverage, case-derived codes): list them too, so a receipt that will bound on one never
+            # sits beside a status that reads clean (ADR-046).
+            gap_markers = tuple(
+                sorted(
+                    set(gap_markers)
+                    | {
+                        gap.code
+                        for gap in loaded.basis.gaps
+                        if gap.kind is not GapEffectKind.HISTORICAL
+                        and not gap.code.startswith(UNCLASSIFIED_GAP_PREFIX)
+                        # Readiness lists the check's absence from its own facts, never as a gap.
+                        and gap.code not in _CHECK_ABSENCE_CODES
+                    },
+                    key=str.encode,
+                )
+            )
         live_blockers = live_lineage_blockers(lineage_gaps, gap_markers)
         declared_gaps = bool(gap_markers or lineage_gaps)
         facts = page.readiness_facts
@@ -1502,23 +1526,6 @@ async def _closure_readiness(
             request_id=request_id,
         )
         return _readiness_unknown()
-    loaded = await _closure_basis_or_none(runtime, frontier, request_id)
-    if loaded is not None:
-        # The receipt folds gaps status does not read off the compact row (a retained finding's
-        # coverage, case-derived codes): list them too, so a receipt that will bound on one never
-        # sits beside a status that reads clean (ADR-046).
-        gap_markers = tuple(
-            sorted(
-                set(gap_markers)
-                | {
-                    gap.code
-                    for gap in loaded.basis.gaps
-                    if gap.kind is not GapEffectKind.HISTORICAL
-                    and not gap.code.startswith(UNCLASSIFIED_GAP_PREFIX)
-                },
-                key=str.encode,
-            )
-        )
     blocking: list[str] = []
     if open_obligations:
         blocking.append("obligations_open")

@@ -63,8 +63,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
         "Status view: compact; frontier: 9; freshness: stale_after_material_change; open "
         "obligations: 2; test edits available: 1 modified, 0 renamed, 0 deleted, 0 skipped, "
         "0 unjustified, 0 unknown; obligation IDs: obl_00000000-0000-4000-8000-000000000001; "
-        "unanswered findings: 4; receipt-blocking findings: 3; "
-        "reported gaps: 2."
+        "unanswered findings: 4; reported gaps: 2."
     )
     assert secret not in status_summary
 
@@ -82,8 +81,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
         "Status view: compact; frontier: 9; freshness: stale_after_material_change; open "
         "obligations: 2; test edits available: 1 modified, 0 renamed, 0 deleted, 0 skipped, "
         "0 unjustified, 0 unknown; obligation IDs: obl_00000000-0000-4000-8000-000000000001; "
-        "unanswered findings: 0; receipt-blocking findings: 3; "
-        "reported gaps: 2."
+        "unanswered findings: 0; reported gaps: 2."
     )
 
     status["view"] = "obligations"
@@ -100,7 +98,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
     assert render_safe_compact_summary(status) == (
         "Status view: obligations; frontier: 9; freshness: current; open obligations: 2; "
         "obligation IDs: obl_00000000-0000-4000-8000-000000000002; unanswered findings: 0; "
-        "receipt-blocking findings: 3; reported gaps: 2."
+        "reported gaps: 2."
     )
     assert secret not in render_safe_compact_summary(status)
 
@@ -114,7 +112,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
     }
     assert render_safe_compact_summary(status) == (
         "Status view: findings; frontier: 9; freshness: current; open obligations: 0; "
-        "unanswered findings: 0; receipt-blocking findings: 2; reported gaps: 2."
+        "unanswered findings: 0; reported gaps: 2."
     )
 
     # An evidence row's `freshness` describes that evidence, not the ledger, so it must never be
@@ -133,7 +131,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
     assert evidence_summary == (
         "Status view: evidence; frontier: 9; freshness: current; open obligations: 0; "
         "evidence rows: 2 (hook_observed 1, unrecorded 1); "
-        "unanswered findings: 0; receipt-blocking findings: 2; reported gaps: 2."
+        "unanswered findings: 0; reported gaps: 2."
     )
     assert secret not in evidence_summary
 

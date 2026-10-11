@@ -60,7 +60,9 @@ from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel, co
 from yoetz.protocol.models import (
     CheckAwaitingHumanModel,
     CheckChecklistCountsModel,
+    CheckChecklistItemModel,
     CheckContinuationModel,
+    CheckOverallNextModel,
     CheckProjectedFindingModel,
     CheckRequest,
     CheckResultModel,
@@ -95,6 +97,7 @@ from yoetz.protocol.models import (
     StatusObligationItemModel,
     StatusObservedRunModel,
     StatusOperationPageModel,
+    StatusPredictedReasonModel,
     StatusProjectDetectionModel,
     StatusProjectPageModel,
     StatusRequest,
@@ -223,7 +226,24 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     ),
     (CheckAwaitingHumanModel, frozenset({"specification_preflight"})),
     # Issue #1020: present only when non-zero.
-    (CheckChecklistCountsModel, frozenset({"disputed_after_rebuttal"})),
+    (
+        CheckChecklistCountsModel,
+        frozenset(
+            {
+                "disputed_after_rebuttal",
+                # ADR-046: the five closure counters travel together.
+                "to_do",
+                "awaiting_ruling",
+                "unmet",
+                "disclosed",
+                "to_disclose",
+            }
+        ),
+    ),
+    # ADR-046: who owes the next move on a checklist row, and the predicted receipt conclusion.
+    (CheckChecklistItemModel, frozenset({"closure_class", "closure_basis"})),
+    (CheckOverallNextModel, frozenset({"predicted_conclusion"})),
+    (StatusPredictedReasonModel, frozenset({"since_frontier"})),
     (
         ChildDependencySnapshotModel,
         frozenset(
@@ -287,6 +307,11 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "limitation_refs_required_count",
                 "acknowledged_obligation_count",
                 "check_cause",
+                # ADR-046: the one closure verdict.
+                "predicted_receipt",
+                "finding_counts",
+                "obligation_counts",
+                "rechecks",
             }
         ),
     ),
@@ -300,6 +325,9 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "finding_frontier",
                 "challenge",
                 "duplicate_of_finding_id",
+                "closure_class",
+                "closure_basis",
+                "next_actions",
             }
         ),
     ),
@@ -311,7 +339,15 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (ReviewInputManifestModel, frozenset({"review_phase", "omitted_item_total"})),
     (
         StatusObligationItemModel,
-        frozenset({"acceptance_criteria", "acknowledged_not_done_reason", "in_current_plan"}),
+        frozenset(
+            {
+                "acceptance_criteria",
+                "acknowledged_not_done_reason",
+                "in_current_plan",
+                "closure_class",
+                "closure_basis",
+            }
+        ),
     ),
     (StatusRequestedItemModel, frozenset({"role"})),
     (StatusObservedRunModel, frozenset({"tool_name", "command_commitment", "exit_status"})),
@@ -1186,6 +1222,86 @@ def test_status_closure_readiness_omits_an_unset_checklist() -> None:
     assert dumped["no_obligations_reason"] is None
 
 
+def test_closure_verdict_models_omit_unset_fields_and_refuse_null() -> None:
+    """ADR-046: every closure-verdict field is absent from a result an earlier build shaped,
+    appears when set, and is never null on the wire."""
+
+    base_counts = {
+        "acknowledged_not_done": "0",
+        "open": "1",
+        "open_at_budget": "0",
+        "rejection_accepted": "0",
+        "self_verified": "0",
+        "verified_resolved": "0",
+    }
+    parsed = CheckChecklistCountsModel.model_validate(base_counts)
+    dumped = parsed.model_dump(mode="json", exclude_unset=True)
+    for field in ("to_do", "awaiting_ruling", "unmet", "disclosed", "to_disclose"):
+        assert field not in dumped
+        with pytest.raises(ValueError):
+            CheckChecklistCountsModel.model_validate({**base_counts, field: None})
+    full = CheckChecklistCountsModel.model_validate(
+        {
+            **base_counts,
+            "to_do": "1",
+            "awaiting_ruling": "1",
+            "unmet": "0",
+            "disclosed": "0",
+            "to_disclose": "0",
+        }
+    )
+    assert full.model_dump(mode="json", exclude_unset=True)["awaiting_ruling"] == "1"
+    # The group travels together.
+    with pytest.raises(ValueError):
+        CheckChecklistCountsModel.model_validate({**base_counts, "to_do": "1"})
+
+    item = CheckChecklistItemModel.model_validate(
+        {"finding_id": protocol_id("fnd_", 2950), "todo_state": "open", "review_rounds": "0"}
+    )
+    assert (
+        not {"closure_class", "closure_basis"}
+        & item.model_dump(mode="json", exclude_unset=True).keys()
+    )
+    with pytest.raises(ValueError):
+        CheckChecklistItemModel.model_validate(
+            {
+                "finding_id": protocol_id("fnd_", 2950),
+                "todo_state": "open",
+                "review_rounds": "0",
+                "closure_class": "agent_work",
+            }
+        )
+
+    reason = StatusPredictedReasonModel.model_validate(
+        {"code": "findings_to_do", "rule": "R2", "count": "1", "refs": []}
+    )
+    assert "since_frontier" not in reason.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValueError):
+        StatusPredictedReasonModel.model_validate(
+            {
+                "code": "findings_to_do",
+                "rule": "R2",
+                "count": "1",
+                "refs": [],
+                "since_frontier": None,
+            }
+        )
+
+    next_step = CheckOverallNextModel.model_validate(
+        {"status": "ready", "action": "request_receipt", "target_refs": []}
+    )
+    assert "predicted_conclusion" not in next_step.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValueError):
+        CheckOverallNextModel.model_validate(
+            {
+                "status": "ready",
+                "action": "request_receipt",
+                "target_refs": [],
+                "predicted_conclusion": None,
+            }
+        )
+
+
 def test_checklist_counts_omit_an_unset_disputed_count() -> None:
     """Issue #1020: the disputed count is absent when zero, present when set, never null."""
 
@@ -1584,6 +1700,12 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         ("CheckChecklistCountsModel", "disputed_after_rebuttal"): (
             "test_checklist_counts_omit_an_unset_disputed_count"
         ),
+        ("StatusPredictedReasonModel", "since_frontier"): (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        ),
+        ("CheckOverallNextModel", "predicted_conclusion"): (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        ),
         ("RespondEvidenceSummaryModel", "description"): (
             "test_respond_omits_unset_optional_response_fields"
         ),
@@ -1654,6 +1776,25 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (
             "test_status_closure_readiness_omits_an_unset_checklist"
+        )
+    for field in ("predicted_receipt", "finding_counts", "obligation_counts", "rechecks"):
+        covered["StatusClosureReadinessModel", field] = (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        )
+    for field in ("closure_class", "closure_basis", "next_actions"):
+        covered["StatusFindingItemModel", field] = (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        )
+    for field in ("closure_class", "closure_basis"):
+        covered["StatusObligationItemModel", field] = (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        )
+        covered["CheckChecklistItemModel", field] = (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        )
+    for field in ("to_do", "awaiting_ruling", "unmet", "disclosed", "to_disclose"):
+        covered["CheckChecklistCountsModel", field] = (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
         )
     for model in ("PublishWorkSuccessModel", "PublishWorkDryRunModel"):
         covered[model, "blocker_notices"] = "test_publish_accepted_events_omit_unset_summary"
