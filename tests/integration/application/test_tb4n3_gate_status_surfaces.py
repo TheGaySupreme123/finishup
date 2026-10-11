@@ -26,18 +26,9 @@ from yoetz.cli.closure_gate import (
     closure_gate_from_readiness,
 )
 from yoetz.domain.closure import recheck_note
-from yoetz.protocol.models import StatusClosureReadinessModel
 from yoetz.protocol.readiness_text import readiness_directive
 
-pytestmark = [
-    pytest.mark.anyio,
-    # The status wire that carries ``rechecks`` is W2-A's lane and merges before this one; this
-    # lane's branch alone has no producer to ask, so the test runs from the merge onward.
-    pytest.mark.skipif(
-        "rechecks" not in StatusClosureReadinessModel.model_fields,
-        reason="closure_readiness.rechecks is produced by the W2-A status wire",
-    ),
-]
+pytestmark = pytest.mark.anyio
 
 _DIGEST = "sha256:" + "d" * 64
 

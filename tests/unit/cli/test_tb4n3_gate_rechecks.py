@@ -297,7 +297,7 @@ def test_receipt_findings_unresolved_counts_agent_work_only() -> None:
 def test_self_verified_is_offered_only_when_a_finding_is_eligible(
     eligible: str | None, offered: bool
 ) -> None:
-    counts = (
+    counts: dict[str, Any] = (
         {}
         if eligible is None
         else {
@@ -787,3 +787,57 @@ def test_the_gate_never_claims_a_challenge_it_did_not_deliver() -> None:
     again = _gate(claimed, reasked=frozenset(first.blocker_keys))
     assert again is not None
     assert "You were already asked about your recorded blocker" in again.text
+
+
+# --- the fact-lineage sentence is the first optional sentence trimmed; the cause stays ----------
+
+
+def _wire_lineage() -> Any:
+    from yoetz.domain.values import obligation_id as typed_obligation_id
+    from yoetz.kernel.fact_lineage import FactLineage, lineage_to_wire
+
+    return lineage_to_wire(
+        FactLineage(
+            code=DECLARED_OUTPUT_EMPTIED_GAP,
+            rule="deliverable_path_history",
+            state="emptied",
+            obligation_id=typed_obligation_id(_OBL),
+            item_index=0,
+            frontier=7,
+            prior_size_bytes=15_975,
+            prior_lines=310,
+            now_size_bytes=0,
+            now_lines=0,
+            proof="earlier_check",
+            basis="verified",
+        )
+    )
+
+
+def test_the_lineage_sentence_is_present_when_the_gate_fits_and_trimmed_first_otherwise() -> None:
+    from yoetz.kernel.fact_lineage import lineage_from_wire, lineage_text
+
+    wire = _wire_lineage()
+    why = lineage_text(lineage_from_wire(wire))
+    roomy = _gate(_emptied(lineage=(wire,)))
+    assert roomy is not None and why in roomy.text
+
+    # Beside two more announced re-checks the whole gate no longer fits 2,000 characters: the
+    # lineage sentence yields first, and every token still says why it fired - the withdrawn
+    # sentence names the rule and the obligation, the item clause names the cause.
+    crowded = _gate(
+        _emptied(
+            lineage=(wire,),
+            rechecks=(
+                premise_recheck(1),
+                ack_recheck(_OBL),
+                blocker_recheck(obligation_id(2)),
+            ),
+        )
+    )
+    assert crowded is not None and len(crowded.text) <= 2_000
+    assert DECLARED_OUTPUT_EMPTIED_GAP in crowded.items
+    assert why not in crowded.text
+    assert "You withdrew a deliverable" in crowded.text
+    assert "rule deliverable_path_history" in crowded.text and _OBL in crowded.text
+    assert "is now empty or truncated" in crowded.text

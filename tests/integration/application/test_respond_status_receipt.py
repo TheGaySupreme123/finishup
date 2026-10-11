@@ -9140,7 +9140,10 @@ async def test_an_emptied_deliverable_tells_the_same_story_on_every_surface(
             observation_pending=False,
         )
         assert gate is not None and DECLARED_OUTPUT_EMPTIED_GAP in gate.items
-        assert why in gate.text
+        # The provenance sentence is the lowest-priority optional sentence (RC-5/RC-8): beside
+        # other items it yields to the host bound, but the token always says why it fired - the
+        # withdrawn-deliverable sentence names the rule and the obligation from the same lineage.
+        assert why in gate.text or (f"rule {fact.rule}" in gate.text and obligation in gate.text)
         assert "Acknowledging or republishing the obligation does not clear this" in gate.text
 
         # 4. The receipt, in every format.
