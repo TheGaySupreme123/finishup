@@ -68,9 +68,10 @@ WRITE_OPERATIONS: Final[frozenset[str]] = frozenset(
     {"start", "publish_work", "check", "respond", "receipt"}
 )
 
-# Bounds chosen against the 512-byte ASCII ceiling in ``yoetz.mcp.summaries``: an error identity
-# clause plus a reason/location clause plus a directive plus a guidance pointer has to fit, with
-# the identity never the part that gets dropped.
+# Bounds chosen against the original 512-byte ASCII ceiling in ``yoetz.mcp.summaries`` (4,096 since
+# ADR-043): an error identity clause plus a reason/location clause plus a directive plus a guidance
+# pointer has to fit, with the identity never the part that gets dropped. They stay as chosen so a
+# tight bound still holds a whole directive.
 _MAX_DIRECTIVE_BYTES: Final = 232
 _MAX_NUDGE_BYTES: Final = 128
 _MAX_REMEDY_BYTES: Final = 320

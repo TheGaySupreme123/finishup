@@ -427,9 +427,15 @@ and its text offered the blocker as the exit. The owner decided:
    not do it. Every gate says a Yoetz limit is never a `yoetz-blocker`. The blocker sentence, with
    "Data the task says is recoverable is not such a blocker" and the confirmation step, is offered
    only when open obligations (or an unconfirmed blocker) remain, never for a findings-only gate.
-   The text never exceeds every host's 2,000-character bound: whole optional sentences are
-   dropped (the drain note first, then the long obligation sentence, then the verification hint)
-   and the re-check sentence is always kept; it names at most three blocked obligations.
+   The text never exceeds Yoetz's 2,000-character bound (its own cap, not a documented host
+   limit): whole optional sentences are dropped (the drain note first, then the long obligation
+   sentence, then the required limitation ids, then the premise ask) and the re-check sentence is
+   always kept; it names at most three blocked obligations. A planned-verification hint is a
+   family instruction and is not shed for the limitation ids. When the ladder still cannot fit,
+   the gate is composed (ADR-043) rather than clipped: the head, one instruction per present item
+   family (obligations, planned verification, receipt-blocking findings, each with a short form)
+   and the `check`/receipt close instruction are required, and the re-checks, blocker offer,
+   limitation ids, premise ask and notes follow by priority with short forms.
 3. **The drain note only when it changed the decision.** `observation_pending` is now computed for
    this task's own hook rows after the Stop drain (#994, owned by the observation lead). The
    planned-verification items are used when it is false; the "(Observations were still draining

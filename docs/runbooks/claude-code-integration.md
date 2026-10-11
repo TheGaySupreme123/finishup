@@ -376,7 +376,7 @@ Claude Code's native MCP profile (`yoetz mcp serve --host claude`) delivers
 results. Cooperative `EVENT_INVALID` therefore cannot rely on `safe_details` reaching the model.
 Decision for Claude Code (issue #579): supported here — the text summary names frozen
 `reason_code` and JSON-pointer `field` (for example `unsorted_set_field at
-/event_drafts/4/payload/obligation_refs`) within the 512-byte bound, with no caller prose. The
+/event_drafts/4/payload/obligation_refs`) within the bounded text channel (4,096 bytes), with no caller prose. The
 public message for `unsorted_set_field`/`duplicate_set_member` states the ascending-ASCII rule.
 This is the same token class as the `Repair:` clause (issue #266).
 
@@ -1276,7 +1276,8 @@ The current Claude Code MCP surface advertises the read-only `closure_prepare/1.
 Discover its declaration before use and pass the returned session and writer identities with an
 explicit selection. It inventories one pinned status frontier or prepares one explicit draft; it
 never appends, judges work, or claims completion. The complete response frame is bounded: an
-oversized inventory returns `LIMIT_EXCEEDED` without partial data. When the declaration is absent,
+draft phases echo only the rows the selection names, and an oversized inventory returns
+`LIMIT_EXCEEDED` (`closure_result_too_large`) without partial data. When the declaration is absent,
 use `yoetz closure-prepare --session-id <returned-session> --writer-id <returned-writer>` with
 `--output <file>` outside the repository. This shared route is supported through the local bridge
 on macOS, Linux, and WSL 2; native Windows has no supported Yoetz MCP route. MCP discovery,
@@ -1467,7 +1468,7 @@ privacy choices; new settings such as Expanded review require a separate exact a
 Claude Code's generic MCP profile delivers only the text `content` for `isError` results, so this
 host is the one that most depends on the directive reaching the text channel. A public error
 carrying a registered `continuation` token renders its frozen directive, any carried consent
-commands, its guidance pointer, and its nudge inside the 512-byte text projection, dropped from the
+commands, its guidance pointer, and its nudge inside the bounded (4,096-byte) text projection, dropped from the
 least load-bearing end when the budget is tight.
 
 This is the host where the gap was observed: before ADR-030 a `VAULT_LOCKED` result whose
@@ -1508,7 +1509,7 @@ configured.
 
 **Provider outcomes (issue #742).** A check whose AI-powered review failed carries a
 `continuation_for_semantic_outcome` token in the shared CLI and MCP check projections. Claude
-Code depends on the MCP text channel, so the token and, when the 512-byte budget allows, the
+Code depends on the MCP text channel, so the token and, when the bounded text budget allows, the
 directive appear there. Raw provider text never reaches that projection. Hook advisories never
 carry this token; SessionStart's vault-locked advisory appends its own `vault_unlock_required`
 token after the host-specific prefix (issue #739). No Claude-specific recovery wording is

@@ -703,7 +703,7 @@ SEMANTIC_REDACTED_VALUES_AGENT_LINE: Final = (
 )
 
 
-# The 512-byte MCP summaries must keep the frontier head digest (issue #279); when the full line
+# The bounded MCP summaries must keep the frontier head digest (issue #279); when the full line
 # cannot fit beside it, they carry this shorter fixed form. Full renderings always use the line.
 SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT: Final = (
     "Values marked [withheld-by-yoetz:possible-credential] were withheld from the external "

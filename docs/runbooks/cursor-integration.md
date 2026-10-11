@@ -1398,7 +1398,8 @@ The current Cursor MCP surface advertises the read-only `closure_prepare/1.0.0` 
 Discover its declaration before use and pass the returned session and writer identities with an
 explicit selection. It inventories one pinned status frontier or prepares one explicit draft; it
 never appends, judges work, or claims completion. The complete response frame is bounded: an
-oversized inventory returns `LIMIT_EXCEEDED` without partial data. When the declaration is absent,
+draft phases echo only the rows the selection names, and an oversized inventory returns
+`LIMIT_EXCEEDED` (`closure_result_too_large`) without partial data. When the declaration is absent,
 use `yoetz closure-prepare --session-id <returned-session> --writer-id <returned-writer>` with
 `--output <file>` outside the repository. This shared route is supported through the local bridge
 on macOS, Linux, and WSL 2; native Windows has no supported Yoetz MCP route. MCP discovery,

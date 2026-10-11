@@ -18,6 +18,7 @@ from pydantic import BaseModel, FileUrl
 
 import yoetz.mcp.server as bridge
 from yoetz.config.models import LoggingConfig
+from yoetz.domain.closure import PREPARATION_REMEDIATIONS
 from yoetz.mcp.resources import GuidancePageAssembler, read_resource
 from yoetz.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
 from yoetz.observability.logging import LogMode, configure_logging
@@ -719,6 +720,119 @@ async def test_closure_prepare_refuses_stale_inventory_without_writing(
         "reason_code": "frontier_changed",
         "continuation": "frontier_refresh_required",
     }
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "reason",
+    sorted(
+        reason
+        for reason in PREPARATION_REMEDIATIONS
+        if reason
+        not in {
+            "closure_output_unwritable",
+            "closure_output_not_durable",
+            "closure_snapshot_unavailable",
+            "closure_result_too_large",
+        }
+    ),
+)
+async def test_closure_prepare_names_its_refusal_and_the_remedy_on_the_text_channel(
+    monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    """tb4n3 formal-crypto S: `closure_attempt_selection_required` reached the agent as a bare
+    "Error INVALID_REQUEST" because the reason was not an admitted protocol reason code."""
+
+    async def prepare(*_args: object, **_kwargs: object) -> dict[str, JsonValue]:
+        raise ValueError(reason)
+
+    monkeypatch.setattr(bridge, "prepare_closure", prepare)
+    runtime = bridge.build_bridge_runtime("policy", host_profile="codex")
+
+    result = await bridge.dispatch_closure_prepare(
+        {
+            "session_id": _id("session", 1),
+            "writer_id": _id("writer", 1),
+            "selection": {"phase": "inventory"},
+        },
+        runtime,
+    )
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    error = cast(dict[str, Any], result.structuredContent["error"])
+    assert error["code"] == "INVALID_REQUEST"
+    assert error["safe_details"] == {"reason_code": reason}
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert f"Reason: {reason}." in text
+    assert f"Remedy: {PREPARATION_REMEDIATIONS[reason]}" in text
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_closure_prepare_scopes_a_draft_phase_to_the_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n3 formal-crypto S: the full-inventory echo (about 983 KB at frontier ~1,430) made the
+    follow-up draft LIMIT_EXCEEDED. The MCP route now asks for the scoped echo."""
+
+    seen: dict[str, object] = {}
+
+    async def prepare(*_args: object, **kwargs: object) -> dict[str, JsonValue]:
+        seen.update(kwargs)
+        return {
+            "preparatory_only": True,
+            "frontier": {"sequence": "0", "head_digest": "genesis"},
+            "closure_readiness": {},
+            "inventory": {"obligations": [], "scope": {"mode": "selected_rows"}},
+            "request": None,
+            "notes": ["Nothing was published or judged."],
+        }
+
+    monkeypatch.setattr(bridge, "prepare_closure", prepare)
+    runtime = bridge.build_bridge_runtime()
+    result = await bridge.dispatch_closure_prepare(
+        {
+            "session_id": _id("session", 1),
+            "writer_id": _id("writer", 1),
+            "selection": {"phase": "inventory"},
+        },
+        runtime,
+    )
+    assert result.isError is False
+    assert seen["scope_to_selection"] is True
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (RuntimeError("must-not-reach-public-output"), "bridge_invoke_failed"),
+    ],
+)
+async def test_an_unexpected_invoke_failure_is_a_typed_stage_with_a_remedy(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, reason: str
+) -> None:
+    """tb4n3 RC-2: no bare "The bridge could not complete the operation"; the agent is told whether
+    its write may be recorded and what to read first."""
+
+    _install_clients(monkeypatch, [_FakeClient(failure)])
+    runtime = bridge.build_bridge_runtime("policy", host_profile="codex")
+
+    result = await bridge.dispatch_publish_work(_requests()["publish_work"], runtime)
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    error = cast(dict[str, Any], result.structuredContent["error"])
+    assert error["code"] == "INTERNAL_ERROR"
+    assert error["safe_details"] == {"reason_code": reason}
+    assert "status view=operation" in error["message"]
+    assert "must-not-reach-public-output" not in json.dumps(result.structuredContent)
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert f"Reason: {reason}." in text
+    assert "Remedy:" in text and "status view=operation" in text
     await bridge.close_bridge_runtime(runtime)
 
 
