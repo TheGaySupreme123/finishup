@@ -318,3 +318,51 @@ def test_only_the_closed_exploration_runner_class_is_read_only(
     assert {
         classify_later_material(record, projection).material_class for record in ledger.prefix[-2:]
     } == {expected}
+
+
+def test_a_receipt_saved_into_a_declared_output_directory_never_supersedes() -> None:
+    """lake D (tb4n2): the agent saved yoetz_receipt.json into the declared output directory after
+    its last check. ``task_facts.non_counting_edits_exempt`` counts that write for verification
+    staleness (a directory output makes it part of the delivery), but a check can never cover the
+    receipt that reports on it: counting it would invalidate the check that produced it, and the
+    next saved receipt would do it again."""
+
+    from yoetz.domain.events import (
+        ObligationStatus,
+        PlanPublishedPayload,
+        RequestedItem,
+        RequestedItemKind,
+        RequestedItemRole,
+    )
+    from yoetz.kernel.task_facts import non_counting_edits_exempt
+
+    obligation = obligation_id("obl_00000000-0000-4000-8000-0000000000b5")
+    ledger = ObservedLedger()
+    ledger.append(
+        EventSchema("obligation_published", "1.1.0"),
+        ObligationPublishedPayload(
+            obligation_id=obligation,
+            description="Deliver",
+            evidence_expectation="files",
+            status=ObligationStatus.OPEN,
+            requested_items=(
+                RequestedItem(
+                    RequestedItemKind.DIRECTORY, "/app/output", role=RequestedItemRole.OUTPUT
+                ),
+            ),
+        ),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", (obligation,)),
+        observed=False,
+    )
+    ledger.edit(write_scope="yoetz_owned")
+    projection = replay(ledger.prefix)
+    # The verification-staleness rule counts it (ADR-042 decision 1) ...
+    assert "write yoetz_owned" not in non_counting_edits_exempt(projection)
+    # ... the check-supersession rule never does.
+    assert {
+        classify_later_material(record, projection).material_class for record in ledger.prefix[-2:]
+    } == {_C.NON_COUNTING_WRITE}

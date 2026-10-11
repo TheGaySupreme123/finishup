@@ -139,7 +139,7 @@ builder. Classes:
 |---|---|---|
 | `yoetz_own_call` | the observation of a call to one of Yoetz's own MCP tools, any host spelling (`mcp__yoetz__x`, `mcp__plugin_yoetz_yoetz__x`, bare `x`, `yoetz:x`, `plugin-yoetz-yoetz:x`, Cursor's generic `MCP:x` by the closed basenames) | ignored |
 | `exploration` | an observed run of the hook's `exploration` runner class, a native read tool, a routine-read summary | ignored |
-| `no_tool_activity` | host stream bookkeeping that names no tool call: `Opaque observation kind=<Codex wrapper kind>`, `Observed completion signal kind=...`; and a host poll tool that returns the output of work started earlier (Codex `wait`, the trailing call of 9 of 14 tb4n2 semantic-arm suffixes) | ignored |
+| `no_tool_activity` | host stream bookkeeping that names no tool call: `Opaque observation kind=<Codex wrapper kind>`, `Observed completion signal kind=...`; and a host poll tool that returns the output of work started earlier (Codex `wait`, a poll output that follows the last check in 18 of 27 tb4n2/tb4n3 semantic-arm attempts) | ignored |
 | `non_counting_write` | an observed edit whose every path is scratch or Yoetz-owned (ADR-042) | ignored |
 | `response` | a cooperative answer to a finding | advisory (above) |
 | `edit_or_write` | an observed deliverable, workspace or outside-workspace edit | supersedes the check: `check_not_applicable`, freshness `stale_after_material_change`, closing review required again |

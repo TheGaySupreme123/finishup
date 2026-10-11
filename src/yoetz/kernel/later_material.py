@@ -155,9 +155,9 @@ def supersession_exempt(projection: ProjectionState) -> frozenset[str]:
 
 # Host tools that only poll something already running and record no work of their own: Codex's
 # ``wait`` returns the output of a code-mode cell started earlier (the work it ran has its own
-# rows). In the tb4n2 replay it was the one trailing call of 9 of 14 semantic-arm suffixes; left
-# unclassified it kept the bounding disclosure, and readiness would then ask for a costly extra
-# AI-powered review because the agent waited. A closed list, evidenced per tool.
+# rows). In the tb4n2/tb4n3 replay a poll output followed the last check in 18 of 27 semantic-arm
+# attempts; left unclassified it kept the bounding disclosure, and readiness would then ask for a
+# costly extra AI-powered review because the agent waited. A closed list, evidenced per tool.
 _HOST_POLL_TOOLS: Final = frozenset({"wait"})
 
 
