@@ -5087,8 +5087,17 @@ record identities cannot be re-derived), and a still-needed correction binds to 
 action. A later explicit session-stream outcome enriches an earlier hook `UNKNOWN` through an
 append-only `result_correction` linked to the same canonical action; it never rewrites, downgrades,
 or silently overwrites an explicit result. Exact correction retries replay; a contradictory explicit
-outcome appends under its outcome/exit-bound identity with a `dedup_conflict` gap. The correction is
-part of ingest acceptance: an unavailable, lagging, rebuilding, missing-result, or redacted-result
+outcome appends under its outcome/exit-bound identity with a `dedup_conflict` gap. A call-keyed
+delivery (event ids derived from the host call: a paired pre/post, a Codex stream completion, a
+post-only post that names its call) none of whose reconstructable role sets is committed, but whose
+every event id the task ledger already holds, is a duplicate, never a content refusal: nothing is
+appended, the correction still applies, and an append refused as `EVENT_INVALID` is re-read the same
+way before it can quarantine (issue #1027, tb4n3 N3-7). A Codex stream completion is bound to its hook
+call's generation before its captured-content manifests are looked up, so a content-bearing hook post
+and its contentless stream copy resolve the same committed operation across a `compact`, `resume` or
+`clear` generation bump. Event ids derived from a source identity alone (unpaired evidence) can be
+reused by another call, so a collision there, and any partial overlap, still fails closed as
+`ledger_rejected` (#560). The correction is part of ingest acceptance: an unavailable, lagging, rebuilding, missing-result, or redacted-result
 candidate-findings projection returns retryable `service_unavailable` and leaves the outbox row
 pending until the projection can prove and complete the correction. Duplicates retry incomplete
 content/store/ledger/verification/advice work idempotently. Stream cursor advancement occurs only

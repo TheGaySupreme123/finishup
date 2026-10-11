@@ -2802,6 +2802,21 @@ class MemoryLedgerAdapter:
             record = self._state.projection.actions.get(key)
         return None if record is None else str(record.source_event_id)
 
+    async def committed_event_ids(self, event_ids: Iterable[str]) -> frozenset[str]:
+        """Return which of ``event_ids`` the task ledger already holds (#1027).
+
+        Task-wide and read-only. The observation coordinator uses it to tell a batch whose
+        every event is already committed (a duplicate of an earlier delivery, however that
+        delivery was shaped) from one the ledger would refuse as a content conflict.
+        """
+
+        wanted = frozenset(str(item) for item in event_ids)
+        if not wanted:
+            return frozenset()
+        async with self._lock:
+            records = self._state.records
+        return frozenset(str(record.event_id) for record in records if record.event_id in wanted)
+
     async def lookup_task_operation(
         self, writer_id: str, operation_id: str
     ) -> OperationRecord | None:

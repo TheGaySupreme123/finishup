@@ -293,6 +293,22 @@ unsupported claims and unbounded duplicate findings.
     one this completion itself recorded; otherwise the stream keeps its own generation. The
     reverse order (a stream completion delivered before a post-compaction hook call) still
     records two actions.
+    Amendment (issue #1027, tb4n3 N3-7): the binding is resolved before the completion's
+    captured-content manifests are looked up, because those manifests (and the role set they
+    reconstruct) are keyed by the call's generation-qualified identity. Resolved after the lookup,
+    a hook post that carried captured output committed a captured-evidence role the contentless
+    completion could not reconstruct, so the completion was appended as a new operation reusing the
+    hook post's result event id; the ledger refused it (`EVENT_INVALID`), the drain quarantined it
+    as `ledger_rejected`, and every later command of the compacted session kept its hook
+    `UNKNOWN` (183 outcomes in 7 of 7 compacted tb4n3 attempts). One shared predicate
+    (`application/observation_committed.py`) now answers "is this observation already in the task
+    ledger" for the alignment, the paired-call link and the replay lookup: when no committed
+    operation is found under any reconstructable role set but every event of a call-keyed batch
+    (event ids derived from the host call, never from a source identity alone) is already recorded,
+    the delivery is a duplicate. Nothing is appended and the stream's explicit outcome still
+    reaches the recorded action through the same append-only correction; an append the ledger
+    refuses as `EVENT_INVALID` is re-read the same way before it can quarantine. A partial overlap,
+    and a collision on source-identity-keyed ids (#560), stay content refusals.
     Amendment (issue #1019, tb4n2 N-4): a retired native content handoff is disclosed on its own
     task. Each retirement appends one marker, keyed by the ticket identity, to the ticket's task
     ledger with the standing gap `capture_handoff_retired`; it never reaches another task and

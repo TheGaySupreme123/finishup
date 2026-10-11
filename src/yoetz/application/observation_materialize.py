@@ -1999,6 +1999,37 @@ def paired_action_link(
     return PairedActionLink(action, action_event, replace(batch, drafts=remaining))
 
 
+def observation_event_ids_call_keyed(envelope: ObservationEnvelope) -> bool:
+    """True when the envelope's action and result event ids derive from its host call (#1027).
+
+    A paired pre or post, a Codex stream completion and a post-only post that names its call
+    mint their ids from the task, source lane, host session, generation, call id and tool
+    family, so two deliveries holding the same event id are the same call. Unpaired and
+    no-call evidence mints its ids from the source identity, which a producer can reuse for
+    another call: a collision there is a conflict that must fail closed, never a duplicate.
+    """
+
+    if type(envelope) is not ObservationEnvelope:
+        return False
+    structural = cast(Mapping[str, JsonValue], envelope.structural_payload)
+    pairing_mode, correlation_kind = _pairing_contract(envelope, structural)
+    if _correlation(structural, correlation_kind=correlation_kind) is None:
+        return False
+    kind = envelope.event_kind
+    if envelope.source is ObservationSource.CODEX_SESSION_STREAM and stream_event_is_completed_tool(
+        kind, structural
+    ):
+        kind = "PostToolUse"
+    if kind == "PreToolUse":
+        return pairing_mode == "paired"
+    if kind == "PostToolUse":
+        return not (
+            ObservationGapCode.UNPAIRED_EVENT.value in envelope.gap_codes
+            and pairing_mode == "paired"
+        )
+    return False
+
+
 def paired_action_linked_roles(draft_roles: tuple[str, ...]) -> tuple[str, ...]:
     """Return the role set a batch has once its canonical paired action is linked."""
 
