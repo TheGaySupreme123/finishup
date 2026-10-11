@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from builders.shell_write_vectors import VECTORS, ShellWriteVector
 from yoetz.cli import runtime_facts
 from yoetz.cli.runtime_facts import install_target_class, runtime_structural_facts
 from yoetz.protocol.canonical import JsonValue
@@ -324,14 +325,80 @@ def test_install_target_fact_is_closed_token_only(env: dict[str, Path], tmp_path
     assert "secret-pkg" not in repr(facts)
 
 
-def test_quoted_text_and_heredoc_bodies_are_not_write_targets() -> None:
-    from yoetz.cli.runtime_facts import _write_targets  # pyright: ignore[reportPrivateUsage]
+def test_quoted_text_and_heredoc_bodies_are_not_write_targets(tmp_path: Path) -> None:
+    """The hook entry point reads the one shared parser (``domain.shell_writes``), and the
+    classifier that parser feeds decides every written path, outside ones included."""
 
-    assert _write_targets('git commit -m "x > /y"') == []
-    assert _write_targets('echo "a>/b"') == []
-    assert _write_targets("cat > /tmp/x <<EOF\nhello > /etc/z\nEOF") == ["/tmp/x"]
-    assert _write_targets("bash run.sh > /tmp/log 2>&1") == ["/tmp/log"]
-    assert _write_targets("echo x | tee -a /var/out") == ["/var/out"]
+    def scope(command: str) -> JsonValue:
+        return _facts("Bash", {"command": command}, tmp_path).get("write_scope")
+
+    assert scope('git commit -m "x > /y"') is None
+    assert scope('echo "a>/b"') is None
+    assert scope("cat > /tmp/x <<EOF\nhello > /etc/z\nEOF") is None  # /tmp/x is scratch
+    assert scope("bash run.sh > /tmp/log 2>&1") is None
+    assert scope("echo x | tee -a /var/out") == "outside_workspace"
+    assert scope("cat > /tmp/x <<EOF\nhello\nEOF\necho y > /etc/z") == "outside_workspace"
+
+
+@pytest.mark.parametrize("vector", VECTORS, ids=[f"{n:03d}" for n, _ in enumerate(VECTORS)])
+def test_the_hook_claims_the_scope_the_shared_vectors_name(vector: ShellWriteVector) -> None:
+    """tb4n3 shell-write review (#1028): the same exact commands the domain and stream tests read.
+
+    The workspace is ``/app`` (lexical, never touched); ``write_scope`` is absent when the
+    command claims none."""
+
+    facts = runtime_structural_facts(
+        {"tool_input": {"command": vector.command}},
+        tool_name="Bash",
+        workspace_locator="/app",
+        inside=lambda path: path == "/app" or path.startswith("/app/"),
+    )
+    assert facts.get("write_scope") == vector.hook, vector.command
+
+
+def test_the_hook_bounds_every_parse_of_a_huge_command(tmp_path: Path) -> None:
+    """Review round 2: the install-target ``shlex`` pass read the whole megabyte of one token
+    (quadratic); it is bounded like the write parser, and a bounded parse claims nothing."""
+
+    import time
+
+    started = time.perf_counter()
+    facts = _facts("Bash", {"command": "echo " + "x" * 900_000 + " > out.txt"}, tmp_path)
+    elapsed = time.perf_counter() - started
+    assert "install_target" not in facts
+    assert "write_scope" not in facts
+    assert elapsed < 2.0
+
+
+def test_a_yoetz_receipt_copied_outside_the_workspace_is_yoetz_owned_not_outside(
+    tmp_path: Path,
+) -> None:
+    """Review 3: the outside precheck returned before the ownership rule, so a saved receipt made
+    a verification stale. One classifier decides, for a shell command as for an edit tool."""
+
+    for command in (
+        "cp source.json /opt/yoetz_receipt.json",
+        "echo '{}' > /opt/yoetz_receipt.json",
+        "cat /app/r.json | tee /opt/out/yoetz_export.json",
+    ):
+        assert _facts("Bash", {"command": command}, tmp_path)["write_scope"] == "yoetz_owned"
+    assert _facts("Write", {"file_path": "/opt/yoetz_receipt.json"}, tmp_path) == {
+        "write_scope": "yoetz_owned"
+    }
+    # Any real outside write still wins over Yoetz's own material.
+    both = "cp a /opt/yoetz_receipt.json && cp b /opt/result.json"
+    assert _facts("Bash", {"command": both}, tmp_path)["write_scope"] == "outside_workspace"
+
+
+def test_a_literal_dollar_or_star_in_an_outside_target_is_still_an_outside_write(
+    tmp_path: Path,
+) -> None:
+    """Review 4: quoting makes ``$`` and ``*`` literal; an expansion names no path."""
+
+    for literal in ("echo x > '/opt/$report.txt'", "echo x > /opt/file\\*.py"):
+        assert _facts("Bash", {"command": literal}, tmp_path)["write_scope"] == "outside_workspace"
+    for expansion in ('echo x > "/opt/$report.txt"', "echo x > /opt/file*.py", "echo x > $OUT"):
+        assert "write_scope" not in _facts("Bash", {"command": expansion}, tmp_path), expansion
 
 
 def test_a_system_interpreter_prefix_is_never_yoetz_runtime(

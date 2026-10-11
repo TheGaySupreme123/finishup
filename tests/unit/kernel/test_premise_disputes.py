@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from builders.gate_readiness import blocker_recheck, premise_recheck
 from builders.observed_runs import ObservedLedger
 from yoetz.cli.closure_gate import (
     BLOCKER_RECHECK_ITEM,
@@ -80,6 +81,9 @@ def _view(**fields: object) -> SimpleNamespace:
         "open_obligation_count": "0",
         "receipt_blocking_finding_count": "0",
         "blocked_obligations": (),
+        # tb4n3 RC-8: the gate asks the re-checks status announces; the premise key carries the
+        # acknowledged count, so a later acknowledgement is a new ask.
+        "rechecks": (premise_recheck(2),),
     }
     base.update(fields)
     return SimpleNamespace(**base)
@@ -104,11 +108,11 @@ def test_the_gate_asks_once_about_a_premise_dispute() -> None:
     assert "a Yoetz limit or a hard result is not a reason" in gate.text  # type: ignore[attr-defined]
     # Asked already: the agent may stop. A new acknowledgement asks again.
     assert _gate(_view(), reasked_blockers=frozenset({"premise:2"})) is None
-    assert _gate(_view(acknowledged_not_done_count="3"), reasked_blockers=frozenset({"premise:2"}))
+    assert _gate(_view(rechecks=(premise_recheck(3),)), reasked_blockers=frozenset({"premise:2"}))
     # Never on a Stop the host already continued this turn.
     assert _gate(_view(), active_stop=True) is None
-    # No dispute, nothing to ask.
-    assert _gate(_view(standing_limitations=("finding_self_verified",))) is None
+    # No dispute announced, nothing to ask.
+    assert _gate(_view(rechecks=())) is None
 
 
 def test_the_premise_ask_rides_an_ordinary_gate_and_drops_before_the_recheck() -> None:
@@ -116,12 +120,9 @@ def test_the_premise_ask_rides_an_ordinary_gate_and_drops_before_the_recheck() -
         state="action_required",
         agent_actionable=("obligations_open", "obligation_blocker_unconfirmed"),
         open_obligation_count="1",
-        blocked_obligations=(
-            SimpleNamespace(
-                obligation_id="obl_00000000-0000-4000-8000-000000000001",
-                blocker_kind="authority",
-                confirmation="claimed",
-            ),
+        rechecks=(
+            premise_recheck(2),
+            blocker_recheck("obl_00000000-0000-4000-8000-000000000001", "authority"),
         ),
     )
     gate = _gate(view)

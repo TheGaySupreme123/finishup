@@ -59,6 +59,8 @@ __all__ = [
     "EXTERNAL_SEMANTIC_FINDING_KINDS",
     "FALLBACK_ORIGIN_REASONS",
     "FINDING_KIND_TRAITS",
+    "LIMITATION_REQUEST_NEXT_STEP",
+    "LIMITATION_REQUEST_REQUIREMENT_KINDS",
     "MAX_RECORDED_VERDICTS",
     "MAX_RELATED_FINDING_IDS",
     "PRIOR_FINDING_VERDICTS",
@@ -92,9 +94,11 @@ __all__ = [
     "finding_event_from_json",
     "finding_event_to_json",
     "finding_from_json",
+    "finding_demands_work",
     "finding_has_dialogue_fields",
     "finding_policy_identity",
     "finding_to_json",
+    "is_limitation_request",
     "rank_key",
     "semantic_fallback_origin_to_json",
     "semantic_provenance_from_json",
@@ -209,6 +213,11 @@ class ResponseDisposition(str, Enum):  # noqa: UP042 - exact wire enum base
     # never clean, never re-reviewed, and not agent work. Recorded only on
     # ``response_recorded`` 1.1.0.
     SELF_VERIFIED = "self_verified"
+    # Issue #1030 (tb4n3 RC-7, ADR-034/040 amendment): the agent takes back an
+    # ``acknowledged_not_done`` answer (it will do the work after all). The only edge that leaves
+    # that terminal state; the finding is ``open`` again and the agent's earlier position is
+    # retracted. Requires a reason. Recorded only on ``response_recorded`` 1.1.0.
+    REOPENED = "reopened"
     WAIVED = "waived"
 
 
@@ -220,7 +229,7 @@ TERMINAL_RESPONSE_DISPOSITIONS: Final = frozenset(
 # The dispositions recorded only on ``response_recorded`` 1.1.0 (issues #905, #984, #996); every
 # other disposition keeps the released 1.0.0 bytes.
 RESPONSE_V1_1_DISPOSITIONS: Final = TERMINAL_RESPONSE_DISPOSITIONS | frozenset(
-    {ResponseDisposition.DUPLICATE_OF}
+    {ResponseDisposition.DUPLICATE_OF, ResponseDisposition.REOPENED}
 )
 
 # The one sentence every agent-facing text reuses when it tells the agent what to do with a
@@ -1797,3 +1806,45 @@ def rank_key(finding: Finding) -> RankKey:
         origin_ordinal,
         finding.finding_id.encode("ascii"),
     )
+
+
+# tb4n3 RC-1 / RC-3 (issue #1026): the reviewer's recorded statement that a requirement
+# cannot be verified in this environment and asks the agent to say so. It is a challenge fact only:
+# nothing here reads the agent's own words, so an agent's "I could not find it" never qualifies.
+LIMITATION_REQUEST_NEXT_STEP: Final = "state_unresolved_limitation"
+# The requirement-family kinds a limitation request can legitimately attach to.
+LIMITATION_REQUEST_REQUIREMENT_KINDS: Final = frozenset(
+    {
+        FindingKind.TASK_REQUIREMENT_UNMET,
+        FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS,
+        FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED,
+        FindingKind.EVIDENCE_DOES_NOT_SUPPORT_CLAIM,
+        FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE,
+    }
+)
+
+
+def is_limitation_request(finding: Finding) -> bool:
+    """Whether the reviewer asked the agent to *state* a limitation instead of doing more work.
+
+    A pure function of the recorded finding (so ranking can use it at mint time). It does not
+    settle the finding by itself: the closure class stays ``agent_work`` / ``limitation_requested``
+    until the agent discloses it (``kernel.closure_class``, owner decision Q4).
+    """
+
+    return (
+        finding.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+        and finding.challenge is not None
+        and finding.challenge.requested_next_step == LIMITATION_REQUEST_NEXT_STEP
+        and finding.kind in LIMITATION_REQUEST_REQUIREMENT_KINDS
+    )
+
+
+def finding_demands_work(finding: Finding) -> bool:
+    """Whether the finding asks the agent for work (repair, evidence or a rebuttal).
+
+    The kind trait says whether a kind can be work at all; a limitation request is the one
+    actionable kind that asks only for a disclosure, so it never demands work.
+    """
+
+    return FINDING_KIND_TRAITS[finding.kind][1] and not is_limitation_request(finding)

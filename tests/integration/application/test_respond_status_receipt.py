@@ -139,7 +139,13 @@ from yoetz.ports.objects import (
 )
 from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
 from yoetz.ports.runtime import BundleProvisionCommand, BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.ports.semantic import ReviewerChallenge, SamplingParams, SemanticCase, SemanticJudgment
+from yoetz.ports.semantic import (
+    ReviewerChallenge,
+    ReviewerNextStep,
+    SamplingParams,
+    SemanticCase,
+    SemanticJudgment,
+)
 from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from yoetz.protocol.coverage import (
     ArtifactObservation,
@@ -1868,7 +1874,8 @@ async def test_check_respond_recheck_reaches_a_fixed_point() -> None:
     assert "semantic_review_not_requested" in status.coverage.known_gaps
     assert "check_not_applicable" not in status.coverage.known_gaps
     assert "unanswered findings: 0" in summary
-    assert f"receipt-blocking findings: {item.receipt_blocking_finding_count}" in summary
+    # ADR-046: the phrase is gone; the counters sentence carries the same number (to do + unmet).
+    assert "receipt-blocking" not in summary
 
 
 async def test_status_freshness_scalar_survives_immaterial_events() -> None:
@@ -4743,9 +4750,17 @@ async def test_succeeded_review_records_assessable_conclusion_durably(
 
 
 def _semantic_challenge_evaluator(
-    claim_ref: str, *, subjects: tuple[str, ...] = ()
+    claim_ref: str,
+    *,
+    subjects: tuple[str, ...] = (),
+    next_step: ReviewerNextStep = "provide_evidence",
 ) -> Callable[..., Awaitable[object]]:
-    """Raise one AI-powered challenge about *claim_ref*, also citing any further *subjects*."""
+    """Raise one AI-powered challenge about *claim_ref*, also citing any further *subjects*.
+
+    The default asks the agent to record the result that supports the claim (``provide_evidence``),
+    which is what its message says; a ``state_unresolved_limitation`` request is a disclosure the
+    agent acknowledges once (tb4n3 RC-1), so it has its own tests.
+    """
 
     cited = tuple(sorted({claim_ref, *subjects}, key=str.encode))
 
@@ -4763,7 +4778,7 @@ def _semantic_challenge_evaluator(
             "The claim cites only an open obligation.",
             "The work may be done but unrecorded.",
             "Record the result that supports the claim.",
-            "state_unresolved_limitation",
+            next_step,
             "No result content is in the packet.",
         )
         return replace(succeeded, judgment=SemanticJudgment("challenges_returned", (challenge,)))
@@ -4771,8 +4786,53 @@ def _semantic_challenge_evaluator(
     return evaluate
 
 
+async def test_acknowledging_a_limitation_request_needs_no_resolution_attempt() -> None:
+    """tb4n3 RC-1 (owner decision Q4): the reviewer asked the agent to state a limit, so one
+    reasoned acknowledgement settles it; the repair-attempt rule above is for repair demands."""
+
+    seed = 5350
+    app, _runtime, _ = _build_app(
+        seed_offset=54,
+        semantic="optional",
+        semantic_evaluator=_semantic_challenge_evaluator(
+            protocol_id("clm_", seed + 5), next_step="state_unresolved_limitation"
+        ),
+    )
+    started, checked, _obligation = await _bootstrap_finding(
+        app, seed=seed, mode="semantic_if_configured"
+    )
+    finding = next(
+        item for item in checked.findings if item.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+    )
+    # The request is a disclosure to acknowledge, not work (other findings of the bootstrap may
+    # still make the check action_required).
+    assert finding.challenge is not None
+    assert finding.challenge.requested_next_step == "state_unresolved_limitation"
+    recorded = await app.respond(
+        RespondRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 10)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(checked.result_frontier),
+                "finding_id": finding.finding_id,
+                "finding_frontier": _frontier(checked.result_frontier),
+                "disposition": "acknowledged",
+                "reason": "The result content is withheld by the task design; stated as a limit.",
+            }
+        )
+    )
+    assert recorded.response.disposition == "acknowledged"
+    assert recorded.closure_after is not None
+    assert recorded.closure_after.limitation == "limitation_disclosed"
+
+
 async def test_accepting_a_semantic_finding_requires_a_recorded_resolution_attempt() -> None:
-    """Issue #885: "limitation accepted" is not an answer until one concrete attempt is recorded."""
+    """Issue #885: accepting a repair demand is not an answer until one concrete attempt is recorded.
+
+    A reviewer's limitation request is the exception (tb4n3 RC-1, owner decision Q4): it asks for a
+    disclosure, so one reasoned acknowledgement settles it (``test_acknowledging_a_limitation...``).
+    """
 
     seed = 5300
     app, _runtime, _ = _build_app(
@@ -9080,7 +9140,10 @@ async def test_an_emptied_deliverable_tells_the_same_story_on_every_surface(
             observation_pending=False,
         )
         assert gate is not None and DECLARED_OUTPUT_EMPTIED_GAP in gate.items
-        assert why in gate.text
+        # The provenance sentence is the lowest-priority optional sentence (RC-5/RC-8): beside
+        # other items it yields to the host bound, but the token always says why it fired - the
+        # withdrawn-deliverable sentence names the rule and the obligation from the same lineage.
+        assert why in gate.text or (f"rule {fact.rule}" in gate.text and obligation in gate.text)
         assert "Acknowledging or republishing the obligation does not clear this" in gate.text
 
         # 4. The receipt, in every format.

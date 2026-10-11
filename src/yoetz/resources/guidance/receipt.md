@@ -12,7 +12,9 @@ findings it returned that remain unanswered, then read `status view=findings` wi
 not repair a finding; a material repair needs a qualifying recheck. Responses to the check's own
 findings, acknowledgement of an observation-authored non-actionable finding, and `work_closed` do
 not need a recheck. At `ready_with_limitations`, nothing further is to do: request the receipt
-without another check and disclose its standing limitations. After `insufficient_packet`, go to
+without another check and disclose its standing limitations. The status sentence after the stop
+instruction says what the receipt will read (`predicted_receipt`); lead the final prose with the
+receipt's conclusion and its `conclusion_basis` reasons, not with "nothing further to do". After `insufficient_packet`, go to
 the receipt rather than a deterministic fallback.
 
 Receipt and final prose are scope-first. Lead with what recorded evidence/checks covered and what was

@@ -246,12 +246,16 @@ exception is fixed by the released status wire: a finding whose latest response 
 
 Findings are a to-do list that ends. Each one is `open` or in a final state: `verified_resolved`
 (proved absent as above), `acknowledged_not_done` (the agent said, with a required reason, that it
-will not do it), or `rejection_accepted` (the agent rejected an AI-powered finding with a reason and
+will not do it; it stays reopenable, and a later check that tests the work and finds the issue absent
+resolves it), or `rejection_accepted` (the agent rejected an AI-powered finding with a reason and
 a later review withdrew it; a withdrawal wins over the same review not raising it again, so such an
 item never reads as proved absent). A final item never changes again and is not reviewed again; a
 later `respond` to it records nothing and answers `finding_terminal`. New evidence about the same
 problem comes back as a new finding. `acknowledged_not_done` is an honest "not done": it keeps the
-receipt from reading clean and appears in its own "Acknowledged, not done" section.
+receipt from reading clean and appears in its own "Acknowledged, not done" section. A reviewer's
+request that you state a limit you cannot remove (a hidden evaluator, a withheld reference) is not
+"not done" work: once you disclose it with one reasoned answer it is a settled limitation, and a
+repeat of the same concern is recorded on it rather than raised again.
 
 `self_verified` is the final state for a finding you repaired that Yoetz cannot prove repaired
 because of its own limits (a *Yoetz limit*: content it could not capture or had to redact, lost
@@ -276,7 +280,30 @@ names it in a "Disputed after rebuttal" section, and the conclusion is at best
 empty, shorten or delete a working deliverable because a finding is open; deliver it and disclose
 its limits.
 
+Two more things decide what the receipt will say, and status tells you before you ask for it:
+
+- **Findings you rejected with a reason.** A rejection of an AI-powered finding is not settled by
+  your word: the next check lets the reviewer rule. Until then it counts as awaiting a ruling
+  (status says `finding_rejection_awaiting_ruling`, and the receipt reads
+  `unresolved_findings_remain`); run `check` once, do not acknowledge it or repair what you
+  rejected. If no review can rule (the route did not request one), the rejection is disclosed
+  instead.
+- **A limit a reviewer asks you to state.** When a challenge asks you to say plainly that something
+  cannot be verified (a hidden evaluator, a private trace), that is not work. Answer once with
+  `acknowledged` and say what cannot be verified. It is then final, the receipt lists it under
+  "Verification limits", and the conclusion is at best `insufficient_coverage`; it never reads clean
+  and it never reads `unresolved_findings_remain` for that item. A decision line
+  `yoetz-verification-limit:<obligation id>` covering the obligation the challenge concerns does the
+  same.
+
+Before you ask for a receipt, `closure_readiness.predicted_receipt` names the conclusion it would
+carry and why. The receipt carries the same reasons (`conclusion_basis`) and opens its Summary with
+the same counters (findings to do, awaiting a ruling, unmet requirements, disclosed items, limits to
+disclose), then one sentence beginning "Why". The totals printed from the latest check are labelled
+with that check's frontier, because they describe the check, not the final state.
+
 Three more things the receipt discloses in their own sections, by id only:
+
 
 - **Assumptions and verification limits.** When you make a best-effort choice, or a check is
   inherently out of reach (a hidden verifier, a private trace), that is not a blocker: finish the

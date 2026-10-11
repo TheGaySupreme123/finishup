@@ -692,7 +692,12 @@ async def test_status_distinguishes_open_and_resolved_declared_obligations() -> 
     resolved_item = cast(StatusCompactPageModel, resolved_status.page).items[0]
     assert resolved_item.declared_obligation_count == "1"
     assert resolved_item.open_obligation_count == "0"
-    assert resolved_status.closure_readiness.blocking_conditions == ()
+    # ADR-046: status lists the gaps the receipt would carry, so the digest-only evidence that
+    # resolved the obligation is declared here instead of surfacing only on the receipt.
+    assert resolved_status.closure_readiness.blocking_conditions == ("coverage_gaps_declared",)
+    assert "evidence_digest_subject_legacy_unknown" in (
+        resolved_status.closure_readiness.standing_limitations or ()
+    )
     await _assert_mcp_scope_projection(
         app,
         resolved_request,
@@ -701,7 +706,7 @@ async def test_status_distinguishes_open_and_resolved_declared_obligations() -> 
         declared="1",
         opened="0",
         reason=None,
-        blockers=(),
+        blockers=("coverage_gaps_declared",),
     )
 
 

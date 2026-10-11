@@ -14,6 +14,11 @@ from typing import Any, Final, Literal, Protocol, cast
 from pydantic import BaseModel
 
 from yoetz.application.check import CheckScope, run_deterministic_policies
+from yoetz.application.closure_basis import (
+    ClosureBasisUnavailable,
+    LoadedClosureBasis,
+    load_closure_basis,
+)
 from yoetz.application.coordination import CoordinationAdvice
 from yoetz.application.ledger_snapshot import projection_for_records
 from yoetz.application.projects import ProjectApplication, ProjectCommandError
@@ -36,18 +41,23 @@ from yoetz.domain.values import (
     repository_grant_continuation,
     review_input_continuation,
 )
+from yoetz.kernel.closure_class import FindingClosureClass, closure_counts, counted_findings
 from yoetz.kernel.closure_readiness import (
     GAP_CLASSIFICATION_VERSION,
     ClosureReadinessFacts,
+    ClosureReadinessSplit,
     derive_closure_readiness,
     live_lineage_blockers,
 )
+from yoetz.kernel.closure_verdict import rechecks_from_closures
 from yoetz.kernel.deterministic_checks import (
     DeterministicAssessment,
     build_deterministic_case,
     finding_basis_to_status_json,
 )
 from yoetz.kernel.fact_lineage import lineage_to_wire
+from yoetz.kernel.gap_effect import UNCLASSIFIED_GAP_PREFIX, GapEffectKind
+from yoetz.kernel.receipt_prediction import predict_receipt_conclusion
 from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.host_lineage import HostLineageRegistryPort
@@ -101,6 +111,7 @@ from yoetz.protocol.models import (
     StatusAdvicePageModel,
     StatusAssignmentFilterModel,
     StatusAssignmentPageModel,
+    StatusAwaitingRulingFindingModel,
     StatusBlockedObligationModel,
     StatusCandidateFindingItemModel,
     StatusCandidateFindingsFilterModel,
@@ -113,18 +124,23 @@ from yoetz.protocol.models import (
     StatusEvidenceFilterModel,
     StatusEvidencePageModel,
     StatusFilter,
+    StatusFindingCountsModel,
     StatusFindingsFilterModel,
     StatusFindingsPageModel,
     StatusHistoryFilterModel,
     StatusHistoryPageModel,
     StatusImportStatusModel,
     StatusLineagePageModel,
+    StatusObligationCountsModel,
     StatusObligationsFilterModel,
     StatusObligationsPageModel,
     StatusOperationFilterModel,
     StatusOperationPageModel,
     StatusPage,
+    StatusPredictedReasonModel,
+    StatusPredictedReceiptModel,
     StatusProjectPageModel,
+    StatusRecheckModel,
     StatusRequest,
     StatusResultsPageModel,
     StatusSemanticProgressModel,
@@ -1273,6 +1289,122 @@ def _check_cause_model(
     )
 
 
+_MAX_AWAITING_RULING_FINDINGS: Final = 8
+_CHECK_ABSENCE_CODES: Final = frozenset(
+    {"check_not_recorded", "check_not_applicable", "check_payload_unavailable"}
+)
+
+
+async def _closure_basis_or_none(
+    runtime: TaskRuntime, frontier: Frontier, request_id: str | None
+) -> LoadedClosureBasis | None:
+    """The receipt's own context at this frontier, or ``None`` when it cannot be read.
+
+    Status stays total: an unreadable case omits the predicted conclusion (never guesses one) and
+    leaves a bounded diagnostic. The fallback is visible, not silent.
+    """
+
+    try:
+        return await load_closure_basis(runtime, frontier)
+    except (ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError) as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component="application.status",
+            operation="status_closure_prediction_unavailable",
+            request_id=request_id,
+        )
+        return None
+
+
+def _closure_verdict_fields(
+    facts: ClosureReadinessFacts,
+    checklist: ClosureReadinessSplit,
+    loaded: LoadedClosureBasis | None,
+    *,
+    live_blockers: tuple[str, ...],
+    check_in_flight: bool,
+) -> dict[str, Any]:
+    """The wire form of the counters, the re-reads and the predicted receipt conclusion."""
+
+    fields: dict[str, Any] = {}
+    findings = facts.finding_closures
+    if findings is not None:
+        counts = closure_counts(findings, facts.obligation_closures)
+        fields["finding_counts"] = StatusFindingCountsModel(
+            to_do=str(counts.findings_to_do),
+            awaiting_ruling=str(counts.findings_awaiting_ruling),
+            unmet=str(counts.findings_unmet),
+            disclosed=str(counts.findings_disclosed),
+            to_disclose=str(counts.findings_to_disclose),
+            self_verify_eligible=str(counts.findings_self_verify_eligible),
+        )
+        fields["obligation_counts"] = StatusObligationCountsModel(
+            open=str(counts.obligations_open),
+            acknowledged=str(counts.obligations_acknowledged),
+            disclosed=str(counts.obligations_disclosed),
+        )
+        awaiting = sorted(
+            (
+                item
+                for item in counted_findings(findings).values()
+                if item.closure_class is FindingClosureClass.AWAITING_RULING
+            ),
+            key=lambda item: str(item.finding_id).encode(),
+        )[:_MAX_AWAITING_RULING_FINDINGS]
+        if awaiting:
+            fields["awaiting_ruling_findings"] = tuple(
+                StatusAwaitingRulingFindingModel.model_validate(
+                    {
+                        "finding_id": str(item.finding_id),
+                        "since_frontier": str(item.since_frontier or 0),
+                    }
+                )
+                for item in awaiting
+            )
+        fields["rechecks"] = tuple(
+            StatusRecheckModel.model_validate(
+                {
+                    "kind": item.kind,
+                    "key": item.key,
+                    "subjects": item.subjects,
+                    "rule": item.rule,
+                    "since_frontier": str(item.since_frontier),
+                }
+            )
+            for item in rechecks_from_closures(
+                facts.obligation_closures,
+                facts,
+                acknowledged_count=checklist.acknowledged_not_done_count,
+            )
+        )
+    if loaded is not None:
+        basis = replace(loaded.basis, live_blockers=live_blockers, check_in_flight=check_in_flight)
+        prediction = predict_receipt_conclusion(basis)
+        fields["predicted_receipt"] = StatusPredictedReceiptModel(
+            conclusion=prediction.conclusion.value,
+            reasons=tuple(
+                StatusPredictedReasonModel.model_validate(
+                    {
+                        "code": reason.code,
+                        "rule": reason.rule,
+                        "count": str(reason.count),
+                        "refs": reason.refs,
+                        **(
+                            {}
+                            if reason.since_frontier is None
+                            else {"since_frontier": str(reason.since_frontier)}
+                        ),
+                    }
+                )
+                for reason in prediction.reasons
+            ),
+            reason_total=str(prediction.reason_total),
+            basis_frontier=str(prediction.basis_frontier.sequence),
+            provisional=prediction.provisional,
+        )
+    return fields
+
+
 def _readiness_unknown() -> StatusClosureReadinessModel:
     # Unknown is never "nothing to do": the one checklist entry is to read status again once the
     # projection can be read.
@@ -1382,6 +1514,25 @@ async def _closure_readiness(
         # Recorded gaps (the ones a receipt folds) are classified; live lineage tokens that no
         # recorded evaluation carries yet cannot be promised as receipt disclosures (#913).
         gap_markers = tuple(page.gaps)
+        loaded = await _closure_basis_or_none(runtime, frontier, request_id)
+        if loaded is not None:
+            # The receipt folds gaps status does not read off the compact row (a retained finding's
+            # coverage, case-derived codes): list them too, so a receipt that will bound on one never
+            # sits beside a status that reads clean (ADR-046).
+            gap_markers = tuple(
+                sorted(
+                    set(gap_markers)
+                    | {
+                        gap.code
+                        for gap in loaded.basis.gaps
+                        if gap.kind is not GapEffectKind.HISTORICAL
+                        and not gap.code.startswith(UNCLASSIFIED_GAP_PREFIX)
+                        # Readiness lists the check's absence from its own facts, never as a gap.
+                        and gap.code not in _CHECK_ABSENCE_CODES
+                    },
+                    key=str.encode,
+                )
+            )
         live_blockers = live_lineage_blockers(lineage_gaps, gap_markers)
         declared_gaps = bool(gap_markers or lineage_gaps)
         facts = page.readiness_facts
@@ -1434,6 +1585,15 @@ async def _closure_readiness(
             FactLineageModel.model_validate(lineage_to_wire(item))
             for item in facts.fact_lineage[:64]
         )
+    optional_fields.update(
+        _closure_verdict_fields(
+            facts,
+            checklist,
+            loaded,
+            live_blockers=live_blockers,
+            check_in_flight=check_in_flight,
+        )
+    )
     return StatusClosureReadinessModel(
         declared_obligation_count=str(declared_obligations),
         no_obligations_reason=no_obligations_reason,

@@ -39,6 +39,7 @@ from yoetz.domain.events import (
     ResultOutcome,
 )
 from yoetz.domain.observation import ObservationEnvelope
+from yoetz.domain.shell_writes import shell_write_scope
 from yoetz.domain.values import JsonObject, event_id, evidence_id, obligation_id
 from yoetz.kernel.delivered_set import DeliverableSnapshot, emptied_declared_items
 from yoetz.kernel.reducers import replay
@@ -383,6 +384,30 @@ def test_c2f_a_shell_write_to_notes_counts_only_when_notes_are_declared_output()
     declared.passes("pytest -q")
     declared.run("echo x > NOTES.md", ResultOutcome.SUCCESS, exit_status=0, write_scope="notes")
     assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(declared)
+
+
+def test_c2g_a_command_writing_notes_and_a_declared_receipt_keeps_counting() -> None:
+    """Shell-write review (#1028): ``: > NOTES.md; : > yoetz_receipt.md`` once earned only
+    ``notes``, which the task's declared ``yoetz_receipt.md`` could not override; the receipt
+    write was exempt and the verification stayed fresh. A command that writes two non-counting
+    classes now counts, as a mixed edit-tool call does."""
+
+    command = ": > NOTES.md; : > yoetz_receipt.md"
+    scope = shell_write_scope(command, workspace="/app", inside=lambda p: p.startswith("/app"))
+    assert scope == "workspace"
+    declared = _ledger(_out("/app/yoetz_receipt.md"))
+    declared.passes("pytest -q")
+    declared.run(command, ResultOutcome.SUCCESS, exit_status=0, write_scope=scope)
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(declared)
+    # One class alone stays non-counting unless its own declared output overrides it.
+    alone = shell_write_scope(
+        ": > yoetz_receipt.md", workspace="/app", inside=lambda p: p.startswith("/app")
+    )
+    assert alone == "yoetz_owned"
+    plain = _ledger()
+    plain.passes("pytest -q")
+    plain.run(": > yoetz_receipt.md", ResultOutcome.SUCCESS, exit_status=0, write_scope=alone)
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(plain)
 
 
 def test_c3c_a_bare_run_of_the_canonical_form_has_a_known_outcome() -> None:

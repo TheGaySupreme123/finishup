@@ -1717,6 +1717,7 @@ class RespondRequestModel(PublicRequestModel):
         "duplicate_of",
         "provenance_disputed",
         "rejected",
+        "reopened",
         "self_verified",
         "waived",
     ]
@@ -1780,6 +1781,7 @@ class StatusFindingsFilterModel(_ClosedModel):
             "none",
             "provenance_disputed",
             "rejected",
+            "reopened",
             "self_verified",
             "waived",
         ]
@@ -2130,6 +2132,7 @@ class ClosureSelectionModel(_ClosedModel):
             "duplicate_of",
             "provenance_disputed",
             "rejected",
+            "reopened",
             "self_verified",
             "waived",
         ]
@@ -3443,23 +3446,141 @@ class CheckAwaitingHumanModel(_ClosedModel):
         return self
 
 
+# tb4n3 RC-3 (issue #1026, ADR-046): the one closure verdict. Closed vocabularies mirror
+# ``kernel.closure_class`` and ``kernel.receipt_prediction``; a conformance test asserts equality.
+FindingClosureClassLiteral = Literal[
+    "agent_work", "awaiting_ruling", "settled_unmet", "settled_disclosed", "resolved"
+]
+ObligationClosureClassLiteral = Literal[
+    "agent_work", "settled_unmet", "settled_disclosed", "resolved"
+]
+FindingClosureBasisLiteral = Literal[
+    "open_unanswered",
+    "open_answered",
+    "reopened",
+    "limitation_requested",
+    "rejected_awaiting_ruling",
+    "rejected_review_unavailable",
+    "acknowledged_not_done_requirement",
+    "acknowledged_not_done_bookkeeping",
+    "self_verified",
+    "disputed_after_rebuttal",
+    "rejection_accepted",
+    "limitation_disclosed",
+    "absence_proved",
+    "absence_proved_after_acknowledged_not_done",
+    "absence_proved_after_self_verified",
+]
+ObligationClosureBasisLiteral = Literal[
+    "open",
+    "blocker_claimed",
+    "resolved_deliverable_emptied",
+    "acknowledged_not_done",
+    "blocker_confirmed",
+    "externally_evaluated",
+    "resolved",
+]
+FindingNextActionLiteral = Literal[
+    "repair",
+    "recheck",
+    "reject",
+    "acknowledge",
+    "acknowledge_not_done",
+    "self_verify",
+    "reopen",
+    "none",
+]
+ReceiptConclusionLiteral = Literal[
+    "unresolved_findings_remain",
+    "insufficient_coverage",
+    "no_unresolved_deterministic_findings",
+]
+PredictionReasonCodeLiteral = Literal[
+    "completion_scope_gap",
+    "findings_to_do",
+    "findings_awaiting_ruling",
+    "findings_unmet",
+    "child_findings_actionable",
+    "limitations_to_disclose",
+    "findings_disclosed",
+    "obligations_open",
+    "obligations_acknowledged",
+    "obligations_disclosed",
+    "lineage_blocks",
+    "no_applicable_check",
+    "check_suppressed_findings",
+    "check_verdict_insufficient",
+    "policy_execution_incomplete",
+    "live_gap_bounds",
+]
+# A prediction reason cites at most three findings, obligations or gap codes.
+PredictionRefWire = Annotated[
+    str,
+    Field(
+        max_length=128,
+        pattern=(
+            r"^(?:(?:fnd|obl)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+            r"|[a-z][a-z0-9_]{0,127})$"
+        ),
+    ),
+]
+RecheckKeyWire = Annotated[
+    str, Field(max_length=160, pattern=r"^(?:accept|ack|blocker|premise):[A-Za-z0-9_.:?-]{1,140}$")
+]
+
+
 class CheckChecklistItemModel(_ClosedModel):
+    # ADR-046: who owes the next move and why. Optional on the unreleased 1.4.0 wire.
+    optional_non_null_fields = frozenset({"closure_class", "closure_basis"})
+
     finding_id: FindingIdWire
     todo_state: FindingTodoStateLiteral
     review_rounds: CanonicalUInt64Wire
+    closure_class: FindingClosureClassLiteral | None = None
+    closure_basis: FindingClosureBasisLiteral | None = None
+
+    @model_validator(mode="after")
+    def _validate_item_closure(self) -> CheckChecklistItemModel:
+        if (self.closure_class is None) != (self.closure_basis is None):
+            raise ValueError("checklist_item_closure_partial")
+        return self
 
 
 class CheckChecklistCountsModel(_ClosedModel):
-    # Issue #1020: present only when non-zero.
-    optional_non_null_fields = frozenset({"disputed_after_rebuttal"})
+    # Issue #1020: present only when non-zero. ADR-046: the five closure counters are present
+    # together or not at all (an earlier build omits them); ``to_do`` includes ``awaiting_ruling``.
+    optional_non_null_fields = frozenset(
+        {
+            "disputed_after_rebuttal",
+            "to_do",
+            "awaiting_ruling",
+            "unmet",
+            "disclosed",
+            "to_disclose",
+        }
+    )
 
     acknowledged_not_done: CanonicalUInt64Wire
+    awaiting_ruling: CanonicalUInt64Wire | None = None
+    disclosed: CanonicalUInt64Wire | None = None
     disputed_after_rebuttal: CanonicalUInt64Wire | None = None
+    to_disclose: CanonicalUInt64Wire | None = None
+    to_do: CanonicalUInt64Wire | None = None
+    unmet: CanonicalUInt64Wire | None = None
     open: CanonicalUInt64Wire
     open_at_budget: CanonicalUInt64Wire
     rejection_accepted: CanonicalUInt64Wire
     self_verified: CanonicalUInt64Wire
     verified_resolved: CanonicalUInt64Wire
+
+    @model_validator(mode="after")
+    def _validate_closure_counts(self) -> CheckChecklistCountsModel:
+        group = (self.to_do, self.awaiting_ruling, self.unmet, self.disclosed, self.to_disclose)
+        if any(value is None for value in group) and any(value is not None for value in group):
+            raise ValueError("checklist_closure_counts_partial")
+        if self.to_do is not None and int(cast(str, self.awaiting_ruling)) > int(self.to_do):
+            raise ValueError("checklist_closure_counts_invalid")
+        return self
 
 
 class CheckFindingChecklistModel(_ClosedModel):
@@ -3468,7 +3589,7 @@ class CheckFindingChecklistModel(_ClosedModel):
     attempt_budget: CanonicalPositiveUInt64Wire
     counts: CheckChecklistCountsModel
     items: tuple[CheckChecklistItemModel, ...]
-    next: Literal["decide_at_budget", "request_receipt", "work_open_findings"]
+    next: Literal["decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"]
 
     @model_validator(mode="after")
     def _validate_checklist(self) -> CheckFindingChecklistModel:
@@ -3485,20 +3606,30 @@ class CheckOverallNextModel(_ClosedModel):
     action: Literal[
         "supply_missing_input",
         "work_open_findings",
+        "request_ruling",
         "review_recorded_work",
         "request_receipt",
     ]
     target_refs: tuple[SubjectIdWire, ...] = Field(max_length=64)
     acknowledged_incomplete_endpoint: Literal["receipt"] | None = None
+    # ADR-046: the receipt conclusion a request now would carry, from the receipt's own function.
+    predicted_conclusion: ReceiptConclusionLiteral | None = None
+
+    optional_non_null_fields = frozenset({"predicted_conclusion"})
 
     @model_validator(mode="after")
     def _validate_overall_next(self) -> CheckOverallNextModel:
         _require_unique(self.target_refs, limit=64)
-        if self.action in {"supply_missing_input", "work_open_findings", "review_recorded_work"}:
+        if self.action in {
+            "supply_missing_input",
+            "work_open_findings",
+            "request_ruling",
+            "review_recorded_work",
+        }:
             if self.status != "action_required":
                 raise ValueError("check_overall_next_action_invalid")
             if (
-                self.action in {"work_open_findings", "review_recorded_work"}
+                self.action in {"work_open_findings", "request_ruling", "review_recorded_work"}
                 and not self.target_refs
             ):
                 raise ValueError("check_overall_next_targets_invalid")
@@ -3838,6 +3969,7 @@ class RespondResponseModel(_ClosedModel):
         "duplicate_of",
         "provenance_disputed",
         "rejected",
+        "reopened",
         "self_verified",
         "waived",
     ]
@@ -3868,6 +4000,7 @@ class RespondResponseModel(_ClosedModel):
             "acknowledged_not_done",
             "provenance_disputed",
             "rejected",
+            "reopened",
             "self_verified",
         }:
             if (
@@ -3894,7 +4027,30 @@ class RespondVersionSliceModel(_ClosedModel):
         return self
 
 
+class RespondClosureAfterModel(_ClosedModel):
+    """Where the finding stands once this answer is recorded (tb4n3 RC-7, issue #1030).
+
+    ``todo_state`` is the finding's shared to-do state after the answer; ``limitation`` is set
+    only for a reviewer's limitation request (owner decision Q4): ``limitation_requested`` until
+    the agent discloses it, ``limitation_disclosed`` once one acknowledgement did.
+    """
+
+    optional_non_null_fields = frozenset({"limitation"})
+
+    todo_state: Literal[
+        "acknowledged_not_done",
+        "disputed_after_rebuttal",
+        "open",
+        "rejection_accepted",
+        "self_verified",
+        "verified_resolved",
+    ]
+    limitation: Literal["limitation_requested", "limitation_disclosed"] | None = None
+
+
 class RespondSuccessModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"closure_after"})
+
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
     request_id: RequestIdWire
@@ -3910,6 +4066,7 @@ class RespondSuccessModel(_ClosedModel):
     warning_codes: tuple[Literal["waiver_expired_at_recording"], ...]
     versions: RespondVersionSliceModel
     privacy_projection: PrivacyProjectionModel
+    closure_after: RespondClosureAfterModel | None = None
 
     @model_validator(mode="after")
     def _validate_respond_success(self) -> RespondSuccessModel:
@@ -4252,7 +4409,16 @@ FindingTodoStateLiteral = Literal[
 class StatusFindingItemModel(_ClosedModel):
     # Issue #905 to-do facts: present on every current row, absent only on older recordings.
     optional_non_null_fields = frozenset(
-        {"challenge", "todo_state", "review_rounds", "finding_frontier", "duplicate_of_finding_id"}
+        {
+            "challenge",
+            "todo_state",
+            "review_rounds",
+            "finding_frontier",
+            "duplicate_of_finding_id",
+            "closure_class",
+            "closure_basis",
+            "next_actions",
+        }
     )
 
     finding_id: FindingIdWire
@@ -4274,6 +4440,7 @@ class StatusFindingItemModel(_ClosedModel):
         "none",
         "provenance_disputed",
         "rejected",
+        "reopened",
         "self_verified",
         "waived",
     ]
@@ -4293,9 +4460,21 @@ class StatusFindingItemModel(_ClosedModel):
     # ``duplicate_of`` link holds; ``todo_state`` is then derived from that finding. A
     # ``duplicate_of`` row without it is a link a later check broke: it needs its own answer.
     duplicate_of_finding_id: FindingIdWire | None = None
+    # tb4n3 RC-3 (ADR-046): who owes the next move on this finding and why, the receipt effect it
+    # has, and the closed set of answers that would move it. Absent on non-work kinds and on an
+    # earlier 0.3 build. ``todo_state`` keeps its wire values.
+    closure_class: FindingClosureClassLiteral | None = None
+    closure_basis: FindingClosureBasisLiteral | None = None
+    next_actions: tuple[FindingNextActionLiteral, ...] | None = None
 
     @model_validator(mode="after")
     def _validate_finding_item(self) -> StatusFindingItemModel:
+        if (self.closure_class is None) != (self.closure_basis is None) or (
+            self.next_actions is not None and self.closure_class is None
+        ):
+            raise ValueError("finding_closure_partial")
+        if self.next_actions is not None:
+            _require_unique(self.next_actions, limit=8)
         if not self.subject_refs:
             raise ValueError("finding_subject_refs_empty")
         _require_unique(self.subject_refs, limit=64)
@@ -4312,20 +4491,21 @@ class StatusFindingItemModel(_ClosedModel):
             or self.waiver_expiry is not None
         ):
             raise ValueError("provenance_disputed_finding_state_invalid")
+        # tb4n3 RC-7 (#1030): ``acknowledged_not_done`` and ``self_verified`` are the agent's last
+        # word until a later qualifying check proves the issue absent, so such a row may read
+        # ``resolved``; ``reopened`` takes a not-done answer back.
         if self.disposition == "acknowledged_not_done" and (
-            self.reason is None
-            or self.resolved
-            or self.waiver_scope is not None
-            or self.waiver_expiry is not None
+            self.reason is None or self.waiver_scope is not None or self.waiver_expiry is not None
         ):
             raise ValueError("acknowledged_not_done_finding_state_invalid")
         if self.disposition == "self_verified" and (
-            self.reason is None
-            or self.resolved
-            or self.waiver_scope is not None
-            or self.waiver_expiry is not None
+            self.reason is None or self.waiver_scope is not None or self.waiver_expiry is not None
         ):
             raise ValueError("self_verified_finding_state_invalid")
+        if self.disposition == "reopened" and (
+            self.reason is None or self.waiver_scope is not None or self.waiver_expiry is not None
+        ):
+            raise ValueError("reopened_finding_state_invalid")
         if self.duplicate_of_finding_id is not None and (
             self.disposition != "duplicate_of" or self.duplicate_of_finding_id == self.finding_id
         ):
@@ -4523,6 +4703,96 @@ class StatusCredentialHeuristicModel(_ClosedModel):
     machine_default: Literal["disabled", "enforced", "unknown"]
 
 
+class StatusPredictedReasonModel(_ClosedModel):
+    """One rule that fired in the receipt prediction, with the lineage a reader needs."""
+
+    optional_non_null_fields = frozenset({"since_frontier"})
+
+    code: PredictionReasonCodeLiteral
+    rule: Literal["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"]
+    count: CanonicalPositiveUInt64Wire
+    refs: tuple[PredictionRefWire, ...]
+    since_frontier: CanonicalUInt64Wire | None = None
+
+    @model_validator(mode="after")
+    def _validate_reason(self) -> StatusPredictedReasonModel:
+        _require_unique(self.refs, limit=3)
+        return self
+
+
+class StatusPredictedReceiptModel(_ClosedModel):
+    """The conclusion a receipt requested at this frontier would carry, and why (ADR-046).
+
+    Computed by the receipt's own conclusion function over the receipt's own context, so it is
+    the label ``receipt`` returns for the same frontier (``provisional`` while a check is in flight
+    or a live dependency fact is not yet recorded).
+    """
+
+    conclusion: ReceiptConclusionLiteral
+    reasons: tuple[StatusPredictedReasonModel, ...]
+    reason_total: CanonicalUInt64Wire
+    basis_frontier: CanonicalUInt64Wire
+    provisional: bool
+
+    @model_validator(mode="after")
+    def _validate_prediction(self) -> StatusPredictedReceiptModel:
+        if len(self.reasons) > 8 or len(self.reasons) > int(self.reason_total):
+            raise ValueError("predicted_receipt_reasons_invalid")
+        if (self.conclusion == "no_unresolved_deterministic_findings") != (
+            int(self.reason_total) == 0
+        ):
+            raise ValueError("predicted_receipt_conclusion_mismatch")
+        return self
+
+
+class StatusFindingCountsModel(_ClosedModel):
+    """The finding counters every surface prints (ADR-046); ``to_do`` includes ``awaiting_ruling``."""
+
+    to_do: CanonicalUInt64Wire
+    awaiting_ruling: CanonicalUInt64Wire
+    unmet: CanonicalUInt64Wire
+    disclosed: CanonicalUInt64Wire
+    to_disclose: CanonicalUInt64Wire
+    self_verify_eligible: CanonicalUInt64Wire
+
+    @model_validator(mode="after")
+    def _validate_counts(self) -> StatusFindingCountsModel:
+        if int(self.awaiting_ruling) > int(self.to_do) or int(self.self_verify_eligible) > int(
+            self.to_do
+        ):
+            raise ValueError("finding_counts_invalid")
+        return self
+
+
+class StatusObligationCountsModel(_ClosedModel):
+    open: CanonicalUInt64Wire
+    acknowledged: CanonicalUInt64Wire
+    disclosed: CanonicalUInt64Wire
+
+
+class StatusRecheckModel(_ClosedModel):
+    """A once-per-frontier re-read the Stop gate may ask for (RC-8); delivery memory is the gate's."""
+
+    kind: Literal["acceptance", "acknowledgement", "blocker", "premise"]
+    key: RecheckKeyWire
+    subjects: tuple[SubjectIdWire, ...]
+    rule: CodeWire
+    since_frontier: CanonicalUInt64Wire
+
+    @model_validator(mode="after")
+    def _validate_recheck(self) -> StatusRecheckModel:
+        _require_unique(self.subjects, limit=8)
+        return self
+
+
+class StatusAwaitingRulingFindingModel(_ClosedModel):
+    """A finding the agent rejected with a reason that no reviewer ruling has answered yet."""
+
+    finding_id: FindingIdWire
+    # The frontier of the agent's standing rejection: the answer the ruling is owed to.
+    since_frontier: CanonicalUInt64Wire
+
+
 class StatusClosureReadinessModel(_ClosedModel):
     """What currently bounds a completion conclusion, before a check or receipt is spent.
 
@@ -4588,6 +4858,17 @@ class StatusClosureReadinessModel(_ClosedModel):
     # work) or the bounding standing ``check_current_as_of_earlier_frontier``. Optional on the
     # unreleased 1.4.0 wire: absent when neither is listed, and from an earlier 0.3 build.
     check_cause: StatusCheckCauseModel | None = None
+    # tb4n3 RC-3 (ADR-046): the receipt conclusion this frontier would carry and why, the finding
+    # and obligation counters, and the once-per-frontier re-reads. Optional on the unreleased 1.4.0
+    # wire: absent from an earlier 0.3 build and whenever the closure basis could not be read
+    # (never guessed); ``receipt_blocking_finding_count`` keeps its wire meaning (to do + unmet).
+    predicted_receipt: StatusPredictedReceiptModel | None = None
+    finding_counts: StatusFindingCountsModel | None = None
+    obligation_counts: StatusObligationCountsModel | None = None
+    rechecks: tuple[StatusRecheckModel, ...] | None = None
+    # The findings counted in ``finding_counts.awaiting_ruling`` (at most eight, ordered by id),
+    # so the Stop gate and the status text name them and the frontier of the rejection.
+    awaiting_ruling_findings: tuple[StatusAwaitingRulingFindingModel, ...] | None = None
     # ADR-045: where each derived fact the checklist lists came from (rule, obligation item,
     # observing check and frontier, prior state, observed runs). Optional on the unreleased 1.4.0
     # wire: an earlier 0.3 build omits it, and absence never means the facts have no source.
@@ -4596,6 +4877,11 @@ class StatusClosureReadinessModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
             "check_cause",
+            "predicted_receipt",
+            "finding_counts",
+            "obligation_counts",
+            "rechecks",
+            "awaiting_ruling_findings",
             "acknowledged_obligation_count",
             "fact_lineage",
             "state",
@@ -4647,6 +4933,17 @@ class StatusClosureReadinessModel(_ClosedModel):
             raise ValueError("closure_readiness_unknown_reason")
         if unknown and set(self.blocking_conditions) != {"readiness_unknown"}:
             raise ValueError("closure_readiness_unknown_not_exclusive")
+        if unknown and any(
+            value is not None
+            for value in (
+                self.predicted_receipt,
+                self.finding_counts,
+                self.obligation_counts,
+                self.rechecks,
+                self.awaiting_ruling_findings,
+            )
+        ):
+            raise ValueError("closure_readiness_unknown_verdict")
         if not unknown:
             declared = int(cast(str, self.declared_obligation_count))
             opened = int(cast(str, self.open_obligation_count))
@@ -4750,6 +5047,7 @@ class StatusClosureReadinessModel(_ClosedModel):
             if (
                 "obligation_blocked_outside_agent_control" not in standing
                 and "obligation_blocker_unconfirmed" not in actionable
+                and "verification_limit_disclosed" not in standing
                 and not acknowledged_obligations
             ) or (
                 blocked_rows is not None
@@ -4775,11 +5073,35 @@ class StatusClosureReadinessModel(_ClosedModel):
         if receipt_condition in actionable:
             if receipt_condition not in self.blocking_conditions:
                 raise ValueError("closure_readiness_actionable_condition_mismatch")
-        elif receipt_condition in self.blocking_conditions and not any(
-            item.startswith("fnd_") for item in acknowledged_ids
+        elif (
+            receipt_condition in self.blocking_conditions
+            and "finding_rejection_awaiting_ruling" not in actionable
+            and not any(item.startswith("fnd_") for item in acknowledged_ids)
         ):
-            # Only an acknowledgement moves a receipt-blocking finding off the agent's list.
+            # Only an acknowledgement moves a receipt-blocking finding off the agent's list, or
+            # a rejection that now awaits a reviewer ruling (its own token, ADR-046).
             raise ValueError("closure_readiness_receipt_acknowledgement_mismatch")
+        if self.finding_counts is not None:
+            counts = self.finding_counts
+            if self.receipt_blocking_finding_count is not None and int(counts.to_do) + int(
+                counts.unmet
+            ) != int(self.receipt_blocking_finding_count):
+                raise ValueError("closure_readiness_finding_counts_mismatch")
+            if (int(counts.awaiting_ruling) > 0) != (
+                "finding_rejection_awaiting_ruling" in actionable
+            ):
+                raise ValueError("closure_readiness_finding_counts_mismatch")
+        if self.rechecks is not None:
+            _require_unique(tuple(item.key for item in self.rechecks), limit=128)
+        if self.awaiting_ruling_findings is not None:
+            named = tuple(item.finding_id for item in self.awaiting_ruling_findings)
+            _require_unique(named, limit=8)
+            if named != tuple(sorted(named, key=str.encode)):
+                raise ValueError("closure_readiness_awaiting_ruling_findings_mismatch")
+            if self.finding_counts is None or len(named) != min(
+                int(self.finding_counts.awaiting_ruling), 8
+            ):
+                raise ValueError("closure_readiness_awaiting_ruling_findings_mismatch")
 
 
 class StatusRequestedItemModel(_ClosedModel):
@@ -4816,7 +5138,13 @@ class StatusCommandAttemptModel(_ClosedModel):
 
 class StatusObligationItemModel(_ClosedModel):
     optional_non_null_fields = frozenset(
-        {"acceptance_criteria", "acknowledged_not_done_reason", "in_current_plan"}
+        {
+            "acceptance_criteria",
+            "acknowledged_not_done_reason",
+            "in_current_plan",
+            "closure_class",
+            "closure_basis",
+        }
     )
 
     obligation_id: ObligationIdWire
@@ -4841,9 +5169,15 @@ class StatusObligationItemModel(_ClosedModel):
     # historical ones (#1027, the post-compaction recap's deliverables). Status-result 1.4.0
     # only; absent when the plan scope cannot be read, and never a claim that it is open.
     in_current_plan: bool | None = None
+    # tb4n3 RC-3 (ADR-046): the obligation's closure class and why. Absent when the plan scope
+    # cannot be read (the obligation is not effective) and on an earlier 0.3 build.
+    closure_class: ObligationClosureClassLiteral | None = None
+    closure_basis: ObligationClosureBasisLiteral | None = None
 
     @model_validator(mode="after")
     def _validate_obligation_item(self) -> StatusObligationItemModel:
+        if (self.closure_class is None) != (self.closure_basis is None):
+            raise ValueError("obligation_closure_partial")
         for values in (self.source_refs, self.assigned_actor_ids, self.evidence_refs):
             _require_unique(values, limit=64)
         if len(self.requested_items) > 64 or len(self.unattempted_items) > 64:
@@ -6107,14 +6441,23 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         "/finding_checklist/counts/rejection_accepted",
         "/finding_checklist/counts/self_verified",
         "/finding_checklist/counts/verified_resolved",
+        # ADR-046: the five closure counters travel together.
+        "/finding_checklist/counts/to_do",
+        "/finding_checklist/counts/awaiting_ruling",
+        "/finding_checklist/counts/unmet",
+        "/finding_checklist/counts/disclosed",
+        "/finding_checklist/counts/to_disclose",
         "/finding_checklist/items/*/finding_id",
         "/finding_checklist/items/*/review_rounds",
         "/finding_checklist/items/*/todo_state",
+        "/finding_checklist/items/*/closure_class",
+        "/finding_checklist/items/*/closure_basis",
         "/finding_checklist/next",
     )
     + (
         "/overall_next/action",
         "/overall_next/acknowledged_incomplete_endpoint",
+        "/overall_next/predicted_conclusion",
         "/overall_next/status",
         "/overall_next/target_refs/*",
     )
@@ -6243,6 +6586,8 @@ _RESPOND_STRUCTURAL_POINTERS: Final = (
         ),
     )
     + _prefix_leaf_patterns("/response/finding_frontier", FRONTIER_LEAVES)
+    # tb4n3 RC-7 (#1030): the finding's to-do state and limitation state after the answer.
+    + _prefix_leaf_patterns("/closure_after", ("limitation", "todo_state"))
     + _prefix_leaf_patterns("/response/evidence/*", ("reference_id",))
     + _prefix_leaf_patterns("/response/reason", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns(
@@ -6315,6 +6660,32 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "check_cause/material_class",
             "check_cause/rule",
             "check_cause/tool",
+            # ADR-046: closed tokens and counters only (the one closure verdict).
+            "finding_counts/to_do",
+            "finding_counts/awaiting_ruling",
+            "finding_counts/unmet",
+            "finding_counts/disclosed",
+            "finding_counts/to_disclose",
+            "finding_counts/self_verify_eligible",
+            "obligation_counts/open",
+            "obligation_counts/acknowledged",
+            "obligation_counts/disclosed",
+            "predicted_receipt/conclusion",
+            "predicted_receipt/reason_total",
+            "predicted_receipt/basis_frontier",
+            "predicted_receipt/provisional",
+            "predicted_receipt/reasons/*/code",
+            "predicted_receipt/reasons/*/rule",
+            "predicted_receipt/reasons/*/count",
+            "predicted_receipt/reasons/*/refs/*",
+            "predicted_receipt/reasons/*/since_frontier",
+            "rechecks/*/kind",
+            "rechecks/*/key",
+            "rechecks/*/subjects/*",
+            "rechecks/*/rule",
+            "rechecks/*/since_frontier",
+            "awaiting_ruling_findings/*/finding_id",
+            "awaiting_ruling_findings/*/since_frontier",
             # ADR-045: closed tokens, counts and service-minted ids only.
             *(f"fact_lineage/*/{leaf}" for leaf in _FACT_LINEAGE_LEAVES),
         ),
@@ -6499,6 +6870,10 @@ _STATUS_FINDINGS_STRUCTURAL_POINTERS: Final = (
             "todo_state",
             "waiver_expiry",
             "waiver_scope",
+            # ADR-046: closed tokens only (who owes the next move, why, and the answers offered).
+            "closure_class",
+            "closure_basis",
+            "next_actions/*",
         ),
     )
     + _prefix_leaf_patterns("/page/items/*/coverage", _COVERAGE_LEAVES)
@@ -6551,6 +6926,8 @@ _STATUS_OBLIGATIONS_STRUCTURAL_POINTERS: Final = (
             "requested_items/*/role",
             "source_refs/*",
             "in_current_plan",
+            "closure_class",
+            "closure_basis",
             "status",
             "unattempted_items/*/item_kind",
             "unattempted_items/*/role",
@@ -6785,6 +7162,14 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
             "schema_version",
             "self_verified_finding_ids/*",
             "disputed_after_rebuttal_finding_ids/*",
+            # ADR-046: ids, closed codes and counters only.
+            "limitation_disclosed_finding_ids/*",
+            "conclusion_basis/reason_total",
+            "conclusion_basis/reasons/*/code",
+            "conclusion_basis/reasons/*/rule",
+            "conclusion_basis/reasons/*/count",
+            "conclusion_basis/reasons/*/refs/*",
+            "conclusion_basis/reasons/*/since_frontier",
             "session_id",
             "suppressed_finding_count",
             "task_id",
@@ -6829,7 +7214,7 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
         ("disposition", "evidence_refs/*", "finding_id", "waiver_expiry", "waiver_scope"),
     )
     + _prefix_leaf_patterns("/document/responses/*/finding_frontier", FRONTIER_LEAVES)
-    + _prefix_leaf_patterns("/document/gaps/*", ("code", "status", "subject_refs/*"))
+    + _prefix_leaf_patterns("/document/gaps/*", ("code", "effect", "status", "subject_refs/*"))
     # Issue #1017: the frontier a later check cleared a historical gap at.
     + _prefix_leaf_patterns("/document/gaps/*/cleared_at_frontier", FRONTIER_LEAVES)
     + _prefix_leaf_patterns("/document/redactions/*", ("category", "count", "reason"))
@@ -7094,8 +7479,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1516
-    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, LF +34 (fact_lineage: check 17, status 17)
+        len(result) != 1564
+    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

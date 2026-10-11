@@ -287,6 +287,8 @@ def test_l6_counting_regime_lists_an_acknowledged_obligation_once(
 def _gate_view(**fields: object) -> object:
     from types import SimpleNamespace
 
+    from builders.gate_readiness import ack_recheck
+
     base: dict[str, object] = {
         "state": "ready_with_limitations",
         "agent_actionable": (),
@@ -296,6 +298,8 @@ def _gate_view(**fields: object) -> object:
         "open_obligation_count": "0",
         "receipt_blocking_finding_count": "0",
         "blocked_obligations": (),
+        # tb4n3 RC-8: the gate asks the re-checks status announces.
+        "rechecks": (ack_recheck(str(_OBLIGATION)),),
     }
     base.update(fields)
     return SimpleNamespace(**base)
@@ -331,10 +335,8 @@ def test_the_gate_challenges_each_acknowledged_obligation_once() -> None:
     # Asked once; also on an active Stop, like a blocker re-check.
     assert gate(_gate_view(), reasked_blockers=frozenset({f"ack:{_OBLIGATION}"})) is None
     assert gate(_gate_view(), active_stop=True) is not None
-    # A count beyond the listed ids (the list keeps 64, findings first) still asks once.
-    many = gate(_gate_view(acknowledged_not_done=(), acknowledged_obligation_count="70"))
-    assert many is not None
-    assert many.blocker_keys == ("ack-count:70",)
+    # An acknowledgement status does not announce is not asked (tb4n3 RC-8).
+    assert gate(_gate_view(rechecks=())) is None
 
 
 def test_an_ordinary_gate_never_offers_acknowledgement_as_an_exit() -> None:

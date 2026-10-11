@@ -21,6 +21,7 @@ from builders.codex_rollout import (
     response_item,
     session_meta,
 )
+from builders.shell_write_vectors import VECTORS, ShellWriteVector
 from yoetz.adapters.importers.codex_jsonl import CodexParsedRecord
 from yoetz.adapters.importers.codex_rollout_jsonl import ROLLOUT_MAX_LINE_BYTES
 from yoetz.adapters.integrations import codex_session_stream as stream_module
@@ -1326,22 +1327,7 @@ def test_completed_masking_compound_command_preserves_outer_zero_with_nested_gap
     assert ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value in envelope.gap_codes
 
 
-@pytest.mark.parametrize(
-    ("command", "scope"),
-    [
-        ("cat > solve.py <<'EOF'\nx\nEOF", "workspace"),
-        # The agent's notes and Yoetz's own material keep their closed non-counting scope, so a
-        # declared output of that kind can still override the exemption (ADR-045, Codex review).
-        ("echo x > NOTES.md", "notes"),
-        ("echo x > yoetz_receipt.md", "yoetz_owned"),
-        ("echo done", None),
-        # An absolute path says nothing without a workspace root; the hook claims those.
-        ("echo x > /app/solve.py", None),
-    ],
-)
-def test_a_rollout_command_that_writes_carries_the_hooks_closed_write_scope(
-    command: str, scope: str | None
-) -> None:
+def _rollout_command_envelope(command: str) -> ObservationEnvelope:
     record = CodexParsedRecord(
         1,
         0,
@@ -1363,7 +1349,7 @@ def test_a_rollout_command_that_writes_carries_the_hooks_closed_write_scope(
             }
         ),
     )
-    envelope = envelope_from_stream_record(
+    return envelope_from_stream_record(
         record,
         session_commitment="hmac-sha256:" + ("ae" * 32),
         cursor=ObservationCursor(
@@ -1374,7 +1360,43 @@ def test_a_rollout_command_that_writes_carries_the_hooks_closed_write_scope(
             mapping_version=STREAM_MAPPING_VERSION,
         ),
     )
-    assert envelope.structural_payload.get("write_scope") == scope
+
+
+@pytest.mark.parametrize(
+    ("command", "scope"),
+    [
+        ("cat > solve.py <<'EOF'\nx\nEOF", "workspace"),
+        # The agent's notes and Yoetz's own material keep their closed non-counting scope, so a
+        # declared output of that kind can still override the exemption (ADR-045, Codex review).
+        ("echo x > NOTES.md", "notes"),
+        ("echo x > yoetz_receipt.md", "yoetz_owned"),
+        ("echo done", None),
+        # An absolute path says nothing without a workspace root; the hook claims those.
+        ("echo x > /app/solve.py", None),
+        # Two non-counting classes in one command keep counting (one token cannot carry both).
+        (": > NOTES.md; : > yoetz_receipt.md", "workspace"),
+    ],
+)
+def test_a_rollout_command_that_writes_carries_the_hooks_closed_write_scope(
+    command: str, scope: str | None
+) -> None:
+    assert _rollout_command_envelope(command).structural_payload.get("write_scope") == scope
+
+
+@pytest.mark.parametrize("vector", VECTORS, ids=[f"{n:03d}" for n, _ in enumerate(VECTORS)])
+def test_a_rollout_command_earns_the_scope_the_shared_vectors_name(
+    vector: ShellWriteVector,
+) -> None:
+    """tb4n3 shell-write review (#1028): the exact commands the domain and hook tests read, here
+    as the Codex rollout stream sees them (no workspace root, so a relative write only), both bare
+    and inside the ``/bin/bash -lc`` argv Codex really records."""
+
+    from shlex import join
+
+    wrapped = join(["/bin/bash", "-lc", vector.command])
+    for command in (vector.command, wrapped):
+        envelope = _rollout_command_envelope(command)
+        assert envelope.structural_payload.get("write_scope") == vector.stream, command
 
 
 def test_completed_and_compound_command_keeps_proven_zero_without_nested_gap() -> None:

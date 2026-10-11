@@ -29,6 +29,7 @@ from yoetz.domain.receipts import (
 )
 from yoetz.domain.values import (
     Frontier,
+    action_id,
     claim_id,
     event_id,
     finding_id,
@@ -350,7 +351,7 @@ def test_templates_are_complete_exact_and_structural() -> None:
 def test_text_contract_digest_pins_every_rendered_wording_branch() -> None:
     corpus = deterministic_checks._text_contract_corpus()  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     assert canonical_digest(corpus) == DETERMINISTIC_TEXT_CONTRACT_DIGEST
-    assert len(corpus) == len(FindingKind) + 10
+    assert len(corpus) == len(FindingKind) + 11  # +1 tb4n3 N3-5: the act_ id link
     rendered = canonical_encode(corpus).decode("utf-8")
     assert "No obligation in the current plan cites the recorded task statement." in rendered
     assert "plan declares no obligation for the recorded task statement" in rendered
@@ -383,6 +384,33 @@ def test_text_contract_digest_tracks_template_wording(monkeypatch: pytest.Monkey
         deterministic_checks._text_contract_corpus()  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     )
     assert reworded_digest != DETERMINISTIC_TEXT_CONTRACT_DIGEST
+
+
+def test_action_without_result_detail_names_the_act_id_and_how_a_result_links() -> None:
+    """tb4n3 N3-5 (cargo D): the finding's subject is the event that recorded the action, but a
+    result links by the action's own act_ id; the agent tried a causal parent and was refused."""
+
+    recorded = event_id("evt_00000000-0000-4000-8000-000000000010")
+    action = action_id("act_00000000-0000-4000-8000-000000000011")
+    _summary, detail = render_deterministic_finding_text(
+        FindingKind.ACTION_WITHOUT_RESULT,
+        (recorded,),
+        observed_facts=(FindingFact("action_present", (action,)),),
+    )
+    assert f"The action to link is {action}" in detail
+    assert "result_recorded whose payload action_id is that act_ id" in detail
+    assert "a causal parent alone names the event but does not link the result" in detail
+    assert "outcome unknown" in detail
+    # Without the fact the template text is unchanged (no act_ id to name).
+    plain = render_deterministic_finding_text(FindingKind.ACTION_WITHOUT_RESULT, (recorded,))
+    assert "The action to link is" not in plain[1]
+    many = tuple(action_id(f"act_00000000-0000-4000-8000-0000000000{n:02d}") for n in range(20, 25))
+    _summary, detail = render_deterministic_finding_text(
+        FindingKind.ACTION_WITHOUT_RESULT,
+        (recorded,),
+        observed_facts=(FindingFact("action_present", many),),
+    )
+    assert "and 2 more" in detail
 
 
 def test_material_limitation_detail_names_the_safe_limiting_record() -> None:

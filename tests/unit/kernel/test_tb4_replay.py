@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from builders.gate_readiness import blocker_recheck
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
 from yoetz.application.check import CheckScope, run_deterministic_policies
 from yoetz.cli.closure_gate import BLOCKER_RECHECK_ITEM, closure_gate_from_readiness
@@ -240,11 +241,20 @@ def _stop_gate(
         facts,
         semantic_review_required=False,
     )
+    # tb4n3 RC-8: the gate asks the re-checks status announces. The derivation announces
+    # one blocker re-check per claimed blocker; a readiness that carries the list uses it.
+    announced = getattr(readiness, "rechecks", None)
+    if announced is None:
+        announced = tuple(
+            blocker_recheck(str(obligation), kind)
+            for obligation, kind, _event in facts.blocked_obligation_details
+        )
     view = SimpleNamespace(
         state=readiness.state,
         agent_actionable=readiness.agent_actionable,
         open_obligation_count=str(len(open_obligations)),
         receipt_blocking_finding_count=str(len(blocking_findings)),
+        rechecks=tuple(announced),
         blocked_obligations=tuple(
             SimpleNamespace(obligation_id=obligation, blocker_kind=kind, decision_event_id=event)
             for obligation, kind, event in facts.blocked_obligation_details

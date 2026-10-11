@@ -200,18 +200,23 @@ _REASONS: Final = frozenset(
         "hook_budget_exceeded",
         "hook_followup_deferred",
         # The Stop-time closure gate (#977): it continued the agent once, closure needed no
-        # action, it already fired at this frontier, the host loop guard was set, too little of
-        # the Stop budget was left for the status read, or the read failed.
+        # action, it already fired at this frontier, a Stop the gate had already continued this
+        # turn ended with nothing more to say (the normal end of a continued turn, renamed from
+        # ``closure_gate_loop_guard`` in tb4n3 RC-8: it is not a defect and guards no loop), too
+        # little of the Stop budget was left for the status read, or the read failed.
         "closure_gate_continued",
         "closure_gate_not_required",
         "closure_gate_repeat_suppressed",
-        "closure_gate_loop_guard",
+        "closure_gate_turn_end_after_continue",
         "closure_gate_budget_exhausted",
         "closure_gate_unavailable",
         # The delivered continuation also re-asked a recorded blocker once (#977), or its
         # once-per-frontier/once-per-blocker memory could not be written.
         "closure_gate_blocker_rechecked",
         "closure_gate_memory_unwritten",
+        # The delivered continuation also asked the acceptance re-read (A-12) readiness announced
+        # (tb4n3 RC-8): the count of extra Stop turns that re-read costs.
+        "closure_gate_acceptance_rechecked",
         # The Stop pass drained this task's hook rows to the current frontier before the
         # closure gate read status, or the bounded Stop drain left some pending (tb4n1 B4/C6).
         "stop_drain_complete",

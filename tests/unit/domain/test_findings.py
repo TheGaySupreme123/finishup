@@ -226,6 +226,7 @@ def test_nominal_public_enums_are_closed() -> None:
         "duplicate_of",
         "provenance_disputed",
         "rejected",
+        "reopened",
         "self_verified",
         "waived",
     }

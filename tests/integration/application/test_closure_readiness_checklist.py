@@ -376,7 +376,9 @@ async def test_bandit_b_reads_ready_with_limitations_and_keeps_its_verdict(
     assert "Closure: ready_with_limitations." in summary
     assert sentence in summary
     assert "host_outcome_unavailable" in summary
-    assert "check" not in summary.split("Closure:", 1)[1].lower().replace("checks", "")
+    # No check-standing lineage line is added to this state (ADR-046 adds the predicted
+    # conclusion, which names the latest check's verdict, so the word itself may appear).
+    assert "Why check_" not in summary
     # CLI and TUI (which renders the same lines) say the same thing.
     rendered = render_human_status(_wire(status)).splitlines()
     assert "Closure: ready_with_limitations" in rendered
