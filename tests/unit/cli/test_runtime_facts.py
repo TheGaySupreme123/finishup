@@ -271,13 +271,13 @@ def test_shell_redirect_scope(tmp_path: Path) -> None:
         _facts("Bash", {"command": "echo x | tee /opt/elsewhere/y"}, tmp_path)["write_scope"]
         == "outside_workspace"
     )
-    for harmless in (
-        "echo x > /dev/null",
-        "echo x 2>&1",
-        f"echo x > {tmp_path}/ok",
-        "echo x > relative/ok",
-    ):
+    for harmless in ("echo x > /dev/null", "echo x 2>&1"):
         assert "write_scope" not in _facts("Bash", {"command": harmless}, tmp_path), harmless
+    # ADR-045: a command that visibly writes the workspace is an edit, so it says so.
+    for workspace_write in (f"echo x > {tmp_path}/ok", "echo x > relative/ok"):
+        assert (
+            _facts("Bash", {"command": workspace_write}, tmp_path)["write_scope"] == "workspace"
+        ), workspace_write
 
 
 def test_effective_user_only_for_shell_tools(tmp_path: Path) -> None:

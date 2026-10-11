@@ -57,6 +57,7 @@ from yoetz.domain.observation_selection import (
     command_runner_class,
     compound_verification_gap_required,
 )
+from yoetz.domain.shell_writes import shell_write_scope
 from yoetz.domain.values import JsonObject, JsonValue, Timestamp, timestamp_from_datetime
 from yoetz.domain.write_scope import (
     NON_COUNTING_WRITE_SCOPES,
@@ -1226,6 +1227,15 @@ def structural_from_stream_record(
             runner = command_runner_class(command_payload)
             if runner is not None:
                 fields["runner_class"] = runner
+            raw_command = body.get("command")
+            if type(raw_command) is str and "write_scope" not in fields:
+                # ADR-045: the stream knows no workspace root, so it claims only a relative write
+                # (a working directory makes it certain); an absolute path is left to the hook.
+                scope = shell_write_scope(
+                    raw_command, workspace=None, inside=lambda _path: False, relative_only=True
+                )
+                if scope == "workspace":
+                    fields["write_scope"] = scope
                 if compound_verification_gap_required(command_payload):
                     # Preserve the host's outer result. The bounded gap records that a
                     # masking-capable composition does not expose each nested outcome (#968).

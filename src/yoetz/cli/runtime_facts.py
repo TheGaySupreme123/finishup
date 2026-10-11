@@ -51,6 +51,7 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import Final, cast
 
+from yoetz.domain.shell_writes import shell_write_scope
 from yoetz.domain.write_scope import classify_write_path, edit_write_scope, scratch_path
 from yoetz.protocol.canonical import JsonValue
 
@@ -445,6 +446,13 @@ def runtime_structural_facts(
         facts["install_target"] = target
     if workspace_locator is not None and _shell_writes_outside(command, inside, workspace_locator):
         facts["write_scope"] = "outside_workspace"
+    elif workspace_locator is not None:
+        # ADR-045: a command that visibly writes into the workspace is an edit, not a bare run.
+        scope = shell_write_scope(
+            command, workspace=workspace_locator, inside=inside, owned_roots=_owned_roots()
+        )
+        if scope is not None:
+            facts["write_scope"] = scope
     geteuid = getattr(os, "geteuid", None)
     if callable(geteuid):
         facts["effective_user"] = "root" if geteuid() == 0 else "non_root"

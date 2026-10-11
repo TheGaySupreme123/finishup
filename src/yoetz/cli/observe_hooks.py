@@ -95,7 +95,7 @@ from yoetz.cli.hook_timing import HookPassTiming, record_hook_pass_timing
 from yoetz.cli.runtime_facts import runtime_structural_facts
 from yoetz.domain.command_segments import (
     COMMAND_COMPOSITIONS,
-    MAX_SEGMENT_COMMITMENTS,
+    MAX_COMMAND_COMMITMENTS,
     command_segment_commitments,
 )
 from yoetz.domain.observation import (
@@ -856,7 +856,7 @@ def _supplied_segment_fields(payload: Mapping[str, JsonValue]) -> dict[str, Json
         return {}
     items = list(cast(list[JsonValue], segments))
     if (
-        not 1 <= len(items) <= MAX_SEGMENT_COMMITMENTS
+        not 1 <= len(items) <= MAX_COMMAND_COMMITMENTS
         or any(
             type(item) is not str or not _COMMAND_COMMITMENT_RE.fullmatch(item) for item in items
         )

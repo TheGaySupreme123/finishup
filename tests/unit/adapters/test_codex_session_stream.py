@@ -1318,7 +1318,9 @@ def test_completed_masking_compound_command_preserves_outer_zero_with_nested_gap
             mapping_version=STREAM_MAPPING_VERSION,
         ),
     )
-    assert envelope.structural_payload["runner_class"] == "compound"
+    assert (
+        envelope.structural_payload["runner_class"] == "test"
+    )  # ADR-045: classed by its strongest verification
     assert envelope.structural_payload["exit_status"] == 0
     assert envelope.structural_payload["result_status"] == "completed"
     assert ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value in envelope.gap_codes
@@ -1357,7 +1359,9 @@ def test_completed_and_compound_command_keeps_proven_zero_without_nested_gap() -
             mapping_version=STREAM_MAPPING_VERSION,
         ),
     )
-    assert envelope.structural_payload["runner_class"] == "compound"
+    assert (
+        envelope.structural_payload["runner_class"] == "test"
+    )  # ADR-045: classed by its strongest verification
     assert envelope.structural_payload["exit_status"] == 0
     assert ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value not in envelope.gap_codes
 
