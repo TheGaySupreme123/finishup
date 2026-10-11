@@ -152,18 +152,18 @@ check could cover it, and counting it would invalidate the check that produced i
 ends where a declared output is itself a packaged Yoetz tree (`.agents/...`): a write there may be
 the deliverable and keeps counting.
 
-When the suffix still bounds, readiness lists `check_current_as_of_earlier_frontier` as
-agent-actionable (one more check removes it) instead of "nothing further to do" beside a receipt
-it will bound, but only while a counted observation names the tool call it saw
-(`CheckStanding.recheck_clears`): the next check's own observation is an identified Yoetz call,
-so the condition cannot regenerate. A bounding record with no tool identity (Cursor's structural
-`afterMCPExecution` result of every call, an unpaired host result, a lineage manifest) is regenerated
-by every check on a host that observes that way, so readiness keeps it a standing disclosure and
-never turns it into an instruction that cannot be followed to the end; the receipt still discloses
-and bounds. It stays a standing disclosure when only responses followed. The gap table and its
-version are unchanged: the move is made by the `earlier_frontier_recheck_clears` readiness fact,
-like `check_not_applicable`. Content the host captured for a call (tool output, a workspace diff)
-is evidence recorded under that call's action and takes the action's class.
+Readiness keeps `check_current_as_of_earlier_frontier` a standing disclosure (the gap table and
+`gap_classification_version` are unchanged), including while a counted observation bounds the
+receipt. The tb4n2 B5 proposal to list it as agent work ("one more check removes it") was
+examined and not adopted: every variant of it can regenerate after the check it asks for, and an
+instruction an agent cannot complete is the worst outcome (steered wrong). Reproduced regenerators:
+Cursor's structural `afterMCPExecution` result of every call (including each check's own) carries
+no tool identity; an agent running the Yoetz CLI through its shell (`yoetz check ...`) records a
+named command after every check; a late-delivered observation lands after any check. The receipt
+still discloses and bounds, and the limitations text names the first bounding record; wave 2's
+`gap_effect` decides with the host facts. Content the host captured for a call (tool output, a
+workspace diff) is evidence recorded under that call's action and takes the action's class; the
+late output of an edit is `other` with rule `evidence_of_edit` (the edit is the superseding record).
 
 Provenance (owner lineage rule): the receipt gap cites the superseding or first counted record
 (`subject_refs`), and the limitations text names the record, its ledger sequence, the closed rule

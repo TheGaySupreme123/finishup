@@ -1,8 +1,8 @@
 """The Stop gate and the new readiness work items (tb4n3 RC-6, issue #1029).
 
-Readiness now lists ``check_current_as_of_earlier_frontier`` as work while unclassified
-observations bound the receipt, and ``check_not_applicable`` after an observed edit. Neither is a
-Stop-gate token: the gate must not become a new way to hold an agent that merely polled status.
+Readiness lists ``check_not_applicable`` after an observed edit. It is not a Stop-gate token
+(wave 2 decides that): the gate must not become a new way to hold an agent that merely polled
+status. The earlier-frontier code stays a standing limitation, so it never reaches the gate.
 A closing review that an observed edit re-armed (``closing_review_required``) is a gate token and
 keeps its existing text.
 """
@@ -10,8 +10,6 @@ keeps its existing text.
 from __future__ import annotations
 
 from types import SimpleNamespace
-
-import pytest
 
 from yoetz.cli.closure_gate import closure_gate_from_readiness
 
@@ -26,11 +24,10 @@ def _readiness(*actionable: str) -> SimpleNamespace:
     )
 
 
-@pytest.mark.parametrize("token", ("check_current_as_of_earlier_frontier", "check_not_applicable"))
-def test_the_new_work_items_alone_never_continue_the_agent(token: str) -> None:
+def test_a_superseded_check_alone_never_continues_the_agent() -> None:
     assert (
         closure_gate_from_readiness(
-            _readiness(token),
+            _readiness("check_not_applicable"),
             frontier_sequence="12",
             frontier_digest="sha256:x",
             observation_pending=False,

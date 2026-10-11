@@ -6801,11 +6801,7 @@ while a check holds the session frontier (read at the head through the ledger's
 `has_active_frozen_case`; an unanswerable probe counts as in flight), then `check_not_recorded` or
 `check_not_applicable` from the receipt applicability rule (an observed deliverable or workspace edit
 after the check counts; Yoetz's own calls, read-only reads and host bookkeeping do not,
-`kernel/later_material`, tb4n3 RC-6), then `check_current_as_of_earlier_frontier` while a counted
-observation after the check names the tool call it saw and bounds the receipt
-(`ClosureReadinessFacts.earlier_frontier_recheck_clears`; the gap's static class stays standing, so
-`gap_classification_version` is unchanged; a bounding record with no tool identity stays standing), then
-`closing_review_required` (issue
+`kernel/later_material`, tb4n3 RC-6), then `closing_review_required` (issue
 #976: AI-powered review is required on the route or completed on the task, and no completed
 final-phase review, or undeliverable review attempt, is current since the last material change),
 then every actionable gap code and
@@ -8294,9 +8290,10 @@ A receipt whose applicable check is followed only by responses to that check's o
 (issue #1021); any other counted later material keeps it bounding the conclusion. "Counted" excludes
 what `later_material_class` proves harmless (Yoetz's own calls, read-only reads, host bookkeeping,
 scratch or Yoetz-owned writes; ADR-040 section 7, tb4n3 RC-6). While the counted suffix bounds,
-`closure_readiness.agent_actionable` lists `check_current_as_of_earlier_frontier` (one more
-check removes it); `closure_readiness.check_cause` (optional) names the first record that
-superseded the check or that the bounding suffix rests on: `effect`, `event_id`,
+`check_current_as_of_earlier_frontier` stays a standing limitation in `closure_readiness` (not
+agent work: a recheck-instruction can regenerate, ADR-040 section 7); `closure_readiness.check_cause`
+(optional) names the first record that superseded the check (beside `check_not_applicable`) or that
+the bounding suffix rests on (beside the standing code): `effect`, `event_id`,
 `ledger_sequence`, `family`, `material_class`, `rule`, optional `tool`, `check_event_id`,
 `check_subject_frontier`.
 

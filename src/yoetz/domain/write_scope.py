@@ -132,17 +132,20 @@ def yoetz_artifact_name(path: str) -> bool:
 
 
 def yoetz_tree_overlap(path: str) -> bool:
-    """Whether a declared path lies in, or contains, a packaged Yoetz tree (pure).
+    """Whether a declared path lies in, or is an ancestor of, a packaged Yoetz tree (pure).
 
-    A declared deliverable there (a repository whose product is the Yoetz plugin) is the work
-    itself; a saved receipt is not. Any ``.agents`` path segment is treated as overlapping, so a
-    declared ``/app/.agents`` directory counts too.
+    A declared deliverable there (a repository whose product is the Yoetz plugin or skill) is the
+    work itself; a saved receipt is not. ``.agents/plugins/yoetz`` and ``.agents/skills/yoetz`` are
+    the trees; the bare ``.agents``, ``.agents/plugins`` and ``.agents/skills`` directories contain
+    them. A sibling such as ``.agents/skills/project-skill`` does not overlap.
     """
 
     if type(path) is not str or not path:
         return False
     padded = "/" + _normalize(path).lstrip("/") + "/"
-    return "/.agents/" in padded or any(f"/{tree}/" in padded for tree in _YOETZ_TREES)
+    if any(f"/{tree}/" in padded for tree in _YOETZ_TREES):
+        return True
+    return padded.endswith(("/.agents/", "/.agents/plugins/", "/.agents/skills/"))
 
 
 def scratch_overlap(path: str) -> bool:

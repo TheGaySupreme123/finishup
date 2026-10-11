@@ -71,19 +71,41 @@ def test_the_tool_is_optional_but_never_null() -> None:
         )
 
 
+def test_a_bounding_cause_sits_beside_the_standing_code() -> None:
+    model = StatusClosureReadinessModel.model_validate(
+        _readiness(
+            (),
+            state="ready_with_limitations",
+            standing_limitations=("check_current_as_of_earlier_frontier",),
+            check_cause=_cause(effect="bounds_conclusion", material_class="other"),
+        )
+    )
+    assert model.check_cause is not None and model.check_cause.effect == "bounds_conclusion"
+
+
 @pytest.mark.parametrize(
-    ("actionable", "cause"),
+    ("fields", "cause"),
     (
-        ((), _cause()),
-        (("check_not_applicable",), _cause(effect="bounds_conclusion")),
-        (("check_current_as_of_earlier_frontier",), _cause()),
+        # No listed token at all.
+        ({}, _cause()),
+        # A superseded cause needs check_not_applicable as WORK, not a standing code.
+        ({"standing_limitations": ("check_not_applicable",)}, _cause()),
+        # A bounding cause needs the standing disclosure, not agent work.
+        (
+            {"agent_actionable": ("check_current_as_of_earlier_frontier",)},
+            _cause(effect="bounds_conclusion"),
+        ),
+        ({}, _cause(effect="bounds_conclusion")),
     ),
 )
 def test_a_cause_without_the_token_it_explains_is_refused(
-    actionable: tuple[str, ...], cause: dict[str, Any]
+    fields: dict[str, Any], cause: dict[str, Any]
 ) -> None:
-    with pytest.raises(ValidationError, match="check_cause_mismatch"):
-        StatusClosureReadinessModel.model_validate(_readiness(actionable, check_cause=cause))
+    base = _readiness(fields.pop("agent_actionable", ()), **fields)
+    if not base["agent_actionable"] and base["state"] == "action_required":
+        base["state"] = "ready_with_limitations"
+    with pytest.raises(ValidationError):
+        StatusClosureReadinessModel.model_validate({**base, "check_cause": cause})
 
 
 @pytest.mark.parametrize(

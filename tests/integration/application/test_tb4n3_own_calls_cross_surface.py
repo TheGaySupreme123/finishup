@@ -351,12 +351,12 @@ async def test_an_unclassified_command_after_the_check_still_keeps_the_disclosur
     assert _CCAOEF in surfaces["capacity"]
     assert _NOT_APPLICABLE not in surfaces["capacity"]
     assert _CCAOEF in surfaces["compact"].coverage.known_gaps
-    # Readiness agrees with the receipt: the code bounds the conclusion and one more check removes
-    # it, so it is work (B4/B5), with the first unclassified record named (owner lineage rule).
+    # Readiness keeps the code a standing limitation (any recheck instruction derived from it can
+    # regenerate after the check it asks for: the Yoetz CLI run through a shell, Cursor's
+    # tool-identity-free results; ADR-040 section 7), and names the first record (owner lineage).
     readiness = surfaces["status"].closure_readiness
-    assert readiness.state == "action_required"
-    assert _CCAOEF in readiness.agent_actionable
-    assert _CCAOEF not in readiness.standing_limitations
+    assert _CCAOEF in readiness.standing_limitations
+    assert _CCAOEF not in readiness.agent_actionable
     cause = readiness.check_cause
     assert cause is not None
     assert (cause.effect, cause.material_class, cause.rule, cause.tool) == (
@@ -538,6 +538,7 @@ async def test_a_mixed_suffix_names_the_observation_that_bounds_not_the_response
     )
     surfaces = await _surfaces(app, runtime, started, appended.result_frontier, 6700)
     readiness = surfaces["status"].closure_readiness
+    assert _CCAOEF in readiness.standing_limitations
     cause = readiness.check_cause
     assert cause is not None and cause.effect == "bounds_conclusion"
     assert (cause.family, cause.material_class, cause.tool) == (
@@ -549,3 +550,26 @@ async def test_a_mixed_suffix_names_the_observation_that_bounds_not_the_response
     # The observation is cited first; the answer follows it.
     assert cause.event_id in gap["subject_refs"]
     assert len(gap["subject_refs"]) == 3  # the script's action, its result, the answer
+
+
+async def test_the_lineage_sentence_survives_the_status_text_budget() -> None:
+    """Codex review 2: the byte-bounded MCP text tries the short form before dropping the cause."""
+
+    app, runtime, _ = h._build_app(seed_offset=65)
+    started, checked = await _checked(app, runtime, "memory")
+    appended = await _append_observed(
+        app,
+        runtime,
+        started,
+        (_action(6800, ActionKind.EDIT, "apply_patch", "compound"), _result(6801, 6800)),
+        seed=6800,
+        expected_frontier=checked.result_frontier.sequence,
+    )
+    surfaces = await _surfaces(app, runtime, started, appended.result_frontier, 6900)
+    wire = surfaces["status"].as_json()
+    full = _check_cause_clause(wire, byte_budget=4096)
+    short = _check_cause_clause(wire, byte_budget=len(full) - 1)
+    assert "ledger record" in full and "rule observed_counting_edit" in full
+    assert short and len(short) < len(full)
+    assert "observed edit via apply_patch" in short and "frontier" in short
+    assert _check_cause_clause(wire, byte_budget=20) == ""

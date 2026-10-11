@@ -1466,8 +1466,9 @@ and `plugin-yoetz-yoetz:<tool>` are exact. `Write` is an edit that supersedes a 
 structural profile's `afterFileEdit` / `afterMCPExecution` post-only results (no tool identity),
 are `other`: they keep the `check_current_as_of_earlier_frontier` disclosure and never supersede. A
 record that names no tool (the structural profile's post-only result of every call, including each
-check's own) bounds the receipt but is not offered as work in `closure_readiness`: every check on
-that profile would regenerate it, so the receipt says so and status does not ask for a recheck.
+check's own) is `other` too, so on that profile every receipt carries and is bounded by the
+disclosure; status keeps it a standing limitation and never asks for a recheck, because every check
+would regenerate it.
 That is a known Cursor capability gap, shared with `edited_after_last_verification`.
 
 ### Bounded workflow recovery examples (#613)

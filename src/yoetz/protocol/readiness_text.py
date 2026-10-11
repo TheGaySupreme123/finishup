@@ -75,6 +75,7 @@ def check_cause_sentence(
     material_class: str,
     rule: str,
     tool: str | None = None,
+    compact: bool = False,
 ) -> str:
     """The owner-lineage sentence for ``check_not_applicable`` or a bounding earlier-frontier code.
 
@@ -85,9 +86,22 @@ def check_cause_sentence(
     frontier, not a file.
     """
 
+    via = "" if tool is None else f" via {tool}"
+    if compact:
+        # The short form for a byte-bounded text: no id, no rule, the same record and frontier.
+        record = f"ledger record {_count(ledger_sequence)}"
+        tested = f"frontier {_count(check_subject_frontier)}"
+        if effect == "superseded":
+            what = "observed edit" if material_class == "edit_or_write" else f"{family} record"
+            return f"Why check_not_applicable: {what}{via} ({record}) after the check at {tested}."
+        if effect == "bounds_conclusion":
+            return (
+                f"Why check_current_as_of_earlier_frontier: {family} record{via} ({record}) "
+                f"after the check at {tested} is unclassified."
+            )
+        raise ValueError("check_cause_effect_invalid")
     where = f"ledger record {_count(ledger_sequence)}, {event_id}"
     tested = f"subject frontier {_count(check_subject_frontier)}"
-    via = "" if tool is None else f" via {tool}"
     if effect == "superseded":
         what = (
             f"an observed edit{via}"
@@ -102,6 +116,7 @@ def check_cause_sentence(
         return (
             "Why check_current_as_of_earlier_frontier: after the check at "
             f"{tested}, a {family} record{via} ({where}) could not be classified as Yoetz's own "
-            f"call, a read-only read or host bookkeeping (rule {rule}). One more check evaluates it."
+            f"call, a read-only read or host bookkeeping (rule {rule}). A new check would evaluate "
+            "it; the receipt discloses it either way."
         )
     raise ValueError("check_cause_effect_invalid")

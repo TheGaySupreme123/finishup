@@ -1629,20 +1629,27 @@ def _check_cause_clause(source: Mapping[str, JsonValue], *, byte_budget: int) ->
         tool is not None and type(tool) is not str
     ):
         return ""
-    try:
-        sentence = " " + check_cause_sentence(
-            effect=cast(str, texts["effect"]),
-            event_id=cast(str, texts["event_id"]),
-            ledger_sequence=texts["ledger_sequence"],
-            check_subject_frontier=texts["check_subject_frontier"],
-            family=cast(str, texts["family"]),
-            material_class=cast(str, texts["material_class"]),
-            rule=cast(str, texts["rule"]),
-            tool=tool,
-        )
-    except ValueError:
-        return ""
-    return sentence if sentence.isascii() and len(sentence) <= byte_budget else ""
+    # The full sentence when it fits, else the short form (same record and frontier): the cause
+    # is what makes the listed token true, so it is never dropped for lack of room before the
+    # short form has been tried.
+    for compact in (False, True):
+        try:
+            sentence = " " + check_cause_sentence(
+                effect=cast(str, texts["effect"]),
+                event_id=cast(str, texts["event_id"]),
+                ledger_sequence=texts["ledger_sequence"],
+                check_subject_frontier=texts["check_subject_frontier"],
+                family=cast(str, texts["family"]),
+                material_class=cast(str, texts["material_class"]),
+                rule=cast(str, texts["rule"]),
+                tool=tool,
+                compact=compact,
+            )
+        except ValueError:
+            return ""
+        if sentence.isascii() and len(sentence) <= byte_budget:
+            return sentence
+    return ""
 
 
 def _closure_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:

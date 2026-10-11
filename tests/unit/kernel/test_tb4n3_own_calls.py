@@ -99,7 +99,6 @@ class _Surfaces:
     compact_gaps: frozenset[str]
     freshness: LedgerFreshness
     readiness_applicability: str
-    readiness_bounds: bool
     readiness_actionable: tuple[str, ...]
     readiness_standing: tuple[str, ...]
 
@@ -123,7 +122,6 @@ def _surfaces(records: tuple[LedgerRecord, ...]) -> _Surfaces:
         compact_gaps=frozenset(coverage.known_gaps),
         freshness=projection.freshness,
         readiness_applicability=facts.check_applicability,
-        readiness_bounds=facts.earlier_frontier_recheck_clears,
         readiness_actionable=split.agent_actionable,
         readiness_standing=split.standing_limitations,
     )
@@ -140,9 +138,9 @@ def test_b4_earlier_frontier_gap_class_agrees_with_receipt_bound() -> None:
     """Repro: readiness classed ccaoef "standing" (nothing to do) while the receipt treated it as
     bounding unless the suffix was responses only, and the suffix was never responses only.
 
-    After the fix the gap exists only for a suffix Yoetz cannot prove harmless; the same suffix is
-    what the receipt counts as bounding, and readiness then lists the code as work (one more
-    check removes it). A suffix of Yoetz's own calls and host bookkeeping adds no gap anywhere.
+    After the fix the gap exists only for a suffix Yoetz cannot prove harmless, and every surface
+    agrees on that: capacity fold, compact coverage, readiness standing list and the receipt count
+    the same records. A suffix of Yoetz's own calls and host bookkeeping adds no gap anywhere.
     """
 
     # The real post-check shape: the check call's own observation, status/receipt polls, and host
@@ -156,12 +154,14 @@ def test_b4_earlier_frontier_gap_class_agrees_with_receipt_bound() -> None:
     assert _CCAOEF not in quiet.capacity_codes
     assert _CCAOEF not in quiet.compact_gaps
     assert quiet.readiness_applicability == "applicable"
-    assert quiet.readiness_bounds is False
     assert _CCAOEF not in quiet.readiness_actionable + quiet.readiness_standing
     assert quiet.freshness is not LedgerFreshness.STALE_AFTER_MATERIAL_CHANGE
 
-    # A command Yoetz cannot classify may have changed the work: the disclosure stays, the receipt
-    # side counts it, and readiness no longer says "nothing further to do" beside it.
+    # A command Yoetz cannot classify may have changed the work: the disclosure stays and the
+    # receipt side counts it. Readiness keeps the code a standing limitation: it is not agent work,
+    # because any instruction derived from it can regenerate after the check it asks for (the
+    # Yoetz CLI run through a shell, Cursor's tool-identity-free post-only results, ADR-040
+    # section 7), and "nothing to do" is true of it (Codex review 1 and 2).
     script = _after_check()
     _own_call(script, "mcp__yoetz__check")
     script.passes("python gen.py")
@@ -169,32 +169,29 @@ def test_b4_earlier_frontier_gap_class_agrees_with_receipt_bound() -> None:
     assert bounded.superseded is False and bounded.counted >= 1
     assert _CCAOEF in bounded.capacity_codes
     assert _CCAOEF in bounded.compact_gaps
-    assert bounded.readiness_bounds is True
-    assert _CCAOEF in bounded.readiness_actionable
-    assert _CCAOEF not in bounded.readiness_standing
+    assert _CCAOEF not in bounded.readiness_actionable
+    assert _CCAOEF in bounded.readiness_standing
     assert bounded.freshness is not LedgerFreshness.STALE_AFTER_MATERIAL_CHANGE
+    facts = closure_readiness_facts(replay(script.prefix), script.prefix)
+    assert facts.check_cause is not None and facts.check_cause.effect == "bounds_conclusion"
+    assert facts.check_cause.record.material.rule == "unclassified_observed_action"
 
-    # A host result that names no tool (Cursor's structural afterMCPExecution is such a post-only
-    # result for every call, including each check's own) bounds the receipt like any record Yoetz
-    # cannot prove harmless, but one more check cannot clear it: the next check is observed the
-    # same way. Readiness must not turn that into an instruction that never ends (Codex review 1).
+    # A host result that names no tool bounds the receipt the same way and is likewise standing.
     blind = _after_check()
     _evidence(blind, 9300, "Observed post-only tool result")
     anonymous = _surfaces(blind.prefix)
     assert anonymous.counted == 1
     assert _CCAOEF in anonymous.capacity_codes and _CCAOEF in anonymous.compact_gaps
-    assert anonymous.readiness_bounds is False
     assert _CCAOEF not in anonymous.readiness_actionable
     assert _CCAOEF in anonymous.readiness_standing
 
-    # The surfaces cannot disagree on any variant: the code is in the receipt-capacity fold and
-    # the compact coverage together or in neither, exactly when a record is counted; and readiness
-    # lists it as work exactly when a recheck would clear it.
+    # The surfaces cannot disagree on any variant: the code is in the receipt-capacity fold, the
+    # compact coverage and the readiness standing list together, or in none of them.
     for state in (quiet, bounded, anonymous):
         in_capacity = _CCAOEF in state.capacity_codes
         assert in_capacity == (_CCAOEF in state.compact_gaps)
+        assert in_capacity == (_CCAOEF in state.readiness_standing)
         assert in_capacity == (state.counted > 0)
-        assert state.readiness_bounds == (_CCAOEF in state.readiness_actionable)
 
 
 def test_c4_observed_edit_after_check_supersedes_it() -> None:
@@ -473,3 +470,77 @@ def test_a_find_that_writes_a_file_is_not_exploration() -> None:
     ):
         assert command_runner_class({"command": command}) != "exploration", command
     assert command_runner_class({"command": "find . -name '*.py'"}) == "exploration"
+
+
+def test_a_wrapped_read_is_not_proven_read_only() -> None:
+    """Codex review 2: ``uv run --upgrade cat README.md`` rewrites uv.lock before it reads."""
+
+    from yoetz.domain.observation_selection import command_runner_class
+
+    for command in ("uv run --upgrade cat README.md", "uv run cat README.md", "poetry run ls"):
+        assert command_runner_class({"command": command}) != "exploration", command
+    assert command_runner_class({"command": "cat README.md"}) == "exploration"
+
+
+def test_a_late_output_of_an_edit_is_disclosed_but_never_a_second_supersession() -> None:
+    """Codex review 2: the walk and the reducer must agree on what supersedes. Evidence recorded
+    under an edit action that arrived before the check is the edit's late output: counted (the
+    disclosure stays), never superseding, and the same in the reducer, which cannot see lineage."""
+
+    from yoetz.domain.values import timestamp_from_string
+
+    ledger = ObservedLedger()
+    ledger.edit()
+    action = ledger.prefix[-2]
+    check_like_boundary = ledger.prefix[-1].ledger.ingestion_sequence
+    ledger.append(
+        EventSchema("evidence_recorded", "1.0.0"),
+        EvidenceRecordedPayload(
+            evidence_id("evd_00000000-0000-4000-8000-000000009501"),
+            EvidenceKind.OTHER,
+            EvidenceImmutability.METADATA_ONLY,
+            timestamp_from_string("2026-09-29T17:58:11.363Z"),
+            description="Observation-captured workspace_diff",
+        ),
+        observed=True,
+        causal_parents=(action.event_id,),
+    )
+    projection = replay(ledger.prefix)
+    evidence = ledger.prefix[-1]
+    assert evidence.ledger.ingestion_sequence > check_like_boundary
+    material = classify_later_material(evidence, projection)
+    assert (material.material_class, material.rule) == (_C.OTHER, "evidence_of_edit") or (
+        # Without the lineage map (the reducer's view) it is plain unclassified evidence.
+        material.material_class is _C.OTHER
+    )
+    assert not material.supersedes
+    with_lineage = classify_later_material(
+        evidence,
+        projection,
+        actions_by_event={action.event_id: action.payload},  # type: ignore[dict-item]
+    )
+    assert (with_lineage.material_class, with_lineage.rule) == (_C.OTHER, "evidence_of_edit")
+    assert not with_lineage.supersedes
+
+
+def test_only_the_packaged_yoetz_trees_end_the_receipt_exemption() -> None:
+    """Codex review 2: ``.agents/skills/project-skill`` is the project's, not Yoetz's."""
+
+    from yoetz.domain.write_scope import yoetz_tree_overlap
+
+    for overlapping in (
+        "/app/.agents/skills/yoetz/SKILL.md",
+        "/app/.agents/plugins/yoetz",
+        "/app/.agents",
+        "/app/.agents/skills",
+        "/app/.agents/plugins/",
+    ):
+        assert yoetz_tree_overlap(overlapping), overlapping
+    for separate in (
+        "/app/.agents/skills/project-skill",
+        "/app/.agents/skills/project-skill/SKILL.md",
+        "/app/output",
+        "/app",
+        "",
+    ):
+        assert not yoetz_tree_overlap(separate), separate

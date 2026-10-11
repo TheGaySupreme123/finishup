@@ -38,7 +38,6 @@ from typing import Final, Literal, cast
 
 from yoetz.domain.events import CheckRecordedPayload, LedgerRecord
 from yoetz.domain.receipts import (
-    CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
     COMPLETION_PLAN_NOT_CLAIMED_GAP,
 )
@@ -599,14 +598,6 @@ class ClosureReadinessFacts:
     open_obligations_unreadable: bool = True
     # Issue #984 (D7a): acknowledged-not-done findings whose premise the reviewer disputes.
     premise_disputed_finding_ids: tuple[FindingId, ...] = ()
-    # tb4n3 RC-6. The records that follow the applicable check include an observation of a named
-    # tool call that Yoetz could not prove harmless (``kernel.later_material``), so the receipt
-    # carries ``check_current_as_of_earlier_frontier`` and that code bounds its conclusion. One
-    # more check evaluates the call and removes the code for good (the next check's own
-    # observation is an identified Yoetz call), so readiness lists it as work instead of "nothing
-    # to do". A suffix with no tool identity (a post-only host result) is not asked to be
-    # rechecked: every check on such a host regenerates it.
-    earlier_frontier_recheck_clears: bool = False
     # Why the check is not applicable, or why the earlier-frontier code bounds: the first later
     # record that decided it (event id, ledger sequence, family, class, closed rule, tool token).
     check_cause: CheckCause | None = None
@@ -623,7 +614,6 @@ class ClosureReadinessFacts:
             or type(self.semantic_review_current) is not bool
             or type(self.closing_review_current) is not bool
             or type(self.semantic_review_used) is not bool
-            or type(self.earlier_frontier_recheck_clears) is not bool
             or (self.check_cause is not None and type(self.check_cause) is not CheckCause)
         ):
             raise ValueError("closure_readiness_facts_invalid")
@@ -940,7 +930,6 @@ def closure_readiness_facts(
     applicability, standing = _check_applicability(state, records)
     return ClosureReadinessFacts(
         check_applicability=applicability,
-        earlier_frontier_recheck_clears=applicability == "applicable" and standing.recheck_clears,
         check_cause=standing.cause if applicability in {"applicable", "not_applicable"} else None,
         semantic_review_current=_semantic_review_current(state, records, limitations),
         receipt_blocking_finding_ids=tuple(sorted(blocking, key=str.encode)),
@@ -1074,20 +1063,6 @@ def derive_closure_readiness(
         )
         standing.add(COMPLETION_PLAN_NOT_CLAIMED_GAP)
     actionable.extend(code for code in split_actionable if code not in actionable)
-    split_standing = split.standing_limitations
-    if (
-        facts is not None
-        and facts.earlier_frontier_recheck_clears
-        and CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP in split_standing
-    ):
-        # tb4n3 RC-6 (B5): the receipt will be bounded by this code and one more check removes it,
-        # so readiness must not call it "nothing to do". It stays a standing limitation whenever
-        # only answers to the check's own findings follow it (advisory, ADR-040 section 7).
-        split_standing = tuple(
-            code for code in split_standing if code != CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP
-        )
-        if CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP not in actionable:
-            actionable.append(CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP)
     # Issue #976: the receipt is the last step, so the last review before it judges
     # completeness. Required on a route that requires AI-powered review, and on any task that
     # already used it; not repeated while the missing review is already the actionable item.
@@ -1102,7 +1077,7 @@ def derive_closure_readiness(
         item = token if _CODE_RE.fullmatch(token) else _unclassified(token)
         if item not in actionable:
             actionable.append(item)
-    standing.update(split_standing)
+    standing.update(split.standing_limitations)
     if (facts is not None and facts.self_verified_finding_ids) or lineage_self_verified:
         # ``lineage_self_verified``: an accepted child holds self-verified findings (ADR-034,
         # ADR-027). The parent receipt is then at best insufficient_coverage; status says so.

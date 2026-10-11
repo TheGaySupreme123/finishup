@@ -539,7 +539,11 @@ def _classify_argv(argv: list[str]) -> RunnerClass | None:
     if wrapped is not None:
         # ``uv run python build_model.py`` is the wrapped command, classified on its own; the
         # wrapper's name never makes a script a build or a test (ADR-042).
-        return _runner_class_for_argv(wrapped)
+        inner = _runner_class_for_argv(wrapped)
+        # A package-manager wrapper syncs, and with ``--upgrade`` rewrites, the lock file and the
+        # environment before it runs the command, so a wrapped read is not proven read-only
+        # (tb4n3 RC-6: the later-material rule ignores exploration).
+        return "other" if inner == "exploration" else inner
     if command == "rg" and any(
         argument.partition("=")[0].casefold() in _RG_PRE_OPTIONS
         or argument.casefold().startswith("--pre")

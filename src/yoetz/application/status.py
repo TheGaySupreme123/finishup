@@ -1239,23 +1239,23 @@ def _unknown_structural_coverage() -> Coverage:
 
 
 def _check_cause_model(
-    facts: ClosureReadinessFacts, actionable: tuple[str, ...]
+    facts: ClosureReadinessFacts, actionable: tuple[str, ...], standing: tuple[str, ...]
 ) -> StatusCheckCauseModel | None:
     """The lineage of ``check_not_applicable`` / a bounding earlier-frontier code, when listed.
 
-    Emitted only beside the token it explains (tb4n3 RC-6, owner lineage rule), so a reader never
-    sees a cause for a condition the checklist does not list as work.
+    Emitted only beside the token it explains (tb4n3 RC-6, owner lineage rule): a superseded
+    check beside ``check_not_applicable`` (work), a bounding suffix beside the standing
+    ``check_current_as_of_earlier_frontier`` (a disclosure), so a reader never sees a cause for a
+    condition the checklist does not list.
     """
 
     cause = facts.check_cause
     if cause is None:
         return None
-    token = (
-        "check_not_applicable"
-        if cause.effect == "superseded"
-        else "check_current_as_of_earlier_frontier"
-    )
-    if token not in actionable:
+    if cause.effect == "superseded":
+        if "check_not_applicable" not in actionable:
+            return None
+    elif "check_current_as_of_earlier_frontier" not in standing:
         return None
     material = cause.record.material
     return StatusCheckCauseModel(
@@ -1421,7 +1421,7 @@ async def _closure_readiness(
     )
     confirmations = dict(facts.blocked_obligation_confirmations)
     # An optional field is omitted, never null, when there is no cause to name.
-    cause = _check_cause_model(facts, checklist.agent_actionable)
+    cause = _check_cause_model(facts, checklist.agent_actionable, checklist.standing_limitations)
     cause_fields: dict[str, StatusCheckCauseModel] = {} if cause is None else {"check_cause": cause}
     return StatusClosureReadinessModel(
         declared_obligation_count=str(declared_obligations),

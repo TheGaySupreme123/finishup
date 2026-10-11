@@ -4474,9 +4474,9 @@ class StatusClosureReadinessModel(_ClosedModel):
     # ``acknowledged_not_done``). ``open_obligation_count`` never includes them. Optional on
     # the unreleased 1.4.0 wire; absent from an earlier 0.3 build.
     acknowledged_obligation_count: CanonicalUInt64Wire | None = None
-    # tb4n3 RC-6 (owner lineage rule): the record that decided ``check_not_applicable`` or the
-    # bounding ``check_current_as_of_earlier_frontier``. Optional on the unreleased 1.4.0 wire:
-    # absent when neither is listed as work, and from an earlier 0.3 build.
+    # tb4n3 RC-6 (owner lineage rule): the record that decided ``check_not_applicable`` (listed as
+    # work) or the bounding standing ``check_current_as_of_earlier_frontier``. Optional on the
+    # unreleased 1.4.0 wire: absent when neither is listed, and from an earlier 0.3 build.
     check_cause: StatusCheckCauseModel | None = None
 
     optional_non_null_fields = frozenset(
@@ -4582,12 +4582,13 @@ class StatusClosureReadinessModel(_ClosedModel):
         _require_unique(actionable, limit=128)
         _require_unique(standing, limit=128)
         if self.check_cause is not None:
-            token = (
-                "check_not_applicable"
+            # A superseded check is listed as work; a bounding suffix is a standing disclosure.
+            listed = (
+                "check_not_applicable" in actionable
                 if self.check_cause.effect == "superseded"
-                else "check_current_as_of_earlier_frontier"
+                else "check_current_as_of_earlier_frontier" in standing
             )
-            if token not in actionable:
+            if not listed:
                 raise ValueError("closure_readiness_check_cause_mismatch")
         _require_unique(acknowledged_ids, limit=64)
         acknowledged = int(cast(str, self.acknowledged_not_done_count))
