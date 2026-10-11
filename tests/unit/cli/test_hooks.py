@@ -840,7 +840,9 @@ def test_session_start_active_with_fake_service(tmp_path: Path) -> None:
         connect=connect,
     )
     assert code == 0
-    assert client.calls == ["status"]
+    # A compact start reads the compact status, then one bounded obligations view for the
+    # post-compaction recap's deliverables (ADR-044); both are reads and create no ledger events.
+    assert client.calls == ["status", "status"]
     text = json.loads(stdout.getvalue().decode("utf-8"))["hookSpecificOutput"]["additionalContext"]
     assert task_id in text
     # The context carries a selector guidance recognises (#580): the mapped

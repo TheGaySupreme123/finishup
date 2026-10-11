@@ -57,6 +57,9 @@ _NEXT_ACTION: Final = {
     "ready": "next: when the work is complete, request the receipt.",
     "unknown": "next: call status with the held ids; readiness is unknown at this frontier.",
 }
+_NEXT_UNREPORTED: Final = (
+    "next: call status with the held ids; this status did not report readiness."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +169,7 @@ def compose_compaction_recap(facts: RecapFacts, *, limit: int = RECAP_LIMIT) -> 
         "[source status compact head frontier]."
     )
     state = facts.readiness_state
-    next_text = _NEXT_ACTION.get(state or "unknown", _NEXT_ACTION["unknown"])
+    next_text = _NEXT_ACTION[state] if state in _NEXT_ACTION else _NEXT_UNREPORTED
     next_line = f"{next_text} [source status compact closure_readiness @{seq}]"
     tail = (
         "This recap is a read of status, not a new claim or evidence; call status for the "
@@ -226,6 +229,12 @@ def compose_compaction_recap(facts: RecapFacts, *, limit: int = RECAP_LIMIT) -> 
 
 
 def _plan_variants(facts: RecapFacts, compact: str) -> tuple[str, ...]:
+    if (
+        facts.declared_obligations is None
+        and facts.open_obligations_total is None
+        and facts.plan_event_id is None
+    ):
+        return (f"plan: not reported by this status. {compact}",)
     bits = [
         f"{_count(facts.declared_obligations)} declared",
         f"{_count(facts.open_obligations_total)} open",
@@ -244,12 +253,14 @@ def _plan_variants(facts: RecapFacts, compact: str) -> tuple[str, ...]:
 
 
 def _readiness_variants(facts: RecapFacts, sequence: str) -> tuple[str, ...]:
+    if facts.readiness_state is None:
+        return (f"readiness: not reported by this status [source status compact @{sequence}].",)
     blocked = (
         f"; blocked obligations {facts.blocked_obligations}" if facts.blocked_obligations else ""
     )
     source = f"{blocked} [source status compact closure_readiness @{sequence}]."
     return list_variants(
-        f"readiness: {facts.readiness_state or 'unreported'}; agent-actionable: ",
+        f"readiness: {facts.readiness_state}; agent-actionable: ",
         list(facts.agent_actionable) or ["none"],
         suffix=source,
         more="; +{n} more",

@@ -209,8 +209,11 @@ def test_a_status_without_a_frontier_or_page_leaves_the_startup_context_unchange
     assert _HELD_IDS_CUE in context
     assert "frontier 3:sha256:" in context
     assert "Yoetz recap after context compaction" in context  # frontier present: recap composes
-    assert "plan: unreported declared" in context  # ...and says what the status did not carry
+    # ...and says what the status did not carry instead of inventing it
+    assert "plan: not reported by this status" in context
+    assert "readiness: not reported by this status" in context
     assert "last check: not reported by this status" in context
+    assert "no plan published" not in context
 
 
 def test_undelivered_work_rows_are_disclosed_in_the_recap(tmp_path: Path) -> None:

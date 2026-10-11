@@ -275,7 +275,7 @@ def test_hostile_task_text_is_flattened_to_quoted_single_line_excerpts() -> None
         ),
         ("ready", "next: when the work is complete, request the receipt."),
         ("unknown", "next: call status with the held ids; readiness is unknown"),
-        (None, "next: call status with the held ids; readiness is unknown"),
+        (None, "next: call status with the held ids; this status did not report readiness."),
     ],
 )
 def test_the_next_action_is_the_readiness_state_in_plain_words(
