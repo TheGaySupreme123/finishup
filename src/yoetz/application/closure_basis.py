@@ -161,17 +161,23 @@ def finding_states(
     states: list[ReceiptFindingState] = []
     for item in current_receipt_findings(projection):
         todo = finding_todo_state(projection, item.finding_id)
+        closure = closures.get(item.finding_id)
+        # A limitation request answered ``acknowledged_not_done`` is a disclosed verification
+        # limit (ADR-046), not a requirement left undone: it is named once, as disclosed.
+        undone = todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE and (
+            closure is None or closure.basis != "limitation_disclosed"
+        )
         states.append(
             ReceiptFindingState(
                 item.finding_id,
                 todo is FindingTodoState.VERIFIED_RESOLVED,
-                acknowledged_not_done=todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE,
+                acknowledged_not_done=undone,
                 rejection_accepted=todo is FindingTodoState.REJECTION_ACCEPTED,
                 self_verified=todo is FindingTodoState.SELF_VERIFIED,
                 disputed_after_rebuttal=todo is FindingTodoState.DISPUTED_AFTER_REBUTTAL,
                 # Issue #996: the flags above are derived from the linked earlier finding.
                 duplicate_of_finding_id=duplicate_link_target(projection, item.finding_id),
-                closure=closures.get(item.finding_id),
+                closure=closure,
             )
         )
     return tuple(states)

@@ -79,8 +79,10 @@ from yoetz.protocol.models import (
     PublishWorkRequest,
     PublishWorkSuccessModel,
     ReadGuidanceSuccessModel,
+    RespondClosureAfterModel,
     RespondEvidenceSummaryModel,
     RespondResponseModel,
+    RespondSuccessModel,
     ReviewInputManifestModel,
     SemanticRedactedValueModel,
     StartSuccessModel,
@@ -202,6 +204,8 @@ def _status_history_v14_payload() -> dict[str, object]:
 # A new result model that joins the set without a row in this table fails the inventory test.
 _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = (
     (CheckContinuationModel, frozenset({"pending_id", "expires_at"})),
+    (RespondSuccessModel, frozenset({"closure_after"})),  # tb4n3 RC-7
+    (RespondClosureAfterModel, frozenset({"limitation"})),
     (
         CheckSuccessModel,
         frozenset(
@@ -1955,6 +1959,12 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     covered["StatusResultItemModel", "observed_run"] = (
         "test_results_view_names_tool_occurrence_commitment_and_exit_status"
     )
+    covered["RespondSuccessModel", "closure_after"] = (
+        "test_respond_closure_after_omits_unset_fields"
+    )
+    covered["RespondClosureAfterModel", "limitation"] = (
+        "test_respond_closure_after_omits_unset_fields"
+    )
     for field in (
         "document_id",
         "revision",
@@ -1980,6 +1990,25 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         f"unset-projection coverage drifted: missing={expected - set(covered)} "
         f"extra={set(covered) - expected}"
     )
+
+
+def test_respond_closure_after_omits_unset_fields() -> None:
+    """tb4n3 RC-7: an absent closure_after / limitation is omitted, never an explicit null."""
+
+    from unit.protocol.test_models_and_schemas import (
+        _respond_result_wire,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    closure = RespondClosureAfterModel.model_validate({"todo_state": "open"})
+    assert "limitation" not in closure.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        RespondClosureAfterModel.model_validate({"todo_state": "open", "limitation": None})
+    wire = _respond_result_wire()
+    assert "closure_after" not in wire
+    model = RespondSuccessModel.model_validate(wire)
+    assert "closure_after" not in model.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        RespondSuccessModel.model_validate({**wire, "closure_after": None})
 
 
 async def test_legacy_guidance_result_omits_unset_paging_metadata() -> None:

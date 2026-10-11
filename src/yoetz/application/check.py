@@ -20,6 +20,7 @@ from yoetz.application.missing_for_assessment import (
     review_missing_for_assessment,
     unsupported_data_type,
 )
+from yoetz.application.review_concern import answer_bound, concern_material_after
 from yoetz.domain.coordination import CoordinationError, CoordinationErrorCode
 from yoetz.domain.events import (
     MAX_SEMANTIC_INCLUDED_REFS,
@@ -41,7 +42,6 @@ from yoetz.domain.findings import (
     FindingOrigin,
     PriorFindingVerdictRecord,
     RankedFindings,
-    ResponseDisposition,
     SemanticProvenance,
     finding_demands_work,
     finding_from_json,
@@ -116,6 +116,13 @@ from yoetz.kernel.closure_class import (
     finding_closures,
     obligation_closures,
 )
+from yoetz.kernel.concern import (
+    ConcernKey,
+    concern_key,
+    equal_concern,
+    kinds_comparable,
+    same_concern,
+)
 from yoetz.kernel.delivered_set import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
@@ -149,6 +156,8 @@ from yoetz.kernel.finding_resolution import (
     AGENT_SETTLED_DISPOSITION_VALUES,
     SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
     SEMANTIC_REFERENCE_SCOPE_REDUCED_GAP,
+    finding_is_resolved,
+    rejection_stands,
 )
 from yoetz.kernel.finding_todo import (
     DEFAULT_FINDING_ATTEMPT_BUDGET,
@@ -158,6 +167,7 @@ from yoetz.kernel.finding_todo import (
     finding_todo_state,
     todo_counts,
 )
+from yoetz.kernel.limitation import limitation_standing
 from yoetz.kernel.lineage import LineageEvaluation, evaluate_recorded_lineage
 from yoetz.kernel.observed_failures import (
     ObservedFailureState,
@@ -175,7 +185,7 @@ from yoetz.kernel.policies.work_integrity import (
     reportable_absent_outputs,
     work_integrity_findings,
 )
-from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionRecord, ProjectionState
+from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.receipt_prediction import predict_receipt_conclusion
@@ -3336,6 +3346,15 @@ _RE_RAISED_HEADER: Final = (
     "Reviewer re-raised earlier findings (recorded on that finding, which stays open; answer it "
     "there):"
 )
+# tb4n3 RC-7: a re-raise of a finding the agent already settled (acknowledged_not_done,
+# self_verified or a disclosed limitation) is recorded on it. No new finding exists and respond
+# refuses most answers on it, so the header must not say "answer it there".
+_SETTLED_HEADER: Final = (
+    "Reviewer repeated findings you already settled, citing nothing newer (recorded on that "
+    "finding as a standing re-raise; no new finding was opened and no answer is needed. To take "
+    "an acknowledged_not_done answer back and do the work, respond reopened with a reason; never "
+    "empty or withdraw a working deliverable over it):"
+)
 # Issue #1020: a repeat over the agent's reasoned rejection with nothing newer.
 _DISPUTED_HEADER: Final = (
     "Reviewer repeated findings you rejected with a reason, citing nothing newer (recorded as "
@@ -3357,21 +3376,30 @@ def _summary_with_re_raised(
     summary: str,
     re_raised: tuple[tuple[FindingId, ReviewerChallenge], ...],
     disputed: frozenset[FindingId] = frozenset(),
+    settled: frozenset[FindingId] = frozenset(),
 ) -> str:
     """Append the reviewer's words on each restated finding to the review summary (issue #980).
 
     A challenge that names the earlier finding it restates is recorded on that finding as a
     ruling, so no new finding carries its text; the summary does, under a header naming the item.
     A repeat recorded as ``disputed_after_rebuttal`` (issue #1020) is final and needs no answer,
-    so it goes under its own header that says so instead of asking for one.
+    so it goes under its own header that says so instead of asking for one. So does a repeat of a
+    finding the agent already settled (``acknowledged_not_done``, ``self_verified`` or a disclosed
+    limitation; tb4n3 RC-7): ``respond`` refuses most answers on it, so it never says "answer it
+    there".
     """
 
     if not re_raised:
         return summary
     lines = [summary]
-    open_items = [item for item in re_raised if item[0] not in disputed]
     final_items = [item for item in re_raised if item[0] in disputed]
-    for header, items in ((_RE_RAISED_HEADER, open_items), (_DISPUTED_HEADER, final_items)):
+    settled_items = [item for item in re_raised if item[0] in settled and item[0] not in disputed]
+    open_items = [item for item in re_raised if item[0] not in disputed and item[0] not in settled]
+    for header, items in (
+        (_RE_RAISED_HEADER, open_items),
+        (_SETTLED_HEADER, settled_items),
+        (_DISPUTED_HEADER, final_items),
+    ):
         if items:
             lines.extend(("", header))
             for restated, challenge in items:
@@ -3412,24 +3440,36 @@ def _restates_target(
     if record is None or record.payload is None or record.redacted:
         return None
     semantic = record.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
-    unresolved = record.resolved_by_check_event_id is None
+    unresolved = not finding_is_resolved(case.projection, key)
     state = finding_todo_state(case.projection, key)
+    # tb4n3 RC-1: a limitation request the agent disclosed is settled, so a re-raise of it is
+    # recorded on it exactly like a re-raise of an acknowledged_not_done answer.
+    settled_answer = _latest_response_value(case, key) in AGENT_SETTLED_DISPOSITION_VALUES or (
+        _limitation_disclosed(case, key)
+    )
     if (
         semantic
         and unresolved
         and state is FindingTodoState.OPEN
         and (prior_finding_refs is None or target in prior_finding_refs)
-        and _latest_response_value(case, key) not in AGENT_SETTLED_DISPOSITION_VALUES
+        and not settled_answer
     ):
         return _RESTATES_OPEN, key
     if (
         semantic
         and unresolved
-        and _latest_response_value(case, key) in AGENT_SETTLED_DISPOSITION_VALUES
+        and settled_answer
         and (settled_finding_refs is None or target in settled_finding_refs)
     ):
         return _RESTATES_SETTLED, key
     return _RESTATES_LINKED, key
+
+
+def _limitation_disclosed(case: DeterministicCase, key: FindingId) -> bool:
+    """Whether *key* is a reviewer limitation request the agent already disclosed (Q4)."""
+
+    standing = limitation_standing(case.projection, key)
+    return standing is not None and standing.disclosed
 
 
 def _latest_response_value(case: DeterministicCase, key: FindingId) -> str | None:
@@ -3529,12 +3569,9 @@ def _ruling_supported(
     if kind in {"still_present", "answered_not_fixed"}:
         return bool(cited)
     if kind == "withdrawn":
-        response = projection.responses.get(finding)
-        return (
-            response is not None
-            and response.payload is not None
-            and response.payload.disposition is ResponseDisposition.REJECTED
-        )
+        # tb4n3 RC-7: the reviewer accepts a rejection that still stands, even when a later
+        # acknowledgement was recorded after it; ``reopened`` retracts it.
+        return rejection_stands(projection.findings.get(finding), projection.responses.get(finding))
     return True
 
 
@@ -3542,112 +3579,60 @@ def _ruling_supported(
 _HELD_OPEN_RULINGS: Final = frozenset({"still_present", "answered_not_fixed", "unassessable"})
 
 
-def _reasoned_rejection_frontier(projection: ProjectionState, finding: FindingId) -> int | None:
-    """The ledger sequence of the agent's readable, reasoned ``rejected`` answer, else ``None``.
+def _finding_concern(case: DeterministicCase, key: FindingId) -> ConcernKey:
+    """The concern identity of a recorded finding's subjects (tb4n3 RC-7)."""
 
-    Only the latest response counts: a later answer of another kind replaces the rebuttal.
-    """
-
-    response = projection.responses.get(finding)
-    if (
-        response is None
-        or response.payload is None
-        or response.redacted
-        or response.payload.disposition is not ResponseDisposition.REJECTED
-        or response.payload.reason is None
-        or not response.payload.reason.strip()
-    ):
-        return None
-    return response.source_frontier
+    record = case.projection.findings.get(key)
+    subjects = () if record is None or record.payload is None else record.payload.subject_refs
+    return concern_key(case.projection, (str(ref) for ref in subjects))
 
 
-def _cites_material_after(case: DeterministicCase, refs: Iterable[str], frontier: int) -> bool:
-    """Whether any cited ref is recorded material newer than ``frontier`` (issue #1020).
-
-    Findings are not material: citing an earlier finding is not new evidence about it. Nor are a
-    re-published claim or a re-stated obligation (``_BOOKKEEPING_PREFIXES``): the agent restating
-    its position is not new evidence that the problem remains.
-    """
-
-    return any(
-        not ref.startswith("fnd_")
-        and ref[:4] not in _BOOKKEEPING_PREFIXES
-        and not _bookkeeping_event(case, ref)
-        and (sequence := _material_sequence(case, ref)) is not None
-        and sequence > frontier
-        for ref in refs
-    )
-
-
-_CLAIM_EVENT_SCHEMAS: Final = frozenset({"claim_recorded"})
-_BOOKKEEPING_EVENT_SCHEMAS: Final = frozenset({"claim_recorded", "obligation_published"})
-
-
-def _bookkeeping_event(
-    case: DeterministicCase, ref: str, schemas: frozenset[str] = _BOOKKEEPING_EVENT_SCHEMAS
+def _cites_concern_material_after(
+    case: DeterministicCase,
+    finding: FindingId,
+    refs: Iterable[str],
+    frontier: int,
+    *,
+    also: ConcernKey | None = None,
 ) -> bool:
-    """Whether an ``evt_`` ref is an event that recorded a claim or obligation (#1020).
+    """Whether *refs* hold concern-relevant material recorded after *frontier* (tb4n3 RC-7).
 
-    Citing that event is citing the claim or obligation itself, which is bookkeeping, not
-    material about the problem. Both the frozen history (every publication, including ones a
-    later publication replaced) and the current projection rows are consulted.
+    Only evidence, results and actions linked to the concern count (``review_concern``): never a
+    finding, claim, obligation, response, decision or other bookkeeping, and never the agent's
+    own acknowledgement evidence. The earlier ``_cites_material_after`` counted any newer ref,
+    including another finding's response event and the latest test run every agent re-runs.
     """
 
-    if not ref.startswith("evt_"):
-        return False
-    if any(str(event.event_id) == ref and event.schema_name in schemas for event in case.history):
-        return True
-    projection = case.projection
-    sources: list[Mapping[object, ProjectionRecord[object]]] = []
-    if "claim_recorded" in schemas:
-        sources.append(cast(Mapping[object, ProjectionRecord[object]], projection.claims))
-    if "obligation_published" in schemas:
-        sources.append(cast(Mapping[object, ProjectionRecord[object]], projection.obligations))
-    return any(str(row.source_event_id) == ref for rows in sources for row in rows.values())
-
-
-def _material_sequence(case: DeterministicCase, ref: str) -> int | None:
-    """``_ref_sequence``, plus an ``evt_`` ref that names the event recording a projected row.
-
-    The fence rewrites a cited result or evidence id to the event that recorded it; that event's
-    row still carries the sequence when the frozen history does not list it.
-    """
-
-    sequence = _ref_sequence(case, ref)
-    if sequence is not None or not ref.startswith("evt_"):
-        return sequence
-    projection = case.projection
-    for rows in (
-        cast(Mapping[object, object], projection.results),
-        cast(Mapping[object, object], projection.evidence),
-        cast(Mapping[object, object], projection.actions),
-        cast(Mapping[object, object], projection.claims),
-        cast(Mapping[object, object], projection.obligations),
-    ):
-        for row in rows.values():
-            if str(getattr(row, "source_event_id", "")) == ref:
-                found = getattr(row, "source_frontier", None)
-                return found if type(found) is int else None
-    return None
+    concern = _finding_concern(case, finding)
+    if also is not None:
+        concern = ConcernKey(
+            concern.obligations | also.obligations,
+            concern.refs | also.refs,
+            concern.named_obligations or also.named_obligations,
+        )
+    return concern_material_after(case, concern, refs, frontier)
 
 
 def _disputed_after_rebuttal(
     case: DeterministicCase, finding: FindingId, ruling: str, cited: Iterable[str]
 ) -> bool:
-    """Whether a ruling keeping *finding* open repeats it over the agent's rebuttal (#1020).
+    """Whether a ruling keeping *finding* open repeats it over the agent's position (#1020, #1030).
 
-    True when the agent's latest answer is a readable ``rejected`` with a non-blank reason and the
-    ruling (``still_present``, ``answered_not_fixed`` or ``unassessable``) cites nothing recorded
-    after that answer. The prompt already asks the reviewer to cite newer material before
-    raising an answered finding again; this enforces it in code, so a repeated demand can never
-    turn into pressure on the agent (TB4 tb4n2 formal-crypto: three repeats, then a working
-    deliverable was emptied).
+    True when the agent holds a standing reasoned position on the finding (a ``rejected``, or an
+    ``acknowledged`` with a reason: the earliest one not retracted, ``standing_answer_frontier``)
+    and the ruling (``still_present``, ``answered_not_fixed`` or ``unassessable``) cites no
+    concern-relevant material recorded after the later of that position and the reviewer's last
+    ruling. The prompt already asks the reviewer to cite newer material before raising an answered
+    finding again; this enforces it in code, so a repeated demand can never turn into pressure on
+    the agent (TB4 tb4n2 formal-crypto: three repeats, then a working deliverable was emptied).
+    Reading only the latest answer made it unreachable: agents answer ``acknowledged`` (21 of 23
+    answers in tb4n3), and a later acknowledgement erased an earlier rebuttal.
     """
 
     if ruling not in _HELD_OPEN_RULINGS:
         return False
-    rebuttal = _reasoned_rejection_frontier(case.projection, finding)
-    return rebuttal is not None and not _cites_material_after(case, cited, rebuttal)
+    bound = answer_bound(case.projection, finding)
+    return bound is not None and not _cites_concern_material_after(case, finding, cited, bound)
 
 
 def _admit_prior_verdicts(
@@ -3707,11 +3692,19 @@ def _admit_prior_verdicts(
             # on it says nothing about the review's own findings and is only counted.
             set_aside += 1
             continue
-        if record.resolved_by_check_event_id is not None or (
-            finding_todo_state(projection, record.payload.finding_id) is not FindingTodoState.OPEN
-            # Issue #996: a linked duplicate only inherits a final state; the reviewer can
-            # still rule on it, and a still_present ruling breaks the link.
-            and duplicate_link_target(projection, record.payload.finding_id) is None
+        if (
+            finding_is_resolved(projection, record.payload.finding_id)
+            or (
+                finding_todo_state(projection, record.payload.finding_id)
+                is not FindingTodoState.OPEN
+                # Issue #996: a linked duplicate only inherits a final state; the reviewer can
+                # still rule on it, and a still_present ruling breaks the link.
+                and duplicate_link_target(projection, record.payload.finding_id) is None
+            )
+            # tb4n3 RC-1: a disclosed limitation request is settled; the reviewer accepting the
+            # disclosure (``withdrawn``) or repeating itself says nothing about the review's
+            # other findings, so it is only counted, like a ruling on any final item.
+            or _limitation_disclosed(case, record.payload.finding_id)
         ):
             # A terminal item is never re-reviewed, so no ruling on it is admitted.
             set_aside += 1
@@ -3727,20 +3720,32 @@ def _admit_prior_verdicts(
         # but an explicit ruling must not fall back to silence either, so it is unassessable.
         shown = prior_finding_refs is None or key in prior_finding_refs
         lost_cite = len(cited) != len(verdict.cited_refs)
+        supported = _ruling_supported(
+            kind, cited, record.source_frontier, record.payload.finding_id, projection
+        )
         if shown and _disputed_after_rebuttal(case, record.payload.finding_id, kind, cited):
-            # Issue #1020 (ADR-040): the reviewer saw the agent's reasoned rejection and kept the
+            # Issue #1020 (ADR-040): the reviewer saw the agent's reasoned position and kept the
             # item open without citing anything newer. Recorded as a standing disagreement.
             unsupported += lost_cite
             kind = DISPUTED_AFTER_REBUTTAL_VERDICT
-        elif (
-            not shown
-            or lost_cite
-            or not _ruling_supported(
-                kind, cited, record.source_frontier, record.payload.finding_id, projection
-            )
-        ):
+        elif not shown or not supported or (lost_cite and kind not in {"withdrawn", "fixed"}):
             unsupported += 1
-            kind = "unassessable"
+            if (
+                shown
+                and kind != "withdrawn"
+                and _disputed_after_rebuttal(case, record.payload.finding_id, "unassessable", cited)
+            ):
+                # tb4n3 RC-7 (D-6): a ruling that cannot stand over a standing position and cites
+                # nothing newer is the standing disagreement, not an open review round.
+                kind = DISPUTED_AFTER_REBUTTAL_VERDICT
+            else:
+                kind = "unassessable"
+        elif lost_cite and kind == "fixed":
+            # A trimmed citation is disclosed, but a ``fixed`` the remaining cites still support
+            # (it keeps one recorded newer result) stays ``fixed`` (D-6). ``withdrawn`` needs no
+            # citation at all; ``still_present`` and ``answered_not_fixed`` that lose a citation
+            # are ``unassessable`` as before.
+            unsupported += 1
         earlier = admitted.get(key)
         if earlier is not None:
             unsupported += 1
@@ -3936,7 +3941,28 @@ def validate_semantic_judgment(
         linked: FindingId | None = None
         if target is not None:
             treatment, target_id = target
-            same_kind = _finding_kind_of(case, target_id) is challenge.finding_kind
+            target_kind = _finding_kind_of(case, target_id)
+            # tb4n3 RC-7: the requirement-family kinds name one concern across kinds (a limitation
+            # request raised as ``task_requirement_unmet`` after ``completion_with_open_obligations``
+            # is the same concern); every other kind folds only onto its own.
+            # An open item folds only the same kind; a settled one (the agent's final word, or a
+            # disclosed limitation) also folds a comparable kind, because the re-raise cannot
+            # change what the agent settled. Folding a different kind into an open item would
+            # hide a requirement demand behind a bookkeeping finding (cargo S).
+            same_kind = target_kind is not None and (
+                target_kind is challenge.finding_kind
+                or (
+                    treatment == _RESTATES_SETTLED
+                    and kinds_comparable(
+                        target_kind,
+                        challenge.finding_kind,
+                        obligation_concern=(
+                            _finding_concern(case, target_id).named_obligations
+                            and concern_key(case.projection, refs).named_obligations
+                        ),
+                    )
+                )
+            )
             if treatment == _RESTATES_OPEN and same_kind:
                 named = target_id
             elif treatment == _RESTATES_SETTLED and same_kind:
@@ -3952,10 +3978,11 @@ def validate_semantic_judgment(
                 same_kind
                 and finding_todo_state(case.projection, target_id)
                 is FindingTodoState.DISPUTED_AFTER_REBUTTAL
-                and not _cites_material_after(
+                and not _cites_concern_material_after(
                     case,
+                    target_id,
                     (*refs, *challenge.cited_refs),
-                    _reasoned_rejection_frontier(case.projection, target_id) or 0,
+                    answer_bound(case.projection, target_id) or 0,
                 )
             ):
                 # Issue #1020: the reviewer named a standing disagreement again with nothing
@@ -4002,10 +4029,10 @@ def validate_semantic_judgment(
                 # problem and its state; a second row would only restart it. Disclosed on the
                 # check, and recorded on the open item so it can never close by silence.
                 restatements += 1
-                if named is not None:
-                    # The reviewer's renewed words reach the agent in the review summary, named
-                    # by the item they were recorded on (issue #980).
-                    re_raised.append((named, challenge))
+                # The reviewer's renewed words reach the agent in the review summary, named by
+                # the item they were recorded on (issue #980). tb4n3 RC-7: also when the reviewer
+                # did not name it (``restates`` is optional), so a fold never hides the repeat.
+                re_raised.append((named if named is not None else restated, challenge))
                 continue
         policy_id, policy_version = _policy_identity(challenge.finding_kind)
         priority, _actionable = FINDING_KIND_TRAITS[challenge.finding_kind]
@@ -4081,6 +4108,13 @@ def validate_semantic_judgment(
                 or finding_todo_state(case.projection, restated)
                 is FindingTodoState.DISPUTED_AFTER_REBUTTAL
             ),
+            frozenset(
+                restated
+                for restated, _challenge in re_raised
+                if finding_todo_state(case.projection, restated)
+                in {FindingTodoState.ACKNOWLEDGED_NOT_DONE, FindingTodoState.SELF_VERIFIED}
+                or _limitation_disclosed(case, restated)
+            ),
         ),
         judgment.verified,
         snippets_rejected,
@@ -4126,39 +4160,6 @@ def _judgment_review(*args: object, **kwargs: object) -> SemanticJudgmentReview:
         raise _rejected("semantic_judgment_review_invalid") from exc
 
 
-def _ref_sequence(case: DeterministicCase, ref: str) -> int | None:
-    """The ledger sequence that last recorded ``ref`` in the frozen case, when it is known."""
-
-    projection = case.projection
-    sources: tuple[Mapping[object, object], ...]
-    if ref.startswith("obl_"):
-        sources = (cast(Mapping[object, object], projection.obligations),)
-    elif ref.startswith("clm_"):
-        sources = (cast(Mapping[object, object], projection.claims),)
-    elif ref.startswith("evd_"):
-        sources = (cast(Mapping[object, object], projection.evidence),)
-    elif ref.startswith("res_"):
-        sources = (cast(Mapping[object, object], projection.results),)
-    elif ref.startswith("act_"):
-        sources = (cast(Mapping[object, object], projection.actions),)
-    elif ref.startswith("evt_"):
-        for event in case.history:
-            if str(event.event_id) == ref:
-                return event.ingestion_sequence
-        sources = (
-            cast(Mapping[object, object], projection.decisions),
-            cast(Mapping[object, object], projection.assignments),
-        )
-    else:
-        return None
-    for rows in sources:
-        for key, row in rows.items():
-            sequence = getattr(row, "source_frontier", None)
-            if str(key) == ref and type(sequence) is int:
-                return sequence
-    return None
-
-
 _MAX_RULING_CITED_REFS: Final = 16
 
 
@@ -4180,16 +4181,18 @@ def _record_restatement(
     names an answered item in ``restates`` records ``answered_not_fixed``, issue #980), so the
     check cannot resolve it by silence and the item's review round advances once per concern. A
     restatement contradicts an explicit ``fixed`` or ``withdrawn`` ruling on the same item, which
-    becomes ``unassessable``. An ``acknowledged_not_done`` item is final: the re-raise is recorded
-    on it as a standing dispute (``_record_settled_reraise``, #980) and it is never reopened. A
+    becomes ``unassessable``. A settled item (``acknowledged_not_done``, ``self_verified`` or a
+    disclosed limitation) is final: the re-raise is recorded on it as a standing re-raise
+    (``_record_settled_reraise``, #980) and it is never reopened or duplicated. tb4n3 RC-7
+    (#1030) applies that to ``self_verified`` too: a reviewer that raises the same concern again
+    over the agent's own verification, citing nothing concern-relevant newer, is not a new
+    sighting (the old rule minted a fresh finding, which is how vpp S got three ids). A
     ``rejection_accepted`` or ``disputed_after_rebuttal`` item is final, stays disclosed on the
-    receipt, and needs nothing recorded. An open item the agent rejected with a reason, restated
-    with nothing recorded after that rejection, is ruled ``disputed_after_rebuttal`` (#1020). A ``self_verified`` item (issue #984) is final too, but only because Yoetz could not
-    see the repair; a reviewer that still raises the issue is a new sighting, so the restatement
-    is not suppressed and is minted as a new finding the agent must answer. (A
-    ``verified_resolved`` item is never a restatement target: see ``_restated_finding``.) When no
-    ruling can be recorded (the check's ruling bound is full) the restatement is not suppressed
-    and is minted as before.
+    receipt, and needs nothing recorded. An open item the agent holds a reasoned position on
+    (a rejection, or an acknowledgement with a reason), restated with nothing newer than that
+    position, is ruled ``disputed_after_rebuttal`` (#1020, #1030). (A ``verified_resolved`` item is
+    never a restatement target: see ``_restated_finding``.) When no ruling can be recorded (the
+    check's ruling bound is full) the restatement is not suppressed and is minted as before.
     """
 
     todo = finding_todo_state(case.projection, restated)
@@ -4197,9 +4200,10 @@ def _record_restatement(
         # Issue #996: a linked duplicate's final state is only inherited; a restatement of it is
         # a still_present ruling that breaks the link, never a silent suppression.
         todo = FindingTodoState.OPEN
-    if todo is FindingTodoState.SELF_VERIFIED:
-        return False, False
-    if todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE:
+    if todo in {
+        FindingTodoState.ACKNOWLEDGED_NOT_DONE,
+        FindingTodoState.SELF_VERIFIED,
+    } or (todo is FindingTodoState.OPEN and _limitation_disclosed(case, restated)):
         # The agent settled it; the re-raise is recorded on it as a standing dispute (#980).
         return _record_settled_reraise(admitted, restated, refs), False
     if todo in {FindingTodoState.REJECTION_ACCEPTED, FindingTodoState.DISPUTED_AFTER_REBUTTAL}:
@@ -4214,14 +4218,14 @@ def _record_restatement(
         kept = tuple(sorted(refs, key=str.encode))[:_MAX_RULING_CITED_REFS]
         recorded: str = verdict
         if _disputed_after_rebuttal(case, restated, verdict, (*refs, *cited)):
-            # Issue #1020: the same concern raised again over the agent's reasoned rejection,
+            # Issue #1020: the same concern raised again over the agent's reasoned position,
             # with nothing newer, is the standing disagreement, not another round.
             recorded = DISPUTED_AFTER_REBUTTAL_VERDICT
         admitted[key] = PriorFindingVerdictRecord(restated, recorded, kept)
         return True, False
     if earlier.verdict in {"fixed", "withdrawn"}:
         # A contradicted explicit ruling; when the restatement itself only repeats the concern
-        # over the agent's reasoned rejection, the item is the standing disagreement (#1020).
+        # over the agent's reasoned position, the item is the standing disagreement (#1020).
         contradicted = (
             DISPUTED_AFTER_REBUTTAL_VERDICT
             if _disputed_after_rebuttal(case, restated, verdict, (*refs, *cited))
@@ -4235,7 +4239,7 @@ def _record_restatement(
         and _disputed_after_rebuttal(case, restated, verdict, (*refs, *cited, *earlier.cited_refs))
     ):
         # Issue #1020: the explicit ruling was reduced (or kept open) without anything newer, and
-        # the restatement repeats the concern over the rebuttal: the standing disagreement.
+        # the restatement repeats the concern over the position: the standing disagreement.
         admitted[key] = PriorFindingVerdictRecord(
             restated, DISPUTED_AFTER_REBUTTAL_VERDICT, earlier.cited_refs
         )
@@ -4243,7 +4247,7 @@ def _record_restatement(
     if earlier.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT and not _disputed_after_rebuttal(
         case, restated, verdict, (*refs, *cited)
     ):
-        # Issue #1020: the same review also restated it with material newer than the rebuttal;
+        # Issue #1020: the same review also restated it with material newer than the position;
         # that newer sighting outranks the stale ruling, so the item stays open.
         kept = tuple(sorted(refs, key=str.encode))[:_MAX_RULING_CITED_REFS]
         admitted[key] = PriorFindingVerdictRecord(restated, verdict, kept)
@@ -4287,42 +4291,42 @@ def _restated_finding(
     replies_to: tuple[FindingId, ...] = (),
     cited: tuple[str, ...] = (),
 ) -> FindingId | None:
-    """The recorded AI-powered finding a challenge restates, if any (issue #905).
+    """The recorded AI-powered finding a challenge restates, if any (issues #905, #1020, #1030).
 
-    The stable key is the finding kind and its exact subject set, the same key the receipt uses
-    for an issue; the evidence fingerprint is what the challenge rests on. A restatement has the
-    same kind, exactly the recorded finding's subjects, and nothing among them recorded after that
-    finding. A narrower or wider challenge is a distinct issue: suppressing it would lose its
-    discrepancy and requested next step, which a ``still_present`` ruling cannot carry. A
-    challenge with newer material is a new, linked item, never a restatement. The newest match
-    wins.
+    A restatement is a challenge about the same *concern* as a recorded finding of a comparable
+    kind (``kernel.concern``): the same obligations, or one subject set containing the other, with
+    the requirement-family kinds folding across kinds and claim churn normalised. The earlier rule
+    keyed the concern on the kind and an exact or asymmetric subject set (an obligation set on
+    one side, a raw event set on the other), so a re-raise under another kind, over a
+    ``self_verified`` answer, or after the agent republished its own obligation was minted as a
+    new finding: vpp S three ids, payments S four, formal-crypto S four for one concern.
 
-    When no exact match exists, the same concern is still matched across the agent's claim
-    churn (issue #1020, tb4n2 payments P1-10: four ids for one concern). Both subject sets are
-    normalized by ``_concern_key``: a claim maps to the claim that currently supersedes it, and
-    when both sides name obligations the concern is those obligations (re-published claims and
-    event refs do not make a new concern). Every ref but claims is still held to the "nothing
-    newer than the finding" rule, exactly as on the exact path: a re-published claim is not new
-    material, but a revised obligation is. Over a reasoned rejection that nothing newer
-    answers, the bound is the rejection rather than the finding.
+    The challenge must also bring nothing concern-relevant newer than the dialogue so far
+    (``review_concern.concern_material_after``): evidence, results and actions linked to the
+    concern's obligations, recorded after the agent's standing position and the reviewer's last
+    ruling, and not evidence the agent itself cited when it answered. Responses, decisions,
+    claims, obligations and other bookkeeping are never material, so the agent's own republish
+    cannot defeat the fold. A challenge with newer material is a new, linked item, never a
+    restatement. An exact subject match outranks a concern match; then the newest finding wins.
 
     A ``verified_resolved`` row is never a target: done stays done, and the reviewer finding the
     problem again after that proof is a #458 successor, minted and blocking. Suppressing it would
     hide a real re-raise behind a closed row.
 
-    A challenge that cites an open item the main agent has already answered (``replies_to``, the
-    earlier ``fnd_`` ids the challenge names) is the reviewer's reply to that answer, as the
-    reviewer instruction asks: it is minted as a new item linked to the earlier one, so the agent
-    receives it as a finding instead of a ruling it never sees (TB4 tb4f1, issue #976). The
-    exception is a reply to a reasoned ``rejected`` answer that brings nothing newer than that
-    answer (issue #1020): it is the same demand repeated over the rebuttal, so it folds onto the
-    rejected item, where ``_record_restatement`` records the standing disagreement.
+    A challenge that cites an open item the main agent has already answered without a reasoned
+    position (``replies_to``, the earlier ``fnd_`` ids the challenge names) is the reviewer's reply
+    to that answer, as the reviewer instruction asks: it is minted as a new item linked to the
+    earlier one, so the agent receives it as a finding instead of a ruling it never sees (TB4
+    tb4f1, issue #976). A reply over a reasoned position (a rejection or a reasoned
+    acknowledgement) that brings nothing newer is the same demand repeated over the position
+    (issue #1020), so it folds onto the item, where ``_record_restatement`` records the standing
+    disagreement.
     """
 
     wanted = frozenset(refs)
     if not wanted:
         return None
-    wanted_key = _concern_key(case, refs)
+    wanted_key = concern_key(case.projection, refs)
     best: tuple[int, int, FindingId] | None = None
     for key, record in case.projection.findings.items():
         payload = record.payload
@@ -4330,90 +4334,60 @@ def _restated_finding(
             payload is None
             or record.redacted
             or payload.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
-            or payload.kind is not kind
             or finding_todo_state(case.projection, key) is FindingTodoState.VERIFIED_RESOLVED
         ):
             continue
         subjects = tuple(str(ref) for ref in payload.subject_refs)
         exact = wanted == frozenset(subjects)
-        if not exact and wanted_key != _concern_key(case, subjects):
+        target_state = finding_todo_state(case.projection, key)
+        # A settled item's concern is widened by the re-raises recorded on it (bounded).
+        target_key = concern_key(case.projection, (*subjects, *record.absorbed_refs))
+        # An open item folds only a challenge about the very same concern: a narrower or wider
+        # one is a distinct issue whose discrepancy a ruling cannot carry (Greptile P1 on #943).
+        # A settled item (the agent's final word, or a disclosed limitation) folds any overlap,
+        # because the re-raise cannot change what the agent already settled (tb4n3 RC-7).
+        settled_target = target_state is not FindingTodoState.OPEN or _limitation_disclosed(
+            case, key
+        )
+        if payload.kind is not kind and not (
+            settled_target
+            and kinds_comparable(
+                payload.kind,
+                kind,
+                obligation_concern=wanted_key.named_obligations and target_key.named_obligations,
+            )
+        ):
             continue
+        if not exact and not (
+            same_concern(wanted_key, target_key)
+            if settled_target
+            else equal_concern(wanted_key, target_key)
+        ):
+            continue
+        bound = answer_bound(case.projection, key)
         if (
             key in replies_to
-            and finding_todo_state(case.projection, key) is FindingTodoState.OPEN
+            and target_state is FindingTodoState.OPEN
             and _answered(case.projection, key)
-            and not _disputed_after_rebuttal(case, key, "still_present", (*refs, *cited))
+            and not rejection_stands(record, case.projection.responses.get(key))
         ):
+            # The reviewer's reply to an answer reaches the agent as a finding (issue #976); only
+            # a reply to a standing rejection that brings nothing newer folds (issue #1020).
             continue
-        held = (
-            wanted
-            if exact
-            else frozenset(
-                ref
-                for ref in wanted
-                if not ref.startswith("clm_")
-                and not _bookkeeping_event(case, ref, _CLAIM_EVENT_SCHEMAS)
-            )
+        if bound is None:
+            bound = max(record.source_frontier, record.last_ruling_frontier or 0)
+        merged = ConcernKey(
+            wanted_key.obligations | target_key.obligations,
+            wanted_key.refs | target_key.refs,
+            wanted_key.named_obligations or target_key.named_obligations,
         )
-        # Issue #1020: over the agent's reasoned rejection, material recorded before that
-        # rejection is what the agent already answered; only material after it is new.
-        rebuttal = _reasoned_rejection_frontier(case.projection, key)
-        bound = (
-            rebuttal
-            if rebuttal is not None
-            and rebuttal > record.source_frontier
-            and not _cites_material_after(case, (*refs, *cited), rebuttal)
-            else record.source_frontier
-        )
-        if not all(
-            (sequence := _material_sequence(case, ref)) is not None and sequence <= bound
-            for ref in held
-        ):
+        if concern_material_after(case, merged, (*refs, *cited), bound):
             continue
-        # An exact match outranks a normalized one; then the newest finding wins.
+        # An exact match outranks a concern match; then the newest finding wins.
         rank = (int(exact), record.source_frontier, key)
         if best is None or rank[:2] > best[:2]:
             best = rank
     return None if best is None else best[2]
-
-
-# The refs that are the agent's bookkeeping around a concern rather than material about it: a
-# claim is re-published and an obligation re-stated without changing the concern (issue #1020).
-# Used by the dispute rule; restatement matching still holds obligations to the freshness rule.
-_BOOKKEEPING_PREFIXES: Final = frozenset({"clm_", "obl_"})
-
-
-def _current_claim(projection: ProjectionState, ref: str) -> str:
-    """The claim that currently supersedes *ref* (itself when none does); bounded, cycle-safe."""
-
-    current = ref
-    seen: set[str] = set()
-    while current not in seen and len(seen) < 64:
-        seen.add(current)
-        row = projection.claims.get(cast(ClaimId, current))
-        following = None if row is None else row.superseded_by_claim_id
-        if following is None:
-            return current
-        current = str(following)
-    return current
-
-
-def _concern_key(case: DeterministicCase, refs: Iterable[str]) -> frozenset[str]:
-    """A subject set normalized across claim churn (issue #1020, tb4n2 P1-10).
-
-    Each claim maps to the claim currently superseding it. When the set names obligations, the
-    concern is those obligations; the claim and event refs around them are dropped, so
-    re-publishing a claim over the same obligation is the same concern. Event refs still have to
-    be no newer than the finding (``_restated_finding``), so newer material is never folded.
-    """
-
-    items = tuple(refs)
-    obligations = frozenset(ref for ref in items if ref.startswith("obl_"))
-    if obligations:
-        return obligations
-    return frozenset(
-        _current_claim(case.projection, ref) if ref.startswith("clm_") else ref for ref in items
-    )
 
 
 def _answered(projection: ProjectionState, finding: FindingId) -> bool:

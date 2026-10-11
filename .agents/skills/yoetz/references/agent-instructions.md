@@ -2,7 +2,7 @@
 
 Use Yoetz for material multi-step, delegated, resumable, or verification-heavy work. New session: read guidance/discover schemas, then `start` before substantive work. If startup fails, follow recovery first; if still blocked, ask for intro and guidance. Skip trivial questions or edits; never invent a ledger task. Cadence: `start` once, `publish_work` per material transition; `receipt` last. Never claim Yoetz is active until `start` returns. `yoetz://guidance/workflow.md`.
 
-This small core is required before `start`. Read current guidance, not memory. Schemas are wire authority. Yoetz is a local ledger/checker. Yoetz is not an enforcement system; a check is not correctness.
+Read current guidance, not memory. Schemas are wire authority. Yoetz is a local ledger/checker. Yoetz is not an enforcement system; a check is not correctness.
 
 # Task first
 
@@ -10,7 +10,7 @@ Deliver every requested output at its path, even if an input looks inconsistent:
 
 # Guidance catalog
 
-Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance. The five index URIs are the complete legacy catalog; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI; verify `structuredContent.text`, byte counts, offsets, revision and digest. `page_size` is 4 to 16,384 UTF-8 bytes; default 4,096. Only if that result is also empty, use installed `references/<name>.md` or the focused topic's parent index.
+Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance. The five index URIs are the complete legacy catalog; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI; verify the text and byte counts. `page_size` is 4 to 16,384 UTF-8 bytes; default 4,096. Only if that result is also empty, use installed `references/<name>.md` or the focused topic's parent index.
 
 Focused topics: `startup.md`, `recovery.md`, `publication.md`, `review.md`, `receipt.md`, `delegation.md`, `consent.md`, `page-delivery.md`. Heading topics like `yoetz://guidance/workflow.md#start-and-resume` are a closed catalog: use only anchors guidance names; a rejected anchor's error lists valid ones.
 
@@ -22,7 +22,7 @@ Discover the `start` schema, use a fresh `req_` UUIDv4, and provide `mode`, `tas
 
 # Essential boundaries
 
-Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history, credentials, secrets, whole files/repositories, or broad unrelated source. Never move, split, shrink, delete, `git add -N` or git-ignore (incl. `.git/info/exclude`) a deliverable for review; Yoetz redacts; what it can't show, self-verify. Recover via schemas/guidance, not SQLite/source. On `retryable: false`, follow only the typed `continuation`; keep an unknown write's request id. If Yoetz is unavailable, say no record or receipt exists.
+Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history, credentials, secrets, whole files/repositories, or broad unrelated source. Never move, split, shrink, delete, `git add -N` or git-ignore (incl. `.git/info/exclude`) a deliverable for review; Yoetz redacts; what it can't show, self-verify. On `retryable: false`, follow only the typed `continuation`; keep an unknown write's request id. If Yoetz is unavailable, say no record or receipt exists.
 
 # Review and closure
 

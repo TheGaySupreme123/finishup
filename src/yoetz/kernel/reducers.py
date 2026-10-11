@@ -71,6 +71,7 @@ from yoetz.kernel.claim_limitations import (
 from yoetz.kernel.finding_resolution import (
     apply_check_resolution,
     apply_check_rulings,
+    next_standing_position,
     reopen_findings_resolved_by,
 )
 from yoetz.kernel.later_material import (
@@ -763,6 +764,13 @@ def _apply_obligation(
         superseded_by_obligation_ids=(
             () if existing is None else existing.superseded_by_obligation_ids
         ),
+        # A republication only changes status (the meaning fields must repeat), so the obligation
+        # keeps the sequence it was first published at (tb4n3 RC-7).
+        introduced_frontier=(
+            None
+            if existing is None or existing.payload is None
+            else (existing.introduced_frontier or existing.source_frontier)
+        ),
     )
 
 
@@ -1423,6 +1431,17 @@ def reduce_event(
                 # ``self_verified`` answer (the agent repaired the item and verified it itself,
                 # because Yoetz could not prove it) also disputes the reviewer's standing claim.
                 findings[key] = replace(rebutted, rebuttal_count=rebutted.rebuttal_count + 1)
+            if payload is not None and key in findings:
+                # tb4n3 RC-7: the agent's earliest unretracted reasoned position is a reducer
+                # fact, so a later answer of another kind never erases a rebuttal (D-2).
+                findings[key] = replace(
+                    findings[key],
+                    standing_position=next_standing_position(
+                        findings[key].standing_position,
+                        cast(ResponseRecordedPayload, payload),
+                        accepted.ledger.ingestion_sequence,
+                    ),
+                )
         elif family == "coordination_context_recorded":
             if accepted.event_id in coordination_contexts:
                 raise _corrupt()
@@ -1483,7 +1502,13 @@ def reduce_event(
                     proof_state=state,
                     first_task_statement_sequence=replay_index.first_task_statement_sequence,
                 )
-                apply_check_rulings(findings, responses, check, accepted.event_id)
+                apply_check_rulings(
+                    findings,
+                    responses,
+                    check,
+                    accepted.event_id,
+                    check_frontier=accepted.ledger.ingestion_sequence,
+                )
                 # Issue #907: the latest assessed review decides what is still named missing. A
                 # local-only or failed check leaves the prior request standing, and so does an
                 # ``insufficient_packet`` that recorded no item (a reply that named nothing, or

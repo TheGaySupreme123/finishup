@@ -4182,7 +4182,10 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     cast(dict[str, JsonValue], findings_page["properties"])["attempt_budget"] = (
         _attempt_budget_schema()
     )
-    for terminal in (_ACKNOWLEDGED_NOT_DONE, _SELF_VERIFIED):
+    # tb4n3 RC-7 (#1030): these answers are the agent's last word until a later qualifying check
+    # proves the issue absent, so the row may read ``resolved`` then (reverse edge); ``reopened``
+    # takes an ``acknowledged_not_done`` answer back and carries a reason too.
+    for terminal in (_ACKNOWLEDGED_NOT_DONE, _SELF_VERIFIED, _REOPENED):
         cast(list[JsonValue], finding_item["allOf"]).append(
             {
                 "if": {
@@ -4192,7 +4195,6 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                 "then": {
                     "properties": {
                         "reason": {"not": {"type": "null"}},
-                        "resolved": {"const": False},
                         "waiver_expiry": {"type": "null"},
                         "waiver_scope": {"type": "null"},
                     }
@@ -8329,13 +8331,14 @@ def _no_waiver_fields() -> dict[str, JsonValue]:
 
 
 _SELF_VERIFIED: Final = "self_verified"
+_REOPENED: Final = "reopened"
 
 
 def _admit_terminal_dispositions(disposition: dict[str, JsonValue]) -> None:
-    """Add the terminal not-done (#905) and self-verified (#984) dispositions to one enum."""
+    """Add the terminal not-done (#905), self-verified (#984) and reopened (#1030) dispositions."""
 
     values = cast(list[JsonValue], disposition["enum"])
-    for value in (_ACKNOWLEDGED_NOT_DONE, _SELF_VERIFIED):
+    for value in (_ACKNOWLEDGED_NOT_DONE, _SELF_VERIFIED, _REOPENED):
         if value not in values:
             values.append(value)
     values.sort(key=lambda item: str(item).encode("ascii"))
@@ -8447,6 +8450,18 @@ def _acknowledged_not_done_condition() -> dict[str, JsonValue]:
     }
 
 
+def _reopened_condition() -> dict[str, JsonValue]:
+    """``reopened`` (tb4n3 RC-7, #1030) takes a not-done answer back: a reason, no waiver fields."""
+
+    return {
+        "if": {
+            "properties": {"disposition": {"const": _REOPENED}},
+            "required": ["disposition"],
+        },
+        "then": {**_no_waiver_fields(), "required": ["reason"]},
+    }
+
+
 def _response_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Admit the terminal ``acknowledged_not_done`` response on a new event version (#905)."""
 
@@ -8479,6 +8494,14 @@ def _response_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue
             "required": ["reason", "evidence_refs"],
         },
     )
+    _insert_before_waived(
+        rules,
+        {
+            **_no_waiver_fields(),
+            "properties": {"disposition": {"const": _REOPENED}},
+            "required": ["reason"],
+        },
+    )
     link_rule = _admit_duplicate_of(properties, rules, one_of=True)
     assert link_rule is not None
     cast(list[JsonValue], document.setdefault("allOf", [])).append(link_rule)
@@ -8501,6 +8524,7 @@ def _respond_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _admit_terminal_dispositions(disposition)
     rules.insert(1, _acknowledged_not_done_condition())
     _insert_before_waived(rules, _self_verified_condition())
+    _insert_before_waived(rules, _reopened_condition())
     link_rule = _admit_duplicate_of(properties, rules)
     assert link_rule is not None
     rules.append(link_rule)
@@ -8527,9 +8551,37 @@ def _respond_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _admit_terminal_dispositions(disposition)
     rules.insert(1, _acknowledged_not_done_condition())
     _insert_before_waived(rules, _self_verified_condition("evidence"))
+    _insert_before_waived(rules, _reopened_condition())
     link_rule = _admit_duplicate_of(properties, rules)
     assert link_rule is not None
     rules.append(link_rule)
+    # tb4n3 RC-7 (#1030): where the finding stands once the answer is recorded.
+    definitions["closure_after"] = {
+        "additionalProperties": False,
+        "properties": {
+            "limitation": {
+                "enum": ["limitation_disclosed", "limitation_requested"],
+                "type": "string",
+            },
+            "todo_state": {
+                "enum": [
+                    "acknowledged_not_done",
+                    "disputed_after_rebuttal",
+                    "open",
+                    "rejection_accepted",
+                    "self_verified",
+                    "verified_resolved",
+                ],
+                "type": "string",
+            },
+        },
+        "required": ["todo_state"],
+        "type": "object",
+    }
+    success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["closure_after"] = {
+        "$ref": "#/$defs/closure_after"
+    }
     _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     if "title" in document:

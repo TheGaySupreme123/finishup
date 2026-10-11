@@ -60,12 +60,12 @@ from yoetz.kernel.finding_todo import (
     finding_todo_state,
     ruling_since,
 )
+from yoetz.kernel.limitation import externally_evaluated_obligations, limitation_standing
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.task_facts import (
     blocker_declarations,
     decision_batches,
-    disclosure_declarations,
     effective_obligations,
 )
 from yoetz.protocol.models import SemanticStatus
@@ -337,9 +337,6 @@ UNDELIVERABLE_SEMANTIC_STATUSES: Final = frozenset(
         SemanticStatus.APPROVAL_EXPIRED,
     }
 )
-_ACKNOWLEDGING: Final = frozenset(
-    {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.ACKNOWLEDGED_NOT_DONE}
-)
 
 
 def review_can_rule(state: ProjectionState, records: Iterable[LedgerRecord] = ()) -> bool:
@@ -372,25 +369,6 @@ def review_can_rule(state: ProjectionState, records: Iterable[LedgerRecord] = ()
         check.semantic_route_required is False
         and check.semantic_status is SemanticStatus.NOT_REQUESTED
     )
-
-
-def _limitation_disclosure(
-    state: ProjectionState, finding: Finding, response_disposition: ResponseDisposition | None
-) -> EventId | None:
-    """The event that discloses a reviewer's limitation request (owner decision Q4), or ``None``.
-
-    Either the agent answered it (``acknowledged`` / ``acknowledged_not_done``) or a recorded
-    ``yoetz-verification-limit:<obligation>`` decision covers an obligation the finding cites.
-    Only recorded facts count; the agent's own prose never does (guard G2).
-    """
-
-    if response_disposition in _ACKNOWLEDGING:
-        return None  # the response event is the source; the caller names it
-    cited = {str(ref) for ref in finding.subject_refs}
-    for declaration in disclosure_declarations(state):
-        if declaration.kind == "verification_limit" and str(declaration.obligation_id) in cited:
-            return declaration.decision_event_id
-    return None
 
 
 def _make(
@@ -541,15 +519,16 @@ def finding_closure(
                 sources=response_event,
             )
     if limitation and not rejected:
-        decision = _limitation_disclosure(state, finding, disposition)
-        if disposition in _ACKNOWLEDGING or decision is not None:
+        # One implementation of the Q4 lifecycle: ``kernel.limitation`` (recorded facts only, G2).
+        standing_limit = limitation_standing(state, finding_id)
+        if standing_limit is not None and standing_limit.disclosed:
             return _make(
                 state,
                 finding,
                 "limitation_disclosed",
                 ("none",),
-                since=response_frontier,
-                sources=response_event if decision is None else (decision,),
+                since=standing_limit.since_frontier,
+                sources=standing_limit.source_event_ids,
             )
         return _make(
             state,
@@ -619,28 +598,6 @@ def finding_closures(
     return MappingProxyType(closures)
 
 
-def _externally_evaluated(state: ProjectionState) -> frozenset[ObligationId]:
-    """Obligations the agent disclosed as verifiable only outside this environment (RC-1).
-
-    A recorded ``yoetz-verification-limit:<obl>`` decision plus a reviewer limitation request
-    that cites the obligation (marker ``acceptance_externally_evaluated``). Neither alone
-    qualifies, and the agent's own acknowledgement of the obligation does not either (guard G2).
-    """
-
-    declared = {
-        item.obligation_id
-        for item in disclosure_declarations(state)
-        if item.kind == "verification_limit"
-    }
-    if not declared:
-        return frozenset()
-    cited: set[str] = set()
-    for record in state.findings.values():
-        if record.payload is not None and is_limitation_request(record.payload):
-            cited.update(str(ref) for ref in record.payload.subject_refs)
-    return frozenset(item for item in declared if str(item) in cited)
-
-
 def _emptied_obligations(
     state: ProjectionState, records: tuple[LedgerRecord, ...]
 ) -> frozenset[ObligationId]:
@@ -680,7 +637,7 @@ def obligation_closures(
     ledger = tuple(records)
     emptied = _emptied_obligations(state, ledger)
     blocked = blocker_declarations(state, decision_batches(ledger))
-    external = _externally_evaluated(state)
+    external = externally_evaluated_obligations(state)
     closures: dict[ObligationId, ObligationClosure] = {}
     for obligation in effective_obligations(state):
         record = state.obligations[obligation]

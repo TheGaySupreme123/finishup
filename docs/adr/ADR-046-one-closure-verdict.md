@@ -98,7 +98,9 @@ Rules the tables encode:
   next action `acknowledge`, counted as "to disclose" and never as receipt-blocking work. After any
   `respond` acknowledgement (`acknowledged` or `acknowledged_not_done`) it is
   `limitation_disclosed`: settled, and the receipt discloses it under "Verification limits" at
-  `insufficient_coverage`. Guards: an `act` challenge never qualifies, and the agent's own words
+  `insufficient_coverage`. It is then named once, as disclosed: never under "Acknowledged, not done", never in
+  `closure_readiness.acknowledged_not_done`, and its explanation says "to disclose", never "repair it, then check".
+  Guards: an `act` challenge never qualifies, and the agent's own words
   never make a finding a limitation. A `yoetz-verification-limit:<obligation>` decision covering the
   obligation the finding concerns settles it the same way, and marks the obligation
   `externally_evaluated`.

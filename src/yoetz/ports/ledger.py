@@ -1789,6 +1789,7 @@ class FindingsProjectionFilter:
             "duplicate_of",
             "provenance_disputed",
             "rejected",
+            "reopened",
             "self_verified",
             "waived",
         ]
@@ -1816,6 +1817,7 @@ class FindingsProjectionFilter:
                 "duplicate_of",
                 "provenance_disputed",
                 "rejected",
+                "reopened",
                 "self_verified",
                 "waived",
             }

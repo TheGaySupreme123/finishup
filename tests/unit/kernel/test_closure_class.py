@@ -146,9 +146,13 @@ def _finding(
 
 
 def _response(
-    number: int, disposition: ResponseDisposition, *, frontier: int = 6
+    number: int, disposition: ResponseDisposition, *, frontier: int = 6, reasoned: bool = False
 ) -> ProjectionRecord[ResponseRecordedPayload]:
-    reason = None if disposition is ResponseDisposition.ACKNOWLEDGED else "A recorded reason."
+    reason = (
+        None
+        if disposition is ResponseDisposition.ACKNOWLEDGED and not reasoned
+        else "A recorded reason."
+    )
     refs = (evd(number),) if disposition is ResponseDisposition.SELF_VERIFIED else ()
     return record(
         ResponseRecordedPayload(
@@ -172,13 +176,21 @@ def _state(
     )
 
 
-def _one(finding: Finding, response: ResponseDisposition | None = None, **fields: object):
+def _one(
+    finding: Finding,
+    response: ResponseDisposition | None = None,
+    *,
+    reasoned: bool = False,
+    **fields: object,
+):
     findings = {finding.finding_id: replace(finding_record(finding, 4), **fields)}
     responses = (
         {}
         if response is None
         else {
-            finding.finding_id: _response(int(str(finding.finding_id).rsplit("-", 1)[1]), response)
+            finding.finding_id: _response(
+                int(str(finding.finding_id).rsplit("-", 1)[1]), response, reasoned=reasoned
+            )
         }
     )
     state = _state(findings, responses)
@@ -333,7 +345,8 @@ def test_a_limitation_request_is_agent_work_to_disclose_not_blocking_work() -> N
     "response", [ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.ACKNOWLEDGED_NOT_DONE]
 )
 def test_one_acknowledgement_discloses_a_limitation(response: ResponseDisposition) -> None:
-    _, closure = _one(_limitation(), response)
+    # The disclosure is a reasoned answer (``respond`` requires the reason on a reviewer finding).
+    _, closure = _one(_limitation(), response, reasoned=True)
     assert (closure.closure_class, closure.basis, closure.receipt_effect) == (
         FindingClosureClass.SETTLED_DISCLOSED,
         "limitation_disclosed",
@@ -344,6 +357,14 @@ def test_one_acknowledgement_discloses_a_limitation(response: ResponseDispositio
         1,
         0,
         0,
+    )
+
+
+def test_an_unreasoned_acknowledgement_does_not_disclose_a_limitation() -> None:
+    _, closure = _one(_limitation(), ResponseDisposition.ACKNOWLEDGED)
+    assert (closure.closure_class, closure.basis) == (
+        FindingClosureClass.AGENT_WORK,
+        "limitation_requested",
     )
 
 

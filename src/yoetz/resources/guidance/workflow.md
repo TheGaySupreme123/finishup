@@ -266,7 +266,8 @@ to reconsider it, even right after an earlier continuation: if the task says the
 dependency is recoverable, continue the work; if it is genuinely outside your control, follow the
 confirmation step that re-check gives you, then stop. A Stop also asks you once about findings you
 marked `acknowledged_not_done` that the review says the task itself requires
-(`finding_premise_disputed`): do that work unless it is genuinely impossible.
+(`finding_premise_disputed`): do that work unless it is genuinely impossible, and if you cannot
+finish it keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
 If a script ran the planned command for you (for example `python run_tests.py` calling the
 planned `pytest` command internally), link that run: publish an `action_recorded` with
 `action_kind` `command`, the planned item's exact `value` in `attempted_items`, and the observed

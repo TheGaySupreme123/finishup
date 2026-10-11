@@ -634,6 +634,31 @@ def render_deterministic_finding_text(
                     " resolve it, and it stays current until a qualifying check proves those"
                     f" other gaps absent.{support}"
                 )
+    if kind is FindingKind.ACTION_WITHOUT_RESULT:
+        # tb4n3 N3-5: the subject is the event that recorded the action, but a result links by the
+        # action's own act_ id. cargo D could not find it and tried a causal parent instead.
+        action_ids = tuple(
+            dict.fromkeys(
+                ref
+                for fact in observed_facts
+                if fact.fact_code == "action_present"
+                for ref in fact.subject_refs
+                if ref.startswith("act_")
+            )
+        )
+        if action_ids:
+            named = ", ".join(action_ids[:3]) + (
+                f" and {len(action_ids) - 3} more" if len(action_ids) > 3 else ""
+            )
+            return (
+                template.summary,
+                f"Subjects: {', '.join(refs)}. Main agent: {template.next_action} The action to"
+                f" link is {named} (the subject above is the event that recorded it). Link a"
+                " result by publishing a result_recorded whose payload action_id is that act_ id,"
+                " with outcome success, failure, partial or unknown and a summary; a causal"
+                " parent alone names the event but does not link the result. If the attempt was"
+                " abandoned, record its result with outcome unknown and say so in the summary.",
+            )
     if kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED and any(
         fact.fact_code == REQUESTED_OUTPUT_ABSENT_FACT for fact in observed_facts
     ):
@@ -853,6 +878,18 @@ def _text_contract_corpus() -> tuple[JsonValue, ...]:
             FindingKind.LEDGER_STALE_OR_INCOMPLETE,
             ("evidence_digest_subject_legacy_unknown", "unknown_event"),
             (),
+        ),
+        (
+            # tb4n3 N3-5: the action finding names the act_ id a result must link to.
+            "action_without_result_link",
+            FindingKind.ACTION_WITHOUT_RESULT,
+            (),
+            (
+                FindingFact(
+                    "action_present",
+                    (action_id("act_00000000-0000-4000-8000-000000000000"),),
+                ),
+            ),
         ),
         ("limitation_result", FindingKind.MATERIAL_LIMITATION_OMITTED, (), (limitation_result,)),
         ("limitation_record", FindingKind.MATERIAL_LIMITATION_OMITTED, (), (limitation_record,)),

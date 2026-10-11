@@ -263,3 +263,31 @@ about verification or evidence. When such a fact is the only reason left it stil
 agent clears it by doing that work). Closure readiness, the Stop gate and finding resolution keep
 every task fact task-wide. tb4n2 interleaved S: two review findings were refused only because of an
 (also false, ADR-042 decision 5) edited-after-verification fact.
+
+## Amendment (2026-10-11, issue #1030, tb4n3 RC-7): the answers are not one-way doors
+
+`acknowledged_not_done` and `self_verified` were final: an agent that gave up (or verified a repair
+Yoetz could not prove) and then did the work, or whose work a later check proved, stayed
+receipt-blocking or stayed "disclosed" forever (pretrain S, N3-5). The reverse edges:
+
+- **Absence proof after the answer.** `FindingProjectionRecord.resolution_frontier` is the tested
+  frontier of the check named by `resolved_by_check_event_id`. `finding_is_resolved` is true for an
+  `acknowledged_not_done` or `self_verified` answer when that frontier is later than the answer's
+  ledger sequence: a qualifying check that tested the work after the answer proved the issue absent,
+  so the finding is `verified_resolved`. A proof recorded before the answer does not resolve it.
+- **`reopened`.** A new `respond` disposition takes an `acknowledged_not_done` answer back (reason
+  required): the finding is `open` again and the standing position is retracted. It is refused
+  (`response_fields_invalid` on `/disposition`) on every other state. `self_verified` takes no answer
+  (it is upgraded by the proof above), and `verified_resolved`, `rejection_accepted` and
+  `disputed_after_rebuttal` stay absolutely final (`finding_terminal`).
+- **`closure_after`.** The `respond` result reports `{todo_state, limitation?}` as the answer leaves
+  the finding, so the agent sees whether it settled a limitation request or reopened work without a
+  second `status` call.
+- **Transitions table** (`kernel/finding_todo.TODO_TRANSITIONS`): `acknowledged_not_done` to `open`
+  (`respond_reopened_with_reason`), `acknowledged_not_done` to `verified_resolved`, and
+  `self_verified` to `verified_resolved`.
+
+A reasoned `self_verified` over a reviewer's limitation request also discloses it (ADR-040
+amendment): it is the agent's final reasoned word, and the request has no other exit once given.
+Host decision: the change is in the shared kernel, respond and MCP paths, so Codex, Claude Code and
+Cursor behave identically; no host gap.

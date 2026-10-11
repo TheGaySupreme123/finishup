@@ -676,9 +676,12 @@ def test_a_ruling_that_loses_a_cited_ref_is_unassessable_never_silently_dropped(
         )
     )
 
+    # tb4n3 RC-7 (D-6): a ``fixed`` that keeps one recorded newer result stays ``fixed`` when
+    # another citation is trimmed; a ``still_present`` that loses its citation is still
+    # ``unassessable``. Both trims are disclosed.
     assert _rulings(review) == [
         (str(fnd(1)), "unassessable", (str(obl(1)),)),
-        (str(fnd(2)), "unassessable", (str(res(2)),)),
+        (str(fnd(2)), "fixed", (str(res(2)),)),
     ]
     assert review.verdicts_unsupported == 2
 
@@ -1389,6 +1392,7 @@ def _cargo_case(
     *,
     resolved: bool = False,
     disposition: ResponseDisposition = ResponseDisposition.REJECTED,
+    result_outcome: ResultOutcome = ResultOutcome.FAILURE,
 ) -> DeterministicCase:
     """cargo-flight-dispatch shape: one concern raised at 5, answered at 6, then new work.
 
@@ -1409,7 +1413,7 @@ def _cargo_case(
     results = {
         res(number): record(
             ResultRecordedPayload(
-                res(number), act(number), ResultOutcome.SUCCESS, summary=f"attempt {number}"
+                res(number), act(number), result_outcome, summary=f"attempt {number}"
             ),
             6 + number,
         )
@@ -1481,6 +1485,28 @@ def test_cargo_re_raises_named_by_restates_stay_one_open_finding() -> None:
             review.review_summary
         )
         assert "Reviewer re-raised earlier findings" in review.review_summary
+
+
+def test_cargo_re_raises_citing_only_passing_runs_are_a_standing_disagreement() -> None:
+    """tb4n3 RC-7 (D-8): the latest passing test run every agent re-runs is not new material about
+    a rejected concern. The SUCCESS variant of the cargo shape therefore records the reviewer's
+    repeat as ``disputed_after_rebuttal`` (a standing disagreement, not a round), where the
+    failing-run variant above is ``answered_not_fixed``."""
+
+    case = _cargo_case(result_outcome=ResultOutcome.SUCCESS)
+    for number in range(1, 8):
+        review = validate_semantic_judgment(
+            case,
+            (),
+            SemanticJudgment("challenges_returned", (_re_raise(number, restates=str(fnd(1))),)),
+            _provenance(),
+            expected_frontier=case.frontier,
+            prior_finding_refs=frozenset({str(fnd(1))}),
+        )
+        assert review.candidates == ()
+        assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+            (str(fnd(1)), "disputed_after_rebuttal")
+        ]
 
 
 def test_restates_of_another_concern_mints_a_linked_finding_and_never_rules_on_the_target() -> None:

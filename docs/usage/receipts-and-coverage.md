@@ -246,12 +246,16 @@ exception is fixed by the released status wire: a finding whose latest response 
 
 Findings are a to-do list that ends. Each one is `open` or in a final state: `verified_resolved`
 (proved absent as above), `acknowledged_not_done` (the agent said, with a required reason, that it
-will not do it), or `rejection_accepted` (the agent rejected an AI-powered finding with a reason and
+will not do it; it stays reopenable, and a later check that tests the work and finds the issue absent
+resolves it), or `rejection_accepted` (the agent rejected an AI-powered finding with a reason and
 a later review withdrew it; a withdrawal wins over the same review not raising it again, so such an
 item never reads as proved absent). A final item never changes again and is not reviewed again; a
 later `respond` to it records nothing and answers `finding_terminal`. New evidence about the same
 problem comes back as a new finding. `acknowledged_not_done` is an honest "not done": it keeps the
-receipt from reading clean and appears in its own "Acknowledged, not done" section.
+receipt from reading clean and appears in its own "Acknowledged, not done" section. A reviewer's
+request that you state a limit you cannot remove (a hidden evaluator, a withheld reference) is not
+"not done" work: once you disclose it with one reasoned answer it is a settled limitation, and a
+repeat of the same concern is recorded on it rather than raised again.
 
 `self_verified` is the final state for a finding you repaired that Yoetz cannot prove repaired
 because of its own limits (a *Yoetz limit*: content it could not capture or had to redact, lost

@@ -8347,7 +8347,7 @@ at its schema boundary. `status-request`
 
 Every recorded finding has one to-do state (`kernel/finding_todo.py`): `open`,
 `verified_resolved` (the shared `finding_is_resolved` rule), `acknowledged_not_done` (latest
-readable response has that disposition; never reads as resolved), or `rejection_accepted` (a later
+readable response has that disposition; reads as resolved only through a later absence proof, below), or `rejection_accepted` (a later
 check recorded a `withdrawn` ruling on an AI-powered finding whose latest readable response was
 `rejected`; the projection records the check as `rejection_accepted_by_check_event_id`). When the
 same check also satisfies the absence proof for that row, the explicit ruling wins:
@@ -8358,9 +8358,9 @@ three are terminal: `respond` on a terminal finding appends nothing and fails wi
 `INVALID_REQUEST`, reason code `finding_terminal`, field `/finding_id` (no continuation: there is
 nothing to do); a latched row is never resolved later; redacting the latching check clears the
 latch. Terminal items are left out of the prior-findings section and rulings on them are not
-admitted. `receipt_blocking_finding_count` counts `acknowledged_not_done` rows of a requirement kind (an
-acknowledged `action_without_result` bookkeeping finding is disclosed instead, ADR-046) and no longer
-counts `rejection_accepted` rows.
+admitted. `receipt_blocking_finding_count` counts `acknowledged_not_done` rows of a requirement kind that demand work (an
+acknowledged `action_without_result` bookkeeping finding is disclosed instead, ADR-046; a reviewer's limitation
+request is never counted) and no longer counts `rejection_accepted` rows.
 
 #### `self_verified`: proof-limited findings (issue #984, ADR-034)
 
@@ -8381,8 +8381,9 @@ message names them with a next step and the `yoetz-verification-limit:<obligatio
 (ADR-041).
 Eligibility is `kernel/self_verification.self_verification_refusal(state, finding_id, records)`
 over the resolution reasons of that check (ADR-034): any `coverage:<code>` classified standing in
-`GAP_CLASSIFICATION` is a Yoetz limit. The to-do state `self_verified` is terminal and never
-resolved (`finding_is_resolved` is false for it, like `acknowledged_not_done`), is not counted by
+`GAP_CLASSIFICATION` is a Yoetz limit. The to-do state `self_verified` is not resolved by its own
+answer (`finding_is_resolved` is false for it unless a qualifying check tested the work after the
+answer; see "Reverse edges" below), is not counted by
 `receipt_blocking_finding_count`, is left out of the next review, and is disclosed: closure
 readiness lists the standing code `finding_self_verified`; `receipt-document` `1.3.0` carries
 `self_verified_finding_ids` (1–100, a `no_unresolved_deterministic_findings` conclusion beside it is
@@ -8429,6 +8430,42 @@ agent work: a recheck-instruction can regenerate, ADR-040 section 7); `closure_r
 the bounding suffix rests on (beside the standing code): `effect`, `event_id`,
 `ledger_sequence`, `family`, `material_class`, `rule`, optional `tool`, `check_event_id`,
 `check_subject_frontier`.
+
+#### Reverse edges, limitation requests and concern identity (issues #1024 and #1030, ADR-034 and ADR-040 amendments)
+
+Names shared by the kernel, `respond`, `check`, status and the receipt:
+
+- `respond` disposition `reopened` (with `acknowledged_not_done` it rides `respond-request` and
+  `respond-result` `1.1.0` and the `response_recorded` `1.1.0` event; `reason` is required): takes an
+  `acknowledged_not_done` answer back, the finding is `open` and its standing position is retracted.
+  Refused with `response_fields_invalid` on `/disposition` on any other state. `verified_resolved`,
+  `rejection_accepted` and `disputed_after_rebuttal` stay absolutely final (`finding_terminal`);
+  `acknowledged_not_done` answers `finding_terminal` to every disposition but `reopened`; the message
+  names the state and the way out.
+- `respond-result` `1.1.0` optional `closure_after {todo_state, limitation?}`: the state the answer
+  produced, simulated at its own frontier (`limitation` is `limitation_requested` or
+  `limitation_disclosed` for a reviewer's limitation request; absent otherwise).
+- Absence proof after the answer: `FindingProjectionRecord.resolution_frontier` (the tested frontier
+  of the check named by `resolved_by_check_event_id`) lets `finding_is_resolved` resolve an
+  `acknowledged_not_done` or `self_verified` answer when the proof tested the work after the answer.
+  The status finding items allow `resolved: true` on those two states.
+- Limitation requests: `domain.findings.is_limitation_request(finding)` and
+  `finding_demands_work(finding)`; `kernel.limitation.limitation_standing(state, finding_id) ->
+  LimitationStanding | None` with states `limitation_requested` (to disclose) and
+  `limitation_disclosed` (basis `respond_acknowledgement` or `verification_limit_decision`),
+  `limitation_requested_ids` and `limitation_disclosed_ids`. A limitation request never demands
+  work, is never receipt-blocking and is never clean. Acknowledging it needs no recorded resolution
+  attempt.
+- Reducer facts (replay-derived, snapshot-emitted only when set): `standing_position`
+  (`StandingPosition(kind, frontier)`; the earliest unretracted reasoned answer), `last_ruling_frontier`,
+  `resolution_frontier`, `absorbed_refs` (bounded refs a settled item's re-raises cited) on a finding
+  row; `introduced_frontier` on an obligation row (its first publication; republication only changes
+  status). Accessors: `kernel.finding_todo.finding_standing(state, id) -> (kind, frontier) | None`,
+  `ruling_since(state, id) -> int | None`, `standing_answer_frontier(state, id) -> int | None`.
+- Concern identity: `kernel.concern.concern_key(projection, refs) -> ConcernKey`, `same_concern`,
+  `equal_concern`, `kinds_comparable`; new material: `application.review_concern.concern_material_after`
+  and `answer_bound`. Packet: `yoetz_already_disclosed` beside an obligation the agent disclosed and
+  `limitation_already_disclosed` / `limitation_disclosed_by` on a settled-finding row.
 
 #### `duplicate_of`: a re-raised finding linked to an earlier one (issue #996, ADR-034 amendment)
 

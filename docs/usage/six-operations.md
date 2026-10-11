@@ -181,16 +181,25 @@ material edit, evidence change, or plan change. A readable response to a finding
 current check does not require a recheck, nor does acknowledging an observation-authored
 non-actionable finding or publishing `work_closed`; a redacted or unreadable response does.
 `acknowledged_not_done` records, with a required reason, that you will not do what a finding asks;
-it is final, is not reviewed again, and keeps the receipt from reading clean; use it only if you
-truly will not or cannot do the work. `self_verified` is for a finding you repaired that Yoetz still
+it is not reviewed again and keeps the receipt from reading clean; use it only if you truly will not
+or cannot do the work. It is not a one-way door: respond `reopened` with a reason to take it back, or
+just do the work and run `check`, and a check that tests the work after your answer and finds the
+issue absent resolves the finding. When the reviewer asks you to state a limit (a requirement only
+a hidden evaluator or something you cannot obtain could settle), that finding is a limitation
+request, not work: one reasoned `acknowledged` (or a `yoetz-verification-limit:<obligation id>`
+decision) discloses it, with no repair attempt required, and the receipt lists the disclosed limit
+instead of reading clean. Never empty or withdraw a working deliverable over a finding. `self_verified` is for a finding you repaired that Yoetz still
 cannot prove after a later check because of its own limits: say how you verified the repair in
 `reason` and cite at least one recorded evidence or result id in `evidence_refs`. It is final, is
 not your work any more, and keeps the receipt at best `insufficient_coverage`; Yoetz refuses it
 with `finding_not_rechecked` before a later check, or `finding_not_proof_limited` while that check
 still sees the issue. A finding that is already `verified_resolved`, `acknowledged_not_done`,
 `self_verified`, `rejection_accepted` or `disputed_after_rebuttal` (the review repeated a finding
-you rejected with a reason without citing anything newer; disclosed, not your work) is final: `respond` records nothing and answers
-`finding_terminal`. `duplicate_of` is only for a genuine restatement of the same issue (same origin
+you rejected with a reason without citing anything newer; disclosed, not your work) takes no further
+answer: `respond` records nothing and answers `finding_terminal`, naming the state and the way out
+(`reopened` for `acknowledged_not_done`; a later check that finds the issue absent for
+`acknowledged_not_done` and `self_verified`). The result of a `respond` includes `closure_after`, the
+state your answer produced. `duplicate_of` is only for a genuine restatement of the same issue (same origin
 and kind) as an earlier finding you answered: name it in `duplicate_of_finding_id`. Linking never
 resolves the new finding; it stays open until its own check proves it absent, needs no separate
 answer, and inherits only the earlier finding's not-done or self-verified answer. A later check

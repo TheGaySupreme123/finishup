@@ -1717,6 +1717,7 @@ class RespondRequestModel(PublicRequestModel):
         "duplicate_of",
         "provenance_disputed",
         "rejected",
+        "reopened",
         "self_verified",
         "waived",
     ]
@@ -1780,6 +1781,7 @@ class StatusFindingsFilterModel(_ClosedModel):
             "none",
             "provenance_disputed",
             "rejected",
+            "reopened",
             "self_verified",
             "waived",
         ]
@@ -2130,6 +2132,7 @@ class ClosureSelectionModel(_ClosedModel):
             "duplicate_of",
             "provenance_disputed",
             "rejected",
+            "reopened",
             "self_verified",
             "waived",
         ]
@@ -3966,6 +3969,7 @@ class RespondResponseModel(_ClosedModel):
         "duplicate_of",
         "provenance_disputed",
         "rejected",
+        "reopened",
         "self_verified",
         "waived",
     ]
@@ -3996,6 +4000,7 @@ class RespondResponseModel(_ClosedModel):
             "acknowledged_not_done",
             "provenance_disputed",
             "rejected",
+            "reopened",
             "self_verified",
         }:
             if (
@@ -4022,7 +4027,30 @@ class RespondVersionSliceModel(_ClosedModel):
         return self
 
 
+class RespondClosureAfterModel(_ClosedModel):
+    """Where the finding stands once this answer is recorded (tb4n3 RC-7, issue #1030).
+
+    ``todo_state`` is the finding's shared to-do state after the answer; ``limitation`` is set
+    only for a reviewer's limitation request (owner decision Q4): ``limitation_requested`` until
+    the agent discloses it, ``limitation_disclosed`` once one acknowledgement did.
+    """
+
+    optional_non_null_fields = frozenset({"limitation"})
+
+    todo_state: Literal[
+        "acknowledged_not_done",
+        "disputed_after_rebuttal",
+        "open",
+        "rejection_accepted",
+        "self_verified",
+        "verified_resolved",
+    ]
+    limitation: Literal["limitation_requested", "limitation_disclosed"] | None = None
+
+
 class RespondSuccessModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"closure_after"})
+
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
     request_id: RequestIdWire
@@ -4038,6 +4066,7 @@ class RespondSuccessModel(_ClosedModel):
     warning_codes: tuple[Literal["waiver_expired_at_recording"], ...]
     versions: RespondVersionSliceModel
     privacy_projection: PrivacyProjectionModel
+    closure_after: RespondClosureAfterModel | None = None
 
     @model_validator(mode="after")
     def _validate_respond_success(self) -> RespondSuccessModel:
@@ -4411,6 +4440,7 @@ class StatusFindingItemModel(_ClosedModel):
         "none",
         "provenance_disputed",
         "rejected",
+        "reopened",
         "self_verified",
         "waived",
     ]
@@ -4461,20 +4491,21 @@ class StatusFindingItemModel(_ClosedModel):
             or self.waiver_expiry is not None
         ):
             raise ValueError("provenance_disputed_finding_state_invalid")
+        # tb4n3 RC-7 (#1030): ``acknowledged_not_done`` and ``self_verified`` are the agent's last
+        # word until a later qualifying check proves the issue absent, so such a row may read
+        # ``resolved``; ``reopened`` takes a not-done answer back.
         if self.disposition == "acknowledged_not_done" and (
-            self.reason is None
-            or self.resolved
-            or self.waiver_scope is not None
-            or self.waiver_expiry is not None
+            self.reason is None or self.waiver_scope is not None or self.waiver_expiry is not None
         ):
             raise ValueError("acknowledged_not_done_finding_state_invalid")
         if self.disposition == "self_verified" and (
-            self.reason is None
-            or self.resolved
-            or self.waiver_scope is not None
-            or self.waiver_expiry is not None
+            self.reason is None or self.waiver_scope is not None or self.waiver_expiry is not None
         ):
             raise ValueError("self_verified_finding_state_invalid")
+        if self.disposition == "reopened" and (
+            self.reason is None or self.waiver_scope is not None or self.waiver_expiry is not None
+        ):
+            raise ValueError("reopened_finding_state_invalid")
         if self.duplicate_of_finding_id is not None and (
             self.disposition != "duplicate_of" or self.duplicate_of_finding_id == self.finding_id
         ):
@@ -6555,6 +6586,8 @@ _RESPOND_STRUCTURAL_POINTERS: Final = (
         ),
     )
     + _prefix_leaf_patterns("/response/finding_frontier", FRONTIER_LEAVES)
+    # tb4n3 RC-7 (#1030): the finding's to-do state and limitation state after the answer.
+    + _prefix_leaf_patterns("/closure_after", ("limitation", "todo_state"))
     + _prefix_leaf_patterns("/response/evidence/*", ("reference_id",))
     + _prefix_leaf_patterns("/response/reason", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns(
@@ -7446,8 +7479,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1562
-    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage: check 17, status 17)
+        len(result) != 1564
+    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

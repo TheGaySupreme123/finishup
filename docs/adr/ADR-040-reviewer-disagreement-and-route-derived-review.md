@@ -1,7 +1,7 @@
 # ADR-040: Binding rules for reviewer disagreement; review requirement derived from the route
 
 - Status: accepted (2026-10-08)
-- Issues: #1020 (tb4n2 R1), #1021 (tb4n2 R6)
+- Issues: #1020 (tb4n2 R1), #1021 (tb4n2 R6), #1024 (tb4n3 RC-1), #1030 (tb4n3 RC-7)
 - Amends: ADR-034 (finding to-do states), ADR-033 amendment of 2026-10-08 (#986, "record route;
   don't block"), ADR-006 (reviewer instruction)
 - Maintainer acknowledgement: the owner approved all tb4n2 core issues R1-R10, design changes
@@ -9,7 +9,8 @@
 - Implemented by: `kernel/later_material.py`, `kernel/check_standing.py`, `kernel/reducers.py`
   (`invalidates_recorded_check`), `domain/yoetz_tools.py` (tb4n3 RC-6, #1029),
   `application/check.py` (`_admit_prior_verdicts`, `_disputed_after_rebuttal`,
-  `_record_restatement`, `_restated_finding`, `_concern_key`, `semantic_route_required`),
+  `_record_restatement`, `_restated_finding`, `semantic_route_required`), `kernel/concern.py`,
+  `kernel/limitation.py`, `application/review_concern.py` (tb4n3 RC-1 and RC-7, amendment below),
   `kernel/finding_resolution.py` (`apply_check_rulings`), `kernel/finding_todo.py`,
   `kernel/receipt_builder.py` (`_conclusion`), `domain/receipts.py`, `kernel/closure_readiness.py`,
   `adapters/providers/openai_responses.py`; guidance `workflow.md`, `coverage-and-receipts.md`
@@ -81,7 +82,8 @@ the workspace and the tools shown in the packet. It must not demand a hidden gra
 generator, private specification or user answer; a concern only such an artifact would settle is a
 `state_unresolved_limitation` of priority at most 2, and an earlier finding it concerns is ruled
 `unassessable`. It must never recommend delivering less, emptying a file or withdrawing working
-code, and it may approve a reasoned, disclosed fallback.
+code. (tb4n3 amendment below: a working partial solution may be accepted; an empty-file or
+withdrawal fallback is never approved when a tested deliverable existed.)
 
 ### 3. Findings are advisory (guidance and Codex skill, issue #1020)
 
@@ -92,7 +94,7 @@ because a finding is open; disagree through `respond` (`rejected` with a reason,
 ### 4. Restatements across claim churn (issue #1020)
 
 `_restated_finding` keeps the exact subject-set match first. Failing that, it matches the same
-finding kind over a normalized key (`_concern_key`): each claim maps to the claim currently
+finding kind over a normalized key (`concern_key`, tb4n3 amendment below): each claim maps to the claim currently
 superseding it, and when both sides name obligations the key is the obligation set alone. A
 re-published claim is not new material; every other subject ref (obligations included, as on the
 exact path) must be no newer than the earlier finding, or than the agent's reasoned rejection when
@@ -196,3 +198,121 @@ gains `disputed_after_rebuttal`), `check-result` 1.3.0/1.4.0 (`todo_state` value
 `finding_checklist.counts.disputed_after_rebuttal`, present only when non-zero), `status-result`
 1.4.0 (`todo_state` value; `gap_classification_version` `"5"`), `receipt-document` 1.3.0 (optional
 `disputed_after_rebuttal_finding_ids`; a clean conclusion beside it is invalid).
+
+## Amendment 2026-10-11 (issues #1024 and #1030, tb4n3 RC-1 and RC-7): limitation requests and one dialogue per concern
+
+Owner decision RC-1 ("I thought we fixed that?!? why not fixed?") and the Q4 lifecycle. Nine of nine
+tb4n3 `state_unresolved_limitation` findings ended `acknowledged_not_done` (ks, vpp, payments, lake,
+cargo): the P0-3 prompt text reached every review, but the code minted the compliant answer as
+priority-1 receipt-blocking work, so a compliant reviewer and a non-compliant one produced the same
+outcome. RC-7: one concern became up to six ids, a rebuttal was erased by a later acknowledgement,
+and `acknowledged_not_done` / `self_verified` were one-way doors.
+
+### Limitation requests (RC-1)
+
+`domain.findings.is_limitation_request` is the one predicate: a reviewer finding (origin
+`semantic_model_derived`) whose recorded challenge asks `state_unresolved_limitation` and whose kind
+is one of `task_requirement_unmet`, `completion_with_open_obligations`,
+`requested_item_never_attempted`, `claim_without_admissible_evidence`,
+`evidence_does_not_support_claim`. `finding_demands_work` is the kind trait minus that predicate.
+The consumers that asked "is this finding agent work" read it: ranking (a limitation-only check
+reads `insufficient_coverage`, never `action_required`), check totals, deterministic scope and
+`finding_blocks_receipt`. The receipt's own "Verification limits" section and the closure-readiness
+classes (`limitation_requested`, `limitation_disclosed`) are built on `limitation_standing` by the
+tb4n3 RC-3 change (ADR-046), not here.
+
+`kernel/limitation.limitation_standing` is the lifecycle, replay-derived:
+
+- **limitation_requested** (to disclose): the request is recorded, never repair work, never
+  receipt-blocking, never a Stop-gate token. Its only next action is one disclosure.
+- **limitation_disclosed**: the agent's one disclosure settles it, by a reasoned `respond`
+  (`acknowledged`, `acknowledged_not_done`, or `self_verified`, which already requires a reason and
+  the agent's evidence) or by a recorded `yoetz-verification-limit:<obligation id>` decision on an
+  obligation the finding concerns. Acknowledging a limitation request needs no recorded resolution
+  attempt (this relaxes the #885 rule for that class only; repair demands keep it). It is settled and
+  never clean: closure readiness and the receipt list it, and a re-raise of the same concern folds
+  onto it. A `rejected` answer disputes the request instead; `reopened` takes a disclosure back.
+
+Guards, each tested: **G1** a challenge asking the agent to `act` is never a limitation request, even
+beside a `yoetz-verification-limit` decision (the reviewer sees an obtainable path). **G2** nothing
+reads the agent's own words, so an agent that answers an `act` finding "I could not find it" does not
+turn it into a limitation (the pretrain-shard-corruption rescue, where the acknowledgement re-check
+sent the agent back and it recovered the inputs, is kept). **G3** `declared_output_emptied` is
+independent of the class: a disclosed limitation never clears the fact that a delivered file was
+emptied. **G4** the class is never clean.
+
+Reviewer instruction (same change): the final-phase question and the standing instruction say that a
+requirement only a hidden evaluator or an unobtainable artifact can establish is a `not_assessable`
+row once the packet shows the agent disclosed it (an obligation acknowledged as not done, a
+`yoetz-verification-limit` decision, or a limitation request it acknowledged); a requirement
+quantified over unbounded inputs is judged on the tested part (`supported`) with the remainder stated
+as a limitation, never `not_supported`; the acknowledged-obligation question keeps the genuine-blocker
+carve-outs; and "a reasoned fallback ... may be approved" is replaced by: a working partial solution
+may be accepted, an empty-file or withdrawal fallback is never approved when a tested deliverable
+existed. The packet carries recorded limitation decisions and acknowledgement states beside the
+obligations (`yoetz_already_disclosed`) and a disclosed limitation as a non-rulable
+`yoetz.settled-finding/1` row marked `limitation_already_disclosed`. Agent guidance: never empty or
+withdraw a working deliverable over a finding or an "empty file if unsolved" clause.
+
+### One dialogue per concern (RC-7)
+
+**Concern identity** (`kernel/concern.concern_key`): the obligations a finding concerns (named
+directly, or reached through the claims it cites), the other non-event subject refs, with the event
+that recorded an obligation dropped (an anchor, not a subject). `same_concern` is obligation overlap,
+else ref containment; `equal_concern` is the same obligation set, else equal refs. Requirement kinds
+(`task_requirement_unmet`, `completion_with_open_obligations`, `requested_item_never_attempted`) are
+comparable with each other, and `evidence_does_not_support_claim` joins them only when both name an
+`obl_` directly. A different kind is never folded into an open item: that hid a requirement demand
+behind a bookkeeping finding.
+
+**Fold rules** (`_restated_finding`, `_restates_target`, `_record_restatement`): an open, rulable
+target folds a challenge of the same kind over `equal_concern` (a narrower or wider challenge is a
+distinct issue whose discrepancy a ruling cannot carry, Greptile P1 on #943); a settled target
+(`acknowledged_not_done`, `self_verified`, a disclosed limitation, `rejection_accepted`,
+`disputed_after_rebuttal`) folds any overlap of a comparable kind, because the re-raise cannot change
+what the agent settled. A settled item remembers what its re-raises cited (`absorbed_refs`, at most
+32 typed non-work ids), so a later re-raise naming only what the first re-raise added still folds
+(formal-crypto S). A reply to an answered open item with no standing rejection still mints a linked
+finding. The review summary now lists unnamed folds as well as named ones.
+
+**Standing position** (reducer fact `standing_position`, `kernel/finding_resolution`): the earliest
+unretracted reasoned answer (`rejected`, `acknowledged` with a reason, `acknowledged_not_done`,
+`self_verified`), with its ledger sequence; `reopened` retracts it. A later `acknowledged` no longer
+erases an earlier `rejected` (12 of 16 tb4n3 rejections were overwritten before the next review: cargo
+S). `last_ruling_frontier` is the sequence of the newest check that ruled on the finding.
+`standing_answer_frontier` and `kernel.finding_todo.finding_standing` / `ruling_since` expose them.
+
+**New material** (`application/review_concern.concern_material_after`): a ref counts only when it is
+evidence, a result or an action recorded after the bound (the later of the standing position and the
+last ruling); never a finding, claim or response/decision/check/plan event; an obligation counts only
+if its `introduced_frontier` (a new reducer fact; republication only changes status) is after the
+bound; evidence the agent itself cited in an answer never counts; when the concern names obligations
+the ref must be linked to them (a result of an action listing one, evidence such a result or a claim
+over them cites or an obligation lists as resolution evidence, an edit action, or an unlinked result
+that did not succeed: a new failing run can show the problem remains, a new passing run cannot). Not
+implemented: narrowing by cited file paths (evidence rows carry no path in the projection); the rule
+above is the narrowest the recorded facts allow.
+
+**Ruling admission** (`_admit_prior_verdicts`): `withdrawn` needs no citation and is admitted against
+a rejection that stands; a `fixed` whose citations are trimmed but stay supported stays `fixed`; a
+`still_present` or `answered_not_fixed` that loses a citation is `unassessable`; an unsupported
+downgrade over a standing position that cites no concern material is recorded `disputed_after_rebuttal`;
+a ruling on a resolved item or a disclosed limitation is set aside.
+
+**Reverse edges** (ADR-034 amendment): `acknowledged_not_done` and `self_verified` are not one-way
+doors; see there. The respond text for a refused answer names the state and the way out and no longer
+says "answer it there" about an item `respond` refuses.
+
+Wire (unreleased 0.3, changed in place): `response-recorded` 1.1.0, `respond-request` and
+`respond-result` 1.1.0 gain the disposition `reopened` (reason required); `respond-result` 1.1.0 gains
+optional `closure_after {todo_state, limitation?}` (the state the answer produced, simulated at its
+own frontier); status finding items allow `resolved: true` on `acknowledged_not_done` and
+`self_verified` (absence proven after the answer). `result_recorded` acceptance of a causal parent
+without `action_id` is not implemented: the frozen event schema still requires `action_id`, so the
+finding text for `action_without_result` names the `act_` id and the linking recipe, and the MCP
+rejection of an unlinkable result says what links one (N3-5).
+
+Risks: the normalized fold can still merge two distinct concerns of a comparable kind that overlap
+on one obligation, but only into a settled item or the same open kind over an equal concern, and each
+fold is disclosed through `semantic_restatements_suppressed` and the review summary. A concern
+absorbed into a settled item stays absorbed (bounded at 32).

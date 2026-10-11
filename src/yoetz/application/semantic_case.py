@@ -44,6 +44,7 @@ from yoetz.domain.events import (
     EvidenceKind,
     EvidenceRecordedPayload,
     ObligationPublishedPayload,
+    ObligationStatus,
     ResultOutcome,
     encode_payload,
 )
@@ -115,6 +116,7 @@ from yoetz.kernel.finding_todo import (
     duplicate_link_target,
     finding_todo_state,
 )
+from yoetz.kernel.limitation import LimitationStanding, limitation_standing
 from yoetz.kernel.lineage import LineageEvaluation
 from yoetz.kernel.projections import (
     EvidenceProjectionRecord,
@@ -124,6 +126,7 @@ from yoetz.kernel.projections import (
 from yoetz.kernel.task_facts import (
     acknowledged_obligation_ids,
     blocker_declarations,
+    disclosure_declarations,
     effective_obligations,
     open_effective_obligations,
 )
@@ -286,7 +289,9 @@ REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProx
             "Review phase: final. This is the closing review, with or without a completion "
             "claim: judge completeness against the task statement. For each stated requirement "
             "and requested output (path), say whether the change and its recorded verification "
-            "deliver it, and challenge each one they do not."
+            "deliver it, and challenge each one they do not. A requirement only a hidden "
+            "evaluator or an artifact the agent cannot obtain can establish is a not_assessable "
+            "row, not a challenge, once the packet shows the agent disclosed it."
         ),
     }
 )
@@ -376,8 +381,15 @@ ACKNOWLEDGED_REVIEW_INSTRUCTION: Final = (
     "For each obligation acknowledged as not done, quote its own description from its packet"
     " item obligation-<obligation id>, then verify the acknowledgement against the task statement"
     " and the work: challenge it (one finding citing the obligation id, naming the work the agent"
-    " can still do) when the task statement requires that work and nothing readable shows it is"
-    " genuinely impossible, or when the agent did not attempt the obvious prerequisite."
+    " can still do) when the task statement requires that work and the readable material shows"
+    " the agent can do it, or when the agent did not attempt the obvious prerequisite. A genuine"
+    " blocker outside the agent's control (authority, consent, a credential, a hidden evaluator"
+    " or reference it cannot obtain, an answer only the user has) that none of this contradicts"
+    " stands as a disclosed limitation: do not challenge it, and where you want the limit stated"
+    " ask for state_unresolved_limitation. What Yoetz or this review could not show or prove is"
+    " never a reason to challenge. Never recommend emptying, deleting or withdrawing a deliverable"
+    " that passes its recorded tests: it is a partial solution to keep and disclose, not"
+    " an unsolved task."
 )
 _MAX_ACKNOWLEDGED_LISTED: Final = 8
 
@@ -3077,6 +3089,9 @@ def _prior_finding_candidates(
                 # packet so the reviewer can rule still_present and break a wrong link.
                 and duplicate_link_target(projection, key) is None
             )
+            # tb4n3 RC-1 (Q4): a limitation request the agent disclosed is settled; it travels as
+            # a non-rulable settled row marked already disclosed, never as an open question.
+            or _limitation_disclosure(projection, key) is not None
         ):
             continue
         rows.append((ref, record))
@@ -3328,6 +3343,17 @@ def _settled_finding_candidates(
         ):
             continue
         response = projection.responses.get(key)
+        disclosure = _limitation_disclosure(projection, key)
+        if disclosure is not None:
+            # tb4n3 RC-1 (Q4): a limitation request the agent disclosed (a reasoned
+            # acknowledgement, or a yoetz-verification-limit decision on its obligation).
+            order = (
+                response.source_frontier
+                if disclosure.since_frontier is not None and response is not None
+                else record.source_frontier
+            )
+            rows.append((order, ref, record))
+            continue
         if (
             response is None
             or response.redacted
@@ -3346,6 +3372,45 @@ def _settled_finding_candidates(
     return [(ref, record) for _order, ref, record in rows]
 
 
+def _obligation_disclosures(
+    projection: ProjectionState, allowed: frozenset[str]
+) -> dict[str, dict[str, JsonValue]]:
+    """What the agent already disclosed per obligation, as ids and closed tokens only.
+
+    An obligation acknowledged as not done, a ``yoetz-verification-limit`` decision and a
+    ``yoetz-assumption`` decision are the agent's own disclosure of a limit. The reviewer reads
+    them beside the obligation they cover, marked already disclosed, so it asks for nothing more
+    than the disclosure (tb4n3 RC-1, owner decision Q4). Decision ids ride only when citable.
+    """
+
+    found: dict[str, dict[str, JsonValue]] = {}
+    for obligation_id, record in projection.obligations.items():
+        payload = record.payload
+        if (
+            payload is not None
+            and not record.redacted
+            and payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+        ):
+            found.setdefault(str(obligation_id), {})["acknowledged_not_done"] = True
+    for declaration in disclosure_declarations(projection):
+        row = found.setdefault(str(declaration.obligation_id), {})
+        row[declaration.kind] = (
+            str(declaration.decision_event_id)
+            if str(declaration.decision_event_id) in allowed
+            else True
+        )
+    for row in found.values():
+        row["already_disclosed"] = True
+    return found
+
+
+def _limitation_disclosure(projection: ProjectionState, key: object) -> LimitationStanding | None:
+    """The disclosed limitation standing of a finding, or ``None`` (tb4n3 RC-1, Q4)."""
+
+    standing = limitation_standing(projection, finding_id_value(str(key)))
+    return standing if standing is not None and standing.disclosed else None
+
+
 def _settled_finding_items(
     ref: str,
     record: FindingProjectionRecord,
@@ -3358,26 +3423,37 @@ def _settled_finding_items(
 
     payload = record.payload
     response = projection.responses.get(finding_id_value(ref))
-    assert payload is not None and response is not None and response.payload is not None
+    disclosure = _limitation_disclosure(projection, ref)
+    assert payload is not None
+    answer = None if response is None or response.redacted else response.payload
+    # A limitation disclosed by a decision line has no answer of its own.
+    assert answer is not None or disclosure is not None
     subjects: list[JsonValue] = [str(item) for item in payload.subject_refs if str(item) in allowed]
+    order = (
+        record.source_frontier if answer is None or response is None else response.source_frontier
+    )
     body: dict[str, JsonValue] = {
-        "disposition": response.payload.disposition.value,
+        "disposition": "none" if answer is None else answer.disposition.value,
         "finding_kind": payload.kind.value,
         "finding_ref": ref,
         "recorded_sequence": record.source_frontier,
-        "response_sequence": response.source_frontier,
+        "response_sequence": order,
         "rulable": False,
         "schema": "yoetz.settled-finding/1",
         "subject_ref_count": len(payload.subject_refs),
         "subject_refs": subjects[:_MAX_PRIOR_FINDING_LISTED_REFS],
     }
+    if disclosure is not None:
+        # The agent already stated the limit you asked for: do not challenge it again.
+        body["limitation_already_disclosed"] = True
+        body["limitation_disclosed_by"] = disclosure.basis or ""
     if record.settled_reraise_count:
         body["settled_reraise_count"] = record.settled_reraise_count
     prose: list[tuple[str, str]] = []
     if include_prose:
         prose.append(("summary", payload.summary))
-        if response.payload.reason is not None:
-            prose.append(("response", response.payload.reason))
+        if answer is not None and answer.reason is not None:
+            prose.append(("response", answer.reason))
         body["text_item_ids"] = {
             field: f"{SETTLED_FINDING_ITEM_PREFIX}{field}-{ref}" for field, _text in prose
         }
@@ -3390,7 +3466,7 @@ def _settled_finding_items(
             source_kind="finding",
             source_ref=ref,
             linked_subject_refs=(ref,),
-            occurred_order=response.source_frontier,
+            occurred_order=order,
             text=text,
         )
     ]
@@ -3403,7 +3479,7 @@ def _settled_finding_items(
                 source_kind="finding",
                 source_ref=ref,
                 linked_subject_refs=(ref,),
-                occurred_order=response.source_frontier,
+                occurred_order=order,
                 text=value,
             )
         )
@@ -3828,6 +3904,7 @@ def _build_semantic_case_once(
             omissions.append(_omit(plan_ref, DataCategory.TASK_DESCRIPTION, "task", "not_recorded"))
 
     # --- Obligations ---
+    disclosures = _obligation_disclosures(projection, allowed)
     for obligation_id, record in sorted(
         projection.obligations.items(), key=lambda pair: str(pair[0])
     ):
@@ -3861,7 +3938,13 @@ def _build_semantic_case_once(
                 key=str.encode,
             )
         )[:16]
-        text, fit = _bounded_json(cast(Mapping[str, JsonValue], encode_payload(payload)))
+        obligation_json = dict(cast(Mapping[str, JsonValue], encode_payload(payload)))
+        disclosed = disclosures.get(ref)
+        if disclosed is not None:
+            # tb4n3 RC-1: recorded limitation decisions and the acknowledgement state sit beside
+            # the obligation they cover, so the reviewer cannot read them as undisclosed.
+            obligation_json["yoetz_already_disclosed"] = cast(JsonValue, disclosed)
+        text, fit = _bounded_json(cast(Mapping[str, JsonValue], obligation_json))
         item = _content_item(
             item_id=f"obligation-{ref}",
             section="obligation",
