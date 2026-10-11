@@ -14,8 +14,8 @@ Owner decision Q4 (DESIGN_RC3 section 8) fixes the lifecycle:
   receipt-blocking work, and never raises a Stop-gate token beyond the ordinary unanswered-finding
   path.
 * **disclosed** (``limitation_disclosed``): exactly one agent disclosure settles it. Either a
-  ``respond`` acknowledgement with a reason (``acknowledged`` or ``acknowledged_not_done``) or a
-  recorded ``yoetz-verification-limit:<obligation id>`` decision covering an obligation the finding
+  ``respond`` answer with a reason (``acknowledged``, ``acknowledged_not_done``, or the agent's
+  ``self_verified`` final word) or a recorded ``yoetz-verification-limit:<obligation id>`` decision covering an obligation the finding
   concerns. It is then settled, never clean (the receipt reads at best ``insufficient_coverage``
   and lists it under "Verification limits"), and a re-raise of the same concern folds onto it.
 

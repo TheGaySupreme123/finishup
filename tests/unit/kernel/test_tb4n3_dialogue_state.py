@@ -105,12 +105,14 @@ def test_a_limitation_request_is_a_to_disclose_item_until_one_acknowledgement() 
     assert limitation_disclosed_ids(requested) == ()
 
 
-@pytest.mark.parametrize("disposition", [D.ACKNOWLEDGED, D.ACKNOWLEDGED_NOT_DONE])
+@pytest.mark.parametrize("disposition", [D.ACKNOWLEDGED, D.ACKNOWLEDGED_NOT_DONE, D.SELF_VERIFIED])
 def test_one_reasoned_acknowledgement_settles_it_as_a_disclosed_limitation(
     disposition: ResponseDisposition,
 ) -> None:
     """vpp S and payments S ended every such request ``acknowledged_not_done``: that is the
-    disclosure now, not the end of a blocking item."""
+    disclosure now, not the end of a blocking item. A ``self_verified`` answer is the agent's
+    reasoned final word on a request Yoetz cannot prove (pretrain S ``fnd_1ff0de49``): it settles
+    it too, because the request has no other exit once that answer is given."""
 
     state = _ks_state((1, disposition, 12))
     standing = limitation_standing(state, fnd(1))

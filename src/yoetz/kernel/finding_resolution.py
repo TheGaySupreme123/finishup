@@ -2027,10 +2027,13 @@ def next_standing_position(
 def disclosing_response(
     response: ProjectionRecord[ResponseRecordedPayload] | None,
 ) -> bool:
-    """Whether a finding's current answer is a reasoned acknowledgement (the Q4 disclosure form).
+    """Whether a finding's current answer is a reasoned disclosure (the Q4 disclosure form).
 
     ``acknowledged`` and ``acknowledged_not_done`` with a non-blank reason disclose a reviewer's
-    limitation request; a rejection disputes it instead (the reviewer then rules on it),
+    limitation request, and so does ``self_verified`` (admitted only on a finding Yoetz's own
+    check cannot prove, always with a reason and the agent's evidence): it is the agent's final,
+    reasoned word and the request has no other exit once it is given (pretrain S
+    ``fnd_1ff0de49``). A rejection disputes the request instead (the reviewer then rules on it),
     ``reopened`` takes a disclosure back, and every other disposition says nothing about it.
     """
 
@@ -2039,7 +2042,11 @@ def disclosing_response(
     payload = response.payload
     return (
         payload.disposition
-        in {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.ACKNOWLEDGED_NOT_DONE}
+        in {
+            ResponseDisposition.ACKNOWLEDGED,
+            ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
+            ResponseDisposition.SELF_VERIFIED,
+        }
         and payload.reason is not None
         and bool(payload.reason.strip())
     )
