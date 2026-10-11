@@ -100,6 +100,9 @@ Rules the tables encode:
   `limitation_disclosed`: settled, and the receipt discloses it under "Verification limits" at
   `insufficient_coverage`. It is then named once, as disclosed: never under "Acknowledged, not done", never in
   `closure_readiness.acknowledged_not_done`, and its explanation says "to disclose", never "repair it, then check".
+  While requested, the check wire still counts it under `work_open_findings` (no enum value of its
+  own); the CLI words that step from the items' `closure_basis`, so a check whose open items are all
+  limitation requests says "disclose", and a mixed list says how a limitation request is answered.
   Guards: an `act` challenge never qualifies, and the agent's own words
   never make a finding a limitation. A `yoetz-verification-limit:<obligation>` decision covering the
   obligation the finding concerns settles it the same way, and marks the obligation

@@ -13,6 +13,7 @@ re-check), G3 a limitation never touches ``declared_output_emptied`` (unit-teste
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
@@ -116,6 +117,50 @@ async def test_a_limitation_request_is_to_disclose_never_blocking_work_on_every_
     text = gathered.receipts["text"].human_text
     assert "To disclose:" in text and "repair it, then check" not in text
     assert "Verification limits" not in text
+
+
+async def test_the_check_text_asks_to_disclose_a_limitation_request_never_to_repair_it() -> None:
+    """The check wire counts a pending limitation request under ``work_open_findings`` (no enum
+    value for "to disclose"), so the CLI words that step from the items' closure basis: every
+    agent-facing sentence must be true, and a limitation request is never repair work (Q4)."""
+
+    from yoetz.application.check import check_internal_json
+    from yoetz.cli.render import render_human_check
+    from yoetz.protocol.models import (
+        CheckFindingChecklistModel,
+        CheckOverallNextModel,
+        CheckSuccessModel,
+        CoverageModel,
+    )
+
+    _, checked = await _run_with(_LIMIT, 87)
+    finding = _reviewer_finding(checked)
+    wire = check_internal_json(checked)
+    overall = wire["overall_next"]
+    assert isinstance(overall, Mapping)
+    checklist = CheckFindingChecklistModel.model_validate(wire["finding_checklist"])
+    assert checklist.next == "work_open_findings"
+    assert [item.closure_basis for item in checklist.items if item.todo_state == "open"] == [
+        "limitation_requested"
+    ]
+    model = CheckSuccessModel.model_construct(
+        verdict="issue_detected",
+        semantic_status="succeeded",
+        semantic_reason="semantic_completed",
+        semantic_provenance=None,
+        findings=(),
+        suppressed_count="0",
+        overall_next=CheckOverallNextModel.model_validate(dict(overall)),
+        finding_checklist=checklist,
+        children=None,
+        advisory_notes=(),
+        coverage=CoverageModel.model_construct(known_gaps=()),
+    )
+    text = render_human_check(model)
+    assert "Disclose the named limitation requests" in text
+    assert finding.finding_id in text
+    assert "Repair" not in text and "repair the" not in text.lower()
+    assert "no repair is needed" in text
 
 
 @pytest.mark.parametrize("disposition", ["acknowledged", "acknowledged_not_done"])

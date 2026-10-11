@@ -295,18 +295,68 @@ def _render_checklist(
     if total > len(checklist.items):
         lines.append(f"Not listed: {total - len(checklist.items)}")
     label = "Finding checklist next" if input_action_required else "Next"
-    lines.append(f"{label}: {_CHECKLIST_NEXT_TEXT[checklist.next]}")
+    next_text = _CHECKLIST_NEXT_TEXT[checklist.next]
+    if checklist.next == "work_open_findings":
+        next_text = _open_findings_next_text(checklist, next_text)
+    lines.append(f"{label}: {next_text}")
     return lines
 
 
-def _render_overall_next(next_step: CheckOverallNextModel) -> str:
+# tb4n3 RC-1 (ADR-046, owner decision Q4): a reviewer's limitation request is counted with the
+# open findings on the check wire, but it is a disclosure to make, never repair work.
+_LIMITATION_REQUEST_NEXT: Final = (
+    "Disclose the named limitation requests: respond acknowledged with the reason the reviewer "
+    "cannot verify it here; no repair is needed."
+)
+_LIMITATION_REQUEST_ALSO: Final = (
+    " For a reviewer's request to state a limit, respond acknowledged with the reason instead "
+    "of repairing it."
+)
+
+
+def _open_limitation_requests(checklist: CheckFindingChecklistModel | None) -> tuple[bool, bool]:
+    """Whether some, and whether all, open checklist items are limitation requests.
+
+    "All" is claimed only when every open item is listed (the counts cover the whole list).
+    """
+
+    if checklist is None:
+        return False, False
+    open_items = [item for item in checklist.items if item.todo_state == "open"]
+    requests = [item for item in open_items if item.closure_basis == "limitation_requested"]
+    complete = len(open_items) == int(checklist.counts.open)
+    return bool(requests), bool(requests) and complete and len(requests) == len(open_items)
+
+
+def _open_findings_next_text(checklist: CheckFindingChecklistModel, default: str) -> str:
+    some, every = _open_limitation_requests(checklist)
+    if every:
+        return _LIMITATION_REQUEST_NEXT
+    return default + _LIMITATION_REQUEST_ALSO if some else default
+
+
+def _render_overall_next(
+    next_step: CheckOverallNextModel, checklist: CheckFindingChecklistModel | None = None
+) -> str:
     if next_step.action == "supply_missing_input":
         action = (
             "Supply the named review input as new records tied to the named refs "
             "(never change your work to fit the reviewer)"
         )
     elif next_step.action == "work_open_findings":
-        action = "Repair or answer the named open findings"
+        some, every = _open_limitation_requests(checklist)
+        if every:
+            action = (
+                "Disclose the named limitation requests (respond acknowledged with the reason; "
+                "no repair is needed)"
+            )
+        elif some:
+            action = (
+                "Repair or answer the named open findings (a limitation request needs only an "
+                "acknowledged response with the reason)"
+            )
+        else:
+            action = "Repair or answer the named open findings"
     elif next_step.action == "request_ruling":
         action = "Run check with final_review: true so the reviewer rules on the rejected findings"
     elif next_step.action == "review_recorded_work":
@@ -397,7 +447,7 @@ def render_human_check(result: CheckSuccessModel) -> str:
     if suppressed:
         lines.append(f"Suppressed findings: {suppressed}")
     if result.overall_next is not None:
-        lines.append(_render_overall_next(result.overall_next))
+        lines.append(_render_overall_next(result.overall_next, result.finding_checklist))
     if result.finding_checklist is not None:
         lines.extend(
             _render_checklist(
