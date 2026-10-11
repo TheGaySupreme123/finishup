@@ -313,7 +313,7 @@ readiness it is given (ADR-033 amendment).
   deliverable the newest applicable check found emptied or truncated (the path-keyed fact
   `declared_output_emptied`, ADR-045, not accepted by a `yoetz-assumption` decision) reads
   `resolved_deliverable_emptied` (agent work, `insufficient_coverage`) instead of `resolved`. A
-  later material record (the file refilled, the decision that accepts the path) supersedes that
+  later material record (the file refilled by an edit tool or a shell write, the decision that accepts the path) supersedes that
   check, so the stale fact is not read and the obligation returns to `resolved` until the next
   check re-reads the file. The reviewer cannot approve around it: the fact is actionable on both
   routes (section 2), so a review that raises nothing still leaves the check below clean.

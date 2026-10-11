@@ -169,7 +169,16 @@ overridden by a declared output of that name. A command that writes only one non
 shell write as to an edit tool; a command that writes two non-counting classes
 (`: > NOTES.md; : > yoetz_receipt.md`) counts as an edit, as a mixed edit-tool call does, because
 one token cannot carry both classes' overrides. A shell command that wrote counts as an edit
-whatever its exit status (`: > f; false` emptied `f`). One classifier decides every path, in the
+whatever its exit status (`: > f; false` emptied `f`). The rule is one predicate,
+`kernel/observed_failures.observed_shell_write_counts`: a COMMAND whose runtime tokens carry
+`write workspace` or `write outside_workspace` is an edit, and one that carries only a non-counting
+class is an edit only where a declared output overrides that class. Every consumer of "the agent
+changed files after X" shares it: the latest-edit fact (`task_facts`), later-material
+classification (a shell write after a check is `edit_or_write`, so it supersedes the check and
+re-arms the closing review exactly like an edit tool, ADR-046), the claim-verification
+latest-edit rule (`work_integrity`) and the concern-fold materiality test (`review_concern`). A
+failed or outcomeless shell write supersedes as a failed edit does. A command with no write token
+(unknown scope, or `none`) and Yoetz's own exploration runs stay as before. One classifier decides every path, in the
 hook as in the Codex stream: the hook has no separate outside-workspace precheck, so
 `cp source.json /opt/yoetz_receipt.json` is `yoetz_owned` (Yoetz's own material), not
 `outside_workspace`.

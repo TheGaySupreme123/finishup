@@ -18,7 +18,8 @@ projection's action rows and the declared outputs, and names *why* (``LaterMater
   ``wait``) that only returns the output of work started earlier.
 * ``NON_COUNTING_WRITE`` - an observed edit whose every path was scratch or Yoetz-owned (ADR-042).
 * ``RESPONSE`` - a cooperative answer to a finding; advisory, as before (ADR-040 section 7).
-* ``EDIT_OR_WRITE`` - an observed deliverable, workspace or outside-workspace edit. It supersedes
+* ``EDIT_OR_WRITE`` - an observed deliverable, workspace or outside-workspace edit, or a shell
+  command whose runtime tokens record a workspace write (ADR-045). It supersedes
   the check: the check no longer covers the current state.
 * ``OTHER`` - anything Yoetz cannot prove harmless: an unclassified command or tool, an unpaired
   result with no tool identity, a subagent, a lineage manifest. It keeps the disclosure.
@@ -56,6 +57,7 @@ from yoetz.kernel.observed_failures import (
     observed_action_runner_class,
     observed_action_tool,
     observed_edit_counts,
+    observed_shell_write_counts,
 )
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.task_facts import effective_obligations, non_counting_edits_exempt
@@ -199,6 +201,12 @@ def _classify_action(
         return LaterMaterial(
             LaterMaterialClass.NON_COUNTING_WRITE, "observed_non_counting_write", tool
         )
+    if payload.action_kind is ActionKind.COMMAND and observed_shell_write_counts(
+        payload.description, supersession_exempt(projection) if exempt is None else exempt
+    ):
+        # ADR-045: a shell command that wrote the workspace (``cat > f``, ``sed -i``) changed the
+        # work as surely as an edit tool, whatever its exit status or whether a result arrived.
+        return LaterMaterial(LaterMaterialClass.EDIT_OR_WRITE, "observed_shell_write", tool)
     if (
         payload.action_kind in {ActionKind.COMMAND, ActionKind.OTHER}
         and observed_action_runner_class(payload.description) == "exploration"
