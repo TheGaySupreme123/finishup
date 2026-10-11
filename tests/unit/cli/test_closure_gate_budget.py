@@ -132,6 +132,10 @@ def test_a_re_check_that_cannot_fit_is_not_remembered_as_asked() -> None:
     assert _CLOSE in decision.text
     asked = BLOCKER_RECHECK_ITEM in decision.items
     assert asked == ("Blocker re-check (asked once)" in decision.text)
-    assert bool(decision.blocker_keys) == (
+    # Every token set carries a withdrawn-deliverable token, which records its own ``emptied:``
+    # key; the re-check keys are the others.
+    recheck_keys = tuple(key for key in decision.blocker_keys if not key.startswith("emptied:"))
+    assert bool(recheck_keys) == (
         asked or ACKNOWLEDGEMENT_RECHECK_ITEM in decision.items or "premise" in str(decision.items)
     )
+    assert any(key.startswith("emptied:") for key in decision.blocker_keys)

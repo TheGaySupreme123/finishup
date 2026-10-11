@@ -321,7 +321,7 @@ def _limitation_text(readiness: object) -> str:
     )
 
 
-_MAX_RECHECKS: Final = 64
+_MAX_RECHECKS: Final = 256
 _MAX_NAMED_LINEAGE: Final = 3
 _SUBJECT_ID: Final = re.compile(r"(?:obl|fnd)_[0-9A-Za-z-]{1,60}")
 _OBL_ID_SHAPE: Final = r"obl_[0-9A-Za-z-]{1,60}"
