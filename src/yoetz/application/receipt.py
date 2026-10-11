@@ -47,6 +47,7 @@ from yoetz.domain.values import (
     task_id,
     timestamp_from_datetime,
 )
+from yoetz.kernel.check_standing import check_standing
 from yoetz.kernel.deterministic_checks import CaseGap, build_deterministic_case, case_coverage
 from yoetz.kernel.finding_resolution import (
     unverified_resolution_finding_ids,
@@ -57,7 +58,7 @@ from yoetz.kernel.finding_todo import (
     finding_todo_state,
 )
 from yoetz.kernel.lineage import evaluate_recorded_lineage
-from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
+from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.receipt_builder import (
     CheckSuffixClass,
     ReceiptBuildContext,
@@ -65,10 +66,6 @@ from yoetz.kernel.receipt_builder import (
     build_receipt,
 )
 from yoetz.kernel.receipt_capacity import current_receipt_findings
-from yoetz.kernel.reducers import (
-    invalidates_recorded_check,
-    is_material_event_family,
-)
 from yoetz.observability.logging import (
     record_classified_exception_without_raising,
     record_public_error_without_raising,
@@ -508,33 +505,32 @@ def _context(
             if record.event_id == latest.source_check_event_id:
                 check_record = record
                 break
-    limitations = observation_limitation_finding_ids(projection, records)
+    standing = check_standing(projection, records)
     if latest is None:
         gaps.append(CaseGap("check_not_recorded", "check_not_recorded", ()))
-    elif check_record is not None and any(
-        invalidates_recorded_check(
-            record,
-            check_record.ledger.ingestion_sequence,
-            latest.returned_finding_ids,
-            limitation_finding_ids=limitations,
-        )
-        for record in records
-    ):
+    elif check_record is not None and standing.superseded_by is not None:
         # Applicability follows the material state, not frontier equality: a check applies to
         # this receipt when no material-family event superseded it. Its own events (returned
         # findings plus check_recorded) land atomically right after the tested frontier, so
         # anything later is genuinely newer work, except a response answering a finding the
         # check itself returned, which reports on that check rather than replacing what it read,
-        # and an acknowledgement of an observation-authored limitation no check returns (#911).
-        gaps.append(CaseGap("check_not_applicable", "check_not_applicable", ()))
+        # an acknowledgement of an observation-authored limitation no check returns (#911), and
+        # the observations that cannot have changed the work: Yoetz's own calls, exploration and
+        # host bookkeeping (tb4n3 RC-6). An observed deliverable or workspace edit supersedes.
+        # The gap cites the first superseding record, so the receipt can say what changed.
+        gaps.append(
+            CaseGap(
+                "check_not_applicable",
+                "check_not_applicable",
+                (standing.superseded_by.event_id,),
+            )
+        )
     elif check_record is not None and type(check_record.payload) is CheckRecordedPayload:
         applicable = check_record.payload
-        later_material = tuple(
-            record
-            for record in records
-            if is_material_event_family(record.schema.name)
-            and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
-        )
+        # Only the records Yoetz cannot prove harmless keep the disclosure (tb4n3 RC-6): the
+        # agent's own status polls, host stream bookkeeping and read-only runs no longer make
+        # every receipt "current as of an earlier frontier".
+        later_material = standing.counted
         if later_material:
             # Check-answering responses and finding-free observation-authored records can reach
             # here. The verdict still covers the frontier it tested rather than this one, so the
@@ -543,7 +539,21 @@ def _context(
                 CaseGap(
                     CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
                     CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
-                    (),
+                    # A receipt gap cites at most 16 records: the observations that bound come
+                    # first (in ledger order), then the answers that followed; the explanation
+                    # says how many there were.
+                    tuple(
+                        sorted(
+                            (
+                                record.event_id
+                                for record in (
+                                    *(r for r in later_material if is_observation_authored(r)),
+                                    *(r for r in later_material if not is_observation_authored(r)),
+                                )[:16]
+                            ),
+                            key=str.encode,
+                        )
+                    ),
                 )
             )
             # Classify that suffix for the explanation (issue #657). The applicability rule above
@@ -671,6 +681,7 @@ def _context(
         lineage,
         check_suffix=check_suffix,
         records=records,
+        check_standing=standing,
         historical_gaps=_historical_gaps(records, check_record, retained_only_codes),
     )
 

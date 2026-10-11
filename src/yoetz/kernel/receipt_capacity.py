@@ -11,17 +11,16 @@ from yoetz.domain.receipts import (
     CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
     semantic_coverage_gap_code,
 )
+from yoetz.kernel.check_standing import check_standing
 from yoetz.kernel.deterministic_checks import (
     build_deterministic_case,
     healthy_storage_availability,
 )
 from yoetz.kernel.finding_resolution import finding_is_resolved, issue_key
 from yoetz.kernel.finding_todo import duplicate_counting_id, finding_blocks_receipt
-from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
+from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.reducers import (
     ReplayIndex,
-    invalidates_recorded_check,
-    is_material_event_family,
 )
 from yoetz.protocol.coverage import MAX_KNOWN_GAPS
 
@@ -147,25 +146,11 @@ def _receipt_gap_codes(
     for coverage in case.coverage_by_ref.values():
         codes.update(coverage.known_gaps)
 
-    latest = projection.latest_tested_state
-    check_record = None
-    if latest is not None:
-        check_record = next(
-            (record for record in records if record.event_id == latest.source_check_event_id),
-            None,
-        )
-    limitations = observation_limitation_finding_ids(projection, records)
-    if latest is None:
+    standing = check_standing(projection, records)
+    check_record = standing.check_record
+    if standing.latest is None:
         codes.add(_CHECK_NOT_RECORDED)
-    elif check_record is not None and any(
-        invalidates_recorded_check(
-            record,
-            check_record.ledger.ingestion_sequence,
-            latest.returned_finding_ids,
-            limitation_finding_ids=limitations,
-        )
-        for record in records
-    ):
+    elif check_record is not None and standing.superseded:
         codes.add(_CHECK_NOT_APPLICABLE)
     elif check_record is not None and type(check_record.payload) is CheckRecordedPayload:
         codes.update(check_record.payload.coverage.known_gaps)
@@ -178,11 +163,7 @@ def _receipt_gap_codes(
         )
         if semantic_gap is not None:
             codes.add(semantic_gap)
-        if any(
-            is_material_event_family(record.schema.name)
-            and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
-            for record in records
-        ):
+        if standing.counted:
             codes.add(CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP)
     else:
         codes.add(_CHECK_PAYLOAD_UNAVAILABLE)

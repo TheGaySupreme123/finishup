@@ -17,6 +17,7 @@ from typing import Final, Literal
 
 __all__ = [
     "READINESS_STATES",
+    "check_cause_sentence",
     "readiness_directive",
 ]
 
@@ -62,3 +63,60 @@ def readiness_directive(state: str, *, standing: object = 0, acknowledged: objec
     if state == "unknown":
         return _UNKNOWN
     raise ValueError("readiness_state_invalid")
+
+
+def check_cause_sentence(
+    *,
+    effect: str,
+    event_id: str,
+    ledger_sequence: object,
+    check_subject_frontier: object,
+    family: str,
+    material_class: str,
+    rule: str,
+    tool: str | None = None,
+    compact: bool = False,
+) -> str:
+    """The owner-lineage sentence for ``check_not_applicable`` or a bounding earlier-frontier code.
+
+    Built only from the closed fields ``closure_readiness.check_cause`` carries (service-minted
+    ids, counters, a family and rule token, the recorded tool name), so every surface (status text,
+    CLI, terminal interface) reconstructs the same words locally. The hook records the tool and
+    whether a write left the workspace, never the path, so this names the record and the check
+    frontier, not a file.
+    """
+
+    via = "" if tool is None else f" via {tool}"
+    if compact:
+        # The short form for a byte-bounded text: no id, no rule, the same record and frontier.
+        record = f"ledger record {_count(ledger_sequence)}"
+        tested = f"frontier {_count(check_subject_frontier)}"
+        if effect == "superseded":
+            what = "observed edit" if material_class == "edit_or_write" else f"{family} record"
+            return f"Why check_not_applicable: {what}{via} ({record}) after the check at {tested}."
+        if effect == "bounds_conclusion":
+            return (
+                f"Why check_current_as_of_earlier_frontier: {family} record{via} ({record}) "
+                f"after the check at {tested} is unclassified."
+            )
+        raise ValueError("check_cause_effect_invalid")
+    where = f"ledger record {_count(ledger_sequence)}, {event_id}"
+    tested = f"subject frontier {_count(check_subject_frontier)}"
+    if effect == "superseded":
+        what = (
+            f"an observed edit{via}"
+            if material_class == "edit_or_write"
+            else f"a {family} record{via}"
+        )
+        return (
+            f"Why check_not_applicable: {what} ({where}) was recorded after the check at "
+            f"{tested} (rule {rule}). Re-run check after your last change."
+        )
+    if effect == "bounds_conclusion":
+        return (
+            "Why check_current_as_of_earlier_frontier: after the check at "
+            f"{tested}, a {family} record{via} ({where}) could not be classified as Yoetz's own "
+            f"call, a read-only read or host bookkeeping (rule {rule}). Yoetz cannot tell whether "
+            "it changed the work; the receipt discloses it."
+        )
+    raise ValueError("check_cause_effect_invalid")

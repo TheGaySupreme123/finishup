@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
+from types import MappingProxyType
 from typing import Final, Literal, cast
 
 from yoetz.domain.bounded_text import clip_to_limit
@@ -95,6 +96,7 @@ from yoetz.domain.values import (
     Timestamp,
     finding_id,
 )
+from yoetz.kernel.check_standing import CheckStanding, LaterRecord
 from yoetz.kernel.claims import (
     claim_discloses_result,
     effective_claim_items,
@@ -120,6 +122,7 @@ from yoetz.kernel.finding_resolution import (
     issue_key,
     unverified_resolution_finding_ids,
 )
+from yoetz.kernel.later_material import LaterMaterialClass, counted_later_material
 from yoetz.kernel.lineage import LineageEvaluation, LineageRollupState
 from yoetz.kernel.observed_failures import (
     ObservedFailureState,
@@ -452,6 +455,10 @@ class ReceiptBuildContext:
     lineage: LineageEvaluation | None = None
     check_suffix: CheckSuffixClass | None = None
     records: tuple[LedgerRecord, ...] = ()
+    # tb4n3 RC-6: what followed the latest check and why it did or did not supersede it
+    # (``kernel.check_standing``): the superseding record, the records the earlier-frontier code
+    # counts, and the number of later records proved harmless by class. Render context only.
+    check_standing: CheckStanding | None = None
     # Issue #1017: gap codes an earlier check carried and the latest check no longer carries,
     # each with the subject frontier of the first check without it, sorted by code. They stay in
     # ``coverage`` (retained findings still carry them) but never bound the conclusion.
@@ -473,6 +480,7 @@ class ReceiptBuildContext:
             )
             or (self.lineage is not None and type(self.lineage) is not LineageEvaluation)
             or (self.check_suffix is not None and type(self.check_suffix) is not CheckSuffixClass)
+            or (self.check_standing is not None and type(self.check_standing) is not CheckStanding)
         ):
             raise ValueError(_CONTEXT_INVALID)
         # A suffix class describes records that followed an attributable check; without that
@@ -723,6 +731,9 @@ def _check_change_gap_text(context: ReceiptBuildContext, code: str) -> str | Non
     """The fixed sentence for a check-time code; for the legacy-resolution disclosure (R945-02),
     also the affected resolved findings, at most 16 by id and the rest as a count."""
 
+    later = _later_material_text(context, code)
+    if later is not None:
+        return later
     sentence = check_time_change_gap_sentence(code)
     if sentence is None or code != CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP:
         return sentence
@@ -737,6 +748,90 @@ def _check_change_gap_text(context: ReceiptBuildContext, code: str) -> str | Non
     more = f", and {remaining} more" if remaining > 0 else ""
     noun = "finding" if len(affected) == 1 else "findings"
     return f"{sentence} {len(affected)} resolved AI-powered {noun} rely on it: {listed}{more}."
+
+
+_LATER_CLASS_PHRASES: Final[Mapping[LaterMaterialClass, str]] = MappingProxyType(
+    {
+        LaterMaterialClass.YOETZ_OWN_CALL: "records of Yoetz's own tool calls",
+        LaterMaterialClass.EXPLORATION: "records of read-only reads",
+        LaterMaterialClass.NO_TOOL_ACTIVITY: "host bookkeeping records that name no tool call",
+        LaterMaterialClass.NON_COUNTING_WRITE: "records of scratch or Yoetz-owned writes",
+    }
+)
+
+
+def _later_record_phrase(record: LaterRecord) -> str:
+    """Name one later record in the reader's terms: what it is, its ledger position, its id."""
+
+    where = f"ledger record {record.ingestion_sequence}, {record.event_id}"
+    tool = "" if record.material.tool is None else f" via {record.material.tool}"
+    if record.material.material_class is LaterMaterialClass.EDIT_OR_WRITE:
+        return f"an observed edit{tool} ({where})"
+    if record.family == "finding_recorded" and record.observation_authored:
+        return f"a host-observation finding ({where})"
+    if record.observation_authored:
+        return f"an unclassified host observation, {record.family}{tool} ({where})"
+    return f"published {record.family} work ({where})"
+
+
+def _later_material_text(context: ReceiptBuildContext, code: str) -> str | None:
+    """Why the check no longer covers this frontier, or why the earlier-frontier code bounds.
+
+    Every fact the receipt adds says which record it rests on, the closed rule that classified it
+    and the check frontier it follows (tb4n3 RC-6; the owner's lineage rule). ``None`` for any
+    other code, or when the application passed no standing (a hand-built context).
+    """
+
+    standing = context.check_standing
+    latest = None if standing is None else standing.latest
+    if standing is None or latest is None:
+        return None
+    tested = f"subject frontier {latest.subject_frontier.sequence}"
+    if code == "check_not_applicable":
+        cause = standing.superseded_by
+        if cause is None:
+            return None
+        sentence = (
+            f"Why: {_later_record_phrase(cause)} was recorded after the check at {tested} "
+            f"(rule {cause.material.rule})."
+        )
+        if cause.material.material_class is LaterMaterialClass.EDIT_OR_WRITE:
+            sentence += (
+                " The host hook records the tool and whether the write left the workspace, not "
+                "the path; the next check reads the changed files."
+            )
+        return sentence
+    if code == CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP:
+        first = standing.bounding_first or standing.counted_first
+        if standing.superseded_by is not None or first is None:
+            return None
+        answers = sum(1 for record in standing.counted if not is_observation_authored(record))
+        unclassified = len(standing.counted) - answers
+        parts: list[str] = []
+        if unclassified:
+            parts.append(
+                f"{_count_phrase(unclassified, 'later record', 'later records')} could not be "
+                "classified as Yoetz's own calls, read-only reads, host bookkeeping or "
+                "scratch writes"
+            )
+        if answers:
+            parts.append(
+                f"{_count_phrase(answers, 'later response', 'later responses')} answered findings"
+            )
+        sentence = (
+            f"Why: after the check at {tested}, " + " and ".join(parts) + "; the first is "
+            f"{_later_record_phrase(first)} (rule {first.material.rule})."
+        )
+        if standing.ignored:
+            ignored = ", ".join(
+                f"{count} {_LATER_CLASS_PHRASES.get(kind, kind.value)}"
+                for kind, count in standing.ignored.items()
+            )
+            sentence += (
+                f" Not counted, because Yoetz classified them as not changing the work: {ignored}."
+            )
+        return sentence
+    return None
 
 
 def _select_gaps(
@@ -1383,11 +1478,21 @@ def _suffix_record_kinds(context: ReceiptBuildContext) -> tuple[str | None, bool
     )
     if check_record is None:
         return None, False, False
-    later_material = tuple(
-        record
-        for record in context.records
-        if is_material_event_family(record.schema.name)
-        and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
+    # The same filter the application used to derive ``check_suffix`` (tb4n3 RC-6): records the
+    # shared ``later_material_class`` rule proves harmless are not part of the disclosed suffix.
+    later_material = (
+        context.check_standing.counted
+        if context.check_standing is not None
+        else counted_later_material(
+            (
+                record
+                for record in context.records
+                if is_material_event_family(record.schema.name)
+                and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
+            ),
+            context.projection,
+            all_records=context.records,
+        )
     )
     lineage_records = tuple(
         record for record in later_material if is_lineage_service_stamped(record)
@@ -1425,6 +1530,7 @@ def _check_coverage_sentence(
     engine_derived_suffix: str | None = None,
     host_observation_suffix: bool = False,
     limitation_response_suffix: bool = False,
+    superseded_by_observation: bool = False,
 ) -> str:
     """State what the recorded check does or does not cover here, in the reader's terms."""
 
@@ -1493,7 +1599,8 @@ def _check_coverage_sentence(
             else f"subject frontier {tested_subject_sequence}"
         )
         return (
-            f"A check is recorded at {tested}, but material work was published after it, so "
+            f"A check is recorded at {tested}, but material work was "
+            f"{'recorded' if superseded_by_observation else 'published'} after it, so "
             f"its verdict no longer covers frontier {frontier.sequence}. Re-run check at this "
             "frontier to restore coverage."
         )
@@ -1704,6 +1811,7 @@ def _sections(
     observed_failure_sentence: str = "",
     caller_digest_counts: _CallerDigestCounts = _NO_CALLER_DIGESTS,
     limitation_response_suffix: bool = False,
+    superseded_by_observation: bool = False,
     check_change_gap_texts: Mapping[str, str] | None = None,
     review_input_manifest: object | None = None,
     missing_for_assessment: object = (),
@@ -1877,6 +1985,7 @@ def _sections(
             engine_derived_suffix=engine_derived_suffix,
             host_observation_suffix=host_observation_suffix,
             limitation_response_suffix=limitation_response_suffix,
+            superseded_by_observation=superseded_by_observation,
         )
         if check_sentence:
             gap_body = f"{check_sentence} Coverage is limited by: {', '.join(gap_codes)}."
@@ -2254,6 +2363,11 @@ def build_receipt(
         acknowledged_obligations=frozenset(acknowledged_obligation_ids(context.projection)),
         caller_digest_counts=_caller_digest_counts(context),
         limitation_response_suffix=limitation_response_suffix,
+        superseded_by_observation=(
+            context.check_standing is not None
+            and context.check_standing.superseded_by is not None
+            and context.check_standing.superseded_by.observation_authored
+        ),
         review_input_manifest=(
             None
             if context.applicable_check is None

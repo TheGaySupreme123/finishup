@@ -34,7 +34,11 @@ from yoetz.protocol.canonical import JsonValue, ensure_canonical_value
 from yoetz.protocol.errors import PublicErrorCode, normalize_safe_details
 from yoetz.protocol.guidance_uris import ALL_GUIDANCE_URIS
 from yoetz.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
-from yoetz.protocol.readiness_text import READINESS_STATES, readiness_directive
+from yoetz.protocol.readiness_text import (
+    READINESS_STATES,
+    check_cause_sentence,
+    readiness_directive,
+)
 from yoetz.protocol.recovery import (
     REASON_REMEDIES,
     RecoveryDirective,
@@ -126,6 +130,9 @@ _P_IDENTITY: Final = 20  # ids and refs the next request must carry
 _P_STATE: Final = 30  # counts and checklists that describe state
 _P_DISCLOSURE: Final = 40  # disclosures of what the check did not cover
 _P_DETAIL: Final = 50  # supporting detail; the structured result carries it in full
+# The lineage of a listed closure token (check_cause) is granted right after the action clauses
+# and ahead of every boilerplate sentence, the operation-progress text included (tb4n3 RC-6).
+_P_CAUSE: Final = _P_ACTION + 1
 # One id or token list never takes more than this of the bounded text, so a 100-finding check
 # still leaves room for the instruction, the checklist and the disclosures beside it; the exact
 # remainder is stated as "+N more" and the structured result carries every row.
@@ -1712,7 +1719,7 @@ def summary_for_status(envelope: object) -> str:
                     "details.",
                     priority=_P_ACTION,
                 ),
-                *render.guarded_parts("closure", lambda: _closure_parts(source)),
+                *_closure_section(render, source),
                 render.failure_part(),
             ]
         )
@@ -1743,10 +1750,16 @@ def summary_for_status(envelope: object) -> str:
             )
         )
     if view == "operation":
+        # The fallback is core; the full progress text is granted behind the closure lineage
+        # (_P_CAUSE), which is what makes a listed readiness token true.
         parts.append(
-            _req(
-                render.text("operation", lambda: _operation_progress_clause(source)),
-                "semantic progress: see structured page;",
+            Part(
+                (
+                    render.text("operation", lambda: _operation_progress_clause(source)),
+                    "semantic progress: see structured page;",
+                ),
+                required=True,
+                priority=_P_CAUSE + 1,
             )
         )
     if view == "findings":
@@ -1763,7 +1776,7 @@ def summary_for_status(envelope: object) -> str:
             f"receipt-blocking findings: {receipt_blocking}; reported gaps: {gaps}."
         )
     )
-    parts.extend(render.guarded_parts("closure", lambda: _closure_parts(source)))
+    parts.extend(_closure_section(render, source))
     page = source.get("page")
     if isinstance(page, Mapping):
         typed_page = cast(Mapping[str, JsonValue], page)
@@ -1832,15 +1845,99 @@ def _readiness_tokens(readiness: Mapping[str, JsonValue], key: str) -> tuple[str
     )
 
 
+def _check_cause_variants(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """The lineage sentence for ``check_not_applicable`` or a bounding earlier-frontier code.
+
+    Built from the closed ``closure_readiness.check_cause`` fields by the shared frozen text
+    (``yoetz.protocol.readiness_text.check_cause_sentence``), so the MCP text, the CLI and the
+    terminal interface say the same words (tb4n3 RC-6, owner lineage rule). Returns the full
+    sentence, then the short form (same record and frontier, no id or rule); an absent or invalid
+    cause yields no variant, because a malformed record must not be shown as lineage.
+    """
+
+    readiness = source.get("closure_readiness")
+    if not isinstance(readiness, Mapping):
+        return ()
+    cause = cast(Mapping[str, JsonValue], readiness).get("check_cause")
+    if not isinstance(cause, Mapping):
+        return ()
+    fields = cast(Mapping[str, JsonValue], cause)
+    texts = {
+        key: fields.get(key)
+        for key in (
+            "effect",
+            "event_id",
+            "ledger_sequence",
+            "check_subject_frontier",
+            "family",
+            "material_class",
+            "rule",
+        )
+    }
+    tool = fields.get("tool")
+    if any(type(value) is not str for value in texts.values()) or (
+        tool is not None and type(tool) is not str
+    ):
+        return ()
+    variants: list[str] = []
+    for compact in (False, True):
+        try:
+            sentence = check_cause_sentence(
+                effect=cast(str, texts["effect"]),
+                event_id=cast(str, texts["event_id"]),
+                ledger_sequence=texts["ledger_sequence"],
+                check_subject_frontier=texts["check_subject_frontier"],
+                family=cast(str, texts["family"]),
+                material_class=cast(str, texts["material_class"]),
+                rule=cast(str, texts["rule"]),
+                tool=tool,
+                compact=compact,
+            )
+        except ValueError:
+            return ()
+        if not sentence.isascii():
+            return ()
+        variants.append(sentence)
+    return tuple(variants)
+
+
+def _check_cause_part(source: Mapping[str, JsonValue]) -> Part | None:
+    """The cause, granted room right after the core and the action clauses.
+
+    The cause is what makes the listed ``check_not_applicable`` or
+    ``check_current_as_of_earlier_frontier`` true (tb4n3 RC-6, owner lineage rule), so it ranks
+    ahead of every boilerplate sentence: the full directive, the generic closure sentence and the
+    operation-progress text yield to it. It is never required, so it cannot displace the closure
+    state, the stop instruction or the agent-actionable items, which are reserved first. The full
+    sentence is tried before the short form (same record and frontier); a missing or malformed
+    cause adds no part.
+    """
+
+    variants = _check_cause_variants(source)
+    if not variants:
+        return None
+    return Part(variants, priority=_P_CAUSE)
+
+
+def _closure_section(render: _Render, source: Mapping[str, JsonValue]) -> list[Part | None]:
+    """The closure checklist and the lineage of the item it lists; each fails on its own."""
+
+    return [
+        *render.guarded_parts("closure", lambda: _closure_parts(source)),
+        render.guarded_one("check_cause", lambda: _check_cause_part(source)),
+    ]
+
+
 def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
     """Name the closure-readiness state and its frozen directive (issue #913, ADR-032).
 
     Only the closed state token, service counts and classified gap or condition tokens appear.
-    The state is always present. For ``ready_with_limitations`` the owner-approved stop sentence is
-    required beside it (its short form when room is scarce) and the named limitations are an
-    optional part granted after the action clauses; for ``action_required`` the named items are the
-    instruction, so they are granted before the generic sentence. One named list never takes more
-    than the list bound.
+    The state is always present. For ``ready_with_limitations`` the owner-approved stop instruction
+    is required beside it (the counts sentence of the full directive is granted when room is left)
+    and the named limitations are an optional part granted after the action clauses; for
+    ``action_required`` the named items are the instruction and are required (their shortest
+    rendering is reserved), so they are never displaced by the generic sentence or by the lineage
+    of the item. One named list never takes more than the list bound.
     """
 
     readiness = source.get("closure_readiness")
@@ -1869,17 +1966,22 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
         ]
         actionable = _readiness_tokens(typed, "agent_actionable")
         if actionable:
-            parts.append(Part(listed("Agent-actionable: ", actionable), priority=_P_ACTION))
+            # Core: at least one named item and the count of the rest are always present.
+            parts.append(
+                Part(listed("Agent-actionable: ", actionable), required=True, priority=_P_ACTION)
+            )
         return parts
     if state == "ready_with_limitations":
+        # Core: the state and the stop instruction. The counts sentence of the full directive is
+        # boilerplate: it is granted after the lineage of the listed limitation (_P_CAUSE).
         parts = [
             Part(
                 (
                     f"{head} {sentence}",
                     f"{head} Nothing further to do. Request the receipt.",
-                    head,
                 ),
                 required=True,
+                priority=_P_CAUSE + 2,
             )
         ]
         if standing:
@@ -1937,7 +2039,7 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
             [
                 head,
                 _req("page unavailable."),
-                *render.guarded_parts("closure", lambda: _closure_parts(source)),
+                *_closure_section(render, source),
                 render.failure_part(),
             ]
         )
@@ -1996,7 +2098,7 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
     parts.append(
         _opt("Read the structured page for child states and row identities.", priority=_P_STATE)
     )
-    parts.extend(render.guarded_parts("closure", lambda: _closure_parts(source)))
+    parts.extend(_closure_section(render, source))
     parts.append(render.failure_part())
     return _compose(parts)
 

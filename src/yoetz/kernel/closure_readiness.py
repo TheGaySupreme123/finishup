@@ -43,6 +43,7 @@ from yoetz.domain.receipts import (
 )
 from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel import finding_todo as _finding_todo_module
+from yoetz.kernel.check_standing import CheckCause, CheckStanding, check_standing
 from yoetz.kernel.claim_limitations import required_limitation_ids_for_projection
 from yoetz.kernel.claims import completion_claim_present
 from yoetz.kernel.finding_resolution import finding_is_resolved
@@ -597,6 +598,9 @@ class ClosureReadinessFacts:
     open_obligations_unreadable: bool = True
     # Issue #984 (D7a): acknowledged-not-done findings whose premise the reviewer disputes.
     premise_disputed_finding_ids: tuple[FindingId, ...] = ()
+    # Why the check is not applicable, or why the earlier-frontier code bounds: the first later
+    # record that decided it (event id, ledger sequence, family, class, closed rule, tool token).
+    check_cause: CheckCause | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -610,6 +614,7 @@ class ClosureReadinessFacts:
             or type(self.semantic_review_current) is not bool
             or type(self.closing_review_current) is not bool
             or type(self.semantic_review_used) is not bool
+            or (self.check_cause is not None and type(self.check_cause) is not CheckCause)
         ):
             raise ValueError("closure_readiness_facts_invalid")
         for values in (
@@ -689,31 +694,20 @@ def finding_acknowledged_not_done(state: ProjectionState, finding: FindingId) ->
 def _check_applicability(
     state: ProjectionState,
     records: tuple[LedgerRecord, ...],
-    limitations: frozenset[FindingId],
-) -> CheckApplicability:
+) -> tuple[CheckApplicability, CheckStanding]:
     # The receipt's own applicability rule (application/receipt.py, kernel/receipt_capacity.py):
-    # a check covers this state unless a later material record superseded it.
-    latest = state.latest_tested_state
-    if latest is None:
-        return "not_recorded"
-    check_record = next(
-        (record for record in records if record.event_id == latest.source_check_event_id), None
-    )
-    if check_record is None:
-        return "payload_unavailable"
-    if any(
-        invalidates_recorded_check(
-            record,
-            check_record.ledger.ingestion_sequence,
-            latest.returned_finding_ids,
-            limitation_finding_ids=limitations,
-        )
-        for record in records
-    ):
-        return "not_applicable"
-    if type(check_record.payload) is not CheckRecordedPayload:
-        return "payload_unavailable"
-    return "applicable"
+    # a check covers this state unless a later material record superseded it. ``check_standing``
+    # is the one walk all of them share (tb4n3 RC-6).
+    standing = check_standing(state, records)
+    if standing.latest is None:
+        return "not_recorded", standing
+    if standing.check_record is None:
+        return "payload_unavailable", standing
+    if standing.superseded:
+        return "not_applicable", standing
+    if type(standing.check_record.payload) is not CheckRecordedPayload:
+        return "payload_unavailable", standing
+    return "applicable", standing
 
 
 def _review_round_stopped(payload: CheckRecordedPayload) -> bool:
@@ -728,7 +722,9 @@ def _review_round_stopped(payload: CheckRecordedPayload) -> bool:
 
 
 def _semantic_review_current(
-    records: tuple[LedgerRecord, ...], limitations: frozenset[FindingId]
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    limitations: frozenset[FindingId],
 ) -> bool:
     """True when an AI-powered review completed and no material change was recorded since.
 
@@ -751,6 +747,7 @@ def _semantic_review_current(
                 record.ledger.ingestion_sequence,
                 payload.returned_finding_ids,
                 limitation_finding_ids=limitations,
+                projection=state,
             )
             for later in records
         )
@@ -806,6 +803,7 @@ def _closing_review_facts(
                 record.ledger.ingestion_sequence,
                 payload.returned_finding_ids,
                 limitation_finding_ids=limitations,
+                projection=state,
             )
             for later in records
         ):
@@ -929,9 +927,11 @@ def closure_readiness_facts(
         sorted({item for item in open_obligations if item in blocked}, key=str.encode)
     )
     closing_current, review_used = _closing_review_facts(state, records, limitations)
+    applicability, standing = _check_applicability(state, records)
     return ClosureReadinessFacts(
-        check_applicability=_check_applicability(state, records, limitations),
-        semantic_review_current=_semantic_review_current(records, limitations),
+        check_applicability=applicability,
+        check_cause=standing.cause if applicability in {"applicable", "not_applicable"} else None,
+        semantic_review_current=_semantic_review_current(state, records, limitations),
         receipt_blocking_finding_ids=tuple(sorted(blocking, key=str.encode)),
         acknowledged_finding_ids=tuple(sorted(acknowledged, key=str.encode)),
         acknowledged_obligation_ids=acknowledged_obligations,

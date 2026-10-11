@@ -83,6 +83,7 @@ from yoetz.protocol.models import (
     StartSuccessModel,
     StatusAdviceItemModel,
     StatusBlockedObligationModel,
+    StatusCheckCauseModel,
     StatusClosureReadinessModel,
     StatusCompactItemModel,
     StatusCompactObligationModel,
@@ -242,6 +243,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (PublishWorkSuccessModel, frozenset({"blocker_notices"})),
     (PublishWorkDryRunModel, frozenset({"blocker_notices"})),
     (StatusBlockedObligationModel, frozenset({"confirmation", "confirmation_event_id"})),
+    (StatusCheckCauseModel, frozenset({"tool"})),
     (PublicErrorModel, frozenset({"safe_details"})),
     (
         ReadGuidanceSuccessModel,
@@ -284,6 +286,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "limitation_refs_required",
                 "limitation_refs_required_count",
                 "acknowledged_obligation_count",
+                "check_cause",
             }
         ),
     ),
@@ -836,6 +839,25 @@ def test_blocked_obligation_omits_an_unset_confirmation() -> None:
     )
     dumped = parsed.model_dump(mode="json", exclude_unset=True)
     assert not StatusBlockedObligationModel.optional_non_null_fields & dumped.keys()
+
+
+def test_check_cause_omits_an_unset_tool() -> None:
+    """A later record that names no tool (stream bookkeeping, a lineage manifest) leaves it out."""
+
+    parsed = StatusCheckCauseModel.model_validate(
+        {
+            "effect": "bounds_conclusion",
+            "event_id": "evt_00000000-0000-4000-8000-000000000001",
+            "ledger_sequence": "12",
+            "check_event_id": "evt_00000000-0000-4000-8000-000000000002",
+            "check_subject_frontier": "9",
+            "family": "evidence_recorded",
+            "material_class": "other",
+            "rule": "unclassified_observed_evidence",
+        }
+    )
+    dumped = parsed.model_dump(mode="json", exclude_unset=True)
+    assert not StatusCheckCauseModel.optional_non_null_fields & dumped.keys()
 
 
 async def test_respond_omits_unset_optional_response_fields() -> None:
@@ -1626,6 +1648,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "limitation_refs_required_count",
         # #997: absent from a readiness an earlier 0.3 build shaped.
         "acknowledged_obligation_count",
+        # tb4n3 RC-6: absent unless it explains a listed check_not_applicable / earlier-frontier item.
+        "check_cause",
     ):
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (
@@ -1637,6 +1661,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         covered["StatusBlockedObligationModel", field] = (
             "test_blocked_obligation_omits_an_unset_confirmation"
         )
+    covered["StatusCheckCauseModel", "tool"] = "test_check_cause_omits_an_unset_tool"
     for field in ("remaining_ms", "terminal_outcome", "terminal_reason"):
         # The sampling case omits the terminal pair; the terminal case omits remaining_ms.
         covered["StatusSemanticProgressModel", field] = (

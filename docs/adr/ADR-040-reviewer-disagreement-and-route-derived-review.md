@@ -6,7 +6,9 @@
   don't block"), ADR-006 (reviewer instruction)
 - Maintainer acknowledgement: the owner approved all tb4n2 core issues R1-R10, design changes
   included, on 2026-10-08 (maintainer TheGaySupreme123: "all r been agreed").
-- Implemented by: `application/check.py` (`_admit_prior_verdicts`, `_disputed_after_rebuttal`,
+- Implemented by: `kernel/later_material.py`, `kernel/check_standing.py`, `kernel/reducers.py`
+  (`invalidates_recorded_check`), `domain/yoetz_tools.py` (tb4n3 RC-6, #1029),
+  `application/check.py` (`_admit_prior_verdicts`, `_disputed_after_rebuttal`,
   `_record_restatement`, `_restated_finding`, `_concern_key`, `semantic_route_required`),
   `kernel/finding_resolution.py` (`apply_check_rulings`), `kernel/finding_todo.py`,
   `kernel/receipt_builder.py` (`_conclusion`), `domain/receipts.py`, `kernel/closure_readiness.py`,
@@ -118,6 +120,63 @@ When the only material recorded after the applicable check is the agent's answer
 own findings (`CheckSuffixClass.RESPONSES_ONLY`), `check_current_as_of_earlier_frontier` is a
 disclosure and does not bound the receipt conclusion. Finding states already reflect those
 answers. Observations or other later material keep it bounding.
+
+#### Amendment 2026-10-11 (issue #1029, tb4n3 RC-6): the suffix is classified, not counted
+
+The rule above never matched a real run. The records that follow a deterministic arm's final
+check are the `check` call's own hook observation and the host's stream bookkeeping (opaque
+`event_msg`/`response_item`/`token_usage_record` rows, completion signals), not responses, so the
+code bounded 17 of 17 tb4n3 final receipts and was the only bound in three D attempts. Conversely
+an observed edit after the check produced the same standing code, so a post-check edit read like
+a status poll.
+
+`kernel/later_material.later_material_class` (re-exported by `kernel/reducers`) is now the one
+predicate over a record accepted after a check, shared by the reducer, `kernel/check_standing`
+(receipt context, receipt capacity, compact status coverage, closure readiness) and the receipt
+builder. Classes:
+
+| class | what it is | effect |
+|---|---|---|
+| `yoetz_own_call` | the observation of a call to one of Yoetz's own MCP tools, any host spelling (`mcp__yoetz__x`, `mcp__plugin_yoetz_yoetz__x`, bare `x`, `yoetz:x`, `plugin-yoetz-yoetz:x`, Cursor's generic `MCP:x` by the closed basenames) | ignored |
+| `exploration` | an observed run of the hook's `exploration` runner class, a native read tool, a routine-read summary | ignored |
+| `no_tool_activity` | host stream bookkeeping that names no tool call: `Opaque observation kind=<Codex wrapper kind>`, `Observed completion signal kind=...`; and a host poll tool that returns the output of work started earlier (Codex `wait`, a poll output that follows the last check in 18 of 27 tb4n2/tb4n3 semantic-arm attempts) | ignored |
+| `non_counting_write` | an observed edit whose every path is scratch or Yoetz-owned (ADR-042) | ignored |
+| `response` | a cooperative answer to a finding | advisory (above) |
+| `edit_or_write` | an observed deliverable, workspace or outside-workspace edit | supersedes the check: `check_not_applicable`, freshness `stale_after_material_change`, closing review required again |
+| `other` | anything Yoetz cannot prove harmless: an unclassified command or tool, an unpaired host result, a subagent, a lineage manifest | keeps the bounding disclosure |
+
+A result is classified by the action it answers. A Yoetz receipt or export the agent saved is
+exempt even when a declared output directory would otherwise make a lexical `yoetz_owned` write
+count for verification staleness (ADR-042 decision 1): it is the output about the check, so no
+check could cover it, and counting it would invalidate the check that produced it. The exemption
+ends where a declared output is itself a packaged Yoetz tree (`.agents/...`): a write there may be
+the deliverable and keeps counting.
+
+Readiness keeps `check_current_as_of_earlier_frontier` a standing disclosure (the gap table and
+`gap_classification_version` are unchanged), including while a counted observation bounds the
+receipt. The tb4n2 B5 proposal to list it as agent work ("one more check removes it") was
+examined and not adopted: every variant of it can regenerate after the check it asks for, and an
+instruction an agent cannot complete is the worst outcome (steered wrong). Reproduced regenerators:
+Cursor's structural `afterMCPExecution` result of every call (including each check's own) carries
+no tool identity; an agent running the Yoetz CLI through its shell (`yoetz check ...`) records a
+named command after every check; a late-delivered observation lands after any check. The receipt
+still discloses and bounds, and the limitations text names the first bounding record; wave 2's
+`gap_effect` decides with the host facts. Content the host captured for a call (tool output, a
+workspace diff) is evidence recorded under that call's action and takes the action's class; the
+late output of an edit is `other` with rule `evidence_of_edit` (the edit is the superseding record).
+
+Provenance (owner lineage rule): the receipt gap cites the superseding or first counted record
+(`subject_refs`), and the limitations text names the record, its ledger sequence, the closed rule
+(`observed_counting_edit`, `unclassified_observed_action`, ...), the check's subject frontier and
+how many later records were classified harmless, by class. `closure_readiness.check_cause`
+carries the same facts on status. The hook records the tool and whether a write left the
+workspace, not the path, so the text says which record changed after which check, not which file.
+
+Known host limits, recorded in each integration runbook: Cursor's structural `afterFileEdit`
+profile and any unpaired or post-only result carry no tool identity (`other`, disclosed, never
+superseding); Cursor `StrReplace`/`Delete` and any other tool the materializer records as an
+`other` action are disclosed, not superseding; a late-delivered pre-check edit observation
+supersedes the check (the safe side; ingestion order is not occurrence time).
 
 ## Consequences
 

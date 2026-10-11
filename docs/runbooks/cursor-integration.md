@@ -1454,6 +1454,24 @@ X-HOST evidence: the derivation is covered by service-side contract tests over a
 ledger replay; a dogfood transcript on this host across macOS, Linux and WSL 2 has not been
 recorded yet. That gap is owned by issue #913.
 
+### What follows the last check on Cursor (tb4n3 RC-6, #1029)
+
+The ordinary profile spells every MCP call `MCP:<tool>` and names no server, so Yoetz's own
+calls are recognised by the closed Yoetz basenames (`start`, `publish_work`, `check`, `respond`,
+`status`, `receipt`, `read_guidance`, `closure_prepare`). A foreign MCP tool with exactly one of
+those names is treated alike; that loses only a later-material disclosure, never a supersession,
+and is the cost of the missing server field (a paired `afterMCPExecution` owner would remove it;
+follow-up owner: the Cursor ordinary-profile issue). The server-scoped spellings `yoetz:<tool>`
+and `plugin-yoetz-yoetz:<tool>` are exact. `Write` is an edit that supersedes a check;
+`StrReplace`, `Delete` and any other tool the materializer records as an `other` action, and the
+structural profile's `afterFileEdit` / `afterMCPExecution` post-only results (no tool identity),
+are `other`: they keep the `check_current_as_of_earlier_frontier` disclosure and never supersede. A
+record that names no tool (the structural profile's post-only result of every call, including each
+check's own) is `other` too, so on that profile every receipt carries and is bounded by the
+disclosure; status keeps it a standing limitation and never asks for a recheck, because every check
+would regenerate it.
+That is a known Cursor capability gap, shared with `edited_after_last_verification`.
+
 ### Bounded workflow recovery examples (#613)
 
 These examples use the existing MCP operations on the pinned local Cursor IDE or Agent CLI cell.

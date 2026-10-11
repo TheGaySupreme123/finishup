@@ -313,6 +313,7 @@ def test_semantic_currency_needs_a_completed_review_with_no_later_material_chang
             check.ledger.ingestion_sequence,
             payload.returned_finding_ids,
             limitation_finding_ids=limitations,
+            projection=replay(prefix),
         )
     )
     suffix = later[: material + 1]
@@ -460,6 +461,7 @@ def test_closing_review_goes_stale_after_a_material_change() -> None:
             check.ledger.ingestion_sequence,
             payload.returned_finding_ids,
             limitation_finding_ids=limitations,
+            projection=replay(prefix),
         )
     )
     stale = (*closing, *later[: material + 1])

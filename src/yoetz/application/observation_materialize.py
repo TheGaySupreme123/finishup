@@ -67,6 +67,12 @@ from yoetz.domain.values import (
     result_id,
 )
 from yoetz.domain.write_scope import WRITE_SCOPES
+from yoetz.domain.yoetz_tools import yoetz_tool_spelling
+from yoetz.kernel.later_material import (
+    COMPLETION_SIGNAL_PREFIX,
+    OPAQUE_OBSERVATION_PREFIX,
+    ROUTINE_READ_SUMMARY_PREFIX,
+)
 from yoetz.kernel.observed_failures import observed_action_description, observed_command_field
 from yoetz.ports.integrations import observation_pairing_contract
 from yoetz.protocol.canonical import request_digest
@@ -407,10 +413,7 @@ def _omitted_command(structural: Mapping[str, JsonValue]) -> str:
 def _yoetz_mcp_tool(lowered: str) -> bool:
     """Whether a lower-cased host tool name is a server-qualified Yoetz MCP tool."""
 
-    if not lowered.startswith("mcp__"):
-        return False
-    server, separator, _tool = lowered[len("mcp__") :].partition("__")
-    return bool(separator) and "yoetz" in server.split("_")
+    return yoetz_tool_spelling(lowered) == "server_scoped"
 
 
 def _action_kind(tool: str | None) -> ActionKind:
@@ -760,7 +763,7 @@ def materialize_routine_read_summary(
         role="routine_read_summary_event",
     )
     description = (
-        "Routine-read summary observed "
+        f"{ROUTINE_READ_SUMMARY_PREFIX}"
         f"calls={summary.summary_count} inputs={summary.input_count} "
         f"member_digest={summary.member_digest} content_scope={summary.content_scope}"
     )
@@ -1595,7 +1598,7 @@ def materialize_observation_envelope(
                     EvidenceKind.OTHER,
                     EvidenceImmutability.METADATA_ONLY,
                     envelope.receipt_time,
-                    description=f"Observed completion signal kind={kind}",
+                    description=f"{COMPLETION_SIGNAL_PREFIX}{kind}",
                 ),
                 role="completion_signal",
             )
@@ -1635,7 +1638,7 @@ def materialize_observation_envelope(
                 EvidenceKind.OTHER,
                 EvidenceImmutability.METADATA_ONLY,
                 envelope.receipt_time,
-                description=f"Opaque observation kind={kind}",
+                description=f"{OPAQUE_OBSERVATION_PREFIX}{kind}",
             ),
             role="opaque",
         )

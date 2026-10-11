@@ -4546,6 +4546,49 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
                 "enum": ["action_required", "ready", "ready_with_limitations", "unknown"],
                 "type": "string",
             },
+            # tb4n3 RC-6 (issue #1029): the record that decided check_not_applicable or the
+            # bounding check_current_as_of_earlier_frontier. Service-minted ids, a ledger
+            # sequence, closed tokens and the recorded tool name; never a path or command text.
+            "check_cause": {
+                "additionalProperties": False,
+                "properties": {
+                    "check_event_id": {"$ref": "#/$defs/event_id"},
+                    "check_subject_frontier": {"$ref": "#/$defs/canonical_uint"},
+                    "effect": {"enum": ["superseded", "bounds_conclusion"], "type": "string"},
+                    "event_id": {"$ref": "#/$defs/event_id"},
+                    "family": {"$ref": "#/$defs/code"},
+                    "ledger_sequence": {"$ref": "#/$defs/canonical_uint"},
+                    "material_class": {
+                        "enum": [
+                            "yoetz_own_call",
+                            "response",
+                            "exploration",
+                            "no_tool_activity",
+                            "non_counting_write",
+                            "edit_or_write",
+                            "other",
+                        ],
+                        "type": "string",
+                    },
+                    "rule": {"$ref": "#/$defs/code"},
+                    "tool": {
+                        "maxLength": 128,
+                        "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$",
+                        "type": "string",
+                    },
+                },
+                "required": [
+                    "check_event_id",
+                    "check_subject_frontier",
+                    "effect",
+                    "event_id",
+                    "family",
+                    "ledger_sequence",
+                    "material_class",
+                    "rule",
+                ],
+                "type": "object",
+            },
             # Open obligations a recorded yoetz-blocker decision names (#977): ids and the closed
             # kind only. Optional and independent of the checklist group.
             "blocked_obligations": {

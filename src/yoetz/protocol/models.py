@@ -1004,6 +1004,10 @@ SubjectIdWire = Annotated[
     ),
 ]
 CodeWire = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,127}$", max_length=128)]
+# A host tool name as materialization records it (a closed token; never a path or command text).
+ObservedToolWire = Annotated[
+    str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$", max_length=128)
+]
 # One closure-readiness checklist entry: a condition token, an actionable gap code, or the
 # conservative ``unclassified_gap:<code>`` form for a code the running build does not know.
 ReadinessItemWire = Annotated[
@@ -4387,6 +4391,38 @@ class StatusBlockedObligationModel(_ClosedModel):
         return self
 
 
+class StatusCheckCauseModel(_ClosedModel):
+    """Why the latest check is not applicable, or why the earlier-frontier code bounds (RC-6).
+
+    The first record that followed the check and decided it: ``superseded`` names the record that
+    revoked the check (an observed deliverable or workspace edit, a cooperative material record,
+    an observation finding); ``bounds_conclusion`` names the first observation Yoetz could not
+    prove harmless. Service-minted ids, closed tokens and the recorded tool name only: the hook
+    records the tool and whether a write left the workspace, never the path (owner lineage rule,
+    issue #1029).
+    """
+
+    effect: Literal["superseded", "bounds_conclusion"]
+    event_id: EventIdWire
+    ledger_sequence: CanonicalUInt64Wire
+    check_event_id: EventIdWire
+    check_subject_frontier: CanonicalUInt64Wire
+    family: CodeWire
+    material_class: Literal[
+        "yoetz_own_call",
+        "response",
+        "exploration",
+        "no_tool_activity",
+        "non_counting_write",
+        "edit_or_write",
+        "other",
+    ]
+    rule: CodeWire
+    tool: ObservedToolWire | None = None
+
+    optional_non_null_fields = frozenset({"tool"})
+
+
 class StatusCredentialHeuristicModel(_ClosedModel):
     """The possible-credential filter state for the external AI reviewer (issue #982)."""
 
@@ -4455,9 +4491,14 @@ class StatusClosureReadinessModel(_ClosedModel):
     # ``acknowledged_not_done``). ``open_obligation_count`` never includes them. Optional on
     # the unreleased 1.4.0 wire; absent from an earlier 0.3 build.
     acknowledged_obligation_count: CanonicalUInt64Wire | None = None
+    # tb4n3 RC-6 (owner lineage rule): the record that decided ``check_not_applicable`` (listed as
+    # work) or the bounding standing ``check_current_as_of_earlier_frontier``. Optional on the
+    # unreleased 1.4.0 wire: absent when neither is listed, and from an earlier 0.3 build.
+    check_cause: StatusCheckCauseModel | None = None
 
     optional_non_null_fields = frozenset(
         {
+            "check_cause",
             "acknowledged_obligation_count",
             "state",
             "gap_classification_version",
@@ -4546,6 +4587,8 @@ class StatusClosureReadinessModel(_ClosedModel):
             self.acknowledged_not_done_count,
         )
         if all(value is None for value in checklist):
+            if self.check_cause is not None:
+                raise ValueError("closure_readiness_check_cause_mismatch")
             return
         if any(value is None for value in checklist):
             raise ValueError("closure_readiness_checklist_partial")
@@ -4555,6 +4598,15 @@ class StatusClosureReadinessModel(_ClosedModel):
         acknowledged_ids = cast(tuple[str, ...], self.acknowledged_not_done)
         _require_unique(actionable, limit=128)
         _require_unique(standing, limit=128)
+        if self.check_cause is not None:
+            # A superseded check is listed as work; a bounding suffix is a standing disclosure.
+            listed = (
+                "check_not_applicable" in actionable
+                if self.check_cause.effect == "superseded"
+                else "check_current_as_of_earlier_frontier" in standing
+            )
+            if not listed:
+                raise ValueError("closure_readiness_check_cause_mismatch")
         _require_unique(acknowledged_ids, limit=64)
         acknowledged = int(cast(str, self.acknowledged_not_done_count))
         if len(acknowledged_ids) != min(acknowledged, 64):
@@ -6131,6 +6183,17 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "limitation_refs_required_count",
             # #997: a count only.
             "acknowledged_obligation_count",
+            # tb4n3 RC-6: service-minted ids, counters and closed tokens only (the recorded tool
+            # name is a closed token, never a path or command text).
+            "check_cause/effect",
+            "check_cause/event_id",
+            "check_cause/ledger_sequence",
+            "check_cause/check_event_id",
+            "check_cause/check_subject_frontier",
+            "check_cause/family",
+            "check_cause/material_class",
+            "check_cause/rule",
+            "check_cause/tool",
         ),
     )
     # Closed state tokens only (issue #982).
@@ -6907,7 +6970,9 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1473:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +5
+    if (
+        len(result) != 1482
+    ):  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +5, tb4n3 LO +9
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

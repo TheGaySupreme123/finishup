@@ -1467,18 +1467,28 @@ result (#911). A kind outside the allowlist stays response work even when it is 
 rejection or waiver of that finding, which the local packs score, and every response to any other
 finding the check did not return, still revokes it.
 `check_current_as_of_earlier_frontier` is the qualified attribution in this family: when only
-check-answering responses, such limitation acknowledgements, and/or finding-free observation
-records follow the check, its coverage still contributes while the receipt names the subject
-frontier its verdict is current as of. The application also classifies that suffix
-(`kernel/receipt_builder.CheckSuffixClass`: responses only, observations only, or mixed) so the
-limitations sentence names what actually followed the check instead of assuming responses; the
-class is render context, not a wire field or gap code (#657). A response suffix that includes a
-limitation acknowledgement is named as responses "to the findings it returned or to
-observation-authored coverage limitations". `kernel/reducers.invalidates_recorded_check`
-is the single predicate deciding between the two, shared by the receipt and by compact status
-coverage; the reducer's projection freshness applies the same rule through the replay index's
-`observation_finding_event_ids`. Lineage and work-state events such as `work_closed` are not
-material and never revoke a check.
+check-answering responses, such limitation acknowledgements, and/or observation records Yoetz
+cannot prove harmless follow the check, its coverage still contributes while the receipt names the
+subject frontier its verdict is current as of. Which later records count is one predicate,
+`kernel/later_material.later_material_class(record, projection)` (re-exported by
+`kernel/reducers`), with the closed classes `yoetz_own_call | response | exploration |
+no_tool_activity | non_counting_write | edit_or_write | other` (ADR-040 section 7, tb4n3 RC-6,
+#1029). The first four observation classes (a hook or stream observation of one of Yoetz's own
+MCP tools in any host spelling, a read-only run, host stream bookkeeping that names no tool call,
+a scratch or Yoetz-owned write) are ignored: no gap, no supersession. `edit_or_write`, an observed
+deliverable, workspace or outside-workspace edit, supersedes the check exactly like cooperative
+material work. `other` and `response` keep the disclosure. `kernel/check_standing.check_standing`
+is the one walk over the records after the latest check; the receipt context, receipt capacity,
+compact status coverage and closure readiness all read it, so none can disagree. The application
+classifies the counted suffix (`kernel/receipt_builder.CheckSuffixClass`: responses only,
+observations only, or mixed) so the limitations sentence names what actually followed the check
+instead of assuming responses; the class is render context, not a wire field or gap code (#657).
+A response suffix that includes a limitation acknowledgement is named as responses "to the
+findings it returned or to observation-authored coverage limitations".
+`kernel/reducers.invalidates_recorded_check(record, check_sequence, returned_finding_ids, *,
+limitation_finding_ids, projection)` is the single predicate deciding whether a record supersedes
+the check; the reducer's projection freshness applies the same rule. Lineage and work-state events
+such as `work_closed` are not material and never revoke a check.
 
 ## 9. Kernel (`kernel/`)
 
@@ -1678,10 +1688,14 @@ material and never revoke a check.
   `session_resumed` — never revokes it; a readable `response_recorded` answering a finding the check
   itself returned never revokes it; an `acknowledged` or `provenance_disputed` response to an
   observation-authored, non-actionable finding never revokes it (#911); and a finding-free suffix
-  consisting entirely of service-stamped observation-authored records never revokes it. Those latter advances carry the
-  `check_current_as_of_earlier_frontier` gap. An observation-authored `finding_recorded`, every
+  of service-stamped observation-authored records never revokes it unless it contains an observed
+  edit. The observation records `later_material_class` cannot prove harmless carry the
+  `check_current_as_of_earlier_frontier` gap; the rest add nothing. An observation-authored `finding_recorded`, every
   other material-family event, a response to a finding the check did not return, and a response
-  whose payload is unreadable all revoke it. Frontier equality is not the rule: a check necessarily
+  whose payload is unreadable all revoke it, as does an observed deliverable, workspace or
+  outside-workspace edit (`later_material_class` = `edit_or_write`, tb4n3 RC-6); observations of
+  Yoetz's own calls, read-only reads, host bookkeeping and scratch or Yoetz-owned writes are
+  ignored and add no gap. Frontier equality is not the rule: a check necessarily
   advances the frontier past the subject it tested. The application constructs this context; the
   builder never imports a port type or re-derives applicability.
 - `build_receipt(context, receipt_id, task_id, session_id, generated_at, versions:
@@ -6843,7 +6857,9 @@ unless every receipt-blocking finding's latest response is `acknowledged_not_don
 `no_plan_published`, `no_obligations_declared`, `projection_stale`), then `check_in_progress`
 while a check holds the session frontier (read at the head through the ledger's
 `has_active_frozen_case`; an unanswerable probe counts as in flight), then `check_not_recorded` or
-`check_not_applicable` from the receipt applicability rule, then `closing_review_required` (issue
+`check_not_applicable` from the receipt applicability rule (an observed deliverable or workspace edit
+after the check counts; Yoetz's own calls, read-only reads and host bookkeeping do not,
+`kernel/later_material`, tb4n3 RC-6), then `closing_review_required` (issue
 #976: AI-powered review is required on the route or completed on the task, and no completed
 final-phase review, or undeliverable review attempt, is current since the last material change),
 then every actionable gap code and
@@ -6870,7 +6886,16 @@ lineage token from the catalog comparison is disclosed only when a recorded eval
 carries its code (`live_lineage_blockers`; `lineage_child_read_gap` is recorded as
 `lineage_child_unavailable`); otherwise it is agent-actionable whatever its class, because a
 receipt folds recorded lineage only and cannot disclose it yet. No gap is dropped from `gaps` or
-`known_gaps`. `state` is `unknown` exactly with `readiness_unknown`
+`known_gaps`. The optional `check_cause` (`StatusCheckCauseModel`, present only beside the token it explains: `effect`
+`superseded|bounds_conclusion`, `event_id`, `ledger_sequence`, `check_event_id`,
+`check_subject_frontier`, `family`, `material_class`, `rule`, optional `tool`) names the first later
+record that decided it; MCP text, the CLI and the terminal interface render the one frozen sentence
+`readiness_text.check_cause_sentence`. The bounded MCP text on every status view reserves its core
+first (view and frontier, the closure state, the stop instruction, the agent-actionable items, the
+operation-progress fallback), then grants the cause (the full sentence, else its short form: record
+and check frontier, no id or rule), then every boilerplate sentence (the counts sentence of the full
+directive, the generic closure sentence, the operation-progress text); the cause is never required,
+so it cannot displace core (`mcp/summaries.py` `_check_cause_part`, `compose_parts`). `state` is `unknown` exactly with `readiness_unknown`
 (then `agent_actionable` is `("readiness_unknown",)` and the other groups are empty); otherwise it
 is `action_required` while `agent_actionable` is non-empty, `ready_with_limitations` when only
 standing or acknowledged entries remain, and `ready` when nothing remains. The five agent
@@ -8330,7 +8355,15 @@ finding, or than the agent's reasoned rejection when nothing after that rejectio
 
 A receipt whose applicable check is followed only by responses to that check's own findings
 (`CheckSuffixClass.RESPONSES_ONLY`) treats `check_current_as_of_earlier_frontier` as a disclosure
-(issue #1021); any other later material keeps it bounding the conclusion.
+(issue #1021); any other counted later material keeps it bounding the conclusion. "Counted" excludes
+what `later_material_class` proves harmless (Yoetz's own calls, read-only reads, host bookkeeping,
+scratch or Yoetz-owned writes; ADR-040 section 7, tb4n3 RC-6). While the counted suffix bounds,
+`check_current_as_of_earlier_frontier` stays a standing limitation in `closure_readiness` (not
+agent work: a recheck-instruction can regenerate, ADR-040 section 7); `closure_readiness.check_cause`
+(optional) names the first record that superseded the check (beside `check_not_applicable`) or that
+the bounding suffix rests on (beside the standing code): `effect`, `event_id`,
+`ledger_sequence`, `family`, `material_class`, `rule`, optional `tool`, `check_event_id`,
+`check_subject_frontier`.
 
 #### `duplicate_of`: a re-raised finding linked to an earlier one (issue #996, ADR-034 amendment)
 
