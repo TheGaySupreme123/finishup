@@ -4,43 +4,58 @@ When an agent stops while the mapped task's closure readiness still names work t
 the Stop hook continues it once with a message that names what remains. The decision reads only
 the service's own ``status`` answer (``closure_readiness``), never the transcript or a file:
 
-* it continues only for ``STOP_GATE_TOKENS`` in ``agent_actionable``: open obligations, an
-  unacknowledged receipt-blocking finding, and the task facts the agent can repair (a planned
-  verification not observed, failing or stale; an edit to the work after the last verification
-  run, ADR-042; a requested output Git would not deliver);
+* it continues only for ``STOP_GATE_TOKENS`` in ``agent_actionable``: open obligations, a
+  receipt-blocking finding the agent has not repaired, a rejected finding still awaiting the
+  reviewer's ruling, and the task facts the agent can repair (a planned verification not
+  observed, failing or stale; an edit to the work after the last verification run, ADR-042; a
+  requested output Git would not deliver; a deliverable that was emptied or removed);
 * once per ledger frontier and session: a second Stop at the same frontier passes, so an agent
   that cannot or will not act is never trapped;
+* the four re-checks (tb4n3 RC-8) are not riders on those tokens. Readiness announces them in
+  ``closure_readiness.rechecks`` (acceptance, acknowledgement, blocker, premise: the same list
+  status and ``closure_prepare`` show), each with a content key, and the gate asks exactly the
+  announced ones, each once per session and key: a Stop that readiness called "nothing further to
+  do" is continued only for a re-check it announced. A readiness without the list (a service
+  older than this gate) announces none, so the gate asks none;
+* the acceptance re-read (A-12) invites the agent to republish an obligation whose output does
+  not meet its acceptance_criteria as ``acknowledged_not_done``. An acknowledgement published
+  after that invite answers it and is never challenged by the acknowledgement re-check;
 * an obligation a recorded blocker decision names (authority, consent, credentials, an
   unobtainable dependency) is a standing disclosure in readiness. Yoetz cannot verify the claim,
   so a Stop that finds a blocker the agent has not been asked about continues the agent once
-  with a re-check that names the obligation and the claimed kind (``blocked_obligations`` in
-  readiness). The re-check is remembered per session and ``(obligation, kind)``; the agent
-  confirms a genuine blocker by publishing the same line again, and it is then never re-asked.
-  This re-check also runs on a Stop the host already continued this turn (``stop_hook_active``,
-  Cursor ``loop_count > 0``), because a blocker is usually published after the first gate
-  (#985). On such an active Stop only a new blocker key may continue the agent, at most once per
-  Stop and at most ``MAX_GATE_BLOCKS_PER_TURN`` gate continuations per host turn; anything
-  else, including any error or a short time budget, lets the agent stop;
+  with a re-check that names the obligation and the claimed kind. The re-check is remembered per
+  session and ``(obligation, kind)``; the agent confirms a genuine blocker by publishing the
+  same line again, and it is then never re-asked. These re-checks also run on a Stop the host
+  already continued this turn (``stop_hook_active``, Cursor ``loop_count > 0``), because they
+  usually follow the first gate (#985). On such an active Stop only a re-check or an emptied or
+  removed deliverable not yet asked about may continue the agent, at most once per Stop and at
+  most ``MAX_GATE_BLOCKS_PER_TURN`` gate continuations per host turn; anything else, including
+  any error or a short time budget, lets the agent stop;
+* a deliverable that held content and is now empty or gone (``declared_output_emptied`` /
+  ``declared_output_removed``) is voiced once per key on an active Stop too (tb4n3 formal-crypto
+  S: every later Stop was active, so the text never reached the agent that emptied its solver);
 * the text pushes repair or self-verification first; ``acknowledged_not_done`` is the last
-  resort, a Yoetz limit is never a ``yoetz-blocker``, and the blocker exit is offered only when
-  open obligations remain (#984);
+  resort and never requires withdrawing a working deliverable, a Yoetz limit is never a
+  ``yoetz-blocker``, and the blocker exit is offered only when open obligations remain (#984);
 * a finding the agent acknowledged as not done that the review says the task itself requires
-  (readiness ``finding_premise_disputed``, D7a) is asked about once per session and acknowledged
-  count, on a Stop the host has not already continued (closed item ``premise_recheck``);
+  (readiness ``premise`` re-check, D7a) is asked about once per session and acknowledged count,
+  on a Stop the host has not already continued (closed item ``premise_recheck``);
 * while this task's hook observations are still draining, the facts that depend on observed
   runs are not used to continue the agent, and the text says so only when that changed the
   decision.
 
 The delivered text holds only closed tokens, counts and service-minted ids. The memory is three
 small owner-only files in the observation state directory holding opaque session, frontier and
-obligation ids, closed blocker kinds and a per-session turn counter.
+obligation ids, closed re-check keys and a per-session turn counter.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
+import re
 from collections.abc import Awaitable, Callable, Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +64,7 @@ from typing import Final, cast
 from yoetz import __version__
 from yoetz.config.paths import ensure_owner_only_dir, state_dir
 from yoetz.domain.bounded_text import Part, compose_parts
+from yoetz.kernel.closure_class import FINDING_REJECTION_AWAITING_RULING_GAP
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
@@ -72,6 +88,7 @@ except ImportError:  # pragma: no cover - supported hook hosts are POSIX
 __all__ = [
     "ClosureGate",
     "ClosureGateUnavailable",
+    "ACCEPTANCE_RECHECK_ITEM",
     "BLOCKER_RECHECK_ITEM",
     "BLOCKER_UNCONFIRMED_TOKEN",
     "PREMISE_RECHECK_ITEM",
@@ -95,15 +112,24 @@ _STANDING_FILE_NAME: Final = "stop-withheld-standing-advice.json"
 _LOCK_NAME: Final = "closure-gate.lock"
 _MAX_SESSIONS: Final = 128
 _MAX_BLOCKER_KEYS: Final = 64
-_BLOCKER_KINDS: Final = frozenset({"authority", "consent", "credential", "dependency_unavailable"})
 # The closed item a blocker re-check adds to ``ClosureGate.items`` (#977).
 BLOCKER_RECHECK_ITEM: Final = "blocker_recheck"
-# D7a (#984): the closed item a one-time premise-dispute ask adds, and the readiness code it reads.
+# D7a (#984): the closed item a one-time premise-dispute ask adds.
 PREMISE_RECHECK_ITEM: Final = "premise_recheck"
-_PREMISE_DISPUTED_CODE: Final = "finding_premise_disputed"
+# tb4n3 RC-8: the closed item the acceptance re-read (A-12) adds when its sentence was delivered.
+ACCEPTANCE_RECHECK_ITEM: Final = "acceptance_recheck"
+# tb4n3 RC-8 (formal-crypto S): the re-check that sent pretrain S back to work ("do that work
+# unless it is genuinely impossible") also sent formal-crypto S into 35 minutes of impossibility
+# research and then to an emptied solver. It keeps its push to work and now says what to do when
+# the work cannot be finished: keep what works.
+_KEEP_DELIVERABLE_TEXT: Final = (
+    "If you cannot finish it, keep the working deliverable; acknowledgement never requires"
+    " withdrawing or emptying it."
+)
 _PREMISE_TEXT: Final = (
     "You marked finding(s) as not done that the reviewer says the task itself requires. Do that"
     " work unless it is genuinely impossible; a Yoetz limit or a hard result is not a reason."
+    f" {_KEEP_DELIVERABLE_TEXT}"
 )
 _STATUS_DEADLINE_MS: Final = 4_000
 # Hard caps (#985): a host turn gets at most this many gate continuations (the first Stop's gate
@@ -126,6 +152,8 @@ _GATE_TOKENS: Final = (
     if BLOCKER_UNCONFIRMED_TOKEN in STOP_GATE_TOKENS
     else (STOP_GATE_TOKENS[0], BLOCKER_UNCONFIRMED_TOKEN, *STOP_GATE_TOKENS[1:])
 )
+# Deliverable tokens whose text is voiced once per key even on a Stop the host already continued.
+_WITHDRAWN_TOKENS: Final = (DECLARED_OUTPUT_REMOVED_GAP, DECLARED_OUTPUT_EMPTIED_GAP)
 _BLOCKER_LINE: Final = "yoetz-blocker:<authority|consent|credential|dependency_unavailable>"
 # Issue #995: what is not a blocker, and the line that discloses it instead.
 _DISCLOSE_TEXT: Final = (
@@ -146,6 +174,13 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
     "obligations_open": "{open} open obligation(s)",
     BLOCKER_UNCONFIRMED_TOKEN: "a recorded blocker you have not confirmed",
     "receipt_findings_unresolved": "{blocking} receipt-blocking finding(s) not repaired",
+    # tb4n3 RC-8 (ks S): a finding the agent rejected with a reason awaits the reviewer's ruling.
+    # An acknowledgement would concede what the agent disputes, so this item offers none and the
+    # acceptance invitation never rides beside it.
+    FINDING_REJECTION_AWAITING_RULING_GAP: (
+        "{awaiting} finding(s) you rejected await a reviewer ruling: run `check` with"
+        " `final_review: true` so the reviewer rules; do not acknowledge a finding you dispute"
+    ),
     "closing_review_required": (
         "the closing review has not run since your last change: run `check` with"
         " `final_review: true` (a recorded blocker does not waive it)"
@@ -190,12 +225,25 @@ _FINDING_TEXT: Final = (
     " respond `self_verified` with how you verified it and the evidence ids. Do not reshape your"
     " work for Yoetz. Respond `acknowledged_not_done` only if you truly cannot or will not do it."
 )
+# tb4n3 RC-8: `self_verified` is accepted only for a finding whose newest check resolution names a
+# Yoetz limit (status counts those in ``finding_counts.self_verify_eligible``). When none is
+# eligible the gate does not offer it: an offer `respond` would refuse is a wrong steer.
+_FINDING_NO_SELF_VERIFY_TEXT: Final = (
+    "For each receipt-blocking finding, repair what you can and run `check` again."
+    " `self_verified` is not accepted for these findings now (status view=findings lists what each"
+    " finding accepts). Do not reshape your work for Yoetz. Respond `acknowledged_not_done` only"
+    " if you truly cannot or will not do it."
+)
 # Short forms used only when the full text cannot share the host bound with the rest of the gate
 # (tb4n3 RC-2, A5): each keeps the instruction and drops the elaboration.
 _FINDING_SHORT_TEXT: Final = (
     "Repair each receipt-blocking finding; if Yoetz still cannot prove a repaired one, verify it"
     " yourself and respond `self_verified` with the evidence ids; `acknowledged_not_done` only if"
     " you truly will not do it."
+)
+_FINDING_NO_SELF_VERIFY_SHORT_TEXT: Final = (
+    "Repair each receipt-blocking finding and run `check` again; `self_verified` is not accepted"
+    " for these now; `acknowledged_not_done` only if you truly will not do it."
 )
 _BLOCKER_OFFER_SHORT_TEXT: Final = (
     "Leave an open obligation undone only for a blocker outside your control: publish"
@@ -205,13 +253,19 @@ _CLOSE_TEXT: Final = (
     "Then run `check` and request the receipt. A Yoetz limit is never a `yoetz-blocker`."
 )
 # tb4n2 FH A-12 (cargo D): an obligation was published resolved while the agent's own output said
-# the outcome was infeasible. Asked on the first-stop question; an acknowledged obligation is left
-# out of the completion claim and no longer traps closure (issue #1022).
+# the outcome was infeasible. An acknowledged obligation is left out of the completion claim and no
+# longer traps closure (issue #1022). tb4n3 RC-1/RC-8: when the criteria can only be checked outside
+# this environment (a hidden verifier, a withheld artifact), the honest answer is not a retreat to
+# `acknowledged_not_done` but a recorded verification limit on the resolved obligation. The branch
+# is for what cannot be verified here at all, never for work the agent could still do.
 _ACCEPTANCE_TEXT: Final = (
     "Before you stop, read each resolved obligation's acceptance_criteria against your final"
     " output. If the output does not meet it (for example it reports infeasible, skipped or"
     " partial), republish that obligation as `acknowledged_not_done` with the reason instead of"
-    " resolved, and leave it out of the completion claim; the receipt discloses it."
+    " resolved, and leave it out of the completion claim; the receipt discloses it. If the"
+    " criteria can only be checked outside this environment (a hidden verifier, a withheld"
+    " artifact) and you did the work, keep it resolved and record a decision with the line"
+    " `yoetz-verification-limit:<obligation id>`; the receipt lists it as a verification limit."
 )
 _BLOCKER_OFFER_TEXT: Final = (
     "Leave an open obligation undone only for a blocker outside your control (authority,"
@@ -267,47 +321,133 @@ def _limitation_text(readiness: object) -> str:
     )
 
 
-def _premise_key(readiness: object) -> str | None:
-    """``premise:<acknowledged count>`` when readiness discloses a premise dispute (D7a, #984).
+_MAX_RECHECKS: Final = 64
+_MAX_NAMED_LINEAGE: Final = 3
+_SUBJECT_ID: Final = re.compile(r"(?:obl|fnd)_[0-9A-Za-z-]{1,60}")
+_OBL_ID_SHAPE: Final = r"obl_[0-9A-Za-z-]{1,60}"
+# The closed key shapes of ``closure_readiness.rechecks`` (DESIGN_RC3 3.4). A key of another shape,
+# or a kind outside the four, is dropped: the gate never asks a re-check it cannot read.
+_RECHECK_KEY_SHAPES: Final[Mapping[str, re.Pattern[str]]] = {
+    "acceptance": re.compile(r"accept:[0-9a-f]{4,32}"),
+    "acknowledgement": re.compile(rf"ack:{_OBL_ID_SHAPE}"),
+    "blocker": re.compile(
+        rf"blocker:{_OBL_ID_SHAPE}:(?:authority|consent|credential|dependency_unavailable)"
+    ),
+    "premise": re.compile(r"premise:(?:[0-9]{1,8}|\?)"),
+}
 
-    Readiness carries the closed standing code, not the disputed ids; the acknowledged count
-    stands in, so a later acknowledgement asks again while an unchanged one never does.
+
+def _field(entry: object, name: str) -> object:
+    """One field of a wire model, a mapping or a test double."""
+
+    if isinstance(entry, Mapping):
+        return cast(Mapping[str, object], entry).get(name)
+    return getattr(entry, name, None)
+
+
+def _decimal(raw: object) -> int | None:
+    """A canonical non-negative count, from the wire string or an int; anything else is None."""
+
+    if type(raw) is int and raw >= 0:
+        return raw
+    if type(raw) is str and raw.isascii() and raw.isdecimal() and len(raw) <= 18:
+        return int(raw)
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class _Recheck:
+    """One re-check readiness announced in ``rechecks``, validated and closed (tb4n3 RC-8)."""
+
+    kind: str
+    key: str
+    subjects: tuple[str, ...]
+    since: int | None
+
+    @property
+    def memory_key(self) -> str:
+        """The key the gate remembers once it asked. A blocker keeps its historical
+        ``<obligation id>:<kind>`` form so a memory file written by an earlier build still
+        honours it; the acceptance key also carries the invite frontier (``_asked``)."""
+
+        return self.key.removeprefix("blocker:") if self.kind == "blocker" else self.key
+
+
+def _announced_rechecks(readiness: object) -> tuple[_Recheck, ...]:
+    """The re-checks readiness announces; a readiness without the list announces none.
+
+    A service older than this gate sends no ``rechecks``. The gate then asks no re-check: status
+    never announced one, and "nothing further to do" is never followed by a gate for an item the
+    service did not name.
     """
 
-    standing = getattr(readiness, "standing_limitations", None)
-    if not isinstance(standing, (tuple, list)) or _PREMISE_DISPUTED_CODE not in tuple(
-        cast(tuple[object, ...], standing)
-    ):
-        return None
-    count = getattr(readiness, "acknowledged_not_done_count", None)
-    if type(count) is not str or not count.isdigit() or len(count) > 8:
-        return "premise:?"
-    return f"premise:{count}"
-
-
-def _acknowledged_obligations(readiness: object) -> tuple[str, ...]:
-    """Obligation ids readiness lists as acknowledged not done (#997); malformed entries drop."""
-
-    raw = getattr(readiness, "acknowledged_not_done", None)
+    raw = getattr(readiness, "rechecks", None)
     if not isinstance(raw, (tuple, list)):
         return ()
-    return tuple(
-        item
+    found: dict[str, _Recheck] = {}
+    for entry in tuple(cast(tuple[object, ...], raw))[:_MAX_RECHECKS]:
+        kind = _field(entry, "kind")
+        key = _field(entry, "key")
+        if type(kind) is not str or type(key) is not str:
+            continue
+        shape = _RECHECK_KEY_SHAPES.get(kind)
+        if shape is None or shape.fullmatch(key) is None:
+            continue
+        subjects_raw = _field(entry, "subjects")
+        subjects = (
+            tuple(
+                item
+                for item in tuple(cast(tuple[object, ...], subjects_raw))
+                if type(item) is str and _SUBJECT_ID.fullmatch(item)
+            )
+            if isinstance(subjects_raw, (tuple, list))
+            else ()
+        )
+        found.setdefault(
+            key, _Recheck(kind, key, subjects, _decimal(_field(entry, "since_frontier")))
+        )
+    return tuple(found.values())
+
+
+def _asked(recheck: _Recheck, memory: frozenset[str]) -> bool:
+    """Whether this session was already asked this re-check (by its key)."""
+
+    if recheck.kind == "acceptance":
+        prefix = recheck.key + "@"
+        return any(item.startswith(prefix) for item in memory)
+    return recheck.memory_key in memory
+
+
+def _first_invite_frontier(memory: frozenset[str]) -> int | None:
+    """The frontier of the earliest acceptance invite this session received, if any."""
+
+    frontiers: list[int] = []
+    for item in memory:
+        head, separator, tail = item.partition("@")
+        value = _decimal(tail) if separator and head.startswith("accept:") else None
+        if value is not None:
+            frontiers.append(value)
+    return min(frontiers) if frontiers else None
+
+
+def _blocker_pairs(rechecks: tuple[_Recheck, ...]) -> tuple[tuple[str, str], ...]:
+    """``(obligation id, kind)`` for the announced blocker re-checks, ordered by obligation id."""
+
+    pairs: dict[str, str] = {}
+    for recheck in rechecks:
+        _prefix, obligation, kind = recheck.key.split(":", 2)
+        pairs.setdefault(obligation, kind)
+    return tuple(sorted(pairs.items(), key=lambda row: row[0].encode()))
+
+
+def _acknowledged_listed(readiness: object) -> bool:
+    """Whether readiness lists acknowledged obligations (an older build counted them as open)."""
+
+    raw = getattr(readiness, "acknowledged_not_done", None)
+    return isinstance(raw, (tuple, list)) and any(
+        type(item) is str and item.startswith("obl_")
         for item in tuple(cast(tuple[object, ...], raw))
-        if type(item) is str and item.startswith("obl_") and len(item) <= 64
     )
-
-
-def _acknowledgement_keys(readiness: object) -> tuple[str, ...]:
-    """``ack:<obligation id>`` per listed acknowledged obligation, plus ``ack-count:<n>`` when the
-    untruncated count exceeds the listed ids (the list keeps 64 ids, findings first)."""
-
-    listed = _acknowledged_obligations(readiness)
-    keys = [f"ack:{item}" for item in listed]
-    count = getattr(readiness, "acknowledged_obligation_count", None)
-    if type(count) is str and count.isdigit() and len(count) <= 8 and int(count) > len(listed):
-        keys.append(f"ack-count:{count}")
-    return tuple(keys)
 
 
 def _acknowledgement_text(keys: tuple[str, ...], *, short: bool = False) -> str:
@@ -322,17 +462,145 @@ def _acknowledgement_text(keys: tuple[str, ...], *, short: bool = False) -> str:
     if short:
         return (
             f"Acknowledgement re-check (asked once): {subject}. Do that work unless it is"
-            " genuinely impossible; a Yoetz limit is not a reason. If it truly stays undone, you"
-            " may stop and the receipt discloses it; republish it `open` to take it back."
+            f" genuinely impossible; a Yoetz limit is not a reason. {_KEEP_DELIVERABLE_TEXT} If it"
+            " truly stays undone, you may stop and the receipt discloses it; republish it `open`"
+            " to take it back."
         )
     return (
         f"Acknowledgement re-check (asked once): {subject}. Repair first: do that work unless it"
         " is genuinely impossible; missing data the task says is recoverable, a hard result or a"
-        " Yoetz limit is not a reason. If it truly stays undone, you may stop: the receipt"
-        " discloses it as not done. To take it back, republish it with status `open`, repeating"
-        " every meaning field, on obligation_published 1.1.0 (it keeps any role or directory"
-        " item)."
+        f" Yoetz limit is not a reason. {_KEEP_DELIVERABLE_TEXT} If it truly stays undone, you"
+        " may stop: the receipt discloses it as not done. To take it back, republish it with"
+        " status `open`, repeating every meaning field, on obligation_published 1.1.0 (it keeps"
+        " any role or directory item)."
     )
+
+
+def _present_tokens(readiness: object) -> frozenset[str] | None:
+    actionable = getattr(readiness, "agent_actionable", None)
+    if not isinstance(actionable, (tuple, list)):
+        return None
+    return frozenset(
+        item for item in tuple(cast(tuple[object, ...], actionable)) if type(item) is str
+    )
+
+
+def _finding_counts(readiness: object) -> tuple[int | None, int | None, int | None]:
+    """``(to do, awaiting a ruling, self_verified-eligible)`` from ``finding_counts``, if sent."""
+
+    counts = getattr(readiness, "finding_counts", None)
+    if counts is None:
+        return (None, None, None)
+    return (
+        _decimal(_field(counts, "to_do")),
+        _decimal(_field(counts, "awaiting_ruling")),
+        _decimal(_field(counts, "self_verify_eligible")),
+    )
+
+
+def _plural_ids(named: list[str]) -> str:
+    shown = ", ".join(named[:_MAX_NAMED_LINEAGE])
+    hidden = len(named) - _MAX_NAMED_LINEAGE
+    return shown + (f" and {hidden} more" if hidden > 0 else "")
+
+
+def _awaiting_clause(readiness: object) -> str:
+    """Why the awaiting-ruling token fired (owner decision 10): the findings and their frontier."""
+
+    raw = getattr(readiness, "awaiting_ruling_findings", None)
+    if not isinstance(raw, (tuple, list)):
+        return ""
+    named: list[str] = []
+    for entry in tuple(cast(tuple[object, ...], raw))[:_MAX_RECHECKS]:
+        finding = _field(entry, "finding_id")
+        if type(finding) is not str or not _SUBJECT_ID.fullmatch(finding):
+            continue
+        since = _decimal(_field(entry, "since_frontier"))
+        named.append(finding if since is None else f"{finding} (rejected at frontier {since})")
+    if not named:
+        return ""
+    return (
+        f"Why: no check has ruled since you rejected {_plural_ids(named)}."
+        f" Rule {FINDING_REJECTION_AWAITING_RULING_GAP}."
+    )
+
+
+def _withdrawn_entries(
+    readiness: object, tokens: tuple[str, ...]
+) -> list[tuple[str, str | None, str | None, str | None, str | None]]:
+    """``(code, rule, obligation id, item index, basis)`` of the lineage naming these tokens."""
+
+    raw = getattr(readiness, "fact_lineage", None)
+    if not isinstance(raw, (tuple, list)):
+        return []
+    entries: list[tuple[str, str | None, str | None, str | None, str | None]] = []
+    for entry in tuple(cast(tuple[object, ...], raw))[:_MAX_RECHECKS]:
+        code = _field(entry, "code")
+        if type(code) is not str or code not in tokens:
+            continue
+
+        def text(name: str, entry: object = entry) -> str | None:
+            value = _field(entry, name)
+            return value if type(value) is str and value.isascii() and len(value) <= 64 else None
+
+        obligation = text("obligation_id")
+        entries.append(
+            (
+                code,
+                text("rule"),
+                obligation if obligation is not None and obligation.startswith("obl_") else None,
+                text("item_index"),
+                text("basis"),
+            )
+        )
+    return entries
+
+
+def _withdrawn_key(readiness: object, tokens: tuple[str, ...]) -> str:
+    """``emptied:<h8>``: once per withdrawn deliverable set, never a path.
+
+    A deliverable is named by the obligation item that declares it (one path per item), so the
+    key hashes ``(code, obligation id, item index)`` from the readiness lineage. A readiness
+    without lineage keys on the token names.
+    """
+
+    material = sorted(
+        f"{code}:{obligation or ''}:{index or ''}"
+        for code, _rule, obligation, index, _basis in _withdrawn_entries(readiness, tokens)
+    ) or sorted(tokens)
+    return "emptied:" + hashlib.sha256("\n".join(material).encode("ascii")).hexdigest()[:8]
+
+
+def _withdrawn_text(readiness: object, tokens: tuple[str, ...]) -> str:
+    """The withdrawn-deliverable instruction, with the rule and obligation ids (never a path).
+
+    "Passed your tests" is said only when every lineage entry's basis is ``verified`` (a
+    verification run passed while the file had content); otherwise the deliverable "held content".
+    """
+
+    entries = _withdrawn_entries(readiness, tokens)
+    verified = bool(entries) and all(basis == "verified" for *_rest, basis in entries)
+    what = "passed your tests" if verified else "held content"
+    gone = "an empty file" if DECLARED_OUTPUT_EMPTIED_GAP in tokens else "a missing file"
+    sentence = (
+        f"You withdrew a deliverable that {what}; {gone} scores as no solution; restore it and"
+        " disclose its limits."
+    )
+    rules = sorted({rule for _c, rule, _o, _i, _b in entries if rule is not None})
+    obligations = sorted(
+        {
+            f"{obligation} item {index}" if index is not None else obligation
+            for _c, _r, obligation, index, _b in entries
+            if obligation is not None
+        },
+        key=str.encode,
+    )
+    notes: list[str] = []
+    if rules:
+        notes.append("rule " + ", ".join(rules))
+    if obligations:
+        notes.append("obligations " + _plural_ids(obligations))
+    return sentence + (f" ({'; '.join(notes)}.)" if notes else "")
 
 
 # Informational only (ADR-035): appended when the gate already fires for another reason and
@@ -364,36 +632,10 @@ class ClosureGate:
     identity: str
     text: str
     items: tuple[str, ...]
-    # ``<obligation id>:<kind>`` keys this gate re-asks; remembered once delivered.
+    # The re-check keys this gate asked, remembered once it is delivered (the historical field
+    # name): ``<obligation id>:<kind>`` blockers, ``ack:<obligation id>``, ``premise:<n>``,
+    # ``accept:<h8>@<invite frontier>`` and ``emptied:<h8>``.
     blocker_keys: tuple[str, ...] = ()
-
-
-def _blocker_rows(readiness: object) -> tuple[tuple[str, str], ...]:
-    """``(obligation id, kind)`` pairs from readiness ``blocked_obligations``; malformed rows drop.
-
-    A row readiness marks ``confirmation: confirmed`` (the agent re-published the same blocker in
-    a later decision, #985) is a standing claim and is not re-asked; a claimed row, or one from a
-    build without that field, is.
-    """
-
-    raw = getattr(readiness, "blocked_obligations", None)
-    if not isinstance(raw, (tuple, list)):
-        return ()
-    rows: dict[str, str] = {}
-    for item in tuple(cast(tuple[object, ...], raw)):
-        obligation = getattr(item, "obligation_id", None)
-        kind = getattr(item, "blocker_kind", None)
-        if getattr(item, "confirmation", None) == "confirmed":
-            continue
-        if (
-            type(obligation) is str
-            and obligation.startswith("obl_")
-            and len(obligation) <= 64
-            and type(kind) is str
-            and kind in _BLOCKER_KINDS
-        ):
-            rows.setdefault(obligation, kind)
-    return tuple(sorted(rows.items(), key=lambda row: row[0].encode()))
 
 
 def _blocker_text(rows: tuple[tuple[str, str], ...], *, short: bool = False) -> str:
@@ -424,8 +666,9 @@ def _blocker_text(rows: tuple[tuple[str, str], ...], *, short: bool = False) -> 
 def _fallback_parts(
     *,
     head: str,
+    why: str,
     items: tuple[str, ...],
-    premise: bool,
+    premise_text: str,
     offers_blocker: bool,
     recheck: str,
     ack_keys: tuple[str, ...],
@@ -434,20 +677,25 @@ def _fallback_parts(
     moved_note: str,
     drain_note: str,
     unconfirmed: bool,
+    finding_texts: tuple[str, str],
+    withdrawn_text: str,
+    accept_text: str,
 ) -> list[tuple[str, Part]]:
     """The gate's sentences as named parts, in reading order, for the composed fallback.
 
     Required: the head, one instruction per present item family (obligations, planned
-    verification, receipt-blocking findings) and the close instruction. Optional, in priority
-    order: the blocker re-check, the acknowledgement re-check, the unconfirmed-blocker sentence,
-    the blocker offer, the required limitation ids, the premise ask, the first-stop acceptance
-    re-read, then the notes. This changes composition only: no token set and no sentence's
-    wording; the short forms drop elaboration and keep the instruction.
+    verification, receipt-blocking findings, a withdrawn deliverable) and the close instruction.
+    Optional, in priority order: the blocker re-check, the acknowledgement re-check, the
+    unconfirmed-blocker sentence, the blocker offer, the required limitation ids, the provenance
+    sentence, the premise ask, the first-stop acceptance re-read, then the notes. This changes
+    composition only: the short forms drop elaboration and keep the instruction.
     """
 
     parts: list[tuple[str, Part]] = [("head", Part((head,), required=True))]
-    if premise:
-        parts.append(("premise", Part((_PREMISE_TEXT,), priority=6)))
+    if why:
+        parts.append(("why", Part((why,), priority=5)))
+    if premise_text:
+        parts.append(("premise", Part((premise_text,), priority=6)))
     if "obligations_open" in items:
         parts.append(
             (
@@ -458,13 +706,13 @@ def _fallback_parts(
     if any(token in _OBSERVATION_DEPENDENT for token in items):
         parts.append(("verification", Part((_VERIFICATION_TEXT,), required=True)))
     if "receipt_findings_unresolved" in items:
-        parts.append(
-            ("findings", Part((_FINDING_TEXT, _FINDING_SHORT_TEXT), required=True, priority=7))
-        )
+        parts.append(("findings", Part(finding_texts, required=True, priority=7)))
+    if withdrawn_text:
+        parts.append(("withdrawn", Part((withdrawn_text,), required=True)))
     if limitations:
         parts.append(("limitations", Part((limitations,), priority=5)))
-    if "obligations_open" not in items:
-        parts.append(("acceptance", Part((_ACCEPTANCE_TEXT,), priority=8)))
+    if accept_text:
+        parts.append(("acceptance", Part((accept_text,), priority=8)))
     parts.append(("close", Part((_CLOSE_TEXT,), required=True)))
     if offers_blocker:
         parts.append(("offer", Part((_BLOCKER_OFFER_TEXT, _BLOCKER_OFFER_SHORT_TEXT), priority=4)))
@@ -494,51 +742,75 @@ def closure_gate_from_readiness(
 ) -> ClosureGate | None:
     """Decide the gate from one ``closure_readiness`` object; ``None`` means let the agent stop.
 
-    ``reasked_blockers`` holds the ``<obligation id>:<kind>`` keys this session was already
-    re-asked about; any other blocked obligation in readiness is re-asked once.
-    ``active_stop`` is a Stop the host already continued this turn (``stop_hook_active``,
-    Cursor ``loop_count > 0``): only a blocker key not yet re-asked may continue it, never the
-    ordinary items (#985).
+    ``reasked_blockers`` holds the re-check keys this session was already asked (the historical
+    name: blockers as ``<obligation id>:<kind>``, ``ack:<obligation id>``, ``premise:<n>``,
+    ``accept:<h8>@<invite frontier>``, ``emptied:<h8>``); any other re-check readiness announces
+    is asked once. ``active_stop`` is a Stop the host already continued this turn
+    (``stop_hook_active``, Cursor ``loop_count > 0``): only a re-check not yet asked, or a
+    withdrawn deliverable not yet voiced, may continue it, never the ordinary items (#985).
     """
 
     state = getattr(readiness, "state", None)
-    if state not in {"action_required", "ready_with_limitations"}:
+    if state not in {"action_required", "ready", "ready_with_limitations"}:
         return None
-    rows = tuple(
-        (obligation, kind)
-        for obligation, kind in _blocker_rows(readiness)
-        if f"{obligation}:{kind}" not in reasked_blockers
-    )
     identity = f"{frontier_sequence}:{frontier_digest}"
+    invite = _first_invite_frontier(reasked_blockers)
+    blockers: list[_Recheck] = []
+    acknowledgements: list[_Recheck] = []
+    premise: _Recheck | None = None
+    acceptance: _Recheck | None = None
+    for recheck in _announced_rechecks(readiness):
+        if _asked(recheck, reasked_blockers):
+            continue
+        if recheck.kind == "blocker":
+            blockers.append(recheck)
+        elif recheck.kind == "acknowledgement":
+            # An acknowledgement published after an acceptance invite answers it: the invite
+            # told the agent to republish an unmet obligation as `acknowledged_not_done`, so
+            # challenging that answer would be invite-then-challenge (tb4n3 RC-8, cargo D).
+            if invite is not None and recheck.since is not None and recheck.since > invite:
+                continue
+            acknowledgements.append(recheck)
+        elif recheck.kind == "premise":
+            # D7a (#984): only on a Stop the host has not already continued this turn.
+            if not active_stop and premise is None:
+                premise = recheck
+        elif acceptance is None:
+            acceptance = recheck
+    rows = _blocker_pairs(tuple(blockers))
     keys = tuple(f"{obligation}:{kind}" for obligation, kind in rows)
-    # D7a (#984): a premise dispute is asked once per session and acknowledged-item count, and
-    # only on a Stop the host has not already continued this turn.
-    premise_key = _premise_key(readiness)
-    premise = not active_stop and premise_key is not None and premise_key not in reasked_blockers
-    # #997: an obligation acknowledged as not done is challenged once, like a blocker (also on
-    # an active Stop, since acknowledgements usually follow the first gate).
-    ack_keys = tuple(key for key in _acknowledgement_keys(readiness) if key not in reasked_blockers)
+    ack_keys = tuple(sorted((recheck.key for recheck in acknowledgements), key=str.encode))
     ack_text = _acknowledgement_text(ack_keys) if ack_keys else ""
     ack_items = (ACKNOWLEDGEMENT_RECHECK_ITEM,) if ack_keys else ()
+    premise_items = (PREMISE_RECHECK_ITEM,) if premise is not None else ()
+    premise_keys = (premise.key,) if premise is not None else ()
+    premise_text = _PREMISE_TEXT if premise is not None else ""
+    accept_key = None if acceptance is None else f"{acceptance.key}@{frontier_sequence}"
+    present: frozenset[str] = frozenset()
+    if state == "action_required":
+        tokens = _present_tokens(readiness)
+        if tokens is not None:
+            present = tokens
+        elif not active_stop:
+            return None
     items: tuple[str, ...] = ()
     drain_changed_decision = False
-    if state == "action_required" and not active_stop:
-        actionable = getattr(readiness, "agent_actionable", None)
-        if not isinstance(actionable, (tuple, list)):
-            return None
-        present = {
-            item for item in tuple(cast(tuple[object, ...], actionable)) if type(item) is str
-        }
+    if active_stop:
+        # tb4n3 RC-8 (formal-crypto S): every Stop after the first gate is an active Stop, so the
+        # withdrawn-deliverable text never reached the agent that emptied its solver. It may
+        # continue an active Stop once per key (the turn cap still bounds it).
+        withdrawn = tuple(token for token in _WITHDRAWN_TOKENS if token in present)
+        if withdrawn and _withdrawn_key(readiness, withdrawn) not in reasked_blockers:
+            items = withdrawn
+    else:
         items = tuple(
             token
             for token in _GATE_TOKENS
             if token in present and not (observation_pending and token in _OBSERVATION_DEPENDENT)
         )
         drain_changed_decision = observation_pending and bool(present & _OBSERVATION_DEPENDENT)
-    premise_items = (PREMISE_RECHECK_ITEM,) if premise else ()
-    premise_keys = (cast(str, premise_key),) if premise else ()
     if not items:
-        if not rows and not premise and not ack_keys:
+        if not rows and premise is None and not ack_keys and acceptance is None:
             return None
         opener = (
             "Yoetz closure gate (shown once for these blockers):"
@@ -546,18 +818,20 @@ def closure_gate_from_readiness(
             else "Yoetz closure gate (shown once):"
         )
         blocker = _blocker_text(rows) if rows else ""
+        accept_sentence = _ACCEPTANCE_TEXT if acceptance is not None else ""
         # ADR-035: the standing content-moved disclosure rides gate text that fires anyway.
         moved = _content_moved_note(readiness).strip()
         # Keep only whole sentences under the host bound, choosing by priority (blocker re-check,
-        # acknowledgement re-check, premise ask, then the note) but keeping the reading order. A
-        # re-check that does not fit is not reported as asked, so its keys are not remembered and
-        # the next Stop asks it again.
+        # acknowledgement re-check, premise ask, acceptance re-read, then the note) but keeping
+        # the reading order. A re-check that does not fit is not reported as asked, so its keys
+        # are not remembered and the next Stop asks it again.
         used = len(opener)
         chosen: set[str] = set()
         for name, sentence in (
             ("rows", blocker),
             ("ack", ack_text),
-            ("premise", _PREMISE_TEXT if premise else ""),
+            ("premise", premise_text),
+            ("acceptance", accept_sentence),
             ("moved", moved),
         ):
             if sentence and used + 1 + len(sentence) <= _MAX_TEXT_CHARS:
@@ -566,15 +840,17 @@ def closure_gate_from_readiness(
         asked_rows = "rows" in chosen
         asked_ack = "ack" in chosen
         asked_premise_only = "premise" in chosen
-        if not (asked_rows or asked_ack or asked_premise_only):
+        asked_acceptance = "acceptance" in chosen
+        if not (asked_rows or asked_ack or asked_premise_only or asked_acceptance):
             return None
         short_text = " ".join(
             sentence
             for name, sentence in (
                 ("opener", opener),
-                ("premise", _PREMISE_TEXT),
+                ("premise", premise_text),
                 ("rows", blocker),
                 ("ack", ack_text),
+                ("acceptance", accept_sentence),
                 ("moved", moved),
             )
             if name == "opener" or name in chosen
@@ -584,20 +860,31 @@ def closure_gate_from_readiness(
             short_text,
             (premise_items if asked_premise_only else ())
             + ((BLOCKER_RECHECK_ITEM,) if asked_rows else ())
-            + (ack_items if asked_ack else ()),
+            + (ack_items if asked_ack else ())
+            + ((ACCEPTANCE_RECHECK_ITEM,) if asked_acceptance else ()),
             (keys if asked_rows else ())
             + (premise_keys if asked_premise_only else ())
-            + (ack_keys if asked_ack else ()),
+            + (ack_keys if asked_ack else ())
+            + ((cast(str, accept_key),) if asked_acceptance else ()),
         )
     open_count = str(getattr(readiness, "open_obligation_count", "?"))
-    if getattr(
-        readiness, "acknowledged_obligation_count", None
-    ) is None and _acknowledged_obligations(readiness):
+    if getattr(readiness, "acknowledged_obligation_count", None) is None and _acknowledged_listed(
+        readiness
+    ):
         # #997: an earlier 0.3 build may count acknowledged obligations as open; name no number.
         open_count = "some"
-    blocking_count = str(getattr(readiness, "receipt_blocking_finding_count", "?"))
+    to_do, awaiting, eligible = _finding_counts(readiness)
+    # tb4n3 RC-8: `receipt_findings_unresolved` counts the findings the agent can still act on;
+    # a rejected finding awaiting a ruling has its own item. An older service sends no counts.
+    blocking_count = (
+        str(max(to_do - (awaiting or 0), 0))
+        if to_do is not None
+        else str(getattr(readiness, "receipt_blocking_finding_count", "?"))
+    )
+    awaiting_count = "some" if awaiting is None else str(awaiting)
     remaining = "; ".join(
-        _ITEM_TEXT[token].format(open=open_count, blocking=blocking_count) for token in items
+        _ITEM_TEXT[token].format(open=open_count, blocking=blocking_count, awaiting=awaiting_count)
+        for token in items
     )
     offers_blocker = "obligations_open" in items or BLOCKER_UNCONFIRMED_TOKEN in items
     head = (
@@ -607,6 +894,30 @@ def closure_gate_from_readiness(
     recheck = _blocker_text(rows, short=offers_blocker) if rows else ""
     limitations = _limitation_text(readiness)
     moved_note = _content_moved_note(readiness).strip()
+    withdrawn_items = tuple(token for token in _WITHDRAWN_TOKENS if token in items)
+    withdrawn_text = _withdrawn_text(readiness, withdrawn_items) if withdrawn_items else ""
+    why_text = _awaiting_clause(readiness) if FINDING_REJECTION_AWAITING_RULING_GAP in items else ""
+    # The acceptance invitation offers `acknowledged_not_done`. It is never offered beside open
+    # obligations (acknowledgement stays the challenged last resort, #997), beside a rejected
+    # finding awaiting a ruling (it would concede what the agent disputes) or beside a withdrawn
+    # deliverable (acknowledging never clears it). It stays unasked, so it is asked at a later Stop.
+    accept_text = (
+        _ACCEPTANCE_TEXT
+        if acceptance is not None
+        and not (
+            {"obligations_open", FINDING_REJECTION_AWAITING_RULING_GAP, *_WITHDRAWN_TOKENS}
+            & set(items)
+        )
+        else ""
+    )
+    # `self_verified` is offered only when `respond` would accept it for some finding; an older
+    # service sends no counts and keeps the offer.
+    self_verify = eligible is None or eligible > 0
+    finding_texts = (
+        (_FINDING_TEXT, _FINDING_SHORT_TEXT)
+        if self_verify
+        else (_FINDING_NO_SELF_VERIFY_TEXT, _FINDING_NO_SELF_VERIFY_SHORT_TEXT)
+    )
 
     def compose(
         *,
@@ -614,24 +925,27 @@ def closure_gate_from_readiness(
         short_obligation: bool,
         verification: bool,
         limits: bool = True,
-        premise_text: bool = True,
+        premise_sentence: bool = True,
     ) -> str:
         parts = [head]
-        if premise and premise_text:
-            parts.append(_PREMISE_TEXT)
+        if why_text:
+            parts.append(why_text)
+        if premise_text and premise_sentence:
+            parts.append(premise_text)
         if "obligations_open" in items:
             parts.append(_OBLIGATION_SHORT_TEXT if short_obligation else _OBLIGATION_TEXT)
         if verification and any(token in _OBSERVATION_DEPENDENT for token in items):
             parts.append(_VERIFICATION_TEXT)
         if "receipt_findings_unresolved" in items:
-            parts.append(_FINDING_TEXT)
+            parts.append(finding_texts[0])
+        if withdrawn_text:
+            parts.append(withdrawn_text)
         if limits and limitations:
             parts.append(limitations)
-        if drain and "obligations_open" not in items:
-            # FH A-12, for an agent that resolved everything: never offered beside open
-            # obligations, where acknowledgement stays the challenged last resort (#997). The
-            # first optional sentence dropped under the host bound, with the drain note.
-            parts.append(_ACCEPTANCE_TEXT)
+        if drain and accept_text:
+            # FH A-12, announced by readiness: the first optional sentence dropped under the host
+            # bound, with the drain note.
+            parts.append(accept_text)
         parts.append(_CLOSE_TEXT)
         # The blocker exit is offered only for open obligations: findings, reviews and Yoetz
         # limits are never excused by a blocker (F1, #984).
@@ -656,7 +970,8 @@ def closure_gate_from_readiness(
     text = ""
     delivered_rows = bool(rows)
     delivered_ack = bool(ack_keys)
-    for drain, short_obligation, verification, limits, premise_text in (
+    asked_acceptance = False
+    for drain, short_obligation, verification, limits, premise_sentence in (
         (True, False, True, True, True),
         (False, False, True, True, True),
         (False, True, True, True, True),
@@ -671,10 +986,11 @@ def closure_gate_from_readiness(
             short_obligation=short_obligation,
             verification=verification,
             limits=limits,
-            premise_text=premise_text,
+            premise_sentence=premise_sentence,
         )
         if len(text) <= _MAX_TEXT_CHARS:
-            asked_premise = premise and premise_text
+            asked_premise = premise is not None and premise_sentence
+            asked_acceptance = drain and bool(accept_text)
             break
     else:
         # The ladder could not fit the whole gate. Compose it instead of clipping the head
@@ -686,8 +1002,9 @@ def closure_gate_from_readiness(
         # asked, so a re-check that did not fit is asked again at the next Stop.
         parts = _fallback_parts(
             head=head,
+            why=why_text,
             items=items,
-            premise=premise,
+            premise_text=premise_text,
             offers_blocker=offers_blocker,
             recheck=recheck,
             ack_keys=ack_keys,
@@ -696,23 +1013,31 @@ def closure_gate_from_readiness(
             moved_note=moved_note,
             drain_note=_DRAIN_TEXT if drain_changed_decision else "",
             unconfirmed=BLOCKER_UNCONFIRMED_TOKEN in items and not rows,
+            finding_texts=finding_texts,
+            withdrawn_text=withdrawn_text,
+            accept_text=accept_text,
         )
         composed = compose_parts([part for _, part in parts], _MAX_TEXT_CHARS, ascii_only=False)
         text = composed.text
         included = {parts[index][0] for index in composed.kept}
         delivered_rows = bool(recheck) and "recheck" in included
         delivered_ack = bool(ack_text) and "ack" in included
-        asked_premise = premise and "premise" in included
+        asked_premise = premise is not None and "premise" in included
+        asked_acceptance = bool(accept_text) and "acceptance" in included
+    withdrawn_keys = (_withdrawn_key(readiness, withdrawn_items),) if withdrawn_items else ()
     return ClosureGate(
         identity,
         text,
         items
         + ((BLOCKER_RECHECK_ITEM,) if delivered_rows else ())
         + ((PREMISE_RECHECK_ITEM,) if asked_premise else ())
-        + (ack_items if delivered_ack else ()),
+        + (ack_items if delivered_ack else ())
+        + ((ACCEPTANCE_RECHECK_ITEM,) if asked_acceptance else ()),
         (keys if delivered_rows else ())
         + (premise_keys if asked_premise else ())
-        + (ack_keys if delivered_ack else ()),
+        + (ack_keys if delivered_ack else ())
+        + ((cast(str, accept_key),) if asked_acceptance else ())
+        + withdrawn_keys,
     )
 
 

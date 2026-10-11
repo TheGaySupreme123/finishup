@@ -50,6 +50,7 @@ from yoetz.adapters.integrations.observation_task_pending import task_pending_ou
 from yoetz.adapters.workspace_binding import canonical_workspace_locator, resolve_workspace_locator
 from yoetz.cli import hook_io
 from yoetz.cli.closure_gate import (
+    ACCEPTANCE_RECHECK_ITEM,
     BLOCKER_RECHECK_ITEM,
     MAX_GATE_BLOCKS_PER_TURN,
     ClosureGate,
@@ -4090,9 +4091,10 @@ def _decide_closure_gate(
     Reads the service's compact status for the mapped session; the gate fires at most once per
     session and ledger frontier. Every outcome lands in the bounded hook diagnostics so an
     operator (or a benchmark export of ``yoetz observe status``) can see what the gate decided.
-    On an ``active_stop`` (the host already continued this turn) only a blocker key not yet
-    re-asked may continue the agent, within the per-turn cap; the caller records the outcome
-    (#985).
+    On an ``active_stop`` (the host already continued this turn) only a re-check key not yet
+    asked (blocker, acknowledgement, acceptance re-read) or a withdrawn deliverable not yet
+    voiced may continue the agent, within the per-turn cap; the caller records the outcome
+    (#985, tb4n3 RC-8).
     """
 
     reason = "closure_gate_unavailable"
@@ -4176,7 +4178,8 @@ def _decide_closure_gate(
     except Exception:
         return None
     finally:
-        # An active Stop that emits nothing is recorded once by the caller as the loop guard.
+        # An active Stop that emits nothing is recorded once by the caller as the normal end of a
+        # continued turn (``closure_gate_turn_end_after_continue``).
         if reason and not active_stop:
             with contextlib.suppress(Exception):
                 record_hook_diagnostic(reason, "Stop", _state=_state)
@@ -4245,6 +4248,8 @@ def _record_closure_gate_emitted(
         record_hook_diagnostic("closure_gate_continued", event, _state=_state)
         if BLOCKER_RECHECK_ITEM in closure_gate.items:
             record_hook_diagnostic("closure_gate_blocker_rechecked", event, _state=_state)
+        if ACCEPTANCE_RECHECK_ITEM in closure_gate.items:
+            record_hook_diagnostic("closure_gate_acceptance_rechecked", event, _state=_state)
         if active_stop:
             record_hook_diagnostic("closure_gate_active_stop_rechecked", event, _state=_state)
 
@@ -5969,10 +5974,11 @@ def handle_observe(
         # Commit remains after emit, so a failed write never suppresses a later delivery.
         pending_delivery: AdviceDelivery | None = None
         delivery_session_id: str | None = None
-        # stop_hook_active is the host loop guard: a prior Stop already
-        # continued this turn. Ordinary items and advice never continue it again; only a
-        # blocker published since the last gate is re-asked once, within the per-turn cap
-        # (#985), and anything else records the loop guard.
+        # stop_hook_active says a prior Stop already continued this turn. Ordinary items and
+        # advice never continue it again; only a re-check readiness announced since the last
+        # gate (a blocker, an acknowledgement, the acceptance re-read) or a withdrawn deliverable
+        # not yet voiced is asked once, within the per-turn cap (#985, tb4n3 RC-8), and anything
+        # else records the normal end of a continued turn.
         stop_already_active = payload.get("stop_hook_active") is True
         if resolved_event == "Stop" and not stop_already_active and mapping is not None:
             # A Stop the host did not continue starts a new turn for the gate's per-turn cap,
@@ -6012,9 +6018,12 @@ def handle_observe(
             and mapping is not None
             and closure_gate is None
         ):
-            # An already-continued Stop that emits nothing is the host loop guard (#985).
+            # An already-continued Stop that emits nothing is the normal end of a continued turn
+            # (#985); it guards no loop, so the diagnostic says what happened (tb4n3 RC-8).
             with contextlib.suppress(Exception):
-                record_hook_diagnostic("closure_gate_loop_guard", resolved_event, _state=_state)
+                record_hook_diagnostic(
+                    "closure_gate_turn_end_after_continue", resolved_event, _state=_state
+                )
         # Task/receipt context always wins this shared channel outright, with one exception:
         # the static attach advisory carries no advice of its own, so pending advice joins it
         # (the delivery text is appended below) instead of being silently starved at the very
