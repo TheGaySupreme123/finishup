@@ -55,7 +55,7 @@ from yoetz.kernel.later_material import (
 from yoetz.kernel.observed_failures import observed_action_description
 from yoetz.kernel.receipt_capacity import receipt_gap_codes
 from yoetz.kernel.reducers import replay
-from yoetz.mcp.summaries import _check_cause_clause
+from yoetz.mcp.summaries import _MAX_SUMMARY_BYTES, _check_cause_clause, summary_for_status
 from yoetz.ports.ledger import AppendCommand, AppendEntry, CheckCommitResult, OperationKind
 from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
 from yoetz.protocol.canonical import canonical_encode
@@ -573,3 +573,38 @@ async def test_the_lineage_sentence_survives_the_status_text_budget() -> None:
     assert short and len(short) < len(full)
     assert "observed edit via apply_patch" in short and "frontier" in short
     assert _check_cause_clause(wire, byte_budget=20) == ""
+
+
+@pytest.mark.parametrize("view", ("compact", "advice", "obligations"))
+async def test_the_real_mcp_status_text_carries_the_cause_in_its_byte_budget(view: str) -> None:
+    """Codex round 3: the cause is reserved ahead of the closure boilerplate on every view that
+    names the closure state, so the text a host shows never lists ``check_not_applicable`` without
+    the record behind it."""
+
+    app, runtime, _ = h._build_app(seed_offset=66)
+    started, checked = await _checked(app, runtime, "memory")
+    appended = await _append_observed(
+        app,
+        runtime,
+        started,
+        (_action(7000, ActionKind.EDIT, "apply_patch", "compound"), _result(7001, 7000)),
+        seed=7000,
+        expected_frontier=checked.result_frontier.sequence,
+    )
+    status = await app.status(
+        StatusRequest.model_validate(
+            {
+                **h._request_base(protocol_id("req_", 7200)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "view": view,
+                "limit": "10",
+            }
+        )
+    )
+    del appended
+    summary = summary_for_status(status.as_json())
+    assert len(summary.encode("ascii")) <= _MAX_SUMMARY_BYTES
+    assert "check_not_applicable" in summary
+    assert "Why check_not_applicable: " in summary, summary
+    assert "observed edit via apply_patch" in summary

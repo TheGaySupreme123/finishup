@@ -116,7 +116,7 @@ def check_cause_sentence(
         return (
             "Why check_current_as_of_earlier_frontier: after the check at "
             f"{tested}, a {family} record{via} ({where}) could not be classified as Yoetz's own "
-            f"call, a read-only read or host bookkeeping (rule {rule}). A new check would evaluate "
-            "it; the receipt discloses it either way."
+            f"call, a read-only read or host bookkeeping (rule {rule}). Yoetz cannot tell whether "
+            "it changed the work; the receipt discloses it."
         )
     raise ValueError("check_cause_effect_invalid")

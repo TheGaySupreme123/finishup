@@ -1463,7 +1463,9 @@ def summary_for_status(envelope: object) -> str:
         # Every view carries the closure checklist, so every view names its state (#913).
         return _bounded(
             text
-            + _closure_clause(source, byte_budget=_MAX_SUMMARY_BYTES - len(text.encode("ascii")))
+            + _closure_with_cause(
+                source, byte_budget=_MAX_SUMMARY_BYTES - len(text.encode("ascii"))
+            )
         )
     freshness, obligations, unanswered, receipt_blocking = _compact_status_fields(source, view)
     gaps = _item_count(source.get("gaps"))
@@ -1503,10 +1505,7 @@ def summary_for_status(envelope: object) -> str:
         - len((prefix + suffix).encode("ascii"))
         - _CLOSURE_CLAUSE_RESERVE,
     )
-    suffix += _closure_clause(
-        source, byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii"))
-    )
-    suffix += _check_cause_clause(
+    suffix += _closure_with_cause(
         source, byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii"))
     )
     obligation_ids = _obligation_ids_from_status(source, view)
@@ -1596,7 +1595,9 @@ def _readiness_tokens(readiness: Mapping[str, JsonValue], key: str) -> tuple[str
     )
 
 
-def _check_cause_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
+def _check_cause_clause(
+    source: Mapping[str, JsonValue], *, byte_budget: int, compact_only: bool = False
+) -> str:
     """The lineage sentence for ``check_not_applicable`` or a bounding earlier-frontier code.
 
     Built from the closed ``closure_readiness.check_cause`` fields by the shared frozen text
@@ -1632,7 +1633,7 @@ def _check_cause_clause(source: Mapping[str, JsonValue], *, byte_budget: int) ->
     # The full sentence when it fits, else the short form (same record and frontier): the cause
     # is what makes the listed token true, so it is never dropped for lack of room before the
     # short form has been tried.
-    for compact in (False, True):
+    for compact in (True,) if compact_only else (False, True):
         try:
             sentence = " " + check_cause_sentence(
                 effect=cast(str, texts["effect"]),
@@ -1650,6 +1651,21 @@ def _check_cause_clause(source: Mapping[str, JsonValue], *, byte_budget: int) ->
         if sentence.isascii() and len(sentence) <= byte_budget:
             return sentence
     return ""
+
+
+def _closure_with_cause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
+    """The closure clause plus the lineage of the item it lists, in one byte budget.
+
+    The short form of the cause is reserved before the closure clause shrinks, so the closure
+    boilerplate (the frozen directive) gives way before the record that makes the listed token
+    true is dropped; the full sentence replaces it when room is left (tb4n3 RC-6).
+    """
+
+    reserve = len(_check_cause_clause(source, byte_budget=byte_budget, compact_only=True))
+    closure = _closure_clause(source, byte_budget=byte_budget - reserve)
+    return closure + _check_cause_clause(
+        source, byte_budget=byte_budget - len(closure.encode("ascii"))
+    )
 
 
 def _closure_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
@@ -1753,7 +1769,9 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
         text = prefix + "page unavailable."
         return _bounded(
             text
-            + _closure_clause(source, byte_budget=_MAX_SUMMARY_BYTES - len(text.encode("ascii")))
+            + _closure_with_cause(
+                source, byte_budget=_MAX_SUMMARY_BYTES - len(text.encode("ascii"))
+            )
         )
     lineage = page if view == "lineage" else page.get("lineage")
     if view == "project":
@@ -1794,7 +1812,7 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
     if page.get("next_cursor") is not None:
         suffix = "More pages available. " + suffix
     # The parent's own closure checklist travels on these views too (#913).
-    suffix += _closure_clause(
+    suffix += _closure_with_cause(
         source, byte_budget=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
     )
     gap_clause = _bounded_list_clause(

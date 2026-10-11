@@ -335,8 +335,10 @@ test or build, a tool it cannot attribute), the receipt folds the check's covera
 `semantic_model_derived`, and carries the gap `check_current_as_of_earlier_frontier` naming the
 subject frontier that was tested and the first such record. The verdict is current as of that
 earlier frontier, not the receipt's, so the receipt is still coverage-incomplete. `status` keeps the
-code among the standing limitations and names the first such record; a new `check` before the
-receipt evaluates it and removes the code.
+code among the standing limitations and names the first such record. One new `check` before the
+receipt evaluates it; the code can return when the host observes the check itself in a way Yoetz
+cannot attribute (some Cursor profiles, Yoetz run through a shell), so do not repeat checks for
+it: the receipt discloses it.
 
 An observed edit to the deliverable or the workspace after the check is different: it changes
 what the check judged. The receipt then reports `check_not_applicable` and says which record did
