@@ -178,7 +178,7 @@ class _Harness:
             ),
             _state=tmp_path,
         )
-        self.readiness: object = _readiness()
+        self.readiness: Any = _readiness()
         self.sequence = "5"
         self.status_calls = 0
         harness = self
