@@ -43,6 +43,7 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [043](ADR-043-bounded-agent-facing-text.md) | Bounded agent-facing text: one never-failing composer, and a committed operation never fails on its text |
 | [044](ADR-044-post-compaction-recap.md) | A bounded, sourced recap of Yoetz state when a host resumes after compaction |
 | [045](ADR-045-derived-facts-history-and-lineage.md) | Derived facts carry history (path-keyed deliverable state) and lineage; canonical command commitments; attempts; binary by content first |
+| [046](ADR-046-one-closure-verdict.md) | One closure verdict: finding and obligation classes with receipt effects, one gap-effect table, a predicted receipt conclusion every surface prints |
 
 Unresolved gates are centralized in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md), not scattered
 through individual ADRs.

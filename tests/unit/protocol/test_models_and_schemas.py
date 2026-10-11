@@ -309,21 +309,27 @@ _STATUS_PAGE_DEF_BY_VIEW_FOR_TEST: tuple[tuple[str, str], ...] = (
     ("versions", "versions_page"),
 )
 _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
-    ("check", None): 391,  # tb4n2 LA: counts/disputed_after_rebuttal; tb4n3 LF +17 fact_lineage
+    (
+        "check",
+        None,
+    ): 399,  # tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8 closure verdict; tb4n3 LF +17 fact_lineage
     ("publish_work", None): 61,
-    ("receipt", None): 293,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3
+    ("receipt", None): 301,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
     ("respond", None): 54,
     ("start", None): 72,
-    ("status", None): 89,  # +9 tb4n3 LO: check_cause; +17 LF: fact_lineage
+    (
+        "status",
+        None,
+    ): 114,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage
     ("status", "advice"): 25,
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,
     ("status", "compact"): 61,  # #1027: latest_check +4
     ("status", "evidence"): 19,
-    ("status", "findings"): 126,
+    ("status", "findings"): 129,  # W2-A +3: closure_class/basis/next_actions
     ("status", "history"): 63,
     ("status", "lineage"): 17,
-    ("status", "obligations"): 40,  # #1027: in_current_plan +1
+    ("status", "obligations"): 42,  # #1027: in_current_plan +1; W2-A +2 closure_class/basis
     ("status", "operation"): 48,
     ("status", "project"): 68,
     ("status", "results"): 11,
@@ -845,7 +851,8 @@ def test_human_status_renders_operation_continuation_and_exact_trusted_command()
     assert type(parsed.root) is models.StatusSuccessModel
     rendered = render_human_status(parsed.root)
     assert "Unanswered findings: 0" in rendered
-    assert "Receipt-blocking findings: 0" in rendered
+    # ADR-046: no human surface prints "receipt-blocking" any more; the counters are the verdict.
+    assert "Receipt-blocking" not in rendered
     assert "Continuation: repository_privacy_setup" in rendered
     assert "Trusted command: yoetz --privacy" in rendered
     assert f"Replay request ID: {operation_request_id}" in rendered
@@ -966,7 +973,7 @@ def test_human_status_reports_unknown_readiness_counts_as_unavailable() -> None:
     assert "None" not in rendered
     assert "Open obligations: unavailable" in rendered
     assert "Unanswered findings: unavailable" in rendered
-    assert "Receipt-blocking findings: unavailable" in rendered
+    assert "Receipt-blocking" not in rendered
 
 
 def test_human_status_counts_acknowledged_obligations_apart() -> None:
@@ -2528,7 +2535,9 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     rules = cast(tuple[Any, ...], getattr(models, "_RESULT_LEAF_RULES"))
 
     derived_patterns = _derived_result_success_patterns(catalog)
-    assert len(derived_patterns) == 1489  # +9 LO check_cause, +34 LF fact_lineage
+    assert (
+        len(derived_patterns) == 1535
+    )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2537,7 +2546,9 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert derived_counts == _EXPECTED_RESULT_PATTERN_COUNTS
 
     assert type(rules) is tuple
-    assert len(rules) == 1516  # #1027 +5, tb4n3 LO +9 check_cause, LF +34 fact_lineage
+    assert (
+        len(rules) == 1562
+    )  # #1027 +5, tb4n3 LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {
@@ -2546,7 +2557,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1489  # #1027 +5, LO +9, LF +34
+    assert len(registry_patterns) == 1535  # #1027 +5, LO +9, W2-A +46, LF +34
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)
@@ -3244,8 +3255,8 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_738
-    )  # #1027 +3, tb4n3 LO +6, LF +17
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_763
+    )  # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17
 
 
 def test_schema_name_derivation_and_version_maps_are_exact() -> None:

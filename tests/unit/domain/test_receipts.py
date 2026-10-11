@@ -161,6 +161,8 @@ def test_receipt_document_is_frozen_and_exactly_shaped() -> None:
         "disclosed_assumptions",
         "acknowledged_not_done_obligation_ids",
         "premise_disputed_finding_ids",
+        "limitation_disclosed_finding_ids",
+        "conclusion_basis",
     )
     assert is_dataclass(document)
     assert ReceiptDocument.__slots__ == expected_fields

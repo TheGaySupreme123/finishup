@@ -8,22 +8,13 @@ frozen case keep missing work from being mistaken for a clean local check.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Final, cast
 
 from yoetz.domain.check_totals import validate_check_totals
-from yoetz.domain.findings import FINDING_KIND_TRAITS, Finding
-from yoetz.domain.receipts import (
-    PREEXISTING_TEST_INFORMATIONAL_GAPS,
-    SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
-)
-from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
-from yoetz.kernel.finding_resolution import (
-    DETERMINISTIC_PROOF_TOLERATED_GAPS,
-    SEMANTIC_ONLY_GAPS,
-)
-from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS
-from yoetz.kernel.task_facts import STANDING_TASK_FACT_GAPS
+from yoetz.domain.findings import Finding, finding_demands_work, is_limitation_request
+from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
+from yoetz.kernel.gap_effect import GAP_EFFECT_TABLE, GapContext, judge_gaps
 from yoetz.protocol.coverage import Coverage
 
 __all__ = [
@@ -32,43 +23,34 @@ __all__ = [
     "HOST_OBSERVATION_GUARDED_GAPS",
     "commands_complete",
     "deterministic_scope_is_clean",
+    "gaps_are_clean",
 ]
 
 
-# The one list of gaps a clean deterministic conclusion may carry (issue #986): the receipt's
-# ``no_unresolved_deterministic_findings`` and the scoped local verdict both read it, so the two
-# can no longer disagree. Derived, not hand-kept: a code qualifies when closure readiness
-# classifies it as a standing limitation (no agent action removes it) AND a local absence proof
-# tolerates it (it never hides rows a local pack judges: host pairing loss, an unstated host
-# outcome, an unreadable captured object, deliberate content selection, plan-drift and task-fact
-# disclosures). Gaps that describe only the AI-powered review are excluded: whether a missing or
-# weakened review bounds the conclusion is the route's question, not a local one, so they keep
-# their existing treatment. The advisory sets the receipt already tolerated stay members.
-# Every member stays disclosed on the result and the receipt; this only decides whether it
-# bounds the conclusion.
+# The gaps a clean conclusion may carry whatever the route says: those the one table of gap
+# effects (``kernel.gap_effect``, ADR-046) discloses on both routes, never as a bound. Derived,
+# not hand-kept, so the receipt, the check verdict and the scoped local verdict can no longer
+# disagree (issue #986). A gap whose effect depends on the route or the check (a missing review,
+# a Yoetz packet budget, a host-observation gap) is judged by ``gaps_are_clean`` with a context.
+# Every member stays disclosed on the result and the receipt; this only decides whether it bounds.
 CLEAN_COMPATIBLE_GAPS: Final = frozenset(
-    {
-        *(
-            code
-            for code, assigned in GAP_CLASSIFICATION.items()
-            if assigned is GapClass.STANDING_LIMITATION
-            and code in DETERMINISTIC_PROOF_TOLERATED_GAPS
-            and code not in SEMANTIC_ONLY_GAPS
-            # Review-dialogue and review-selection bounds (``semantic_*``) also describe only
-            # the AI-powered review; evidence-strength labels (``evidence_*``) bound what the
-            # cited evidence proves, so a clean conclusion never hides them either.
-            and not code.startswith(("semantic_", "evidence_"))
-        ),
-        *PLAN_DRIFT_ADVISORY_GAPS,
-        *PREEXISTING_TEST_INFORMATIONAL_GAPS,
-        *STANDING_TASK_FACT_GAPS,
-    }
+    code
+    for code, row in GAP_EFFECT_TABLE.items()
+    if row.d_route in {"D", "G"}
+    and row.review_route in {"D", "G"}
+    and row.rule != "G13"  # readiness-only tokens are never recorded as coverage gaps
 )
-# The scoped local verdict of a deterministic-only check adds the one review gap such a check
-# always carries: it asked for no AI-powered review. Unknown, actionable, or material coverage
-# loss keeps the ordinary insufficient-coverage verdict.
+# Kept for callers that name the scoped list: the scoped local verdict of a deterministic-only
+# check adds the one review gap such a check always carries (it asked for no review) when the
+# route did not require one. ``gaps_are_clean`` decides that by the route, not by this set.
 DETERMINISTIC_SCOPED_STANDING_GAPS: Final = CLEAN_COMPATIBLE_GAPS | frozenset(
     {SEMANTIC_REVIEW_NOT_REQUESTED_GAP}
+)
+# Host-observation gaps are clean-compatible only where the check that carried them also proved,
+# from its frozen-case counters, that no observed command has an unknown or live failed outcome
+# (``commands_complete``). The table marks them with the ``G`` effect (#986).
+HOST_OBSERVATION_GUARDED_GAPS: Final = frozenset(
+    code for code, row in GAP_EFFECT_TABLE.items() if row.d_route == "G" or row.review_route == "G"
 )
 
 
@@ -82,19 +64,37 @@ def _counter(totals: Mapping[str, object], group: str, key: str) -> int | None:
     return int(value)
 
 
-# Host-observation members of the list are clean-compatible only where the check that carried
-# them also proved, from its frozen-case counters, that no observed command has an unknown or live
-# failed outcome (``commands_complete``). A receipt therefore treats them as advisory only when
-# the applicable check's own coverage already carried them (#986).
-HOST_OBSERVATION_GUARDED_GAPS: Final = CLEAN_COMPATIBLE_GAPS & frozenset(
-    {"captured_object_unavailable", "host_outcome_unavailable", "unpaired_event"}
-)
-
-
 def commands_complete(totals: Mapping[str, object]) -> bool:
     """True when the case's command counters show no unknown and no live failed outcome."""
 
     return all(_counter(totals, "commands", key) == 0 for key in ("unknown", "live_failed"))
+
+
+def gaps_are_clean(
+    known_gaps: Iterable[str],
+    totals: Mapping[str, object],
+    *,
+    route_requires_review: bool,
+    review_succeeded: bool = False,
+    reviewer_reported_insufficiency: bool = False,
+) -> bool:
+    """Whether every gap of one check is only disclosed, never a bound (ADR-046).
+
+    The check verdict's cleanliness is the receipt's: the same table, the same context. The route
+    is the one the check will record (``semantic_route_required``), the host-observation guard is
+    this check's own coverage plus its command counters, and a Yoetz review-packet budget is
+    disclosed only when the review succeeded and the reviewer reported no insufficiency.
+    """
+
+    codes = tuple(known_gaps)
+    context = GapContext(
+        route_requires_review=route_requires_review,
+        review_succeeded=review_succeeded,
+        reviewer_reported_insufficiency=reviewer_reported_insufficiency,
+        check_carried=frozenset(codes),
+        commands_complete=commands_complete(totals),
+    )
+    return not any(effect.kind.bounds for effect in judge_gaps(codes, context))
 
 
 def deterministic_scope_is_clean(
@@ -102,6 +102,7 @@ def deterministic_scope_is_clean(
     coverage: Coverage,
     totals: Mapping[str, object],
     findings: Sequence[Finding],
+    route_requires_review: bool = False,
 ) -> bool:
     """Return whether a deterministic-only check may use its scoped local verdict.
 
@@ -116,11 +117,14 @@ def deterministic_scope_is_clean(
         checked = validate_check_totals(totals)
     except ValueError:
         return False
-    if not set(coverage.known_gaps) <= DETERMINISTIC_SCOPED_STANDING_GAPS:
+    if not gaps_are_clean(
+        coverage.known_gaps, checked, route_requires_review=route_requires_review
+    ):
         return False
     if any(type(finding) is not Finding for finding in findings):
         return False
-    if any(FINDING_KIND_TRAITS[finding.kind][1] for finding in findings):
+    # A limitation request asks for a disclosure, not work, but it can never read as clean.
+    if any(finding_demands_work(finding) or is_limitation_request(finding) for finding in findings):
         return False
     values = checked
     if _counter(values, "obligations", "scope_known") != 1:

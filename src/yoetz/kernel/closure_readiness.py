@@ -32,41 +32,51 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from enum import Enum
 from types import MappingProxyType
 from typing import Final, Literal, cast
 
 from yoetz.domain.events import CheckRecordedPayload, LedgerRecord
-from yoetz.domain.receipts import (
-    CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
-    COMPLETION_PLAN_NOT_CLAIMED_GAP,
-)
+from yoetz.domain.receipts import COMPLETION_PLAN_NOT_CLAIMED_GAP
 from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel import finding_todo as _finding_todo_module
 from yoetz.kernel.check_standing import CheckCause, CheckStanding, check_standing
 from yoetz.kernel.claim_limitations import required_limitation_ids_for_projection
 from yoetz.kernel.claims import completion_claim_present
+from yoetz.kernel.closure_class import (
+    FINDING_REJECTION_AWAITING_RULING_GAP,
+    UNDELIVERABLE_SEMANTIC_STATUSES,
+    FindingClosure,
+    FindingClosureClass,
+    ObligationClosure,
+    ReceiptEffect,
+    finding_closures,
+    obligation_closures,
+)
 from yoetz.kernel.delivered_set import deliverable_lineage
 from yoetz.kernel.fact_lineage import MAX_FACT_LINEAGE_ITEMS, FactLineage
 from yoetz.kernel.finding_resolution import finding_is_resolved
 from yoetz.kernel.finding_todo import (
     FindingTodoState,
     duplicate_counting_id,
-    finding_blocks_receipt,
     finding_todo_state,
 )
+from yoetz.kernel.gap_effect import (
+    GAP_EFFECT_TABLE,
+    UNCLASSIFIED_GAP_PREFIX,
+    GapClass,
+    gap_base_code,
+    unclassified_marker,
+)
 from yoetz.kernel.observed_failures import observed_event_ids_from_records
-from yoetz.kernel.plan_drift import PLAN_DRIFT_ADVISORY_GAPS, PLAN_DRIFT_GAPS
+from yoetz.kernel.plan_drift import PLAN_DRIFT_GAPS
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.reducers import invalidates_recorded_check
 from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
-    AGENT_ACTIONABLE_TASK_FACT_GAPS,
     OBLIGATION_BLOCKED_GAP,
     OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
-    STANDING_TASK_FACT_GAPS,
     acknowledged_obligation_ids,
     blocker_declarations,
     decision_batches,
@@ -88,7 +98,9 @@ __all__ = [
     "AGENT_READINESS_CONDITIONS",
     "ASSUMPTION_DISCLOSED_GAP",
     "FINDING_DISPUTED_AFTER_REBUTTAL_GAP",
+    "FINDING_LIMITATION_DISCLOSED_GAP",
     "FINDING_PREMISE_DISPUTED_GAP",
+    "FINDING_REJECTION_UNREVIEWABLE_GAP",
     "premise_disputed_finding_ids",
     "VERIFICATION_LIMIT_DISCLOSED_GAP",
     "FINDING_SELF_VERIFIED_GAP",
@@ -122,7 +134,9 @@ __all__ = [
 # ``finding_disputed_after_rebuttal`` (issue #1020, ADR-040) was added. "6": the agent-actionable
 # task fact ``declared_output_emptied`` and the standing disclosure
 # ``deliverable_references_undeclared_file`` (tb4n2 R2, issue #1022, ADR-035) were added. "7": the
-# standing disclosures ``planned_verification_matched_by_prefix`` and
+# table became a derived view of ``kernel.gap_effect`` (tb4n3 RC-3, issue #1026, ADR-046), and the
+# agent-actionable readiness token ``finding_rejection_awaiting_ruling`` was added. The standing
+# disclosures ``planned_verification_matched_by_prefix`` and
 # ``declared_output_not_reviewable`` were added and ``declared_output_emptied`` became a path-keyed
 # fact with provenance (tb4n3 RC-5, issue #1028, ADR-045).
 GAP_CLASSIFICATION_VERSION: Final = "7"
@@ -140,312 +154,33 @@ VERIFICATION_LIMIT_DISCLOSED_GAP: Final = "verification_limit_disclosed"
 # challenge says the task itself requires the work. Terminal, so never agent work: disclosed, and
 # the Stop gate asks once.
 FINDING_PREMISE_DISPUTED_GAP: Final = "finding_premise_disputed"
+# tb4n3 RC-3 (ADR-046, owner decision Q4): a reviewer's limitation request the agent disclosed, and
+# a rejection no reviewer on this route can rule on. Settled and disclosed, never agent work.
+FINDING_LIMITATION_DISCLOSED_GAP: Final = "finding_limitation_disclosed"
+FINDING_REJECTION_UNREVIEWABLE_GAP: Final = "finding_rejection_unreviewable"
 _DISCLOSURE_CODES: Final[Mapping[str, str]] = MappingProxyType(
     {"assumption": ASSUMPTION_DISCLOSED_GAP, "verification_limit": VERIFICATION_LIMIT_DISCLOSED_GAP}
 )
-UNCLASSIFIED_GAP_PREFIX: Final = "unclassified_gap:"
 
 _CODE_RE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
-# Markers that wrap a base code in a named envelope: ``coverage:<code>`` (finding resolution),
-# ``check_coverage:<code>``, ``retained_finding_coverage:<code>``, ``semantic_outcome:<code>``
-# (receipt case gaps) and ``lineage:<code>:<child>:<event>`` (receipt lineage gaps). Every other
-# ``<code>:<subject...>`` marker (``unknown_event:``, ``missing_ref:``, ``redacted_event:``,
-# ``completion_scope_undeclared:<event>``) already leads with its base code.
-_WRAPPER_PREFIXES: Final = frozenset(
-    {"check_coverage", "coverage", "lineage", "retained_finding_coverage", "semantic_outcome"}
-)
-
-
-class GapClass(str, Enum):  # noqa: UP042 - exact internal contract token
-    AGENT_ACTIONABLE = "agent_actionable"
-    STANDING_LIMITATION = "standing_limitation"
-    ROUTE_DEPENDENT = "route_dependent"
 
 
 _A: Final = GapClass.AGENT_ACTIONABLE
 _S: Final = GapClass.STANDING_LIMITATION
 _R: Final = GapClass.ROUTE_DEPENDENT
 
+# The ADR-032 readiness group of every code, derived from the one table of gap effects
+# (``kernel.gap_effect``, ADR-046): who owes the next move. What a code does to the receipt is the
+# table's other column; nothing re-classifies a code here. The rationale for each group lives with
+# the table's families (``GAP_EFFECT_WHY``) and in ADR-032; the vocabulary stays closed and a code
+# the build does not know is reported as ``unclassified_gap:<code>`` (agent-actionable).
 GAP_CLASSIFICATION: Final[Mapping[str, GapClass]] = MappingProxyType(
-    {
-        # -- Host observation (ObservationGapCode and the local observation store). Recorded into
-        # the coverage of the observed rows; host-profile, consent, capture-profile and delivery
-        # facts that no agent action rewrites.
-        "unpaired_event": _S,  # host pairing loss; sticky by design (#917 owns its surfacing)
-        "unsupported_event": _S,
-        "unsupported_format": _S,
-        "truncated_payload": _S,  # capture failure: bounded capture or packet truncation (#904)
-        "service_unavailable": _S,
-        "vault_locked": _S,
-        "ledger_rejected": _S,
-        "dedup_conflict": _S,
-        "cursor_stale": _S,
-        "consent_missing": _S,
-        "consent_revoked": _S,
-        "source_lag": _S,
-        "mapping_missing": _S,
-        "missing_subagent_identity": _S,
-        "session_superseded": _S,
-        "outbox_overflow": _S,
-        "observation_input_loss": _S,
-        "outbox_quarantined": _S,
-        "observation_storage_corrupt": _S,
-        "quarantine_detail_evicted": _S,
-        "content_capture_unavailable": _S,  # consent or capture profile
-        "capture_budget_exhausted": _S,
-        "content_capture_profile_mismatch": _S,
-        "content_unselected": _S,  # deliberate selection: the policy chose not to capture
-        "content_redacted": _S,  # capture-time redaction of a high-confidence secret shape
-        "routine_read_detail_omitted": _S,
-        "routine_read_summary_invalid": _S,
-        "routine_summary_invalid": _S,
-        "payload_too_large": _S,
-        "payload_content_omitted": _S,
-        "selection_route_changed": _S,
-        "policy_untrusted": _S,
-        "verification_stale": _S,
-        "network_check_unsupported": _S,
-        "pending_attempt_expired": _S,  # open pre-events pruned by TTL or generation fence
-        "pending_attempt_limit": _S,
-        "optional_observation_detail_omitted": _S,
-        "drain_diagnostic_unavailable": _S,
-        "host_outcome_unavailable": _S,  # the host did not state an outcome (#910)
-        # A piped or chained command reports one exit status for several commands, so the
-        # observer cannot attribute an outcome; no agent action rewrites the recorded row.
-        "compound_outcome_unavailable": _S,
-        # -- Background observation advice: pipeline state, not an agent task (#923).
-        "advice_coverage_gaps_truncated": _S,
-        "advice_evidence_refs_truncated": _S,
-        "advice_ranked_findings_truncated": _S,
-        "advice_semantic_deferred": _S,
-        "advice_semantic_output_invalid": _S,
-        "advice_semantic_pending": _S,
-        "advice_semantic_text_truncated": _S,
-        "advice_semantic_unavailable": _S,
-        "observation_qualified_partial": _S,
-        # -- Completion scope (ADR-019). A scope difference is repaired by the agent: claim the
-        # omitted plan item, revise the plan or claim, declare obligations, or acknowledge the
-        # obligation as not done. An explicit "no obligations" declaration is the agent's own
-        # recorded choice and stays a disclosure.
-        "completion_plan_not_claimed": _A,
-        "completion_claim_outside_plan": _A,
-        "completion_scope_undeclared": _A,
-        "completion_scope_declared_none": _S,
-        # -- Check applicability. A missing or superseded check is removed by running a check
-        # after the material change; a check that only trails attributable answers and
-        # observations is a disclosure (real material staleness reads check_not_applicable).
-        "check_not_recorded": _A,
-        "check_not_applicable": _A,
-        # A readiness condition rather than a recorded gap: a check holds the session frontier
-        # right now, so its result (and any finding it returns) is still to come.
-        "check_in_progress": _A,
-        # Issue #976: AI-powered review is required or in use on this task and no closing
-        # review (final phase, with or without a completion claim) is current since the last
-        # material change. Removed by `check` with `final_review: true`.
-        "closing_review_required": _A,
-        "check_current_as_of_earlier_frontier": _S,
-        "check_payload_unavailable": _S,
-        # -- AI-powered review outcome and packet bounds: disclosure of how the review was bounded.
-        "semantic_review_not_requested": _R,
-        # Plan drift is a diagnostic about the quality of the recorded planning trace.  The
-        # advisory codes are deliberately standing: a refinement may remove them, but their
-        # presence never turns a receipt into an agent-actionable closure blocker by itself.
-        **{code: _S for code in sorted(PLAN_DRIFT_ADVISORY_GAPS)},
-        # A recorded task statement that no effective obligation cites in source_refs is agent
-        # work (TB4 pilot): decompose the request into statement-sourced obligations, or revise
-        # the plan to an explicit empty scope. Yoetz checks the link, never the request prose.
-        "instruction_requirement_unmapped": _A,
-        # Test-edit accounting is structural and path-private.  A baseline gap is a standing
-        # limit; an unjustified edit remains agent-actionable until an explicit action/path
-        # decision is recorded.
-        "preexisting_test_baseline_unknown": _S,
-        "preexisting_test_modified": _S,
-        "preexisting_test_renamed": _S,
-        "preexisting_test_deleted": _S,
-        "preexisting_test_skipped": _S,
-        "preexisting_test_skip_unknown": _S,  # path metadata only: skip markers unreadable
-        "preexisting_test_edit_unjustified": _A,
-        "semantic_review_not_configured": _S,
-        "semantic_relevance_review_not_run": _S,  # provider or evaluator failure
-        "semantic_review_context_withheld": _S,
-        # Egress-only privacy redaction of the review packet (#982): bounds the review, never the
-        # agent's work. Never ask the agent to reveal the value or widen consent to clear it.
-        "semantic_review_value_redacted": _S,
-        "semantic_review_item_withheld": _S,
-        # Owner opt-out (#982): the policy disabled the low-confidence credential heuristic, so the
-        # review saw more, not less. A disclosure, never agent work.
-        "semantic_review_credential_heuristic_disabled": _S,
-        "semantic_packet_insufficient": _S,  # agent-suppliable items arrive as findings (#907)
-        # #907: what an insufficient_packet review named as missing. Only an item the agent can
-        # supply is agent work; the rest disclose how the review was bounded.
-        "semantic_missing_agent_suppliable": _A,
-        "semantic_missing_structurally_unavailable": _S,
-        "semantic_missing_yoetz_limit": _S,  # tb4n1 D1: Yoetz cannot show it; self-verify
-        "semantic_missing_already_supplied": _S,
-        "semantic_missing_items_rejected": _S,
-        "semantic_missing_non_convergent": _S,
-        # tb4n1 D3: the reviewer twice could not assess the same content; the round stopped.
-        "semantic_review_skipped_insufficient_packet": _S,
-        "semantic_provider_input_manifest_missing": _S,
-        "semantic_provider_input_manifest_invalid": _S,
-        "semantic_provider_input_manifest_parse_failed": _S,
-        "semantic_provider_input_manifest_mismatch": _S,
-        "semantic_provider_input_manifest_recovery_failed": _S,
-        "semantic_challenges_rejected": _S,  # reviewer output dropped by the validation fence
-        "semantic_review_snippet_invalid": _S,  # provider quote could not be proved against sent text
-        "semantic_review_refs_reduced": _S,  # reviewer citations of unsent refs removed (#976)
-        "semantic_case_content_over_item_limit": _S,  # packet item bound (#907)
-        "semantic_case_finding_refs_over_limit": _S,
-        # #904: what a reduced review sent could not be recorded; one new check is the remedy only
-        # when the agent has recorded and cited its repair evidence, so it is disclosed, not a task.
-        "semantic_included_refs_not_recorded": _S,
-        "semantic_prior_findings_over_limit": _S,  # prior-findings packet bound (#905)
-        "semantic_prior_verdicts_unsupported": _S,  # reviewer rulings dropped by the fence (#905)
-        "semantic_restatements_suppressed": _S,  # duplicate re-raises folded into one item (#905)
-        # #908: what the reviewer knew of the user's request. Withholding is the owner's policy;
-        # a missing statement is agent work through a same-session statement-carrying plan event.
-        "task_statement_unavailable": _S,
-        "task_statement_not_authorized": _S,
-        "task_statement_not_supplied": _A,
-        # ADR-031: the service's own check-time read of the repository. Every limit on it is the
-        # service's (capture, Git state, redaction, packet room), not work the agent can redo.
-        "check_time_change_unavailable": _S,
-        "check_time_change_base_unavailable": _S,
-        "check_time_change_truncated": _S,
-        "check_time_change_redacted": _S,
-        # #1019: the local changed-path read skipped a file name holding a line break.
-        "check_time_change_path_unrepresentable": _S,
-        # #1019: a native content handoff of this task was retired before it could attach.
-        "capture_handoff_retired": _S,
-        "check_time_change_resolution_unverified": _S,
-        # Each closed unavailability reason travels beside the generic code with the same class.
-        **{code: _S for code in sorted(CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS)},
-        "semantic_case_capacity_exceeded": _S,
-        "semantic_reference_scope_reduced": _S,  # deliberate selection: bounded review scope (#904)
-        "optional_semantic_review_blocked_by_policy": _S,
-        "optional_semantic_review_registration_drift": _S,  # owner reinstall, not the agent
-        # -- Ledger and evidence facts found by the deterministic case.
-        "unknown_event": _S,  # written by a newer build
-        "redacted_event": _S,  # capture failures: the recorded payload or object is unreadable
-        "redacted_object": _S,
-        "event_payload_unavailable": _S,
-        "captured_object_unavailable": _S,
-        "missing_ref": _A,  # publish the referenced record or supersede the reference
-        "evidence_content_digest_only": _S,  # provenance label (#912)
-        "evidence_content_withheld": _S,
-        "evidence_digest_subject_legacy_unknown": _S,
-        "unknown_event_schema_preserved": _S,
-        # -- Command attempts: an uncorroborated command has no observable command identity
-        # (#909); a mismatch is removed by running the requested command or correcting the
-        # assertion.
-        "command_attempt_uncorroborated": _S,
-        "command_attempt_mismatch": _A,
-        # -- Findings the agent self-verified because a Yoetz limit kept the repair unproven
-        # (issue #984). Final and disclosed; no agent action removes it.
-        FINDING_SELF_VERIFIED_GAP: _S,
-        # -- The agent's own disclosures (issue #995): a best-effort assumption or a check it
-        # inherently cannot run, recorded on an obligation. Disclosed; no agent action removes it.
-        ASSUMPTION_DISCLOSED_GAP: _S,
-        VERIFICATION_LIMIT_DISCLOSED_GAP: _S,
-        # Acknowledged-not-done findings the reviewer says the task requires (D7a). Final
-        # answers, so standing; the Stop gate asks about them once.
-        FINDING_PREMISE_DISPUTED_GAP: _S,
-        # Findings the reviewer repeated over the agent's reasoned rejection with nothing newer
-        # (issue #1020). Final and disclosed; the agent already answered, nothing removes it.
-        FINDING_DISPUTED_AFTER_REBUTTAL_GAP: _S,
-        # -- Lineage (ADR-027). Child work, child verification and a check that has not covered
-        # the latest manifest are actionable; unreadable, restricted or terminal child facts are
-        # disclosures. A manifest that trails the catalog is refreshed by the service, so, like
-        # ``projection_stale``, the remedy is to re-read status rather than a standing limit.
-        "lineage_child_actionable_finding": _A,
-        "lineage_child_open": _A,
-        "lineage_child_incomplete": _A,
-        "lineage_child_check_stale": _A,
-        "lineage_child_verification_unknown": _A,
-        "lineage_child_check_frontier_unknown": _S,
-        "lineage_child_coverage_gap": _S,
-        "lineage_child_frontier_unknown": _S,
-        "lineage_child_provenance_restricted": _S,
-        "lineage_child_read_gap": _S,
-        "lineage_child_unavailable": _S,
-        # Always accompanied by lineage_child_actionable_finding, which carries the action.
-        "lineage_invalid_acceptance_transition": _S,
-        "lineage_manifest_uncovered": _A,
-        "lineage_manifest_not_recorded": _A,
-        "lineage_manifest_state_changed": _A,
-        "lineage_readiness_unavailable": _A,
-        "lineage_manifest_missing": _S,
-        "lineage_manifest_not_authorized": _S,
-        "lineage_manifest_quarantined": _S,
-        "lineage_manifest_revoked": _S,
-        "lineage_manifest_unknown": _S,
-        "lineage_manifest_unreadable": _S,
-        # -- Project and coordination detail bounds.
-        "project_member_unavailable": _S,
-        "source_unavailable": _S,
-        "revoked": _S,
-        "not_observable": _S,
-        "details_truncated": _S,
-        # -- Imported source streams (Codex JSONL and rollout imports, human imports). The import
-        # records what the source stream held; the agent cannot rewrite the imported source.
-        "import_source_range_not_universal": _S,
-        "human_import_scope_not_universal": _S,
-        "command_declined_not_executed": _S,
-        "command_outcome_incomplete": _S,
-        "file_content_not_captured": _S,
-        "final_newline_absent": _S,
-        "item_shape_unsupported": _S,
-        "item_transition_invalid": _S,
-        "json_profile_unsupported": _S,
-        "line_oversized": _S,
-        "malformed_line": _S,
-        "result_outcome_incomplete": _S,
-        "source_category_not_mapped": _S,
-        "source_line_unmapped": _S,
-        "source_text_not_represented": _S,
-        "source_timestamp_unavailable": _S,
-        "truncated_final_line": _S,
-        "unknown_item_type": _S,
-        "unknown_wrapper_type": _S,
-        "unsupported_codex_profile": _S,
-        "web_results_not_captured": _S,
-        "wrapper_shape_unsupported": _S,
-        # -- Task facts (#977): what hook observations, the ledger and the check-time workspace
-        # read establish about the task's own work. A planned verification that was not observed,
-        # failed, or ran before the last edit, an edit after the last verification run, and a
-        # requested output Git would not deliver are removed by the agent's own action. Installs,
-        # writes and the user a run had are recorded history, an unmatched or unread item is a
-        # bound on what Yoetz could see, and a declared blocker is the agent's recorded position.
-        **{code: _A for code in sorted(AGENT_ACTIONABLE_TASK_FACT_GAPS)},
-        **{code: _S for code in sorted(STANDING_TASK_FACT_GAPS)},
-    }
+    {code: row.readiness for code, row in GAP_EFFECT_TABLE.items()}
 )
 if not PLAN_DRIFT_GAPS <= set(GAP_CLASSIFICATION):  # pragma: no cover - closed drift vocabulary
     raise ValueError("gap_classification_plan_drift_incomplete")
 if any(_CODE_RE.fullmatch(code) is None for code in GAP_CLASSIFICATION):  # pragma: no cover
     raise ValueError("gap_classification_code_invalid")
-if [code for code, value in GAP_CLASSIFICATION.items() if value is _R] != [
-    "semantic_review_not_requested"
-]:  # pragma: no cover - the route rule is defined for exactly one code
-    raise ValueError("gap_classification_route_rule_invalid")
-
-
-def gap_base_code(marker: str) -> str:
-    """Return the base code a gap marker or prefixed form classifies by.
-
-    ``coverage:<code>``, ``check_coverage:<code>``, ``retained_finding_coverage:<code>``,
-    ``semantic_outcome:<code>`` and ``lineage:<code>:…`` name their base code second; every other
-    ``<code>:<subject…>`` marker names it first. A bare code is its own base.
-    """
-
-    if type(marker) is not str:
-        raise TypeError("gap_marker_invalid")
-    head, separator, rest = marker.partition(":")
-    if not separator:
-        return marker
-    if head in _WRAPPER_PREFIXES:
-        return rest.partition(":")[0]
-    return head
 
 
 def classify_gap(
@@ -481,7 +216,7 @@ class GapSplit:
 def _unclassified(code: str) -> str:
     # Page gaps are already validated tokens; bound anything else to a fixed, content-free token
     # so an unreadable value can never echo into a structural readiness field.
-    return UNCLASSIFIED_GAP_PREFIX + (code if _CODE_RE.fullmatch(code) else "unreadable_gap_code")
+    return unclassified_marker(code)
 
 
 def split_gaps(
@@ -608,6 +343,12 @@ class ClosureReadinessFacts:
     # Why the check is not applicable, or why the earlier-frontier code bounds: the first later
     # record that decided it (event id, ledger sequence, family, class, closed rule, tool token).
     check_cause: CheckCause | None = None
+    # tb4n3 RC-3 (ADR-046): the closure of every current finding and every effective obligation,
+    # computed once by ``kernel.closure_class``. ``None`` marks a hand-built fact set that predates
+    # the classes: readiness then falls back to the id lists above (acknowledged and self-verified
+    # findings settle ``receipt_findings_unresolved``) exactly as before.
+    finding_closures: tuple[FindingClosure, ...] | None = None
+    obligation_closures: tuple[ObligationClosure, ...] = ()
     # ADR-045: where each derived task fact came from, so the agent sees why a code fired.
     fact_lineage: tuple[FactLineage, ...] = ()
 
@@ -624,6 +365,15 @@ class ClosureReadinessFacts:
             or type(self.closing_review_current) is not bool
             or type(self.semantic_review_used) is not bool
             or (self.check_cause is not None and type(self.check_cause) is not CheckCause)
+            or (
+                self.finding_closures is not None
+                and (
+                    type(self.finding_closures) is not tuple
+                    or any(type(item) is not FindingClosure for item in self.finding_closures)
+                )
+            )
+            or type(self.obligation_closures) is not tuple
+            or any(type(item) is not ObligationClosure for item in self.obligation_closures)
         ):
             raise ValueError("closure_readiness_facts_invalid")
         for values in (
@@ -767,16 +517,7 @@ def _semantic_review_current(
 # agent cannot remove (policy, privacy, configuration or a human decision). A timeout or an
 # unavailable or failed provider is transient: the closing review stays actionable. Their own gaps disclose it, and
 # closure does not also demand a closing review the route cannot deliver.
-_UNDELIVERABLE_SEMANTIC_STATUSES: Final = frozenset(
-    {
-        SemanticStatus.BLOCKED_BY_POLICY,
-        SemanticStatus.BLOCKED_FORBIDDEN_DATA,
-        SemanticStatus.NOT_CONFIGURED,
-        SemanticStatus.CLASSIFICATION_UNCERTAIN,
-        SemanticStatus.HUMAN_DENIED,
-        SemanticStatus.APPROVAL_EXPIRED,
-    }
-)
+_UNDELIVERABLE_SEMANTIC_STATUSES: Final = UNDELIVERABLE_SEMANTIC_STATUSES
 
 
 def _closing_review_facts(
@@ -896,14 +637,14 @@ def closure_readiness_facts(
         for finding in current_receipt_findings(state)
         if not finding_is_resolved(state, finding.finding_id)
     )
-    # Same predicate as receipt_blocking_finding_count (``finding_todo.finding_blocks_receipt``): an
-    # actionable finding kind that no later qualifying check resolved and that is not a terminal
-    # ``rejection_accepted`` item (issue #905). A linked ``duplicate_of`` item (issue #996) is
-    # named by the finding that answers for it (``duplicate_counting_id``), so a pair counts once.
+    # ADR-046: one classifier decides who owes the next move and what each finding does to the
+    # receipt. The id lists below are views of it (a linked ``duplicate_of`` item is named by the
+    # finding that answers for it, ``duplicate_counting_id``, so a pair counts once).
+    finding_classes = finding_closures(state, records=records)
     blocking = {
-        duplicate_counting_id(state, finding.finding_id)
-        for finding in current
-        if finding_blocks_receipt(state, finding.finding_id)
+        closure.counts_as
+        for closure in finding_classes.values()
+        if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
     }
     acknowledged = {
         duplicate_counting_id(state, finding.finding_id)
@@ -926,10 +667,18 @@ def closure_readiness_facts(
     # #997: an acknowledged obligation is never open work here, whichever counting regime the
     # projection uses (L6 counts it among open obligations); it is listed once, as acknowledged.
     acknowledged_obligations = _acknowledged_obligation_ids(state)
+    obligation_classes = obligation_closures(state, records=records)
+    # An open obligation the agent disclosed as verifiable only outside this environment
+    # (``externally_evaluated``, RC-1) is disclosed, not work: it leaves ``obligations_open``.
+    externally_evaluated = {
+        item.obligation_id
+        for item in obligation_classes.values()
+        if item.basis == "externally_evaluated"
+    }
     open_obligations = tuple(
         item
         for item in open_effective_obligations(state)
-        if item not in set(acknowledged_obligations)
+        if item not in set(acknowledged_obligations) and item not in externally_evaluated
     )
     blocked = blocker_declarations(state, decision_batches(records))
     blocked_open = tuple(
@@ -967,6 +716,12 @@ def closure_readiness_facts(
             for item in disclosure_declarations(state)
         ),
         premise_disputed_finding_ids=premise_disputed_finding_ids(state),
+        finding_closures=tuple(
+            finding_classes[key] for key in sorted(finding_classes, key=str.encode)
+        ),
+        obligation_closures=tuple(
+            obligation_classes[key] for key in sorted(obligation_classes, key=str.encode)
+        ),
         fact_lineage=current_fact_lineage(state, records, applicability),
     )
 
@@ -1048,6 +803,28 @@ def derive_closure_readiness(
     for condition in AGENT_READINESS_CONDITIONS:
         if condition not in conditions:
             continue
+        if (
+            condition == "receipt_findings_unresolved"
+            and facts is not None
+            and facts.finding_closures is not None
+        ):
+            # ADR-046: only a finding the agent still owes a move on is agent work. A rejection
+            # that awaits a reviewer ruling is its own token (the only useful move is `check`
+            # with `final_review: true`); an acknowledged requirement is final (listed under
+            # acknowledged, the receipt keeps it unresolved).
+            counted: dict[FindingId, FindingClosure] = {}
+            for closure in facts.finding_closures:
+                if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN:
+                    counted.setdefault(closure.counts_as, closure)
+            classes = {closure.closure_class for closure in counted.values()}
+            if counted:
+                if FindingClosureClass.AGENT_WORK in classes:
+                    actionable.append(condition)
+                if FindingClosureClass.AWAITING_RULING in classes:
+                    actionable.append(FINDING_REJECTION_AWAITING_RULING_GAP)
+                continue
+            # The condition names findings these facts do not classify (a count from another
+            # derivation): never infer "nothing to do" from the absence of an explanation.
         if condition == "receipt_findings_unresolved" and facts is not None:
             blocking = set(facts.receipt_blocking_finding_ids)
             # Acknowledged-not-done (#905) and self-verified (#984) items are final answers,
@@ -1123,6 +900,13 @@ def derive_closure_readiness(
         if item not in actionable:
             actionable.append(item)
     standing.update(split.standing_limitations)
+    if facts is not None and facts.finding_closures is not None:
+        bases = {closure.basis for closure in facts.finding_closures}
+        # A settled finding nobody owes a move on is still disclosed, never silently dropped.
+        if "limitation_disclosed" in bases:
+            standing.add(FINDING_LIMITATION_DISCLOSED_GAP)
+        if "rejected_review_unavailable" in bases:
+            standing.add(FINDING_REJECTION_UNREVIEWABLE_GAP)
     if (facts is not None and facts.self_verified_finding_ids) or lineage_self_verified:
         # ``lineage_self_verified``: an accepted child holds self-verified findings (ADR-034,
         # ADR-027). The parent receipt is then at best insufficient_coverage; status says so.

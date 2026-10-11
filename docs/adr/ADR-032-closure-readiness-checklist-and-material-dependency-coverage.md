@@ -395,3 +395,49 @@ child applies the same rule: a retained-only code the child's latest tested chec
 out of the child's snapshot coverage, so a cleared child gap never bounds the parent as
 `lineage_child_coverage_gap`. Classification and `GAP_CLASSIFICATION_VERSION` are unchanged. Field
 names: `docs/INTERFACES.md`.
+
+## Amendment (2026-10-11): readiness is built from the closure verdict (#1026, ADR-046)
+
+tb4n3 showed the checklist agreeing with the receipt only by accident: sixteen of sixteen
+successful runs read `ready_with_limitations` / "Nothing further to do" and then received a receipt
+below clean. ADR-046 replaces the private per-site answers with one closure verdict, and the
+checklist is now built from it.
+
+1. **Classes, not flags.** `closure_readiness_facts` computes the closure of every current finding
+   and every effective obligation once (`kernel/closure_class`). `receipt_findings_unresolved` is
+   agent-actionable only for findings whose class is `agent_work`. An acknowledged requirement
+   (`settled_unmet`) is final, so readiness stays `ready_with_limitations`, and it is still
+   counted: `receipt_blocking_finding_count` is `to_do + unmet`, and the predicted receipt
+   conclusion says what it does. A finding the agent rejected with a reason is `awaiting_ruling`:
+   the new agent-actionable token `finding_rejection_awaiting_ruling` (a check is the next move; the
+   reviewer rules), listed in `awaiting_ruling_findings` with the frontier of the rejection.
+   A reviewer's limitation request is agent work (`acknowledge`) counted as "to disclose", never as
+   receipt-blocking.
+2. **The table is a view.** `GAP_CLASSIFICATION` (version `"7"`) is derived from
+   `kernel/gap_effect.GAP_EFFECT_TABLE`, which also decides whether a gap bounds the receipt on each
+   route. The three readiness-only finding tokens are rows of the same table. A condition that
+   names findings the facts do not classify stays actionable.
+3. **The receipt's own gaps.** Status unions the gaps the receipt would carry (judged with the
+   applicable check's `GapContext`) into the declared gaps, so a limitation that first appears on
+   the receipt is listed on status. The check-absence codes (`check_not_recorded`,
+   `check_not_applicable`, `check_payload_unavailable`) keep their own handling.
+4. **A prediction and counters beside the directive.** Status carries `predicted_receipt`,
+   `finding_counts`, `obligation_counts`, `awaiting_ruling_findings` and `rechecks`. The
+   owner-approved `ready_with_limitations` sentence is unchanged byte for byte; the predicted
+   conclusion is a separate sentence appended after it, and the phrase "receipt-blocking" is no
+   longer printed.
+5. **One state for the acknowledged obligation.** The check's next step reads the obligation
+   closures (decision 7 of the 2026-10-07 amendment, now the single rule): an acknowledged
+   obligation is never open work, and a `yoetz-verification-limit` obligation is disclosed
+   (`externally_evaluated`), not open.
+
+## Amendment (2026-10-11): reviewer limitation requests and the language of settled items (#1026)
+
+A reviewer's challenge whose requested next step is `state_unresolved_limitation` on a
+requirement-shaped finding asks the agent to say plainly what cannot be verified. That is not work
+that repair can clear, so it is not counted as receipt-blocking (owner decision Q4): it stays
+`agent_work` with the single next action `acknowledge` until any `respond` acknowledgement, or a
+`yoetz-verification-limit:<obligation>` decision covering the obligation it concerns, settles it as
+`limitation_disclosed`. The receipt then discloses it in "Verification limits" at
+`insufficient_coverage`. An `act` challenge never qualifies, and neither do the agent's own words.
+Details: ADR-046 section 1.

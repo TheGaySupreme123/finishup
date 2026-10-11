@@ -1868,7 +1868,8 @@ async def test_check_respond_recheck_reaches_a_fixed_point() -> None:
     assert "semantic_review_not_requested" in status.coverage.known_gaps
     assert "check_not_applicable" not in status.coverage.known_gaps
     assert "unanswered findings: 0" in summary
-    assert f"receipt-blocking findings: {item.receipt_blocking_finding_count}" in summary
+    # ADR-046: the phrase is gone; the counters sentence carries the same number (to do + unmet).
+    assert "receipt-blocking" not in summary
 
 
 async def test_status_freshness_scalar_survives_immaterial_events() -> None:

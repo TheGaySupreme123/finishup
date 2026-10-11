@@ -3712,12 +3712,86 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     values.sort(key=lambda item: str(item).encode("ascii"))
     _add_semantic_redacted_values(definitions, properties)
     _add_semantic_route_required(properties)
+    _add_check_closure_verdict(definitions)
     definitions["fact_lineage"] = _fact_lineage_definition()
     properties["fact_lineage"] = _fact_lineage_array()
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz check result {entry.schema_version}"
     return document
+
+
+def _add_check_closure_verdict(definitions: dict[str, JsonValue]) -> None:
+    """The one closure verdict on check-result 1.4.0 (tb4n3 RC-3, issue #1026, ADR-046).
+
+    Additive and optional on the unreleased wire: a rejected finding that awaits a reviewer
+    ruling has its own continuation (``request_ruling``), the checklist counts the rest of the
+    closure classes (emitted only when non-zero), each row names its class and basis, and
+    ``overall_next`` carries the receipt conclusion a request now would carry.
+    """
+
+    item = cast(dict[str, JsonValue], definitions["checklist_item"])
+    cast(dict[str, JsonValue], item["properties"]).update(
+        {
+            "closure_basis": {"enum": list(_FINDING_CLOSURE_BASES), "type": "string"},
+            "closure_class": {"enum": list(_FINDING_CLOSURE_CLASSES), "type": "string"},
+        }
+    )
+    cast(list[JsonValue], item.setdefault("allOf", [])).append(
+        {
+            "if": {"anyOf": [{"required": ["closure_class"]}, {"required": ["closure_basis"]}]},
+            "then": {"required": ["closure_basis", "closure_class"]},
+        }
+    )
+    checklist = cast(dict[str, JsonValue], definitions["finding_checklist"])
+    checklist_properties = cast(dict[str, JsonValue], checklist["properties"])
+    counts = cast(dict[str, JsonValue], checklist_properties["counts"])
+    closure_counter_names = ("awaiting_ruling", "disclosed", "to_disclose", "to_do", "unmet")
+    cast(dict[str, JsonValue], counts["properties"]).update(
+        {name: {"$ref": "#/$defs/canonical_uint"} for name in closure_counter_names}
+    )
+    # The five closure counters travel together (an earlier build omits all of them).
+    cast(list[JsonValue], counts.setdefault("allOf", [])).append(
+        {
+            "if": {"anyOf": [{"required": [name]} for name in closure_counter_names]},
+            "then": {"required": list(closure_counter_names)},
+        }
+    )
+    cast(dict[str, JsonValue], checklist_properties["next"])["enum"] = [
+        "decide_at_budget",
+        "request_receipt",
+        "request_ruling",
+        "work_open_findings",
+    ]
+    overall = cast(dict[str, JsonValue], definitions["overall_next"])
+    overall_properties = cast(dict[str, JsonValue], overall["properties"])
+    action = cast(dict[str, JsonValue], overall_properties["action"])
+    action["enum"] = [
+        "supply_missing_input",
+        "work_open_findings",
+        "request_ruling",
+        "review_recorded_work",
+        "request_receipt",
+    ]
+    overall_properties["predicted_conclusion"] = {
+        "enum": list(_RECEIPT_CONCLUSIONS),
+        "type": "string",
+    }
+    rules = cast(list[JsonValue], overall["allOf"])
+    for rule in rules:
+        condition = cast(dict[str, JsonValue], rule)["if"]
+        action_condition = cast(
+            dict[str, JsonValue],
+            cast(dict[str, JsonValue], cast(dict[str, JsonValue], condition)["properties"]).get(
+                "action", {}
+            ),
+        )
+        if action_condition.get("enum") == ["work_open_findings", "review_recorded_work"]:
+            action_condition["enum"] = [
+                "request_ruling",
+                "review_recorded_work",
+                "work_open_findings",
+            ]
 
 
 def _add_review_input_manifest_to_check_result(document: dict[str, JsonValue]) -> None:
@@ -4545,6 +4619,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_status_operation_admission(definitions)
     _add_status_observed_run(definitions)
     _add_status_closure_checklist(definitions)
+    _add_status_closure_verdict(definitions)
     _add_status_finding_frontier(definitions)
     _add_review_input_continuation(definitions)
     _add_status_credential_heuristic(definitions)
@@ -4670,8 +4745,10 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
             # for a result an earlier 0.3 build shaped.
             # "5" adds ``finding_disputed_after_rebuttal`` (#1020); "6" adds
             # ``declared_output_emptied`` and ``deliverable_references_undeclared_file`` (#1022);
-            # "7" adds ``planned_verification_matched_by_prefix`` and
-            # ``declared_output_not_reviewable`` (tb4n3 RC-5, ADR-045).
+            # "7" is the table derived from ``kernel.gap_effect`` (#1026), with the
+            # ``finding_rejection_awaiting_ruling`` readiness token, and adds
+            # ``planned_verification_matched_by_prefix`` and ``declared_output_not_reviewable``
+            # (tb4n3 RC-5, ADR-045).
             "gap_classification_version": {
                 "enum": ["1", "2", "3", "4", "5", "6", "7"],
                 "type": "string",
@@ -4833,6 +4910,252 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
                 },
             },
         ]
+    )
+
+
+_FINDING_CLOSURE_CLASSES: Final = (
+    "agent_work",
+    "awaiting_ruling",
+    "settled_disclosed",
+    "settled_unmet",
+    "resolved",
+)
+_OBLIGATION_CLOSURE_CLASSES: Final = (
+    "agent_work",
+    "resolved",
+    "settled_disclosed",
+    "settled_unmet",
+)
+_FINDING_CLOSURE_BASES: Final = (
+    "absence_proved",
+    "absence_proved_after_acknowledged_not_done",
+    "absence_proved_after_self_verified",
+    "acknowledged_not_done_bookkeeping",
+    "acknowledged_not_done_requirement",
+    "disputed_after_rebuttal",
+    "limitation_disclosed",
+    "limitation_requested",
+    "open_answered",
+    "open_unanswered",
+    "rejected_awaiting_ruling",
+    "rejected_review_unavailable",
+    "rejection_accepted",
+    "reopened",
+    "self_verified",
+)
+_OBLIGATION_CLOSURE_BASES: Final = (
+    "acknowledged_not_done",
+    "blocker_claimed",
+    "blocker_confirmed",
+    "externally_evaluated",
+    "open",
+    "resolved",
+    "resolved_deliverable_emptied",
+)
+_FINDING_NEXT_ACTIONS: Final = (
+    "acknowledge",
+    "acknowledge_not_done",
+    "none",
+    "recheck",
+    "reject",
+    "reopen",
+    "repair",
+    "self_verify",
+)
+_PREDICTION_REASON_CODES: Final = (
+    "check_suppressed_findings",
+    "check_verdict_insufficient",
+    "child_findings_actionable",
+    "completion_scope_gap",
+    "findings_awaiting_ruling",
+    "findings_disclosed",
+    "findings_to_do",
+    "findings_unmet",
+    "limitations_to_disclose",
+    "lineage_blocks",
+    "live_gap_bounds",
+    "no_applicable_check",
+    "obligations_acknowledged",
+    "obligations_disclosed",
+    "obligations_open",
+    "policy_execution_incomplete",
+)
+_RECEIPT_CONCLUSIONS: Final = (
+    "insufficient_coverage",
+    "no_unresolved_deterministic_findings",
+    "unresolved_findings_remain",
+)
+_UUID_ID: Final = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+
+
+def _predicted_receipt_schema() -> dict[str, JsonValue]:
+    """The receipt conclusion a request now would carry, and every rule behind it (ADR-046)."""
+
+    reason: dict[str, JsonValue] = {
+        "additionalProperties": False,
+        "properties": {
+            "code": {"enum": list(_PREDICTION_REASON_CODES), "type": "string"},
+            "count": {"$ref": "#/$defs/positive_uint"},
+            "refs": {
+                "items": {
+                    "maxLength": 128,
+                    "pattern": f"^(?:(?:fnd|obl)_{_UUID_ID}|[a-z][a-z0-9_]{{0,127}})$",
+                    "type": "string",
+                },
+                "maxItems": 3,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "rule": {
+                "enum": ["R1", "R10", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+                "type": "string",
+            },
+            "since_frontier": {"$ref": "#/$defs/canonical_uint"},
+        },
+        "required": ["code", "count", "refs", "rule"],
+        "type": "object",
+    }
+    return {
+        "additionalProperties": False,
+        "properties": {
+            "basis_frontier": {"$ref": "#/$defs/canonical_uint"},
+            "conclusion": {"enum": list(_RECEIPT_CONCLUSIONS), "type": "string"},
+            "provisional": {"type": "boolean"},
+            "reason_total": {"$ref": "#/$defs/canonical_uint"},
+            "reasons": {"items": reason, "maxItems": 8, "type": "array"},
+        },
+        "required": ["basis_frontier", "conclusion", "provisional", "reason_total", "reasons"],
+        "type": "object",
+    }
+
+
+def _add_status_closure_verdict(definitions: dict[str, JsonValue]) -> None:
+    """The one closure verdict on status-result 1.4.0 (tb4n3 RC-3, issue #1026, ADR-046).
+
+    Additive and optional, changed in place on the unreleased wire (ADR-040 precedent): the
+    predicted receipt conclusion, the finding and obligation counters, the once-per-frontier
+    re-reads, and each finding / obligation row's closure class, basis and next actions.
+    ``receipt_blocking_finding_count`` keeps its wire meaning (findings to do plus unmet).
+    """
+
+    readiness = cast(dict[str, JsonValue], definitions["closure_readiness"])
+    properties = cast(dict[str, JsonValue], readiness["properties"])
+    properties.update(
+        {
+            "finding_counts": {
+                "additionalProperties": False,
+                "properties": {
+                    name: {"$ref": "#/$defs/canonical_uint"}
+                    for name in (
+                        "awaiting_ruling",
+                        "disclosed",
+                        "self_verify_eligible",
+                        "to_disclose",
+                        "to_do",
+                        "unmet",
+                    )
+                },
+                "required": [
+                    "awaiting_ruling",
+                    "disclosed",
+                    "self_verify_eligible",
+                    "to_disclose",
+                    "to_do",
+                    "unmet",
+                ],
+                "type": "object",
+            },
+            "obligation_counts": {
+                "additionalProperties": False,
+                "properties": {
+                    name: {"$ref": "#/$defs/canonical_uint"}
+                    for name in ("acknowledged", "disclosed", "open")
+                },
+                "required": ["acknowledged", "disclosed", "open"],
+                "type": "object",
+            },
+            "predicted_receipt": _predicted_receipt_schema(),
+            "rechecks": {
+                "items": {
+                    "additionalProperties": False,
+                    "properties": {
+                        "key": {
+                            "maxLength": 160,
+                            "pattern": r"^(?:accept|ack|blocker|premise):[A-Za-z0-9_.:?-]{1,140}$",
+                            "type": "string",
+                        },
+                        "kind": {
+                            "enum": ["acceptance", "acknowledgement", "blocker", "premise"],
+                            "type": "string",
+                        },
+                        "rule": {"$ref": "#/$defs/code"},
+                        "since_frontier": {"$ref": "#/$defs/canonical_uint"},
+                        "subjects": {
+                            "items": {"$ref": "#/$defs/subject_id"},
+                            "maxItems": 8,
+                            "type": "array",
+                            "uniqueItems": True,
+                        },
+                    },
+                    "required": ["key", "kind", "rule", "since_frontier", "subjects"],
+                    "type": "object",
+                },
+                "maxItems": 128,
+                "type": "array",
+            },
+            "awaiting_ruling_findings": {
+                "items": {
+                    "additionalProperties": False,
+                    "properties": {
+                        "finding_id": {"$ref": "#/$defs/finding_id"},
+                        "since_frontier": {"$ref": "#/$defs/canonical_uint"},
+                    },
+                    "required": ["finding_id", "since_frontier"],
+                    "type": "object",
+                },
+                "maxItems": 8,
+                "type": "array",
+                "uniqueItems": True,
+            },
+        }
+    )
+    finding_item = cast(dict[str, JsonValue], definitions["finding_item"])
+    cast(dict[str, JsonValue], finding_item["properties"]).update(
+        {
+            "closure_basis": {"enum": list(_FINDING_CLOSURE_BASES), "type": "string"},
+            "closure_class": {"enum": list(_FINDING_CLOSURE_CLASSES), "type": "string"},
+            "next_actions": {
+                "items": {"enum": list(_FINDING_NEXT_ACTIONS), "type": "string"},
+                "maxItems": 8,
+                "type": "array",
+                "uniqueItems": True,
+            },
+        }
+    )
+    cast(list[JsonValue], finding_item.setdefault("allOf", [])).extend(
+        [
+            {
+                "if": {"anyOf": [{"required": ["closure_class"]}, {"required": ["closure_basis"]}]},
+                "then": {"required": ["closure_basis", "closure_class"]},
+            },
+            {
+                "if": {"required": ["next_actions"]},
+                "then": {"required": ["closure_class"]},
+            },
+        ]
+    )
+    obligation_item = cast(dict[str, JsonValue], definitions["obligation_item"])
+    cast(dict[str, JsonValue], obligation_item["properties"]).update(
+        {
+            "closure_basis": {"enum": list(_OBLIGATION_CLOSURE_BASES), "type": "string"},
+            "closure_class": {"enum": list(_OBLIGATION_CLOSURE_CLASSES), "type": "string"},
+        }
+    )
+    cast(list[JsonValue], obligation_item.setdefault("allOf", [])).append(
+        {
+            "if": {"anyOf": [{"required": ["closure_class"]}, {"required": ["closure_basis"]}]},
+            "then": {"required": ["closure_basis", "closure_class"]},
+        }
     )
 
 
@@ -5153,6 +5476,8 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
         "rejection_accepted_finding_ids",
         "self_verified_finding_ids",
         "disputed_after_rebuttal_finding_ids",
+        # tb4n3 RC-3 (ADR-046): a reviewer's limitation request the agent disclosed.
+        "limitation_disclosed_finding_ids",
     ):
         properties[name] = {
             "items": {"$ref": "#/$defs/finding_id"},
@@ -5229,7 +5554,11 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     }
     # A repair only the agent verified never reads as clean (issue #984, ADR-034), nor does a
     # standing reviewer disagreement (issue #1020, ADR-040).
-    for name in ("self_verified_finding_ids", "disputed_after_rebuttal_finding_ids"):
+    for name in (
+        "self_verified_finding_ids",
+        "disputed_after_rebuttal_finding_ids",
+        "limitation_disclosed_finding_ids",
+    ):
         cast(list[JsonValue], document.setdefault("allOf", [])).append(
             {
                 "if": {"required": [name]},
@@ -5274,6 +5603,50 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     receipt_gap["dependentRequired"] = {
         "cleared_at_frontier": ["status"],
         "status": ["cleared_at_frontier"],
+    }
+    # ADR-046: a live gap says whether it bounds the conclusion or is only disclosed; a clean
+    # conclusion beside a bounding gap is a contradiction the schema refuses.
+    gap_properties["effect"] = {"enum": ["bounds", "disclosed"], "type": "string"}
+    cast(list[JsonValue], receipt_gap.setdefault("allOf", [])).append(
+        {"if": {"required": ["status"]}, "then": {"not": {"required": ["effect"]}}}
+    )
+    # ADR-046: every rule behind the conclusion (the one that selected it first).
+    definitions["conclusion_reason"] = {
+        "additionalProperties": False,
+        "properties": {
+            "code": {"enum": list(_PREDICTION_REASON_CODES), "type": "string"},
+            "count": {"maximum": 9007199254740991, "minimum": 1, "type": "integer"},
+            "refs": {
+                "items": {
+                    "maxLength": 128,
+                    "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+                    "type": "string",
+                },
+                "maxItems": 3,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "rule": {
+                "enum": ["R1", "R10", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+                "type": "string",
+            },
+            "since_frontier": {"maximum": 9007199254740991, "minimum": 0, "type": "integer"},
+        },
+        "required": ["code", "count", "refs", "rule"],
+        "type": "object",
+    }
+    properties["conclusion_basis"] = {
+        "additionalProperties": False,
+        "properties": {
+            "reason_total": {"maximum": 9007199254740991, "minimum": 0, "type": "integer"},
+            "reasons": {
+                "items": {"$ref": "#/$defs/conclusion_reason"},
+                "maxItems": 8,
+                "type": "array",
+            },
+        },
+        "required": ["reason_total", "reasons"],
+        "type": "object",
     }
     required = cast(list[JsonValue], document["required"])
     if "children" not in required:

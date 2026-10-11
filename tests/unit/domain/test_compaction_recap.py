@@ -93,7 +93,7 @@ def test_every_fact_line_names_its_source_and_the_facts_are_the_inputs() -> None
         "p1",
         "task_requirement_unmet",  # findings
         "Requirement 3 has no recorded verification",
-        "1 receipt-blocking",
+        "1 to do",
         "last check: action_required on frontier 600",
         _CHECK,  # check
         "out/result.json",
@@ -408,7 +408,7 @@ def test_counted_findings_and_obligations_the_status_did_not_preview_are_still_s
     for limit in (RECAP_LIMIT, 900):
         lines = _lines(compose_compaction_recap(facts, limit=limit))
         assert any(
-            line.startswith("findings awaiting your response: 2; 1 receipt-blocking")
+            line.startswith("findings awaiting your response: 2; 1 to do")
             and "ask status for ids" in line
             and "[source status compact @604]" in line
             for line in lines

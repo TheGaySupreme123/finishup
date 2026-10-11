@@ -143,13 +143,22 @@ def recap_facts_from_status(
         task_title=title,
         obligations=obligations,
         unanswered_findings_total=_int(getattr(item, "unanswered_finding_count", None)),
-        receipt_blocking_findings=_int(getattr(item, "receipt_blocking_finding_count", None)),
+        # ADR-046: findings to do (the counter every surface prints); an earlier status that
+        # carries only the wire count keeps reporting that.
+        receipt_blocking_findings=_int(
+            getattr(getattr(readiness, "finding_counts", None), "to_do", None)
+        )
+        if getattr(readiness, "finding_counts", None) is not None
+        else _int(getattr(item, "receipt_blocking_finding_count", None)),
         findings=findings,
         check=check,
         no_check_recorded="check_not_recorded" in actionable,
         readiness_state=state,
         agent_actionable=actionable,
         blocked_obligations=len(_items(blocked)) if blocked is not None else None,
+        predicted_conclusion=_text(
+            getattr(getattr(readiness, "predicted_receipt", None), "conclusion", None)
+        ),
     )
 
 

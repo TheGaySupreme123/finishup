@@ -16,9 +16,9 @@ status just now and names its source.
 ids: task tsk_..., session ses_..., writer wri_... [source hook mapping]; use these held ids ...
 frontier: 604 (sha256:c6a3f00ac6a3f00) [source status compact head frontier].
 plan: 4 declared, 2 open obligations (plan event evt_...). [source status compact @604]
-readiness: action_required; agent-actionable: obligations_open, findings_unanswered [source ...]
+readiness: action_required; receipt would read unresolved_findings_remain; agent-actionable: obligations_open, findings_unanswered [source ...]
 open obligations (2): obl_... "Port the kimi detector ..."; obl_... [source status compact @604].
-findings awaiting your response (2; 1 receipt-blocking; reviewer text, advisory): fnd_... p1 ...
+findings awaiting your response (2; 1 to do; reviewer text, advisory): fnd_... p1 ...
 last check: action_required on frontier 600 (check event evt_...) [source status compact ...].
 declared deliverables (2): out/result.json (obl_... open); out/figures (obl_... resolved) [...]
 next: resolve the agent-actionable items above; status (held ids) lists each with its detail.
