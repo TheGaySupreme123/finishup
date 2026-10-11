@@ -160,6 +160,9 @@ def finding_record(
     number: int,
     *,
     resolved_by_check_event_id: EventId | None = None,
+    resolution_frontier: int | None = None,
+    standing_position: StandingPosition | None = None,
+    last_ruling_frontier: int | None = None,
 ) -> FindingProjectionRecord:
     return FindingProjectionRecord(
         payload=payload,
@@ -168,6 +171,9 @@ def finding_record(
         source_event_id=evt(number),
         source_frontier=number,
         resolved_by_check_event_id=resolved_by_check_event_id,
+        resolution_frontier=resolution_frontier,
+        standing_position=standing_position,
+        last_ruling_frontier=last_ruling_frontier,
     )
 
 
