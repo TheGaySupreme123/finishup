@@ -65,13 +65,13 @@ from yoetz.domain.findings import (
     FindingOrigin,
     ResponseDisposition,
     finding_demands_work,
-    is_limitation_request,
 )
 from yoetz.domain.values import FindingId
 from yoetz.kernel.finding_resolution import (
     finding_is_resolved,
     position_stands,
     rejection_stands,
+    standing_position_of,
 )
 from yoetz.kernel.projections import ProjectionState, duplicate_link_holds
 from yoetz.kernel.task_facts import blocker_declarations
@@ -291,26 +291,12 @@ def standing_answer_frontier(state: ProjectionState, finding_id: FindingId) -> i
     (tb4n3 RC-7, issue #1030). It is a reducer fact (``FindingProjectionRecord.standing_position``):
     a reasoned ``rejected``, ``acknowledged``, ``acknowledged_not_done`` or ``self_verified``
     answer fixes it, later answers of another kind never move it, and ``reopened`` retracts it.
-    A projection without the fact (a hand-built or older one) falls back to a readable, reasoned
-    latest ``rejected`` answer, the only position the earlier rule knew.
+    A projection without the fact (a hand-built or older one) falls back to its latest response
+    when that is itself a reasoned position.
     """
 
-    record = state.findings.get(finding_id)
-    if record is None:
-        return None
-    if record.standing_position is not None:
-        return record.standing_position.frontier
-    response = state.responses.get(finding_id)
-    if (
-        response is not None
-        and response.payload is not None
-        and not response.redacted
-        and response.payload.disposition is ResponseDisposition.REJECTED
-        and response.payload.reason is not None
-        and response.payload.reason.strip()
-    ):
-        return response.source_frontier
-    return None
+    position = standing_position_of(state.findings.get(finding_id), state.responses.get(finding_id))
+    return None if position is None else position.frontier
 
 
 def finding_todo_state(state: ProjectionState, finding_id: FindingId) -> FindingTodoState:
@@ -509,12 +495,8 @@ def finding_standing(state: ProjectionState, finding_id: FindingId) -> tuple[str
     agent holds no reasoned position (no answer, only an unreasoned or retracted one).
     """
 
-    record = state.findings.get(finding_id)
-    frontier = standing_answer_frontier(state, finding_id)
-    if record is None or frontier is None:
-        return None
-    kind = "rejected" if record.standing_position is None else record.standing_position.kind
-    return kind, frontier
+    position = standing_position_of(state.findings.get(finding_id), state.responses.get(finding_id))
+    return None if position is None else (position.kind, position.frontier)
 
 
 def ruling_since(state: ProjectionState, finding_id: FindingId) -> int | None:

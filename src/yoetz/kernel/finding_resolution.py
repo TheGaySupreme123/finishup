@@ -141,10 +141,13 @@ __all__ = [
     "finding_resolution_attempt",
     "issue_key",
     "next_standing_position",
+    "position_stands",
     "prior_finding_verdict",
     "qualifying_check_resolves",
+    "rejection_stands",
     "reopen_findings_resolved_by",
     "resolved_finding_ids",
+    "standing_position_of",
 ]
 
 IssueKey = tuple[object, ...]
@@ -2008,35 +2011,47 @@ def next_standing_position(
     return current
 
 
+def standing_position_of(
+    record: FindingProjectionRecord | None,
+    latest: ProjectionRecord[ResponseRecordedPayload] | None,
+) -> StandingPosition | None:
+    """The agent's standing position on a finding, from the reducer fact or its fallback.
+
+    The reducer records ``FindingProjectionRecord.standing_position`` on every response. A record
+    that carries none (an older snapshot, a hand-built projection) falls back to the latest
+    response when that is itself a reasoned position, which is exactly what the reducer would
+    have recorded for a single answer.
+    """
+
+    if record is None:
+        return None
+    if record.standing_position is not None:
+        return record.standing_position
+    if latest is None or latest.payload is None or latest.redacted:
+        return None
+    return next_standing_position(None, latest.payload, latest.source_frontier)
+
+
 def rejection_stands(
     record: FindingProjectionRecord | None,
     latest: ProjectionRecord[ResponseRecordedPayload] | None,
 ) -> bool:
     """Whether the agent's reasoned rejection of this finding still stands (tb4n3 RC-7).
 
-    A later ``acknowledged`` answer does not retract it; only ``reopened`` does. A record that
-    carries no standing position (an older snapshot, a hand-built projection) falls back to the
-    latest response being a readable ``rejected``.
+    A later ``acknowledged`` answer does not retract it; only ``reopened`` does.
     """
 
-    if record is None:
-        return False
-    if record.standing_position is not None:
-        return record.standing_position.kind == "rejected"
-    return _readable_rejection(latest)
+    position = standing_position_of(record, latest)
+    return position is not None and position.kind == "rejected"
 
 
 def position_stands(
     record: FindingProjectionRecord | None,
     latest: ProjectionRecord[ResponseRecordedPayload] | None,
 ) -> bool:
-    """Whether the agent holds any reasoned position on this finding (same fallback as above)."""
+    """Whether the agent holds any reasoned position on this finding (same source as above)."""
 
-    if record is None:
-        return False
-    if record.standing_position is not None:
-        return True
-    return _readable_rejection(latest)
+    return standing_position_of(record, latest) is not None
 
 
 def apply_check_rulings(
@@ -2307,7 +2322,10 @@ def finding_is_resolved(state: ProjectionState, finding_id: FindingId) -> bool:
     disposition = response.payload.disposition
     if disposition is ResponseDisposition.PROVENANCE_DISPUTED:
         return False
-    if disposition in {ResponseDisposition.ACKNOWLEDGED_NOT_DONE, ResponseDisposition.SELF_VERIFIED}:
+    if disposition in {
+        ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
+        ResponseDisposition.SELF_VERIFIED,
+    }:
         # ``acknowledged_not_done`` (issue #905) and ``self_verified`` (issue #984) are the
         # agent's last word: a proof of a state tested *before* it never turns them into a clean
         # row. Reverse edge (tb4n3 RC-7, owner decision 8, ADR-034/040 amendment): a qualifying
