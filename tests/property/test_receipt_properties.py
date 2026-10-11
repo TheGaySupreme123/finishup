@@ -161,8 +161,9 @@ def test_no_child_receipt_matches_frozen_pre_lineage_bytes() -> None:
 
     The digest is the independently recorded output of this fixed context from pre-lineage
     commit ``95aa2065`` using the frozen child-free receipt-document 1.1 artifact.  The current
-    writer is allowed exactly two changes for the additive artifact: its schema-version entry and
-    an empty ``children`` object.
+    writer is allowed exactly three changes for the additive artifact: its schema-version entry, an
+    empty ``children`` object and the ``conclusion_basis`` object that names the rules behind the
+    conclusion (ADR-046).
     """
 
     context = _context()
@@ -190,6 +191,8 @@ def test_no_child_receipt_matches_frozen_pre_lineage_bytes() -> None:
 
     compatible = dict(current)
     del compatible["children"]
+    assert "conclusion_basis" in compatible
+    del compatible["conclusion_basis"]
     versions = dict(cast(dict[str, object], compatible["versions"]))
     schema_versions = [
         dict(cast(dict[str, object], item))

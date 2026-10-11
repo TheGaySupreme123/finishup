@@ -14,7 +14,7 @@ from dataclasses import replace
 import pytest
 
 from builders.observed_runs import ObservedLedger
-from builders.policy_cases import evt, finding_record, fnd, obl, record
+from builders.policy_cases import evd, evt, finding_record, fnd, obl, record
 from yoetz.domain.events import (
     DecisionRecordedPayload,
     EventSchema,
@@ -149,8 +149,12 @@ def _response(
     number: int, disposition: ResponseDisposition, *, frontier: int = 6
 ) -> ProjectionRecord[ResponseRecordedPayload]:
     reason = None if disposition is ResponseDisposition.ACKNOWLEDGED else "A recorded reason."
+    refs = (evd(number),) if disposition is ResponseDisposition.SELF_VERIFIED else ()
     return record(
-        ResponseRecordedPayload(fnd(number), Frontier(5, _DIGEST), disposition, reason), frontier
+        ResponseRecordedPayload(
+            fnd(number), Frontier(5, _DIGEST), disposition, reason, evidence_refs=refs
+        ),
+        frontier,
     )
 
 
@@ -376,7 +380,7 @@ def test_a_verification_limit_decision_discloses_the_request_without_a_response(
     )
     before = replay(ledger.prefix)
     finding = _limitation(refs=(obligation,))
-    state = replace(before, findings={fnd(1): finding_record(finding, 4)})
+    state = replace(before, findings={fnd(1): finding_record(finding, before.frontier)})
     undisclosed = finding_closure(state, fnd(1))
     assert undisclosed is not None and undisclosed.basis == "limitation_requested"
 
@@ -389,7 +393,8 @@ def test_a_verification_limit_decision_discloses_the_request_without_a_response(
         ),
         observed=False,
     )
-    after = replace(replay(ledger.prefix), findings={fnd(1): finding_record(finding, 4)})
+    replayed = replay(ledger.prefix)
+    after = replace(replayed, findings={fnd(1): finding_record(finding, before.frontier)})
     disclosed = finding_closure(after, fnd(1))
     assert disclosed is not None
     assert (disclosed.closure_class, disclosed.basis) == (
@@ -409,17 +414,14 @@ def test_the_agents_own_words_never_make_a_finding_a_limitation() -> None:
 
     plain = _finding(1, kind=FindingKind.TASK_REQUIREMENT_UNMET, semantic=True, next_step="act")
     findings = {fnd(1): finding_record(plain, 4)}
-    gave_up = ProjectionRecord(
-        payload=ResponseRecordedPayload(
+    gave_up = record(
+        ResponseRecordedPayload(
             fnd(1),
             Frontier(5, _DIGEST),
             ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
             "I could not find the data and this is a verification limit.",
         ),
-        payload_digest=_DIGEST,
-        redacted=False,
-        source_event_id=evt(7),
-        source_frontier=6,
+        6,
     )
     closure = finding_closure(_state(findings, {fnd(1): gave_up}), fnd(1))
     assert closure is not None and closure.closure_class is FindingClosureClass.SETTLED_UNMET

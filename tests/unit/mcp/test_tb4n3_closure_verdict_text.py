@@ -76,3 +76,74 @@ def test_a_status_from_a_build_without_the_verdict_never_prints_the_old_phrase()
     assert "Closure: ready_with_limitations." in text
     assert "receipt-blocking" not in text.lower()
     assert "The receipt will read" not in text  # nothing is guessed when nothing was reported
+
+
+_FINDING = "fnd_28afe22a-9741-4830-b4eb-84af6faf0262"
+_RECHECKS = [
+    {
+        "kind": "acceptance",
+        "key": "accept:1a2b3c4d",
+        "subjects": ["obl_00000000-0000-4000-8000-000000000001"],
+        "rule": "resolved_obligations_acceptance_reread",
+        "since_frontier": "5",
+    },
+    {
+        "kind": "acknowledgement",
+        "key": "ack:obl_00000000-0000-4000-8000-000000000002",
+        "subjects": ["obl_00000000-0000-4000-8000-000000000002"],
+        "rule": "obligation_acknowledged_not_done",
+        "since_frontier": "6",
+    },
+]
+
+
+def test_the_announced_rechecks_follow_the_stop_sentence_on_every_surface() -> None:
+    """A "nothing further to do" is never followed by a surprise gate: the text names the re-reads."""
+
+    from yoetz.domain.closure import recheck_note
+    from yoetz.protocol.readiness_text import recheck_note as shared
+
+    readiness = _status(rechecks=_RECHECKS)["closure_readiness"]
+    sentence = shared(readiness)
+    assert sentence is not None
+    assert "the acceptance criteria of your resolved obligations" in sentence
+    assert "obligations you recorded as not done" in sentence
+    assert recheck_note is shared  # closure_prepare, status text, CLI and TUI say the same thing
+    text = summary_for_status(_status(rechecks=_RECHECKS))
+    assert _STOP in text
+    assert "At Stop you will be asked once to re-read" in text
+    assert text.index(_STOP) < text.index("At Stop you will be asked once to re-read")
+    assert shared({"rechecks": []}) is None
+    assert shared({}) is None  # an earlier build sent no list: nothing is announced
+
+
+def test_findings_awaiting_a_ruling_are_named_with_the_frontier_of_the_rejection() -> None:
+    from yoetz.protocol.readiness_text import awaiting_ruling_variants
+
+    readiness = {
+        "finding_counts": {
+            "to_do": "1",
+            "awaiting_ruling": "1",
+            "unmet": "0",
+            "disclosed": "0",
+            "to_disclose": "0",
+            "self_verify_eligible": "0",
+        },
+        "awaiting_ruling_findings": [{"finding_id": _FINDING, "since_frontier": "412"}],
+    }
+    variants = awaiting_ruling_variants(readiness)
+    assert variants[0] == (
+        f"1 finding(s) you rejected await a reviewer ruling: {_FINDING} (rejected at frontier 412)."
+    )
+    assert variants[-1].endswith(".") and len(variants[-1]) < len(variants[0])
+    # Nothing awaits a ruling, or an older service named no findings: no guess, no sentence.
+    assert (
+        awaiting_ruling_variants(
+            {"finding_counts": {**readiness["finding_counts"], "awaiting_ruling": "0"}}
+        )
+        == ()
+    )
+    assert awaiting_ruling_variants({}) == ()
+    # A count without ids still says that something waits, and where to see it.
+    bare = awaiting_ruling_variants({"finding_counts": readiness["finding_counts"]})
+    assert bare and "status view=findings lists them" in bare[0]

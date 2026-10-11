@@ -695,7 +695,7 @@ async def test_status_distinguishes_open_and_resolved_declared_obligations() -> 
     # ADR-046: status lists the gaps the receipt would carry, so the digest-only evidence that
     # resolved the obligation is declared here instead of surfacing only on the receipt.
     assert resolved_status.closure_readiness.blocking_conditions == ("coverage_gaps_declared",)
-    assert "evidence_content_digest_only" in (
+    assert "evidence_digest_subject_legacy_unknown" in (
         resolved_status.closure_readiness.standing_limitations or ()
     )
     await _assert_mcp_scope_projection(

@@ -131,6 +131,7 @@ def _acknowledged_requirement_state() -> ProjectionState:
     base = replay(_acknowledged_obligation_ledger().prefix)
     return replace(
         base,
+        frontier=max(base.frontier, 4),
         findings={fnd(1): finding_record(finding, 3)},
         responses={fnd(1): response},
     )

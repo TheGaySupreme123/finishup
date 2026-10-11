@@ -38,6 +38,7 @@ from yoetz.application.status import StatusInternalResult
 from yoetz.cli.closure import Selection, prepare_closure
 from yoetz.cli.render import render_closure_readiness_lines, render_human_status
 from yoetz.domain.findings import FindingKind
+from yoetz.domain.receipts import SchemaVersionEntry
 from yoetz.mcp.summaries import summary_for_closure_prepare, summary_for_status
 from yoetz.ports.semantic import ReviewerChallenge, SemanticJudgment
 from yoetz.protocol.canonical import JsonValue
@@ -76,6 +77,21 @@ _STATUS_VIEWS = (
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def _receipt_artifact_1_3_0(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shipped receipt artifact (the harness default is the 1.0.0 reader, with no basis)."""
+
+    original = h._versions
+
+    def versions() -> Any:
+        return replace(
+            original(),
+            schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+        )
+
+    monkeypatch.setattr(h, "_versions", versions)
 
 
 # -- The run: a task driven through the public operations --------------------------------------
@@ -230,6 +246,8 @@ async def _ai_finding(
                 "statement": "The work is complete.",
                 "supporting_refs": [obligation],
                 "obligation_refs": [obligation],
+                "limitation_refs": [],
+                "supersedes_claim_refs": [],
             },
         ),
     )
@@ -458,7 +476,7 @@ async def test_acknowledged_obligations_and_bookkeeping_findings_agree_on_every_
     """cargo D: check said "review_recorded_work", status "nothing to do", receipt "unresolved".
 
     Two ``action_without_result`` findings answered ``acknowledged_not_done`` are bookkeeping
-    (disclosed, not unmet), two acknowledged obligations are not work, and the one check next step,
+    (disclosed, not unmet), the acknowledged obligations are not work, and the one check next step,
     the status and the receipt all say so: nothing left to do, the receipt reads
     ``insufficient_coverage``.
     """
@@ -482,9 +500,9 @@ async def test_acknowledged_obligations_and_bookkeeping_findings_agree_on_every_
     # Answer each finding, acknowledging it as not done.
     for item in bookkeeping:
         await run.respond(item.finding_id, first.result_frontier, "acknowledged_not_done", reason)
-    # The agent also records two of its obligations as not done (obligation_published 1.1.0).
+    # The agent also records its obligations as not done (obligation_published 1.1.0).
     drafts: list[dict[str, JsonValue]] = []
-    for number in (2, 3):
+    for number in (1, 2, 3):
         draft = _obligation(
             run,
             number,
@@ -500,7 +518,7 @@ async def test_acknowledged_obligations_and_bookkeeping_findings_agree_on_every_
     readiness = gathered.status["compact"].closure_readiness
     assert readiness.agent_actionable == (), readiness.agent_actionable
     assert readiness.obligation_counts is not None
-    assert readiness.obligation_counts.acknowledged == "2"
+    assert readiness.obligation_counts.acknowledged == "3"
     assert_surfaces_agree(gathered, conclusion=_INSUFFICIENT, counts=(0, 0, 0, 2, 0), check=checked)
     # The check no longer calls acknowledged obligations open work.
     assert checked.overall_next is not None

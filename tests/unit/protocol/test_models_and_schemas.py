@@ -314,7 +314,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("receipt", None): 301,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
     ("respond", None): 54,
     ("start", None): 72,
-    ("status", None): 95,  # +9 tb4n3 LO: check_cause; W2-A +23 closure verdict
+    ("status", None): 97,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict
     ("status", "advice"): 25,
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,
@@ -2529,7 +2529,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     rules = cast(tuple[Any, ...], getattr(models, "_RESULT_LEAF_RULES"))
 
     derived_patterns = _derived_result_success_patterns(catalog)
-    assert len(derived_patterns) == 1499  # +9 tb4n3 LO: check_cause; W2-A +44 closure verdict
+    assert len(derived_patterns) == 1501  # +9 tb4n3 LO: check_cause; W2-A +46 closure verdict
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2538,7 +2538,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert derived_counts == _EXPECTED_RESULT_PATTERN_COUNTS
 
     assert type(rules) is tuple
-    assert len(rules) == 1526  # #1027 +5, +9 tb4n3 LO: check_cause; W2-A +44 closure verdict
+    assert len(rules) == 1528  # #1027 +5, +9 tb4n3 LO: check_cause; W2-A +46 closure verdict
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {
@@ -3245,7 +3245,7 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_742
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_746
     )  # #1027 +3, +6 tb4n3 LO, +21 W2-A closure verdict
 
 

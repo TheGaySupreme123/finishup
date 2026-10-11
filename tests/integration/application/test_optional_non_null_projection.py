@@ -312,6 +312,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "finding_counts",
                 "obligation_counts",
                 "rechecks",
+                "awaiting_ruling_findings",
             }
         ),
     ),
@@ -1777,7 +1778,13 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         covered["StatusClosureReadinessModel", field] = (
             "test_status_closure_readiness_omits_an_unset_checklist"
         )
-    for field in ("predicted_receipt", "finding_counts", "obligation_counts", "rechecks"):
+    for field in (
+        "predicted_receipt",
+        "finding_counts",
+        "obligation_counts",
+        "rechecks",
+        "awaiting_ruling_findings",
+    ):
         covered["StatusClosureReadinessModel", field] = (
             "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
         )

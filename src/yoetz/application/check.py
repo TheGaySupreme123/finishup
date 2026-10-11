@@ -45,6 +45,7 @@ from yoetz.domain.findings import (
     finding_from_json,
     finding_policy_identity,
     finding_to_json,
+    is_limitation_request,
     semantic_provenance_to_json,
 )
 from yoetz.domain.receipts import (
@@ -4270,8 +4271,10 @@ def _full_check_is_complete(
 ) -> bool:
     """Whether a full check may read ``complete``: clean gaps and no returned limit finding.
 
-    A returned finding that asks for no work is a coverage limit (a stale or incomplete ledger, a
-    reviewer's limitation request), so the check can never read complete beside it (ADR-046).
+    A returned finding that asks for no work is a coverage limit (a stale or incomplete ledger), so
+    the check can never read complete beside it (ADR-046). A reviewer's limitation request is the
+    exception only in how it is judged: the ranking verdict reads it as ``insufficient_coverage``
+    itself, so it does not make the completeness incomplete here.
     """
 
     return full_check_gaps_clean(
@@ -4280,7 +4283,9 @@ def _full_check_is_complete(
         route_requires_review=route_requires_review,
         review_succeeded=review_succeeded,
         reviewer_reported_insufficiency=reviewer_reported_insufficiency,
-    ) and all(finding_demands_work(finding) for finding in findings)
+    ) and all(
+        finding_demands_work(finding) or is_limitation_request(finding) for finding in findings
+    )
 
 
 def full_check_gaps_clean(
@@ -5204,7 +5209,12 @@ async def execute_check_commit(
             review_succeeded=semantic_result.status is SemanticStatus.SUCCEEDED,
             reviewer_reported_insufficiency=reviewer_reported_insufficiency,
         ):
-            completeness = CheckCompleteness.COVERAGE_INCOMPLETE
+            completeness = (
+                CheckCompleteness.COVERAGE_INCOMPLETE
+                if coverage.known_gaps
+                # A returned coverage-only finding is itself the disclosed reason; no gap names it.
+                else CheckCompleteness.SCOPED_COMPLETE
+            )
         else:
             completeness = CheckCompleteness.COMPLETE
         maximum = (
