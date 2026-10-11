@@ -763,3 +763,27 @@ def test_the_prediction_never_changes_what_else_the_gate_says(
     assert with_tail.text == bare.text or any(
         with_tail.text == bare.text + tail for tail in tails
     ), (tokens_name, blockers, acknowledgements, premise, acceptance)
+
+
+def test_the_gate_never_claims_a_challenge_it_did_not_deliver() -> None:
+    """Codex round 3: the unconfirmed-blocker token alone, with no re-check announced (a service
+    older than the gate) and an empty memory, must not say "you were already asked"."""
+
+    token = gate_module.BLOCKER_UNCONFIRMED_TOKEN
+    legacy = _gate(readiness("action_required", (token,), rechecks=None))
+    assert legacy is not None
+    assert "You were already asked" not in legacy.text
+    assert "same yoetz-blocker line again" not in legacy.text
+    silent = _gate(readiness("action_required", (token,), rechecks=()))
+    assert silent is not None
+    assert "You were already asked" not in silent.text
+    # Announced and not yet asked: the challenge itself is delivered, not the "already" sentence.
+    claimed = readiness("action_required", (token,), rechecks=(blocker_recheck(_OBL, "consent"),))
+    first = _gate(claimed)
+    assert first is not None
+    assert "Blocker re-check (asked once)" in first.text
+    assert "You were already asked" not in first.text
+    # Announced and already asked: now, and only now, the text says so.
+    again = _gate(claimed, reasked=frozenset(first.blocker_keys))
+    assert again is not None
+    assert "You were already asked about your recorded blocker" in again.text

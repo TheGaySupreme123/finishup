@@ -263,7 +263,7 @@ names only finished obligations has no effect. The next stop may ask you once to
 blocker, and the closing review checks it against the task once and challenges it when the
 blocked obligation is the task's main deliverable.
 
-A Stop asks only what `closure_readiness.rechecks` named before you stopped: the acceptance
+Beyond the work `agent_actionable` lists, a Stop asks only what `closure_readiness.rechecks` named before you stopped: the acceptance
 criteria of the obligations you resolved, an obligation you recorded as not done, a blocker you
 recorded, or a finding you answered as not done that the review says the task requires. Each is
 asked once, so `ready_with_limitations` is never followed by a surprise. Reading the acceptance

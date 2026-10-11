@@ -771,8 +771,13 @@ def closure_gate_from_readiness(
     acknowledgements: list[_Recheck] = []
     premise: _Recheck | None = None
     acceptance: _Recheck | None = None
+    # Whether a blocker re-check readiness announced was already delivered to this session: only
+    # then may the text say "you were already asked" (absence of a candidate proves nothing, e.g.
+    # a service older than the gate sends no list).
+    blocker_already_asked = False
     for recheck in _announced_rechecks(readiness):
         if _asked(recheck, reasked_blockers):
+            blocker_already_asked = blocker_already_asked or recheck.kind == "blocker"
             continue
         if recheck.kind == "blocker":
             blockers.append(recheck)
@@ -930,6 +935,7 @@ def closure_gate_from_readiness(
         f" requires action before you stop. Remaining: {remaining}."
     )
     recheck = _blocker_text(rows, short=offers_blocker) if rows else ""
+    unconfirmed_sentence = BLOCKER_UNCONFIRMED_TOKEN in items and not rows and blocker_already_asked
     limitations = _limitation_text(readiness)
     moved_note = _content_moved_note(readiness).strip()
     withdrawn_items = tuple(token for token in _WITHDRAWN_TOKENS if token in items)
@@ -978,7 +984,7 @@ def closure_gate_from_readiness(
         # limits are never excused by a blocker (F1, #984).
         if offers_blocker:
             parts.append(_BLOCKER_OFFER_TEXT)
-        if BLOCKER_UNCONFIRMED_TOKEN in items and not rows:
+        if unconfirmed_sentence:
             parts.append(_UNCONFIRMED_AFTER_RECHECK_TEXT)
         if recheck:
             parts.append(recheck)
@@ -1047,7 +1053,7 @@ def closure_gate_from_readiness(
             limitations=limitations,
             moved_note=moved_note,
             drain_note=_DRAIN_TEXT if drain_changed_decision else "",
-            unconfirmed=BLOCKER_UNCONFIRMED_TOKEN in items and not rows,
+            unconfirmed=unconfirmed_sentence,
             finding_texts=finding_texts,
             withdrawn_text=withdrawn_text,
             accept_text=accept_text,
