@@ -24,107 +24,107 @@
  },
  "pages": {
   "compact/0": {
-   "mcp_text": "sha256:3102309f1f3af09a3a66448cdd07a2ee010e4e55729c66f2470abe9a696d73ed",
+   "mcp_text": "sha256:239e4532faec013adb2325871594e2d6b11ed770902722ced80098c7148d49e0",
    "rows": null,
    "wire": "sha256:90f588262bd6fade7b534b55c013f6a1fee8000638692cefd8015e3151a95fe5"
   },
   "evidence/0": {
-   "mcp_text": "sha256:79874c277cc712c82acb7f73f23ded3bd4ccac4013f01e56468f436eff233623",
+   "mcp_text": "sha256:db5d1e664838f8b18bdfa024f4a058768582adde3d0612478d978e037a4fd030",
    "rows": 100,
    "wire": "sha256:416ae4f7fcf4fa5eb26250ce579b8600395e2a983592bcfdf5cdb549224d05ad"
   },
   "evidence/1": {
-   "mcp_text": "sha256:79874c277cc712c82acb7f73f23ded3bd4ccac4013f01e56468f436eff233623",
+   "mcp_text": "sha256:db5d1e664838f8b18bdfa024f4a058768582adde3d0612478d978e037a4fd030",
    "rows": 100,
    "wire": "sha256:0a805fbd5ed2540b985a43171883ef3ff4525c4e5df64009ec6a51e17db29901"
   },
   "evidence/2": {
-   "mcp_text": "sha256:8303210d0301f1db7c3a14bbe4acd8fb58c0318b666b8c771e02a4a8611527ec",
+   "mcp_text": "sha256:d54cac18dcdeaa4435208f72fe2ac4a23e8474c36cea07bf1c176e3b15522847",
    "rows": 100,
    "wire": "sha256:3b3371f3e8bc99fd99e783d81a8bc19159d2df69324fe6e2866bf43ba935cfa6"
   },
   "evidence/3": {
-   "mcp_text": "sha256:07971e58f1c97e2e00412be8d323280353ca081285b55cffbe3309d67b44c5b7",
+   "mcp_text": "sha256:7ba1e499f71227ac1686d2c74b4047e463eab009ada87274a02770bdcadf24a5",
    "rows": 30,
    "wire": "sha256:1aa09561512a2a3902eaceadf136d73251b07c16da346e32ab51e931f5f5747b"
   },
   "findings/0": {
-   "mcp_text": "sha256:83740aa09a7b4d5bb92afd85d520b0dfbef0d587f7843b0e71c4108851206fa6",
+   "mcp_text": "sha256:d9763e597070cc006edb1d34dee180a362abafb936ac0991e67f1855122a8e62",
    "rows": 3,
    "wire": "sha256:57a3ee99b3031a09fb2121297c83fce5f338c664b6584fa7ffbed2bbdb1f737e"
   },
   "history/0": {
-   "mcp_text": "sha256:b14d67540110d3f118b45c0d9858463a889389a3f5d53e6d9c6fb1bc2e7f1e41",
+   "mcp_text": "sha256:30fcbaa7becec6604a52b8f3f484a6604c740391b8ca46f0f87fd391b37f531a",
    "rows": 100,
    "wire": "sha256:7659474111e3290d037aa128f4255532f21b46000f151d783b626d90f8c6f218"
   },
   "history/1": {
-   "mcp_text": "sha256:b14d67540110d3f118b45c0d9858463a889389a3f5d53e6d9c6fb1bc2e7f1e41",
+   "mcp_text": "sha256:30fcbaa7becec6604a52b8f3f484a6604c740391b8ca46f0f87fd391b37f531a",
    "rows": 100,
    "wire": "sha256:364e20e736aaaee12701976450c563087c3f8a2604ac28a6a52ebf21d3971dde"
   },
   "history/2": {
-   "mcp_text": "sha256:b14d67540110d3f118b45c0d9858463a889389a3f5d53e6d9c6fb1bc2e7f1e41",
+   "mcp_text": "sha256:30fcbaa7becec6604a52b8f3f484a6604c740391b8ca46f0f87fd391b37f531a",
    "rows": 100,
    "wire": "sha256:ed46387a59c8ce3bb100102b982804435792ad0b70b94e7773ab128aace42c16"
   },
   "history/3": {
-   "mcp_text": "sha256:b14d67540110d3f118b45c0d9858463a889389a3f5d53e6d9c6fb1bc2e7f1e41",
+   "mcp_text": "sha256:30fcbaa7becec6604a52b8f3f484a6604c740391b8ca46f0f87fd391b37f531a",
    "rows": 100,
    "wire": "sha256:990b1e52c8f84d5b135e7afb6fc10d13d08eb7dbe4f64c5deb9d2ac50a6a43aa"
   },
   "history/4": {
-   "mcp_text": "sha256:b14d67540110d3f118b45c0d9858463a889389a3f5d53e6d9c6fb1bc2e7f1e41",
+   "mcp_text": "sha256:30fcbaa7becec6604a52b8f3f484a6604c740391b8ca46f0f87fd391b37f531a",
    "rows": 100,
    "wire": "sha256:331a6fc2a88a348ed1044f056b96ad2ebb25e9cbd19bbfb1243f8785d5a605ca"
   },
   "history/5": {
-   "mcp_text": "sha256:b14d67540110d3f118b45c0d9858463a889389a3f5d53e6d9c6fb1bc2e7f1e41",
+   "mcp_text": "sha256:30fcbaa7becec6604a52b8f3f484a6604c740391b8ca46f0f87fd391b37f531a",
    "rows": 100,
    "wire": "sha256:a7fb0e8a15d8f67494f7af4982b406f974c3a21b145eea9d9a63539c66c16684"
   },
   "history/6": {
-   "mcp_text": "sha256:b14d67540110d3f118b45c0d9858463a889389a3f5d53e6d9c6fb1bc2e7f1e41",
+   "mcp_text": "sha256:30fcbaa7becec6604a52b8f3f484a6604c740391b8ca46f0f87fd391b37f531a",
    "rows": 100,
    "wire": "sha256:7fe10909f24a83c4c6648d5ed516e20fee79bb780ee307f6b2836dfd768bcbc9"
   },
   "history/7": {
-   "mcp_text": "sha256:b14d67540110d3f118b45c0d9858463a889389a3f5d53e6d9c6fb1bc2e7f1e41",
+   "mcp_text": "sha256:30fcbaa7becec6604a52b8f3f484a6604c740391b8ca46f0f87fd391b37f531a",
    "rows": 100,
    "wire": "sha256:f6412e9a06c72c3ce36236ec672e7b6b869841691a91a2f74b4dcb11ed710b89"
   },
   "history/8": {
-   "mcp_text": "sha256:b14d67540110d3f118b45c0d9858463a889389a3f5d53e6d9c6fb1bc2e7f1e41",
+   "mcp_text": "sha256:30fcbaa7becec6604a52b8f3f484a6604c740391b8ca46f0f87fd391b37f531a",
    "rows": 100,
    "wire": "sha256:9a4fe17106710f05a6bb4c39cc180a603499044be77f1853bf809ecfa90e38a7"
   },
   "history/9": {
-   "mcp_text": "sha256:b14d67540110d3f118b45c0d9858463a889389a3f5d53e6d9c6fb1bc2e7f1e41",
+   "mcp_text": "sha256:30fcbaa7becec6604a52b8f3f484a6604c740391b8ca46f0f87fd391b37f531a",
    "rows": 98,
    "wire": "sha256:fc392a21bdb738954a6851e729002b1db704d719785bf3b508cb7e343e4fd65c"
   },
   "obligations/0": {
-   "mcp_text": "sha256:ab15b290b9e38d970f2fa878835c67e4829a88258a1d1c736f4c8a71d018f6c9",
+   "mcp_text": "sha256:de28f4b9c0705cead73442690c725076c98a8cc917814c8ef73593ea00da4e53",
    "rows": 1,
    "wire": "sha256:c3eab7ed26d08ea2e2a9b95420da7777c4378633d7e916586d610cbe24990d58"
   },
   "results/0": {
-   "mcp_text": "sha256:87cc50773aa2ea29ac5d83d76f584d70d4453bb29eb2bf02fc05f2cfbae0611d",
+   "mcp_text": "sha256:7dc0d6ffe77489abfa3860d9f6cbd1b64bcfb36c82ffb4b191d5ea300456a8f5",
    "rows": 100,
    "wire": "sha256:c7b0c10eb18cc78115246ceb8c143c62b9a890e537e5f23171bcbfdc9c506e63"
   },
   "results/1": {
-   "mcp_text": "sha256:87cc50773aa2ea29ac5d83d76f584d70d4453bb29eb2bf02fc05f2cfbae0611d",
+   "mcp_text": "sha256:7dc0d6ffe77489abfa3860d9f6cbd1b64bcfb36c82ffb4b191d5ea300456a8f5",
    "rows": 100,
    "wire": "sha256:4a53dc13cfdf381ee30f6806109e9f9063c8badfc11baecff9c5edc70463ed4d"
   },
   "results/2": {
-   "mcp_text": "sha256:87cc50773aa2ea29ac5d83d76f584d70d4453bb29eb2bf02fc05f2cfbae0611d",
+   "mcp_text": "sha256:7dc0d6ffe77489abfa3860d9f6cbd1b64bcfb36c82ffb4b191d5ea300456a8f5",
    "rows": 100,
    "wire": "sha256:8cc40e7019322bb87878c083d1deb5c93c13381df4aedfc213f0f663b9b7c6cb"
   },
   "results/3": {
-   "mcp_text": "sha256:87cc50773aa2ea29ac5d83d76f584d70d4453bb29eb2bf02fc05f2cfbae0611d",
+   "mcp_text": "sha256:7dc0d6ffe77489abfa3860d9f6cbd1b64bcfb36c82ffb4b191d5ea300456a8f5",
    "rows": 30,
    "wire": "sha256:06878429e290ddea791898d7ff4badd2f32edc719d8379767c7011f927f77970"
   }
