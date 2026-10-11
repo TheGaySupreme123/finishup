@@ -27,6 +27,7 @@ from yoetz.cli.observe_hooks import (
 )
 from yoetz.domain.compaction_recap import RECAP_CONTEXT_LIMIT
 from yoetz.domain.observation import ObservationSource
+from yoetz.protocol.models import StatusCompactPageModel, StatusSuccessModel
 
 _HELD_IDS_CUE = "For compaction in an already-started host session, use your held current ids"
 
@@ -593,3 +594,96 @@ def test_the_recap_never_reaches_the_default_context_bound_by_accident() -> None
     )
     wide = context_output("SessionStart", long_text, limit=RECAP_CONTEXT_LIMIT)
     assert len(text(wide, "hookSpecificOutput", "additionalContext")) == 3_000
+
+
+def _recap_block(context: str) -> str:
+    """The recap proper: from its header to the end of the context."""
+
+    start = context.index("Yoetz recap after context compaction")
+    return context[start:]
+
+
+def test_every_host_and_every_carrier_states_the_same_recap_for_the_same_status(
+    tmp_path: Path,
+) -> None:
+    """Cross-surface: one status result, four carriers, one recap.
+
+    The Codex re-ground hook, the Codex observe pass, the Claude Code hook and Cursor all compose
+    through the same code from the same typed result, so they must say the same thing; and what
+    they say about the latest check is what the CLI status render prints for it.
+    """
+
+    from yoetz.cli.render import render_human_status
+
+    service = _service()
+    compact_root = service.compact.result.root
+    assert isinstance(compact_root, StatusSuccessModel)
+    assert isinstance(compact_root.page, StatusCompactPageModel)
+    latest = compact_root.page.items[0].latest_check
+    assert latest is not None
+
+    carriers: dict[str, str] = {}
+    runners: dict[str, Callable[[Path], str]] = {
+        "codex-reground": lambda state: _codex_context(state, service, source="compact")[0],
+        "claude": lambda state: _claude_context(state, service, source="compact")[0],
+    }
+    for name, runner in runners.items():
+        state = tmp_path / name
+        state.mkdir(mode=0o700)
+        carriers[name] = _recap_block(runner(state))
+
+    cursor_state = tmp_path / "cursor"
+    cursor_state.mkdir(mode=0o700)
+    _consented(cursor_state)
+    _mapped(cursor_state, "cursor:recap-session", service)
+    cursor_out = io.BytesIO()
+    handle_cursor_observe(
+        event_name="sessionStart",
+        stdin_bytes=json.dumps(
+            {
+                "session_id": "recap-session",
+                "conversation_id": "recap-session",
+                "hook_event_name": "sessionStart",
+                "source": "compact",
+                "workspace_roots": [str(cursor_state)],
+            }
+        ).encode(),
+        stdout=cursor_out,
+        workspace=str(cursor_state),
+        _state=cursor_state,
+        connect=_connector(service),
+    )
+    carriers["cursor"] = _recap_block(
+        json.loads(cursor_out.getvalue().decode())["additional_context"]
+    )
+
+    observe_state = tmp_path / "codex-observe"
+    observe_state.mkdir(mode=0o700)
+    _consented(observe_state)
+    _mapped(observe_state, "codex-recap", service)
+    observe_out = io.BytesIO()
+    handle_observe(
+        event_name="SessionStart",
+        stdin_bytes=json.dumps(
+            {
+                "session_id": "codex-recap",
+                "hook_event_name": "SessionStart",
+                "source": "compact",
+                "cwd": str(observe_state),
+            }
+        ).encode(),
+        stdout=observe_out,
+        workspace=str(observe_state),
+        _state=observe_state,
+        connect=_connector(service),
+        source=ObservationSource.CODEX_HOOK,
+    )
+    carriers["codex-observe"] = _recap_block(
+        json.loads(observe_out.getvalue().decode())["hookSpecificOutput"]["additionalContext"]
+    )
+
+    assert len(set(carriers.values())) == 1, carriers
+    recap = next(iter(carriers.values()))
+    rendered = render_human_status(compact_root)
+    for needle in (latest.verdict, latest.checked_frontier.sequence, latest.check_event_id):
+        assert needle in recap and needle in rendered, needle
