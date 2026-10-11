@@ -1471,6 +1471,16 @@ carrying a registered `continuation` token renders its frozen directive, any car
 commands, its guidance pointer, and its nudge inside the bounded (4,096-byte) text projection, dropped from the
 least load-bearing end when the budget is tight.
 
+**Bounded text and committed operations (ADR-043, issue #1025).** Because this host reads only the
+text `content` of an `isError` result and the summary of a success, the summary is composed with its
+required core first (verdict or error identity and location, the `overall next` instruction, the
+review status/reason, the frontier with its head digest) and never raises. A text that cannot be
+built never fails a committed call: the omitted clause is named
+(`summary_render_failed:<builder>.<clause>`), a service diagnostic records it, and the structured
+result is returned. Hook `additionalContext` over Yoetz's own 2,000-character cap ends with a cut
+marker; no Claude Code document available here states a limit, so the cap is Yoetz's own. The
+behavior is the same on macOS, Linux and WSL 2.
+
 This is the host where the gap was observed: before ADR-030 a `VAULT_LOCKED` result whose
 `safe_details` already carried `vault_initialization_required` and its prepare command reached the
 model as `Error VAULT_LOCKED; retryable: no; correlation: err_...` and nothing else (issue #740).

@@ -1961,6 +1961,19 @@ Codex consumes structured MCP results, so the `continuation` token arrives in `s
 bounded text projection repeats the resolved directive for parity. No Codex-specific behavior is
 configured.
 
+The observed Codex failure this covers: 
+
+**Bounded text and committed operations (ADR-043, issue #1025).** Codex shows the model the
+serialized `structuredContent` outside code mode and the bounded text summary inside it; that
+summary is composed within 4,096 bytes (it was 512, and the closing `check` of 10 of 13
+deterministic tb4n3 runs overflowed it). The verdict, the `overall next` instruction, the review
+status/reason and the frontier with its head digest are reserved first, so a closing check always
+reads. A text that cannot be built never fails a committed call: the clause is omitted and named
+(`summary_render_failed:<builder>.<clause>`), a service diagnostic records it, and the structured
+result is the call's result. Hook advice over Yoetz's own 2,000-character cap ends with a cut
+marker (no Codex document states a hook limit; the cap is Yoetz's own). No Codex-specific behavior is
+configured; it is the same on macOS, Linux and WSL 2.
+
 The observed Codex failure this covers: a `start` with `actor_id` `codex:/root` was rejected as
 `INVALID_REQUEST` with `fields: ["/actor/actor_id"]`, `reasons: ["invalid_type_or_value"]`, and
 no continuation, and the text channel carried neither the field nor a way forward. The same
