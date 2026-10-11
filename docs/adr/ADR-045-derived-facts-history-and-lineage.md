@@ -162,13 +162,79 @@ cmp ...` is composed and classes `compound`, yet it is the check the task named.
 (redirect targets, `tee`, `sed -i`, the destination of `cp`/`mv`/`install`/`rsync`, `touch`,
 `truncate`, `dd of=`) and classifies them like an edit tool's paths. A command whose attributable
 writes include a workspace path carries `write_scope: workspace` (a real outside-workspace write
-already carried `outside_workspace`); the kernel counts both as edits. The agent's own working notes
+carries `outside_workspace`); the kernel counts both as edits. The agent's own working notes
 (`NOTES.md`, `todo.txt`; `.log` is never named by extension) are the new non-counting `notes` scope,
-overridden by a declared output of that name. A command that writes only notes, Yoetz material or
-scratch carries that same non-counting scope (so the declared-output override applies to a shell
-write as to an edit tool), a quoted or escaped operator, a comment and the word `tee` as an argument are text and not a write (a newline ends a command; the lexer is the module's own, not `shlex`), a write
-inside `bash -lc '...'` is attributed, and a shell command that wrote counts as an edit whatever its
-exit status (`: > f; false` emptied `f`).
+overridden by a declared output of that name. A command that writes only one non-counting class
+(notes, or Yoetz material) carries that same scope, so the declared-output override applies to a
+shell write as to an edit tool; a command that writes two non-counting classes
+(`: > NOTES.md; : > yoetz_receipt.md`) counts as an edit, as a mixed edit-tool call does, because
+one token cannot carry both classes' overrides. A shell command that wrote counts as an edit
+whatever its exit status (`: > f; false` emptied `f`). One classifier decides every path, in the
+hook as in the Codex stream: the hook has no separate outside-workspace precheck, so
+`cp source.json /opt/yoetz_receipt.json` is `yoetz_owned` (Yoetz's own material), not
+`outside_workspace`.
+
+**The parser prefers a missed write to a guessed one.** A false write tells the agent its
+verification is stale (steering, burned time); a missed write hides an edit made after it. Both
+matter and a false write is worse, so `domain/shell_writes` names no write when it cannot be sure:
+
+- *Text is not syntax.* The lexer is the module's own, not `shlex`. A quoted or escaped operator
+  or keyword (`'!' touch f` runs a command named `!`), a comment, the word `tee` as an argument, a
+  here-string, a heredoc body, and the inside of `[[ ... ]]` and `(( ... ))` (where `>` and `<`
+  compare) write nothing. `$(...)`, `${...}`, `$[...]`, `$'...'` and backticks are opaque, with
+  their own quote and nesting state (`echo "$(echo "x > f")"` writes nothing); inside `$(...)` a
+  comment's parenthesis and a heredoc body (the `git commit -m "$(cat <<'EOF' ... EOF)"` idiom)
+  close nothing, while a `case` there (its patterns end in an unmatched `)`) makes the command
+  unlexable. A heredoc starts only at an unquoted `<<`/`<<-`; its delimiter is the word with
+  quotes removed (`'END-DATA'`, `$'EOF'`; an escape inside `$'...'` is not decoded, so the command
+  is unlexable); `<<-` strips leading tabs, and only tabs, when matching the closing line; in an
+  unquoted heredoc a body line ending in a backslash continues on the next, and the joined line is
+  what is compared; an unterminated body runs to the end, as in bash. The body of an unquoted heredoc is data here even
+  though bash expands `$(...)` in it: a write hidden in one is a missed write, accepted. A write
+  inside `bash -lc '...'` is attributed (the wrapper's command text is parsed in turn, to a bounded
+  depth); a wrapper argument the outer shell expands (`bash -c "... '$OUT'"`) is unknown and names
+  nothing.
+- *A path is attributable only if it is literal.* Each word records whether an unquoted `$`,
+  backtick, glob character, brace or leading `~` could change it. Quoting or an escape makes those
+  characters literal, so `'/opt/$report.txt'` and `/opt/file\*.py` are real (outside-workspace)
+  targets, while `"$OUT"`, `~/f`, `*.py` and `{a,b}` name no path.
+- *Unlexable is silent.* Unbalanced quotes, an unterminated expansion or a trailing backslash make
+  the whole command name no write. The existing disclosure is unchanged: an unattributed write
+  only means the kernel does not count that command as an edit.
+- *Redirections.* `>& file` and `1>& file` write a file; a descriptor target (`>&2`, `>&-`)
+  duplicates or closes, and `2>& file` is an ambiguous redirect in bash: the redirections before it
+  were opened, the ones after it and the command are not. `<>` opens read-write and creates an
+  absent file, so it counts. A redirection with no target is a syntax error: that command and
+  everything after it is not run. A file named `-` is a file (`touch -` is stdout).
+- *Options.* `sed` reads `-e`/`-f` attached or separate, `-i[SUFFIX]` (GNU: the suffix swallows the
+  rest of the word, so `-i.bak1` and `-ie`), `--in-place[=SUFFIX]` and `--`. After a bare `-i`,
+  macOS takes the next word as the suffix (`-i ''`, `-i .bak`) where GNU takes it as the script or
+  a file; for `sed` only the files both readings agree on are writes (`sed -i '' 's/a/b/' f` is `f`,
+  `sed -i '' f` is none), and `gsed` is GNU. `cp`/`mv`/`install` read `-t DIR`, `-tDIR`,
+  `--target-directory[=]DIR` and every operand of `install -d`; `touch -r REF` and
+  `truncate -r REF` read their reference (`truncate` needs `-s` or `-r`); the last `dd of=` wins;
+  operands after `--` are operands even if they begin with `-`; an rsync `host:path` or
+  `rsync://` destination is remote, `-n`/`--dry-run`/`--list-only` transfer nothing, and its
+  option values (`--exclude PATTERN`) are no paths. An invocation that exits before writing names
+  nothing: `--help`/`--version` (also of a wrapper such as `timeout`), `bash -n`, `-t DIR` with no
+  source, with `-T`, or given twice. The bodies of compound statements (`then`, `do`, `{ ... }`,
+  function definitions) are not read: whether they run is control flow, and a `[[ ... ]]` test's
+  `||`, `&&` and parentheses are test syntax. An expansion is assumed to yield a word.
+- *A directory destination is classified by where it is.* `cp -t DIR`, `install -d DIR` and
+  `dest/` write files named after something else, so a notes or receipt *file name* never exempts
+  the directory (`cp -t NOTES.md src.py` is a workspace write); a Yoetz tree or state directory
+  still does.
+- *Bounded.* The parser is linear: no pattern backtracks, no region is rescanned and
+  `strip_wrappers` is handed a constant-size head of each command. The hook's other `shlex` pass
+  (install-target detection) reads the same bounded head (`bound_command`). Text longer than 16,384
+  characters (the hook's command-normalization limit, `MAX_SHELL_WRITE_CHARS`) is analysed only up
+  to its last newline inside that limit, so a long `cat > f <<'EOF'` body still names `f` (8 of the
+  9 over-limit commands in the recorded n2 and n3 runs are exactly that) and so does the same
+  command inside the `/bin/bash -lc '...'` argv the rollout records (the wrapper's cut script is
+  analysed in turn). A write after the limit is not seen. The command a cut interrupts (an open
+  quote, an expansion, a continued line) is dropped whole, never completed by a guess, and a text
+  with no newline inside the limit names nothing. This never raises and never blocks the hook; it
+  is a coverage limit of the same kind as an unattributable path, not an error.
 
 ### 4. What counts as an attempt
 
@@ -200,6 +266,15 @@ receipt, so a present-but-not-reviewed deliverable is named.
 - **Known coupling (wave 2).** The A-12 acceptance re-read rides on other Stop-gate tokens. Removing
   the false `declared_output_emptied` and flag-prefix tokens means it is delivered less often until
   it becomes its own once-per-frontier readiness item (owner decision 6, wave 2).
+- Shell-write attribution trades recall for honesty. Writes the parser does not read (`perl -pi`,
+  `awk -i inplace`, `ln`, `curl -o`, a script that opens files itself, an expansion-built path, a
+  write after the 16,384-character bound, a heredoc body that runs `$(...)`, a `then`/`do` body, a
+  command whose group holds a `case`) are missed writes: the command is not counted as an edit and
+  nothing says so. Known false-write direction, not seen in the 2,343 recorded commands: a relative
+  path written after a `cd` out of the workspace (`cd /tmp && echo x > f`) is read against the
+  workspace, as before; and a redirection whose target is an expansion that fails is assumed to
+  succeed. The tests lock the false-write direction harder (every false write found by review is a
+  vector).
 - Not done here, owned elsewhere: the Stop gate's active-Stop suppression of ordinary tokens and the
   premise text (RC-8, wave 2), the hook-observed-edit check invalidation (`c4`, lane LO), and a real
   reducer reopen of a resolved obligation.

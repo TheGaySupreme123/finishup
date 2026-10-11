@@ -51,8 +51,8 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import Final, cast
 
-from yoetz.domain.shell_writes import shell_write_paths, shell_write_scope
-from yoetz.domain.write_scope import classify_write_path, edit_write_scope, scratch_path
+from yoetz.domain.shell_writes import bound_command, shell_write_scope
+from yoetz.domain.write_scope import classify_write_path, edit_write_scope
 from yoetz.protocol.canonical import JsonValue
 
 __all__ = [
@@ -81,11 +81,9 @@ _EDIT_TOOLS: Final = frozenset(
     {"Write", "Edit", "MultiEdit", "NotebookEdit", "write_file", "edit_file", "cursor_file_edit"}
 )
 _EDIT_PATH_KEYS: Final = ("file_path", "path", "target_file", "filePath", "notebook_path")
-_HEREDOC: Final = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _PATCH_PATH: Final = re.compile(
     r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", re.MULTILINE
 )
-_REDIRECT_OPERATORS: Final = frozenset({">", ">>", ">|", "&>", "&>>"})
 _SHELL_TOOLS: Final = frozenset({"Bash", "bash", "Shell", "shell", "exec_command", "local_shell"})
 _LOCATION_FLAGS: Final = ("--target", "-t", "--prefix", "--root")
 
@@ -101,7 +99,9 @@ def _raw_command(tool_input: Mapping[str, JsonValue]) -> str | None:
 
 
 def _segments(command: str) -> list[list[str]]:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    # ``shlex`` builds a token by repeated concatenation: bound the text it reads, as the shell
+    # write parser does, so a megabyte of one token cannot stall the hook.
+    lexer = shlex.shlex(bound_command(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)
@@ -303,23 +303,6 @@ def install_target_class(command: str, workspace: str | None) -> str | None:
     return next((target for target in _TARGET_RANK if target in found), None)
 
 
-def _write_targets(command: str) -> list[str]:
-    """Absolute paths a shell command visibly writes, read from shell tokens (ADR-045).
-
-    One parser for every surface (``domain.shell_writes.shell_write_paths``): quoted text and
-    heredoc bodies are data, a quoted operator or the word ``tee`` is not a write, and a write
-    inside ``bash -lc '...'`` counts. A command that does not tokenize names no target.
-    """
-
-    return [path for path in shell_write_paths(command) if path.startswith("/")]
-
-
-def _scratch_path(path: str, workspace: str | None = None) -> bool:
-    """Whether an absolute path lands in a temporary or device directory (``domain.write_scope``)."""
-
-    return scratch_path(path, workspace)
-
-
 def _owned_roots() -> tuple[str, ...]:
     """Yoetz's own state directory, when this hook process can name it without failing."""
 
@@ -332,15 +315,6 @@ def _owned_roots() -> tuple[str, ...]:
             roots.append(str(isolated))
         roots.append(str(state_dir()))
     return tuple(roots)
-
-
-def _shell_writes_outside(
-    command: str, inside: Callable[[str], bool], workspace: str | None = None
-) -> bool:
-    return any(
-        not _scratch_path(target, workspace) and not inside(target)
-        for target in _write_targets(command)
-    )
 
 
 def _edit_paths(
@@ -416,10 +390,10 @@ def runtime_structural_facts(
     target = install_target_class(command, workspace_locator)
     if target is not None:
         facts["install_target"] = target
-    if workspace_locator is not None and _shell_writes_outside(command, inside, workspace_locator):
-        facts["write_scope"] = "outside_workspace"
-    elif workspace_locator is not None:
-        # ADR-045: a command that visibly writes into the workspace is an edit, not a bare run.
+    if workspace_locator is not None:
+        # ADR-045: one classifier decides every written path, the one an edit tool uses: a real
+        # write outside the workspace, a write into it (an edit), or only notes, Yoetz material
+        # (``cp a.json /opt/yoetz_receipt.json`` is Yoetz-owned, not outside) or scratch.
         scope = shell_write_scope(
             command, workspace=workspace_locator, inside=inside, owned_roots=_owned_roots()
         )
