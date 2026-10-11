@@ -23,9 +23,16 @@ only, so status, check, receipts and ``respond`` all agree:
   as receipt-blocking, but it is never resolved: it stays disclosed and keeps the receipt
   conclusion at best ``insufficient_coverage``.
 
-Every state but ``open`` is terminal: no transition leaves them, and ``respond`` refuses to record anything
-further on a terminal item. New evidence about the same problem becomes a new finding. The
-transition table is kept as data in ``TODO_TRANSITIONS``.
+Every state but ``open`` is terminal for the agent's answers: ``respond`` refuses to record
+anything further on a terminal item, and new evidence about the same problem becomes a new finding.
+Two reverse edges leave the agent's never-clean answers (tb4n3 RC-7, issue #1030, ADR-034/040
+amendment), because a one-way door left a repaired finding "unresolved" forever: a later
+qualifying check that tested the work *after* an ``acknowledged_not_done`` or ``self_verified``
+answer and proves the issue absent makes the item ``verified_resolved`` (the proof, not the agent,
+resolves it), and a ``reopened`` response takes an ``acknowledged_not_done`` answer back
+(``open`` again, the agent's earlier position retracted). ``verified_resolved``,
+``rejection_accepted`` and ``disputed_after_rebuttal`` stay absolutely final. The transition table
+is kept as data in ``TODO_TRANSITIONS``.
 
 A ``duplicate_of`` answer (issue #996, ADR-034 amendment) adds no state of its own and never
 makes a finding read clean. While its link holds (``duplicate_link_target``) the duplicate inherits
@@ -57,17 +64,26 @@ from yoetz.domain.findings import (
     FindingKind,
     FindingOrigin,
     ResponseDisposition,
+    finding_demands_work,
+    is_limitation_request,
 )
 from yoetz.domain.values import FindingId
-from yoetz.kernel.finding_resolution import finding_is_resolved
+from yoetz.kernel.finding_resolution import (
+    finding_is_resolved,
+    position_stands,
+    rejection_stands,
+)
 from yoetz.kernel.projections import ProjectionState, duplicate_link_holds
 from yoetz.kernel.task_facts import blocker_declarations
 
 __all__ = [
+    "ABSOLUTELY_FINAL_TODO_STATES",
     "DEFAULT_FINDING_ATTEMPT_BUDGET",
     "MAX_FINDING_ATTEMPT_BUDGET",
+    "REOPENABLE_TODO_STATES",
     "TERMINAL_TODO_STATES",
     "TODO_TRANSITIONS",
+    "FindingStanding",
     "FindingTodo",
     "FindingTodoCounts",
     "FindingTodoState",
@@ -82,8 +98,11 @@ __all__ = [
     "is_premise_challenge",
     "premise_dispute_basis",
     "standing_premise_disputes",
+    "finding_standing",
     "finding_todo",
     "finding_todo_state",
+    "ruling_since",
+    "standing_answer_frontier",
     "todo_counts",
 ]
 
@@ -110,7 +129,21 @@ TERMINAL_TODO_STATES: Final = frozenset(
     }
 )
 
-# The only transitions a recorded item makes, and what makes each one. Terminal states have none.
+# The terminal states no answer and no proof ever leaves, and the one whose answer the agent may
+# take back (tb4n3 RC-7). ``self_verified`` is not reopenable: it is the agent's own verification;
+# a later qualifying check upgrades it to ``verified_resolved`` instead.
+ABSOLUTELY_FINAL_TODO_STATES: Final = frozenset(
+    {
+        FindingTodoState.VERIFIED_RESOLVED,
+        FindingTodoState.REJECTION_ACCEPTED,
+        FindingTodoState.DISPUTED_AFTER_REBUTTAL,
+    }
+)
+REOPENABLE_TODO_STATES: Final = frozenset({FindingTodoState.ACKNOWLEDGED_NOT_DONE})
+
+# The only transitions a recorded item makes, and what makes each one. The first five leave
+# ``open``; the last three are the reverse edges out of the agent's never-clean answers (tb4n3
+# RC-7). ``verified_resolved``, ``rejection_accepted`` and ``disputed_after_rebuttal`` have none.
 TODO_TRANSITIONS: Final[tuple[tuple[FindingTodoState, str, FindingTodoState], ...]] = (
     (FindingTodoState.OPEN, "qualifying_check_proves_absent", FindingTodoState.VERIFIED_RESOLVED),
     (
@@ -130,8 +163,23 @@ TODO_TRANSITIONS: Final[tuple[tuple[FindingTodoState, str, FindingTodoState], ..
     ),
     (
         FindingTodoState.OPEN,
-        "reviewer_keeps_open_without_newer_material_after_reasoned_rejection",
+        "reviewer_keeps_open_without_newer_material_after_a_reasoned_position",
         FindingTodoState.DISPUTED_AFTER_REBUTTAL,
+    ),
+    (
+        FindingTodoState.ACKNOWLEDGED_NOT_DONE,
+        "respond_reopened_with_reason",
+        FindingTodoState.OPEN,
+    ),
+    (
+        FindingTodoState.ACKNOWLEDGED_NOT_DONE,
+        "qualifying_check_proves_absent_after_the_answer",
+        FindingTodoState.VERIFIED_RESOLVED,
+    ),
+    (
+        FindingTodoState.SELF_VERIFIED,
+        "qualifying_check_proves_absent_after_the_answer",
+        FindingTodoState.VERIFIED_RESOLVED,
     ),
 )
 
@@ -208,26 +256,97 @@ def _own_todo_state(state: ProjectionState, finding_id: FindingId) -> FindingTod
     disposition = (
         None if response is None or response.payload is None else response.payload.disposition
     )
-    # ``respond`` refuses anything after a terminal state, so an ``acknowledged_not_done`` or
-    # ``self_verified`` response is always the item's last word and precedes any later absence
-    # proof.
+    # An ``acknowledged_not_done`` or ``self_verified`` response is the item's last word until a
+    # qualifying check tested the work after it (reverse edge 1: ``finding_is_resolved`` then
+    # reads true) or the agent takes the first back with ``reopened`` (reverse edge 2: the
+    # latest response is then ``reopened`` and the item is open again).
     if disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE:
+        if finding_is_resolved(state, finding_id):
+            return FindingTodoState.VERIFIED_RESOLVED
         return FindingTodoState.ACKNOWLEDGED_NOT_DONE
     if disposition is ResponseDisposition.SELF_VERIFIED:
+        if finding_is_resolved(state, finding_id):
+            return FindingTodoState.VERIFIED_RESOLVED
         return FindingTodoState.SELF_VERIFIED
     if finding_is_resolved(state, finding_id):
         return FindingTodoState.VERIFIED_RESOLVED
-    if (
-        record.rejection_accepted_by_check_event_id is not None
-        and disposition is ResponseDisposition.REJECTED
+    # tb4n3 RC-7: both latches read the agent's *standing* position (the earliest unretracted
+    # reasoned answer), not only its latest response, so an acknowledgement recorded after a
+    # rebuttal never erases the rebuttal and a reasoned acknowledgement a reviewer repeats over
+    # is a standing disagreement too.
+    if record.rejection_accepted_by_check_event_id is not None and rejection_stands(
+        record, response
     ):
         return FindingTodoState.REJECTION_ACCEPTED
-    if (
-        record.disputed_after_rebuttal_by_check_event_id is not None
-        and disposition is ResponseDisposition.REJECTED
+    if record.disputed_after_rebuttal_by_check_event_id is not None and position_stands(
+        record, response
     ):
         return FindingTodoState.DISPUTED_AFTER_REBUTTAL
     return FindingTodoState.OPEN
+
+
+def standing_answer_frontier(state: ProjectionState, finding_id: FindingId) -> int | None:
+    """The ledger sequence of the agent's earliest unretracted reasoned position, else ``None``.
+
+    The one answer the dispute, fold and ruling-admission rules compare newer material against
+    (tb4n3 RC-7, issue #1030). It is a reducer fact (``FindingProjectionRecord.standing_position``):
+    a reasoned ``rejected``, ``acknowledged``, ``acknowledged_not_done`` or ``self_verified``
+    answer fixes it, later answers of another kind never move it, and ``reopened`` retracts it.
+    A projection without the fact (a hand-built or older one) falls back to a readable, reasoned
+    latest ``rejected`` answer, the only position the earlier rule knew.
+    """
+
+    record = state.findings.get(finding_id)
+    if record is None:
+        return None
+    if record.standing_position is not None:
+        return record.standing_position.frontier
+    response = state.responses.get(finding_id)
+    if (
+        response is not None
+        and response.payload is not None
+        and not response.redacted
+        and response.payload.disposition is ResponseDisposition.REJECTED
+        and response.payload.reason is not None
+        and response.payload.reason.strip()
+    ):
+        return response.source_frontier
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class FindingStanding:
+    """Where the dialogue about one finding stands (tb4n3 RC-7), as closed facts."""
+
+    position_kind: str | None
+    position_frontier: int | None
+    last_ruling_frontier: int | None
+    # A reviewer ruling was recorded after the agent's standing position: the rejection (or
+    # acknowledgement) has been answered by a review, so it is not "awaiting a ruling".
+    ruled_since_position: bool
+
+
+def finding_standing(state: ProjectionState, finding_id: FindingId) -> FindingStanding:
+    record = state.findings.get(finding_id)
+    frontier = standing_answer_frontier(state, finding_id)
+    ruling = None if record is None else record.last_ruling_frontier
+    kind: str | None = None
+    if record is not None and record.standing_position is not None:
+        kind = record.standing_position.kind
+    elif frontier is not None:
+        kind = "rejected"
+    return FindingStanding(
+        kind,
+        frontier,
+        ruling,
+        frontier is not None and ruling is not None and ruling > frontier,
+    )
+
+
+def ruling_since(state: ProjectionState, finding_id: FindingId) -> bool:
+    """Whether a reviewer ruling was recorded after the agent's standing position."""
+
+    return finding_standing(state, finding_id).ruled_since_position
 
 
 def finding_todo_state(state: ProjectionState, finding_id: FindingId) -> FindingTodoState:
@@ -379,7 +498,10 @@ def finding_blocks_receipt(state: ProjectionState, finding_id: FindingId) -> boo
     record = state.findings.get(finding_id)
     if record is None or record.payload is None:
         return False
-    if not FINDING_KIND_TRAITS[record.payload.kind][1]:
+    if not finding_demands_work(record.payload):
+        # A coverage-only kind, or a reviewer's limitation request (tb4n3 RC-1, #1024): that is a
+        # disclosure the agent acknowledges, never work, and never counted as receipt-blocking.
+        # It does not read clean either: the closure class lists it as a verification limit.
         return False
     return finding_todo_state(state, finding_id) not in {
         FindingTodoState.VERIFIED_RESOLVED,

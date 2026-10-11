@@ -100,6 +100,8 @@ __all__ = [
     "PlanProjectionRecord",
     "ProjectionRecord",
     "ProjectionState",
+    "STANDING_POSITION_KINDS",
+    "StandingPosition",
     "empty_projection_state",
     "is_observation_limitation",
     "is_observation_limitation_kind",
@@ -337,6 +339,35 @@ class DecisionProjectionRecord(ProjectionRecord[DecisionRecordedPayload]):
                 raise _invalid() from exc
 
 
+# The agent's reasoned dialogue positions on a finding (issue #1030, tb4n3 RC-7, ADR-040
+# amendment). ``reopened`` is not one: it retracts the standing position.
+STANDING_POSITION_KINDS: Final = frozenset(
+    {"rejected", "acknowledged", "acknowledged_not_done", "self_verified"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StandingPosition:
+    """The agent's earliest unretracted reasoned position on one finding (tb4n3 RC-7).
+
+    ``frontier`` is the ledger sequence of the first reasoned answer (``rejected``,
+    ``acknowledged`` with a reason, ``acknowledged_not_done`` or ``self_verified``) recorded since
+    the last ``reopened`` answer: later answers of another kind do not move it, so an
+    acknowledgement recorded after a rebuttal never erases the rebuttal. ``kind`` is
+    ``rejected`` once any answer in that run was a reasoned rejection (the strongest dispute
+    stance a reviewer can accept, ``withdrawn``), otherwise the first answer's kind.
+    """
+
+    kind: str
+    frontier: int
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str or self.kind not in STANDING_POSITION_KINDS:
+            raise _invalid()
+        if type(self.frontier) is not int or not 1 <= self.frontier <= _MAX_SQLITE_SIGNED_INTEGER:
+            raise _invalid()
+
+
 # Optional finding-record event references, each emitted in a snapshot only when set.
 _FINDING_RESOLUTION_EVENT_FIELDS: Final = (
     "resolved_by_check_event_id",
@@ -397,6 +428,14 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     the agent's terminal answer (``acknowledged_not_done``, or ``self_verified``; issue #980): the
     agent stopped, the reviewer did not. It never reopens the item; it is what
     ``kernel.finding_todo`` reads as a standing premise dispute.
+    The tb4n3 RC-7 dialogue facts (issue #1030) are replay-derived like the counters above:
+    ``standing_position`` is the agent's earliest unretracted reasoned answer
+    (``StandingPosition``; ``reopened`` retracts it), ``last_ruling_frontier`` is the ledger
+    sequence of the newest check that recorded a reviewer ruling on this finding (so "was the
+    rejection ruled on?" is a comparison, not a guess), and ``resolution_frontier`` is the ledger
+    sequence of the check named by ``resolved_by_check_event_id`` (so an absence proof recorded
+    *after* an ``acknowledged_not_done`` or ``self_verified`` answer can be told from one recorded
+    before it).
     ``duplicate_link_broken_by_check_event_ids`` (issue #996) names, in fold order, every later
     check that raised this finding's issue again (returned it, or the reviewer ruled it
     ``still_present`` or ``answered_not_fixed``) while its latest response was ``duplicate_of``.
@@ -418,10 +457,27 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     last_reviewer_verdict: str | None = None
     settled_reraise_count: int = 0
     duplicate_link_broken_by_check_event_ids: tuple[EventId, ...] = ()
+    standing_position: StandingPosition | None = None
+    last_ruling_frontier: int | None = None
+    resolution_frontier: int | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.payload is not None and type(self.payload) is not Finding:
+            raise _invalid()
+        if (
+            self.standing_position is not None
+            and type(self.standing_position) is not StandingPosition
+        ):
+            raise _invalid()
+        for frontier_name in ("last_ruling_frontier", "resolution_frontier"):
+            frontier_value = getattr(self, frontier_name)
+            if frontier_value is not None and (
+                type(frontier_value) is not int
+                or not 1 <= frontier_value <= _MAX_SQLITE_SIGNED_INTEGER
+            ):
+                raise _invalid()
+        if self.resolution_frontier is not None and self.resolved_by_check_event_id is None:
             raise _invalid()
         if (
             type(self.rebuttal_count) is not int
@@ -1260,6 +1316,16 @@ def _record_snapshot(record: _ProjectionRecordLike) -> dict[str, JsonValue]:
             result["last_reviewer_verdict"] = record.last_reviewer_verdict
         if record.settled_reraise_count:
             result["settled_reraise_count"] = record.settled_reraise_count
+        # Issue #1030 (tb4n3 RC-7) dialogue facts: emitted only when set.
+        if record.standing_position is not None:
+            result["standing_position"] = {
+                "kind": record.standing_position.kind,
+                "frontier": record.standing_position.frontier,
+            }
+        if record.last_ruling_frontier is not None:
+            result["last_ruling_frontier"] = record.last_ruling_frontier
+        if record.resolution_frontier is not None:
+            result["resolution_frontier"] = record.resolution_frontier
         # Issue #996: emitted only when a check broke a ``duplicate_of`` link.
         if record.duplicate_link_broken_by_check_event_ids:
             result["duplicate_link_broken_by_check_event_ids"] = list(
@@ -1561,6 +1627,9 @@ def _record_from_snapshot(
                 "last_reviewer_verdict",
                 "settled_reraise_count",
                 "duplicate_link_broken_by_check_event_ids",
+                "standing_position",
+                "last_ruling_frontier",
+                "resolution_frontier",
             }
         )
     else:
@@ -1673,6 +1742,20 @@ def _record_from_snapshot(
         last_verdict = source.get("last_reviewer_verdict")
         if "last_reviewer_verdict" in source and type(last_verdict) is not str:
             raise _invalid()
+        standing: StandingPosition | None = None
+        if "standing_position" in source:
+            raw_position = _snapshot_object(
+                source["standing_position"], required=frozenset({"kind", "frontier"})
+            )
+            kind_value, frontier_value = raw_position["kind"], raw_position["frontier"]
+            if type(kind_value) is not str or type(frontier_value) is not int:
+                raise _invalid()
+            standing = StandingPosition(kind_value, frontier_value)
+        for frontier_name in ("last_ruling_frontier", "resolution_frontier"):
+            if frontier_name in source and (
+                type(source[frontier_name]) is not int or source[frontier_name] < 1
+            ):
+                raise _invalid()
 
         def event_ids(name: str) -> tuple[EventId, ...]:
             raw = source.get(name)
@@ -1720,6 +1803,9 @@ def _record_from_snapshot(
             duplicate_link_broken_by_check_event_ids=event_ids(
                 "duplicate_link_broken_by_check_event_ids"
             ),
+            standing_position=standing,
+            last_ruling_frontier=cast(int | None, source.get("last_ruling_frontier")),
+            resolution_frontier=cast(int | None, source.get("resolution_frontier")),
         )
     return ProjectionRecord(
         payload=payload,

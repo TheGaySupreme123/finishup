@@ -209,6 +209,11 @@ class ResponseDisposition(str, Enum):  # noqa: UP042 - exact wire enum base
     # never clean, never re-reviewed, and not agent work. Recorded only on
     # ``response_recorded`` 1.1.0.
     SELF_VERIFIED = "self_verified"
+    # Issue #1030 (tb4n3 RC-7, ADR-034/040 amendment): the agent takes back an
+    # ``acknowledged_not_done`` answer (it will do the work after all). The only edge that leaves
+    # that terminal state; the finding is ``open`` again and the agent's earlier position is
+    # retracted. Requires a reason. Recorded only on ``response_recorded`` 1.1.0.
+    REOPENED = "reopened"
     WAIVED = "waived"
 
 
@@ -220,7 +225,7 @@ TERMINAL_RESPONSE_DISPOSITIONS: Final = frozenset(
 # The dispositions recorded only on ``response_recorded`` 1.1.0 (issues #905, #984, #996); every
 # other disposition keeps the released 1.0.0 bytes.
 RESPONSE_V1_1_DISPOSITIONS: Final = TERMINAL_RESPONSE_DISPOSITIONS | frozenset(
-    {ResponseDisposition.DUPLICATE_OF}
+    {ResponseDisposition.DUPLICATE_OF, ResponseDisposition.REOPENED}
 )
 
 # The one sentence every agent-facing text reuses when it tells the agent what to do with a

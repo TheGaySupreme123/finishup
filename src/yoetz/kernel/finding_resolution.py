@@ -99,9 +99,11 @@ from yoetz.kernel.plan_drift import (
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import (
     MAX_CHECK_CHANGE_RAISING_CHECKS,
+    STANDING_POSITION_KINDS,
     FindingProjectionRecord,
     ProjectionRecord,
     ProjectionState,
+    StandingPosition,
     is_observation_limitation,
     is_observation_limitation_kind,
     observation_finding_event_ids,
@@ -138,6 +140,7 @@ __all__ = [
     "finding_is_resolved",
     "finding_resolution_attempt",
     "issue_key",
+    "next_standing_position",
     "prior_finding_verdict",
     "qualifying_check_resolves",
     "reopen_findings_resolved_by",
@@ -1866,6 +1869,11 @@ def apply_check_resolution(
 ) -> None:
     """Fold one recorded check into the resolution facts of the findings it could speak to.
 
+    A finding the check resolves records the ledger sequence of the state the check tested
+    (``check.subject_frontier``) as ``resolution_frontier`` (tb4n3 RC-7): it tells an absence
+    proof of a state recorded after an ``acknowledged_not_done`` or ``self_verified`` answer from
+    one that predates it.
+
     Every finding the check returned becomes current again, whatever an earlier check proved.
     An AI-powered finding this check's review raised under a reduced reference scope records this
     check as its raising check (issue #904). If any returned finding is unreadable, the check
@@ -1887,6 +1895,7 @@ def apply_check_resolution(
                 resolved_by_check_event_id=None,
                 resolution_depends_on_check_event_ids=(),
                 resolution_raising_check_event_id=None,
+                resolution_frontier=None,
             )
         if payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED and (
             check.semantic_conclusion is not None or _raised_by(check, payload)
@@ -1960,6 +1969,7 @@ def apply_check_resolution(
             resolved_by_check_event_id=check_event_id,
             resolution_depends_on_check_event_ids=depends_on,
             resolution_raising_check_event_id=relied_on,
+            resolution_frontier=check.subject_frontier.sequence or None,
         )
 
 
@@ -1973,11 +1983,69 @@ AGENT_SETTLED_DISPOSITION_VALUES: Final = frozenset({"acknowledged_not_done", "s
 _RERAISE_VERDICTS: Final = frozenset({"still_present", "answered_not_fixed"})
 
 
+def next_standing_position(
+    current: StandingPosition | None, response: ResponseRecordedPayload, frontier: int
+) -> StandingPosition | None:
+    """The agent's standing position after one more answer on a finding (tb4n3 RC-7, #1030).
+
+    The position is the earliest unretracted *reasoned* answer: ``rejected``, ``acknowledged``,
+    ``acknowledged_not_done`` or ``self_verified`` with a non-blank reason. The first one fixes
+    the frontier and later ones never move it, so an acknowledgement recorded after a rebuttal
+    does not erase the rebuttal (D-2). A reasoned rejection anywhere in the run makes the kind
+    ``rejected``. ``reopened`` retracts the position; every other disposition leaves it as it is.
+    """
+
+    disposition = response.disposition
+    if disposition is ResponseDisposition.REOPENED:
+        return None
+    reasoned = response.reason is not None and bool(response.reason.strip())
+    if disposition.value not in STANDING_POSITION_KINDS or not reasoned:
+        return current
+    if current is None:
+        return StandingPosition(disposition.value, frontier)
+    if disposition is ResponseDisposition.REJECTED and current.kind != "rejected":
+        return StandingPosition("rejected", current.frontier)
+    return current
+
+
+def rejection_stands(
+    record: FindingProjectionRecord | None,
+    latest: ProjectionRecord[ResponseRecordedPayload] | None,
+) -> bool:
+    """Whether the agent's reasoned rejection of this finding still stands (tb4n3 RC-7).
+
+    A later ``acknowledged`` answer does not retract it; only ``reopened`` does. A record that
+    carries no standing position (an older snapshot, a hand-built projection) falls back to the
+    latest response being a readable ``rejected``.
+    """
+
+    if record is None:
+        return False
+    if record.standing_position is not None:
+        return record.standing_position.kind == "rejected"
+    return _readable_rejection(latest)
+
+
+def position_stands(
+    record: FindingProjectionRecord | None,
+    latest: ProjectionRecord[ResponseRecordedPayload] | None,
+) -> bool:
+    """Whether the agent holds any reasoned position on this finding (same fallback as above)."""
+
+    if record is None:
+        return False
+    if record.standing_position is not None:
+        return True
+    return _readable_rejection(latest)
+
+
 def apply_check_rulings(
     findings: dict[FindingId, FindingProjectionRecord],
     responses: Mapping[FindingId, ProjectionRecord[ResponseRecordedPayload]],
     check: CheckRecordedPayload,
     check_event_id: EventId,
+    *,
+    check_frontier: int | None = None,
 ) -> None:
     """Fold one recorded check into the to-do facts of the findings it assessed (issue #905).
 
@@ -2001,6 +2069,11 @@ def apply_check_rulings(
     gone. The same-check absence mark is dropped and ``rejection_accepted`` is latched, so the item
     has exactly one final state. A finding an *earlier* check already proved absent is final and
     stays ``verified_resolved``.
+
+    tb4n3 RC-7 (#1030): the agent's *standing* position decides these latches, not only its
+    latest response, so an acknowledgement recorded after a rebuttal never erases it.
+    ``check_frontier`` (the check's ledger sequence) becomes the finding's
+    ``last_ruling_frontier``.
     """
 
     rulings = {item.finding_id: item.verdict for item in check.prior_finding_verdicts}
@@ -2013,7 +2086,13 @@ def apply_check_rulings(
         ):
             # The reviewer's newest answer on this item, carried to the next packet beside the
             # agent's rebuttal count (TB4 tb4n1 D7). It is a dialogue fact, never a proof.
-            findings[ruled_id] = replace(ruled, last_reviewer_verdict=ruling)
+            findings[ruled_id] = replace(
+                ruled,
+                last_reviewer_verdict=ruling,
+                last_ruling_frontier=(
+                    ruled.last_ruling_frontier if check_frontier is None else check_frontier
+                ),
+            )
     _break_duplicate_links(findings, responses, check, check_event_id, rulings)
     touched = frozenset(check.returned_finding_ids) | frozenset(rulings)
     for current_id in sorted(touched, key=str.encode):
@@ -2026,7 +2105,7 @@ def apply_check_rulings(
             and record.resolved_by_check_event_id == check_event_id
             and record.rejection_accepted_by_check_event_id is None
             and rulings.get(current_id) == "withdrawn"
-            and _readable_rejection(latest)
+            and rejection_stands(record, latest)
         ):
             findings[current_id] = replace(
                 record,
@@ -2035,6 +2114,7 @@ def apply_check_rulings(
                 # no reduced-scope reliance (#904).
                 resolution_depends_on_check_event_ids=(),
                 resolution_raising_check_event_id=None,
+                resolution_frontier=None,
                 rejection_accepted_by_check_event_id=check_event_id,
             )
             continue
@@ -2079,13 +2159,13 @@ def apply_check_rulings(
             continue
         if verdict in OPEN_REVIEW_VERDICTS:
             findings[current_id] = replace(record, review_rounds=record.review_rounds + 1)
-        elif verdict == DISPUTED_AFTER_REBUTTAL_VERDICT and _readable_rejection(latest):
+        elif verdict == DISPUTED_AFTER_REBUTTAL_VERDICT and position_stands(record, latest):
             # Issue #1020 (ADR-040): the reviewer kept the item open after the agent's reasoned
             # rejection and cited nothing newer. Final and non-blocking, never a review round.
             findings[current_id] = replace(
                 record, disputed_after_rebuttal_by_check_event_id=check_event_id
             )
-        elif verdict == "withdrawn" and _readable_rejection(latest):
+        elif verdict == "withdrawn" and rejection_stands(record, latest):
             findings[current_id] = replace(
                 record, rejection_accepted_by_check_event_id=check_event_id
             )
@@ -2184,6 +2264,7 @@ def reopen_findings_resolved_by(
                 resolved_by_check_event_id=None,
                 resolution_depends_on_check_event_ids=(),
                 resolution_raising_check_event_id=None,
+                resolution_frontier=None,
             )
         if record.reduced_scope_raising_check_event_id in event_ids:
             record = replace(record, reduced_scope_raising_check_event_id=None)
@@ -2223,15 +2304,20 @@ def finding_is_resolved(state: ProjectionState, finding_id: FindingId) -> bool:
         return True
     if response.payload is None:
         return False
-    # ``acknowledged_not_done`` is terminal and never reads as resolved (issue #905): the agent
-    # said it will not do this, so a later absence proof must not turn it into a clean row.
-    # ``self_verified`` (issue #984) is final the same way: the item stays the agent's own
-    # verification, disclosed, and never becomes a Yoetz-proven row afterwards.
-    return response.payload.disposition not in {
-        ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
-        ResponseDisposition.PROVENANCE_DISPUTED,
-        ResponseDisposition.SELF_VERIFIED,
-    }
+    disposition = response.payload.disposition
+    if disposition is ResponseDisposition.PROVENANCE_DISPUTED:
+        return False
+    if disposition in {ResponseDisposition.ACKNOWLEDGED_NOT_DONE, ResponseDisposition.SELF_VERIFIED}:
+        # ``acknowledged_not_done`` (issue #905) and ``self_verified`` (issue #984) are the
+        # agent's last word: a proof of a state tested *before* it never turns them into a clean
+        # row. Reverse edge (tb4n3 RC-7, owner decision 8, ADR-034/040 amendment): a qualifying
+        # check that tested the work *after* that answer proves the issue absent, so the agent's
+        # later repair is no longer a one-way door.
+        return (
+            record.resolution_frontier is not None
+            and record.resolution_frontier > response.source_frontier
+        )
+    return True
 
 
 def resolved_finding_ids(state: ProjectionState) -> frozenset[FindingId]:

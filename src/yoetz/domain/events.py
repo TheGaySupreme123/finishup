@@ -2509,6 +2509,7 @@ class ResponseRecordedPayload:
             ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
             ResponseDisposition.PROVENANCE_DISPUTED,
             ResponseDisposition.REJECTED,
+            ResponseDisposition.REOPENED,
             ResponseDisposition.SELF_VERIFIED,
             ResponseDisposition.WAIVED,
         }:
