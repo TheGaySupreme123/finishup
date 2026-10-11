@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-from collections.abc import Iterator
+from collections.abc import Generator
 
 import pytest
 
@@ -12,7 +12,7 @@ from yoetz.ports.integrations import IntegrationError, IntegrationReason
 
 
 @contextlib.contextmanager
-def _passthrough() -> Iterator[None]:
+def _passthrough() -> Generator[None]:
     yield
 
 

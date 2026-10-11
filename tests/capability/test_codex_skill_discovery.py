@@ -24,10 +24,10 @@ from capability.evidence import (
 )
 from yoetz.adapters.integrations.codex_capability_cells import skill_manifest_capability_fields
 from yoetz.adapters.integrations.codex_skill import (
-    _EXPECTED_PACKAGE_PATHS,
     CODEX_HARNESS_PROFILE,
     CodexSkillIntegration,
     build_managed_marker,
+    expected_skill_member_paths,
     load_packaged_skill_source,
 )
 from yoetz.domain.values import request_id
@@ -81,8 +81,10 @@ def _injectable_skill_resources() -> _Resources:
     skill_manifest_body["member_digest"] = canonical_digest(skill_manifest_body)
     # Derived from the adapter's own expected inventory so the fixture cannot go stale.
     installed_paths = {
-        logical: package_path
-        for logical, package_path in _EXPECTED_PACKAGE_PATHS.items()
+        logical: "skills/codex/yoetz/SKILL.md"
+        if logical == "SKILL.md"
+        else logical.replace("references/", "guidance/", 1)
+        for logical in expected_skill_member_paths()
         if logical != "manifest.json"
     }
     files: dict[str, bytes] = {
