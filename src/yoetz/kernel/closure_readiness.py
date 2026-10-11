@@ -649,8 +649,16 @@ def closure_readiness_facts(
     acknowledged = {
         duplicate_counting_id(state, finding.finding_id)
         for finding in current
-        if finding_acknowledged_not_done(state, finding.finding_id)
-        or finding_todo_state(state, finding.finding_id) is FindingTodoState.ACKNOWLEDGED_NOT_DONE
+        if (
+            finding_acknowledged_not_done(state, finding.finding_id)
+            or finding_todo_state(state, finding.finding_id)
+            is FindingTodoState.ACKNOWLEDGED_NOT_DONE
+        )
+        # A disclosed limitation request is settled, not a requirement left undone (ADR-046).
+        and not (
+            finding.finding_id in finding_classes
+            and finding_classes[finding.finding_id].basis == "limitation_disclosed"
+        )
     }
     self_verified = {
         duplicate_counting_id(state, finding.finding_id)

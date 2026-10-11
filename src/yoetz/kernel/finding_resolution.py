@@ -1481,6 +1481,25 @@ def _finding_resolution_explanation(
     finding_record = state.findings.get(finding_id)
     if finding_record is None or finding_record.payload is None:
         return "Resolution explanation unavailable: original finding is unreadable."
+    # A reviewer's limitation request (tb4n3 RC-1, ADR-046) is a disclosure to make, not a repair:
+    # it never says "repair it, then check", and once disclosed it is final and never clean.
+    from yoetz.kernel.limitation import limitation_standing
+
+    standing = limitation_standing(state, finding_id)
+    if standing is not None:
+        if standing.disclosed:
+            return (
+                "Verification limit disclosed: the agent stated that the reviewer cannot verify "
+                "this here. The item is final, is not reviewed again and is not agent work; the "
+                "receipt lists it under verification limits and cannot read clean."
+            )
+        return (
+            "To disclose: the reviewer asked the agent to state a limit that cannot be verified "
+            "here. This is not repair work and does not block the receipt, which cannot read "
+            "clean while it is listed. Respond `acknowledged` with a reason, or record the "
+            "decision line `yoetz-verification-limit:<obligation id>`; respond `rejected` only "
+            "if the finding is wrong."
+        )
     # Terminal to-do states are named first (issue #905): they are final, never re-reviewed, and
     # the blockers of a later check (``reviewer_assessment_incomplete`` included) do not apply.
     response = state.responses.get(finding_id)
