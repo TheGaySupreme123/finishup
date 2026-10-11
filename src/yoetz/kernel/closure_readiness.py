@@ -49,6 +49,7 @@ from yoetz.kernel.closure_class import (
     FindingClosureClass,
     ObligationClosure,
     ReceiptEffect,
+    counted_findings,
     finding_closures,
     obligation_closures,
 )
@@ -348,7 +349,7 @@ class ClosureReadinessFacts:
     # the classes: readiness then falls back to the id lists above (acknowledged and self-verified
     # findings settle ``receipt_findings_unresolved``) exactly as before.
     finding_closures: tuple[FindingClosure, ...] | None = None
-    obligation_closures: tuple[ObligationClosure, ...] = ()
+    obligation_closures: tuple[ObligationClosure, ...] | None = None
     # ADR-045: where each derived task fact came from, so the agent sees why a code fired.
     fact_lineage: tuple[FactLineage, ...] = ()
 
@@ -372,8 +373,13 @@ class ClosureReadinessFacts:
                     or any(type(item) is not FindingClosure for item in self.finding_closures)
                 )
             )
-            or type(self.obligation_closures) is not tuple
-            or any(type(item) is not ObligationClosure for item in self.obligation_closures)
+            or (
+                self.obligation_closures is not None
+                and (
+                    type(self.obligation_closures) is not tuple
+                    or any(type(item) is not ObligationClosure for item in self.obligation_closures)
+                )
+            )
         ):
             raise ValueError("closure_readiness_facts_invalid")
         for values in (
@@ -642,8 +648,8 @@ def closure_readiness_facts(
     # finding that answers for it, ``duplicate_counting_id``, so a pair counts once).
     finding_classes = finding_closures(state, records=records)
     blocking = {
-        closure.counts_as
-        for closure in finding_classes.values()
+        key
+        for key, closure in counted_findings(finding_classes.values()).items()
         if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
     }
     acknowledged = {
@@ -674,8 +680,21 @@ def closure_readiness_facts(
     limitations = observation_limitation_finding_ids(state, records)
     # #997: an acknowledged obligation is never open work here, whichever counting regime the
     # projection uses (L6 counts it among open obligations); it is listed once, as acknowledged.
-    acknowledged_obligations = _acknowledged_obligation_ids(state)
+    acknowledged_status = _acknowledged_obligation_ids(state)
     obligation_classes = obligation_closures(state, records=records)
+    # ADR-046: the acknowledged list is the closure class, not the status alone. An acknowledged
+    # obligation the agent also disclosed as verifiable only outside this environment is
+    # ``externally_evaluated`` (disclosed), so it is listed once, there, and never as "not done".
+    acknowledged_obligations = tuple(
+        sorted(
+            (
+                item.obligation_id
+                for item in obligation_classes.values()
+                if item.basis == "acknowledged_not_done"
+            ),
+            key=str.encode,
+        )
+    )
     # An open obligation the agent disclosed as verifiable only outside this environment
     # (``externally_evaluated``, RC-1) is disclosed, not work: it leaves ``obligations_open``.
     externally_evaluated = {
@@ -686,7 +705,7 @@ def closure_readiness_facts(
     open_obligations = tuple(
         item
         for item in open_effective_obligations(state)
-        if item not in set(acknowledged_obligations) and item not in externally_evaluated
+        if item not in set(acknowledged_status) and item not in externally_evaluated
     )
     blocked = blocker_declarations(state, decision_batches(records))
     blocked_open = tuple(
@@ -820,10 +839,11 @@ def derive_closure_readiness(
             # that awaits a reviewer ruling is its own token (the only useful move is `check`
             # with `final_review: true`); an acknowledged requirement is final (listed under
             # acknowledged, the receipt keeps it unresolved).
-            counted: dict[FindingId, FindingClosure] = {}
-            for closure in facts.finding_closures:
-                if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN:
-                    counted.setdefault(closure.counts_as, closure)
+            counted = {
+                key: closure
+                for key, closure in counted_findings(facts.finding_closures).items()
+                if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
+            }
             classes = {closure.closure_class for closure in counted.values()}
             if counted:
                 if FindingClosureClass.AGENT_WORK in classes:
@@ -844,11 +864,18 @@ def derive_closure_readiness(
             condition == "obligations_open"
             and facts is not None
             and not facts.open_obligation_ids
-            and facts.acknowledged_obligation_ids
+            and (
+                facts.acknowledged_obligation_ids
+                or any(
+                    item.basis == "externally_evaluated" for item in facts.obligation_closures or ()
+                )
+            )
             and not facts.open_obligations_unreadable
         ):
             # #997: the only obligations the projection counts as open are acknowledged as not
-            # done (L6's counting regime). They are listed once, under acknowledged_not_done.
+            # done (L6's counting regime), or acknowledged and disclosed as verifiable only
+            # outside this environment. None is agent work; each is listed once, under
+            # acknowledged_not_done or as a disclosed limitation.
             continue
         if (
             condition == "obligations_open"

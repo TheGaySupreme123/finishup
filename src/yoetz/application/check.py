@@ -109,7 +109,6 @@ from yoetz.kernel.claims import (
     result_is_relevant_to_claim,
 )
 from yoetz.kernel.closure_class import (
-    FindingClosureClass,
     ObligationClosure,
     ObligationClosureClass,
     closure_counts,
@@ -1340,16 +1339,12 @@ def build_finding_checklist(
     counts = todo_counts(
         projection, (todo.finding_id for todo in todos), attempt_budget=attempt_budget
     )
-    open_closures = tuple(
-        closures[todo.finding_id]
-        for todo in todos
-        if todo.state is FindingTodoState.OPEN and todo.finding_id in closures
-    )
-    awaiting = sum(
-        closure.closure_class is FindingClosureClass.AWAITING_RULING for closure in open_closures
-    )
     counted = closure_counts(closures.values(), ())
-    work = counts.open - awaiting
+    # ADR-046: work is what the closure class says the agent owes (``agent_work``, including a
+    # limitation request the agent still has to disclose). A settled basis (a disclosed limitation,
+    # a rejection nobody can rule on) keeps an ``open`` to-do state but is never work.
+    awaiting = counted.findings_awaiting_ruling
+    work = counted.findings_to_do - awaiting + counted.findings_to_disclose
     next_step: Literal[
         "decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"
     ]
@@ -1429,7 +1424,8 @@ def build_overall_next(
     open_refs = _bounded_overall_refs(
         item.finding_id
         for item in checklist.items
-        if item.todo_state == "open" and item.closure_class != "awaiting_ruling"
+        if item.closure_class == "agent_work"
+        or (item.closure_class is None and item.todo_state == "open")
     )
     if open_refs:
         return CheckOverallNext(
@@ -1719,20 +1715,22 @@ async def _attach_finding_checklist(
             record_unexpected_exception_without_raising(
                 exc, component="check", operation="closure_basis_read"
             )
+        if loaded is None:
+            # The closure classes need the ledger prefix (can a reviewer still rule, which
+            # obligations are emptied or blocked). Without it any class would be a guess that
+            # status, reading the real basis, could contradict; the check is returned without the
+            # list, like every other failed read here (the diagnostic above is the trace).
+            return result
         checklist = build_finding_checklist(
-            projection, attempt_budget=budget, records=() if loaded is None else loaded.records
+            projection, attempt_budget=budget, records=loaded.records
         )
         overall_next = build_overall_next(
             result,
             checklist,
             projection,
             coverage_by_ref,
-            obligations=None if loaded is None else loaded.basis.obligations,
-            predicted_conclusion=(
-                None
-                if loaded is None
-                else predict_receipt_conclusion(loaded.basis).conclusion.value
-            ),
+            obligations=loaded.basis.obligations,
+            predicted_conclusion=predict_receipt_conclusion(loaded.basis).conclusion.value,
         )
         return replace(
             result,

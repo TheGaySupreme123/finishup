@@ -77,21 +77,19 @@ def receipt_blocking_finding_count(
     history. A non-actionable finding, a limitation the reviewer asked the agent to state, a
     ``rejection_accepted``, ``self_verified`` or ``disputed_after_rebuttal`` row and an
     acknowledged bookkeeping finding do not count: they stay disclosed and cap the conclusion at
-    ``insufficient_coverage``. A linked ``duplicate_of`` row counts once with the finding it
-    duplicates. ``records`` (the prefix the projection replays) lets the classifier know whether
+    ``insufficient_coverage``. A linked ``duplicate_of`` group counts once, as its most severe member
+    (``counted_findings``). ``records`` (the prefix the projection replays) lets the classifier know whether
     the route can still rule on a rejection.
     """
 
-    from yoetz.kernel.closure_class import ReceiptEffect, finding_closures
+    from yoetz.kernel.closure_class import ReceiptEffect, counted_findings, finding_closures
 
-    return len(
-        {
-            closure.counts_as
-            for closure in finding_closures(
-                projection, records=records, with_self_verify=False
-            ).values()
-            if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
-        }
+    return sum(
+        1
+        for closure in counted_findings(
+            finding_closures(projection, records=records, with_self_verify=False).values()
+        ).values()
+        if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
     )
 
 

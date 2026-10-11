@@ -511,3 +511,144 @@ def test_replaying_the_same_state_gives_the_same_classes() -> None:
         FindingClosureClass.AGENT_WORK,
         FindingClosureClass.AWAITING_RULING,
     ]
+
+
+# -- Duplicates count once, as the most severe member of the group (ADR-046) --------------------
+
+
+def _duplicate_pair(
+    first: Finding,
+    first_response: ResponseDisposition | None,
+    *,
+    first_reasoned: bool = True,
+):
+    """Finding 1 (the root, optionally answered) and finding 2 answered ``duplicate_of`` it."""
+
+    second = _finding(2, semantic=True, next_step="act")
+    findings = {fnd(1): finding_record(first, 4), fnd(2): finding_record(second, 6)}
+    responses = {
+        fnd(2): record(
+            ResponseRecordedPayload(
+                fnd(2),
+                Frontier(5, _DIGEST),
+                ResponseDisposition.DUPLICATE_OF,
+                None,
+                duplicate_of_finding_id=fnd(1),
+            ),
+            8,
+        )
+    }
+    if first_response is not None:
+        responses[fnd(1)] = _response(1, first_response, reasoned=first_reasoned)
+    return _state(findings, responses)
+
+
+def _group_views(state: ProjectionState):
+    """Every consumer of the group selection: counters, receipt count, readiness, prediction."""
+
+    from yoetz.kernel.receipt_capacity import receipt_blocking_finding_count
+    from yoetz.kernel.receipt_prediction import ClosureBasis, predict_receipt_conclusion
+
+    closures = finding_closures(state)
+    counts = closure_counts(closures.values(), ())
+    prediction = predict_receipt_conclusion(
+        ClosureBasis(Frontier(20, _DIGEST), tuple(closures.values()), (), (), None)
+    )
+    return closures, counts, receipt_blocking_finding_count(state, ()), prediction
+
+
+def test_a_root_limitation_request_with_an_act_duplicate_counts_the_unresolved_member() -> None:
+    state = _duplicate_pair(_finding(1, semantic=True, next_step=_LIMITATION_STEP), None)
+    closures, counts, blocking, prediction = _group_views(state)
+    assert closures[fnd(2)].counts_as == fnd(1)
+    # The duplicate (an ordinary open finding) is the more severe member of the group.
+    assert (counts.findings_to_do, counts.findings_to_disclose, counts.findings_unmet) == (1, 0, 0)
+    assert blocking == counts.receipt_blocking_findings == 1
+    assert prediction.conclusion.value == "unresolved_findings_remain"
+    assert "findings_to_do" in [reason.code for reason in prediction.reasons]
+
+
+@pytest.mark.parametrize(
+    ("root_response", "root_basis"),
+    [
+        (ResponseDisposition.ACKNOWLEDGED, "limitation_disclosed"),
+        (ResponseDisposition.REJECTED, "rejected_review_unavailable"),
+    ],
+)
+def test_a_settled_root_never_hides_an_unresolved_duplicate(
+    root_response: ResponseDisposition, root_basis: str
+) -> None:
+    first = _finding(1, semantic=True, next_step=_LIMITATION_STEP)
+    state = _duplicate_pair(first, root_response)
+    closures = finding_closures(state, review_can_rule_=False)
+    assert closures[fnd(1)].basis == root_basis
+    counts = closure_counts(closures.values(), ())
+    # Whatever the duplicate's own class, one group yields exactly one counted finding and the
+    # three consumers (counters, receipt count, prediction) read the same representative.
+    # The root's settled class would count the group as disclosed; the open duplicate answers for
+    # the group, so it stays work and the receipt keeps unresolved_findings_remain.
+    assert closures[fnd(2)].basis == "open_answered"
+    assert (counts.findings_to_do, counts.findings_disclosed, counts.findings_to_disclose) == (
+        1,
+        0,
+        0,
+    )
+    assert counts.receipt_blocking_findings == 1
+
+
+def test_the_representative_is_the_most_severe_member_with_a_deterministic_tiebreak() -> None:
+    from yoetz.kernel.closure_class import counted_findings
+
+    def closure(number: int, basis: str, counts_as: int = 1):
+        from yoetz.kernel.closure_class import FINDING_BASES, FindingClosure
+
+        klass, effect = FINDING_BASES[basis]
+        return FindingClosure(
+            fnd(number), klass, basis, effect, ("none",), None, (), fnd(counts_as)
+        )
+
+    order = [
+        "open_answered",  # unresolved, agent_work
+        "rejected_awaiting_ruling",  # unresolved, awaiting_ruling
+        "acknowledged_not_done_requirement",  # unresolved, settled_unmet
+        "limitation_requested",  # insufficient, agent_work
+        "limitation_disclosed",  # insufficient, settled_disclosed
+        "rejection_accepted",  # none
+        "absence_proved",  # none, resolved
+    ]
+    for index, worse in enumerate(order[:-1]):
+        for better in order[index + 1 :]:
+            for rows in (
+                [closure(1, worse), closure(2, better)],
+                [closure(1, better), closure(2, worse)],
+            ):
+                chosen = counted_findings(rows)
+                assert len(chosen) == 1 and next(iter(chosen.values())).basis == worse, (
+                    worse,
+                    better,
+                )
+    tie = counted_findings([closure(2, "open_answered"), closure(1, "open_answered")])
+    assert next(iter(tie.values())).finding_id == fnd(1)
+    tie_reversed = counted_findings([closure(1, "open_answered"), closure(2, "open_answered")])
+    assert next(iter(tie_reversed.values())).finding_id == fnd(1)
+
+
+# -- The reopened basis -------------------------------------------------------------------------
+
+
+def test_a_reopened_finding_is_agent_work_under_the_reopened_basis() -> None:
+    _, closure = _one(_finding(1), ResponseDisposition.REOPENED)
+    assert (closure.closure_class, closure.basis, closure.receipt_effect.value) == (
+        FindingClosureClass.AGENT_WORK,
+        "reopened",
+        "unresolved_findings_remain",
+    )
+
+
+def test_readiness_names_the_same_group_representative_as_the_counters() -> None:
+    from yoetz.kernel.closure_readiness import closure_readiness_facts
+
+    state = _duplicate_pair(_finding(1, semantic=True, next_step=_LIMITATION_STEP), None)
+    _, counts, blocking, _ = _group_views(state)
+    facts = closure_readiness_facts(state, ())
+    assert len(facts.receipt_blocking_finding_ids) == blocking == counts.receipt_blocking_findings

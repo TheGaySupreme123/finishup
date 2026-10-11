@@ -1329,7 +1329,7 @@ def _closure_verdict_fields(
     fields: dict[str, Any] = {}
     findings = facts.finding_closures
     if findings is not None:
-        counts = closure_counts(findings, facts.obligation_closures)
+        counts = closure_counts(findings, facts.obligation_closures or ())
         fields["finding_counts"] = StatusFindingCountsModel(
             to_do=str(counts.findings_to_do),
             awaiting_ruling=str(counts.findings_awaiting_ruling),
@@ -1372,7 +1372,7 @@ def _closure_verdict_fields(
                 }
             )
             for item in rechecks_from_closures(
-                facts.obligation_closures,
+                facts.obligation_closures or (),
                 facts,
                 acknowledged_count=checklist.acknowledged_not_done_count,
             )

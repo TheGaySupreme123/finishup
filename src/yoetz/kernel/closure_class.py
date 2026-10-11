@@ -546,7 +546,11 @@ def finding_closure(
     return _make(
         state,
         finding,
-        "open_answered" if disposition is not None else "open_unanswered",
+        "reopened"
+        if disposition is ResponseDisposition.REOPENED
+        else "open_answered"
+        if disposition is not None
+        else "open_unanswered",
         tuple(actions),
         since=response_frontier,
         sources=response_event,
@@ -584,7 +588,11 @@ def finding_closures(
             first = finding_closure(
                 state, finding.finding_id, records=records, review_can_rule_=can_rule
             )
-            if first is not None and first.basis in {"open_unanswered", "open_answered"}:
+            if first is not None and first.basis in {
+                "open_unanswered",
+                "open_answered",
+                "reopened",
+            }:
                 from yoetz.kernel.self_verification import self_verification_refusal
 
                 eligible = self_verification_refusal(state, finding.finding_id, records) is None
@@ -680,17 +688,39 @@ def obligation_closure(
     return obligation_closures(state, records=records).get(obligation_id)
 
 
-def counted_findings(findings: Iterable[FindingClosure]) -> dict[FindingId, FindingClosure]:
-    """One closure per counted finding: a linked ``duplicate_of`` chain reads as its earliest finding.
+_EFFECT_SEVERITY: Final = {_UNRESOLVED: 0, _INSUFFICIENT: 1, _NONE: 2}
+_CLASS_SEVERITY: Final = {
+    _F.AGENT_WORK: 0,
+    _F.AWAITING_RULING: 1,
+    _F.SETTLED_UNMET: 2,
+    _F.SETTLED_DISCLOSED: 3,
+    _F.RESOLVED: 4,
+}
 
-    Every counter, reason and list that names findings reads this one selection, so a count and
-    the ids it summarises can never differ.
+
+def _severity_key(closure: FindingClosure) -> tuple[int, int, bytes]:
+    return (
+        _EFFECT_SEVERITY[closure.receipt_effect],
+        _CLASS_SEVERITY[closure.closure_class],
+        str(closure.finding_id).encode(),
+    )
+
+
+def counted_findings(findings: Iterable[FindingClosure]) -> dict[FindingId, FindingClosure]:
+    """One closure per counted finding: a ``counts_as`` group is represented by its most severe member.
+
+    Severity orders by receipt effect (``unresolved_findings_remain`` before
+    ``insufficient_coverage`` before ``none``), then by class (``agent_work``,
+    ``awaiting_ruling``, ``settled_unmet``, ``settled_disclosed``, ``resolved``), then by finding
+    id, so the representative is deterministic and a group never reads cleaner than its worst
+    member. Every counter, reason, list and readiness id that names findings reads this one
+    selection (ADR-046), so a count and the ids it summarises can never differ.
     """
 
     seen: dict[FindingId, FindingClosure] = {}
     for closure in findings:
         prior = seen.get(closure.counts_as)
-        if prior is None or closure.finding_id == closure.counts_as:
+        if prior is None or _severity_key(closure) < _severity_key(prior):
             seen[closure.counts_as] = closure
     return seen
 
