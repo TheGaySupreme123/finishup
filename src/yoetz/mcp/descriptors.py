@@ -1427,7 +1427,7 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
                 "evidence_refs (at least one) cite your recorded evidence; it is final. "
                 "Acknowledged_not_done means you will not or cannot do it and is the last resort; "
                 "reopened (reason required) takes it back so the finding is open again, and a "
-                "later check that proves the issue absent after your answer resolves it by "
+                "later check that finds the issue absent after your answer resolves it by "
                 "itself. Duplicate_of is only for a restatement of the SAME issue (same origin "
                 "and kind) as an earlier finding you answered: name it in duplicate_of_finding_id; "
                 "reason and evidence are optional and it is not final. Linking never resolves the "
@@ -2120,7 +2120,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:f4e91ea5ae6138ca381d3a990340067b6e28a545340eec9c0ca4737a18f06166",
-                "respond": "sha256:cdac44bae4de573707ba1f1f5f5b12bb8391c7193c7260efc93c8181411ab71f",
+                "respond": "sha256:d86e95eeb832b2213dedc5fbecc3febf6f8073a59bd75f4303a067a4af94d684",
                 "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:874876f601c5eb51d0b2059f71c4def9b59be842fbf4d59ac888146d6c8994b8",
@@ -2132,7 +2132,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:3cd2326917a550c0a24f3e94c6141f41b1549107030154c3e5b29f46bfaef78b",
-                "respond": "sha256:cdac44bae4de573707ba1f1f5f5b12bb8391c7193c7260efc93c8181411ab71f",
+                "respond": "sha256:d86e95eeb832b2213dedc5fbecc3febf6f8073a59bd75f4303a067a4af94d684",
                 "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:874876f601c5eb51d0b2059f71c4def9b59be842fbf4d59ac888146d6c8994b8",
@@ -2143,8 +2143,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:bbb25999ea58f9f275c1eacd1a20b4793098c49a8892b067f29f74a79932f997",
-        "strict": "sha256:61fc5da787955d9278413533e155601274edae098cee996141a7d701a30688d6",
+        "policy": "sha256:85a82f2f5b951a437da862c9cf8a2450a5d9c5a52f229e55f60015964e70460e",
+        "strict": "sha256:4cab44f65f2000795f95642bb2812fafba62b847334a0a3373e0fdbe71c7ff11",
     }
 )
 
