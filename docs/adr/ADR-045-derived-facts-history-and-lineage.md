@@ -124,8 +124,9 @@ facts: `declared_output_emptied`, `declared_output_removed`, `declared_output_no
 `domain/command_segments.canonical_words` reduces one simple command to its canonical argv: leading
 `VAR=value` assignments and the wrappers `timeout`, `nice`, `ionice`, `nohup`, `stdbuf`, `env`,
 `setsid`, `time`, `command`, `exec` and `uv`/`poetry`/`pipenv`/`pdm`/`hatch`/`rye run` dropped,
-argv[0] reduced to its basename, `python3` and `pythonX.Y` to `python`, `python -m pytest` and
-`py.test` to `pytest`. Arguments are never reordered or rewritten: two commands that run different
+argv[0] reduced to its basename, `python3` and `pythonX.Y` to `python` (dropping only `-u`, `-B`
+and `-q`; `-O`, `-W`, `-X`, `-E`, `-I`, `-s` and `-S` can change what a verifier does and stay),
+`python -m pytest` and `py.test` to `pytest`. Arguments are never reordered or rewritten: two commands that run different
 things never share a form. The hook commits, beside the whole-command and segment commitments, three
 domain-separated kinds per simple command (`canonical_command_commitments`): `full` (the whole
 canonical argv), `prefix` (each leading run of two or more arguments) and `flag` (one per argument
@@ -160,7 +161,11 @@ cmp ...` is composed and classes `compound`, yet it is the check the task named.
 writes include a workspace path carries `write_scope: workspace` (a real outside-workspace write
 already carried `outside_workspace`); the kernel counts both as edits. The agent's own working notes
 (`NOTES.md`, `todo.txt`; `.log` is never named by extension) are the new non-counting `notes` scope,
-overridden by a declared output of that name.
+overridden by a declared output of that name. A command that writes only notes, Yoetz material or
+scratch carries that same non-counting scope (so the declared-output override applies to a shell
+write as to an edit tool), a quoted operator or the word `tee` is text and not a write, a write
+inside `bash -lc '...'` is attributed, and a shell command that wrote counts as an edit whatever its
+exit status (`: > f; false` emptied `f`).
 
 ### 4. What counts as an attempt
 
