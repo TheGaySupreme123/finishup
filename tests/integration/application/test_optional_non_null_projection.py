@@ -69,6 +69,7 @@ from yoetz.protocol.models import (
     ChildDependencySnapshotModel,
     ChildFindingSnapshotModel,
     DataCategory,
+    FactLineageModel,
     ProjectTextRefModel,
     PublicErrorModel,
     PublishWorkAcceptedEventModel,
@@ -218,6 +219,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "observations_awaited",
                 # Issue #986 (E2): written only as ``false``.
                 "semantic_route_required",
+                # ADR-045: absent when the check carries no derived fact.
+                "fact_lineage",
             }
         ),
     ),
@@ -287,6 +290,28 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "limitation_refs_required_count",
                 "acknowledged_obligation_count",
                 "check_cause",
+                # ADR-045: absent when the readiness lists no derived fact.
+                "fact_lineage",
+            }
+        ),
+    ),
+    (
+        FactLineageModel,
+        frozenset(
+            {
+                "obligation_id",
+                "item_index",
+                "check_event_id",
+                "frontier",
+                "prior_event_id",
+                "prior_frontier",
+                "prior_size_bytes",
+                "prior_lines",
+                "now_size_bytes",
+                "now_lines",
+                "proof",
+                "basis",
+                "accepted_by",
             }
         ),
     ),
@@ -1184,6 +1209,21 @@ def test_status_closure_readiness_omits_an_unset_checklist() -> None:
     dumped = parsed.model_dump(mode="json", exclude_unset=True)
     assert not StatusClosureReadinessModel.optional_non_null_fields & dumped.keys()
     assert dumped["no_obligations_reason"] is None
+    # ADR-045: a readiness with no derived fact lists no lineage; null is refused, not tolerated
+    # (the service once sent ``null`` here and every status read failed).
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        StatusClosureReadinessModel.model_validate({**dumped, "fact_lineage": None})
+
+
+def test_fact_lineage_omits_every_unset_field() -> None:
+    """A lineage entry is closed tokens and counts; whatever it does not know is absent."""
+
+    minimal = {"code": "declared_output_emptied", "rule": "deliverable_read", "state": "emptied"}
+    dumped = FactLineageModel.model_validate(minimal).model_dump(mode="json", exclude_unset=True)
+    assert dumped == minimal
+    for field in FactLineageModel.optional_non_null_fields:
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            FactLineageModel.model_validate({**minimal, field: None})
 
 
 def test_checklist_counts_omit_an_unset_disputed_count() -> None:
@@ -1246,6 +1286,8 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
         assert "semantic_redacted_values" not in projected_check
         assert "observations_awaited" not in projected_check
         assert "review_input_manifest" not in projected_check
+        # ADR-045: a check with no derived fact lists no lineage (absent, not an empty list).
+        assert "fact_lineage" not in projected_check
         # Issue #961: reviewer output is absent on a deterministic check; frozen-work totals and
         # the overall continuation are filled on every new check but stay optional for legacy rows.
         assert not {"semantic_conclusion", "review_summary", "verified"} & projected_check.keys()
@@ -1267,6 +1309,7 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
             "overall_next",
             "semantic_redacted_values",
             "observations_awaited",
+            "fact_lineage",
         ):
             unset = {key: value for key, value in projected_check.items() if key != field}
             model = CheckSuccessModel.model_validate(unset)
@@ -1650,6 +1693,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "acknowledged_obligation_count",
         # tb4n3 RC-6: absent unless it explains a listed check_not_applicable / earlier-frontier item.
         "check_cause",
+        # ADR-045: absent when the readiness lists no derived fact.
+        "fact_lineage",
     ):
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (
@@ -1686,11 +1731,14 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
                 "semantic_redacted_values",
                 "observations_awaited",
                 "semantic_route_required",
+                "fact_lineage",
             ),
         ),
     ):
         for field in fields:
             covered[model, field] = "test_root_start_and_check_omit_unset_multi_agent_fields"
+    for field in FactLineageModel.optional_non_null_fields:
+        covered["FactLineageModel", field] = "test_fact_lineage_omits_every_unset_field"
     covered["CheckAwaitingHumanModel", "specification_preflight"] = (
         "test_nested_multi_agent_results_omit_unset_fields"
     )

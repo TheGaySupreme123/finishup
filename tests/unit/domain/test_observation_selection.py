@@ -160,7 +160,10 @@ def test_json_result_outcome_is_bounded_and_closed() -> None:
         ("rg -n observation src", "exploration"),
         ("rg --pre ./prepare term src", "other"),
         ("find src -exec pytest {} +", "other"),
-        ("pytest tests/unit && ruff check src", "compound"),
+        # ADR-045: a composition is classed by its strongest verification, not left ``compound``.
+        ("pytest tests/unit && ruff check src", "test"),
+        ("cd /app && ls src", "compound"),
+        ("cat notes.txt > copy.txt", "compound"),
         ("pytest tests/unit", "test"),
     ],
 )

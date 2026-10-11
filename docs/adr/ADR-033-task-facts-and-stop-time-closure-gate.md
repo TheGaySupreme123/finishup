@@ -615,3 +615,20 @@ joins `STOP_GATE_TOKENS` and the observation-dependent set. `requested_item_neve
 names a `role: input` item and waits for a completion claim or published work on that obligation;
 a research action is not acting. Task facts that do not bear on a finding no longer refuse
 `respond self_verified` (ADR-034); readiness and the gate stay task-wide.
+
+## Amendment (tb4n3 RC-5, issue #1028, ADR-045): command identity and lineage
+
+A planned verification matches an observed run by more than its exact text. The hook commits three
+domain-separated canonical kinds beside the whole-command and segment commitments (`full`:
+wrappers `timeout`/`nice`/`env`/`nohup`/`stdbuf` and `VAR=` dropped, argv[0] by basename,
+`python3` to `python`, `python -m pytest` to `pytest`; `prefix`: each leading run of two or more
+arguments; `flag`: each argument after argv[0]); `task_facts.planned_match` reports `exact`,
+`normalized`, `prefix` or `flags`. The first two are clean. A prefix or flags match counts as run
+and raises the standing disclosure `planned_verification_matched_by_prefix` (lineage names the
+observed run); like `planned_verification_agent_linked` it does not bound the conclusion. The
+runner class of a composed command is its strongest verifying segment, and a run that matches a
+planned command is a verification run whatever its class, so
+`edited_after_last_verification` is no longer dormant behind `compound`/`other`, and a shell
+command that visibly writes into the workspace is an edit (`write_scope: workspace`). Every
+derived task fact carries a `FactLineage` (rule, subject, observing check and frontier, prior state,
+supporting events) shown on status, the check result, the Stop-gate text and the receipt.

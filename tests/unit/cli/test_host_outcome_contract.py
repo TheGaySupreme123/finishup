@@ -311,7 +311,9 @@ def test_masking_compound_shell_preserves_outer_zero_and_records_nested_gap() ->
         event_ordinal=1,
         key_material=_KEY,
     )
-    assert envelope.structural_payload["runner_class"] == "compound"
+    # ADR-045: a composition is classed by its strongest verification (the test run), while the
+    # nested-status limitation stays raised for any masking shape.
+    assert envelope.structural_payload["runner_class"] == "test"
     assert envelope.structural_payload["exit_status"] == 0
     assert envelope.structural_payload["success"] is True
     assert "compound_outcome_unavailable" in envelope.gap_codes
@@ -334,7 +336,9 @@ def test_and_compound_shell_zero_proves_each_chain_member() -> None:
         event_ordinal=1,
         key_material=_KEY,
     )
-    assert envelope.structural_payload["runner_class"] == "compound"
+    assert (
+        envelope.structural_payload["runner_class"] == "test"
+    )  # ADR-045: classed by its strongest verification
     assert envelope.structural_payload["exit_status"] == 0
     assert "compound_outcome_unavailable" not in envelope.gap_codes
 

@@ -2866,6 +2866,197 @@ def check_change_files_from_json(value: object) -> CheckChangeShownFiles:
     )
 
 
+# ADR-045: what one check read of a declared output file, and what the check concluded from it
+# and from the earlier checks of the same path. Closed tokens, counts and ids only; the path is a
+# keyed commitment, never text.
+DELIVERABLE_CHANGES: Final = ("emptied", "truncated", "removed", "unchanged")
+DELIVERABLE_PROOFS: Final = ("task_base", "earlier_check")
+DELIVERABLE_BASES: Final = ("delivered", "verified", "present")
+MAX_DELIVERABLE_STATES: Final = 64
+
+
+@dataclass(frozen=True, slots=True)
+class DeliverableState:
+    """One declared output file as a check read it (ADR-045, ``check_recorded`` 1.4.0).
+
+    ``path_key`` is a keyed commitment to the root-relative path (``None`` when the installation
+    key was not available, which only costs history, never correctness): the key is the path, not
+    the obligation, so republishing an obligation or declaring a second one on the same path does
+    not start a new history. ``size_bytes`` and ``lines`` are what the check read (``None`` when
+    unknown); ``base_lines`` the line count of the tracked file at the task base. ``basis`` says
+    why this state counts as a delivery: ``delivered`` (an obligation declaring the path was
+    resolved or claimed complete at this check), ``verified`` (a passing verification run was
+    observed while the file had content) or ``present`` (neither). ``change`` is the check's
+    conclusion against the history (``emptied``, ``truncated``, ``removed``, ``unchanged``), with
+    ``proof`` saying how earlier content is known and ``prior_*`` the last state that held
+    content: its size, line count, check event and subject frontier. ``accepted_by`` is the
+    ``yoetz-assumption`` decision that names this path, which stops the fact from firing while the
+    state itself stays on the record.
+    """
+
+    obligation_id: ObligationId
+    item_index: int
+    path_key: str | None = None
+    size_bytes: int | None = None
+    lines: int | None = None
+    base_lines: int | None = None
+    basis: str = "present"
+    change: str | None = None
+    proof: str | None = None
+    prior_size_bytes: int | None = None
+    prior_lines: int | None = None
+    prior_event_id: EventId | None = None
+    prior_frontier: int | None = None
+    accepted_by: EventId | None = None
+    # The file is a type the review packet never carries (binary by Git's NUL sniff, or an
+    # unlisted file with a binary suffix) and a review ran: the deliverable was not reviewed.
+    unreviewable: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "obligation_id", obligation_id(self.obligation_id))
+        object.__setattr__(self, "item_index", _bounded_integer(self.item_index, 0, 63))
+        if type(self.unreviewable) is not bool:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.path_key is not None:
+            validate_commitment(self.path_key)
+        for name in ("size_bytes", "lines", "base_lines", "prior_size_bytes", "prior_lines"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _bounded_integer(value, 0, _MAX_SAFE_INTEGER))
+        if self.prior_frontier is not None:
+            object.__setattr__(
+                self, "prior_frontier", _bounded_integer(self.prior_frontier, 0, _MAX_SAFE_INTEGER)
+            )
+        for name in ("prior_event_id", "accepted_by"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, event_id(value))
+        if type(self.basis) is not str or self.basis not in DELIVERABLE_BASES:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.change is not None and (
+            type(self.change) is not str or self.change not in DELIVERABLE_CHANGES
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.proof is not None and (
+            type(self.proof) is not str or self.proof not in DELIVERABLE_PROOFS
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.change in {"emptied", "truncated"} and self.proof is None:
+            # The fact fires only with proof of earlier content; a record cannot say otherwise.
+            raise ProtocolValueError("invalid_event_value_type")
+        if (self.prior_event_id is None) != (self.prior_frontier is None):
+            raise ProtocolValueError("invalid_event_value_type")
+
+    def as_wire(self) -> dict[str, JsonValue]:
+        wire: dict[str, JsonValue] = {
+            "basis": self.basis,
+            "item_index": self.item_index,
+            "obligation_id": self.obligation_id,
+        }
+        if self.unreviewable:
+            wire["unreviewable"] = True
+        for name in (
+            "path_key",
+            "size_bytes",
+            "lines",
+            "base_lines",
+            "change",
+            "proof",
+            "prior_size_bytes",
+            "prior_lines",
+            "prior_event_id",
+            "prior_frontier",
+            "accepted_by",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                wire[name] = value
+        return wire
+
+    @classmethod
+    def from_wire(cls, value: object) -> DeliverableState:
+        source = _closed_object(
+            value,
+            required=frozenset({"basis", "item_index", "obligation_id"}),
+            optional=frozenset(
+                {
+                    "path_key",
+                    "size_bytes",
+                    "lines",
+                    "base_lines",
+                    "change",
+                    "proof",
+                    "prior_size_bytes",
+                    "prior_lines",
+                    "prior_event_id",
+                    "prior_frontier",
+                    "accepted_by",
+                    "unreviewable",
+                }
+            ),
+        )
+
+        def integer(name: str) -> int | None:
+            value = source.get(name)
+            if value is None:
+                return None
+            if type(value) is not int:
+                raise ProtocolValueError("invalid_event_value_type")
+            return value
+
+        def text(name: str) -> str | None:
+            value = source.get(name)
+            if value is None:
+                return None
+            if type(value) is not str:
+                raise ProtocolValueError("invalid_event_value_type")
+            return value
+
+        item_index = _field(source, "item_index")
+        basis = _field(source, "basis")
+        obligation = _field(source, "obligation_id")
+        unreviewable = source.get("unreviewable", False)
+        if (
+            type(item_index) is not int
+            or type(basis) is not str
+            or type(obligation) is not str
+            or type(unreviewable) is not bool
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        prior_event = text("prior_event_id")
+        accepted = text("accepted_by")
+        return cls(
+            obligation_id=obligation_id(obligation),
+            item_index=item_index,
+            path_key=text("path_key"),
+            size_bytes=integer("size_bytes"),
+            lines=integer("lines"),
+            base_lines=integer("base_lines"),
+            basis=basis,
+            change=text("change"),
+            proof=text("proof"),
+            prior_size_bytes=integer("prior_size_bytes"),
+            prior_lines=integer("prior_lines"),
+            prior_event_id=None if prior_event is None else event_id(prior_event),
+            prior_frontier=integer("prior_frontier"),
+            accepted_by=None if accepted is None else event_id(accepted),
+            unreviewable=unreviewable,
+        )
+
+
+def validate_deliverable_states(value: object) -> tuple[DeliverableState, ...]:
+    """The bounded, ordered, duplicate-free deliverable states of one check."""
+
+    raw = _tuple(value, 0, MAX_DELIVERABLE_STATES)
+    if any(type(item) is not DeliverableState for item in raw):
+        raise ProtocolValueError("invalid_event_value_type")
+    states = cast(tuple[DeliverableState, ...], raw)
+    keys = tuple((str(item.obligation_id).encode(), item.item_index) for item in states)
+    if keys != tuple(sorted(set(keys))):
+        raise ProtocolValueError("duplicate_set_member")
+    return states
+
+
 @dataclass(frozen=True, slots=True)
 class CheckRecordedPayload:
     mode: CheckMode
@@ -2916,6 +3107,10 @@ class CheckRecordedPayload:
     # it); a route that required review omits it, so those checks and every older check keep
     # their bytes. Absent or ``True`` keeps ``semantic_review_not_requested`` blocking.
     semantic_route_required: bool | None = None
+    # ADR-045 (tb4n3 RC-5, 1.4.0 only): how each declared output file read at this check stood and
+    # what the check concluded from it and from the earlier checks of the same path. Empty when
+    # the check read no declared output file, so those checks keep their bytes.
+    deliverable_states: tuple[DeliverableState, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", _exact_enum(self.mode, CheckMode))
@@ -3070,6 +3265,9 @@ class CheckRecordedPayload:
             and type(self.semantic_route_required) is not bool
         ):
             raise ProtocolValueError("invalid_event_value_type")
+        object.__setattr__(
+            self, "deliverable_states", validate_deliverable_states(self.deliverable_states)
+        )
         if type(self.engine_version) is not str or self.engine_version != "0.1.0":
             raise ProtocolValueError("invalid_event_value_type")
         if type(self.projection_version) is not str or self.projection_version != "yoetz/0.1.0":
@@ -4018,6 +4216,7 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
                     "semantic_withheld_item_ids",
                     "semantic_redacted_values",
                     "semantic_route_required",
+                    "deliverable_states",
                     "review_input_manifest",
                     "totals",
                 }
@@ -4549,6 +4748,10 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 _optional(source, "review_input_manifest")
             ),
             semantic_route_required=cast(bool | None, _optional(source, "semantic_route_required")),
+            deliverable_states=tuple(
+                DeliverableState.from_wire(item)
+                for item in _array(_optional(source, "deliverable_states") or ())
+            ),
             totals=(
                 None
                 if _optional(source, "totals") is None
@@ -5096,6 +5299,9 @@ def encode_payload(payload: EventPayload) -> JsonValue:
         )
         _optional_value(result, "review_input_manifest", value.review_input_manifest)
         _optional_value(result, "semantic_route_required", value.semantic_route_required)
+        _optional_tuple(
+            result, "deliverable_states", tuple(item.as_wire() for item in value.deliverable_states)
+        )
         _optional_value(result, "totals", value.totals)
         return _json_object(result)
     if payload_type is ReceiptRecordedPayload:
@@ -5173,6 +5379,7 @@ def _validate_event_schema_payload(
             or payload.totals is not None
             or bool(payload.semantic_redacted_values)
             or payload.semantic_route_required is not None
+            or bool(payload.deliverable_states)
         )
         if has_review_output:
             if schema.version != REVIEW_CHECK_EVENT_SCHEMA_VERSION:

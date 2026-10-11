@@ -271,13 +271,29 @@ def test_shell_redirect_scope(tmp_path: Path) -> None:
         _facts("Bash", {"command": "echo x | tee /opt/elsewhere/y"}, tmp_path)["write_scope"]
         == "outside_workspace"
     )
-    for harmless in (
-        "echo x > /dev/null",
-        "echo x 2>&1",
-        f"echo x > {tmp_path}/ok",
-        "echo x > relative/ok",
-    ):
+    for harmless in ("echo x > /dev/null", "echo x 2>&1"):
         assert "write_scope" not in _facts("Bash", {"command": harmless}, tmp_path), harmless
+
+
+def test_printing_an_operator_or_tee_is_not_an_outside_write(tmp_path: Path) -> None:
+    """Text is not syntax, at the hook entry point and for absolute paths (Codex review, #1028)."""
+
+    for printed in (
+        'echo ">" /etc/motd',
+        "echo tee /etc/motd",
+        "echo 'a > /etc/motd'",
+        "echo \\> /etc/motd",
+        "echo hi # > /etc/motd",
+    ):
+        assert "write_scope" not in _facts("Bash", {"command": printed}, tmp_path), printed
+    # The shell the host wraps the command in still runs the real write.
+    wrapped = _facts("Bash", {"command": "/bin/bash -lc 'echo x > /etc/motd'"}, tmp_path)
+    assert wrapped["write_scope"] == "outside_workspace"
+    # ADR-045: a command that visibly writes the workspace is an edit, so it says so.
+    for workspace_write in (f"echo x > {tmp_path}/ok", "echo x > relative/ok"):
+        assert (
+            _facts("Bash", {"command": workspace_write}, tmp_path)["write_scope"] == "workspace"
+        ), workspace_write
 
 
 def test_effective_user_only_for_shell_tools(tmp_path: Path) -> None:

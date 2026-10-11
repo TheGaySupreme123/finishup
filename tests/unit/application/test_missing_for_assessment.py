@@ -27,6 +27,7 @@ from builders.policy_cases import (
 from builders.privacy_policies import local_only_policy, minimal_external_policy
 from yoetz.application.missing_for_assessment import (
     check_change_binary_paths,
+    check_change_text_paths,
     review_missing_for_assessment,
     supplied_since,
     unsuppliable_missing_kinds,
@@ -1222,11 +1223,16 @@ def _requesting(number: int, *files: str) -> ObligationPublishedPayload:
 
 
 def test_an_other_item_is_a_yoetz_limit_only_when_every_requested_output_is_binary() -> None:
-    """tb4n1 review: cad-model's unseen schematic is a limit; satb's unwritten score is work."""
+    """tb4n1 review: cad-model's unseen schematic is a limit; satb's unwritten score is work.
+
+    tb4n3 (ADR-045): ISO 10303-21 ``.step`` is ASCII, so a request in scope of a ``.step`` file
+    is the agent's work (the reviewer may be asking for exactly that file); a native CAD part is
+    the limit.
+    """
 
     cad = make_case(
         obligations={
-            obl(3): obligation_record(_requesting(3, "/app/part.step", "/app/part.png"), 3)
+            obl(3): obligation_record(_requesting(3, "/app/part.sldprt", "/app/part.png"), 3)
         },
         extra_refs=(obl(3),),
     )
@@ -1234,6 +1240,16 @@ def test_an_other_item_is_a_yoetz_limit_only_when_every_requested_output_is_bina
         cad, (), _first_request("other", str(obl(3))), unsuppliable_kinds=frozenset()
     )
     assert [item.availability for item in review.items] == ["yoetz_limit_unsupported_data_type"]
+    step = make_case(
+        obligations={
+            obl(3): obligation_record(_requesting(3, "/app/part.step", "/app/part.png"), 3)
+        },
+        extra_refs=(obl(3),),
+    )
+    review = review_missing_for_assessment(
+        step, (), _first_request("other", str(obl(3))), unsuppliable_kinds=frozenset()
+    )
+    assert [item.availability for item in review.items] == ["agent_suppliable"]
     satb = make_case(
         obligations={
             obl(3): obligation_record(_requesting(3, "/app/input.mp3", "/app/score.musicxml"), 3)
@@ -1274,7 +1290,11 @@ _A11_SUFFIXES = (
 
 
 def _named_file_review(
-    name: str, kind: str = "other", *, binary_paths: frozenset[str] = frozenset()
+    name: str,
+    kind: str = "other",
+    *,
+    binary_paths: frozenset[str] = frozenset(),
+    text_paths: frozenset[str] = frozenset(),
 ) -> list[str]:
     case = make_case(
         evidence={evd(5): evidence_record(_diff(5, name), 5)},
@@ -1287,6 +1307,7 @@ def _named_file_review(
         unsuppliable_kinds=frozenset(),
         workspace_root="/work/repo",
         binary_paths=binary_paths,
+        text_paths=text_paths,
     )
     return [item.availability for item in review.items]
 
@@ -1434,3 +1455,48 @@ def test_a_claim_target_with_only_text_evidence_stays_agent_work() -> None:
         binary_paths=frozenset({"harmony.mxl"}),
     )
     assert [item.availability for item in review.items] == ["agent_suppliable"]
+
+
+_TEXT_CHANGE = (
+    b"Yoetz check-time change: captured by the Yoetz service when this check ran.\n"
+    b"Changed files: 2 tracked, 4 untracked. Not shown: 0.\n"
+    b"Files:\n"
+    b"  ? part.step (+120 -0) untracked\n"
+    b"  ? part.stl (binary) untracked\n"
+    b"  M src/solver.c (+3 -1)\n"
+    b"  ? my part.stp (+9 -0) untracked\n"
+    b"  ? withheld.bin untracked\n"
+    b"End of header. The unified diff follows.\n"
+)
+
+
+def test_the_check_time_change_names_its_text_files() -> None:
+    """tb4n3 RC-5 (ADR-045): Git's NUL sniff lists a file with numeric line counts as text."""
+
+    text = check_change_text_paths(_binary_capture(_TEXT_CHANGE))
+    assert text == frozenset({"part.step", "src/solver.c", "my part.stp"})
+    assert check_change_binary_paths(_binary_capture(_TEXT_CHANGE)) == frozenset({"part.stl"})
+    assert check_change_text_paths(None) == frozenset()
+
+
+def test_the_content_sniff_decides_before_the_suffix() -> None:
+    """tb4n3 cad: ISO 10303-21 ``.step`` is ASCII. A listed text file is never an unsupported data
+    type by its suffix, a listed binary is whatever its name, and an unlisted file falls back to
+    the suffix."""
+
+    capture = _binary_capture(_TEXT_CHANGE)
+    binary, text = check_change_binary_paths(capture), check_change_text_paths(capture)
+    # ``.step`` and ``.stp`` are not on the suffix list at all any more.
+    assert not unsupported_data_type("out/part.step") and not unsupported_data_type("part.stp")
+    # A text file that does carry a listed binary suffix (``.key`` holding a PEM key) is text when
+    # the change listed it as text, and still a Yoetz limit when the change did not list it.
+    listed_text = frozenset({"notes.key"})
+    assert _named_file_review("notes.key", text_paths=listed_text) == ["agent_suppliable"]
+    assert _named_file_review("notes.key") == ["yoetz_limit_unsupported_data_type"]
+    # Git found it binary, whatever the name.
+    assert _named_file_review("part.stl", binary_paths=binary, text_paths=text) == [
+        "yoetz_limit_unsupported_data_type"
+    ]
+    assert _named_file_review("renamed.txt", binary_paths=frozenset({"renamed.txt"})) == [
+        "yoetz_limit_unsupported_data_type"
+    ]

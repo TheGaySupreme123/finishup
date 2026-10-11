@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from dataclasses import dataclass
 from types import MappingProxyType, SimpleNamespace
 from typing import cast
 
 import pytest
 
-from builders.observed_runs import ObservedLedger
+from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
 from yoetz.domain.events import (
     DecisionRecordedPayload,
+    DeliverableState,
     EventSchema,
     ObligationPublishedPayload,
     ObligationStatus,
@@ -19,16 +21,19 @@ from yoetz.domain.events import (
     RequestedItem,
     RequestedItemKind,
 )
-from yoetz.domain.values import ObligationId, actor_id, obligation_id
+from yoetz.domain.values import ObligationId, actor_id, event_id, obligation_id
 from yoetz.kernel import delivered_set
 from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
 from yoetz.kernel.delivered_set import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
+    DeliverableSnapshot,
+    assess_deliverables,
     content_moved_declared_items,
     declared_delivered_items,
     declared_output_removed,
+    deliverable_lineage,
     emptied_declared_items,
 )
 from yoetz.kernel.projections import ProjectionState
@@ -38,6 +43,8 @@ from yoetz.kernel.task_facts import (
     STANDING_TASK_FACT_GAPS,
     STOP_GATE_TOKENS,
     RequestedOutputState,
+    deliverable_path_identity,
+    register_command_identity_key,
 )
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
@@ -80,6 +87,40 @@ def _file(value: str) -> RequestedItem:
 
 
 _GONE = RequestedOutputState("inside", exists=False, deleted=True)
+
+
+@pytest.fixture(autouse=True)
+def installation_key() -> Iterator[None]:
+    """The path history is keyed with the installation key (ADR-045)."""
+
+    register_command_identity_key(INSTALLATION_KEY)
+    yield
+    register_command_identity_key(None)
+
+
+def _earlier(
+    relative: str,
+    *,
+    size: int = 14_900,
+    lines: int | None = 310,
+    basis: str = "delivered",
+    frontier: int = 12,
+    index: int = 0,
+) -> DeliverableSnapshot:
+    """An earlier check's recorded reading of *relative* that held content (ADR-045)."""
+
+    return DeliverableSnapshot(
+        DeliverableState(
+            obligation_id=_OBLIGATION,
+            item_index=index,
+            path_key=deliverable_path_identity(relative),
+            size_bytes=size,
+            lines=lines,
+            basis=basis,
+        ),
+        event_id("evt_00000000-0000-4000-8000-0000000000c1"),
+        frontier,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -213,7 +254,7 @@ def test_check_reports_the_gap_beside_requested_output_facts(
         }
 
     monkeypatch.setattr(check_change, "requested_output_states", states)
-    _evaluator, gaps, absent = asyncio.run(
+    _evaluator, gaps, absent, _states, _files = asyncio.run(
         check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
             SimpleNamespace(projection=projection, coverage_by_ref={}, gaps=()),  # type: ignore[arg-type]
             None,
@@ -274,7 +315,7 @@ def test_a_new_deliverable_written_in_the_session_and_now_gone_is_removed() -> N
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(check_change, "requested_output_states", states)
-        _evaluator, gaps, absent = asyncio.run(
+        _evaluator, gaps, absent, _states, _files = asyncio.run(
             check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
                 SimpleNamespace(projection=projection, coverage_by_ref={}, gaps=()),  # type: ignore[arg-type]
                 None,
@@ -364,7 +405,7 @@ def test_check_adds_content_moved_as_a_disclosure(monkeypatch: pytest.MonkeyPatc
         return {(_OBLIGATION, 0): _shrunk(201, 200, 200)}
 
     monkeypatch.setattr(check_change, "requested_output_states", states)
-    _evaluator, gaps, absent = asyncio.run(
+    _evaluator, gaps, absent, _states, _files = asyncio.run(
         check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
             SimpleNamespace(projection=projection, coverage_by_ref={}, gaps=()),  # type: ignore[arg-type]
             None,
@@ -477,7 +518,7 @@ def test_check_adds_undeclared_reference_as_a_disclosure(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(check_change, "requested_output_states", states)
     monkeypatch.setattr(check_change, "count_undeclared_references", references)
-    _evaluator, gaps, absent = asyncio.run(
+    _evaluator, gaps, absent, _states, _files = asyncio.run(
         check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
             SimpleNamespace(projection=projection, coverage_by_ref={}, gaps=()),  # type: ignore[arg-type]
             None,
@@ -555,11 +596,19 @@ def test_emptied_is_agent_actionable_and_continues_the_stop_gate() -> None:
 
 
 def test_formal_crypto_resolved_obligation_over_a_zero_byte_deliverable_is_emptied() -> None:
-    """tb4n2 formal-crypto S: ``write_bytes(b'')`` on the delivered solve.sage, 6/6 resolved."""
+    """tb4n2 formal-crypto S: ``write_bytes(b'')`` on the delivered solve.sage, 6/6 resolved.
+
+    ADR-045: the file is only "emptied" with proof it held content earlier (an earlier check read
+    it); a 0-byte read alone is also what a file created empty looks like.
+    """
 
     projection = _resolved_projection(_file("/app/solve.sage"))
-    assert emptied_declared_items(projection, {(_OBLIGATION, 0): _sized(0)}) == ((_OBLIGATION, 0),)
-    assert emptied_declared_items(projection, {(_OBLIGATION, 0): _sized(14_900)}) == ()
+    history = (_earlier("solve.sage"),)
+    empty = {(_OBLIGATION, 0): _sized(0, relative="solve.sage")}
+    assert emptied_declared_items(projection, empty, history=history) == ((_OBLIGATION, 0),)
+    assert emptied_declared_items(projection, empty) == ()
+    full = {(_OBLIGATION, 0): _sized(14_900, relative="solve.sage")}
+    assert emptied_declared_items(projection, full, history=history) == ()
 
 
 @pytest.mark.parametrize(
@@ -586,7 +635,9 @@ def test_an_unrelated_assumption_never_hides_an_emptied_deliverable() -> None:
     """Codex review: a best-effort disclosure must not disable the incomplete-work check."""
 
     projection = _resolved_projection(_file("/app/cracker.py"), assumption=True)
-    assert emptied_declared_items(projection, {(_OBLIGATION, 0): _sized(0)}) == ((_OBLIGATION, 0),)
+    states = {(_OBLIGATION, 0): _sized(0, relative="cracker.py")}
+    history = (_earlier("cracker.py"),)
+    assert emptied_declared_items(projection, states, history=history) == ((_OBLIGATION, 0),)
 
 
 def test_a_conventionally_empty_deliverable_is_never_emptied() -> None:
@@ -629,19 +680,27 @@ def test_check_adds_emptied_and_the_gate_names_it(monkeypatch: pytest.MonkeyPatc
     projection = _resolved_projection(_file("/app/solve.sage"))
 
     async def states(**_kwargs: object) -> dict[tuple[ObligationId, int], RequestedOutputState]:
-        return {(_OBLIGATION, 0): _sized(0)}
+        return {(_OBLIGATION, 0): _sized(0, relative="solve.sage")}
 
     monkeypatch.setattr(check_change, "requested_output_states", states)
-    _evaluator, gaps, _absent = asyncio.run(
+    outputs = asyncio.run(
         check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
             SimpleNamespace(projection=projection, coverage_by_ref={}, gaps=()),  # type: ignore[arg-type]
             None,
             None,
             None,
             "req_00000000-0000-4000-8000-000000000001",
+            (_earlier("solve.sage"),),
         )
     )
+    gaps = outputs.gaps
     assert DECLARED_OUTPUT_EMPTIED_GAP in gaps
+    (recorded,) = outputs.states
+    assert (recorded.change, recorded.proof, recorded.prior_size_bytes) == (
+        "emptied",
+        "earlier_check",
+        14_900,
+    )
     readiness = SimpleNamespace(
         state="action_required",
         agent_actionable=(DECLARED_OUTPUT_EMPTIED_GAP,),
@@ -692,4 +751,312 @@ def test_an_overlapping_declaration_of_the_same_file_is_not_another_output() -> 
     )
     assert emptied_declared_items(projection, states) == ()
     states[(_OBLIGATION, 0)] = _sized(0, relative="src/cracker.py")
-    assert emptied_declared_items(projection, states) == ((_OBLIGATION, 0),)
+    history = (_earlier("src/cracker.py"),)
+    assert emptied_declared_items(projection, states, history=history) == (
+        (_OBLIGATION, 0),
+        (_OBLIGATION, 2),
+    )
+
+
+# --- tb4n3 RC-5 (issue #1028, ADR-045): the fact follows the path, not the obligation ------------
+
+_OTHER_OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000002")
+
+
+def _lifecycle(
+    *statuses: ObligationStatus,
+    fallback: bool = False,
+    decision: str | None = None,
+    path: str = "/app/solve.sage",
+) -> ProjectionState:
+    """One obligation declaring *path* moving through *statuses*, optionally a second "empty
+    fallback" obligation (resolved) on the same path, optionally a decision."""
+
+    from yoetz.domain.values import evidence_id
+
+    ledger = ObservedLedger()
+    item = RequestedItem(RequestedItemKind.FILE, path)
+    for status in statuses:
+        ledger.append(
+            EventSchema("obligation_published", "1.1.0"),
+            ObligationPublishedPayload(
+                obligation_id=_OBLIGATION,
+                description="Deliver the solver",
+                evidence_expectation="The file runs",
+                status=status,
+                requested_items=(item,),
+                resolution_evidence_refs=(
+                    (evidence_id("evd_00000000-0000-4000-8000-000000000009"),)
+                    if status is ObligationStatus.RESOLVED
+                    else ()
+                ),
+                acknowledged_not_done_reason=(
+                    "Not solved for every input."
+                    if status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+                    else None
+                ),
+            ),
+            observed=False,
+        )
+    refs = [_OBLIGATION]
+    if fallback:
+        refs.append(_OTHER_OBLIGATION)
+        for status in (ObligationStatus.OPEN, ObligationStatus.RESOLVED):
+            ledger.append(
+                EventSchema("obligation_published", "1.1.0"),
+                ObligationPublishedPayload(
+                    obligation_id=_OTHER_OBLIGATION,
+                    description="Deliver an empty solve.sage under the task's fallback clause",
+                    evidence_expectation="The file is empty",
+                    status=status,
+                    requested_items=(item,),
+                    resolution_evidence_refs=(
+                        (evidence_id("evd_00000000-0000-4000-8000-000000000019"),)
+                        if status is ObligationStatus.RESOLVED
+                        else ()
+                    ),
+                ),
+                observed=False,
+            )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", tuple(sorted(refs))),
+        observed=False,
+    )
+    if decision is not None:
+        ledger.append(
+            EventSchema("decision_recorded", "1.0.0"),
+            DecisionRecordedPayload(
+                statement=f"{decision}\nyoetz-assumption:{_OBLIGATION}",
+                rationale="The task allows an empty file.",
+                authority=actor_id("agt_codex"),
+            ),
+            observed=False,
+        )
+    return replay(ledger.prefix)
+
+
+_ACK = ObligationStatus.ACKNOWLEDGED_NOT_DONE
+_OPEN = ObligationStatus.OPEN
+_RESOLVED = ObligationStatus.RESOLVED
+
+
+def _emptied_solver(**fields: object) -> dict[tuple[ObligationId, int], RequestedOutputState]:
+    return {(_OBLIGATION, 0): _sized(0, relative="solve.sage", **fields)}
+
+
+def test_republishing_the_obligation_not_done_cannot_clear_a_withdrawn_deliverable() -> None:
+    """formal-crypto S: the old fact was cleared by the ``acknowledged_not_done`` republish."""
+
+    projection = _lifecycle(_OPEN, _RESOLVED, _ACK)
+    history = (_earlier("solve.sage"),)
+    assert emptied_declared_items(projection, _emptied_solver(), history=history) == (
+        (_OBLIGATION, 0),
+    )
+
+
+def test_a_new_resolved_empty_fallback_obligation_cannot_clear_it_either() -> None:
+    projection = _lifecycle(_OPEN, _RESOLVED, _ACK, fallback=True)
+    history = (_earlier("solve.sage"),)
+    states = {
+        (_OBLIGATION, 0): _sized(0, relative="solve.sage"),
+        (_OTHER_OBLIGATION, 0): _sized(0, relative="solve.sage"),
+    }
+    fired = emptied_declared_items(projection, states, history=history)
+    assert fired == ((_OBLIGATION, 0), (_OTHER_OBLIGATION, 0))
+    # And not without proof: the fallback obligation alone, on a file never seen with content.
+    assert emptied_declared_items(projection, states) == ()
+
+
+def test_work_in_progress_on_an_undelivered_path_is_not_a_withdrawal() -> None:
+    """The obligation was never resolved and nothing was verified: the agent is still writing."""
+
+    projection = _lifecycle(_OPEN)
+    open_history = (_earlier("solve.sage", basis="present"),)
+    assert emptied_declared_items(projection, _emptied_solver(), history=open_history) == ()
+    # The same file recorded while a passing verification run was on the record is a delivery.
+    verified = (_earlier("solve.sage", basis="verified"),)
+    assert emptied_declared_items(projection, _emptied_solver(), history=verified) == (
+        (_OBLIGATION, 0),
+    )
+    assert (
+        emptied_declared_items(projection, _emptied_solver(), history=open_history, verified=True)
+        == ()
+    )  # a verified *now* does not make the earlier reading a delivery
+
+
+def test_an_assumption_that_names_the_path_is_the_one_exit() -> None:
+    history = (_earlier("solve.sage"),)
+    named = _lifecycle(_OPEN, _RESOLVED, decision="The task allows /app/solve.sage to be empty.")
+    assert emptied_declared_items(named, _emptied_solver(), history=history) == ()
+    relative = _lifecycle(_OPEN, _RESOLVED, decision="solve.sage must be empty by design.")
+    assert emptied_declared_items(relative, _emptied_solver(), history=history) == ()
+    # Naming nothing, or another file, or only part of a longer path, hides nothing.
+    for text in (
+        "A best-effort choice.",
+        "The task allows /app/other.sage to be empty.",
+        "The task allows /app/solve.sage.bak to be empty.",
+        "The task allows /srv/app/solve.sage2 to be empty.",
+    ):
+        unrelated = _lifecycle(_OPEN, _RESOLVED, decision=text)
+        assert emptied_declared_items(unrelated, _emptied_solver(), history=history) == (
+            (_OBLIGATION, 0),
+        ), text
+
+
+def test_the_accepted_state_stays_on_the_record() -> None:
+    from yoetz.kernel.delivered_set import assess_deliverables
+
+    projection = _lifecycle(_OPEN, _RESOLVED, decision="/app/solve.sage may be empty.")
+    assessment = assess_deliverables(
+        projection, _emptied_solver(), history=(_earlier("solve.sage"),)
+    )
+    assert assessment.emptied == ()
+    (state,) = assessment.states
+    assert (state.change, state.proof) == ("emptied", "earlier_check")
+    assert state.accepted_by is not None
+
+
+def test_a_stub_cut_of_a_new_file_needs_the_earlier_reading_and_a_tenth_left() -> None:
+    projection = _lifecycle(_OPEN, _RESOLVED)
+    stub = {
+        (_OBLIGATION, 0): _sized(14, lines=1, relative="solve.sage"),
+    }
+    history = (_earlier("solve.sage", size=9_800, lines=300),)
+    assert emptied_declared_items(projection, stub) == ()
+    assert emptied_declared_items(projection, stub, history=history) == ((_OBLIGATION, 0),)
+    # A real rewrite that keeps more than a tenth is not a truncation.
+    rewrite = {(_OBLIGATION, 0): _sized(2_000, lines=60, relative="solve.sage")}
+    assert emptied_declared_items(projection, rewrite, history=history) == ()
+    # A short file cut to a few lines is below the floor.
+    short = (_earlier("solve.sage", size=400, lines=12),)
+    assert emptied_declared_items(projection, stub, history=short) == ()
+
+
+def test_an_unread_line_count_falls_back_to_a_tenth_of_the_bytes() -> None:
+    projection = _lifecycle(_OPEN, _RESOLVED)
+    history = (_earlier("solve.sage", size=30_000, lines=None),)
+    cut = {(_OBLIGATION, 0): _sized(900, relative="solve.sage")}
+    assert emptied_declared_items(projection, cut, history=history) == ((_OBLIGATION, 0),)
+    small = (_earlier("solve.sage", size=1_500, lines=None),)
+    assert emptied_declared_items(projection, cut, history=small) == ()
+
+
+def test_a_declared_file_gone_after_an_earlier_reading_is_removed() -> None:
+    projection = _lifecycle(_OPEN, _RESOLVED)
+    gone = {(_OBLIGATION, 0): RequestedOutputState("inside", exists=False, relative="solve.sage")}
+    from yoetz.kernel.delivered_set import removed_declared_items
+
+    assert removed_declared_items(projection, gone) == ()
+    assert removed_declared_items(projection, gone, history=(_earlier("solve.sage"),)) == (
+        (_OBLIGATION, 0),
+    )
+
+
+def test_a_history_for_another_path_proves_nothing() -> None:
+    projection = _lifecycle(_OPEN, _RESOLVED)
+    assert (
+        emptied_declared_items(projection, _emptied_solver(), history=(_earlier("other.sage"),))
+        == ()
+    )
+
+
+# --- Codex review round 1 (issue #1028) --------------------------------------------------------
+
+
+def test_a_clipped_line_count_read_is_unknown_not_a_truncation() -> None:
+    """Moving 195 of a solver's 200 lines into an untracked file beyond the read bound: the
+    undeclared growth is a lower bound, so it can prove a move but never rule one out."""
+
+    projection = _lifecycle(_OPEN, _RESOLVED)
+    history = (_earlier("solve.sage", size=9_800, lines=300),)
+    stub = {(_OBLIGATION, 0): _sized(14, lines=1, relative="solve.sage")}
+    assert emptied_declared_items(projection, stub, history=history) == ((_OBLIGATION, 0),)
+    clipped = {(_OBLIGATION, 0): _sized(14, lines=1, relative="solve.sage", counts_truncated=True)}
+    assert emptied_declared_items(projection, clipped, history=history) == ()
+    # An emptied file stays emptied: a clipped read cannot move bytes into a 0-byte file.
+    zero = {(_OBLIGATION, 0): _sized(0, lines=0, relative="solve.sage", counts_truncated=True)}
+    assert emptied_declared_items(projection, zero, history=history) == ((_OBLIGATION, 0),)
+
+
+def test_content_moved_covers_a_file_the_task_base_does_not_hold() -> None:
+    """A new 300-line solver cut to one line with 300 lines added elsewhere is disclosed (ADR-035)."""
+
+    projection = _lifecycle(_OPEN, _RESOLVED)
+    history = (_earlier("solve.sage", size=9_800, lines=300),)
+    moved = {
+        (_OBLIGATION, 0): _sized(14, lines=1, relative="solve.sage", undeclared_lines_added=300)
+    }
+    assert content_moved_declared_items(projection, moved, history=history) == ((_OBLIGATION, 0),)
+    assert content_moved_declared_items(projection, moved) == ()
+    # And the move is not also a withdrawal.
+    assert emptied_declared_items(projection, moved, history=history) == ()
+    # Growth that does not match the loss is no move.
+    elsewhere = {
+        (_OBLIGATION, 0): _sized(14, lines=1, relative="solve.sage", undeclared_lines_added=20)
+    }
+    assert content_moved_declared_items(projection, elsewhere, history=history) == ()
+
+
+def test_a_truncation_cites_the_reading_it_compared_against() -> None:
+    """Readings of 300, then 60, then 20 lines: the fact compares with 300 and says so."""
+
+    projection = _lifecycle(_OPEN, _RESOLVED)
+    first = _earlier("solve.sage", size=9_800, lines=300, frontier=10)
+    second = _earlier("solve.sage", size=2_000, lines=60, frontier=20)
+    third = DeliverableSnapshot(
+        second.state, event_id("evt_00000000-0000-4000-8000-0000000000c2"), 30
+    )
+    now = {(_OBLIGATION, 0): _sized(500, lines=20, relative="solve.sage")}
+    assessment = assess_deliverables(projection, now, history=(first, second, third))
+    (recorded,) = assessment.states
+    assert recorded.change == "truncated"
+    assert (recorded.prior_lines, recorded.prior_frontier) == (300, 10)
+    (lineage,) = deliverable_lineage(None, 40, assessment.states)
+    assert (lineage.prior_lines, lineage.prior_frontier) == (300, 10)
+
+
+def test_a_removal_proved_only_by_a_published_edit_still_has_lineage() -> None:
+    """A new file written in the session and gone before its first check: no earlier reading and
+    no tracked deletion, but the removal is recorded and explained like the other routes."""
+
+    from yoetz.domain.events import ActionKind, ActionRecordedPayload
+    from yoetz.domain.values import action_id
+
+    ledger = ObservedLedger()
+    ledger.append(
+        EventSchema("obligation_published", "1.0.0"),
+        ObligationPublishedPayload(
+            obligation_id=_OBLIGATION,
+            description="Deliver the score",
+            evidence_expectation="The file",
+            status=ObligationStatus.OPEN,
+            requested_items=(_file("/app/harmony.musicxml"),),
+        ),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", (_OBLIGATION,)),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("action_recorded", "1.0.0"),
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000001"),
+            ActionKind.EDIT,
+            "Wrote the score",
+            obligation_refs=(_OBLIGATION,),
+            attempted_items=("/app/harmony.musicxml",),
+        ),
+        observed=False,
+    )
+    gone = {
+        (_OBLIGATION, 0): RequestedOutputState("inside", exists=False, relative="harmony.musicxml")
+    }
+    assessment = assess_deliverables(replay(ledger.prefix), gone)
+    assert assessment.removed == ((_OBLIGATION, 0),)
+    (recorded,) = assessment.states
+    assert recorded.change == "removed"
+    (lineage,) = deliverable_lineage(None, 12, assessment.states)
+    assert (lineage.code, lineage.state) == (DECLARED_OUTPUT_REMOVED_GAP, "removed")

@@ -1,6 +1,6 @@
 """Which observed writes change the work under test (tb4n2 R4, issue #1018, ADR-042).
 
-An observed edit is one of four classes:
+An observed edit is one of five classes:
 
 * ``deliverable`` — a file an obligation declares as its output (decided in the kernel from the
   declared delivered set, never here);
@@ -9,7 +9,16 @@ An observed edit is one of four classes:
 * ``scratch`` — a temporary location outside the workspace (``/tmp`` and the platform temp
   roots): working notes the delivered work never reads;
 * ``yoetz_owned`` — Yoetz's own material: a receipt or export the agent saved (``yoetz_receipt.md``),
-  Yoetz's state directory, and the packaged Yoetz plugin and skill trees.
+  Yoetz's state directory, and the packaged Yoetz plugin and skill trees;
+* ``notes`` — the agent's own working notes inside the workspace (``NOTES.md``, ``todo.txt``):
+  conventional names that are not source, tests or data (ADR-045). A declared output with such a
+  name is a deliverable and keeps counting; a ``.log`` file is never named by its extension, since
+  a workspace may itself sit under a temporary root and a log may be the deliverable.
+
+A shell command that writes files (``> f``, ``tee f``, ``sed -i f``, ``cp a f``) is classified by
+the same rules; a command whose every write is in the workspace carries the scope ``workspace``
+so the kernel counts it as an edit (an observed edit is otherwise a tool call, and
+``cat > solve.py <<EOF`` was invisible).
 
 Only ``deliverable`` and ``workspace`` writes make an earlier verification stale. The rule is
 lexical: paths are normalized as strings and never resolved through the filesystem, so ``..`` can
@@ -31,18 +40,23 @@ __all__ = [
     "WriteClass",
     "classify_write_path",
     "edit_write_scope",
+    "notes_artifact_name",
     "scratch_overlap",
     "yoetz_artifact_name",
     "yoetz_tree_overlap",
     "scratch_path",
 ]
 
-WriteClass = Literal["workspace", "outside_workspace", "scratch", "yoetz_owned"]
-# The hook's closed ``write_scope`` structural fact: absent for an edit that stays in the
-# workspace, otherwise the class every named path shares (``outside_workspace`` wins).
-WRITE_SCOPES: Final = frozenset({"outside_workspace", "scratch", "yoetz_owned"})
+WriteClass = Literal["workspace", "outside_workspace", "scratch", "yoetz_owned", "notes"]
+# The hook's closed ``write_scope`` structural fact: absent for an edit-tool call that stays in
+# the workspace, otherwise the class every named path shares (``outside_workspace`` wins).
+# ``workspace`` appears only on a shell command whose attributable writes are in the workspace
+# (ADR-045); an edit tool never reports it.
+WRITE_SCOPES: Final = frozenset(
+    {"outside_workspace", "scratch", "yoetz_owned", "notes", "workspace"}
+)
 # Write scopes that never make an earlier verification stale and never count as acting.
-NON_COUNTING_WRITE_SCOPES: Final = frozenset({"scratch", "yoetz_owned"})
+NON_COUNTING_WRITE_SCOPES: Final = frozenset({"scratch", "yoetz_owned", "notes"})
 
 # Scratch roots every supported OS reserves for temporary files (issue E6, tb4n1: 28 of 33
 # attempts flagged only `/tmp` logs). `/dev/` stays wholly exempt below for device targets.
@@ -60,6 +74,14 @@ _TEMP_NAME: Final = re.compile(r"te?mp|scratch", re.IGNORECASE)
 # lake D `/app/output/yoetz_receipt.json`).
 _YOETZ_ARTIFACT_NAME: Final = re.compile(
     r"^yoetz[-_.]?(?:receipt|export)s?(?:[-_.][a-z0-9]+)*\.(?:md|markdown|json|txt|text)$",
+    re.IGNORECASE,
+)
+# Conventional names of the agent's own working notes and logs. Deliberately narrow: a name that
+# could also be source, a test, data or documentation the task delivers (``README.md``,
+# ``report.md``) is not here, and a declared output with one of these names keeps counting.
+_NOTES_NAME: Final = re.compile(
+    r"^(?:notes?|todo|todos|scratch|scratchpad|worklog|work[-_]log|progress|journal)"
+    r"(?:[-_.][a-z0-9]+)*\.(?:md|markdown|txt|text)$",
     re.IGNORECASE,
 )
 # Packaged Yoetz trees a host installation writes into a repository (generated, never the work).
@@ -148,6 +170,16 @@ def yoetz_tree_overlap(path: str) -> bool:
     return padded.endswith(("/.agents/", "/.agents/plugins/", "/.agents/skills/"))
 
 
+def notes_artifact_name(path: str) -> bool:
+    """Whether a path has a conventional notes or log name (pure; declared outputs override it)."""
+
+    return type(path) is str and bool(path) and _notes_name(_normalize(path))
+
+
+def _notes_name(normalized: str) -> bool:
+    return _NOTES_NAME.match(posixpath.basename(normalized)) is not None
+
+
 def scratch_overlap(path: str) -> bool:
     """Whether a declared absolute path lies under, or contains, a fixed temporary root (pure)."""
 
@@ -192,10 +224,11 @@ def classify_write_path(
         return "yoetz_owned"
     absolute = normalized.startswith("/")
     if not absolute or inside is not False:
-        # Inside the workspace (or unknown: no workspace root to compare with) every write counts.
-        # A workspace may itself sit under a temporary root, and a log file there may be a
-        # deliverable, so neither is ever exempt by location or name alone.
-        return "workspace"
+        # Inside the workspace (or unknown: no workspace root to compare with) a write counts,
+        # except the agent's own conventional notes and logs (``notes``; the kernel lets a
+        # declared output with such a name override the class). A workspace may itself sit under
+        # a temporary root, so location alone never exempts.
+        return "notes" if _notes_name(normalized) else "workspace"
     if scratch_path(normalized, workspace, environment=False):
         return "scratch"
     if scratch_path(normalized, workspace):
@@ -221,7 +254,8 @@ def edit_write_scope(classes: Iterable[WriteClass]) -> str | None:
     if "outside_workspace" in seen:
         return "outside_workspace"
     if "workspace" in seen or len(seen) > 1:
-        # A mixed scratch + Yoetz-owned edit keeps counting: one token could not carry both, and
-        # the kernel's deliverable precedence is per class (Codex review round 3).
+        # A mixed edit (scratch + Yoetz-owned, notes + anything) keeps counting: one token could
+        # not carry both, and the kernel's deliverable precedence is per class (Codex review
+        # round 3).
         return None
-    return "yoetz_owned" if "yoetz_owned" in seen else "scratch"
+    return next(iter(seen))

@@ -1318,10 +1318,63 @@ def test_completed_masking_compound_command_preserves_outer_zero_with_nested_gap
             mapping_version=STREAM_MAPPING_VERSION,
         ),
     )
-    assert envelope.structural_payload["runner_class"] == "compound"
+    assert (
+        envelope.structural_payload["runner_class"] == "test"
+    )  # ADR-045: classed by its strongest verification
     assert envelope.structural_payload["exit_status"] == 0
     assert envelope.structural_payload["result_status"] == "completed"
     assert ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value in envelope.gap_codes
+
+
+@pytest.mark.parametrize(
+    ("command", "scope"),
+    [
+        ("cat > solve.py <<'EOF'\nx\nEOF", "workspace"),
+        # The agent's notes and Yoetz's own material keep their closed non-counting scope, so a
+        # declared output of that kind can still override the exemption (ADR-045, Codex review).
+        ("echo x > NOTES.md", "notes"),
+        ("echo x > yoetz_receipt.md", "yoetz_owned"),
+        ("echo done", None),
+        # An absolute path says nothing without a workspace root; the hook claims those.
+        ("echo x > /app/solve.py", None),
+    ],
+)
+def test_a_rollout_command_that_writes_carries_the_hooks_closed_write_scope(
+    command: str, scope: str | None
+) -> None:
+    record = CodexParsedRecord(
+        1,
+        0,
+        160,
+        "event_msg",
+        "CommandExecution",
+        JsonObject(
+            {
+                "payload": {
+                    "item": {
+                        "id": "command-write",
+                        "type": "CommandExecution",
+                        "command": command,
+                        "exit_code": 0,
+                        "status": "completed",
+                    },
+                    "type": "item_completed",
+                }
+            }
+        ),
+    )
+    envelope = envelope_from_stream_record(
+        record,
+        session_commitment="hmac-sha256:" + ("ae" * 32),
+        cursor=ObservationCursor(
+            source_generation=1,
+            byte_position=160,
+            event_position=1,
+            last_source_commitment=_EMPTY,
+            mapping_version=STREAM_MAPPING_VERSION,
+        ),
+    )
+    assert envelope.structural_payload.get("write_scope") == scope
 
 
 def test_completed_and_compound_command_keeps_proven_zero_without_nested_gap() -> None:
@@ -1357,7 +1410,9 @@ def test_completed_and_compound_command_keeps_proven_zero_without_nested_gap() -
             mapping_version=STREAM_MAPPING_VERSION,
         ),
     )
-    assert envelope.structural_payload["runner_class"] == "compound"
+    assert (
+        envelope.structural_payload["runner_class"] == "test"
+    )  # ADR-045: classed by its strongest verification
     assert envelope.structural_payload["exit_status"] == 0
     assert ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value not in envelope.gap_codes
 
