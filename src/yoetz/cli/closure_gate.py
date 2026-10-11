@@ -48,6 +48,7 @@ from typing import Final, cast
 
 from yoetz import __version__
 from yoetz.config.paths import ensure_owner_only_dir, state_dir
+from yoetz.domain.bounded_text import Part, compose_parts
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
@@ -189,6 +190,17 @@ _FINDING_TEXT: Final = (
     " respond `self_verified` with how you verified it and the evidence ids. Do not reshape your"
     " work for Yoetz. Respond `acknowledged_not_done` only if you truly cannot or will not do it."
 )
+# Short forms used only when the full text cannot share the host bound with the rest of the gate
+# (tb4n3 RC-2, A5): each keeps the instruction and drops the elaboration.
+_FINDING_SHORT_TEXT: Final = (
+    "Repair each receipt-blocking finding; if Yoetz still cannot prove a repaired one, verify it"
+    " yourself and respond `self_verified` with the evidence ids; `acknowledged_not_done` only if"
+    " you truly will not do it."
+)
+_BLOCKER_OFFER_SHORT_TEXT: Final = (
+    "Leave an open obligation undone only for a blocker outside your control: publish"
+    f" decision_recorded with affected_obligation_ids and the line {_BLOCKER_LINE}."
+)
 _CLOSE_TEXT: Final = (
     "Then run `check` and request the receipt. A Yoetz limit is never a `yoetz-blocker`."
 )
@@ -298,7 +310,7 @@ def _acknowledgement_keys(readiness: object) -> tuple[str, ...]:
     return tuple(keys)
 
 
-def _acknowledgement_text(keys: tuple[str, ...]) -> str:
+def _acknowledgement_text(keys: tuple[str, ...], *, short: bool = False) -> str:
     named_ids = [key.removeprefix("ack:") for key in keys if key.startswith("ack:")]
     named = ", ".join(named_ids[:_MAX_NAMED_ACKNOWLEDGED])
     hidden = len(named_ids) - _MAX_NAMED_ACKNOWLEDGED
@@ -307,6 +319,12 @@ def _acknowledgement_text(keys: tuple[str, ...]) -> str:
     subject = (
         f"you recorded {named} as not done" if named else "you recorded obligations as not done"
     )
+    if short:
+        return (
+            f"Acknowledgement re-check (asked once): {subject}. Do that work unless it is"
+            " genuinely impossible; a Yoetz limit is not a reason. If it truly stays undone, you"
+            " may stop and the receipt discloses it; republish it `open` to take it back."
+        )
     return (
         f"Acknowledgement re-check (asked once): {subject}. Repair first: do that work unless it"
         " is genuinely impossible; missing data the task says is recoverable, a hard result or a"
@@ -401,6 +419,68 @@ def _blocker_text(rows: tuple[tuple[str, str], ...], *, short: bool = False) -> 
         " not ask again and the receipt discloses it as a standing limitation."
         f" {_ACK_LAST_RESORT_TEXT}"
     )
+
+
+def _fallback_parts(
+    *,
+    head: str,
+    items: tuple[str, ...],
+    premise: bool,
+    offers_blocker: bool,
+    recheck: str,
+    ack_keys: tuple[str, ...],
+    ack_text: str,
+    limitations: str,
+    moved_note: str,
+    drain_note: str,
+    unconfirmed: bool,
+) -> list[tuple[str, Part]]:
+    """The gate's sentences as named parts, in reading order, for the composed fallback.
+
+    Required: the head, one instruction per present item family (obligations, planned
+    verification, receipt-blocking findings) and the close instruction. Optional, in priority
+    order: the blocker re-check, the acknowledgement re-check, the unconfirmed-blocker sentence,
+    the blocker offer, the required limitation ids, the premise ask, the first-stop acceptance
+    re-read, then the notes. This changes composition only: no token set and no sentence's
+    wording; the short forms drop elaboration and keep the instruction.
+    """
+
+    parts: list[tuple[str, Part]] = [("head", Part((head,), required=True))]
+    if premise:
+        parts.append(("premise", Part((_PREMISE_TEXT,), priority=6)))
+    if "obligations_open" in items:
+        parts.append(
+            (
+                "obligations",
+                Part((_OBLIGATION_TEXT, _OBLIGATION_SHORT_TEXT), required=True, priority=7),
+            )
+        )
+    if any(token in _OBSERVATION_DEPENDENT for token in items):
+        parts.append(("verification", Part((_VERIFICATION_TEXT,), required=True)))
+    if "receipt_findings_unresolved" in items:
+        parts.append(
+            ("findings", Part((_FINDING_TEXT, _FINDING_SHORT_TEXT), required=True, priority=7))
+        )
+    if limitations:
+        parts.append(("limitations", Part((limitations,), priority=5)))
+    if "obligations_open" not in items:
+        parts.append(("acceptance", Part((_ACCEPTANCE_TEXT,), priority=8)))
+    parts.append(("close", Part((_CLOSE_TEXT,), required=True)))
+    if offers_blocker:
+        parts.append(("offer", Part((_BLOCKER_OFFER_TEXT, _BLOCKER_OFFER_SHORT_TEXT), priority=4)))
+    if unconfirmed:
+        parts.append(("unconfirmed", Part((_UNCONFIRMED_AFTER_RECHECK_TEXT,), priority=3)))
+    if recheck:
+        parts.append(("recheck", Part((recheck,), priority=1)))
+    if ack_text:
+        parts.append(
+            ("ack", Part((ack_text, _acknowledgement_text(ack_keys, short=True)), priority=2))
+        )
+    if drain_note:
+        parts.append(("drain", Part((drain_note,), priority=9)))
+    if moved_note:
+        parts.append(("moved", Part((moved_note,), priority=9)))
+    return parts
 
 
 def closure_gate_from_readiness(
@@ -571,8 +651,8 @@ def closure_gate_from_readiness(
         return " ".join(parts)
 
     # Every host clips at 2,000 characters. Drop whole optional sentences, never the re-check:
-    # the drain note first, then the long obligation sentence, then the verification hint, then
-    # the required limitation ids (F3).
+    # the drain note first, then the long obligation sentence, then the required limitation ids
+    # (F3), then the premise ask. A planned-verification hint is a family instruction and stays.
     text = ""
     delivered_rows = bool(rows)
     delivered_ack = bool(ack_keys)
@@ -580,10 +660,11 @@ def closure_gate_from_readiness(
         (True, False, True, True, True),
         (False, False, True, True, True),
         (False, True, True, True, True),
-        (False, True, False, True, True),
-        (False, True, False, False, True),
+        # tb4n3 RC-2 (A5): the required limitation ids go before a present family's instruction
+        # does; the composed fallback below shortens the rest and never drops one.
+        (False, True, True, False, True),
         # D7a: the premise ask goes before the re-check does.
-        (False, True, False, False, False),
+        (False, True, True, False, False),
     ):
         text = compose(
             drain=drain,
@@ -596,16 +677,32 @@ def closure_gate_from_readiness(
             asked_premise = premise and premise_text
             break
     else:
-        # Only a re-check whose whole sentence fits is reported as asked: a clipped one keeps its
-        # keys out of the delivered set, so the next Stop asks it again (tb4n2 integration).
-        text = head[:_MAX_TEXT_CHARS]
-        delivered_rows = bool(recheck) and len(text) + 1 + len(recheck) <= _MAX_TEXT_CHARS
-        if delivered_rows:
-            text = f"{text} {recheck}"
-        delivered_ack = bool(ack_text) and len(text) + 1 + len(ack_text) <= _MAX_TEXT_CHARS
-        if delivered_ack:
-            text = f"{text} {ack_text}"
-        asked_premise = False
+        # The ladder could not fit the whole gate. Compose it instead of clipping the head
+        # (tb4n3 RC-2, A5: the clip kept `head[:2000]` and dropped every repair and close
+        # instruction, even with hundreds of characters free): the head, one instruction per
+        # present item family and the close instruction are required; the re-checks, blocker
+        # offer, limitation ids and notes are granted the rest by priority, each with a short
+        # form where one exists. Only a re-check whose whole sentence is included is reported as
+        # asked, so a re-check that did not fit is asked again at the next Stop.
+        parts = _fallback_parts(
+            head=head,
+            items=items,
+            premise=premise,
+            offers_blocker=offers_blocker,
+            recheck=recheck,
+            ack_keys=ack_keys,
+            ack_text=ack_text,
+            limitations=limitations,
+            moved_note=moved_note,
+            drain_note=_DRAIN_TEXT if drain_changed_decision else "",
+            unconfirmed=BLOCKER_UNCONFIRMED_TOKEN in items and not rows,
+        )
+        composed = compose_parts([part for _, part in parts], _MAX_TEXT_CHARS, ascii_only=False)
+        text = composed.text
+        included = {parts[index][0] for index in composed.kept}
+        delivered_rows = bool(recheck) and "recheck" in included
+        delivered_ack = bool(ack_text) and "ack" in included
+        asked_premise = premise and "premise" in included
     return ClosureGate(
         identity,
         text,

@@ -124,7 +124,9 @@ def test_public_error_and_validation_summaries_are_sanitized() -> None:
         },
     }
     summary = render_safe_compact_summary(result)
-    assert summary == f"Error INVALID_REQUEST; retryable: no; correlation: {correlation_id}."
+    assert summary == (
+        f"Error INVALID_REQUEST; retryable: no; correlation: {correlation_id}. Field: /request_id."
+    )
     all_locations = (
         {"field": "/request_id", "reason": "missing"},
         {"field": "/client", "reason": "extra_forbidden"},
@@ -302,8 +304,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:c811a933834e191ee76af6ab3a247478a316708738edcc9918376fb2bd14f62e",
-        "strict": "sha256:f47260c21c70157639d58aece98006a873f4f92f824663fdce93cf88aaf197f6",
+        "policy": "sha256:bbb25999ea58f9f275c1eacd1a20b4793098c49a8892b067f29f74a79932f997",
+        "strict": "sha256:61fc5da787955d9278413533e155601274edae098cee996141a7d701a30688d6",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -1056,5 +1058,5 @@ def test_read_guidance_descriptor_is_read_only_and_names_a_guidance_uri() -> Non
     assert descriptor.annotations.destructive is False
     assert descriptor.annotations.open_world is False
     assert "yoetz://guidance/" in descriptor.description
-    assert "512-byte summary" in descriptor.description
+    assert "bounded 4096-byte summary" in descriptor.description
     assert "not a ledger operation" in descriptor.description

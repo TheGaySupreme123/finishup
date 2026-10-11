@@ -717,7 +717,11 @@ def test_render_receipt_human_projects_sections_and_advisory_count() -> None:
 
 
 def test_render_receipt_human_marks_bounded_truncation() -> None:
-    """#437: the wire bound cannot silently erase later receipt sections."""
+    """#437: the wire bound cannot silently erase later receipt sections.
+
+    tb4n3 RC-2 (A7): the cut is by section. A 32 KiB first section is shortened, the marker names
+    it, and every later section keeps its heading and its content.
+    """
 
     wire = _variant("unresolved-findings.case.json", "mixed_open_responses")
     wire["sections"][0]["body"] = "x" * 32_768
@@ -725,8 +729,13 @@ def test_render_receipt_human_marks_bounded_truncation() -> None:
 
     rendered = render_receipt_human(document, markdown=True)
 
-    assert len(rendered) == 32_768
-    assert rendered.endswith("remaining canonical section content is omitted.]")
+    assert len(rendered) <= 32_768
+    assert "truncated at 32768 characters" in rendered
+    assert "shortened sections: Summary" in rendered
+    assert rendered.endswith("holds every section in full.]")
+    for section in document.sections[1:]:
+        assert f"## {section.title}" in rendered
+        assert section.body[:60] in rendered
 
 
 def test_registration_drift_compact_names_policy_recovery() -> None:

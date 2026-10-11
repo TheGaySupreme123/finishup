@@ -55,6 +55,7 @@ from yoetz.ports.start_catalog import (
 from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind, validate_actor_id, validate_id
+from yoetz.protocol.recovery import REASON_REMEDIES
 
 __all__ = [
     "MemoryStartCatalogAdapter",
@@ -199,8 +200,13 @@ def _error(
         PublicErrorCode.SESSION_NOT_FOUND: "The requested task attachment was not found.",
         PublicErrorCode.BUNDLE_BUSY: "The task is temporarily busy.",
         PublicErrorCode.STORAGE_CORRUPT: "The local catalog is inconsistent.",
-        PublicErrorCode.INTERNAL_ERROR: "The start state is inconsistent.",
+        PublicErrorCode.INTERNAL_ERROR: (
+            "The start state is inconsistent. " + REASON_REMEDIES["start_state_inconsistent"]
+        ),
     }
+    if code is PublicErrorCode.INTERNAL_ERROR and safe_details is None:
+        # An inconsistent start state is a typed stage, never a bare internal error (tb4n3 RC-2).
+        safe_details = {"reason_code": "start_state_inconsistent"}
     return PublicOperationError(
         code,
         messages[code] if message is None else message,

@@ -33,7 +33,11 @@ Formats are `json`, `markdown`, and `text`. All three project under the default 
 policy. `json` carries the structured receipt in `document` with `human_text` null. `markdown`
 and `text` keep `document` null by format and project the canonical sections (summary, findings,
 limitations, versions, section items, and coverage notes) in `human_text`. If that projection
-exceeds the wire bound, `human_text` carries an explicit truncation marker. Under a deliberately
+exceeds the wire bound, the longest sections are shortened, every section keeps its heading, and
+`human_text` ends with a marker that names the shortened sections; the `json` format holds every
+section in full. A receipt for a task with more than 100 findings, obligations or references (or
+more than 64 gaps) lists the rows that matter most, unresolved findings first, and its summary
+says how many of each were left out. Under a deliberately
 stricter owner policy, digest-bound
 `json` can fail closed with `PRIVACY_AUTHORITY_REQUIRED` (`receipt_json_projection_blocked`) —
 re-request `markdown` or `text`, or widen agent-context policy from a local terminal. If a

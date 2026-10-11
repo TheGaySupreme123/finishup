@@ -1398,7 +1398,8 @@ The current Cursor MCP surface advertises the read-only `closure_prepare/1.0.0` 
 Discover its declaration before use and pass the returned session and writer identities with an
 explicit selection. It inventories one pinned status frontier or prepares one explicit draft; it
 never appends, judges work, or claims completion. The complete response frame is bounded: an
-oversized inventory returns `LIMIT_EXCEEDED` without partial data. When the declaration is absent,
+draft phases echo only the rows the selection names, and an oversized inventory returns
+`LIMIT_EXCEEDED` (`closure_result_too_large`) without partial data. When the declaration is absent,
 use `yoetz closure-prepare --session-id <returned-session> --writer-id <returned-writer>` with
 `--output <file>` outside the repository. This shared route is supported through the local bridge
 on macOS, Linux, and WSL 2; native Windows has no supported Yoetz MCP route. MCP discovery,
@@ -1646,6 +1647,14 @@ resolves the check's `semantic_reason` and optional `failure_class` through this
 check output in this host shows the directive. Hook advisories never carry that token;
 SessionStart's vault-locked advisory appends its own `vault_unlock_required` token after the
 host-specific prefix (issue #739). No Cursor-specific recovery wording is configured.
+
+**Bounded text (ADR-043, issue #1025).** The Cursor route receives the exact canonical JSON copy of
+the result as text, which is not subject to the 4,096-byte summary bound and cannot fail to render;
+if the copy ever could not be encoded, the bounded summary (with `summary_render_failed:...` named)
+is returned instead. `closure_prepare` draft phases echo only the selected inventory rows on this
+route as on the others, which keeps the canonical JSON copy inside the MCP frame at a long-run
+frontier. Hook `additional_context` and `followup_message` over Yoetz's own 2,000-character cap end
+with a cut marker (the cap is Yoetz's, not a documented Cursor limit).
 
 ## Cold service attachment and recovery (issue #670)
 

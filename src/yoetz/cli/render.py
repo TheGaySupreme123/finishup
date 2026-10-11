@@ -903,7 +903,7 @@ def render_recovery_directive_lines(
 ) -> list[str]:
     """Render one frozen directive the way every CLI error surface shows it.
 
-    The CLI has no 512-byte ceiling, so unlike the MCP text projection it renders the whole
+    The CLI has no text ceiling, so unlike the MCP text projection it renders the whole
     directive, any carried commands, its guidance pointer, and its nudge on separate lines.
     """
 
@@ -1011,7 +1011,7 @@ def render_error_recovery_lines(safe_details: object) -> list[str]:
 
     The directive is reconstructed locally from the continuation token (issue #739); nothing is
     read from the error message, and no line is rendered for a token the protocol normalizer does
-    not admit. The CLI has no 512-byte ceiling, so unlike the MCP text projection it renders the
+    not admit. The CLI has no text ceiling, so unlike the MCP text projection it renders the
     whole directive, its guidance pointer, and its nudge on separate lines.
     """
 

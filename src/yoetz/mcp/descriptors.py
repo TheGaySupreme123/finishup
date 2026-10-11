@@ -2038,7 +2038,7 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "continuation; consumers must reconstruct every page and verify the final digest before "
         "claiming guidance is loaded. A page marked complete means only that the service emitted "
         "the end page; delivery remains unconfirmed until the consumer reconstructs it. The text "
-        "channel uses a 512-byte summary, while paged reads carry one marked page. The legacy "
+        "channel uses a bounded 4096-byte summary, while paged reads carry one marked page. The legacy "
         "URI-only route remains "
         "available on demand. This is not a ledger operation and does not write the ledger. Extra "
         "keys and unknown URIs are rejected without echoing the value. Guidance: "
@@ -2055,9 +2055,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "dry_run=true; this helper never writes the ledger, judges work, or claims completion. "
         "Use the emitted recovery request and keep its request identity when a later write "
         "times out. Select only IDs and requested-item indexes returned by the same inventory; "
-        "a moving frontier or unavailable item is refused. The MCP response has a bounded frame; "
-        "an oversized inventory returns LIMIT_EXCEEDED without a partial success, so use the CLI "
-        "closure-prepare --output path for a larger local inventory. Guidance: "
+        "a moving frontier or unavailable item is refused. The MCP response has a bounded frame: "
+        "a draft phase echoes only the rows you selected, and an oversized inventory returns "
+        "LIMIT_EXCEEDED without a partial success, so select ids from the status pages or use the "
+        "CLI closure-prepare --output path for a larger local inventory. Guidance: "
         "yoetz://guidance/workflow.md.",
         read_only=True,
         idempotent=True,
@@ -2116,8 +2117,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "respond": "sha256:cdac44bae4de573707ba1f1f5f5b12bb8391c7193c7260efc93c8181411ab71f",
                 "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
-                "read_guidance": "sha256:2d99f8dce9f7dca0f92d51550d2cf8585baed276f13f638103cba61a122bba23",
-                "closure_prepare": "sha256:9cbf97d6a668de25cd80bdf79a75c50dcbeef256ba4abf4b6abc86405a6627d5",
+                "read_guidance": "sha256:874876f601c5eb51d0b2059f71c4def9b59be842fbf4d59ac888146d6c8994b8",
+                "closure_prepare": "sha256:fa7fa2e1aa2c64eae1ace9069b905dbe5c82c89e92d696434d0058a343393007",
             }
         ),
         "strict": MappingProxyType(
@@ -2128,16 +2129,16 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "respond": "sha256:cdac44bae4de573707ba1f1f5f5b12bb8391c7193c7260efc93c8181411ab71f",
                 "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
-                "read_guidance": "sha256:2d99f8dce9f7dca0f92d51550d2cf8585baed276f13f638103cba61a122bba23",
-                "closure_prepare": "sha256:9cbf97d6a668de25cd80bdf79a75c50dcbeef256ba4abf4b6abc86405a6627d5",
+                "read_guidance": "sha256:874876f601c5eb51d0b2059f71c4def9b59be842fbf4d59ac888146d6c8994b8",
+                "closure_prepare": "sha256:fa7fa2e1aa2c64eae1ace9069b905dbe5c82c89e92d696434d0058a343393007",
             }
         ),
     }
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:c811a933834e191ee76af6ab3a247478a316708738edcc9918376fb2bd14f62e",
-        "strict": "sha256:f47260c21c70157639d58aece98006a873f4f92f824663fdce93cf88aaf197f6",
+        "policy": "sha256:bbb25999ea58f9f275c1eacd1a20b4793098c49a8892b067f29f74a79932f997",
+        "strict": "sha256:61fc5da787955d9278413533e155601274edae098cee996141a7d701a30688d6",
     }
 )
 

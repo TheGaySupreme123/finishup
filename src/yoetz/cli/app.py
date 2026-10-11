@@ -745,8 +745,11 @@ def _read_task_statement_file(path: str) -> str:
     else:
         with Path(path).open("rb") as stream:
             raw = stream.read(MAX_TASK_STATEMENT_BYTES + 1)
-    if not raw or len(raw) > MAX_TASK_STATEMENT_BYTES:
+    if not raw:
         raise ProtocolValueError("invalid_event_value_type")
+    if len(raw) > MAX_TASK_STATEMENT_BYTES:
+        # Too long, not mistyped: name the bound (tb4n3 A13).
+        raise ProtocolValueError("event_text_out_of_bounds")
     return raw.decode("utf-8", errors="strict")
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -18,6 +18,7 @@ from builders.start_application import protocol_id, start_request
 from yoetz.cli.closure import PREPARATION_REMEDIATIONS, Selection, prepare_closure
 from yoetz.ports.control import ControlMethod
 from yoetz.ports.ledger import CheckCommitResult
+from yoetz.protocol.canonical import JsonValue, canonical_encode
 from yoetz.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
@@ -183,6 +184,33 @@ async def test_composer_paginates_and_requires_explicit_attempt_and_resolution()
             command="pytest tests/a.py",
             description="Explicit caller attestation",
         ),
+    )
+    # tb4n3 formal-crypto S: the complete inventory echoed in a draft phase (about 983 KB at frontier
+    # ~1,430) exceeded the MCP frame. The scoped echo validates against the whole pinned inventory
+    # but returns only the selected rows, with the per-view totals.
+    scoped = await prepare_closure(
+        status,
+        started.session_id,
+        started.writer_id,
+        Selection(
+            phase="attempt",
+            obligation_ids=(obligation,),
+            requested_item_indexes=(0,),
+            action_kind="command",
+            command="pytest tests/a.py",
+            description="Explicit caller attestation",
+        ),
+        scope_to_selection=True,
+    )
+    scoped_inventory: Any = scoped["inventory"]
+    assert [row["obligation_id"] for row in scoped_inventory["obligations"]] == [obligation]
+    assert scoped_inventory["evidence"] == [] and scoped_inventory["history"] == []
+    assert scoped_inventory["scope"]["mode"] == "selected_rows"
+    assert scoped_inventory["scope"]["totals"]["evidence"] == "101"
+    assert scoped_inventory["scope"]["kept"]["evidence"] == "0"
+    assert len(attempt["inventory"]["evidence"]) == 101  # type: ignore[index, arg-type]
+    assert len(canonical_encode(cast(JsonValue, scoped))) < len(
+        canonical_encode(cast(JsonValue, attempt))
     )
     request = PublishWorkRequest.model_validate(attempt["request"])
     assert request.dry_run is True

@@ -22,6 +22,7 @@ import yoetz.cli.app as cli
 import yoetz.mcp.server as bridge
 from yoetz.cli.render import render_human_error
 from yoetz.mcp.errors import build_public_error_result
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES
 from yoetz.ports.control import ControlError
 from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.models import (
@@ -96,7 +97,7 @@ class TestMalformedActorIdRegression:
         assert "Continuation: input_correction_new_identity." in text
         assert "NEW request_id" in text
         assert "codex:/root" not in text
-        assert len(text.encode("ascii")) <= 512
+        assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
 
     def test_the_corrected_body_the_attempt_then_sent_validates(self) -> None:
         StartRequest.model_validate(_benchmark_start_body("codex:root"))

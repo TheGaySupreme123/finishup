@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from yoetz.mcp.summaries import summary_for_check, summary_for_status
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check, summary_for_status
 from yoetz.protocol.canonical import JsonValue
 
 
@@ -36,7 +36,7 @@ def test_project_summary_carries_generation_and_counts_without_content() -> None
     assert "/private/raw/path" not in text
     assert "More pages available" in text
     assert "private" not in text and "/secret" not in text
-    assert len(text.encode()) <= 512
+    assert len(text.encode()) <= MAX_SUMMARY_BYTES
 
 
 def test_hostile_project_grant_does_not_crash_or_leak() -> None:
@@ -91,7 +91,7 @@ def test_check_summary_prioritizes_actionable_input_over_finding_receipt() -> No
     assert "status: action_required" in text
     assert f"targets: {claim}" in text
     assert f"verification_output=agent_suppliable[{claim}]" in text
-    assert len(text.encode("ascii")) <= 512
+    assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
 
 
 def test_check_summary_keeps_structural_input_as_a_limitation() -> None:
@@ -123,7 +123,7 @@ def test_check_summary_keeps_structural_input_as_a_limitation() -> None:
     assert "acknowledged incomplete endpoint: receipt" in text
     assert "disclose limitation at: receipt" in text
     assert "command_identity=structurally_unavailable_on_this_host" in text
-    assert len(text.encode("ascii")) <= 512
+    assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
 
 
 def test_check_summary_clips_many_overall_targets_without_dropping_action() -> None:
@@ -146,7 +146,7 @@ def test_check_summary_clips_many_overall_targets_without_dropping_action() -> N
 
     assert "overall next: review_recorded_work; status: action_required" in text
     assert "...(+" in text
-    assert len(text.encode("ascii")) <= 512
+    assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
 
 
 def test_check_summary_keeps_global_supply_input_without_a_target_ref() -> None:
@@ -167,7 +167,7 @@ def test_check_summary_keeps_global_supply_input_without_a_target_ref() -> None:
     text = summary_for_check(envelope)
 
     assert "overall next: supply_missing_input; status: action_required" in text
-    assert len(text.encode("ascii")) <= 512
+    assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
 
 
 def test_check_summary_marks_preview_and_non_verdict_advice() -> None:
@@ -185,4 +185,4 @@ def test_check_summary_marks_preview_and_non_verdict_advice() -> None:
     assert "No issue detected within deterministic coverage" in text
     assert "children (preview): 1" in text
     assert "project advice (non-verdict): 1" in text
-    assert len(text.encode()) <= 512
+    assert len(text.encode()) <= MAX_SUMMARY_BYTES

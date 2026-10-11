@@ -276,9 +276,9 @@ directives are bounded at 232 ASCII bytes, and several remedy sentences are byte
 tests. The remedy names which condition was hit and its exact local command; the directive names
 the recovery rule for that shape. Both render, remedy first.
 
-On the 512-byte MCP text channel the directive is budgeted after the identity and reason clauses,
-and optional parts are dropped from the least load-bearing end — nudge, then guidance pointer, then
-carried commands. The error identity is never dropped to fit advice. The CLI has no such ceiling
+On the 4,096-byte MCP text channel (512 until tb4n3, ADR-043) the directive is budgeted after the
+identity and reason clauses, and optional parts are dropped from the least load-bearing end — nudge,
+then guidance pointer, then carried commands. The error identity is never dropped to fit advice. The CLI has no such ceiling
 and renders `Continuation:`, `Next:`, `Commands:`, `Guidance:`, and the nudge on separate lines
 beneath the existing `CODE: message` line, and appends the same lines to a bounded lifecycle,
 instance, or ceremony refusal line whose local reason has a registered directive. Every
@@ -346,7 +346,7 @@ Predispatch configuration and policy outcomes (`not_configured`, `credential_una
 are admitted continuation tokens and live in the same registry. They are not new public
 `SemanticReason` values and do not change frozen check-result schemas. CLI check rendering and the
 MCP check text summary project the resolved directive (the MCP channel drops the sentence when the
-512-byte budget cannot hold it, keeping the token). Hook advisories never carry a provider-outcome
+bounded budget cannot hold it, keeping the token). Hook advisories never carry a provider-outcome
 token: a hook token is resolved from the hook's own exact reason (`render_hook_recovery_suffix`),
 and today only SessionStart's vault-locked advisory has one (`vault_unlock_required`). Hook contexts
 shared by several reasons (the status-read retry class), the service's retryable `storage_unsafe`
@@ -357,8 +357,17 @@ stay frozen. Advice and status `semantic_state` is the recorded attempt status (
 `ready`, and `disabled` means no attempt was requested or configured. The state does not widen
 coverage: only validated AI-powered finding ids add `semantic_model_derived` to advice coverage.
 
-Every MCP result also carries a bounded ASCII text projection (at most 512 bytes) for hosts that
-drop `structuredContent`. A successful projection includes the first valid returned frontier's
+Every MCP result also carries a bounded ASCII text projection (the compact summary is at most 4,096
+bytes; 512 until tb4n3, ADR-043; the check-totals line, manifest line, reviewer output and publish
+blocker notices follow it under their own bounds) for hosts that drop `structuredContent`. The projection is composed, not
+concatenated: the verdict or state, the task continuation, the frontier with its head digest and the
+review status/reason are reserved first and optional clauses are granted room by priority, so it
+never raises and no data-only change can turn a committed operation into an error. A clause that
+fails to render is omitted and named as `summary_render_failed:<builder>.<clause>`; a builder whose
+core fails falls back to the verdict or state token, the frontier and "read status view=compact".
+Each such failure is a service diagnostic (operation `<builder>_summary_degraded`, phase
+`<builder>.<clause>`), never an error result. Id and token lists are capped at 1,024 characters each
+with an exact `+N more`. A successful projection includes the first valid returned frontier's
 `sequence` and canonical `head_digest` when both are present. Generic successful operations also
 include any returned, kind-valid `task_id`, `session_id`, and `writer_id`; in particular, the
 `start` text alone carries the identifiers and frontier needed to author the next request. A
@@ -444,8 +453,15 @@ the exact service-derived predicate; the batch appends at the real head and repo
 
 `response_projection_failed` marks a post-commit shaping failure for non-`publish_work` writes (and
 for the genuinely impossible case where even the minimal publish envelope cannot be built): the
-write may already be durable, so the public error is retryable and same-`request_id` resume is the
-recovery path. For `publish_work`, a post-commit projection failure after a successful append is
+write may already be durable, so the public error is retryable and one same-`request_id` replay
+loads the stored result; if that replay also fails the failure is deterministic and the caller reads
+`status view=operation` for the committed outcome and never repeats the work under a new
+`request_id`. The remedy renders on the MCP text channel as well as in the message. A failure to build the MCP *text* of a committed result is not an error at all
+(ADR-043): the structured result is returned and the failure is a diagnostic. The bridge's own
+structural failure after a commit (the result cannot be serialized, or does not match its response
+schema) is `INTERNAL_ERROR` with reason `bridge_result_wire_failed` or
+`bridge_result_validate_failed`, non-retryable; for a write it names `status view=operation` rather
+than a replay that would rebuild the same result, and for a read or dry run it says nothing changed. For `publish_work`, a post-commit projection failure after a successful append is
 not reported as an error at all. The daemon returns a reduced total-acceptance success branch
 with `ok: true`, `response_completeness: "accepted_projection_unavailable"`,
 `reason_code: "response_projection_failed"`, a `correlation_id` for operator diagnostics, the
@@ -2951,7 +2967,7 @@ timeouts, draining) never latch. The latch is process-local: a fresh host launch
 `response_projection_failed` is reserved for the window after a handler returns
 for non-`publish_work` writes (and the impossible minimal-envelope path), where a write may already
 be durable and only the response could not be shaped; it is always `retryable=True`, and the bridge
-answers it with the same-`request_id` replay remedy it uses for its own projection failures. For
+answers it with one same-`request_id` replay and then `status view=operation`. For
 `publish_work` that same window returns the reduced total-acceptance success envelope instead of a
 `ControlError`. Deliberate bounded failures raised in that window —
 `privacy_projection_blocked`, `privacy_projection_unavailable`, and any `PublicOperationError` —
@@ -7308,9 +7324,14 @@ own local-disclosure receipt; the file changes where the result goes, not what w
 The MCP route sends the returned session and writer identities with an explicit selection. It is
 read-only and preparation-only: it never appends, judges work, or claims completion. The bridge
 checks the final host projection and JSON-RPC serialization, including Cursor's structured-content
-and canonical-text copies, before returning success. Its complete response frame is bounded; an
-oversized inventory returns `LIMIT_EXCEEDED` with no partial success, so callers use the CLI
-`--output` fallback for a larger local inventory. The route is shared by
+and canonical-text copies, before returning success. Its complete response frame is bounded. A draft phase (`attempt`, `respond`, `resolve`, `claim`,
+`receipt`) validates against the whole pinned inventory but echoes only the rows its selection
+names, with the per-view totals and kept counts under `inventory.scope`; the `inventory` phase and
+the CLI keep the complete inventory. An oversized inventory returns `LIMIT_EXCEEDED` with reason
+`closure_result_too_large` and no partial success, so callers select ids from the status pages, use
+a draft phase, or use the CLI `--output` fallback for a larger local inventory. Each refusal is its
+own protocol reason code (`closure_attempt_selection_required`, `closure_obligation_unknown`, ...)
+and its fixed remedy sentence renders on the MCP text beside the reason. The route is shared by
 Codex, Claude Code, and Cursor on macOS, Linux, and WSL 2 through the local bridge. Native Windows
 has no supported Yoetz MCP route; host activation and native dogfood remain separate evidence.
 
@@ -8763,7 +8784,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `check_time_change_gap_sentence(code)` returns its one fixed sentence, which the receipt builder
   puts in the gap's `detail` and the limitations section body (so JSON, markdown and text receipts
   carry it), `render_human_check` and `render_human_status` print after the gap list, and the MCP
-  check summary appends when it fits the 512-byte bound.
+  check summary appends when it fits the bound.
 - **Shown files.** `check_time_change_shown_files(capture, shown_bytes)` returns each
   `diff --git` section of the stored change that reached its leading `shown_bytes`, whether it arrived
   whole and without a `[REDACTED]` marker, the section bytes that arrived, the markers among them,

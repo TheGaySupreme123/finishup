@@ -9,6 +9,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Final, Literal, cast
 
+from yoetz.domain.bounded_text import Part, clip_to_limit, compose_parts
 from yoetz.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
@@ -702,7 +703,7 @@ SEMANTIC_REDACTED_VALUES_AGENT_LINE: Final = (
 )
 
 
-# The 512-byte MCP summaries must keep the frontier head digest (issue #279); when the full line
+# The bounded MCP summaries must keep the frontier head digest (issue #279); when the full line
 # cannot fit beside it, they carry this shorter fixed form. Full renderings always use the line.
 SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT: Final = (
     "Values marked [withheld-by-yoetz:possible-credential] were withheld from the external "
@@ -2350,10 +2351,125 @@ def _declared_none_reason_for_render(document: ReceiptDocument) -> str | None:
 
 
 _HUMAN_TEXT_MAX: Final = 32_768
-_HUMAN_TEXT_TRUNCATION_MARKER: Final = (
-    "\n\n[Receipt human_text truncated at 32768 characters; "
-    "remaining canonical section content is omitted.]"
+_HUMAN_TEXT_MARKER_RESERVE: Final = 900
+_HUMAN_TEXT_MARKER_NAMES: Final = 10
+# Who is granted room first when a long receipt must be shortened (tb4n3 RC-2, A7). Every section
+# keeps at least its heading and a "not shown" line, so no section silently disappears; these
+# ranks only decide whose text is cut first. Disclosures that keep a receipt from reading clean
+# outrank the narrative sections.
+_HUMAN_BLOCK_RANK: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        "Summary": 0,
+        "Limitations": 1,
+        "Outstanding work": 3,
+        "Findings": 4,
+        "Evidence basis": 8,
+        "Versions and policy": 9,
+    }
 )
+_HUMAN_DISCLOSURE_RANK: Final = 2
+_HUMAN_DEFAULT_RANK: Final = 6
+
+
+def _human_block_name(block: str) -> str:
+    return block.split("\n", 1)[0].lstrip("#").strip()
+
+
+def _human_block_rank(name: str, history_title: str) -> int:
+    known = _HUMAN_BLOCK_RANK.get(name)
+    if known is not None:
+        return known
+    if name == history_title:
+        return 5
+    if name in {"Children", "Coverage limitations", "Recovery"}:
+        return _HUMAN_DEFAULT_RANK
+    # The remaining blocks are the by-id disclosures: acknowledged, self-verified, disputed,
+    # rejection accepted, duplicate links, premise disputes, assumptions, withheld items.
+    return _HUMAN_DISCLOSURE_RANK
+
+
+def _cut_human_block(block: str, budget: int) -> str:
+    """Cut ``block`` at a line boundary within ``budget`` characters and say how much is left."""
+
+    lines = block.split("\n")
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > budget - 48:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    rest = len(lines) - len(kept)
+    if rest == 0:
+        return block
+    if len(kept) <= 1 and rest > 0:
+        # One long body line: keep the start of it rather than only the heading.
+        room = budget - used - 48
+        if room > 80 and len(lines) > len(kept):
+            kept.append(clip_to_limit(lines[len(kept)], room, marker=" [...]", ascii_only=False))
+            rest -= 1
+    if rest:
+        kept.append(f"[... {rest} more line(s) not shown]")
+    return "\n".join(kept)
+
+
+def _human_block_variants(block: str) -> tuple[str, ...]:
+    """The block whole, then progressively shorter line-boundary cuts, then its heading alone."""
+
+    variants = [block]
+    for budget in (12_000, 4_000, 1_500, 600):
+        cut = _cut_human_block(block, budget)
+        if len(cut) < len(variants[-1]):
+            variants.append(cut)
+    heading = block.split("\n", 1)[0]
+    stub = f"{heading}\n[section content not shown]"
+    if len(stub) < len(variants[-1]):
+        variants.append(stub)
+    return tuple(variants)
+
+
+def _bound_human_text(parts: list[str], history_title: str) -> str:
+    """Join the blocks, shortening by section when they exceed the bound (tb4n3 RC-2, A7).
+
+    The old cut took the head of the joined text, so a long receipt silently lost whichever
+    sections came last -- the by-id disclosures, the coverage limitations and the recovery lines
+    -- under a generic marker. Each block now keeps at least its heading and a line saying its
+    content was not shown, disclosures and limitations are shortened last, and the marker names
+    every shortened section.
+    """
+
+    text = "\n\n".join(parts)
+    if len(text) <= _HUMAN_TEXT_MAX:
+        return text
+    names = [_human_block_name(part) for part in parts]
+    blocks = [
+        Part(
+            _human_block_variants(part),
+            required=True,
+            priority=_human_block_rank(name, history_title),
+        )
+        for part, name in zip(parts, names, strict=True)
+    ]
+    composed = compose_parts(
+        blocks,
+        _HUMAN_TEXT_MAX - _HUMAN_TEXT_MARKER_RESERVE,
+        sep="\n\n",
+        ascii_only=False,
+    )
+    shortened = [names[index] for index in composed.shortened]
+    listed = ", ".join(shortened[:_HUMAN_TEXT_MARKER_NAMES])
+    if len(shortened) > _HUMAN_TEXT_MARKER_NAMES:
+        listed += f" and {len(shortened) - _HUMAN_TEXT_MARKER_NAMES} more"
+    marker = (
+        "\n\n[Receipt human_text truncated at 32768 characters; "
+        + (f"shortened sections: {listed}. " if listed else "")
+        + ("Remaining text was cut. " if composed.cut_required else "")
+        + "The structured receipt (format json) holds every section in full.]"
+    )
+    return (
+        clip_to_limit(composed.text, _HUMAN_TEXT_MAX - len(marker), marker="...", ascii_only=False)
+        + marker
+    )
 
 
 def _semantic_recovery_lines(document: ReceiptDocument) -> list[str]:
@@ -2610,18 +2726,14 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
     if recovery:
         heading = "## Recovery" if markdown else "Recovery"
         parts.append("\n".join((heading, *recovery)))
-    text = "\n\n".join(parts) if parts else render_receipt_compact(document)
-    if len(text) > _HUMAN_TEXT_MAX:
-        # The historical section is bounded (one short line per gap) and must survive the cut,
-        # or a long receipt would silently drop what an earlier check carried (issue #1017).
-        tail = (
-            ""
-            if history_block is None
-            or history_block in text[: _HUMAN_TEXT_MAX - len(_HUMAN_TEXT_TRUNCATION_MARKER)]
-            else "\n\n" + history_block
+    text = (
+        _bound_human_text(
+            parts,
+            HISTORICAL_GAPS_SECTION_TITLE,
         )
-        text = text[: _HUMAN_TEXT_MAX - len(_HUMAN_TEXT_TRUNCATION_MARKER) - len(tail)]
-        text += _HUMAN_TEXT_TRUNCATION_MARKER + tail
+        if parts
+        else render_receipt_compact(document)
+    )
     if not text:
         raise ProtocolValueError("invalid_receipt_document")
     return text

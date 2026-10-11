@@ -24,7 +24,7 @@ import yoetz.mcp.server as bridge
 from yoetz.mcp.descriptors import ORDINARY_MCP_PUBLISH_EVENT_FAMILIES, descriptor_for
 from yoetz.mcp.errors import safe_validation_locations
 from yoetz.mcp.server import invalid_request_message
-from yoetz.mcp.summaries import render_safe_compact_summary
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
 from yoetz.protocol.errors import PublicErrorCode
 from yoetz.protocol.models import PublishWorkRequestModel
 
@@ -143,7 +143,7 @@ async def test_the_repair_fact_reaches_the_compatible_text_channel(
     summary = render_safe_compact_summary(structured)
     assert "Repair: attempted_items is admitted only by the action_recorded payload" in summary
     assert "Continuation: field_ownership_repair." in summary
-    assert len(summary.encode("ascii")) <= 512
+    assert len(summary.encode("ascii")) <= MAX_SUMMARY_BYTES
     content = cast(list[Any], getattr(result, "content"))
     assert content[0].text == summary
 

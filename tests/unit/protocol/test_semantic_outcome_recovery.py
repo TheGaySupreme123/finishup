@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from yoetz.cli.render import render_human_check
 from yoetz.domain.findings import SemanticFailureClass
-from yoetz.mcp.summaries import summary_for_check
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check
 from yoetz.protocol.models import (
     CheckSuccessModel,
     CoverageModel,
@@ -214,7 +214,7 @@ def test_check_renderers_project_registry_text_without_raw_output() -> None:
     text = summary_for_check(envelope)
     assert "Continuation: semantic_response_truncated." in text
     assert _PROVIDER_CANARY not in text
-    assert len(text.encode("ascii")) <= 512
+    assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
 
     result = CheckSuccessModel.model_construct(
         verdict="incomplete_check",

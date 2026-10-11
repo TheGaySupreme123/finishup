@@ -1750,7 +1750,8 @@ The current Codex MCP surface advertises the read-only `closure_prepare/1.0.0` s
 Discover its declaration before use and pass the returned session and writer identities with an
 explicit selection. It inventories one pinned status frontier or prepares one explicit draft; it
 never appends, judges work, or claims completion. The complete response frame is bounded: an
-oversized inventory returns `LIMIT_EXCEEDED` without partial data. When the declaration is absent,
+draft phases echo only the rows the selection names, and an oversized inventory returns
+`LIMIT_EXCEEDED` (`closure_result_too_large`) without partial data. When the declaration is absent,
 use `yoetz closure-prepare --session-id <returned-session> --writer-id <returned-writer>` with
 `--output <file>` outside the repository. This shared route is supported through the local bridge
 on macOS, Linux, and WSL 2; native Windows has no supported Yoetz MCP route. MCP discovery,
@@ -1959,6 +1960,19 @@ privacy choices; new settings such as Expanded review require a separate exact a
 Codex consumes structured MCP results, so the `continuation` token arrives in `safe_details` and the
 bounded text projection repeats the resolved directive for parity. No Codex-specific behavior is
 configured.
+
+The observed Codex failure this covers:
+
+**Bounded text and committed operations (ADR-043, issue #1025).** Codex shows the model the
+serialized `structuredContent` outside code mode and the bounded text summary inside it; that
+summary is composed within 4,096 bytes (it was 512, and the closing `check` of 10 of 13
+deterministic tb4n3 runs overflowed it). The verdict, the `overall next` instruction, the review
+status/reason and the frontier with its head digest are reserved first, so a closing check always
+reads. A text that cannot be built never fails a committed call: the clause is omitted and named
+(`summary_render_failed:<builder>.<clause>`), a service diagnostic records it, and the structured
+result is the call's result. Hook advice over Yoetz's own 2,000-character cap ends with a cut
+marker (no Codex document states a hook limit; the cap is Yoetz's own). No Codex-specific behavior is
+configured; it is the same on macOS, Linux and WSL 2.
 
 The observed Codex failure this covers: a `start` with `actor_id` `codex:/root` was rejected as
 `INVALID_REQUEST` with `fields: ["/actor/actor_id"]`, `reasons: ["invalid_type_or_value"]`, and

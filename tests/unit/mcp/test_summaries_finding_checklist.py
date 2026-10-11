@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from yoetz.mcp.summaries import summary_for_check, summary_for_status
+import pytest
+
+from yoetz.mcp import summaries
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check, summary_for_status
 
 
 def _row(number: int, kind: str, state: str, rounds: str) -> dict[str, object]:
@@ -40,7 +43,7 @@ def test_actionable_rows_are_counted_and_unknown_kinds_are_ignored() -> None:
     )
     assert "to-do: open 1 (1 at budget 5), verified 1, not done 0, rejection accepted 0;" in text
     assert "not_a_kind" not in text
-    assert len(text.encode()) <= 512
+    assert len(text.encode()) <= MAX_SUMMARY_BYTES
 
 
 def _check_envelope(next_step: str) -> dict[str, object]:
@@ -72,19 +75,35 @@ def _check_envelope(next_step: str) -> dict[str, object]:
     }
 
 
-def test_the_at_budget_decision_survives_a_long_task_continuation() -> None:
-    """Issue #905: the budget cue stays visible when the full to-do clause cannot fit."""
+def test_the_at_budget_decision_is_named_beside_a_long_task_continuation() -> None:
+    """Issue #905: the budget cue is part of the text with a long task continuation."""
 
     text = summary_for_check(_check_envelope("decide_at_budget"))
     assert "overall next: work_open_findings" in text
-    assert "finding checklist next: decide_at_budget (at budget 2);" in text
-    assert len(text.encode("ascii")) <= 512
+    assert "finding checklist next: decide_at_budget" in text
+    assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
+
+
+def test_the_at_budget_decision_survives_when_the_full_to_do_clause_cannot_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #905 under the composer: a tight bound drops the to-do counts before the cue."""
+
+    envelope = _check_envelope("decide_at_budget")
+    full = summary_for_check(envelope)
+    todo = "to-do: open 2 (1 at budget 2), verified 0, not done 0, rejection accepted 0;"
+    assert todo in full
+    # Leave room for the required core and the cue, but not for the whole to-do clause.
+    monkeypatch.setattr(summaries, "_MAX_SUMMARY_BYTES", len(full) - len(todo) // 2)
+    tight = summary_for_check(envelope)
+    assert todo not in tight
+    assert "overall next: work_open_findings" in tight
+    assert "finding checklist next: decide_at_budget (at budget 2);" in tight
 
 
 def test_no_compact_cue_is_invented_below_the_budget() -> None:
     text = summary_for_check(_check_envelope("work_open_findings"))
     assert "decide_at_budget" not in text
-    assert "at budget" not in text
 
 
 def test_linked_duplicates_are_named_only_when_present() -> None:

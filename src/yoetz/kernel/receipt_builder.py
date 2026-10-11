@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Final, Literal, cast
 
+from yoetz.domain.bounded_text import clip_to_limit
 from yoetz.domain.check_totals import render_check_totals
 from yoetz.domain.events import (
     AcceptedEvent,
@@ -190,6 +191,80 @@ def _ascii_key(value: str) -> bytes:
 
 def _sorted_unique[T: str](values: Iterable[T]) -> tuple[T, ...]:
     return tuple(sorted(set(values), key=_ascii_key))
+
+
+# The receipt document holds at most this many of each row kind, and a section at most this many
+# items. A task past them used to fail to build any receipt at all (INVALID_REQUEST "The receipt
+# request is invalid", or STORAGE_CORRUPT from the selection guards) -- the agent could never close
+# a long-lived task (tb4n3 RC-2, A6). The builder now keeps the rows that matter most, in a
+# stable order, and says how many it left out.
+_DOCUMENT_ROW_CAP: Final = 100
+_GAP_ROW_CAP: Final = 64
+_SECTION_ITEM_CAP: Final = 64
+_SECTION_BODY_CAP: Final = 32_768
+
+
+def _keep_by_rank[T](
+    values: tuple[T, ...],
+    cap: int,
+    rank: Callable[[T], int],
+    *,
+    cap_rank: int | None = None,
+) -> tuple[tuple[T, ...], int]:
+    """Keep the ``cap`` best-ranked values in their original order; return them and the rest.
+
+    With ``cap_rank`` the cap applies to the values of that rank alone and every other value is
+    kept (used to bound one kind of row without touching the rest).
+    """
+
+    if cap_rank is not None:
+        capped = [index for index, value in enumerate(values) if rank(value) == cap_rank]
+        if len(capped) <= cap:
+            return values, 0
+        dropped = frozenset(capped[cap:])
+        return (
+            tuple(value for index, value in enumerate(values) if index not in dropped),
+            len(dropped),
+        )
+    if len(values) <= cap:
+        return values, 0
+    best = frozenset(
+        sorted(range(len(values)), key=lambda index: (rank(values[index]), index))[:cap]
+    )
+    return tuple(value for index, value in enumerate(values) if index in best), len(values) - cap
+
+
+def _omitted_rows_sentence(omitted: Mapping[str, int]) -> str:
+    named = [
+        f"{count} {noun if count == 1 else noun + 's'}"
+        for noun, count in omitted.items()
+        if count > 0
+    ]
+    if not named:
+        return ""
+    return (
+        " Not listed in this receipt (the document holds at most "
+        f"{_DOCUMENT_ROW_CAP} rows of a kind, {_GAP_ROW_CAP} gaps): {', '.join(named)}. "
+        "Unresolved actionable findings and open obligations are listed first, and the coverage "
+        "list still names every limitation; status lists every row."
+    )
+
+
+def _finish_section(body: str, items: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
+    """Bound one section: at most the item cap, a visible count of the rest, a marked body cut."""
+
+    note = ""
+    if len(items) > _SECTION_ITEM_CAP:
+        note = (
+            f" {len(items) - _SECTION_ITEM_CAP} more item(s) are not listed here; "
+            "status lists every row."
+        )
+        items = items[:_SECTION_ITEM_CAP]
+    if len(body) + len(note) > _SECTION_BODY_CAP:
+        body = clip_to_limit(
+            body, _SECTION_BODY_CAP - len(note), marker=" [section text cut]", ascii_only=False
+        )
+    return body + note, items
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,9 +573,6 @@ def _select_obligations(
         selected.update(
             cast(ObligationId, ref) for ref in finding.subject_refs if ref.startswith("obl_")
         )
-    if len(selected) > 100:
-        raise ValueError(_CONTEXT_INVALID)
-
     obligations: list[ReceiptObligation] = []
     for obligation_id_value in _sorted_unique(selected):
         record = context.projection.obligations.get(obligation_id_value)
@@ -543,8 +615,6 @@ def _select_claim_refs(
         refs.update(cast(ClaimId, ref) for ref in finding.subject_refs if ref.startswith("clm_"))
     for gap in context.gaps:
         refs.update(cast(ClaimId, ref) for ref in gap.subject_refs if ref.startswith("clm_"))
-    if len(refs) > 100:
-        raise ValueError(_CONTEXT_INVALID)
     return _sorted_unique(refs)
 
 
@@ -619,8 +689,6 @@ def _select_evidence_refs(
                 for evidence_id_value, record in context.projection.evidence.items()
                 if record.source_event_id == root
             )
-    if len(refs) > 100:
-        raise ValueError(_CONTEXT_INVALID)
     return _sorted_unique(refs)
 
 
@@ -645,8 +713,6 @@ def _select_responses(
                 waiver_expiry=payload.waiver_expiry,
             )
         )
-    if len(values) > 100:
-        raise ValueError(_CONTEXT_INVALID)
     return tuple(values)
 
 
@@ -737,8 +803,6 @@ def _select_gaps(
             ),
         )
     )
-    if len(values) > 64:
-        raise ValueError(_CONTEXT_INVALID)
     return values
 
 
@@ -908,11 +972,33 @@ def _apply_profile(
     )
 
 
-def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
-    """Project the pure lineage evaluation into the receipt's bounded child section."""
+_CHILD_FINDING_CAP: Final = 64
+
+
+def _child_finding_rank(finding: ReceiptChildFinding) -> int:
+    """0 unresolved actionable work, 1 self-verified, 2 other unresolved, 3 resolved history.
+
+    A self-verified child finding is also actionable and unresolved, but it is not the parent's
+    work (ADR-034), so a finding that still needs work outranks it.
+    """
+
+    if finding.resolved:
+        return 3
+    if finding.self_verified:
+        return 1
+    return 0 if finding.actionable else 2
+
+
+def _receipt_children(evaluation: LineageEvaluation | None) -> tuple[ReceiptChildren, int]:
+    """Project the pure lineage evaluation into the receipt's bounded child section.
+
+    Lineage allows 100 findings per child while a receipt child outcome holds 64 (tb4n3 RC-2, A6):
+    a child past that used to fail the whole receipt. The rest are counted, not silently dropped.
+    """
 
     if evaluation is None:
-        return ReceiptChildren()
+        return ReceiptChildren(), 0
+    omitted_child_findings = 0
     snapshots = {snapshot.child_task_id: snapshot for snapshot in evaluation.snapshots}
     children: list[ReceiptChildOutcome] = []
     for rollup in evaluation.children:
@@ -936,6 +1022,8 @@ def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
                 )
                 for finding in snapshot.findings
             )
+            findings, omitted = _keep_by_rank(findings, _CHILD_FINDING_CAP, _child_finding_rank)
+            omitted_child_findings += omitted
         # ``blocked`` is the evaluator's internal state for unresolved actionable child findings;
         # receipts expose the bounded child outcome vocabulary, where that state is an open gap
         # accompanied by the actionable finding rows.
@@ -963,7 +1051,7 @@ def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
                 findings=findings,
             )
         )
-    return ReceiptChildren(tuple(children))
+    return ReceiptChildren(tuple(children)), omitted_child_findings
 
 
 def route_did_not_require_review(check: CheckRecordedPayload | None) -> bool:
@@ -1623,6 +1711,7 @@ def _sections(
     acknowledged_obligations: frozenset[str] = frozenset(),
     review_not_required: bool = False,
     historical_gap_codes: frozenset[str] = frozenset(),
+    omitted_rows_sentence: str = "",
 ) -> tuple[ReceiptSection, ...]:
     # Issue #1017: the limitations section lists live gaps only; the human renderings list the
     # historical ones (a later check cleared them) in their own section from the gap rows.
@@ -1651,6 +1740,7 @@ def _sections(
         )
     if check_totals_text:
         bodies[ReceiptSectionKey.SUMMARY] += " " + check_totals_text
+    bodies[ReceiptSectionKey.SUMMARY] += omitted_rows_sentence
     # The summary's items are the resolved historical finding ids: the one place every include
     # level carries, so a renderer can always separate resolved rows from current ones.
     items[ReceiptSectionKey.SUMMARY] = resolved_finding_ids
@@ -1909,12 +1999,13 @@ def _sections(
     )
     items[ReceiptSectionKey.VERSION_AND_POLICY_IDENTITY] = ()
 
+    finished = {key: _finish_section(bodies[key], items[key]) for key in _SECTION_KEYS[include]}
     return tuple(
         ReceiptSection(
             key=key,
             title=_SECTION_TITLES[key],
-            body=bodies[key],
-            items=items[key],
+            body=finished[key][0],
+            items=finished[key][1],
             coverage_note=(
                 review_input_coverage_note
                 if key is ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
@@ -1923,6 +2014,26 @@ def _sections(
         )
         for key in _SECTION_KEYS[include]
     )
+
+
+def _finding_keep_rank(
+    finding: Finding,
+    states_by_id: Mapping[FindingId, ReceiptFindingState],
+    unresolved_actionable: frozenset[FindingId],
+) -> int:
+    """0 unresolved actionable, 1 a terminal state the document discloses, 2 other, 3 resolved."""
+
+    if finding.finding_id in unresolved_actionable:
+        return 0
+    state = states_by_id[finding.finding_id]
+    if (
+        state.acknowledged_not_done
+        or state.rejection_accepted
+        or state.self_verified
+        or state.disputed_after_rebuttal
+    ):
+        return 1
+    return 3 if state.resolved else 2
 
 
 def build_receipt(
@@ -1986,7 +2097,7 @@ def build_receipt(
     claim_refs = _select_claim_refs(context, findings)
     evidence_refs = _select_evidence_refs(context, claim_refs, obligations, responses)
     gaps = _select_gaps(context, historical)
-    children = _receipt_children(context.lineage)
+    children, omitted_child_findings = _receipt_children(context.lineage)
     (
         retained_findings,
         retained_obligations,
@@ -2001,6 +2112,61 @@ def build_receipt(
         responses,
         gaps,
     )
+    # Past the document's row bounds the receipt keeps what matters most -- unresolved actionable
+    # findings, the terminal states the document discloses by id, open obligations, live gaps --
+    # and counts the rest in the summary (tb4n3 RC-2, A6).
+    unresolved_ids = frozenset(finding.finding_id for finding in unresolved_actionable)
+    # The summary section's items name every resolved finding the document retains (the only
+    # resolution flag a receipt carries), and a section holds at most 64 items: keep no more
+    # resolved history than that, or a retained resolved row would read as unresolved.
+    retained_findings, omitted_resolved = _keep_by_rank(
+        retained_findings,
+        _SECTION_ITEM_CAP,
+        lambda finding: 1 if states_by_id[finding.finding_id].resolved else 0,
+        cap_rank=1,
+    )
+    retained_findings, omitted_findings = _keep_by_rank(
+        retained_findings,
+        _DOCUMENT_ROW_CAP,
+        lambda finding: _finding_keep_rank(finding, states_by_id, unresolved_ids),
+    )
+    omitted_findings += omitted_resolved
+    retained_obligations, omitted_obligations = _keep_by_rank(
+        retained_obligations,
+        _DOCUMENT_ROW_CAP,
+        lambda obligation: 0 if obligation.status is ReceiptObligationStatus.OPEN else 1,
+    )
+    kept_finding_ids = frozenset(finding.finding_id for finding in retained_findings)
+    retained_responses, omitted_responses = _keep_by_rank(
+        retained_responses,
+        _DOCUMENT_ROW_CAP,
+        lambda response: 0 if response.finding_id in kept_finding_ids else 1,
+    )
+    claim_refs, omitted_claims = (
+        claim_refs[:_DOCUMENT_ROW_CAP],
+        max(0, len(claim_refs) - _DOCUMENT_ROW_CAP),
+    )
+    evidence_refs, omitted_evidence = (
+        evidence_refs[:_DOCUMENT_ROW_CAP],
+        max(0, len(evidence_refs) - _DOCUMENT_ROW_CAP),
+    )
+    # A cleared (historical) gap row is the only thing that keeps its code from reading as a
+    # current limitation, while a live code stays in the coverage list and the limitations
+    # section whether or not its detail row is kept: cleared rows are kept first.
+    retained_gaps, omitted_gaps = _keep_by_rank(
+        retained_gaps,
+        _GAP_ROW_CAP,
+        lambda gap: 0 if gap.status is ReceiptGapStatus.HISTORICAL else 1,
+    )
+    omitted_rows = {
+        "finding": omitted_findings,
+        "obligation": omitted_obligations,
+        "response": omitted_responses,
+        "claim reference": omitted_claims,
+        "evidence reference": omitted_evidence,
+        "gap detail row": omitted_gaps,
+        "child finding": omitted_child_findings,
+    }
     engine_derived_suffix, host_observation_suffix, limitation_response_suffix = (
         _suffix_record_kinds(context)
     )
@@ -2103,6 +2269,7 @@ def build_receipt(
             if context.applicable_check is None
             else render_check_totals(context.applicable_check.totals)
         ),
+        omitted_rows_sentence=_omitted_rows_sentence(omitted_rows),
     )
     suppressed_count = (
         0 if context.applicable_check is None else context.applicable_check.suppressed_count

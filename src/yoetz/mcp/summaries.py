@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 from typing import Final, cast
 
 from pydantic import BaseModel
 
+from yoetz.domain.bounded_text import (
+    Part,
+    compose_parts,
+    list_variants,
+)
+from yoetz.domain.closure import PREPARATION_REMEDIATIONS
 from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind
 from yoetz.domain.receipts import (
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
@@ -28,6 +36,7 @@ from yoetz.protocol.guidance_uris import ALL_GUIDANCE_URIS
 from yoetz.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
 from yoetz.protocol.readiness_text import READINESS_STATES, readiness_directive
 from yoetz.protocol.recovery import (
+    REASON_REMEDIES,
     RecoveryDirective,
     continuation_for_semantic_outcome,
     correction_for_invariant,
@@ -36,7 +45,10 @@ from yoetz.protocol.recovery import (
 from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 __all__ = [
+    "MAX_SUMMARY_BYTES",
+    "SummaryRender",
     "render_safe_compact_summary",
+    "render_safe_compact_summary_detailed",
     "render_check_reviewer_output",
     "summary_for_check",
     "summary_for_check_awaiting",
@@ -47,7 +59,12 @@ __all__ = [
     "summary_for_status",
 ]
 
-_MAX_SUMMARY_BYTES: Final = 512
+# tb4n3 RC-2 (#1025): 512 was too small for the closing check of a run (10 of 13 deterministic
+# runs overflowed it and lost their verdict). The bound stays a bound, but every builder composes
+# against it with ``compose_parts`` -- required core first, optional clauses by priority -- so
+# exceeding it degrades the optional clauses and can never raise (ADR-030 "Budget priority").
+MAX_SUMMARY_BYTES: Final = 4096
+_MAX_SUMMARY_BYTES: Final = MAX_SUMMARY_BYTES
 _MAX_REVIEW_OUTPUT_BYTES: Final = 12_288
 _REVIEW_VERDICTS: Final = frozenset({"supported", "not_supported", "not_assessable"})
 _REVIEW_KINDS: Final = frozenset(
@@ -83,7 +100,6 @@ _GAP_CODE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
 # F3: the status summary names at most this many required limitation ids, then "+N more"; the
 # structured closure_readiness lists up to 64.
 _MAX_SUMMARY_LIMITATION_IDS: Final = 3
-_CLOSURE_CLAUSE_RESERVE: Final = 96
 _RESULT_REF: Final = re.compile(
     r"^res_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.ASCII
 )
@@ -101,6 +117,137 @@ _HEAD_DIGEST: Final = re.compile(r"^(?:genesis|sha256:[0-9a-f]{64})$", re.ASCII)
 # Closed shape of a packaged guidance URI, the only location a guidance pointer may name.
 _GUIDANCE_URI: Final = re.compile(r"^yoetz://guidance/[a-z0-9-]{1,64}\.md$", re.ASCII)
 _REGISTERED_GUIDANCE_URIS: Final = frozenset(ALL_GUIDANCE_URIS)
+
+
+# Priority bands for ``compose_parts`` (lower is granted room first). Every required part is
+# granted before every optional one; these only order the optional clauses among themselves.
+_P_ACTION: Final = 10  # an instruction the agent must act on
+_P_IDENTITY: Final = 20  # ids and refs the next request must carry
+_P_STATE: Final = 30  # counts and checklists that describe state
+_P_DISCLOSURE: Final = 40  # disclosures of what the check did not cover
+_P_DETAIL: Final = 50  # supporting detail; the structured result carries it in full
+# One id or token list never takes more than this of the bounded text, so a 100-finding check
+# still leaves room for the instruction, the checklist and the disclosures beside it; the exact
+# remainder is stated as "+N more" and the structured result carries every row.
+_LIST_MAX_CHARS: Final = 1024
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryRender:
+    """A rendered text projection plus every clause or builder that failed to render.
+
+    ``failures`` pairs ``<builder>[.<clause>]`` with the exception that stopped it. The text always
+    names them (``summary_render_failed:...``) so the agent knows the structured result is the
+    complete record; the bridge records the exceptions in the service diagnostics.
+    """
+
+    text: str
+    failures: tuple[tuple[str, BaseException], ...] = ()
+
+
+# The failure sink of the render in progress. Direct builder calls leave it unset; the bridge
+# entry point sets it so it can record what degraded.
+_FAILURE_SINK: ContextVar[list[tuple[str, BaseException]] | None] = ContextVar(
+    "yoetz_summary_failure_sink", default=None
+)
+
+
+class _Render:
+    """One builder run: guards each clause so one failing clause cannot blank the summary."""
+
+    __slots__ = ("builder", "failed")
+
+    def __init__(self, builder: str) -> None:
+        self.builder = builder
+        self.failed: list[str] = []
+
+    def _note(self, clause: str, exc: Exception) -> None:
+        site = f"{self.builder}.{clause}"
+        if site not in self.failed:
+            self.failed.append(site)
+        sink = _FAILURE_SINK.get()
+        if sink is not None:
+            sink.append((site, exc))
+
+    def text(self, clause: str, build: Callable[[], str]) -> str:
+        try:
+            return build()
+        except Exception as exc:  # noqa: BLE001 - a clause is optional; the core must survive
+            self._note(clause, exc)
+            return ""
+
+    def variants(self, clause: str, build: Callable[[], tuple[str, ...]]) -> tuple[str, ...]:
+        try:
+            return build()
+        except Exception as exc:  # noqa: BLE001 - a clause is optional; the core must survive
+            self._note(clause, exc)
+            return ()
+
+    def guarded_parts(self, clause: str, build: Callable[[], list[Part]]) -> list[Part]:
+        try:
+            return build()
+        except Exception as exc:  # noqa: BLE001 - a clause is optional; the core must survive
+            self._note(clause, exc)
+            return []
+
+    def guarded_one(self, clause: str, build: Callable[[], Part | None]) -> Part | None:
+        try:
+            return build()
+        except Exception as exc:  # noqa: BLE001 - a clause is optional; the core must survive
+            self._note(clause, exc)
+            return None
+
+    def failure_part(self) -> Part | None:
+        if not self.failed:
+            return None
+        sites = ",".join(self.failed)
+        return Part(
+            (
+                f"summary_render_failed:{sites}; those clauses are omitted and the structured "
+                "result is complete.",
+                f"summary_render_failed:{sites}.",
+            ),
+            required=True,
+        )
+
+
+def _req(*variants: str) -> Part:
+    """A part that is always present; later variants are the shorter forms."""
+
+    return Part(variants, required=True)
+
+
+def _opt(*variants: str, priority: int = _P_DETAIL) -> Part:
+    """A part kept only when the longest variant that fits beside the required text exists."""
+
+    return Part(variants, priority=priority)
+
+
+def _compose(parts: Sequence[Part | None]) -> str:
+    return compose_parts([part for part in parts if part is not None], _MAX_SUMMARY_BYTES).text
+
+
+def _list_part(
+    prefix: str,
+    values: Sequence[str],
+    *,
+    priority: int = _P_DETAIL,
+    required: bool = False,
+    max_chars: int | None = _LIST_MAX_CHARS,
+) -> Part | None:
+    """A bounded token list as one part: all values, then fewer with an exact ``+N more``.
+
+    ``max_chars`` caps the longest rendering so one very long list cannot take the room a sibling
+    list needs; the shortest rendering is always kept.
+    """
+
+    variants = list_variants(prefix, values, suffix=";")
+    if not variants:
+        return None
+    if max_chars is not None:
+        within = tuple(variant for variant in variants if len(variant) <= max_chars)
+        variants = within or variants[-1:]
+    return Part(variants, required=required, priority=priority)
 
 
 def _failure_class_from_mapping(value: object) -> object | None:
@@ -336,12 +483,18 @@ def _checklist_counts_clause(
     return clause
 
 
-def _overall_next_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
-    """Render the structured task continuation before the finding-only checklist (#963)."""
+def _overall_next_parts(source: Mapping[str, JsonValue]) -> list[Part]:
+    """Render the structured task continuation before the finding-only checklist (#963).
+
+    The action and status are the one instruction the closing check must carry, so they are a
+    required part. The acknowledged-endpoint and limitation-disclosure sentences and the target
+    refs are optional parts beside it; a 64-ref list shrinks to as many refs as fit, then to a
+    count, and never makes the action itself disappear.
+    """
 
     raw = source.get("overall_next")
-    if not isinstance(raw, Mapping) or byte_budget <= 0:
-        return ""
+    if not isinstance(raw, Mapping):
+        return []
     next_source = cast(Mapping[str, JsonValue], raw)
     action = next_source.get("action")
     status = next_source.get("status")
@@ -351,9 +504,9 @@ def _overall_next_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -
         "review_recorded_work",
         "request_receipt",
     }:
-        return ""
+        return []
     if status not in {"action_required", "ready_with_limitations", "ready"}:
-        return ""
+        return []
     raw_refs = next_source.get("target_refs")
     refs = (
         tuple(
@@ -365,58 +518,29 @@ def _overall_next_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -
         else ()
     )
     if action in {"work_open_findings", "review_recorded_work"} and not refs:
-        return ""
+        return []
     if action == "request_receipt" and refs:
-        return ""
+        return []
     endpoint = next_source.get("acknowledged_incomplete_endpoint")
-    endpoint_clause = "; acknowledged incomplete endpoint: receipt" if endpoint == "receipt" else ""
-    disclosure_clause = (
-        "; disclose limitation at: receipt"
-        if status == "ready_with_limitations" and endpoint == "receipt"
-        else ""
-    )
-    # ``summary_for_check`` reserves room for its fixed status/frontier/recovery tail.  Keep the
-    # action and status inside that reduced budget, and spend the remaining bytes on target refs;
-    # a long 64-ref list must never make the authoritative continuation disappear altogether.
-    available = max(0, byte_budget - _OPTIONAL_CLAUSE_RESERVE)
-    fixed = f"overall next: {action}; status: {status}{endpoint_clause}{disclosure_clause}"
-    if len(fixed.encode("ascii")) > available:
-        return fixed + "; "
-    if not refs:
-        return fixed + "; "
-    target_prefix = "; targets: "
-    candidate = fixed + target_prefix
-    shown: list[str] = []
-    for ref in refs:
-        separator = "" if not shown else ","
-        trial = candidate + separator + ref + "; "
-        if len(trial.encode("ascii")) > available:
-            break
-        shown.append(ref)
-        candidate = candidate + separator + ref
-    omitted = len(refs) - len(shown)
-    if omitted:
-        marker = f",...(+{omitted})" if shown else f"...(+{omitted})"
-        while shown and len((candidate + marker + "; ").encode("ascii")) > available:
-            shown.pop()
-            candidate = fixed + target_prefix + ",".join(shown)
-            marker = f",...(+{len(refs) - len(shown)})" if shown else f"...(+{len(refs)})"
-        if len((candidate + marker + "; ").encode("ascii")) <= available:
-            return candidate + marker + "; "
-        return fixed + "; "
-    return candidate + "; "
-
-
-# Room the fixed identity, frontier and recovery clauses still need after an optional clause.
-_OPTIONAL_CLAUSE_RESERVE: Final = 240
-
-
-def _with_room(prefix: str, clause: str) -> str:
-    """Append an optional clause only while the fixed summary still fits beside it."""
-
-    if len((prefix + clause).encode("ascii")) > _MAX_SUMMARY_BYTES - _OPTIONAL_CLAUSE_RESERVE:
-        return prefix
-    return prefix + clause
+    parts = [_req(f"overall next: {action}; status: {status};")]
+    if endpoint == "receipt":
+        parts.append(_opt("acknowledged incomplete endpoint: receipt;", priority=_P_ACTION))
+    if status == "ready_with_limitations" and endpoint == "receipt":
+        parts.append(_opt("disclose limitation at: receipt;", priority=_P_ACTION))
+    if refs:
+        variants = tuple(
+            variant
+            for variant in list_variants(
+                "targets: ", refs, joiner=",", more=",...(+{n})", suffix=";", max_variants=32
+            )
+            if len(variant) <= _LIST_MAX_CHARS
+        )
+        parts.append(
+            _opt(*variants, f"targets: ...(+{len(refs)});", priority=_P_ACTION)
+            if len(refs) > 1
+            else _opt(*variants, priority=_P_ACTION)
+        )
+    return parts
 
 
 def _item_count(value: object) -> str:
@@ -426,7 +550,7 @@ def _item_count(value: object) -> str:
     return "unavailable"
 
 
-def _finding_identity_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
+def _finding_identity_part(source: Mapping[str, JsonValue]) -> Part | None:
     """Render as many revalidated finding IDs as the check summary can safely carry.
 
     A check's text projection is an authoring fallback.  When it reports actionable
@@ -434,17 +558,14 @@ def _finding_identity_clause(source: Mapping[str, JsonValue], *, byte_budget: in
     """
 
     raw_findings = source.get("findings")
-    if not isinstance(raw_findings, list | tuple) or byte_budget <= 0:
-        return ""
+    if not isinstance(raw_findings, list | tuple):
+        return None
     finding_ids = tuple(
         cast(str, raw.get("finding_id"))
         for raw in raw_findings
         if isinstance(raw, Mapping) and is_valid_id(IdKind.FINDING, raw.get("finding_id"))
     )
-    if not finding_ids:
-        return ""
-
-    return _bounded_list_clause("finding IDs: ", finding_ids, byte_budget=byte_budget)
+    return _list_part("finding IDs: ", finding_ids, priority=_P_IDENTITY)
 
 
 _MISSING_KINDS: Final = frozenset(
@@ -468,7 +589,7 @@ _MISSING_AVAILABILITIES: Final = frozenset(
 )
 
 
-def _missing_items_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
+def _missing_items_part(source: Mapping[str, JsonValue]) -> Part | None:
     """Name each item an ``insufficient_packet`` review needed, from closed tokens only (#907).
 
     Kinds and availability classes are re-gated against their closed vocabularies; target refs
@@ -476,8 +597,8 @@ def _missing_items_clause(source: Mapping[str, JsonValue], *, byte_budget: int) 
     """
 
     raw = source.get("missing_for_assessment")
-    if not isinstance(raw, list | tuple) or byte_budget <= 0:
-        return ""
+    if not isinstance(raw, list | tuple):
+        return None
     tokens: list[str] = []
     suppliable = 0
     yoetz_limit = 0
@@ -504,41 +625,20 @@ def _missing_items_clause(source: Mapping[str, JsonValue], *, byte_budget: int) 
         target = f"[{','.join(safe_refs)}]" if safe_refs else ""
         tokens.append(f"{kind}={availability}{target}")
     if not tokens:
-        return ""
+        return None
     limit_note = (
         f", yoetz-limit: {yoetz_limit}, self-verify, not a blocker, never reshape the work"
         if yoetz_limit
         else ""
     )
-    return _bounded_list_clause(
+    return _list_part(
         f"missing for assessment: {len(tokens)} (agent-suppliable: {suppliable}{limit_note}): ",
         tokens,
-        byte_budget=byte_budget,
+        priority=_P_STATE,
     )
 
 
-def _bounded_list_clause(prefix: str, values: Sequence[str], *, byte_budget: int) -> str:
-    """Render a bounded structural-token list with an exact omitted-item count."""
-
-    if not values or byte_budget <= 0:
-        return ""
-    selected: list[str] = []
-    for value in values:
-        selected.append(value)
-        remaining = len(values) - len(selected)
-        suffix = f"; +{remaining} more" if remaining else ""
-        clause = f"{prefix}{', '.join(selected)}{suffix}; "
-        if len(clause.encode("ascii")) > byte_budget:
-            selected.pop()
-            break
-    if not selected:
-        return ""
-    remaining = len(values) - len(selected)
-    suffix = f"; +{remaining} more" if remaining else ""
-    return f"{prefix}{', '.join(selected)}{suffix}; "
-
-
-def _limitation_refs_required_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
+def _limitation_refs_required_part(source: Mapping[str, JsonValue]) -> Part | None:
     """Name the result ids a whole-task completion claim must list in ``limitation_refs`` (F3).
 
     Ids and the service count only, so the first completion claim is accepted. A scoped claim
@@ -547,29 +647,26 @@ def _limitation_refs_required_clause(source: Mapping[str, JsonValue], *, byte_bu
 
     readiness = source.get("closure_readiness")
     if not isinstance(readiness, Mapping):
-        return ""
+        return None
     typed = cast(Mapping[str, JsonValue], readiness)
     count = _safe_count(typed.get("limitation_refs_required_count"))
     raw = typed.get("limitation_refs_required")
     if count in {"unavailable", "0"} or not isinstance(raw, list | tuple):
-        return ""
+        return None
     values = tuple(
         value
         for value in cast(Sequence[object], raw)
         if type(value) is str and _RESULT_REF.fullmatch(value) is not None
-    )
+    )[:_MAX_SUMMARY_LIMITATION_IDS]
     prefix = f"limitation_refs a whole-task completion claim must name ({count}): "
-    selected: list[str] = []
-    rendered = ""
-    for value in values[:_MAX_SUMMARY_LIMITATION_IDS]:
-        candidate = [*selected, value]
-        remaining = int(count) - len(candidate)
+    variants: list[str] = []
+    for shown in range(len(values), 0, -1):
+        remaining = int(count) - shown
         suffix = f"; +{remaining} more" if remaining > 0 else ""
-        clause = f"{prefix}{', '.join(candidate)}{suffix}; "
-        if len(clause.encode("ascii")) > byte_budget:
-            break
-        selected, rendered = candidate, clause
-    return rendered
+        variants.append(f"{prefix}{', '.join(values[:shown])}{suffix};")
+    if not variants:
+        return None
+    return Part(tuple(variants), priority=_P_ACTION)
 
 
 def _obligation_ids_from_status(source: Mapping[str, JsonValue], view: str) -> tuple[str, ...]:
@@ -674,11 +771,9 @@ def _semantic_withheld_item_tokens(source: Mapping[str, JsonValue]) -> tuple[str
     return tuple(result)
 
 
-def _semantic_withheld_items_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
-    return _bounded_list_clause(
-        "withheld review items: ",
-        _semantic_withheld_item_tokens(source),
-        byte_budget=byte_budget,
+def _semantic_withheld_items_part(source: Mapping[str, JsonValue]) -> Part | None:
+    return _list_part(
+        "withheld review items: ", _semantic_withheld_item_tokens(source), priority=_P_DETAIL
     )
 
 
@@ -701,37 +796,27 @@ def _semantic_redacted_value_tokens(source: Mapping[str, JsonValue]) -> tuple[st
     return tuple(result)
 
 
-def _semantic_redacted_values_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
-    return _bounded_list_clause(
+def _semantic_redacted_values_part(source: Mapping[str, JsonValue]) -> Part | None:
+    return _list_part(
         "withheld from external review: ",
         _semantic_redacted_value_tokens(source),
-        byte_budget=byte_budget,
+        priority=_P_DISCLOSURE,
     )
 
 
-def _semantic_redacted_values_line(source: Mapping[str, JsonValue], *, room: int) -> str:
+def _semantic_redacted_values_line_part(source: Mapping[str, JsonValue]) -> Part | None:
     """The fixed PL2-1 agent line, once, when any item lost a value to external review.
 
-    ``room`` is the byte budget left beside the summary's required text. The full line is used
-    when it fits, else the shorter fixed form, else nothing (the structured result still has it).
+    The full line is used when it fits beside the required text, else the shorter fixed form,
+    else nothing (the structured result still has it). It outranks every other optional clause.
     """
 
     if not _semantic_redacted_value_tokens(source):
-        return ""
-    for line in (SEMANTIC_REDACTED_VALUES_AGENT_LINE, SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT):
-        if len(line.encode("ascii")) + 1 <= room:
-            return " " + line
-    return ""
-
-
-def _bounded(summary: str) -> str:
-    try:
-        encoded = summary.encode("ascii", errors="strict")
-    except UnicodeEncodeError as exc:
-        raise ValueError("summary_not_english_ascii") from exc
-    if len(encoded) > _MAX_SUMMARY_BYTES:
-        raise ValueError("summary_too_large")
-    return summary
+        return None
+    return Part(
+        (SEMANTIC_REDACTED_VALUES_AGENT_LINE, SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT),
+        priority=_P_ACTION - 1,
+    )
 
 
 def _review_text(value: object) -> str | None:
@@ -771,8 +856,8 @@ def _clip_review_text(value: str, budget: int) -> str:
 def render_check_reviewer_output(envelope: object) -> str:
     """Render authorized reviewer prose after the structural MCP summary.
 
-    ``render_safe_compact_summary`` stays structural and bounded to its historical 512-byte
-    contract. This separate section carries only the privacy-projected Part 2 fields, with fixed
+    ``render_safe_compact_summary`` stays structural and bounded (4096 bytes since tb4n3 RC-2;
+    it was 512). This separate section carries only the privacy-projected Part 2 fields, with fixed
     labels and a larger overall bound so a successful review is visible to text-only hosts.
     """
 
@@ -899,8 +984,8 @@ def _continuation_directive(error: Mapping[str, JsonValue]) -> RecoveryDirective
     return directive_for(gated.get("continuation"))
 
 
-def _continuation_command_clause(error: Mapping[str, JsonValue], *, byte_budget: int) -> str:
-    """Render whichever frozen commands this continuation carries, within the byte budget.
+def _continuation_command_clause(error: Mapping[str, JsonValue]) -> str:
+    """Render whichever frozen commands this continuation carries.
 
     Which commands travel is decided upstream (a Cursor bridge carries no authorize command, for
     instance), so the clause reports what is present rather than restating the directive's own
@@ -908,7 +993,7 @@ def _continuation_command_clause(error: Mapping[str, JsonValue], *, byte_budget:
     """
 
     details = error.get("safe_details")
-    if not isinstance(details, Mapping) or byte_budget <= 0:
+    if not isinstance(details, Mapping):
         return ""
     typed = cast(Mapping[str, JsonValue], details)
     candidate = {key: typed.get(key) for key in _CONTINUATION_COMMAND_KEYS}
@@ -918,41 +1003,37 @@ def _continuation_command_clause(error: Mapping[str, JsonValue], *, byte_budget:
     ]
     if not commands:
         return ""
-    clause = " Commands: " + "; ".join(commands) + "."
-    if len(clause.encode("ascii", errors="replace")) > byte_budget:
-        return ""
-    return clause
+    return " Commands: " + "; ".join(commands) + "."
 
 
-def _continuation_clause(error: Mapping[str, JsonValue], *, byte_budget: int) -> str:
+def _continuation_parts(error: Mapping[str, JsonValue]) -> list[Part]:
     """Render the frozen recovery directive for a typed continuation (issues #669, #739, #740).
 
     Nothing here is copied from the public error message. The token is re-gated, the text is
-    looked up from the checked-in registry, and each optional part is added only when it still
-    fits. Parts are dropped from the least load-bearing end -- nudge, then guidance pointer, then
-    commands -- so a tight budget costs advice rather than the instruction itself.
+    looked up from the checked-in registry, and each part is optional beside the error identity
+    and location. Parts are granted in the ADR-030 order -- directive, commands, guidance
+    pointer, nudge -- so a tight budget costs the least load-bearing advice first, and the
+    directive itself shrinks to the bare continuation token before it is dropped.
     """
 
     directive = _continuation_directive(error)
-    if directive is None or byte_budget <= 0:
-        return ""
-    clause = f" Continuation: {directive.token}. {directive.directive}"
-    if len(clause.encode("ascii", errors="replace")) > byte_budget:
-        return ""
-    remaining = byte_budget - len(clause.encode("ascii", errors="replace"))
-    commands = _continuation_command_clause(error, byte_budget=remaining)
-    clause += commands
-    remaining -= len(commands.encode("ascii", errors="replace"))
+    if directive is None:
+        return []
+    parts = [
+        _opt(
+            f"Continuation: {directive.token}. {directive.directive}",
+            f"Continuation: {directive.token}.",
+            priority=_P_ACTION,
+        )
+    ]
+    commands = _continuation_command_clause(error)
+    if commands:
+        parts.append(_opt(commands, priority=_P_ACTION + 1))
     if directive.guidance_uri is not None:
-        guidance = f" Guidance: {directive.guidance_uri}."
-        if len(guidance.encode("ascii", errors="replace")) <= remaining:
-            clause += guidance
-            remaining -= len(guidance.encode("ascii", errors="replace"))
+        parts.append(_opt(f"Guidance: {directive.guidance_uri}.", priority=_P_ACTION + 2))
     if directive.nudge is not None:
-        nudge = f" {directive.nudge}"
-        if len(nudge.encode("ascii", errors="replace")) <= remaining:
-            clause += nudge
-    return clause
+        parts.append(_opt(directive.nudge, priority=_P_ACTION + 3))
+    return parts
 
 
 def _reason_location_clause(error: Mapping[str, JsonValue]) -> str:
@@ -960,7 +1041,9 @@ def _reason_location_clause(error: Mapping[str, JsonValue]) -> str:
 
     Hosts that deliver only the text channel for ``isError`` results otherwise lose the draft
     index and kernel reason (issue #579). Both tokens are already allowlisted structural content
-    on ``safe_details``; this projector re-gates them and never copies caller prose.
+    on ``safe_details``; this projector re-gates them and never copies caller prose. A field with
+    no reason code (a ``read_guidance`` rejection names only ``/uri``) is still named, because the
+    location is the part of the error the agent can act on (tb4n3 A3).
     """
 
     details = error.get("safe_details")
@@ -978,10 +1061,35 @@ def _reason_location_clause(error: Mapping[str, JsonValue]) -> str:
     gated_reason = gated.get("reason_code")
     gated_field = gated.get("field")
     if type(gated_reason) is not str:
+        if type(gated_field) is str:
+            return f" Field: {gated_field}."
         return ""
     if type(gated_field) is str:
         return f" Reason: {gated_reason} at {gated_field}."
     return f" Reason: {gated_reason}."
+
+
+def _reason_remedy_clause(error: Mapping[str, JsonValue]) -> str:
+    """Render the fixed remedy sentence for a typed reason that has one (tb4n3 RC-2).
+
+    ``closure_*`` preparation reasons and the typed INTERNAL_ERROR stages used to reach the text
+    channel as a bare token (or not at all), with the sentence that says what to do only in the
+    structured message. The sentence is repository text selected by the gated reason token; the
+    caller's value never appears.
+    """
+
+    details = error.get("safe_details")
+    if not isinstance(details, Mapping):
+        return ""
+    reason = normalize_safe_details(
+        {"reason_code": cast(Mapping[str, JsonValue], details).get("reason_code")}
+    ).get("reason_code")
+    if type(reason) is not str:
+        return ""
+    remedy = REASON_REMEDIES.get(reason)
+    if remedy is None and reason.startswith("closure_"):
+        remedy = PREPARATION_REMEDIATIONS.get(reason)
+    return "" if remedy is None else f" Remedy: {remedy}"
 
 
 def _validation_location_clause(error: Mapping[str, JsonValue]) -> str:
@@ -1032,25 +1140,30 @@ _RESULT_OUTCOME_HINT: Final = (
 )
 
 
-def _result_outcome_clause(error: Mapping[str, JsonValue]) -> str:
+_RESULT_OUTCOME_HINT_SHORT: Final = " Outcomes: success|failure|partial|unknown (no blocked)."
+
+
+def _result_outcome_variants(error: Mapping[str, JsonValue]) -> tuple[str, ...]:
     """Name the closed outcome set when a result draft's outcome was rejected (#977).
 
     TB4 agents sent ``outcome: "blocked"`` and learned only that the field was invalid. The clause
     is fixed repository text selected by the frozen rejection pointer; no caller value is echoed.
+    The full hint is followed by the short closed-set sentence, so a tight budget keeps the part
+    of the hint the agent needs (the valid values) rather than dropping the hint entirely.
     """
 
     details = error.get("safe_details")
     if not isinstance(details, Mapping):
-        return ""
+        return ()
     fields = cast(Mapping[str, JsonValue], details).get("fields")
     if not isinstance(fields, Sequence) or isinstance(fields, str):
-        return ""
+        return ()
     if any(
         type(field) is str and _RESULT_OUTCOME_POINTER.fullmatch(field) is not None
         for field in cast(Sequence[JsonValue], fields)
     ):
-        return _RESULT_OUTCOME_HINT
-    return ""
+        return (_RESULT_OUTCOME_HINT, _RESULT_OUTCOME_HINT_SHORT)
+    return ()
 
 
 def _claim_revision_clause(error: Mapping[str, JsonValue]) -> str:
@@ -1122,8 +1235,13 @@ def summary_for_public_error(envelope: object) -> str:
     invariant clause. All projected values come from schema or registry tokens, never caller
     input. A host that drops structured content on ``isError`` would otherwise lose the only
     correction that names which draft and which kernel rule to fix.
+
+    Budget priority (ADR-030): error identity and the rejected location are required; the
+    continuation directive, outcome hint, repair and correction clauses, commands, guidance
+    pointer and nudge follow in that order and are the first to shrink or drop.
     """
 
+    render = _Render("error")
     source = _mapping(envelope)
     nested = source.get("error")
     error = _mapping(nested) if nested is not None else source
@@ -1138,22 +1256,28 @@ def summary_for_public_error(envelope: object) -> str:
         if type(correlation) is str and _CORRELATION_ID.fullmatch(correlation) is not None
         else "unavailable"
     )
-    prefix = f"Error {code}; retryable: {retry_text}; correlation: {correlation_text}."
-    extra = (
-        f"{_repair_clause(error)}{_reason_location_clause(error)}"
-        f"{_validation_location_clause(error)}{_result_outcome_clause(error)}"
-        f"{_claim_revision_clause(error)}{_blocking_reasons_clause(error)}"
-    )
-    # Priority order (issue #739): identity, then what was wrong, then what to do about it. The
-    # continuation is budgeted against what the identity and location clauses already spent, so a
-    # long field pointer costs advice rather than silently dropping the whole projection to bare
-    # identity through the except branch below.
-    spent = len((prefix + extra).encode("ascii", errors="replace"))
-    extra += _continuation_clause(error, byte_budget=_MAX_SUMMARY_BYTES - spent)
-    try:
-        return _bounded(prefix + extra)
-    except ValueError:
-        return _bounded(prefix)
+    parts: list[Part | None] = [
+        _req(f"Error {code}; retryable: {retry_text}; correlation: {correlation_text}."),
+        _opt(render.text("repair", lambda: _repair_clause(error)), priority=_P_IDENTITY),
+        _req(render.text("location", lambda: _reason_location_clause(error))),
+        _opt(render.text("remedy", lambda: _reason_remedy_clause(error)), priority=_P_ACTION - 1),
+        _req(render.text("validation", lambda: _validation_location_clause(error))),
+        _opt(
+            *render.variants("outcome_hint", lambda: _result_outcome_variants(error)),
+            priority=_P_IDENTITY,
+        ),
+        _opt(
+            render.text("claim_revision", lambda: _claim_revision_clause(error)),
+            priority=_P_IDENTITY,
+        ),
+        _opt(
+            render.text("blocking_reasons", lambda: _blocking_reasons_clause(error)),
+            priority=_P_IDENTITY,
+        ),
+    ]
+    parts.extend(render.guarded_parts("continuation", lambda: _continuation_parts(error)))
+    parts.append(render.failure_part())
+    return _compose(parts)
 
 
 def _observations_awaited_clause(source: Mapping[str, JsonValue]) -> str:
@@ -1173,13 +1297,14 @@ def _observations_awaited_clause(source: Mapping[str, JsonValue]) -> str:
     return ""
 
 
-def summary_for_check(envelope: object) -> str:
-    source = _mapping(envelope)
-    verdict = _safe_token(source.get("verdict"))
+def _check_lead_variants(
+    source: Mapping[str, JsonValue], verdict: str, status: str, reason: str
+) -> tuple[str, ...]:
+    """The check's opening sentence, longest first. The shortest still names the verdict."""
+
     findings = _item_count(source.get("findings"))
     suppressed = _safe_count(source.get("suppressed_count"))
-    status = _safe_token(source.get("semantic_status"))
-    reason = _safe_token(source.get("semantic_reason"))
+    counts = f"findings returned: {findings}; suppressed: {suppressed};"
     scoped_local_verdict = (
         verdict == "no_issue_detected"
         and status == "not_requested"
@@ -1189,145 +1314,217 @@ def summary_for_check(envelope: object) -> str:
         "semantic_review_skipped_insufficient_packet" in _safe_gap_codes(source)
     ):
         # tb4n1 D3: not a local-only request; the round stopped after one insufficient retry.
-        prefix = (
+        return (
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
             "assessed review) "
             "could not assess the packet (verify it yourself; a repair re-arms it until that cap); "
-            f"local check verdict: {verdict}; "
-            f"findings returned: {findings}; suppressed: {suppressed}; "
+            f"local check verdict: {verdict}; {counts}",
+            f"AI-powered review skipped (verify it yourself); local check verdict: {verdict}; "
+            f"{counts}",
+            f"AI-powered review skipped; local check verdict: {verdict};",
         )
-    elif scoped_local_verdict:
-        prefix = (
-            "No issue detected within deterministic coverage; AI-powered review was not requested; "
-            f"findings returned: {findings}; suppressed: {suppressed}; "
+    if scoped_local_verdict:
+        return (
+            "No issue detected within deterministic coverage; AI-powered review was not "
+            f"requested; {counts}",
+            f"No issue detected within deterministic coverage; {counts}",
+            "No issue detected within deterministic coverage;",
         )
-    elif status == "not_requested":
-        prefix = (
-            f"AI-powered review not requested; local-only check verdict: {verdict}; "
-            f"findings returned: {findings}; suppressed: {suppressed}; "
+    if status == "not_requested":
+        return (
+            f"AI-powered review not requested; local-only check verdict: {verdict}; {counts}",
+            f"local-only check verdict: {verdict}; {counts}",
+            f"local-only check verdict: {verdict};",
         )
-    else:
-        prefix = (
-            f"Check verdict: {verdict}; findings returned: {findings}; suppressed: {suppressed}; "
-        )
+    return (f"Check verdict: {verdict}; {counts}", f"Check verdict: {verdict};")
+
+
+def _route_variants(status: str, source: Mapping[str, JsonValue]) -> tuple[str, ...]:
     if status == "not_requested" and source.get("semantic_route_required") is False:
         # Issue #986 (owner decision E2): the route did not require review, so the missing review
         # is a disclosure; a route that required it omits the field and the gap still blocks.
-        prefix += "route did not require AI-powered review (disclosed; does not block receipt); "
-    prefix += _observations_awaited_clause(source)
+        return (
+            "route did not require AI-powered review (disclosed; does not block receipt);",
+            "route: review not required (disclosed);",
+        )
+    return ()
+
+
+def _children_clause(source: Mapping[str, JsonValue]) -> str:
     children = source.get("children")
     if (
         isinstance(children, Mapping)
         and type(children.get("label")) is str
         and children.get("label") in {"recorded", "preview"}
     ):
-        prefix += f"children ({children['label']}): {_item_count(children.get('items'))}; "
+        return f"children ({children['label']}): {_item_count(children.get('items'))};"
+    return ""
+
+
+def _notes_clause(source: Mapping[str, JsonValue]) -> str:
     notes = source.get("advisory_notes")
     if isinstance(notes, (list, tuple)) and notes:
-        prefix += f"project advice (non-verdict): {len(notes)}; "
-    input_action_required = has_agent_suppliable_missing(source.get("missing_for_assessment"))
+        return f"project advice (non-verdict): {len(notes)};"
+    return ""
+
+
+def _checklist_variants(
+    source: Mapping[str, JsonValue], *, input_action_required: bool
+) -> tuple[str, ...]:
     checklist = source.get("finding_checklist")
-    checklist_source = (
-        cast(Mapping[str, JsonValue], checklist) if isinstance(checklist, Mapping) else None
+    if not isinstance(checklist, Mapping):
+        return ()
+    typed = cast(Mapping[str, JsonValue], checklist)
+    # An item at its attempt budget needs a decision rather than another repair round (#905); the
+    # compact cue is the variant that survives when the whole to-do clause does not fit.
+    return (
+        _checklist_counts_clause(
+            typed.get("counts"),
+            typed.get("attempt_budget"),
+            typed.get("next"),
+            input_action_required=input_action_required,
+        ),
+        _checklist_budget_cue(typed.get("attempt_budget"), typed.get("next")),
     )
-    # An item at its attempt budget needs a decision rather than another repair round (#905).
-    # Reserve room for that cue before the continuation spends the budget on target refs.
-    budget_cue = (
-        ""
-        if checklist_source is None
-        else _checklist_budget_cue(
-            checklist_source.get("attempt_budget"), checklist_source.get("next")
-        )
-    )
-    overall_clause = _overall_next_clause(
-        source,
-        byte_budget=_MAX_SUMMARY_BYTES
-        - len(prefix.encode("ascii"))
-        - len(budget_cue.encode("ascii")),
-    )
-    if overall_clause:
-        prefix += overall_clause
-    elif input_action_required:
-        # Keep the input continuation ahead of the optional checklist and manifest clauses. A
-        # large finding list must never consume the bounded summary budget and leave only the
-        # finding-only ``request_receipt`` token (#963).
-        prefix = _with_room(
-            prefix,
-            "overall next: supply_missing_input before ordinary receipt "
-            "(new records only; never change the work to fit the reviewer); ",
-        )
-    core_prefix = prefix
-    if checklist_source is not None:
-        with_checklist = _with_room(
-            prefix,
-            _checklist_counts_clause(
-                checklist_source.get("counts"),
-                checklist_source.get("attempt_budget"),
-                checklist_source.get("next"),
-                input_action_required=input_action_required or bool(overall_clause),
-            ),
-        )
-        if with_checklist == prefix:
-            # The task continuation leaves no room for the whole to-do clause; the at-budget cue
-            # must still not disappear behind ``work_open_findings``, so keep it compactly.
-            with_checklist = _with_room(prefix, budget_cue)
-        prefix = with_checklist
-    manifest_clause = render_review_input_manifest_compact(source.get("review_input_manifest"))
-    if manifest_clause:
-        prefix = _with_room(prefix, manifest_clause + " ")
-    suffix = f"AI-powered review status/reason: {status}/{reason}; {_frontier_clause(source)}."
-    core_suffix = suffix
+
+
+def _continuation_variants(
+    status: str, reason: str, source: Mapping[str, JsonValue]
+) -> tuple[str, ...]:
     recovery = continuation_for_semantic_outcome(
         status=status,
         reason=reason,
         failure_class=_failure_class_from_mapping(source.get("semantic_provenance")),
     )
     recovered = directive_for(recovery)
-    if recovered is not None:
-        extra = f" Continuation: {recovered.token}."
-        reserved = 80
-        used = len((prefix + suffix + extra).encode("ascii")) + reserved
-        leftover = _MAX_SUMMARY_BYTES - used
-        directive_text = recovered.directive
-        if leftover > 8 and len(directive_text.encode("ascii")) + 1 <= leftover:
-            extra += f" {directive_text}"
-        suffix += extra
-    # Why the check-time change was unavailable (ADR-031): a fixed sentence per closed code,
-    # kept only when it fits the summary bound.
+    if recovered is None:
+        return ()
+    return (
+        f"Continuation: {recovered.token}. {recovered.directive}",
+        f"Continuation: {recovered.token}.",
+    )
+
+
+def _check_time_change_sentence(source: Mapping[str, JsonValue]) -> str:
+    # Why the check-time change was unavailable (ADR-031): a fixed sentence per closed code.
     for code in _safe_gap_codes(source):
         sentence = check_time_change_gap_sentence(code)
         if sentence is not None:
-            extra = " " + sentence
-            if len((prefix + suffix + extra).encode("ascii")) <= _MAX_SUMMARY_BYTES:
-                suffix += extra
-            break
-    # PL2-1: the fixed agent line outranks every optional clause; shed those to keep it.
-    if _semantic_redacted_value_tokens(source):
-        full = len(SEMANTIC_REDACTED_VALUES_AGENT_LINE.encode("ascii")) + 1
-        if len((prefix + suffix).encode("ascii")) + full > _MAX_SUMMARY_BYTES:
-            prefix = core_prefix
-        if len((prefix + suffix).encode("ascii")) + full > _MAX_SUMMARY_BYTES:
-            suffix = core_suffix
-        suffix += _semantic_redacted_values_line(
-            source, room=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
+            return sentence
+    return ""
+
+
+def summary_for_check(envelope: object) -> str:
+    """Compose the check's text projection: verdict, next instruction and frontier first.
+
+    The required core is the verdict sentence, the task continuation (``overall next``), the
+    review status/reason and the frontier with its head digest. Everything else -- route and await
+    disclosures, children, advice, the to-do checklist, finding ids, missing-for-assessment items,
+    withheld items, the recovery directive -- is granted room by priority and shrinks or drops
+    when the bound is tight. The text never raises and never exceeds ``_MAX_SUMMARY_BYTES``
+    (tb4n3 RC-2): the closing check of a deterministic run used to overflow 512 bytes, lose its
+    verdict to ``INTERNAL_ERROR`` and leave the agent claiming a check it never read.
+    """
+
+    render = _Render("check")
+    source = _mapping(envelope)
+    verdict = _safe_token(source.get("verdict"))
+    status = _safe_token(source.get("semantic_status"))
+    reason = _safe_token(source.get("semantic_reason"))
+    input_action_required = has_agent_suppliable_missing(source.get("missing_for_assessment"))
+    overall = render.guarded_parts("overall_next", lambda: _overall_next_parts(source))
+    parts: list[Part | None] = [
+        # The lead's shortest form already names the verdict and its coverage bound; the longer
+        # forms explain, so they are granted room after the instructions and ids.
+        Part(
+            _check_lead_variants(source, verdict, status, reason),
+            required=True,
+            priority=_P_DISCLOSURE,
+        ),
+        _opt(
+            *render.variants("route", lambda: _route_variants(status, source)),
+            priority=_P_DISCLOSURE,
+        ),
+        _opt(
+            render.text("awaited", lambda: _observations_awaited_clause(source)),
+            priority=_P_DISCLOSURE,
+        ),
+        _opt(render.text("children", lambda: _children_clause(source))),
+        _opt(render.text("notes", lambda: _notes_clause(source))),
+        *overall,
+    ]
+    if not overall and input_action_required:
+        # Keep the input continuation ahead of the optional checklist and manifest clauses. A
+        # large finding list must never consume the bounded summary budget and leave only the
+        # finding-only ``request_receipt`` token (#963).
+        parts.append(
+            _opt(
+                "overall next: supply_missing_input before ordinary receipt "
+                "(new records only; never change the work to fit the reviewer);",
+                priority=_P_ACTION,
+            )
         )
-    clause = _semantic_redacted_values_clause(
-        source,
-        byte_budget=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii")),
+    checklist = source.get("finding_checklist")
+    at_budget = isinstance(checklist, Mapping) and (
+        cast(Mapping[str, JsonValue], checklist).get("next") == "decide_at_budget"
     )
-    clause += _finding_identity_clause(
-        source,
-        byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
+    parts.append(
+        _opt(
+            *render.variants(
+                "checklist",
+                lambda: _checklist_variants(
+                    source, input_action_required=input_action_required or bool(overall)
+                ),
+            ),
+            # A finding at its attempt budget needs a decision, not another repair round (#905),
+            # so that cue is an instruction and outranks the descriptive clauses.
+            priority=_P_ACTION if at_budget else _P_STATE,
+        )
     )
-    clause += _missing_items_clause(
-        source,
-        byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
+    parts.append(
+        _opt(
+            render.text(
+                "manifest",
+                lambda: _manifest_sentence(source),
+            ),
+            priority=_P_DETAIL,
+        )
     )
-    clause += _semantic_withheld_items_clause(
-        source,
-        byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
+    parts.append(
+        render.guarded_one("redacted_values", lambda: _semantic_redacted_values_part(source))
     )
-    return _bounded(prefix + clause + suffix)
+    parts.append(render.guarded_one("finding_ids", lambda: _finding_identity_part(source)))
+    parts.append(render.guarded_one("missing_items", lambda: _missing_items_part(source)))
+    parts.append(
+        render.guarded_one("withheld_items", lambda: _semantic_withheld_items_part(source))
+    )
+    parts.extend(
+        (
+            _req(f"AI-powered review status/reason: {status}/{reason};"),
+            _req(f"{_frontier_clause(source)}."),
+            _opt(
+                *render.variants(
+                    "continuation", lambda: _continuation_variants(status, reason, source)
+                ),
+                # The recovery directive is the first optional clause granted (ADR-043).
+                priority=_P_ACTION - 2,
+            ),
+            _opt(
+                render.text("gap_sentence", lambda: _check_time_change_sentence(source)),
+                priority=_P_DISCLOSURE,
+            ),
+            render.guarded_one(
+                "redacted_values_line", lambda: _semantic_redacted_values_line_part(source)
+            ),
+            render.failure_part(),
+        )
+    )
+    return _compose(parts)
+
+
+def _manifest_sentence(source: Mapping[str, JsonValue]) -> str:
+    manifest = render_review_input_manifest_compact(source.get("review_input_manifest"))
+    return manifest
 
 
 def _first_page_item(source: Mapping[str, JsonValue]) -> Mapping[str, JsonValue] | None:
@@ -1444,7 +1641,61 @@ def _credential_heuristic_clause(source: Mapping[str, JsonValue]) -> str:
     )
 
 
+def _status_checklist_clause(source: Mapping[str, JsonValue]) -> str:
+    page = source.get("page")
+    if not isinstance(page, Mapping):
+        return ""
+    page_source = cast(Mapping[str, JsonValue], page)
+    return _checklist_clause(page_source.get("items"), page_source.get("attempt_budget"), None)
+
+
+def _status_list_parts(
+    render: _Render, source: Mapping[str, JsonValue], view: str
+) -> list[Part | None]:
+    page = source.get("page")
+    typed_page = cast(Mapping[str, JsonValue], page) if isinstance(page, Mapping) else None
+    parts: list[Part | None] = [
+        render.guarded_one("limitation_refs", lambda: _limitation_refs_required_part(source)),
+        render.guarded_one(
+            "obligation_ids",
+            lambda: _list_part(
+                "obligation IDs: ", _obligation_ids_from_status(source, view), priority=_P_IDENTITY
+            ),
+        ),
+    ]
+    if view == "findings":
+        parts.append(
+            render.guarded_one(
+                "finding_frontiers",
+                lambda: _list_part(
+                    "finding frontiers: ",
+                    _finding_frontiers_from_status(source),
+                    priority=_P_IDENTITY,
+                ),
+            )
+        )
+    if typed_page is not None:
+        parts.append(
+            render.guarded_one(
+                "redacted_values", lambda: _semantic_redacted_values_part(typed_page)
+            )
+        )
+        parts.append(
+            render.guarded_one("withheld_items", lambda: _semantic_withheld_items_part(typed_page))
+        )
+    return parts
+
+
 def summary_for_status(envelope: object) -> str:
+    """Compose the status text: view, frontier, freshness, counts and the closure state first.
+
+    Required: the view and frontier, the ledger freshness, the open-obligation count, the
+    unanswered/receipt-blocking/gap counts and the closure-readiness state. Obligation ids, finding
+    frontiers, limitation refs, the test-edit and credential-filter disclosures and the withheld
+    lists are granted room by priority (tb4n3 RC-2).
+    """
+
+    render = _Render("status")
     source = _mapping(envelope)
     view = _safe_token(source.get("view"))
     if view in {"lineage", "project"}:
@@ -1452,89 +1703,77 @@ def summary_for_status(envelope: object) -> str:
     if view == "advice":
         page = source.get("page")
         count = _item_count(page.get("items")) if isinstance(page, Mapping) else "unavailable"
-        text = (
-            f"Status view: advice; {_frontier_clause(source)}; advice items: {count}; "
-            "Read the structured page for coordination selectors and bounded resource details."
-        )
         # Every view carries the closure checklist, so every view names its state (#913).
-        return _bounded(
-            text
-            + _closure_clause(source, byte_budget=_MAX_SUMMARY_BYTES - len(text.encode("ascii")))
+        return _compose(
+            [
+                _req(f"Status view: advice; {_frontier_clause(source)}; advice items: {count};"),
+                _opt(
+                    "Read the structured page for coordination selectors and bounded resource "
+                    "details.",
+                    priority=_P_ACTION,
+                ),
+                *render.guarded_parts("closure", lambda: _closure_parts(source)),
+                render.failure_part(),
+            ]
         )
     freshness, obligations, unanswered, receipt_blocking = _compact_status_fields(source, view)
     gaps = _item_count(source.get("gaps"))
-    prefix = (
-        f"Status view: {view}; {_frontier_clause(source)}; freshness: {freshness}; "
-        f"open obligations: {obligations}; " + _acknowledged_obligations_clause(source)
-    )
-    prefix = _with_room(prefix, _compact_test_edit_clause(source, view))
-    prefix = _with_room(prefix, _credential_heuristic_clause(source))
+    parts: list[Part | None] = [
+        _req(f"Status view: {view}; {_frontier_clause(source)};"),
+        _req(f"freshness: {freshness};"),
+        _req(f"open obligations: {obligations};"),
+        _opt(
+            render.text("acknowledged", lambda: _acknowledged_obligations_clause(source)),
+            priority=_P_ACTION,
+        ),
+        _opt(
+            render.text("test_edits", lambda: _compact_test_edit_clause(source, view)),
+            priority=_P_STATE,
+        ),
+        _opt(
+            render.text("credential_filter", lambda: _credential_heuristic_clause(source)),
+            priority=_P_DISCLOSURE,
+        ),
+    ]
     if view == "evidence":
-        prefix += _evidence_channel_clause(source)
-    if view == "operation":
-        operation_clause = _operation_progress_clause(source)
-        if len((prefix + operation_clause).encode("ascii")) > _MAX_SUMMARY_BYTES - 128:
-            # Pathological counts cannot push the fixed suffix out of the bounded summary.
-            operation_clause = "semantic progress: see structured page; "
-        prefix += operation_clause
-    if view == "findings":
-        page = source.get("page")
-        if isinstance(page, Mapping):
-            page_source = cast(Mapping[str, JsonValue], page)
-            prefix = _with_room(
-                prefix,
-                _checklist_clause(
-                    page_source.get("items"), page_source.get("attempt_budget"), None
-                ),
+        parts.append(
+            _opt(
+                *render.variants("evidence_channels", lambda: _evidence_channel_variants(source)),
+                priority=_P_STATE,
             )
-    suffix = (
-        f"unanswered findings: {unanswered}; "
-        f"receipt-blocking findings: {receipt_blocking}; reported gaps: {gaps}."
-    )
-    # F3: the ids a first completion claim must disclose get room before the closure clause,
-    # which shrinks to its shorter variants; a reserve keeps the closure state named.
-    clause = _limitation_refs_required_clause(
-        source,
-        byte_budget=_MAX_SUMMARY_BYTES
-        - len((prefix + suffix).encode("ascii"))
-        - _CLOSURE_CLAUSE_RESERVE,
-    )
-    suffix += _closure_clause(
-        source, byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii"))
-    )
-    obligation_ids = _obligation_ids_from_status(source, view)
-    clause += _bounded_list_clause(
-        "obligation IDs: ",
-        obligation_ids,
-        byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
-    )
-    if view == "findings":
-        clause += _bounded_list_clause(
-            "finding frontiers: ",
-            _finding_frontiers_from_status(source),
-            byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
         )
+    if view == "operation":
+        parts.append(
+            _req(
+                render.text("operation", lambda: _operation_progress_clause(source)),
+                "semantic progress: see structured page;",
+            )
+        )
+    if view == "findings":
+        parts.append(
+            _opt(
+                render.text("checklist", lambda: _status_checklist_clause(source)),
+                priority=_P_STATE,
+            )
+        )
+    parts.extend(_status_list_parts(render, source, view))
+    parts.append(
+        _req(
+            f"unanswered findings: {unanswered}; "
+            f"receipt-blocking findings: {receipt_blocking}; reported gaps: {gaps}."
+        )
+    )
+    parts.extend(render.guarded_parts("closure", lambda: _closure_parts(source)))
     page = source.get("page")
     if isinstance(page, Mapping):
         typed_page = cast(Mapping[str, JsonValue], page)
-        redacted_line = _semantic_redacted_values_line(
-            typed_page, room=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
-        )
-        if redacted_line:
-            # PL2-1: the fixed agent line outranks the optional id lists.
-            suffix += redacted_line
-            # Keep the earlier id lists when they still fit beside the line; drop them otherwise.
-            if len((prefix + clause + suffix).encode("ascii")) > _MAX_SUMMARY_BYTES:
-                clause = ""
-            clause += _semantic_redacted_values_clause(
-                typed_page,
-                byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
+        parts.append(
+            render.guarded_one(
+                "redacted_values_line", lambda: _semantic_redacted_values_line_part(typed_page)
             )
-        clause += _semantic_withheld_items_clause(
-            typed_page,
-            byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii")),
         )
-    return _bounded(prefix + clause + suffix)
+    parts.append(render.failure_part())
+    return _compose(parts)
 
 
 _PUBLICATION_CHANNELS: Final = (
@@ -1547,17 +1786,18 @@ _PUBLICATION_CHANNELS: Final = (
 )
 
 
-def _evidence_channel_clause(source: Mapping[str, JsonValue]) -> str:
+def _evidence_channel_variants(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
     """Count this page's evidence rows per closed publication channel (issue #914).
 
     The channel is the only structural way to tell the requester's own cooperative evidence from
-    host-observed captures when a host drops the structured page; no row prose is rendered.
+    host-observed captures when a host drops the structured page; no row prose is rendered. The
+    full per-channel breakdown is followed by the bare row count.
     """
 
     page = source.get("page")
     items = cast(Mapping[str, JsonValue], page).get("items") if isinstance(page, Mapping) else None
     if not isinstance(items, list | tuple):
-        return "evidence rows: unavailable; "
+        return ("evidence rows: unavailable;",)
     rows = cast(Sequence[JsonValue], items)
     counts = {channel: 0 for channel in _PUBLICATION_CHANNELS}
     for row in rows:
@@ -1574,7 +1814,10 @@ def _evidence_channel_clause(source: Mapping[str, JsonValue]) -> str:
     unrecorded = len(rows) - sum(counts.values())
     if unrecorded:
         parts.append(f"unrecorded {unrecorded}")
-    return f"evidence rows: {_item_count(rows)} ({', '.join(parts) or 'none'}); "
+    return (
+        f"evidence rows: {_item_count(rows)} ({', '.join(parts) or 'none'});",
+        f"evidence rows: {_item_count(rows)};",
+    )
 
 
 def _readiness_tokens(readiness: Mapping[str, JsonValue], key: str) -> tuple[str, ...]:
@@ -1589,58 +1832,60 @@ def _readiness_tokens(readiness: Mapping[str, JsonValue], key: str) -> tuple[str
     )
 
 
-def _closure_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
+def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
     """Name the closure-readiness state and its frozen directive (issue #913, ADR-032).
 
     Only the closed state token, service counts and classified gap or condition tokens appear.
-    The first variant that fits the remaining budget wins. ``ready_with_limitations`` always keeps
-    the owner-approved stop sentence whole and shrinks the named limitations first; for
-    ``action_required`` the named items are the instruction, so they outrank the generic sentence.
+    The state is always present. For ``ready_with_limitations`` the owner-approved stop sentence is
+    required beside it (its short form when room is scarce) and the named limitations are an
+    optional part granted after the action clauses; for ``action_required`` the named items are the
+    instruction, so they are granted before the generic sentence. One named list never takes more
+    than the list bound.
     """
 
     readiness = source.get("closure_readiness")
     if not isinstance(readiness, Mapping):
-        return ""
+        return []
     typed = cast(Mapping[str, JsonValue], readiness)
     state = typed.get("state")
     if type(state) is not str or state not in READINESS_STATES:
-        return ""
+        return []
     standing = _readiness_tokens(typed, "standing_limitations")
     acknowledged = _safe_count(typed.get("acknowledged_not_done_count"))
     if acknowledged == "unavailable":
-        return ""
-    head = f" Closure: {state}."
-    directive = (
-        head + " " + readiness_directive(state, standing=len(standing), acknowledged=acknowledged)
-    )
+        return []
+    head = f"Closure: {state}."
+    sentence = readiness_directive(state, standing=len(standing), acknowledged=acknowledged)
 
-    def listed(base: str, label: str, values: tuple[str, ...]) -> str:
-        budget = byte_budget - len(base.encode("ascii")) - 1
-        clause = _bounded_list_clause(label, values, byte_budget=budget)
-        return base + " " + clause.removesuffix("; ") + "." if clause else ""
+    def listed(label: str, values: tuple[str, ...]) -> tuple[str, ...]:
+        variants = list_variants(label, values, suffix="")
+        within = tuple(variant for variant in variants if len(variant) <= _LIST_MAX_CHARS)
+        return tuple(f"{variant}." for variant in within or variants[-1:])
 
-    variants: list[str] = []
     if state == "action_required":
+        parts = [
+            Part((head,), required=True),
+            Part((sentence,), priority=_P_ACTION + 2),
+        ]
         actionable = _readiness_tokens(typed, "agent_actionable")
-        complete = listed(directive, "Agent-actionable: ", actionable)
-        if complete and "more." not in complete:
-            variants.append(complete)
-        variants.extend((listed(head, "Agent-actionable: ", actionable), directive, head))
-    elif state == "ready_with_limitations":
-        variants.extend(
-            (
-                listed(directive, "Standing limitations: ", standing),
-                directive,
-                head + " Nothing further to do. Request the receipt.",
-                head,
+        if actionable:
+            parts.append(Part(listed("Agent-actionable: ", actionable), priority=_P_ACTION))
+        return parts
+    if state == "ready_with_limitations":
+        parts = [
+            Part(
+                (
+                    f"{head} {sentence}",
+                    f"{head} Nothing further to do. Request the receipt.",
+                    head,
+                ),
+                required=True,
             )
-        )
-    else:
-        variants.extend((directive, head))
-    for variant in variants:
-        if variant and len(variant.encode("ascii")) <= byte_budget:
-            return variant
-    return ""
+        ]
+        if standing:
+            parts.append(Part(listed("Standing limitations: ", standing), priority=_P_ACTION + 2))
+        return parts
+    return [Part((f"{head} {sentence}", head), required=True)]
 
 
 def _operation_progress_clause(source: Mapping[str, JsonValue]) -> str:
@@ -1684,19 +1929,25 @@ def _operation_progress_clause(source: Mapping[str, JsonValue]) -> str:
 
 
 def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) -> str:
+    render = _Render("status")
     page = source.get("page")
-    prefix = f"Status view: {view}; {_frontier_clause(source)}; "
+    head = _req(f"Status view: {view}; {_frontier_clause(source)};")
     if not isinstance(page, Mapping):
-        text = prefix + "page unavailable."
-        return _bounded(
-            text
-            + _closure_clause(source, byte_budget=_MAX_SUMMARY_BYTES - len(text.encode("ascii")))
+        return _compose(
+            [
+                head,
+                _req("page unavailable."),
+                *render.guarded_parts("closure", lambda: _closure_parts(source)),
+                render.failure_part(),
+            ]
         )
-    lineage = page if view == "lineage" else page.get("lineage")
+    typed_page = cast(Mapping[str, JsonValue], page)
+    lineage = typed_page if view == "lineage" else typed_page.get("lineage")
+    parts: list[Part | None] = [head]
     if view == "project":
-        project = page.get("project_id")
+        project = typed_page.get("project_id")
         project_id = project if is_valid_id(IdKind.PROJECT, project) else "unavailable"
-        grant = page.get("grant_state")
+        grant = typed_page.get("grant_state")
         grant_state = (
             grant
             if type(grant) is str and grant in {"active", "revoked"}
@@ -1704,14 +1955,18 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
             if grant is None
             else "unavailable"
         )
-        prefix += (
-            f"project: {project_id}; generation: {_safe_count(page.get('membership_generation'))}; "
-            f"grant: {grant_state or 'none'}; members: {_item_count(page.get('members'))}; "
-            f"detections: {_item_count(page.get('detections'))}; "
-            f"receipts: {_item_count(page.get('receipts'))}; "
+        parts.append(
+            _req(
+                f"project: {project_id}; "
+                f"generation: {_safe_count(typed_page.get('membership_generation'))}; "
+                f"grant: {grant_state or 'none'}; members: {_item_count(typed_page.get('members'))}; "
+                f"detections: {_item_count(typed_page.get('detections'))}; "
+                f"receipts: {_item_count(typed_page.get('receipts'))};"
+            )
         )
     if isinstance(lineage, Mapping):
-        parent = lineage.get("parent_task_id")
+        typed_lineage = cast(Mapping[str, JsonValue], lineage)
+        parent = typed_lineage.get("parent_task_id")
         if view == "lineage":
             parent_id = (
                 parent
@@ -1720,29 +1975,41 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
                 if parent is None
                 else "unavailable"
             )
-            prefix += f"parent: {parent_id}; "
-        prefix += (
-            f"children: {_item_count(lineage.get('children'))}; "
-            f"host annotations: {_item_count(lineage.get('annotations'))}; "
+            parts.append(_req(f"parent: {parent_id};"))
+        parts.append(
+            _req(
+                f"children: {_item_count(typed_lineage.get('children'))}; "
+                f"host annotations: {_item_count(typed_lineage.get('annotations'))};"
+            )
         )
     if view == "project":
-        prefix += f"coverage: {_item_count(page.get('coverage'))}; "
-    suffix = "Read the structured page for child states and row identities."
-    if page.get("next_cursor") is not None:
-        suffix = "More pages available. " + suffix
+        parts.append(_req(f"coverage: {_item_count(typed_page.get('coverage'))};"))
+    parts.append(
+        render.guarded_one(
+            "gap_codes",
+            lambda: _list_part("gap codes: ", _safe_status_gap_codes(source), priority=_P_STATE),
+        )
+    )
     # The parent's own closure checklist travels on these views too (#913).
-    suffix += _closure_clause(
-        source, byte_budget=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
+    if typed_page.get("next_cursor") is not None:
+        parts.append(_opt("More pages available.", priority=_P_ACTION))
+    parts.append(
+        _opt("Read the structured page for child states and row identities.", priority=_P_STATE)
     )
-    gap_clause = _bounded_list_clause(
-        "gap codes: ",
-        _safe_status_gap_codes(source),
-        byte_budget=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii")),
-    )
-    return _bounded(prefix + gap_clause + suffix)
+    parts.extend(render.guarded_parts("closure", lambda: _closure_parts(source)))
+    parts.append(render.failure_part())
+    return _compose(parts)
 
 
 def summary_for_receipt(envelope: object) -> str:
+    """Compose the receipt text: conclusion, frontier and limitation count first.
+
+    Open obligation ids, withheld-from-review lists, gap codes and the historical (cleared) gaps
+    are granted room by priority; the suppressed-finding count and the fixed redaction line close
+    the text (tb4n3 RC-2).
+    """
+
+    render = _Render("receipt")
     source = _mapping(envelope)
     conclusion = _safe_token(source.get("conclusion"))
     coverage = source.get("coverage")
@@ -1751,67 +2018,67 @@ def summary_for_receipt(envelope: object) -> str:
         typed_coverage = cast(Mapping[str, JsonValue], coverage)
         limitations = _item_count(typed_coverage.get("known_gaps"))
     suppressed = _safe_count(source.get("suppressed_finding_count"))
-    prefix = (
-        f"Receipt conclusion: {conclusion}; {_frontier_clause(source)}; "
-        f"coverage limitations: {limitations}; "
-    )
-    suffix = f"suppressed findings: {suppressed}."
     document = source.get("document")
     typed_document = (
         cast(Mapping[str, JsonValue], document) if isinstance(document, Mapping) else None
     )
-    redacted_line = (
-        ""
-        if typed_document is None
-        else _semantic_redacted_values_line(
-            typed_document, room=_MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
-        )
-    )
-    # PL2-1: the fixed agent line outranks the optional id lists.
-    suffix += redacted_line
-    remaining = _MAX_SUMMARY_BYTES - len((prefix + suffix).encode("ascii"))
-    redacted_clause = (
-        _semantic_redacted_values_clause(typed_document, byte_budget=remaining)
-        if redacted_line and typed_document is not None
-        else ""
-    )
-    remaining -= len(redacted_clause.encode("ascii"))
     gap_codes = _safe_gap_codes(source)
-    obligation_budget = remaining // 2 if gap_codes else remaining
-    obligation_clause = _bounded_list_clause(
-        "open obligation IDs: ",
-        _open_obligation_ids_from_receipt(source),
-        byte_budget=obligation_budget,
-    )
-    remaining -= len(obligation_clause.encode("ascii"))
-    withheld_clause = (
-        _semantic_withheld_items_clause(
-            cast(Mapping[str, JsonValue], document), byte_budget=remaining
+    parts: list[Part | None] = [
+        _req(f"Receipt conclusion: {conclusion};"),
+        _req(f"{_frontier_clause(source)};"),
+        _req(f"coverage limitations: {limitations};"),
+    ]
+    if typed_document is not None:
+        document_source = typed_document
+        parts.append(
+            render.guarded_one(
+                "redacted_values", lambda: _semantic_redacted_values_part(document_source)
+            )
         )
-        if isinstance(document, Mapping)
-        else ""
+    parts.append(
+        render.guarded_one(
+            "open_obligations",
+            lambda: _list_part(
+                "open obligation IDs: ",
+                _open_obligation_ids_from_receipt(source),
+                priority=_P_IDENTITY,
+            ),
+        )
     )
-    remaining -= len(withheld_clause.encode("ascii"))
-    gap_clause = _bounded_list_clause("gap codes: ", gap_codes, byte_budget=remaining)
-    remaining -= len(gap_clause.encode("ascii"))
+    if typed_document is not None:
+        document_source = typed_document
+        parts.append(
+            render.guarded_one(
+                "withheld_items", lambda: _semantic_withheld_items_part(document_source)
+            )
+        )
+    parts.append(_list_part("gap codes: ", gap_codes, priority=_P_DISCLOSURE))
     # Issue #1017: the result coverage counts live gaps only; gaps a later check cleared are
     # named apart (JSON document; markdown/text carry them in human_text).
-    historical_clause = _bounded_list_clause(
-        "cleared earlier (historical, not limitations): ",
-        tuple(
-            f"{code} at {sequence}" for code, sequence in historical_gaps_from_wire(typed_document)
-        ),
-        byte_budget=remaining,
+    parts.append(
+        render.guarded_one(
+            "historical_gaps",
+            lambda: _list_part(
+                "cleared earlier (historical, not limitations): ",
+                tuple(
+                    f"{code} at {sequence}"
+                    for code, sequence in historical_gaps_from_wire(typed_document)
+                ),
+                priority=_P_DETAIL,
+            ),
+        )
     )
-    return _bounded(
-        prefix
-        + redacted_clause
-        + obligation_clause
-        + withheld_clause
-        + gap_clause
-        + historical_clause
-        + suffix
-    )
+    parts.append(_req(f"suppressed findings: {suppressed}."))
+    if typed_document is not None:
+        document_source = typed_document
+        parts.append(
+            render.guarded_one(
+                "redacted_values_line",
+                lambda: _semantic_redacted_values_line_part(document_source),
+            )
+        )
+    parts.append(render.failure_part())
+    return _compose(parts)
 
 
 _AWAITING_STATES: Final = MappingProxyType(
@@ -1872,22 +2139,33 @@ def summary_for_check_awaiting(envelope: object) -> str:
     command = _awaiting_continuation_command(typed.get("kind"), typed.get("command"))
     replay = typed.get("replay_request_id")
     if command is None or type(replay) is not str or _REPLAY_REQUEST_ID.fullmatch(replay) is None:
-        return _bounded(
-            f"Check state: {state} ({_AWAITING_STATES[state]}); no verdict yet. Read "
-            "structuredContent.continuation for the exact command and replay request_id."
+        return _compose(
+            [
+                _req(
+                    f"Check state: {state} ({_AWAITING_STATES[state]}); no verdict yet. Read "
+                    "structuredContent.continuation for the exact command and replay request_id."
+                )
+            ]
         )
     if state == "awaiting_input":
         who = "Supply the complete review input with"
     else:
         who = "Show the user this exact trusted local command to run"
-    pieces = [
-        f"Check state: {state} ({_AWAITING_STATES[state]}); no verdict yet. {who}: {command}."
-    ]
     expires_at = typed.get("expires_at")
-    if type(expires_at) is str and _CONTINUATION_TIMESTAMP.fullmatch(expires_at) is not None:
-        pieces.append(f"Expires at {expires_at}.")
-    pieces.append(f"Then replay the same check with request_id {replay}; do not start a new check.")
-    return _bounded(" ".join(pieces))
+    expires = (
+        f"Expires at {expires_at}."
+        if type(expires_at) is str and _CONTINUATION_TIMESTAMP.fullmatch(expires_at) is not None
+        else ""
+    )
+    return _compose(
+        [
+            _req(
+                f"Check state: {state} ({_AWAITING_STATES[state]}); no verdict yet. {who}: {command}."
+            ),
+            _opt(expires, priority=_P_STATE),
+            _req(f"Then replay the same check with request_id {replay}; do not start a new check."),
+        ]
+    )
 
 
 def summary_for_read_guidance(envelope: object) -> str:
@@ -1918,14 +2196,22 @@ def summary_for_read_guidance(envelope: object) -> str:
         )
         complete = "yes" if source.get("complete") is True else "no"
         continuation = "yes" if isinstance(source.get("continuation"), Mapping) else "no"
-        return _bounded(
-            f"Guidance page {page}/{page_count} for {uri}: {page_bytes} bytes of {total_bytes}; "
-            f"complete: {complete}; continuation: {continuation}; revision: {digest_text}; "
-            "full page in structuredContent.text."
+        return _compose(
+            [
+                _req(
+                    f"Guidance page {page}/{page_count} for {uri}: {page_bytes} bytes of "
+                    f"{total_bytes}; complete: {complete}; continuation: {continuation}; "
+                    f"revision: {digest_text}; full page in structuredContent.text."
+                )
+            ]
         )
-    return _bounded(
-        f"Guidance {uri}: {_safe_count(source.get('byte_count'))} bytes; "
-        "full text in structuredContent.text."
+    return _compose(
+        [
+            _req(
+                f"Guidance {uri}: {_safe_count(source.get('byte_count'))} bytes; "
+                "full text in structuredContent.text."
+            )
+        ]
     )
 
 
@@ -1941,9 +2227,13 @@ def summary_for_closure_prepare(envelope: object) -> str:
             counts.append(f"{view} {_item_count(typed_inventory.get(view))}")
     rows = ", ".join(counts) if counts else "unavailable"
     operation = _safe_token(source.get("operation"), fallback="inventory")
-    return _bounded(
-        f"Closure preparation only; {_frontier_clause(source)}; inventory rows: {rows}; "
-        f"next operation: {operation}; review structuredContent before submitting any request."
+    return _compose(
+        [
+            _req(f"Closure preparation only; {_frontier_clause(source)};"),
+            _req(f"inventory rows: {rows};"),
+            _req(f"next operation: {operation};"),
+            _req("review structuredContent before submitting any request."),
+        ]
     )
 
 
@@ -1951,12 +2241,11 @@ def _summary_for_other_success(source: Mapping[str, JsonValue]) -> str:
     outcome = _safe_token(source.get("outcome"), fallback="recorded")
     identity = _identity_clause(source)
     accepted = source.get("accepted_events")
+    parts: list[Part] = [_req(f"Operation outcome: {outcome};")]
     if accepted is not None:
-        return _bounded(
-            f"Operation outcome: {outcome}; accepted events: {_item_count(accepted)}; "
-            f"{identity}{_frontier_clause(source)}."
-        )
-    return _bounded(f"Operation outcome: {outcome}; {identity}{_frontier_clause(source)}.")
+        parts.append(_req(f"accepted events: {_item_count(accepted)};"))
+    parts.append(_req(f"{identity}{_frontier_clause(source)}."))
+    return _compose(parts)
 
 
 _OBLIGATION_ID: Final = re.compile(
@@ -2011,18 +2300,112 @@ def render_publish_blocker_notices(envelope: object) -> str:
     return "\n".join(lines)
 
 
-def render_safe_compact_summary(envelope: object) -> str:
-    """Render a bounded projection using only allowlisted structural result fields."""
-
-    source = _mapping(envelope)
+def _select_builder(source: Mapping[str, JsonValue]) -> tuple[str, Callable[[object], str]]:
     if source.get("ok") is False or "error" in source:
-        return summary_for_public_error(source)
+        return "error", summary_for_public_error
     if source.get("preparatory_only") is True:
-        return summary_for_closure_prepare(source)
+        return "closure_prepare", summary_for_closure_prepare
     if "verdict" in source:
-        return summary_for_check(source)
+        return "check", summary_for_check
     if "view" in source:
-        return summary_for_status(source)
+        return "status", summary_for_status
     if "receipt_id" in source or "conclusion" in source:
-        return summary_for_receipt(source)
-    return _summary_for_other_success(source)
+        return "receipt", summary_for_receipt
+    return "operation", lambda envelope: _summary_for_other_success(_mapping(envelope))
+
+
+def _minimal_summary(envelope: object, builder: str) -> str:
+    """The guaranteed text when a builder's required core failed (tb4n3 RC-2).
+
+    The operation has committed and its structured result is complete, so this names the verdict
+    or state token and the frontier when they can still be read, says which builder failed, and
+    points at the compact status view. Every step is guarded; the last resort is a fixed sentence.
+    """
+
+    source: Mapping[str, JsonValue] = {}
+    try:
+        source = _mapping(envelope)
+    except Exception:  # noqa: BLE001 - the last resort must not raise
+        pass
+
+    def guarded(build: Callable[[], str]) -> str:
+        try:
+            return build()
+        except Exception:  # noqa: BLE001 - the last resort must not raise
+            return ""
+
+    def identity() -> str:
+        if builder == "error":
+            nested = source.get("error")
+            error = _mapping(nested) if nested is not None else source
+            code = _safe_token(error.get("code"), fallback="INTERNAL_ERROR")
+            if code not in {item.value for item in PublicErrorCode}:
+                code = "INTERNAL_ERROR"
+            retry = "yes" if error.get("retryable") is True else "no"
+            return f"Error {code}; retryable: {retry};"
+        if builder == "check":
+            return (
+                f"Check verdict: {_safe_token(source.get('verdict'))}; AI-powered review "
+                f"status/reason: {_safe_token(source.get('semantic_status'))}/"
+                f"{_safe_token(source.get('semantic_reason'))};"
+            )
+        if builder == "status":
+            return f"Status view: {_safe_token(source.get('view'))};"
+        if builder == "receipt":
+            return f"Receipt conclusion: {_safe_token(source.get('conclusion'))};"
+        if builder == "closure_prepare":
+            return "Closure preparation only;"
+        return (
+            f"Operation outcome: {_safe_token(source.get('outcome'), fallback='recorded')}; "
+            f"{_identity_clause(source)}"
+        )
+
+    parts = [
+        _req(guarded(identity), "Result recorded;"),
+        _req(guarded(lambda: f"{_frontier_clause(source)};")),
+        _req(
+            f"summary_render_failed:{builder}; the operation result is complete in "
+            "structuredContent; read status view=compact for the current state."
+        ),
+    ]
+    try:
+        return _compose(parts)
+    except Exception:  # noqa: BLE001 - the last resort must not raise
+        return (
+            f"Result recorded; summary_render_failed:{builder}; the operation result is complete "
+            "in structuredContent; read status view=compact for the current state."
+        )
+
+
+def render_safe_compact_summary_detailed(envelope: object) -> SummaryRender:
+    """Render the bounded projection and report every clause or builder that degraded.
+
+    Never raises. A failing optional clause is omitted and named in the text; a failing required
+    core is replaced by ``_minimal_summary``. Both are returned in ``failures`` so the bridge can
+    record which builder and clause broke (tb4n3 RC-2: a committed operation must not become an
+    ``INTERNAL_ERROR`` because its text could not be built).
+    """
+
+    failures: list[tuple[str, BaseException]] = []
+    token = _FAILURE_SINK.set(failures)
+    builder = "summary"
+    try:
+        try:
+            source = _mapping(envelope)
+            builder, build = _select_builder(source)
+            text = build(envelope)
+        except Exception as exc:  # noqa: BLE001 - the core failed; fall back to the minimal text
+            failures.append((builder, exc))
+            text = _minimal_summary(envelope, builder)
+    finally:
+        _FAILURE_SINK.reset(token)
+    return SummaryRender(text=text, failures=tuple(failures))
+
+
+def render_safe_compact_summary(envelope: object) -> str:
+    """Render a bounded projection using only allowlisted structural result fields.
+
+    Never raises; see ``render_safe_compact_summary_detailed`` for the failure report.
+    """
+
+    return render_safe_compact_summary_detailed(envelope).text

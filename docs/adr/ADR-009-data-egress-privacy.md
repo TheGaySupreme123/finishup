@@ -813,8 +813,8 @@ blocked the whole packet with `never_send_detected`. Decisions:
   once, the fixed line "Values marked [withheld-by-yoetz:possible-credential] were withheld from the
   external reviewer only; local checks saw them. Do not change consent, rename, hide or reshape your
   work to clear this. If a finding stays open only because of it, verify the repair yourself and
-  respond self_verified."; the 512-byte MCP summaries, which must keep the frontier head digest,
-  fall back to a shorter fixed form when the full line cannot fit.
+  respond self_verified."; the bounded MCP summaries (4,096 bytes since ADR-043), which must keep the
+  frontier head digest, fall back to a shorter fixed form when the full line cannot fit.
 
 ## Credential-heuristic opt-out amendment (2026-10-07, issue #982)
 
