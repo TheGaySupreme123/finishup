@@ -3316,7 +3316,7 @@ def _admit_prior_verdicts(
             # item open without citing anything newer. Recorded as a standing disagreement.
             unsupported += lost_cite
             kind = DISPUTED_AFTER_REBUTTAL_VERDICT
-        elif not shown or not supported:
+        elif not shown or not supported or (lost_cite and kind not in {"withdrawn", "fixed"}):
             unsupported += 1
             if (
                 shown
@@ -3328,10 +3328,11 @@ def _admit_prior_verdicts(
                 kind = DISPUTED_AFTER_REBUTTAL_VERDICT
             else:
                 kind = "unassessable"
-        elif lost_cite and kind != "withdrawn":
-            # A trimmed citation is disclosed, but a ruling the remaining cites still support
-            # stands: a ``fixed`` that keeps one recorded newer result is still ``fixed`` (D-6).
-            # ``withdrawn`` needs no citation at all.
+        elif lost_cite and kind == "fixed":
+            # A trimmed citation is disclosed, but a ``fixed`` the remaining cites still support
+            # (it keeps one recorded newer result) stays ``fixed`` (D-6). ``withdrawn`` needs no
+            # citation at all; ``still_present`` and ``answered_not_fixed`` that lose a citation
+            # are ``unassessable`` as before.
             unsupported += 1
         earlier = admitted.get(key)
         if earlier is not None:
@@ -3533,7 +3534,12 @@ def validate_semantic_judgment(
             # request raised as ``task_requirement_unmet`` after ``completion_with_open_obligations``
             # is the same concern); every other kind folds only onto its own.
             same_kind = target_kind is not None and kinds_comparable(
-                target_kind, challenge.finding_kind
+                target_kind,
+                challenge.finding_kind,
+                obligation_concern=bool(
+                    _finding_concern(case, target_id).obligations
+                    and concern_key(case.projection, refs).obligations
+                ),
             )
             if treatment == _RESTATES_OPEN and same_kind:
                 named = target_id
@@ -3906,13 +3912,18 @@ def _restated_finding(
             payload is None
             or record.redacted
             or payload.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
-            or not kinds_comparable(payload.kind, kind)
             or finding_todo_state(case.projection, key) is FindingTodoState.VERIFIED_RESOLVED
         ):
             continue
         subjects = tuple(str(ref) for ref in payload.subject_refs)
         exact = wanted == frozenset(subjects)
         target_key = concern_key(case.projection, subjects)
+        if not kinds_comparable(
+            payload.kind,
+            kind,
+            obligation_concern=bool(wanted_key.obligations and target_key.obligations),
+        ):
+            continue
         if not exact and not same_concern(wanted_key, target_key):
             continue
         bound = answer_bound(case.projection, key)

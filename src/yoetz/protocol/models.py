@@ -6153,6 +6153,8 @@ _RESPOND_STRUCTURAL_POINTERS: Final = (
         ),
     )
     + _prefix_leaf_patterns("/response/finding_frontier", FRONTIER_LEAVES)
+    # tb4n3 RC-7 (#1030): the finding's to-do state and limitation state after the answer.
+    + _prefix_leaf_patterns("/closure_after", ("limitation", "todo_state"))
     + _prefix_leaf_patterns("/response/evidence/*", ("reference_id",))
     + _prefix_leaf_patterns("/response/reason", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns(

@@ -312,7 +312,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("check", None): 374,  # tb4n2 LA: counts/disputed_after_rebuttal
     ("publish_work", None): 61,
     ("receipt", None): 293,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3
-    ("respond", None): 54,
+    ("respond", None): 56,  # +2 tb4n3 W2-B: closure_after
     ("start", None): 72,
     ("status", None): 72,  # +9 tb4n3 LO: closure_readiness.check_cause
     ("status", "advice"): 25,
@@ -378,7 +378,8 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "projected_finding",
     ),
     ("CheckVersionSliceModel", "operations/check-result-1.0.0.schema.json", "version_slice"),
-    ("RespondSuccessModel", "operations/respond-result-1.0.0.schema.json", "success"),
+    # 1.1.0 (unreleased) adds closure_after (tb4n3 RC-7).
+    ("RespondSuccessModel", "operations/respond-result-1.1.0.schema.json", "success"),
     (
         "RespondAcceptedEventModel",
         "operations/respond-result-1.0.0.schema.json",
@@ -390,6 +391,7 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "evidence_summary",
     ),
     ("RespondResponseModel", "operations/respond-result-1.1.0.schema.json", "response"),
+    ("RespondClosureAfterModel", "operations/respond-result-1.1.0.schema.json", "closure_after"),
     ("RespondVersionSliceModel", "operations/respond-result-1.0.0.schema.json", "version_slice"),
     ("StatusSuccessModel", "operations/status-result-1.4.0.schema.json", "success"),
     (
@@ -2537,7 +2539,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert derived_counts == _EXPECTED_RESULT_PATTERN_COUNTS
 
     assert type(rules) is tuple
-    assert len(rules) == 1482  # #1027 +5, +9 tb4n3 LO: closure_readiness.check_cause
+    assert len(rules) == 1484  # #1027 +5, +9 tb4n3 LO: check_cause, +2 W2-B: closure_after
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {

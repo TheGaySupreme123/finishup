@@ -35,6 +35,7 @@ from yoetz.kernel.finding_resolution import (
     reopen_findings_resolved_by,
 )
 from yoetz.kernel.finding_todo import (
+    ABSOLUTELY_FINAL_TODO_STATES,
     TERMINAL_TODO_STATES,
     TODO_TRANSITIONS,
     FindingTodoState,
@@ -214,9 +215,31 @@ def _state(
     )
 
 
-def test_the_transition_table_is_data_and_terminal_states_have_no_exit() -> None:
-    assert {source for source, _cause, _target in TODO_TRANSITIONS} == {FindingTodoState.OPEN}
-    assert {target for _source, _cause, target in TODO_TRANSITIONS} == set(TERMINAL_TODO_STATES)
+def test_the_transition_table_is_data_and_only_the_agents_never_clean_answers_have_an_exit() -> (
+    None
+):
+    """tb4n3 RC-7 (#1030, owner decision 8): the table gained the reverse edges out of
+    ``acknowledged_not_done`` and ``self_verified``; the three absolutely final states have none."""
+
+    open_exits = {
+        target for source, _cause, target in TODO_TRANSITIONS if source is FindingTodoState.OPEN
+    }
+    assert open_exits == set(TERMINAL_TODO_STATES)
+    leaving_terminal = {
+        (source, target)
+        for source, _cause, target in TODO_TRANSITIONS
+        if source is not FindingTodoState.OPEN
+    }
+    assert leaving_terminal == {
+        (FindingTodoState.ACKNOWLEDGED_NOT_DONE, FindingTodoState.OPEN),
+        (FindingTodoState.ACKNOWLEDGED_NOT_DONE, FindingTodoState.VERIFIED_RESOLVED),
+        (FindingTodoState.SELF_VERIFIED, FindingTodoState.VERIFIED_RESOLVED),
+    }
+    assert {
+        FindingTodoState.VERIFIED_RESOLVED,
+        FindingTodoState.REJECTION_ACCEPTED,
+        FindingTodoState.DISPUTED_AFTER_REBUTTAL,
+    } == ABSOLUTELY_FINAL_TODO_STATES
     assert FindingTodoState.OPEN not in TERMINAL_TODO_STATES
 
 

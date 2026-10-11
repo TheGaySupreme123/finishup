@@ -29,7 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final, cast
 
-from yoetz.domain.findings import LIMITATION_REQUEST_REQUIREMENT_KINDS, FindingKind
+from yoetz.domain.findings import FindingKind
 from yoetz.domain.values import ClaimId
 from yoetz.kernel.projections import ProjectionState
 
@@ -44,17 +44,35 @@ __all__ = [
     "subject_obligations",
 ]
 
-# The kinds that fold across kinds: each says some stated requirement is not delivered or its
-# delivery is not shown. Kept equal to the kinds a limitation request can attach to.
-REQUIREMENT_FAMILY_KINDS: Final = LIMITATION_REQUEST_REQUIREMENT_KINDS
+# The kinds that fold across kinds: each says a stated requirement is not delivered, or that a
+# claim still covers one that is not. ``evidence_does_not_support_claim`` joins them only when the
+# subjects name obligations (D-3 of the tb4n3 dialogue analysis); every other kind, a
+# ``code_defect`` or a claim without admissible evidence for example, folds only onto its own.
+REQUIREMENT_FAMILY_KINDS: Final = frozenset(
+    {
+        FindingKind.TASK_REQUIREMENT_UNMET,
+        FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS,
+        FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED,
+    }
+)
 
 
-def kinds_comparable(first: FindingKind, second: FindingKind) -> bool:
-    """Whether two finding kinds may name one concern (same kind, or both requirement-family)."""
+def kinds_comparable(
+    first: FindingKind, second: FindingKind, *, obligation_concern: bool = False
+) -> bool:
+    """Whether two finding kinds may name one concern.
 
-    return first is second or (
-        first in REQUIREMENT_FAMILY_KINDS and second in REQUIREMENT_FAMILY_KINDS
-    )
+    The same kind always may. The requirement-family kinds may across kinds, and so may
+    ``evidence_does_not_support_claim`` when ``obligation_concern`` says both concerns name
+    obligations.
+    """
+
+    if first is second:
+        return True
+    family = REQUIREMENT_FAMILY_KINDS
+    if obligation_concern:
+        family = family | {FindingKind.EVIDENCE_DOES_NOT_SUPPORT_CLAIM}
+    return first in family and second in family
 
 
 def current_claim(projection: ProjectionState, ref: str) -> str:
