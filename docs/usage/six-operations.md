@@ -224,26 +224,43 @@ Before completion, read `declared_obligation_count`, `no_obligations_reason`, an
 `no_obligations_declared`; a typed reason clears that readiness blocker but remains visible. If the
 plan scope is unreadable, readiness is unknown rather than zero. Read the finding counters
 separately: `unanswered_finding_count` is response work still to do (observation-authored,
-non-actionable findings never count there), while
-`receipt_blocking_finding_count` is the current actionable finding set that prevents a clean
-receipt even after every response; only a later qualifying check of the repaired record shrinks
-it. Accordingly, `findings_unanswered` is answered; `receipt_findings_unresolved` is repaired and
-rechecked once, and should not trigger another response loop. After that recheck, read the finding's
-`resolved` value. If the issue re-fires, or it does not re-fire but remains `resolved=false` because
-the check did not qualify, stop rechecking unchanged state, request the bounded receipt, and
-disclose the current finding and limiting coverage.
+non-actionable findings never count there), while `finding_counts` says where every current
+finding stands. `to_do` is work you can still do (it includes `awaiting_ruling`, findings you
+rejected with a reason that only a reviewer's ruling can settle; the next move for those is
+`check`); `unmet` are requirements you acknowledged as not done; `disclosed` are final items the
+receipt will disclose (a repair you verified yourself, a limit you stated, a bookkeeping finding
+you acknowledged); `to_disclose` are limits a reviewer asked you to state and that you have not
+yet stated (answer once with `acknowledged`; it is not work). `receipt_blocking_finding_count`
+is `to_do` plus `unmet`: the findings that keep a receipt from concluding
+`no_unresolved_deterministic_findings` even after every response; only a later qualifying check
+of the repaired record shrinks `to_do`. Accordingly, `findings_unanswered` is answered;
+`receipt_findings_unresolved` is repaired and rechecked once, and should not trigger another
+response loop. After that recheck, read the finding's `resolved` value. If the issue re-fires,
+or it does not re-fire but remains `resolved=false` because the check did not qualify, stop
+rechecking unchanged state, request the bounded receipt, and disclose the current finding and
+limiting coverage.
+
+`closure_readiness.predicted_receipt` is the conclusion a receipt requested at this frontier would
+carry, with the reasons (`reasons`, each with a code, a count and at most three ids). Status,
+the check's next step and the receipt use one function, so the label you read here is the label the
+receipt gets. "Nothing further to do" never means the receipt will be clean: read the sentence
+after it ("The receipt will read ...").
 
 `closure_readiness.state` tells you whether anything is left to do. `action_required` lists the
-work in `agent_actionable`: open obligations, unanswered findings, a receipt-blocking finding, a
-missing or out-of-date check, or a gap you can repair such as `completion_plan_not_claimed`.
-`ready_with_limitations` means nothing further to do: every remaining condition is either a
-`standing_limitations` code that this assistant, capture profile or privacy policy always has
-(for example `host_outcome_unavailable` or, when AI-powered review is off, `semantic_review_not_requested`)
-or an item in `acknowledged_not_done` (always empty in this release: recording an item as not
-done is not available yet). Request the receipt; another check of unchanged state
-changes nothing. The receipt still lists every limitation, and its conclusion is unchanged: a
-local-only check with limitations is still `insufficient_coverage`. `ready` means nothing remains
-at all, and `unknown` means read status again once it is readable.
+work in `agent_actionable`: open obligations, unanswered findings, an unresolved finding you can
+still repair, a rejected finding awaiting a ruling (`finding_rejection_awaiting_ruling`: run
+`check` so the reviewer rules), a missing or out-of-date check, or a gap you can repair such as
+`completion_plan_not_claimed`. `ready_with_limitations` means nothing further to do: every
+remaining condition is either a `standing_limitations` code that this assistant, capture profile
+or privacy policy always has (for example `host_outcome_unavailable` or, when AI-powered review
+is off, `semantic_review_not_requested`) or an item in `acknowledged_not_done` (obligations and
+findings you recorded as not done). Request the receipt; another check of unchanged state changes
+nothing. The receipt still lists every limitation, and its conclusion follows the prediction: a
+local-only check with limitations is still `insufficient_coverage`, and an acknowledged
+requirement keeps the conclusion at `unresolved_findings_remain`. `rechecks` lists the questions
+a Stop will ask you once to re-read (the acceptance criteria of resolved obligations, obligations
+you recorded as not done, a blocker you recorded); the status text announces them. `ready` means
+nothing remains at all, and `unknown` means read status again once it is readable.
 
 Local checks also report facts about the task's own work: a planned verification command (an
 obligation's requested command) that was not matched to an observed run, failed on its latest
@@ -254,10 +271,10 @@ contains it as one part, such as `cd /app && pytest -q && git diff --check`, `py
 2>&1`, `time pytest -q`, or a line of a `bash <<'EOF'` script; when the run combined other
 commands, its outcome counts for the planned command only if an `&&` chain succeeded. A requested
 command with a `<placeholder>` is refused when you publish it: write the concrete command; a requested output file that is missing (a
-receipt-blocking finding, even if an action named it) or excluded from Git; one you recorded
+unresolved finding, even if an action named it) or excluded from Git; one you recorded
 editing (an `edit` action naming it) that is still unchanged or lies outside the repository; and
-installs or writes that went outside the task's workspace. If you stop while open obligations, a
-receipt-blocking finding, or one of those planned-verification or excluded-output facts remains,
+installs or writes that went outside the task's workspace. If you stop while open obligations, an
+unresolved finding, or one of those planned-verification or excluded-output facts remains,
 the stop is continued once with the list. When something outside your control blocks an
 obligation (authority, consent, credentials, or a dependency you cannot obtain), record a
 `decision_recorded` naming it in `affected_obligation_ids` with the statement line

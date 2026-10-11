@@ -69,6 +69,8 @@ _READINESS_ONLY = frozenset(
         "finding_disputed_after_rebuttal",
         "finding_premise_disputed",
         "finding_rejection_awaiting_ruling",
+        "finding_limitation_disclosed",
+        "finding_rejection_unreviewable",
     }
 )
 _CHANGED = frozenset(
@@ -115,7 +117,7 @@ _CARRIED = frozenset(_GUARDED_AT_BASE)
 
 def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group() -> None:
     assert set(GAP_EFFECT_TABLE) == set(GAP_CLASSIFICATION)
-    assert len(GAP_EFFECT_TABLE) == 214  # the 213 recorded codes + the awaiting-ruling token
+    assert len(GAP_EFFECT_TABLE) == 216  # the 213 recorded codes + 3 readiness-only finding tokens
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
@@ -130,7 +132,7 @@ def test_exactly_the_documented_rows_are_marked_changed() -> None:
 @pytest.mark.parametrize("route_requires_review", [False, True])
 def test_unchanged_rows_keep_the_behaviour_of_the_base_build(route_requires_review: bool) -> None:
     context = GapContext(route_requires_review=route_requires_review, check_carried=_CARRIED)
-    drift = []
+    drift: list[str] = []
     for code, row in GAP_EFFECT_TABLE.items():
         if row.changed or code in _READINESS_ONLY:
             continue

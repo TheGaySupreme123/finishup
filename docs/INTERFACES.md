@@ -6846,15 +6846,20 @@ project views keep their own documented coverage.
 status success; on the unreleased status-result 1.4.0 wire the six checklist fields are optional
 as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null). Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
-`gap_classification_version` (`"5"` since issue #1020 added the standing code
-`finding_disputed_after_rebuttal`; `"4"` added `assumption_disclosed`,
+`gap_classification_version` (`"7"` since the table became a view of `kernel.gap_effect` and added the
+readiness token `finding_rejection_awaiting_ruling` (ADR-046) and the standing task-fact
+disclosures `planned_verification_matched_by_prefix` and `declared_output_not_reviewable`
+(ADR-045); `"5"` added the standing code
+`finding_disputed_after_rebuttal` (issue #1020); `"4"` added `assumption_disclosed`,
 `verification_limit_disclosed` and `finding_premise_disputed` (issues #995, #984); `"3"` added
 `finding_self_verified`; the wire still admits `"1"`–`"4"` from an earlier 0.3 build),
 and three groups. `agent_actionable` lists, in order, the
 agent conditions present (`obligations_open`, `findings_unanswered`, `receipt_findings_unresolved`
-unless every receipt-blocking finding's latest response is `acknowledged_not_done`; a
-`self_verified` finding never counts as receipt-blocking and is disclosed as the standing code
-`finding_self_verified` instead,
+only for findings whose closure class is `agent_work` (an acknowledged requirement is
+`settled_unmet`: final, so the state stays `ready_with_limitations`, and counted in
+`receipt_blocking_finding_count`; a `self_verified` finding is `settled_disclosed` and disclosed as
+the standing code `finding_self_verified`; ADR-046), `finding_rejection_awaiting_ruling` for a
+rejected finding that waits for a reviewer ruling (a check is the next move),
 `no_plan_published`, `no_obligations_declared`, `projection_stale`), then `check_in_progress`
 while a check holds the session frontier (read at the head through the ledger's
 `has_active_frozen_case`; an unanswerable probe counts as in flight), then `check_not_recorded` or
@@ -6923,6 +6928,64 @@ receipt. Request the receipt." Readiness never recounts findings: "this finding 
 `receipt_findings_unresolved` is a persistent conclusion bound, not an instruction to respond
 again. Once every readable finding is answered, the latter condition remains and tells the caller
 that a receipt may be requested but cannot conclude `no_unresolved_deterministic_findings`.
+
+#### The closure verdict (tb4n3 RC-3, issue #1026, ADR-046)
+
+Every surface that says whether an item still bounds closure reads one verdict, computed from the
+ledger prefix and never stored. Names:
+
+- `yoetz.kernel.closure_class`: `FindingClosureClass` (`agent_work|awaiting_ruling|settled_unmet|settled_disclosed|resolved`),
+  `ObligationClosureClass` (`agent_work|settled_unmet|settled_disclosed|resolved`), `ReceiptEffect`
+  (`none|insufficient_coverage|unresolved_findings_remain`), the closed `FINDING_BASES` /
+  `OBLIGATION_BASES` tables (basis -> class and effect), `NEXT_ACTIONS` (`repair|recheck|reject|acknowledge|acknowledge_not_done|self_verify|reopen|none`),
+  `finding_closure(s)`, `obligation_closures`, `ClosureCounts`, `Recheck`. A basis token names the row
+  (`open_unanswered`, `open_answered`, `reopened`, `limitation_requested`, `rejected_awaiting_ruling`,
+  `rejected_review_unavailable`, `acknowledged_not_done_requirement`, `acknowledged_not_done_bookkeeping`,
+  `self_verified`, `disputed_after_rebuttal`, `rejection_accepted`, `limitation_disclosed`,
+  `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`).
+- `yoetz.kernel.gap_effect`: `GAP_EFFECT_TABLE` (one row per recorded gap code and the readiness-only
+  tokens), `GapContext`, `GapEffectKind` (`actionable|standing_bounding|disclosed|historical`),
+  `gap_effect`, `judge_gaps`. `GAP_CLASSIFICATION` is a view of it; `GAP_CLASSIFICATION_VERSION`
+  is `"7"`.
+- `yoetz.kernel.receipt_prediction.predict_receipt_conclusion(ClosureBasis)`: the receipt's
+  conclusion rules R1-R10 and their reason codes. `receipt_builder.build_receipt` calls it, so the
+  receipt label and every prediction are one function over one context.
+- `yoetz.kernel.closure_verdict.closure_verdict`: the composition (classes, judged gaps, readiness
+  split, prediction, counters, rechecks). `yoetz.application.closure_basis.load_closure_basis`
+  rebuilds the receipt's context at a frontier for status and the check (memoized per session and
+  frontier, valid only while the adapter's projection object is unchanged).
+
+Wire (all optional on the unreleased 1.4.0 results; absent from an earlier 0.3 build and whenever
+the basis could not be read):
+
+- `status` `closure_readiness`: `predicted_receipt {conclusion, reasons[{code, rule, count, refs[<=3],
+  since_frontier?}], reason_total, basis_frontier, provisional}`;
+  `finding_counts {to_do, awaiting_ruling, unmet, disclosed, to_disclose, self_verify_eligible}`
+  (`to_do` includes `awaiting_ruling`; `to_disclose` is never inside `to_do`);
+  `obligation_counts {open, acknowledged, disclosed}`;
+  `awaiting_ruling_findings [{finding_id, since_frontier}]` (<= 8, by id; exactly the findings
+  counted in `finding_counts.awaiting_ruling`, up to the bound); `rechecks [{kind
+  (acceptance|acknowledgement|blocker|premise), key (accept:<h8>|ack:<obl>|blocker:<obl>:<kind>|premise:<n>),
+  subjects[<=8], rule, since_frontier}]`. `receipt_blocking_finding_count` keeps its wire name and
+  means `finding_counts.to_do + finding_counts.unmet`.
+- `status view=findings` rows: `closure_class`, `closure_basis`, `next_actions`;
+  `view=obligations` rows: `closure_class`, `closure_basis`.
+- `check` `finding_checklist.counts`: `to_do`, `awaiting_ruling`, `unmet`, `disclosed`,
+  `to_disclose` (the group travels together); items carry `closure_class` and `closure_basis`;
+  `finding_checklist.next` and `overall_next.action` add `request_ruling`; `overall_next` adds
+  `predicted_conclusion`.
+- `receipt-document` 1.3.0 (additive, in place): `limitation_disclosed_finding_ids`,
+  `conclusion_basis {reasons[{code, rule, count, refs, since_frontier?}], reason_total}`, and a gap
+  `effect` (`bounds|disclosed`). A clean conclusion beside a limitation id or a bounding gap is
+  invalid, and `reason_total` is zero exactly when the conclusion is clean.
+
+Text (`yoetz.protocol.readiness_text`): the owner-approved `readiness_directive` sentence is
+unchanged; `predicted_receipt_variants` appends "The receipt will read X: <reasons>." (while work
+remains: "A receipt requested now would read X: ..."); `closure_counts_variants` prints "Findings to
+do: N (awaiting ruling: K); unmet (acknowledged requirements): M; disclosed: L; to disclose: J.";
+`recheck_note` ("At Stop you will be asked once to re-read: ...") and `awaiting_ruling_variants`
+name the announced re-reads and the findings that wait for a ruling. The MCP status text, the CLI,
+the terminal panel and `closure_prepare` print them; no human surface prints "receipt-blocking".
 
 No plan yields `no_plan_published`. A readable effective plan with declared count zero and no reason
 yields `no_obligations_declared`; the same count with a typed reason clears that blocker while the
@@ -8295,8 +8358,9 @@ three are terminal: `respond` on a terminal finding appends nothing and fails wi
 `INVALID_REQUEST`, reason code `finding_terminal`, field `/finding_id` (no continuation: there is
 nothing to do); a latched row is never resolved later; redacting the latching check clears the
 latch. Terminal items are left out of the prior-findings section and rulings on them are not
-admitted. `receipt_blocking_finding_count` counts `acknowledged_not_done` rows that demand work (not a
-reviewer's limitation request) and no longer counts `rejection_accepted` rows.
+admitted. `receipt_blocking_finding_count` counts `acknowledged_not_done` rows of a requirement kind that demand work (an
+acknowledged `action_without_result` bookkeeping finding is disclosed instead, ADR-046; a reviewer's limitation
+request is never counted) and no longer counts `rejection_accepted` rows.
 
 #### `self_verified`: proof-limited findings (issue #984, ADR-034)
 
@@ -9163,7 +9227,12 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `task_facts.observed_planned_commands(projection, observed, cooperative, values)` is the set of
   requested command values some observed run matched; `command_attempts.same_requested_path` /
   `value_in_attempted` match a file in another spelling. `domain/shell_writes.shell_write_paths(
-  command)` and `shell_write_scope(command, *, workspace, inside, owned_roots=, relative_only=)`;
+  command)` (literal, attributable paths only; linear; analyses at most `MAX_SHELL_WRITE_CHARS` =
+  16,384 characters, up to the last newline, and drops the command a cut interrupts) and `shell_write_scope(command, *, workspace,
+  inside, owned_roots=, relative_only=)` (outside wins, then `workspace`, then a single non-counting
+  class; two non-counting classes count as `workspace`; a directory destination is classified by
+  where it is, not by a notes or receipt file name; the hook calls it alone, with no separate
+  outside-workspace check);
   `write_scope` admits `notes` (non-counting) and `workspace` (a shell command that writes the
   workspace; counts as an edit with `outside_workspace`; `observed_failures.SHELL_EDIT_TOKENS`).
   `missing_for_assessment.check_change_text_paths(capture)` lists the files the check-time change

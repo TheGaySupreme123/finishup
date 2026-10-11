@@ -638,7 +638,9 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
         changed=False,
         codes=(
             "finding_disputed_after_rebuttal",
+            "finding_limitation_disclosed",
             "finding_premise_disputed",
+            "finding_rejection_unreviewable",
             "finding_self_verified",
         ),
     ),

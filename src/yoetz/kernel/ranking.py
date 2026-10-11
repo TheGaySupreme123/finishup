@@ -141,11 +141,11 @@ def _verdict(
         return CheckVerdict.INCOMPLETE_CHECK
     if any(finding_demands_work(finding) for finding in selected):
         return CheckVerdict.ACTION_REQUIRED
-    if any(is_limitation_request(finding) for finding in selected):
-        # tb4n3 RC-1 (Q4): a reviewer's limitation request asks the agent to state a limit, not to
-        # do work, so the check is not ``action_required``; it is never clean either.
-        return CheckVerdict.INSUFFICIENT_COVERAGE
-    if context.completeness is CheckCompleteness.COVERAGE_INCOMPLETE:
+    if context.completeness is CheckCompleteness.COVERAGE_INCOMPLETE or any(
+        is_limitation_request(finding) for finding in selected
+    ):
+        # A reviewer's limitation request asks the agent to state a limit, not to do work: it can
+        # never read as clean and never demands repair (ADR-046, owner decision Q4).
         return CheckVerdict.INSUFFICIENT_COVERAGE
     if context.completeness is CheckCompleteness.SCOPED_COMPLETE:
         # A non-actionable coverage finding can remain visible beside a scoped result.  It does

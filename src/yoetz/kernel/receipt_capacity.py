@@ -17,7 +17,6 @@ from yoetz.kernel.deterministic_checks import (
     healthy_storage_availability,
 )
 from yoetz.kernel.finding_resolution import finding_is_resolved, issue_key
-from yoetz.kernel.finding_todo import duplicate_counting_id, finding_blocks_receipt
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.reducers import (
     ReplayIndex,
@@ -67,25 +66,31 @@ def current_receipt_findings(projection: ProjectionState) -> tuple[Finding, ...]
     return tuple(sorted((item[1] for item in newest.values()), key=rank_key))
 
 
-def receipt_blocking_finding_count(projection: ProjectionState) -> int:
-    """Count current actionable findings that prevent a clean receipt conclusion.
+def receipt_blocking_finding_count(
+    projection: ProjectionState, records: tuple[LedgerRecord, ...] = ()
+) -> int:
+    """Count the findings that hold a receipt at ``unresolved_findings_remain``.
 
-    Responses record a disposition but never resolve a finding for receipt purposes; only a later
-    qualifying check does (``kernel/finding_resolution.py``), and a resolved row stays visible as
-    history without counting here. Non-actionable findings remain visible and can contribute
-    coverage gaps, but they do not by themselves select ``unresolved_findings_remain``. A
-    terminal ``rejection_accepted`` row stops counting but stays disclosed; an
-    ``acknowledged_not_done`` row keeps counting (issue #905, ``kernel/finding_todo.py``). A
-    ``self_verified`` row (issue #984) stops counting as agent work but stays disclosed and keeps
-    the receipt from reading clean (``receipt_builder._conclusion``). A linked ``duplicate_of``
-    row (issue #996) counts once with the finding it duplicates (``finding_todo.duplicate_counting_id``).
+    This is the wire value ``receipt_blocking_finding_count``: findings to do plus acknowledged
+    requirements (``kernel.closure_class``, ADR-046). Responses record a disposition but never
+    resolve a finding; only a later qualifying check does, and a resolved row stays visible as
+    history. A non-actionable finding, a limitation the reviewer asked the agent to state, a
+    ``rejection_accepted``, ``self_verified`` or ``disputed_after_rebuttal`` row and an
+    acknowledged bookkeeping finding do not count: they stay disclosed and cap the conclusion at
+    ``insufficient_coverage``. A linked ``duplicate_of`` row counts once with the finding it
+    duplicates. ``records`` (the prefix the projection replays) lets the classifier know whether
+    the route can still rule on a rejection.
     """
+
+    from yoetz.kernel.closure_class import ReceiptEffect, finding_closures
 
     return len(
         {
-            duplicate_counting_id(projection, finding.finding_id)
-            for finding in current_receipt_findings(projection)
-            if finding_blocks_receipt(projection, finding.finding_id)
+            closure.counts_as
+            for closure in finding_closures(
+                projection, records=records, with_self_verify=False
+            ).values()
+            if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
         }
     )
 

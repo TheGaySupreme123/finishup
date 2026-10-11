@@ -64,7 +64,6 @@ from yoetz.domain.findings import (
     FindingKind,
     FindingOrigin,
     ResponseDisposition,
-    finding_demands_work,
 )
 from yoetz.domain.values import FindingId
 from yoetz.kernel.finding_resolution import (
@@ -436,29 +435,23 @@ def standing_premise_disputes(
 
 
 def finding_blocks_receipt(state: ProjectionState, finding_id: FindingId) -> bool:
-    """Whether a current actionable finding keeps a receipt from reading clean.
+    """Whether a current finding keeps a receipt at ``unresolved_findings_remain``.
 
-    ``rejection_accepted``, ``self_verified`` (issue #984) and ``disputed_after_rebuttal``
-    (issue #1020) are the unresolved states that stop blocking; all stay disclosed, and the last
-    two still keep the receipt conclusion from reading clean. ``acknowledged_not_done`` keeps blocking: it is never clean. A linked
-    ``duplicate_of`` item (issue #996) blocks unless its own proof resolved it or it inherited
-    ``self_verified``; counters name it by ``duplicate_counting_id``.
+    A thin wrapper over the one closure classifier (``kernel.closure_class``, ADR-046): true when
+    the finding's receipt effect is ``unresolved_findings_remain`` - open work, a rejection that
+    awaits a ruling, or an acknowledged requirement. ``rejection_accepted``, ``self_verified``,
+    ``disputed_after_rebuttal``, a disclosed limitation and an acknowledged bookkeeping finding
+    stay disclosed but cap the conclusion at ``insufficient_coverage`` instead (or leave it
+    untouched), and a linked ``duplicate_of`` item follows its earlier finding
+    (``duplicate_counting_id``). Counters name a pair once.
     """
 
-    record = state.findings.get(finding_id)
-    if record is None or record.payload is None:
-        return False
-    if not finding_demands_work(record.payload):
-        # A coverage-only kind, or a reviewer's limitation request (tb4n3 RC-1, #1024): that is a
-        # disclosure the agent acknowledges, never work, and never counted as receipt-blocking.
-        # It does not read clean either: the closure class lists it as a verification limit.
-        return False
-    return finding_todo_state(state, finding_id) not in {
-        FindingTodoState.VERIFIED_RESOLVED,
-        FindingTodoState.REJECTION_ACCEPTED,
-        FindingTodoState.SELF_VERIFIED,
-        FindingTodoState.DISPUTED_AFTER_REBUTTAL,
-    }
+    from yoetz.kernel.closure_class import ReceiptEffect, finding_closure
+
+    closure = finding_closure(state, finding_id)
+    return (
+        closure is not None and closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
+    )
 
 
 def todo_counts(

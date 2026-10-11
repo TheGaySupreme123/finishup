@@ -82,6 +82,11 @@ __all__ = [
     "DUPLICATE_LINKS_SECTION_TITLE",
     "ReceiptDuplicateLink",
     "SELF_VERIFIED_SECTION_TITLE",
+    "VERIFICATION_LIMITS_SECTION_TITLE",
+    "CONCLUSION_REASON_CODES",
+    "ReceiptConclusionBasis",
+    "ReceiptConclusionReason",
+    "ReceiptGapEffect",
     "CHILD_SELF_VERIFIED_NOTE",
     "HISTORICAL_GAPS_SECTION_TITLE",
     "historical_gap_line",
@@ -609,7 +614,87 @@ _TERMINAL_ID_FIELDS: Final = (
     "rejection_accepted_finding_ids",
     "self_verified_finding_ids",
     "disputed_after_rebuttal_finding_ids",
+    "limitation_disclosed_finding_ids",
 )
+# tb4n3 RC-3 (ADR-046): a reviewer's limitation request the agent disclosed. Settled, listed
+# under "Verification limits", never clean.
+VERIFICATION_LIMITS_SECTION_TITLE: Final = "Verification limits"
+# The closed reason codes of a conclusion basis; a conformance test keeps this equal to
+# ``kernel.receipt_prediction.PREDICTION_REASON_CODES`` (the domain cannot import the kernel).
+CONCLUSION_REASON_CODES: Final = {
+    "completion_scope_gap": "R1",
+    "findings_to_do": "R2",
+    "findings_awaiting_ruling": "R2",
+    "findings_unmet": "R2",
+    "child_findings_actionable": "R2",
+    "limitations_to_disclose": "R3",
+    "findings_disclosed": "R3",
+    "obligations_open": "R4",
+    "obligations_acknowledged": "R4",
+    "obligations_disclosed": "R4",
+    "lineage_blocks": "R5",
+    "no_applicable_check": "R6",
+    "check_suppressed_findings": "R7",
+    "check_verdict_insufficient": "R8",
+    "policy_execution_incomplete": "R9",
+    "live_gap_bounds": "R10",
+}
+MAX_CONCLUSION_REASONS: Final = 8
+_REASON_REF_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", re.ASCII)
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptConclusionReason:
+    """One rule that fired when the conclusion was chosen: why a reader sees this label."""
+
+    code: str
+    rule: str
+    count: int
+    refs: tuple[str, ...] = ()
+    since_frontier: int | None = None
+
+    def __post_init__(self) -> None:
+        invalid = "invalid_receipt_document"
+        if (
+            type(self.code) is not str
+            or CONCLUSION_REASON_CODES.get(self.code) != self.rule
+            or type(self.count) is not int
+            or not 1 <= self.count <= _MAX_SAFE_INTEGER
+            or type(self.refs) is not tuple
+            or len(self.refs) > 3
+            or any(
+                type(ref) is not str or _REASON_REF_RE.fullmatch(ref) is None for ref in self.refs
+            )
+            or self.refs != tuple(sorted(set(self.refs), key=str.encode))
+            or (
+                self.since_frontier is not None
+                and (
+                    type(self.since_frontier) is not int
+                    or not 0 <= self.since_frontier <= _MAX_SAFE_INTEGER
+                )
+            )
+        ):
+            raise ProtocolValueError(invalid)
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptConclusionBasis:
+    """Every rule behind the conclusion, the one that selected it first (ADR-046)."""
+
+    reasons: tuple[ReceiptConclusionReason, ...]
+    reason_total: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.reasons) is not tuple
+            or len(self.reasons) > MAX_CONCLUSION_REASONS
+            or any(type(item) is not ReceiptConclusionReason for item in self.reasons)
+            or type(self.reason_total) is not int
+            or not len(self.reasons) <= self.reason_total <= _MAX_SAFE_INTEGER
+        ):
+            raise ProtocolValueError("invalid_receipt_document")
+
+
 # Issue #1020 (ADR-040): the agent rejected these with a reason and the reviewer repeated them
 # without citing anything newer. A standing disagreement, disclosed; never agent work.
 DISPUTED_AFTER_REBUTTAL_SECTION_TITLE: Final = "Disputed after rebuttal"
@@ -673,6 +758,13 @@ class ReceiptGapStatus(str, Enum):  # noqa: UP042 - exact wire enum base
 
 
 HISTORICAL_GAPS_SECTION_TITLE: Final = "Cleared earlier (historical)"
+
+
+class ReceiptGapEffect(str, Enum):  # noqa: UP042 - exact wire enum base
+    """What a live gap does to the conclusion (ADR-046): it ``bounds`` it or is only ``disclosed``."""
+
+    BOUNDS = "bounds"
+    DISCLOSED = "disclosed"
 
 
 class ReceiptObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
@@ -1127,9 +1219,15 @@ class ReceiptGap:
     # frontier of the first check that no longer carried it. Absent (live) keeps earlier bytes.
     status: ReceiptGapStatus = ReceiptGapStatus.LIVE
     cleared_at_frontier: Frontier | None = None
+    # ADR-046: absent reads "not recorded" (an earlier artifact); present only on a live gap.
+    effect: ReceiptGapEffect | None = None
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_gap"
+        if self.effect is not None and (
+            type(self.effect) is not ReceiptGapEffect or self.status is not ReceiptGapStatus.LIVE
+        ):
+            raise ProtocolValueError(invalid)
         code_value = _bounded_text(self.code, 1, 128, invalid)
         if _GAP_CODE_RE.fullmatch(code_value) is None:
             raise ProtocolValueError(invalid)
@@ -1347,6 +1445,10 @@ class ReceiptDocument:
     # Issue #984 (D7a): acknowledged-not-done findings whose challenge says the task itself
     # requires the work. A subset of ``acknowledged_not_done_finding_ids``, disclosed by id.
     premise_disputed_finding_ids: tuple[FindingId, ...] = ()
+    # tb4n3 RC-3 (ADR-046): reviewer limitation requests the agent disclosed ("Verification
+    # limits"), and every rule behind the conclusion. Absent (empty / None) keeps earlier bytes.
+    limitation_disclosed_finding_ids: tuple[FindingId, ...] = ()
+    conclusion_basis: ReceiptConclusionBasis | None = None
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_document"
@@ -1424,11 +1526,21 @@ class ReceiptDocument:
         if len(terminal_ids) != len(set(terminal_ids)):
             raise ProtocolValueError(invalid)
         if (
-            self.self_verified_finding_ids or self.disputed_after_rebuttal_finding_ids
+            self.self_verified_finding_ids
+            or self.disputed_after_rebuttal_finding_ids
+            or self.limitation_disclosed_finding_ids
         ) and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS:
-            # A repair only the agent verified (issue #984), or a finding the reviewer still
-            # holds against the agent's rebuttal (issue #1020), never reads as clean.
+            # A repair only the agent verified (issue #984), a finding the reviewer still holds
+            # against the agent's rebuttal (issue #1020), or a verification limit the agent
+            # disclosed (ADR-046), never reads as clean.
             raise ProtocolValueError("invalid_receipt_conclusion")
+        if self.conclusion_basis is not None and (
+            type(self.conclusion_basis) is not ReceiptConclusionBasis
+            or _receipt_document_artifact_version(self.versions) != "1.3.0"
+            or (self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS)
+            != (self.conclusion_basis.reason_total == 0)
+        ):
+            raise ProtocolValueError(invalid)
         links = _validate_tuple(self.duplicate_finding_links, 0, 100, invalid)
         if any(type(value) is not ReceiptDuplicateLink for value in links):
             raise ProtocolValueError(invalid)
@@ -1501,6 +1613,15 @@ class ReceiptDocument:
         for gap in cast(tuple[ReceiptGap, ...], gaps):
             if gap.code not in self.coverage.known_gaps:
                 raise ProtocolValueError("receipt_gap_not_in_coverage")
+            if gap.effect is not None and (
+                _receipt_document_artifact_version(self.versions) != "1.3.0"
+                or (
+                    gap.effect is ReceiptGapEffect.BOUNDS
+                    and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+                )
+            ):
+                # A clean conclusion beside a gap that bounds it is a contradiction (ADR-046).
+                raise ProtocolValueError("invalid_receipt_gap")
         # Issue #1017: a historical gap is written only by the 1.3.0 artifact, and a code is
         # either live or historical on one receipt, never both.
         historical_codes = {gap.code for gap in cast(tuple[ReceiptGap, ...], gaps) if not gap.live}
@@ -1647,7 +1768,7 @@ def _gap_from_json(value: object) -> ReceiptGap:
     source = _closed_object(
         value,
         frozenset({"code", "subject_refs"}),
-        frozenset({"detail", "status", "cleared_at_frontier"}),
+        frozenset({"detail", "status", "cleared_at_frontier", "effect"}),
         invalid,
     )
     keys = frozenset(cast(tuple[str, ...], tuple(source)))
@@ -1671,6 +1792,39 @@ def _gap_from_json(value: object) -> ReceiptGap:
             if historical
             else None
         ),
+        effect=(
+            _enum_value(_field(source, "effect", invalid), ReceiptGapEffect, invalid)
+            if "effect" in keys
+            else None
+        ),
+    )
+
+
+def _conclusion_basis_from_json(value: object) -> ReceiptConclusionBasis:
+    invalid = "invalid_receipt_document"
+    source = _closed_object(value, frozenset({"reasons", "reason_total"}), frozenset(), invalid)
+    reasons: list[ReceiptConclusionReason] = []
+    for item in _array(_field(source, "reasons", invalid), invalid):
+        reason = _closed_object(
+            item,
+            frozenset({"code", "rule", "count", "refs"}),
+            frozenset({"since_frontier"}),
+            invalid,
+        )
+        refs = _array(_field(reason, "refs", invalid), invalid)
+        reasons.append(
+            ReceiptConclusionReason(
+                code=cast(str, _field(reason, "code", invalid)),
+                rule=cast(str, _field(reason, "rule", invalid)),
+                count=cast(int, _field(reason, "count", invalid)),
+                refs=cast(tuple[str, ...], refs),
+                since_frontier=(
+                    cast(int, reason["since_frontier"]) if "since_frontier" in reason else None
+                ),
+            )
+        )
+    return ReceiptConclusionBasis(
+        tuple(reasons), cast(int, _field(source, "reason_total", invalid))
     )
 
 
@@ -1865,6 +2019,8 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
                 "semantic_withheld_items",
                 "semantic_redacted_values",
                 "semantic_provenance",
+                "limitation_disclosed_finding_ids",
+                "conclusion_basis",
             }
         ),
         invalid,
@@ -1999,6 +2155,15 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
             finding_id(item)
             for item in _array(source.get("premise_disputed_finding_ids", ()), invalid)
         ),
+        limitation_disclosed_finding_ids=tuple(
+            finding_id(item)
+            for item in _array(source.get("limitation_disclosed_finding_ids", ()), invalid)
+        ),
+        conclusion_basis=(
+            _conclusion_basis_from_json(source["conclusion_basis"])
+            if "conclusion_basis" in source
+            else None
+        ),
     )
     return document
 
@@ -2084,6 +2249,8 @@ def _gap_to_json(value: ReceiptGap) -> dict[str, object]:
     if value.cleared_at_frontier is not None:
         result["status"] = value.status.value
         result["cleared_at_frontier"] = _frontier_to_json(value.cleared_at_frontier)
+    if value.effect is not None:
+        result["effect"] = value.effect.value
     return result
 
 
@@ -2182,6 +2349,26 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
         result["disputed_after_rebuttal_finding_ids"] = list(
             document.disputed_after_rebuttal_finding_ids
         )
+    if document.limitation_disclosed_finding_ids:
+        result["limitation_disclosed_finding_ids"] = list(document.limitation_disclosed_finding_ids)
+    if document.conclusion_basis is not None:
+        result["conclusion_basis"] = {
+            "reasons": [
+                {
+                    "code": item.code,
+                    "rule": item.rule,
+                    "count": item.count,
+                    "refs": list(item.refs),
+                    **(
+                        {}
+                        if item.since_frontier is None
+                        else {"since_frontier": item.since_frontier}
+                    ),
+                }
+                for item in document.conclusion_basis.reasons
+            ],
+            "reason_total": document.conclusion_basis.reason_total,
+        }
     if document.duplicate_finding_links:
         result["duplicate_finding_links"] = [
             {"finding_id": item.finding_id, "duplicate_of_finding_id": item.duplicate_of_finding_id}
@@ -2599,6 +2786,24 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                     "its own recorded evidence, because Yoetz could not prove the repair. They "
                     "are not resolved by Yoetz and keep this receipt from reading clean.",
                     *(f"- {item}" for item in document.self_verified_finding_ids),
+                )
+            )
+        )
+    if document.limitation_disclosed_finding_ids:
+        heading = (
+            f"## {VERIFICATION_LIMITS_SECTION_TITLE}"
+            if markdown
+            else VERIFICATION_LIMITS_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The reviewer asked the agent to state that these requirements cannot be "
+                    "verified in this environment, and the agent disclosed each one. They are "
+                    "not resolved and not clean: they are limits on what this receipt can "
+                    "establish, listed here by id.",
+                    *(f"- {item}" for item in document.limitation_disclosed_finding_ids),
                 )
             )
         )

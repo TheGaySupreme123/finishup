@@ -145,6 +145,8 @@ def build_check_totals(
     for ref, record in state.evidence.items():
         if ref in case.allowed_ids and record.payload is not None:
             evidence[record.payload.strength.value] += 1
+    # ADR-046: a reviewer's limitation request asks for a disclosure, not work, so it counts as
+    # coverage-only here exactly as it does everywhere else.
     actionable = sum(finding_demands_work(finding) for finding in findings)
     returned = {
         "returned": len(findings),

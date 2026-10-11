@@ -97,3 +97,28 @@ three ways the closure path did the opposite:
 - Gap classification version "6" ("5" is the review lane's; status-result 1.4.0 admits both).
 - Residual: an untracked deliverable truncated to a non-zero size is not detected (no earlier size
   is stored); `deliverable_references_undeclared_file` is a literal-matching heuristic.
+
+## Amendment (2026-10-11): obligation closure classes (#1026, ADR-046)
+
+Decision 7's rule that an acknowledged obligation is never open work is now one table
+(`kernel/closure_class.OBLIGATION_BASES`) every surface reads:
+
+| Basis | Class | Receipt effect |
+|---|---|---|
+| `open`, `blocker_claimed`, `resolved_deliverable_emptied` | agent_work | insufficient_coverage |
+| `acknowledged_not_done` | settled_unmet | insufficient_coverage |
+| `blocker_confirmed`, `externally_evaluated` | settled_disclosed | insufficient_coverage |
+| `resolved` | resolved | none |
+
+Only `agent_work` is recorded as work by the check's next step (`_recorded_work_refs`), so the
+check no longer calls an acknowledged obligation open work while status calls it settled (cargo D).
+Every non-`resolved` obligation reads below clean on the predicted receipt (reasons
+`obligations_open`, `obligations_acknowledged`, `obligations_disclosed`), which names in the
+conclusion what the receipt already did implicitly. `status view=obligations` rows carry
+`closure_class` and `closure_basis`; `obligation_counts {open, acknowledged, disclosed}` is the same
+on every surface. A `resolved` obligation whose declared deliverable the newest applicable check
+found emptied (the path-keyed fact of ADR-045) reads `resolved_deliverable_emptied` until the file
+is restored or a `yoetz-assumption` decision names the path (ADR-046). The once-per-frontier
+re-reads the Stop gate may ask (resolved obligations' acceptance criteria, an acknowledgement, a
+claimed blocker, an acknowledged finding the reviewer disputes) are computed statelessly from the
+closures and announced on status as `rechecks`.
