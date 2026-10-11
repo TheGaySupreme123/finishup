@@ -18,7 +18,8 @@ reverse-chronological released versions.
   records nothing and is not evidence. Codex and Claude Code show it; Cursor does not report a
   compaction, so nothing changes there (#1027, ADR-044, `docs/usage/after-compaction.md`). The
   compact `status` item also carries `latest_check` (the latest check's event, examined frontier and
-  verdict) when a check is recorded.
+  verdict) when a check is recorded, and each `obligations` item says whether it is
+  `in_current_plan` (a waived or superseded obligation is listed but not current).
 
 - When the external reviewer's copy of your work had a possible credential replaced or an item
   withheld, checks, receipts and `status view=operation` now name the item and its line numbers
