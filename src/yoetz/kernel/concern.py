@@ -97,6 +97,8 @@ class ConcernKey:
 
     obligations: frozenset[str]
     refs: frozenset[str]
+    # The subjects name obligations directly (``obl_`` ids), not only through a claim or event.
+    named_obligations: bool = False
 
 
 def anchor_refs(projection: ProjectionState) -> frozenset[str]:
@@ -155,7 +157,11 @@ def concern_key(projection: ProjectionState, refs: Iterable[str]) -> ConcernKey:
         for ref in items
         if ref not in anchors
     )
-    return ConcernKey(subject_obligations(projection, items), normalised)
+    return ConcernKey(
+        subject_obligations(projection, items),
+        normalised,
+        any(ref.startswith("obl_") for ref in items),
+    )
 
 
 def same_concern(first: ConcernKey, second: ConcernKey) -> bool:

@@ -3203,7 +3203,11 @@ def _cites_concern_material_after(
 
     concern = _finding_concern(case, finding)
     if also is not None:
-        concern = ConcernKey(concern.obligations | also.obligations, concern.refs | also.refs)
+        concern = ConcernKey(
+            concern.obligations | also.obligations,
+            concern.refs | also.refs,
+            concern.named_obligations or also.named_obligations,
+        )
     return concern_material_after(case, concern, refs, frontier)
 
 
@@ -3542,9 +3546,9 @@ def validate_semantic_judgment(
             same_kind = target_kind is not None and kinds_comparable(
                 target_kind,
                 challenge.finding_kind,
-                obligation_concern=bool(
-                    _finding_concern(case, target_id).obligations
-                    and concern_key(case.projection, refs).obligations
+                obligation_concern=(
+                    _finding_concern(case, target_id).named_obligations
+                    and concern_key(case.projection, refs).named_obligations
                 ),
             )
             if treatment == _RESTATES_OPEN and same_kind:
@@ -3927,7 +3931,7 @@ def _restated_finding(
         if not kinds_comparable(
             payload.kind,
             kind,
-            obligation_concern=bool(wanted_key.obligations and target_key.obligations),
+            obligation_concern=wanted_key.named_obligations and target_key.named_obligations,
         ):
             continue
         target_state = finding_todo_state(case.projection, key)
@@ -3957,7 +3961,9 @@ def _restated_finding(
         if bound is None:
             bound = max(record.source_frontier, record.last_ruling_frontier or 0)
         merged = ConcernKey(
-            wanted_key.obligations | target_key.obligations, wanted_key.refs | target_key.refs
+            wanted_key.obligations | target_key.obligations,
+            wanted_key.refs | target_key.refs,
+            wanted_key.named_obligations or target_key.named_obligations,
         )
         if concern_material_after(case, merged, (*refs, *cited), bound):
             continue

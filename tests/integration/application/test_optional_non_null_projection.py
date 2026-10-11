@@ -76,8 +76,10 @@ from yoetz.protocol.models import (
     PublishWorkRequest,
     PublishWorkSuccessModel,
     ReadGuidanceSuccessModel,
+    RespondClosureAfterModel,
     RespondEvidenceSummaryModel,
     RespondResponseModel,
+    RespondSuccessModel,
     ReviewInputManifestModel,
     SemanticRedactedValueModel,
     StartSuccessModel,
@@ -198,6 +200,8 @@ def _status_history_v14_payload() -> dict[str, object]:
 # A new result model that joins the set without a row in this table fails the inventory test.
 _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = (
     (CheckContinuationModel, frozenset({"pending_id", "expires_at"})),
+    (RespondSuccessModel, frozenset({"closure_after"})),  # tb4n3 RC-7
+    (RespondClosureAfterModel, frozenset({"limitation"})),
     (
         CheckSuccessModel,
         frozenset(
