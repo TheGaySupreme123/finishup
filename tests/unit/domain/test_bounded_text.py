@@ -6,10 +6,13 @@ import pytest
 
 from yoetz.domain.bounded_text import (
     DEFAULT_CUT_MARKER,
+    Part,
     ascii_safe,
     clip_to_limit,
     compose_bounded,
     compose_bounded_detail,
+    compose_parts,
+    list_variants,
 )
 
 
@@ -97,3 +100,55 @@ def test_clip_to_limit_marks_the_cut() -> None:
     assert clip_to_limit("abc", 8) == "abc"
     assert clip_to_limit("abc", 0) == ""
     assert clip_to_limit("abcdef", 2) == ".."
+
+
+def test_compose_parts_renders_in_list_order_but_grants_room_by_priority() -> None:
+    parts = [
+        Part(("lead",), required=True),
+        Part(("low-priority-clause",), priority=9),
+        Part(("high-priority-clause",), priority=1),
+        Part(("frontier: 5.",), required=True),
+    ]
+    roomy = compose_parts(parts, 200)
+    assert roomy.text == "lead low-priority-clause high-priority-clause frontier: 5."
+    tight = compose_parts(parts, 40)
+    assert tight.text == "lead high-priority-clause frontier: 5."
+    assert tight.dropped == (1,)
+
+
+def test_a_required_part_keeps_its_shortest_variant_until_room_upgrades_it() -> None:
+    parts = [
+        Part(("a very long explanatory lead " * 3, "short lead"), required=True),
+        Part(("frontier: 5.",), required=True),
+    ]
+    assert compose_parts(parts, 40).text == "short lead frontier: 5."
+    assert compose_parts(parts, 40).shortened == (0,)
+    assert compose_parts(parts, 400).text.startswith("a very long explanatory lead")
+
+
+def test_required_upgrade_outranks_every_optional_part() -> None:
+    parts = [
+        Part(("L" * 30, "l" * 5), required=True),
+        Part(("o" * 20,)),
+    ]
+    assert compose_parts(parts, 40).text == "L" * 30
+    assert compose_parts(parts, 40).dropped == (1,)
+    assert compose_parts(parts, 60).text == "L" * 30 + " " + "o" * 20
+
+
+def test_list_variants_shrinks_one_value_at_a_time_and_counts_the_rest() -> None:
+    variants = list_variants("ids: ", ["a", "b", "c"], suffix=";")
+    assert variants == ("ids: a, b, c;", "ids: a, b; +1 more;", "ids: a; +2 more;")
+    assert list_variants("ids: ", []) == ()
+    thinned = list(list_variants("ids: ", [f"v{n}" for n in range(500)], max_variants=16))
+    assert 2 <= len(thinned) <= 17
+    assert thinned[0].endswith("v499") and thinned[-1].startswith("ids: v0; +499 more")
+
+
+def test_list_variants_pick_the_most_values_that_fit() -> None:
+    values = [f"fnd_{n:04d}" for n in range(30)]
+    text = compose_bounded(["head"], [list_variants("ids: ", values)], 100)
+    assert len(text) <= 100
+    assert "+" in text and "more" in text
+    shown = text.split("ids: ")[1].split(";")[0].split(", ")
+    assert shown == values[: len(shown)] and len(shown) > 3
