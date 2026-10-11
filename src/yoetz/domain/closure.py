@@ -37,7 +37,7 @@ PREPARATION_REMEDIATIONS = {
     "closure_snapshot_unavailable": "A complete pinned snapshot was unavailable. Read status and restart inventory.",
     "closure_pagination_invalid": "The cursor repeated. Keep the original query identity and inspect status.",
     "closure_inventory_limit": "The bounded inventory is incomplete; use paginated status without assuming closure.",
-    "closure_result_too_large": "The complete preparation exceeds the MCP response bound; use the CLI closure-prepare --output path or read status pages directly, and do not claim closure from an incomplete response.",
+    "closure_result_too_large": "The complete inventory exceeds the MCP response bound. Select the ids you need from status pages and call closure_prepare with phase attempt, respond, resolve, claim or receipt (those responses carry only the selected rows), or use the CLI closure-prepare --output path; do not claim closure from an incomplete response.",
     "closure_obligation_unknown": "Select an obligation ID from the returned inventory.",
     "closure_evidence_unavailable": "Select available evidence ids (evd_) from the inventory in evidence_refs; result ids (res_) go in result_ids. Otherwise retain the missing-evidence limitation.",
     "closure_result_unavailable": "The selected result payload is unavailable; inspect results and retain its limitation.",
@@ -78,6 +78,48 @@ def _base(
     }
 
 
+def scope_inventory_to_selection(
+    inventory: dict[str, list[dict[str, JsonValue]]], selection: ClosureSelectionModel
+) -> dict[str, JsonValue]:
+    """Keep only the inventory rows a phase's selection names, and say what was left out.
+
+    A draft phase already validated its selection against the whole pinned inventory, so echoing
+    every row again only costs response bytes: at a long-run frontier (about 1,430 events) the
+    full echo exceeded the MCP frame bound and the agent lost the draft it had just earned
+    (tb4n3 formal-crypto S). ``scope`` records the per-view totals and how many rows are kept.
+    """
+
+    selected_findings: set[str] = set() if selection.finding_id is None else {selection.finding_id}
+    wanted: dict[str, tuple[str, set[str]]] = {
+        "obligations": ("obligation_id", set(selection.obligation_ids)),
+        "results": ("result_id", set(selection.result_ids)),
+        "evidence": ("evidence_id", set(selection.evidence_refs)),
+        "findings": ("finding_id", selected_findings),
+        "history": ("event_id", set(selection.observed_event_ids)),
+    }
+    scoped: dict[str, JsonValue] = {}
+    totals: dict[str, JsonValue] = {}
+    kept: dict[str, JsonValue] = {}
+    for view, rows in inventory.items():
+        key, ids = wanted[view]
+        chosen = [
+            row for row in rows if isinstance(row.get(key), str) and cast(str, row.get(key)) in ids
+        ]
+        scoped[view] = cast(JsonValue, chosen)
+        totals[view] = str(len(rows))
+        kept[view] = str(len(chosen))
+    scoped["scope"] = {
+        "mode": "selected_rows",
+        "totals": totals,
+        "kept": kept,
+        "note": (
+            "Only rows named by this selection are included. Read the status views, or prepare "
+            "phase inventory, for every row."
+        ),
+    }
+    return scoped
+
+
 async def prepare_closure(
     status: Callable[[StatusRequest], Awaitable[StatusResult]],
     session_id: str,
@@ -86,8 +128,14 @@ async def prepare_closure(
     *,
     client_kind: str = "yoetz_cli",
     integration: str = "local_cli",
+    scope_to_selection: bool = False,
 ) -> dict[str, JsonValue]:
-    """Pin and exhaust every input view, then produce at most one non-evidential request."""
+    """Pin and exhaust every input view, then produce at most one non-evidential request.
+
+    ``scope_to_selection`` limits a draft phase's echoed inventory to the selected rows (the MCP
+    path; the CLI keeps the complete inventory for its local ``--output`` file). Validation always
+    runs against the complete pinned inventory.
+    """
 
     base = _base(
         session_id,
@@ -360,6 +408,8 @@ async def prepare_closure(
     output["recovery"] = (
         "After timeout, inspect this operation: absent permits replay; pending keeps the same request; committed uses its stored result. Never regenerate the request identity."
     )
+    if scope_to_selection:
+        output["inventory"] = scope_inventory_to_selection(inventory, selection)
     return output
 
 

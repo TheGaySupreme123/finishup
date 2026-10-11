@@ -255,8 +255,10 @@ def _service_unavailable() -> PublicOperationError:
 def _internal_error() -> PublicOperationError:
     return PublicOperationError(
         PublicErrorCode.INTERNAL_ERROR,
-        "Maintenance could not verify its internal state.",
+        "Maintenance could not verify its internal state and changed nothing; preview the plan "
+        "again.",
         False,
+        safe_details={"reason_code": "maintenance_state_unverified"},
     )
 
 

@@ -754,7 +754,7 @@ async def test_closure_prepare_refuses_an_unbounded_mcp_result(
     assert result.structuredContent is not None
     assert result.structuredContent["error"]["code"] == "LIMIT_EXCEEDED"
     assert result.structuredContent["error"]["safe_details"] == {
-        "reason_code": "payload_too_large",
+        "reason_code": "closure_result_too_large",
     }
     await bridge.close_bridge_runtime(runtime)
 
@@ -797,7 +797,7 @@ async def test_cursor_closure_prepare_refuses_projected_frame_with_escaped_conte
     assert result.structuredContent is not None
     assert result.structuredContent["error"]["code"] == "LIMIT_EXCEEDED"
     assert result.structuredContent["error"]["safe_details"] == {
-        "reason_code": "payload_too_large",
+        "reason_code": "closure_result_too_large",
     }
     await bridge.close_bridge_runtime(runtime)
 
@@ -1372,10 +1372,14 @@ async def test_service_post_commit_projection_failure_maps_to_the_same_retryable
 
 
 @pytest.mark.anyio
-async def test_post_commit_response_shaping_failure_is_retryable_with_same_request_id(
+async def test_post_commit_structural_shaping_failure_names_the_stage_and_does_not_advise_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A durable invoke must not collapse into non-retryable INTERNAL_ERROR on shape failure."""
+    """tb4n3 RC-2: a durable invoke whose result cannot be built reads as recorded, not replayable.
+
+    Replaying the same request_id rebuilds the same result and fails the same way, so the error
+    names the stage, points at status view=operation and does not offer a replay.
+    """
 
     correlation_id = "err_00000000-0000-4000-8000-000000000097"
     client = _FakeClient()
@@ -1405,11 +1409,74 @@ async def test_post_commit_response_shaping_failure_is_retryable_with_same_reque
     assert result.structuredContent is not None
     error = cast(dict[str, object], result.structuredContent["error"])
     assert error["code"] == "INTERNAL_ERROR"
-    assert error["retryable"] is True
+    assert error["retryable"] is False
     assert error["correlation_id"] == correlation_id
     assert result.structuredContent["request_id"] == request_id
-    assert "same request_id" in cast(str, error["message"])
+    message = cast(str, error["message"])
+    assert "stage: wire" in message and "status view=operation" in message
+    assert "Replaying the same request_id" in message and "same way" in message
     assert error.get("safe_details") == {"reason_code": "response_projection_failed"}
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_a_text_projection_failure_never_fails_a_committed_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n3 RC-2 (N3-1): the check committed, so its text failing returns the real result.
+
+    The summary builder raising used to become INTERNAL_ERROR ``response_projection_failed`` with
+    "retry the same request_id"; the replay re-rendered the same text and failed identically, and
+    the agent never saw a verdict (10 of 13 deterministic runs).
+    """
+
+    from tests.unit.protocol.test_models_and_schemas import (
+        _check_result_wire,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from yoetz.mcp import summaries
+
+    class _CommittedCheckClient(_FakeClient):
+        async def _call(  # pyright: ignore[reportIncompatibleMethodOverride]
+            self, name: str, request: Any, result_type: type[Any]
+        ) -> Any:
+            return result_type.model_validate(_check_result_wire())
+
+    client = _CommittedCheckClient()
+    _install_clients(monkeypatch, [client])
+    recorded: list[tuple[str, str | None]] = []
+
+    def explode(_envelope: object) -> str:
+        raise RuntimeError("summary-builder-defect")
+
+    def record(
+        exc: BaseException,
+        *,
+        component: str,
+        operation: str,
+        request_id: str | None = None,
+        phase: str | None = None,
+    ) -> str:
+        del exc, component, request_id
+        recorded.append((operation, phase))
+        return "err_00000000-0000-4000-8000-000000000098"
+
+    monkeypatch.setattr(summaries, "summary_for_check", explode)
+    monkeypatch.setattr(bridge, "record_unexpected_exception_without_raising", record)
+    runtime = bridge.build_bridge_runtime("policy", host_profile="codex")
+
+    result = await bridge.dispatch_check(_requests()["check"], runtime)
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    assert result.structuredContent["verdict"]
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert "summary_render_failed:check" in text
+    assert "read status view=compact" in text
+    assert "frontier: " in text and "head_digest: sha256:" in text
+    assert "err_00000000-0000-4000-8000-000000000098" in text
+    assert "retry" not in text.lower()
+    assert recorded == [("check_summary_degraded", "check")]
     await bridge.close_bridge_runtime(runtime)
 
 

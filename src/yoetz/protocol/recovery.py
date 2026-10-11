@@ -41,6 +41,7 @@ __all__ = [
     "CONTINUATION_TOKENS",
     "LOCAL_REASON_CONTINUATION_PREFIXES",
     "REASON_CODE_DIRECTIVE_EXEMPTIONS",
+    "REASON_REMEDIES",
     "RECOVERY_DIRECTIVES",
     "RecoveryDirective",
     "TimeoutOperationKind",
@@ -72,6 +73,7 @@ WRITE_OPERATIONS: Final[frozenset[str]] = frozenset(
 # the identity never the part that gets dropped.
 _MAX_DIRECTIVE_BYTES: Final = 232
 _MAX_NUDGE_BYTES: Final = 128
+_MAX_REMEDY_BYTES: Final = 320
 _GUIDANCE_URI_PATTERN: Final = re.compile(
     r"^yoetz://guidance/[a-z][a-z0-9-]*\.md(?:#[a-z0-9][a-z0-9-]*)?$", re.ASCII
 )
@@ -949,6 +951,87 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         "service_incompatible",
         "service_unavailable",
         "workspace_task_exists",
+        # tb4n3 RC-2 (#1025). Typed INTERNAL_ERROR stages: each names where the bridge or the
+        # service failed so the failure is never a bare "internal error". The remedy for each
+        # reaches the text channel through ``REASON_REMEDIES`` below rather than a continuation.
+        "bridge_error_mapping_failed",
+        "bridge_invoke_failed",
+        "bridge_request_validation_failed",
+        "check_pipeline_failed",
+        "closure_prepare_failed",
+        "import_publication_failed",
+        "maintenance_state_unverified",
+        "start_state_inconsistent",
+        # Closure-preparation selection reasons: the reason names the selection to correct and
+        # the fixed remedy sentence in ``yoetz.domain.closure.PREPARATION_REMEDIATIONS`` reaches
+        # the text channel beside it (tb4n3 formal-crypto S).
+        "closure_attempt_selection_required",
+        "closure_claim_decision_required",
+        "closure_command_revision_required",
+        "closure_draft_invalid",
+        "closure_evidence_unavailable",
+        "closure_inventory_limit",
+        "closure_item_omitted",
+        "closure_item_unknown",
+        "closure_obligation_content_unavailable",
+        "closure_obligation_not_open",
+        "closure_obligation_unknown",
+        "closure_pagination_invalid",
+        "closure_resolution_decision_required",
+        "closure_result_too_large",
+        "closure_response_decision_required",
+        "closure_result_unavailable",
+        "closure_source_unknown",
+        "closure_status_unavailable",
+        "closure_unattempted_items",
+    }
+)
+
+
+# Per-reason remedy sentences for the typed INTERNAL_ERROR stages (tb4n3 RC-2). Like a directive
+# these are repository text selected by a closed reason token and never derived from a caller;
+# unlike a directive they restate no guidance rule, they say what is known about the failure and
+# what the agent can safely do next. Each is bounded so the error identity, the reason and the
+# remedy fit the bounded text channel together.
+REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "bridge_request_validation_failed": (
+            "The bridge's own request validator failed before anything reached the service; "
+            "nothing was recorded. Send the same call once more, then report the correlation_id."
+        ),
+        "bridge_invoke_failed": (
+            "The bridge failed while calling the local service. A write may or may not be "
+            "recorded: read status view=operation for this request_id, and replay the same "
+            "request_id (never a new one) only if it is absent. A read changed nothing."
+        ),
+        "bridge_error_mapping_failed": (
+            "The service reported a failure the bridge could not translate. Read status "
+            "view=operation for this request_id before replaying the same request_id; report "
+            "the correlation_id."
+        ),
+        "check_pipeline_failed": (
+            "The check failed inside the service and was closed as failed; no verdict exists "
+            "for it. Read status view=compact, then run check again under a new request_id. "
+            "Report the correlation_id."
+        ),
+        "closure_prepare_failed": (
+            "Closure preparation failed unexpectedly and recorded nothing. Read status "
+            "view=compact for the frontier, publish the change yourself with publish_work, and "
+            "report the correlation_id."
+        ),
+        "import_publication_failed": (
+            "The import could not publish its records; nothing was recorded. Report the "
+            "correlation_id and repeat the import after the service is healthy."
+        ),
+        "maintenance_state_unverified": (
+            "Maintenance could not verify its own state and changed nothing. Preview the plan "
+            "again, and report the correlation_id if it recurs."
+        ),
+        "start_state_inconsistent": (
+            "The stored start state disagrees with its own evidence; nothing new was started. "
+            "Replay the exact start once with the same request_id, then report the "
+            "correlation_id."
+        ),
     }
 )
 
@@ -1240,6 +1323,11 @@ def _check_registry() -> None:
     # explicit exemption, so a newly registered reason can never reach an agent as a bare token
     # with nothing to do about it. Widening the reason vocabulary without deciding what an agent
     # should do is exactly the regression this gate exists to fail on.
+    for remedy_reason, remedy in REASON_REMEDIES.items():
+        if remedy_reason not in PROTOCOL_REASON_CODES:
+            raise RuntimeError("recovery_remedy_for_unregistered_reason_code")
+        if not remedy.isascii() or not 1 <= len(remedy) <= _MAX_REMEDY_BYTES:
+            raise RuntimeError("recovery_remedy_out_of_bounds")
     if PROTOCOL_REASON_CODES - covered_reason_codes():
         raise RuntimeError("protocol_reason_code_without_recovery_disposition")
     if covered_reason_codes() - PROTOCOL_REASON_CODES:

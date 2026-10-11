@@ -92,8 +92,14 @@ _SCHEMA_VERSION = "1.0.0"
 _REPORT_MEDIA_TYPE = "application/vnd.yoetz.import_report+json"
 
 
-def _error(code: PublicErrorCode, message: str, *, retryable: bool = False) -> PublicOperationError:
-    return PublicOperationError(code, message, retryable)
+def _error(
+    code: PublicErrorCode,
+    message: str,
+    *,
+    retryable: bool = False,
+    safe_details: object | None = None,
+) -> PublicOperationError:
+    return PublicOperationError(code, message, retryable, safe_details=safe_details)
 
 
 def _sorted_digests(values: tuple[str, ...], *, maximum: int) -> tuple[str, ...]:
@@ -474,7 +480,11 @@ async def _publish(
     )
     public = await execute_publish_work(app, request)
     if type(public) is not PublishWorkInternalResult:
-        raise _error(PublicErrorCode.INTERNAL_ERROR, "Import publication failed.")
+        raise _error(
+            PublicErrorCode.INTERNAL_ERROR,
+            "Import publication failed (stage: publish); nothing was recorded by this import.",
+            safe_details={"reason_code": "import_publication_failed"},
+        )
     return _append_from_public(public)
 
 

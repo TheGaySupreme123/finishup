@@ -198,6 +198,9 @@ def _error(
         PublicErrorCode.MIGRATION_REQUIRED: "The local catalog needs a newer schema migration.",
         PublicErrorCode.INTERNAL_ERROR: "The start state is inconsistent.",
     }
+    if code is PublicErrorCode.INTERNAL_ERROR and safe_details is None:
+        # An inconsistent start state is a typed stage, never a bare internal error (tb4n3 RC-2).
+        safe_details = {"reason_code": "start_state_inconsistent"}
     return PublicOperationError(
         code,
         messages[code] if message is None else message,

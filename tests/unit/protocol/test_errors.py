@@ -42,6 +42,9 @@ attach_handle_invalid
 attach_handle_reused
 attach_handle_revoked
 attach_result_invalid
+bridge_error_mapping_failed
+bridge_invoke_failed
+bridge_request_validation_failed
 byte_order_mark_forbidden
 catalog_busy
 catalog_maintenance_busy
@@ -49,6 +52,7 @@ check_admission_capture_pending
 check_admission_contended
 check_admission_import_pending
 check_admission_in_progress
+check_pipeline_failed
 child_check_frontier_ahead_of_child
 child_check_frontier_missing
 child_check_frontier_without_check
@@ -60,6 +64,26 @@ child_frontier_missing
 child_gap_frontier_mismatch
 claim_revision_invalid
 claim_revision_mismatch
+closure_attempt_selection_required
+closure_claim_decision_required
+closure_command_revision_required
+closure_draft_invalid
+closure_evidence_unavailable
+closure_inventory_limit
+closure_item_omitted
+closure_item_unknown
+closure_obligation_content_unavailable
+closure_obligation_not_open
+closure_obligation_unknown
+closure_pagination_invalid
+closure_prepare_failed
+closure_resolution_decision_required
+closure_response_decision_required
+closure_result_too_large
+closure_result_unavailable
+closure_source_unknown
+closure_status_unavailable
+closure_unattempted_items
 commitment_only_object_kind
 coordination_admission_required
 coordination_consent_required
@@ -137,6 +161,7 @@ id_wrong_prefix
 id_wrong_type
 implicit_project_requires_opt_out
 import_publication_authority_required
+import_publication_failed
 import_report_invalid
 input_not_bytes
 integer_out_of_safe_range
@@ -246,6 +271,7 @@ lineage_transition_conflict
 lineage_work_terminal
 lineage_work_transition
 lone_surrogate
+maintenance_state_unverified
 malformed_json
 method_forbidden
 missing_payload_field
@@ -336,6 +362,7 @@ start_busy_retry_ready
 start_catalog_retry_ready
 start_lease_pending
 start_runtime_rebind_retry_ready
+start_state_inconsistent
 stored_result_shape_invalid
 timestamp_not_utc
 timestamp_out_of_range
@@ -346,7 +373,8 @@ unknown_payload_field
 unsorted_set_field
 unsupported_json_type
 unsupported_payload_type
-workspace_task_exists""".splitlines()
+workspace_task_exists
+""".splitlines()
 )
 
 
@@ -515,7 +543,7 @@ def test_public_error_code_membership() -> None:
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
     source_values = cast(tuple[str, ...], getattr(errors_module, "_PROTOCOL_REASON_CODE_VALUES"))
     assert source_values == _EXPECTED_REASON_CODES
-    assert len(source_values) == 315
+    assert len(source_values) == 342
     assert source_values == tuple(sorted(source_values, key=str.encode))
     assert len(source_values) == len(set(source_values))
     assert PROTOCOL_REASON_CODES == frozenset(_EXPECTED_REASON_CODES)

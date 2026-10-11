@@ -5127,8 +5127,11 @@ async def execute_check_commit(
         )
         failure = PublicOperationError(
             PublicErrorCode.INTERNAL_ERROR,
-            "The check failed internally.",
+            "The check failed internally (stage: check pipeline) and was closed as failed; no "
+            "verdict exists for it. Read status view=compact, then run check again under a new "
+            "request_id. The correlation_id resolves the failure in the service diagnostics.",
             False,
+            safe_details={"reason_code": "check_pipeline_failed"},
         )
         if frozen is not None:
             try:
