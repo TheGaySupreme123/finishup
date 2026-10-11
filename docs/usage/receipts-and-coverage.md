@@ -289,9 +289,23 @@ Three more things the receipt discloses in their own sections, by id only:
   is outside completion coverage, so omitting it is not a scope gap, while naming it in the claim
   is still flagged. Publishing the obligation again as `open` (or `resolved` with evidence) takes
   it back.
-- **Emptied deliverables.** When a file your resolved or claimed obligation delivers is now empty
-  or truncated, `declared_output_emptied` asks you once at Stop to restore it, and that obligation
-  no longer counts as done until you restore it, reopen it, or acknowledge it as not done.
+- **Emptied deliverables.** When a declared output file that held content (at an earlier check, or
+  at the task base) is now empty or holds a small fraction of its earlier size,
+  `declared_output_emptied` asks you once at Stop to restore it. It follows the file, not the
+  obligation: acknowledging the obligation as not done, or declaring a new "empty file" obligation
+  for the same file, does not clear it. Status, the Stop text and the receipt say why it fired:
+  what the file held and at which check. A file created empty (an empty requirements list) never
+  raises it; if the task really asked for that file to be empty whatever happens, record a
+  `yoetz-assumption` decision that names the file and run `check`.
+- **Planned commands that matched only in part.** A planned command counts as run when an
+  observed run matches it exactly, or after dropping wrappers such as `timeout`, `env` and
+  `nice` and the interpreter alias `python3`. A run that only began with the planned arguments,
+  or carried its program and flags in another order, also counts, and the receipt lists
+  `planned_verification_matched_by_prefix` with the run it rests on: Yoetz cannot tell whether
+  that run is what you meant.
+- **Deliverables not reviewed.** When a review ran and a declared output is a file type the
+  review never receives (a binary), the receipt lists `declared_output_not_reviewable`: the file
+  is present, and was not reviewed. Verify it yourself and say how.
 - **Findings the review says the task requires.** A finding you answered `acknowledged_not_done`
   whose review challenge says the task itself requires the work is listed as
   `finding_premise_disputed` and under "Not done although the review says the task requires it".

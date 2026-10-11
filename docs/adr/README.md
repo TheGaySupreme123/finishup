@@ -40,6 +40,7 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [034](ADR-034-proof-limited-findings-self-verified.md) | Proof-limited findings: the `self_verified` respond disposition |
 | [040](ADR-040-reviewer-disagreement-and-route-derived-review.md) | Binding rules for reviewer disagreement (`disputed_after_rebuttal`); review requirement derived from the route |
 | [041](ADR-041-obligation-status-re-derived-and-refusal-reasons.md) | Obligation status re-derived from current evidence, one obligation version rule, refusals that say why |
+| [045](ADR-045-derived-facts-history-and-lineage.md) | Derived facts carry history (path-keyed deliverable state) and lineage; canonical command commitments; attempts; binary by content first |
 
 Unresolved gates are centralized in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md), not scattered
 through individual ADRs.
