@@ -10,7 +10,9 @@ after it, so when the parser cannot be sure it names no write.
 
 from __future__ import annotations
 
+import shlex
 import time
+from collections.abc import Sequence
 
 import pytest
 
@@ -85,9 +87,9 @@ def test_the_parser_never_reads_more_than_the_cap(monkeypatch: pytest.MonkeyPatc
     seen: list[int] = []
     real = shell_writes._lex  # pyright: ignore[reportPrivateUsage]
 
-    def spy(text: str) -> object:
+    def spy(text: str, *, partial: bool) -> object:
         seen.append(len(text))
-        return real(text)
+        return real(text, partial=partial)
 
     monkeypatch.setattr(shell_writes, "_lex", spy)
     shell_write_paths("echo x > a.txt\n" * 200_000)
@@ -138,19 +140,79 @@ def test_a_long_heredoc_body_still_names_the_file_it_writes() -> None:
     assert shell_write_scope(command, workspace="/app", inside=_inside) == "workspace"
 
 
-def test_a_write_after_the_cap_is_not_seen_and_a_cut_line_is_never_guessed() -> None:
+def test_a_long_heredoc_inside_the_recorded_bash_wrapper_still_names_its_file() -> None:
+    """Review round 1 (9): the rollout records ``/bin/bash -lc '<script>'``, so the cap cuts
+    inside the outer quoted argument; the stream must still see the write."""
+
+    body = "x\n" * 10_000
+    for script in (
+        "cat > solution.py <<'EOF'\n" + body + "EOF",
+        "cd /app && cat > /app/solution.py <<'EOF'\n" + body + "EOF",
+    ):
+        command = shlex.join(["/bin/bash", "-lc", script])
+        assert len(command) > MAX_SHELL_WRITE_CHARS
+        assert len(shell_write_paths(command)) == 1
+        assert shell_write_paths(command)[0].endswith("solution.py")
+        assert shell_write_scope(command, workspace="/app", inside=_inside) == "workspace"
+    relative = shlex.join(["/bin/bash", "-lc", "cat > solution.py <<'EOF'\n" + body + "EOF"])
+    scope = shell_write_scope(
+        relative, workspace=None, inside=lambda _path: False, relative_only=True
+    )
+    assert scope == "workspace"
+
+
+def test_a_write_after_the_cap_is_not_seen_and_a_cut_command_is_never_guessed() -> None:
     padding = "# " + "p" * 80 + "\n"
     command = padding * 300 + "echo done > late.txt\n"
     assert len(command) > MAX_SHELL_WRITE_CHARS
     assert shell_write_paths(command) == []
-    # The last complete line inside the cap is analysed; a line cut by the cap is dropped whole,
-    # so a path can never be a truncated prefix of the real one.
+    # Whole lines before the cut are read; the line the cut interrupts is dropped, so a path can
+    # never be a truncated prefix of the real one.
     head = "echo x > early.txt\n"
-    cut = head + "echo y > " + "z" * MAX_SHELL_WRITE_CHARS
-    assert shell_write_paths(cut) == ["early.txt"]
-    # A line continued past the cap is not complete either.
-    continued = head + "echo y \\\n" + "z" * MAX_SHELL_WRITE_CHARS
-    assert shell_write_paths(continued) == ["early.txt"]
+    assert shell_write_paths(head + "echo y > " + "z" * MAX_SHELL_WRITE_CHARS) == ["early.txt"]
+    assert shell_write_paths(head + "echo y \\\n" + "z" * MAX_SHELL_WRITE_CHARS) == ["early.txt"]
+
+
+@pytest.mark.parametrize(
+    ("command", "paths"),
+    [
+        # Review round 1 (10): a multi-line quote the cut leaves open erases nothing before it.
+        (": > early\nprintf 'hello\n" + "p" * 16_384 + "'", ["early"]),
+        (": > early\ncp src dest '\n" + "p" * 16_384 + "'", ["early"]),
+        (": > early\necho x > '\n" + "p" * 16_384 + "'", ["early"]),
+        (': > early\necho "a\n' + "p" * 16_384 + '"', ["early"]),
+        # A backslash in a comment, or an escaped backslash, continues no line.
+        (": > out; # \\\n" + "p" * 16_384, ["out"]),
+        (": > out \\\\\n" + "p" * 16_384, ["out"]),
+        # A line really continued past the cut is incomplete: its command is dropped.
+        (": > early\ncp src dest \\\n" + "p" * 16_384, ["early"]),
+        # An expansion the cut leaves open.
+        (": > early\necho $(cat <<EOF\n" + "p" * 16_384 + "\nEOF\n)", ["early"]),
+    ],
+)
+def test_the_cut_keeps_what_precedes_it(command: str, paths: list[str]) -> None:
+    assert len(command) > MAX_SHELL_WRITE_CHARS
+    assert shell_write_paths(command) == paths
+
+
+def test_wrapper_stripping_never_sees_more_than_a_constant_number_of_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``strip_wrappers`` shifts a list per wrapper option; the parser hands it a bounded head."""
+
+    seen: list[int] = []
+    real = shell_writes.strip_wrappers
+
+    def spy(words: Sequence[str]) -> list[str]:
+        seen.append(len(words))
+        return real(words)
+
+    monkeypatch.setattr(shell_writes, "strip_wrappers", spy)
+    assert shell_write_paths("env " + "- " * 8_000 + "touch out") == []  # too many to tell
+    assert shell_write_paths("timeout " + "-v " * 5_000 + "cp a b") == []
+    assert shell_write_paths("cp " + "a " * 8_000 + "b") == ["b"]
+    assert seen
+    assert max(seen) <= 128
 
 
 # --- honesty: no guessed write ------------------------------------------------------------------

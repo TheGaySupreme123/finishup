@@ -32,6 +32,85 @@ _C = "command substitution"
 _H = "heredoc"
 
 VECTORS: list[ShellWriteVector] = [
+    # The commit-message idiom: a heredoc inside `$(...)`; its body (quotes, parens) is data.
+    _v(
+        'git commit -m "$(cat <<\'EOF\'\nfix 1) the 5" pipe > not-a-file.txt\nEOF\n)" > log.txt',
+        ["log.txt"],
+        "workspace",
+        "workspace",
+        f"{_C} with a heredoc",
+    ),
+    _v("echo $(cat <<EOF\n)\nEOF\n) > real.txt", ["real.txt"], "workspace", "workspace", _C),
+    _v("echo $(echo a # ) > ghost.txt\n) > real.txt", ["real.txt"], "workspace", "workspace", _C),
+    _v("echo $[1<<2] > real.txt", ["real.txt"], "workspace", "workspace", "legacy arithmetic"),
+    # Review round 1 (this fix): a comment inside a substitution closes nothing.
+    _v("echo $(echo x # ) > ghost\n)", [], None, None, "round 1: comment in a substitution"),
+    # A quoted or escaped keyword is a command name, not syntax.
+    _v("'!' touch out", [], None, None, "round 1: quoted keyword"),
+    _v("\\! touch out", [], None, None, "round 1: escaped keyword"),
+    _v("'then' cp a b", [], None, None, "round 1: quoted keyword"),
+    _v("'{' touch out", [], None, None, "round 1: quoted keyword"),
+    # A wrapper argument the outer shell expands is unknown; a literal one is read.
+    _v(
+        "OUT=/opt/actual; bash -c \"printf x > '$OUT'\"", [], None, None, "round 1: outer expansion"
+    ),
+    _v('bash -c "printf x > \\"\\$OUT\\""', [], None, None, "round 1: inner expansion"),
+    _v('bash -c "cat > solve.py"', ["solve.py"], "workspace", "workspace", "double-quoted wrapper"),
+    # cp / mv / install that fail before writing name nothing.
+    _v("cp -tout", [], None, None, "round 1: -t without a source"),
+    _v("cp -tout -T src", [], None, None, "round 1: -t with -T"),
+    _v("cp -tone -ttwo src", [], None, None, "round 1: two target directories"),
+    _v("mv -t out", [], None, None, "round 1: -t without a source"),
+    # Help and version print and exit.
+    _v("sed -i -e's/a/b/' --help f", [], None, None, "round 1: --help"),
+    _v("touch --version -- -out", [], None, None, "round 1: --version"),
+    _v("install -d --help out", [], None, None, "round 1: --help"),
+    _v("tee --help out.txt", [], None, None, "round 1: --help"),
+    _v("dd --help of=out.bin", [], None, None, "round 1: --help"),
+    # A directory destination is classified by where it is, not by a notes or receipt file name.
+    _v("cp -tNOTES.md source.py", ["NOTES.md"], "workspace", "workspace", "round 1: -t dir"),
+    _v(
+        "cp -t/opt/yoetz_receipt.json source.py",
+        ["/opt/yoetz_receipt.json"],
+        "outside_workspace",
+        None,
+        "round 1: -t dir",
+    ),
+    _v(
+        "rsync -a src/ NOTES.md/",
+        ["NOTES.md/"],
+        "workspace",
+        "workspace",
+        "round 1: dest/ is a dir",
+    ),
+    _v("install -d yoetz_receipt.md", ["yoetz_receipt.md"], "workspace", "workspace", "install -d"),
+    # macOS `sed -i ''` and GNU `sed -i ''` (an empty script) differ by their operand count.
+    _v("gsed -i '' solve.py", ["solve.py"], "workspace", "workspace", "round 1: GNU empty script"),
+    _v("sed -i '' solve.py", ["solve.py"], "workspace", "workspace", "round 1: GNU empty script"),
+    _v("gsed -i '' 's/a/b/' NOTES.md", ["NOTES.md"], "notes", "notes", "gsed is GNU: two files"),
+    _v("sed -i .bak 's/a/b/' f.py", ["f.py"], "workspace", "workspace", "macOS separate suffix"),
+    # An ANSI-C-quoted heredoc delimiter is its decoded text.
+    _v("cat <<$'EOF'\nEOF\n: > out", ["out"], "workspace", "workspace", "round 1: $'EOF'"),
+    _v('cat <<$"EOF"\nEOF\n: > out', ["out"], "workspace", "workspace", 'round 1: $"EOF"'),
+    _v("cat <<$'E\\x4fF'\nEOF\n: > out", [], None, None, "round 1: undecodable delimiter"),
+    # The scratch exemption never overrides ownership or the mixed-class rule.
+    _v(
+        ": > /tmp/yoetz_receipt.json",
+        ["/tmp/yoetz_receipt.json"],
+        "yoetz_owned",
+        None,
+        "round 1: owned in /tmp",
+    ),
+    _v(
+        ": > NOTES.md; : > /tmp/yoetz_receipt.json",
+        ["NOTES.md", "/tmp/yoetz_receipt.json"],
+        "workspace",
+        "notes",
+        "round 1: notes + owned in /tmp",
+    ),
+    _v(": > /tmp/NOTES.md", ["/tmp/NOTES.md"], None, None, "scratch claims nothing"),
+    # `1>& file` is an explicit stdout redirect; `2>& file` is ambiguous.
+    _v(": 1>& out", ["out"], "workspace", "workspace", "round 1: explicit stdout"),
     # 1. A command substitution is opaque: its quotes are not the enclosing word's quotes.
     _v('echo "$(echo "x > solve.py")"', [], None, None, f"{_R} 1"),
     _v('echo "$(echo "$(echo "x > solve.py")")"', [], None, None, _C),
