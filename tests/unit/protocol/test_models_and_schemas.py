@@ -2548,7 +2548,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1455  # #1027 +5, +9 tb4n3 LO
+    assert len(registry_patterns) == 1457  # #1027 +5, +9 tb4n3 LO, +2 W2-B closure_after
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)
