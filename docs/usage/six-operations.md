@@ -263,6 +263,21 @@ names only finished obligations has no effect. The next stop may ask you once to
 blocker, and the closing review checks it against the task once and challenges it when the
 blocked obligation is the task's main deliverable.
 
+A Stop asks only what `closure_readiness.rechecks` named before you stopped: the acceptance
+criteria of the obligations you resolved, an obligation you recorded as not done, a blocker you
+recorded, or a finding you answered as not done that the review says the task requires. Each is
+asked once, so `ready_with_limitations` is never followed by a surprise. Reading the acceptance
+criteria costs one extra turn, once per set of resolved obligations: if your output does not meet
+them, publish that obligation again as `acknowledged_not_done` with the reason; if they can only be
+checked outside this environment (a hidden verifier, a withheld artifact) and you did the work, keep
+it resolved and record a decision with the line `yoetz-verification-limit:<obligation id>`. An
+acknowledgement you publish in answer to that question is not challenged again. A finding you
+rejected that waits for the reviewer's ruling (`finding_rejection_awaiting_ruling`) is answered by
+running `check` with `final_review: true`, never by acknowledging it. If you cannot finish a
+deliverable, keep the working version: acknowledging an obligation never requires emptying or
+removing its file, and a deliverable that held content and is now empty or gone is named at the
+next Stop once, even when that Stop was already continued this turn.
+
 ### `receipt`
 Projects the honest summary of what was checked, at what coverage, and what remains open. Formats:
 `json`, `markdown`, `text` — all three project under the default policy. If a stricter owner policy
