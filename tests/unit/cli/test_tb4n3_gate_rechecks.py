@@ -542,3 +542,27 @@ def test_closure_prepare_names_the_rechecks_the_gate_will_ask() -> None:
     assert gate.items == (ACKNOWLEDGEMENT_RECHECK_ITEM, ACCEPTANCE_RECHECK_ITEM)
     assert recheck_note(readiness("ready", (), rechecks=())) is None
     assert recheck_note(readiness("ready", (), rechecks=None)) is None
+
+
+def test_the_awaiting_ruling_text_names_the_finding_and_the_frontier_of_the_rejection() -> None:
+    """Owner decision 10: a derived item says why it fired (rule, ids, frontier)."""
+
+    gate = _gate(
+        _awaiting(
+            awaiting_ruling_findings=(SimpleNamespace(finding_id=_FND, since_frontier="252"),)
+        )
+    )
+    assert gate is not None
+    assert f"Why: no check has ruled on {_FND} (rejected at frontier 252)." in gate.text
+    assert f"Rule {_AWAITING}." in gate.text
+    # Malformed lineage entries are skipped, never rendered.
+    odd = _gate(
+        _awaiting(
+            awaiting_ruling_findings=(
+                SimpleNamespace(finding_id="not-an-id", since_frontier="1"),
+                SimpleNamespace(finding_id=None, since_frontier="1"),
+            )
+        )
+    )
+    assert odd is not None
+    assert "Why:" not in odd.text

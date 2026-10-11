@@ -520,7 +520,7 @@ def _awaiting_clause(readiness: object) -> str:
     if not named:
         return ""
     return (
-        f"Why: no check has ruled since you rejected {_plural_ids(named)}."
+        f"Why: no check has ruled on {_plural_ids(named)}."
         f" Rule {FINDING_REJECTION_AWAITING_RULING_GAP}."
     )
 
