@@ -164,6 +164,7 @@ def finding_record(
     resolution_frontier: int | None = None,
     standing_position: StandingPosition | None = None,
     last_ruling_frontier: int | None = None,
+    absorbed_refs: tuple[str, ...] = (),
 ) -> FindingProjectionRecord:
     return FindingProjectionRecord(
         payload=payload,
@@ -175,6 +176,7 @@ def finding_record(
         resolution_frontier=resolution_frontier,
         standing_position=standing_position,
         last_ruling_frontier=last_ruling_frontier,
+        absorbed_refs=absorbed_refs,
     )
 
 

@@ -427,6 +427,37 @@ def test_the_new_projection_fields_round_trip_and_stay_absent_until_set() -> Non
     assert restored.obligations[obl(1)].introduced_frontier == 2
 
 
+def test_a_settled_reraise_widens_the_items_concern_by_what_it_cited() -> None:
+    """formal-crypto S: the agent settled the item; a re-raise cited a second obligation, and a
+    third review named only that one. The item remembers it (bounded, sorted, typed ids that
+    are not subjects of work never join)."""
+
+    finding = reviewer_finding(1, str(obl(1)))
+    findings = {
+        fnd(1): finding_record(
+            finding,
+            5,
+            standing_position=StandingPosition("acknowledged_not_done", 6),
+        )
+    }
+    responses = {fnd(1): answer(1, D.ACKNOWLEDGED_NOT_DONE, 6)}
+    check = ruling_check(
+        rulings=((1, "still_present"),),
+        cited={1: (str(obl(2)), str(fnd(9)), str(res(3)))},
+    )
+    apply_check_rulings(findings, responses, check, evt(30), check_frontier=30)
+    assert findings[fnd(1)].settled_reraise_count == 1
+    assert findings[fnd(1)].absorbed_refs == (str(obl(2)),)
+    # An absent absorbed set stays absent; a present one round-trips through the snapshot.
+    snapshot = projection_snapshot(projection(dict(findings), responses))
+    restored = projection_from_snapshot(snapshot)
+    assert restored.findings[fnd(1)].absorbed_refs == (str(obl(2)),)
+    plain = projection_snapshot(projection({fnd(1): finding_record(finding, 5)}, {}))
+    rows = plain["findings"]
+    assert isinstance(rows, dict)
+    assert "absorbed_refs" not in rows[fnd(1)]  # type: ignore[operator]
+
+
 def test_a_claim_covering_the_obligation_names_the_concern_when_no_obligation_is_cited() -> None:
     from yoetz.kernel.concern import concern_key
 

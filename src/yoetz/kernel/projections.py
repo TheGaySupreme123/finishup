@@ -85,6 +85,7 @@ from yoetz.protocol.coverage import (
 
 __all__ = [
     "OBSERVATION_LIMITATION_KINDS",
+    "MAX_ABSORBED_REFS",
     "MAX_CHECK_CHANGE_RAISING_CHECKS",
     "PROJECTION_GENERATION",
     "PROJECTION_VERSION",
@@ -356,6 +357,8 @@ class DecisionProjectionRecord(ProjectionRecord[DecisionRecordedPayload]):
 
 # The agent's reasoned dialogue positions on a finding (issue #1030, tb4n3 RC-7, ADR-040
 # amendment). ``reopened`` is not one: it retracts the standing position.
+# At most this many subject refs of re-raises recorded on a settled finding widen its concern.
+MAX_ABSORBED_REFS: Final = 32
 STANDING_POSITION_KINDS: Final = frozenset(
     {"rejected", "acknowledged", "acknowledged_not_done", "self_verified"}
 )
@@ -450,7 +453,10 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     rejection ruled on?" is a comparison, not a guess), and ``resolution_frontier`` is the ledger
     sequence of the check named by ``resolved_by_check_event_id`` (so an absence proof recorded
     *after* an ``acknowledged_not_done`` or ``self_verified`` answer can be told from one recorded
-    before it).
+    before it). ``absorbed_refs`` are the subject refs (bounded, sorted, never a finding, result,
+    evidence or action id) of the re-raises recorded on a settled item; they widen its concern so
+    a later re-raise naming only what the first re-raise added still folds onto it instead of
+    minting a new item (formal-crypto S: the open obligation first appeared in a re-raise).
     ``duplicate_link_broken_by_check_event_ids`` (issue #996) names, in fold order, every later
     check that raised this finding's issue again (returned it, or the reviewer ruled it
     ``still_present`` or ``answered_not_fixed``) while its latest response was ``duplicate_of``.
@@ -475,10 +481,18 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     standing_position: StandingPosition | None = None
     last_ruling_frontier: int | None = None
     resolution_frontier: int | None = None
+    absorbed_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.payload is not None and type(self.payload) is not Finding:
+            raise _invalid()
+        if (
+            type(self.absorbed_refs) is not tuple
+            or len(self.absorbed_refs) > MAX_ABSORBED_REFS
+            or any(type(item) is not str or not 1 <= len(item) <= 64 for item in self.absorbed_refs)
+            or list(self.absorbed_refs) != sorted(set(self.absorbed_refs), key=str.encode)
+        ):
             raise _invalid()
         if (
             self.standing_position is not None
@@ -1344,6 +1358,8 @@ def _record_snapshot(record: _ProjectionRecordLike) -> dict[str, JsonValue]:
             result["last_ruling_frontier"] = record.last_ruling_frontier
         if record.resolution_frontier is not None:
             result["resolution_frontier"] = record.resolution_frontier
+        if record.absorbed_refs:
+            result["absorbed_refs"] = list(record.absorbed_refs)
         # Issue #996: emitted only when a check broke a ``duplicate_of`` link.
         if record.duplicate_link_broken_by_check_event_ids:
             result["duplicate_link_broken_by_check_event_ids"] = list(
@@ -1649,6 +1665,7 @@ def _record_from_snapshot(
                 "standing_position",
                 "last_ruling_frontier",
                 "resolution_frontier",
+                "absorbed_refs",
             }
         )
     else:
@@ -1775,6 +1792,12 @@ def _record_from_snapshot(
             if type(kind_value) is not str or type(frontier_value) is not int:
                 raise _invalid()
             standing = StandingPosition(kind_value, frontier_value)
+        absorbed: tuple[str, ...] = ()
+        if "absorbed_refs" in source:
+            raw_absorbed = source["absorbed_refs"]
+            if type(raw_absorbed) not in {list, tuple} or not raw_absorbed:
+                raise _invalid()
+            absorbed = tuple(cast(list[str], raw_absorbed))
         for frontier_name in ("last_ruling_frontier", "resolution_frontier"):
             if frontier_name in source:
                 frontier_raw = source[frontier_name]
@@ -1830,6 +1853,7 @@ def _record_from_snapshot(
             standing_position=standing,
             last_ruling_frontier=cast(int | None, source.get("last_ruling_frontier")),
             resolution_frontier=cast(int | None, source.get("resolution_frontier")),
+            absorbed_refs=absorbed,
         )
     return ProjectionRecord(
         payload=payload,

@@ -99,6 +99,7 @@ from yoetz.kernel.plan_drift import (
 )
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import (
+    MAX_ABSORBED_REFS,
     MAX_CHECK_CHANGE_RAISING_CHECKS,
     STANDING_POSITION_KINDS,
     FindingProjectionRecord,
@@ -1988,6 +1989,16 @@ AGENT_SETTLED_DISPOSITION_VALUES: Final = frozenset({"acknowledged_not_done", "s
 _RERAISE_VERDICTS: Final = frozenset({"still_present", "answered_not_fixed"})
 
 
+def _absorb_refs(current: tuple[str, ...], cited: Iterable[str]) -> tuple[str, ...]:
+    """Merge a re-raise's cited refs into a settled item's absorbed concern (bounded, sorted)."""
+
+    merged = set(current)
+    for ref in cited:
+        if not ref.startswith(("fnd_", "res_", "evd_", "act_")):
+            merged.add(ref)
+    return tuple(sorted(merged, key=str.encode))[:MAX_ABSORBED_REFS]
+
+
 def next_standing_position(
     current: StandingPosition | None, response: ResponseRecordedPayload, frontier: int
 ) -> StandingPosition | None:
@@ -2115,6 +2126,7 @@ def apply_check_rulings(
     """
 
     rulings = {item.finding_id: item.verdict for item in check.prior_finding_verdicts}
+    cited_by_ruling = {item.finding_id: item.cited_refs for item in check.prior_finding_verdicts}
     for ruled_id, ruling in rulings.items():
         ruled = findings.get(ruled_id)
         if (
@@ -2177,8 +2189,15 @@ def apply_check_rulings(
         ):
             # The reviewer re-raised the same concern after the agent's terminal answer (issue
             # #980): recorded on the item, never a new round and never a reopening.
+            # The re-raise is recorded on the item and widens its concern with what it cited
+            # (bounded), so a later re-raise that names only the widened part still folds here
+            # instead of being minted (formal-crypto S: the obligation first appeared in a re-raise).
             findings[current_id] = replace(
-                record, settled_reraise_count=record.settled_reraise_count + 1
+                record,
+                settled_reraise_count=record.settled_reraise_count + 1,
+                absorbed_refs=_absorb_refs(
+                    record.absorbed_refs, cited_by_ruling.get(current_id, ())
+                ),
             )
             continue
         if (

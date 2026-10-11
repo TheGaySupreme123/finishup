@@ -239,6 +239,7 @@ def ruling_check(
     tested: int = 8,
     returned: tuple[object, ...] = (),
     rulings: tuple[tuple[int, str], ...] = (),
+    cited: dict[int, tuple[str, ...]] | None = None,
     qualifying: bool = False,
 ) -> CheckRecordedPayload:
     """A recorded check carrying only the fields the resolution and ruling folds read.
@@ -277,7 +278,12 @@ def ruling_check(
         (
             "prior_finding_verdicts",
             tuple(
-                PriorFindingVerdictRecord(fnd(number), verdict, ()) for number, verdict in rulings
+                PriorFindingVerdictRecord(
+                    fnd(number),
+                    verdict,
+                    tuple(sorted((cited or {}).get(number, ()), key=str.encode)),
+                )
+                for number, verdict in rulings
             ),
         ),
     ):

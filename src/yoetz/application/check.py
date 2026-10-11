@@ -3543,13 +3543,23 @@ def validate_semantic_judgment(
             # tb4n3 RC-7: the requirement-family kinds name one concern across kinds (a limitation
             # request raised as ``task_requirement_unmet`` after ``completion_with_open_obligations``
             # is the same concern); every other kind folds only onto its own.
-            same_kind = target_kind is not None and kinds_comparable(
-                target_kind,
-                challenge.finding_kind,
-                obligation_concern=(
-                    _finding_concern(case, target_id).named_obligations
-                    and concern_key(case.projection, refs).named_obligations
-                ),
+            # An open item folds only the same kind; a settled one (the agent's final word, or a
+            # disclosed limitation) also folds a comparable kind, because the re-raise cannot
+            # change what the agent settled. Folding a different kind into an open item would
+            # hide a requirement demand behind a bookkeeping finding (cargo S).
+            same_kind = target_kind is not None and (
+                target_kind is challenge.finding_kind
+                or (
+                    treatment == _RESTATES_SETTLED
+                    and kinds_comparable(
+                        target_kind,
+                        challenge.finding_kind,
+                        obligation_concern=(
+                            _finding_concern(case, target_id).named_obligations
+                            and concern_key(case.projection, refs).named_obligations
+                        ),
+                    )
+                )
             )
             if treatment == _RESTATES_OPEN and same_kind:
                 named = target_id
@@ -3927,14 +3937,9 @@ def _restated_finding(
             continue
         subjects = tuple(str(ref) for ref in payload.subject_refs)
         exact = wanted == frozenset(subjects)
-        target_key = concern_key(case.projection, subjects)
-        if not kinds_comparable(
-            payload.kind,
-            kind,
-            obligation_concern=wanted_key.named_obligations and target_key.named_obligations,
-        ):
-            continue
         target_state = finding_todo_state(case.projection, key)
+        # A settled item's concern is widened by the re-raises recorded on it (bounded).
+        target_key = concern_key(case.projection, (*subjects, *record.absorbed_refs))
         # An open item folds only a challenge about the very same concern: a narrower or wider
         # one is a distinct issue whose discrepancy a ruling cannot carry (Greptile P1 on #943).
         # A settled item (the agent's final word, or a disclosed limitation) folds any overlap,
@@ -3942,6 +3947,15 @@ def _restated_finding(
         settled_target = target_state is not FindingTodoState.OPEN or _limitation_disclosed(
             case, key
         )
+        if payload.kind is not kind and not (
+            settled_target
+            and kinds_comparable(
+                payload.kind,
+                kind,
+                obligation_concern=wanted_key.named_obligations and target_key.named_obligations,
+            )
+        ):
+            continue
         if not exact and not (
             same_concern(wanted_key, target_key)
             if settled_target
