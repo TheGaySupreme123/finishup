@@ -1422,12 +1422,15 @@ async def _closure_readiness(
         limitation_refs_required_count=str(len(facts.limitation_refs_required)),
         # ADR-045: where each derived fact came from; omitted (not empty) when there is none, so
         # a status with no such fact keeps its bytes.
-        fact_lineage=(
-            tuple(
-                FactLineageModel.model_validate(lineage_to_wire(item))
-                for item in facts.fact_lineage[:64]
-            )
-            or None
+        **(
+            {
+                "fact_lineage": tuple(
+                    FactLineageModel.model_validate(lineage_to_wire(item))
+                    for item in facts.fact_lineage[:64]
+                )
+            }
+            if facts.fact_lineage
+            else {}
         ),
         blocking_conditions=cast(
             tuple[
