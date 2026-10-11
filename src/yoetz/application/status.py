@@ -46,6 +46,7 @@ from yoetz.kernel.deterministic_checks import (
     build_deterministic_case,
     finding_basis_to_status_json,
 )
+from yoetz.kernel.fact_lineage import lineage_to_wire
 from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.host_lineage import HostLineageRegistryPort
@@ -94,6 +95,7 @@ from yoetz.protocol.coverage import (
 )
 from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.models import (
+    FactLineageModel,
     SemanticProgressPhase,
     StatusAdvicePageModel,
     StatusAssignmentFilterModel,
@@ -1418,6 +1420,15 @@ async def _closure_readiness(
         # F3: what a whole-task completion claim must name in limitation_refs (ids only).
         limitation_refs_required=tuple(facts.limitation_refs_required[:64]),
         limitation_refs_required_count=str(len(facts.limitation_refs_required)),
+        # ADR-045: where each derived fact came from; omitted (not empty) when there is none, so
+        # a status with no such fact keeps its bytes.
+        fact_lineage=(
+            tuple(
+                FactLineageModel.model_validate(lineage_to_wire(item))
+                for item in facts.fact_lineage[:64]
+            )
+            or None
+        ),
         blocking_conditions=cast(
             tuple[
                 Literal[

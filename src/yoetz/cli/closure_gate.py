@@ -48,6 +48,7 @@ from typing import Final, cast
 
 from yoetz import __version__
 from yoetz.config.paths import ensure_owner_only_dir, state_dir
+from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
@@ -167,10 +168,12 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
         " never justify moving, splitting or deleting deliverables"
     ),
     DECLARED_OUTPUT_EMPTIED_GAP: (
-        "a declared deliverable of a resolved or claimed obligation is now empty or truncated, so"
-        " that obligation no longer counts as delivered; restore the deliverable, or republish"
-        " the obligation open (or acknowledged_not_done) if it is not done. Never empty or"
-        " withdraw a working deliverable because of an open finding"
+        "a declared deliverable that held content is now empty or truncated, so it no longer"
+        " counts as delivered; restore it from your copy and disclose its limits: a working"
+        " partial is a delivery, and an empty file always grades as no solution. Acknowledging or"
+        " republishing the obligation does not clear this. Only if the task asked for this exact"
+        " file to be empty regardless of outcome, record a decision with the line"
+        " `yoetz-assumption:<obligation id>` that names the file path, then run `check`"
     ),
 }
 # Repair-first guidance, one sentence per present item family (F1, #984). Acknowledgement is the
@@ -253,6 +256,36 @@ def _limitation_text(readiness: object) -> str:
         " none). Add any failed, partial or unknown result you publish in the same batch as the"
         " claim too."
     )
+
+
+_MAX_NAMED_LINEAGE: Final = 3
+
+
+def _lineage_text(readiness: object, items: tuple[str, ...]) -> str:
+    """Why each present token fired (ADR-045): the provenance readiness carries, as sentences.
+
+    Only lineage whose fact code is one of the tokens the gate is naming; at most
+    ``_MAX_NAMED_LINEAGE`` sentences, the rest counted. Unreadable entries are skipped.
+    """
+
+    raw = getattr(readiness, "fact_lineage", None)
+    if not isinstance(raw, (tuple, list)):
+        return ""
+    wanted = frozenset(items)
+    parsed: list[FactLineage] = []
+    for entry in tuple(cast(tuple[object, ...], raw)):
+        try:
+            item = lineage_from_wire(entry)
+        except TypeError, ValueError:
+            continue
+        if item.code in wanted:
+            parsed.append(item)
+    texts = lineage_texts(parsed)
+    if not texts:
+        return ""
+    shown = " ".join(texts[:_MAX_NAMED_LINEAGE])
+    hidden = len(texts) - _MAX_NAMED_LINEAGE
+    return shown + (f" (+{hidden} more in `status`.)" if hidden > 0 else "")
 
 
 def _premise_key(readiness: object) -> str | None:
@@ -527,6 +560,7 @@ def closure_gate_from_readiness(
     recheck = _blocker_text(rows, short=offers_blocker) if rows else ""
     limitations = _limitation_text(readiness)
     moved_note = _content_moved_note(readiness).strip()
+    why_text = _lineage_text(readiness, items)
 
     def compose(
         *,
@@ -535,8 +569,12 @@ def closure_gate_from_readiness(
         verification: bool,
         limits: bool = True,
         premise_text: bool = True,
+        why: bool = True,
     ) -> str:
         parts = [head]
+        if why and why_text:
+            # ADR-045: why each token fired, right under what is remaining.
+            parts.append(why_text)
         if premise and premise_text:
             parts.append(_PREMISE_TEXT)
         if "obligations_open" in items:
@@ -576,14 +614,16 @@ def closure_gate_from_readiness(
     text = ""
     delivered_rows = bool(rows)
     delivered_ack = bool(ack_keys)
-    for drain, short_obligation, verification, limits, premise_text in (
-        (True, False, True, True, True),
-        (False, False, True, True, True),
-        (False, True, True, True, True),
-        (False, True, False, True, True),
-        (False, True, False, False, True),
+    for drain, short_obligation, verification, limits, premise_text, why in (
+        (True, False, True, True, True, True),
+        (False, False, True, True, True, True),
+        (False, True, True, True, True, True),
+        (False, True, False, True, True, True),
+        (False, True, False, False, True, True),
         # D7a: the premise ask goes before the re-check does.
-        (False, True, False, False, False),
+        (False, True, False, False, False, True),
+        # The provenance sentence is the last optional part to go (ADR-045).
+        (False, True, False, False, False, False),
     ):
         text = compose(
             drain=drain,
@@ -591,6 +631,7 @@ def closure_gate_from_readiness(
             verification=verification,
             limits=limits,
             premise_text=premise_text,
+            why=why,
         )
         if len(text) <= _MAX_TEXT_CHARS:
             asked_premise = premise and premise_text

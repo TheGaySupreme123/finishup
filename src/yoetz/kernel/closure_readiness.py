@@ -45,6 +45,8 @@ from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel import finding_todo as _finding_todo_module
 from yoetz.kernel.claim_limitations import required_limitation_ids_for_projection
 from yoetz.kernel.claims import completion_claim_present
+from yoetz.kernel.delivered_set import deliverable_lineage
+from yoetz.kernel.fact_lineage import MAX_FACT_LINEAGE_ITEMS, FactLineage
 from yoetz.kernel.finding_resolution import finding_is_resolved
 from yoetz.kernel.finding_todo import (
     FindingTodoState,
@@ -69,6 +71,7 @@ from yoetz.kernel.task_facts import (
     decision_batches,
     disclosure_declarations,
     open_effective_obligations,
+    task_fact_signals,
 )
 from yoetz.protocol.models import SemanticStatus
 
@@ -100,6 +103,7 @@ __all__ = [
     "GapSplit",
     "classify_gap",
     "closure_readiness_facts",
+    "current_fact_lineage",
     "derive_closure_readiness",
     "finding_acknowledged_not_done",
     "gap_base_code",
@@ -116,8 +120,11 @@ __all__ = [
 # ``finding_premise_disputed`` (issue #984, D7a) were added. "5": the standing disclosure code
 # ``finding_disputed_after_rebuttal`` (issue #1020, ADR-040) was added. "6": the agent-actionable
 # task fact ``declared_output_emptied`` and the standing disclosure
-# ``deliverable_references_undeclared_file`` (tb4n2 R2, issue #1022, ADR-035) were added.
-GAP_CLASSIFICATION_VERSION: Final = "6"
+# ``deliverable_references_undeclared_file`` (tb4n2 R2, issue #1022, ADR-035) were added. "7": the
+# standing disclosures ``planned_verification_matched_by_prefix`` and
+# ``declared_output_not_reviewable`` were added and ``declared_output_emptied`` became a path-keyed
+# fact with provenance (tb4n3 RC-5, issue #1028, ADR-045).
+GAP_CLASSIFICATION_VERSION: Final = "7"
 # Issue #1020 (ADR-040): a current AI-powered finding the reviewer repeated over the agent's
 # reasoned rejection without newer material. A standing disagreement; never agent work.
 FINDING_DISPUTED_AFTER_REBUTTAL_GAP: Final = "finding_disputed_after_rebuttal"
@@ -597,6 +604,8 @@ class ClosureReadinessFacts:
     open_obligations_unreadable: bool = True
     # Issue #984 (D7a): acknowledged-not-done findings whose premise the reviewer disputes.
     premise_disputed_finding_ids: tuple[FindingId, ...] = ()
+    # ADR-045: where each derived task fact came from, so the agent sees why a code fired.
+    fact_lineage: tuple[FactLineage, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -929,8 +938,9 @@ def closure_readiness_facts(
         sorted({item for item in open_obligations if item in blocked}, key=str.encode)
     )
     closing_current, review_used = _closing_review_facts(state, records, limitations)
+    applicability = _check_applicability(state, records, limitations)
     return ClosureReadinessFacts(
-        check_applicability=_check_applicability(state, records, limitations),
+        check_applicability=applicability,
         semantic_review_current=_semantic_review_current(records, limitations),
         receipt_blocking_finding_ids=tuple(sorted(blocking, key=str.encode)),
         acknowledged_finding_ids=tuple(sorted(acknowledged, key=str.encode)),
@@ -958,7 +968,43 @@ def closure_readiness_facts(
             for item in disclosure_declarations(state)
         ),
         premise_disputed_finding_ids=premise_disputed_finding_ids(state),
+        fact_lineage=current_fact_lineage(state, records, applicability),
     )
+
+
+def current_fact_lineage(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    applicability: CheckApplicability,
+) -> tuple[FactLineage, ...]:
+    """Where every derived task fact in force at this prefix came from (ADR-045).
+
+    The check-time deliverable facts (``declared_output_emptied``, ``..._removed``,
+    ``..._not_reviewable``) come from the newest check's recorded deliverable states, and only
+    while that check still applies (a later material change makes the check, and so its facts,
+    stale: ``check_not_applicable`` says so instead). The ledger-derived facts (planned
+    verification, edits after the last verification) come from ``task_fact_signals`` over the
+    same prefix. Sorted and bounded, so every surface renders the same list.
+    """
+
+    items: list[FactLineage] = []
+    latest = state.latest_tested_state
+    if applicability == "applicable" and latest is not None:
+        check_record = next(
+            (record for record in records if record.event_id == latest.source_check_event_id),
+            None,
+        )
+        if check_record is not None and type(check_record.payload) is CheckRecordedPayload:
+            items.extend(
+                deliverable_lineage(
+                    check_record.event_id,
+                    check_record.payload.subject_frontier.sequence,
+                    check_record.payload.deliverable_states,
+                )
+            )
+    items.extend(task_fact_signals(state, records).lineage)
+    ordered = sorted(dict.fromkeys(items), key=lambda item: item.sort_key)
+    return tuple(ordered[:MAX_FACT_LINEAGE_ITEMS])
 
 
 @dataclass(frozen=True, slots=True)

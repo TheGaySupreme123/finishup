@@ -13,6 +13,8 @@ from yoetz.domain.events import (
     EvidenceKind,
     ObligationChangeKind,
     ObligationStatus,
+    RequestedItem,
+    RequestedItemKind,
     RequestedItemRole,
     ResponseDisposition,
     ResultOutcome,
@@ -34,7 +36,7 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
-from yoetz.kernel.command_attempts import attempted_items_for_obligation
+from yoetz.kernel.command_attempts import attempted_items_for_obligation, value_in_attempted
 from yoetz.kernel.deterministic_checks import (
     CALLER_DIGEST_PROVENANCE_GAPS,
     OBSERVED_FAILURE_LIVE_FACT,
@@ -71,6 +73,7 @@ from yoetz.kernel.task_facts import (
     confirmed_blocked_obligation_ids,
     cooperative_event_ids_from_coverage,
     non_counting_edits_exempt,
+    observed_planned_commands,
 )
 from yoetz.protocol.policy_packs import WORK_INTEGRITY_POLICY_ID, WORK_INTEGRITY_POLICY_VERSION
 
@@ -305,6 +308,7 @@ def _requested_item_findings(
     )
     # The case's task-fact markers carry the confirmation rule (it needs the publish batches).
     blocked = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
+    matched_commands: frozenset[str] | None = None
     for obligation_ref in sorted(_active_requested_obligations(case), key=_ascii):
         record = case.projection.obligations[obligation_ref]
         payload = record.payload
@@ -316,6 +320,21 @@ def _requested_item_findings(
         ):
             continue
         attempted = attempted_items_for_obligation(case.projection, obligation_ref)
+        if matched_commands is None:
+            # ADR-045: a hook-observed run of a planned command is an attempt, however the agent
+            # published (or did not publish) it; computed once per case.
+            matched_commands = observed_planned_commands(
+                case.projection,
+                observed_event_ids_from_coverage(case.coverage_by_ref),
+                cooperative_event_ids_from_coverage(case.coverage_by_ref),
+                {
+                    item.value
+                    for other in _active_requested_obligations(case)
+                    if (other_payload := case.projection.obligations[other].payload) is not None
+                    for item in other_payload.requested_items
+                    if item.item_kind is RequestedItemKind.COMMAND
+                },
+            )
         # tb4n1 E4: the pre-work check the guidance asks for found every requested output absent
         # (48 of 68 first findings), because the file obviously does not exist yet. An absent
         # output is reported once acting on that obligation has started, or once a completion
@@ -327,7 +346,7 @@ def _requested_item_findings(
         # attempted", and "never attempted" waits for work on *this* obligation (or a completion
         # claim naming it), never for any action anywhere in the task.
         unattempted = reportable and any(
-            item.value not in attempted
+            not _item_attempted(item, attempted, matched_commands)
             for item in payload.requested_items
             if getattr(item, "role", None) is not RequestedItemRole.INPUT
         )
@@ -354,6 +373,26 @@ def _requested_item_findings(
 
 
 _NON_PRODUCING_ACTIONS: Final = frozenset({ActionKind.RESEARCH, ActionKind.REVIEW})
+
+
+def _item_attempted(
+    item: RequestedItem, attempted: frozenset[str], matched_commands: frozenset[str]
+) -> bool:
+    """Whether one requested item was attempted (ADR-045): named, spelled alike, or observed run.
+
+    A value named in ``attempted_items`` counts exactly as before. A file or directory counts when
+    the agent named the same path in another spelling (``out/x.log`` for ``/app/out/x.log``), and
+    a command counts when a hook-observed run matched it (exactly, up to wrappers, or by its
+    leading arguments or flags): the agent ran it, whether or not it said so.
+    """
+
+    if item.value in attempted:
+        return True
+    if item.item_kind is RequestedItemKind.COMMAND:
+        return item.value in matched_commands
+    if item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}:
+        return value_in_attempted(item.value, attempted)
+    return False
 
 
 def reportable_absent_outputs(
@@ -405,6 +444,7 @@ def _obligation_acted_on(case: DeterministicCase, obligation_ref: ObligationId) 
     """
 
     cooperative = cooperative_event_ids_from_coverage(case.coverage_by_ref)
+    payload = case.projection.obligations[obligation_ref].payload
     for record in case.projection.actions.values():
         action = record.payload
         if (
@@ -415,8 +455,17 @@ def _obligation_acted_on(case: DeterministicCase, obligation_ref: ObligationId) 
             # A hook-observed action carries no obligation_refs, so it would read as global and
             # mark every obligation acted on after any `ls` (adversarial review of E4).
             continue
-        if not action.obligation_refs or obligation_ref in action.obligation_refs:
+        if obligation_ref in action.obligation_refs:
             return True
+        if not action.obligation_refs and payload is not None:
+            # ADR-045 (tb4n3 lake S): a global action works on the obligations whose items it
+            # names, not on every obligation: one untargeted command published while the real
+            # run was still going made every absent output reportable mid-work.
+            if any(
+                value_in_attempted(item.value, action.attempted_items)
+                for item in payload.requested_items
+            ):
+                return True
     return False
 
 

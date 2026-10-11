@@ -28,6 +28,7 @@ from yoetz.domain.events import (
     AcceptedEvent,
     CheckChangeShownFiles,
     CheckRecordedPayload,
+    DeliverableState,
     EventSchema,
     EvidenceDigestProvenance,
     FindingRecordedPayload,
@@ -1059,6 +1060,7 @@ class SqliteLedger:
                             semantic_withheld_item_ids=check_payload.semantic_withheld_item_ids,
                             semantic_redacted_values=check_payload.semantic_redacted_values,
                             semantic_route_required=check_payload.semantic_route_required,
+                            deliverable_states=check_payload.deliverable_states,
                         )
                 else:
                     check_error = self._stored_check_error(cast(bytes, result_canonical))
@@ -2775,6 +2777,7 @@ class SqliteLedger:
         totals: JsonObject | None = None,
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
         semantic_route_required: bool | None = None,
+        deliverable_states: tuple[DeliverableState, ...] = (),
     ) -> CheckCommitResult:
         await self._ensure_recovered()
         async with self._lock:
@@ -2812,6 +2815,7 @@ class SqliteLedger:
                     totals=totals,
                     semantic_redacted_values=semantic_redacted_values,
                     semantic_route_required=semantic_route_required,
+                    deliverable_states=deliverable_states,
                 )
             except PublicOperationError:
                 # The memory oracle terminalizes a frontier conflict before raising it. Preserve

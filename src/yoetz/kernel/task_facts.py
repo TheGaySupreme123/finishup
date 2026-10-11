@@ -49,13 +49,20 @@ Requested-output facts need a check-time workspace read and live in ``requested_
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Final, cast
 
-from yoetz.domain.command_segments import command_segment_commitments, requested_command_shape
+from yoetz.domain.command_segments import (
+    PlannedSegment,
+    exact_segment_commitments,
+    planned_segments,
+    requested_command_shape,
+)
 from yoetz.domain.events import (
     AcceptedEvent,
     ActionKind,
@@ -71,10 +78,17 @@ from yoetz.domain.events import (
 )
 from yoetz.domain.observation import normalize_observed_command, observed_command_commitment
 from yoetz.domain.values import EventId, ObligationId, obligation_id
-from yoetz.domain.write_scope import scratch_overlap, yoetz_artifact_name
+from yoetz.domain.write_scope import notes_artifact_name, scratch_overlap, yoetz_artifact_name
 from yoetz.kernel.command_attempts import attempted_items_for_obligation
+from yoetz.kernel.fact_lineage import (
+    RULE_COMMAND_MATCH,
+    RULE_COMMAND_UNMATCHED,
+    RULE_EDIT_AFTER_RUN,
+    FactLineage,
+)
 from yoetz.kernel.observed_failures import (
     NON_COUNTING_WRITE_TOKENS,
+    SHELL_EDIT_TOKENS,
     command_identity,
     command_segment_identities,
     observed_action_runner_class,
@@ -92,6 +106,7 @@ __all__ = [
     "BLOCKER_MARKER",
     "DECLARED_OUTPUT_CONTENT_MOVED_GAP",
     "DECLARED_OUTPUT_EMPTIED_GAP",
+    "DECLARED_OUTPUT_NOT_REVIEWABLE_GAP",
     "DECLARED_OUTPUT_REMOVED_GAP",
     "DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP",
     "EDITED_AFTER_LAST_VERIFICATION_GAP",
@@ -101,6 +116,7 @@ __all__ = [
     "PLANNED_VERIFICATION_AGENT_LINKED_GAP",
     "OBLIGATION_BLOCKER_UNCONFIRMED_GAP",
     "PLANNED_VERIFICATION_FAILED_GAP",
+    "PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP",
     "PLANNED_VERIFICATION_NOT_OBSERVED_GAP",
     "PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP",
     "PLANNED_VERIFICATION_STALE_GAP",
@@ -115,11 +131,16 @@ __all__ = [
     "TASK_FACT_GAPS",
     "VERIFICATION_ONLY_AS_ROOT_GAP",
     "WRITE_OUTSIDE_WORKSPACE_GAP",
+    "ObservedCommandRun",
+    "PlannedCommand",
+    "PlannedMatch",
     "RequestedOutputState",
     "TaskFactSignals",
     "BlockerDeclaration",
     "acting_started",
     "acknowledged_obligation_ids",
+    "observed_planned_commands",
+    "observed_run_from_command",
     "BLOCKER_NOTICE_CLAIMED",
     "BLOCKER_NOTICE_CODES",
     "BLOCKER_NOTICE_CONFIRMED",
@@ -139,14 +160,18 @@ __all__ = [
     "cooperative_event_ids_from_records",
     "command_identity_key_registered",
     "declared_output_items",
+    "deliverable_path_identity",
     "effective_obligations",
     "open_effective_obligations",
     "register_command_identity_key",
+    "planned_match",
     "requested_command_identities",
     "requested_command_identity",
+    "requested_planned_command",
     "requested_output_facts",
     "task_fact_signals",
     "non_counting_edits_exempt",
+    "passing_verification_observed",
 ]
 
 PLANNED_VERIFICATION_NOT_OBSERVED_GAP: Final = "planned_verification_not_observed"
@@ -155,6 +180,10 @@ PLANNED_VERIFICATION_STALE_GAP: Final = "planned_verification_stale"
 PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP: Final = "planned_verification_outcome_unknown"
 PLANNED_VERIFICATION_UNOBSERVABLE_GAP: Final = "planned_verification_unobservable"
 PLANNED_VERIFICATION_AGENT_LINKED_GAP: Final = "planned_verification_agent_linked"
+# ADR-045: a planned command matched an observed run only by its leading arguments or by its
+# program and flags (the run did the planned work and more, or in another order). It counts as
+# run, and is disclosed: Yoetz cannot tell whether that is what the plan meant.
+PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP: Final = "planned_verification_matched_by_prefix"
 EDITED_AFTER_LAST_VERIFICATION_GAP: Final = "edited_after_last_verification"
 INSTALL_INTO_YOETZ_RUNTIME_GAP: Final = "install_into_yoetz_runtime"
 INSTALL_INTO_PRIVATE_ENV_GAP: Final = "install_into_private_env"
@@ -177,6 +206,10 @@ DECLARED_OUTPUT_CONTENT_MOVED_GAP: Final = "declared_output_content_moved"
 # truncated (tb4n2 R2, ADR-035 amendment): agent work, and a Stop-gate token. While it stands the
 # obligation's recorded ``resolved`` is not counted as delivered.
 DECLARED_OUTPUT_EMPTIED_GAP: Final = "declared_output_emptied"
+# A declared deliverable is a type the review packet never carries (binary by Git's NUL sniff, or
+# an unlisted file with a binary suffix) and a review ran (ADR-045): the deliverable was present
+# but not reviewed. A standing disclosure, named on status and on the receipt; never agent work.
+DECLARED_OUTPUT_NOT_REVIEWABLE_GAP: Final = "declared_output_not_reviewable"
 # A declared deliverable that names an existing workspace file that is neither a declared output
 # nor a declared input (tb4n2 R2, ADR-035 amendment): a non-blocking disclosure only.
 DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP: Final = "deliverable_references_undeclared_file"
@@ -205,6 +238,7 @@ STANDING_TASK_FACT_GAPS: Final = frozenset(
         # A planned command matched only through the agent's own link to an observed run: an
         # agent-asserted equivalence Yoetz cannot verify; the observed outcome still decides.
         PLANNED_VERIFICATION_AGENT_LINKED_GAP,
+        PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP,
         INSTALL_INTO_YOETZ_RUNTIME_GAP,
         INSTALL_INTO_PRIVATE_ENV_GAP,
         WRITE_OUTSIDE_WORKSPACE_GAP,
@@ -215,6 +249,7 @@ STANDING_TASK_FACT_GAPS: Final = frozenset(
         REQUESTED_OUTPUT_UNVERIFIED_GAP,
         REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP,
         DECLARED_OUTPUT_CONTENT_MOVED_GAP,
+        DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
         DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     }
 )
@@ -281,6 +316,25 @@ def command_identity_key_registered() -> bool:
     return _COMMAND_IDENTITY_KEY[0] is not None
 
 
+_PATH_IDENTITY_DOMAIN: Final = b"yoetz/deliverable-path/v1\x00"
+
+
+def deliverable_path_identity(relative: str) -> str | None:
+    """The installation-keyed commitment to one root-relative deliverable path, or ``None``.
+
+    The same key that commits observed commands, with its own domain. History of a declared
+    output is keyed on this (ADR-045), so the obligation that declares the path can change or be
+    republished without starting a new history. Without the key (a process that has not
+    registered it) there is no history and the caller falls back to the task-base proof alone.
+    """
+
+    key = _COMMAND_IDENTITY_KEY[0]
+    if key is None or type(relative) is not str or not relative or "\x00" in relative:
+        return None
+    digest = hmac.new(key, _PATH_IDENTITY_DOMAIN + relative.encode("utf-8"), hashlib.sha256)
+    return "hmac-sha256:" + digest.hexdigest()
+
+
 def requested_command_identity(value: str) -> str | None:
     """The keyed identity a hook would record for exactly this command, or ``None``."""
 
@@ -313,12 +367,56 @@ def requested_command_identities(value: str) -> tuple[str, frozenset[str], str |
         return None
     try:
         whole = observed_command_commitment(key, normalized)
-        segments = command_segment_commitments(key, normalized)
+        segments = exact_segment_commitments(key, normalized)
     except ValueError:
         return None
     if segments is None:
         return whole, frozenset(), None
     return whole, frozenset(segments[0]), segments[1]
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedCommand:
+    """A requested command ready to be matched against observed runs (ADR-045).
+
+    ``whole``, ``segments`` and ``composition`` are ``requested_command_identities``;
+    ``probes`` holds, for each simple command the planned text runs, its canonical probes
+    (wrappers and ``python3`` normalised away, leading-argument prefixes and flag sets).
+    """
+
+    whole: str
+    segments: frozenset[str]
+    composition: str | None
+    probes: tuple[PlannedSegment, ...]
+
+
+# How a planned command matched an observed run, strongest first. ``exact`` and ``normalized``
+# are clean (the same commands, up to wrappers); ``prefix`` and ``flags`` count as a run but are
+# disclosed (``planned_verification_matched_by_prefix``): the run did the planned work and more,
+# or in another order, and Yoetz cannot tell whether that is what the plan meant.
+MATCH_EXACT: Final = "exact"
+MATCH_NORMALIZED: Final = "normalized"
+MATCH_PREFIX: Final = "prefix"
+MATCH_FLAGS: Final = "flags"
+_MATCH_RANK: Final = {MATCH_EXACT: 0, MATCH_NORMALIZED: 1, MATCH_PREFIX: 2, MATCH_FLAGS: 3}
+LOOSE_MATCH_KINDS: Final = frozenset({MATCH_PREFIX, MATCH_FLAGS})
+
+
+def requested_planned_command(value: str) -> PlannedCommand | None:
+    """The identities and canonical probes of a requested command, or ``None``."""
+
+    key = _COMMAND_IDENTITY_KEY[0]
+    identities = requested_command_identities(value)
+    if key is None or identities is None:
+        return None
+    normalized = normalize_observed_command(value)
+    if normalized is None:
+        return None
+    try:
+        probes = planned_segments(key, normalized) or ()
+    except ValueError:
+        probes = ()
+    return PlannedCommand(identities[0], identities[1], identities[2], probes)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -677,6 +775,10 @@ class _ObservedRun:
     action_event: EventId | None = None
 
 
+# Public name for the observed run the matchers take (``planned_match``, ``observed_run_from_command``).
+ObservedCommandRun = _ObservedRun
+
+
 @dataclass(frozen=True, slots=True)
 class _ObservedState:
     runs: tuple[_ObservedRun, ...]
@@ -684,6 +786,7 @@ class _ObservedState:
     edit_tokens: frozenset[str]
     command_tokens: frozenset[str]
     acting: bool
+    latest_edit_event: EventId | None = None
 
 
 def cooperative_event_ids_from_records(records: Iterable[LedgerRecord]) -> frozenset[EventId]:
@@ -740,11 +843,75 @@ def _planned_outcome(
         return run.outcome
     if whole not in run.segments and not (segments and segments <= run.segments | {run.identity}):
         return None
+    return _attributed_outcome(run, composition)
+
+
+def _attributed_outcome(run: _ObservedRun, planned_composition: str | None) -> ResultOutcome:
+    """The outcome a run establishes for a planned part it matched (not the whole command).
+
+    A planned command that masks its own outcome (``! X``, ``X &``, ``X | tee``, ``X; Y``) names
+    no outcome for its part. Otherwise the run's composition decides: a ``single`` run is that
+    command, a successful ``&&`` chain succeeded in every part, anything else is unknown.
+    """
+
+    if planned_composition == "masked":
+        return ResultOutcome.UNKNOWN
     if run.composition == "single":
         return run.outcome
     if run.composition == "and_chain" and run.outcome is ResultOutcome.SUCCESS:
         return ResultOutcome.SUCCESS
     return ResultOutcome.UNKNOWN
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedMatch:
+    """One observed run's match to one planned command: the outcome it establishes and how."""
+
+    outcome: ResultOutcome
+    kind: str
+
+
+def planned_match(run: _ObservedRun, planned: PlannedCommand) -> PlannedMatch | None:
+    """How *run* matches *planned*, or ``None`` (ADR-045).
+
+    The recorded rule first (``exact``: the same command, or the planned one is a segment of the
+    run). Then the canonical rule: every simple command the plan runs must be found among the
+    run's, as ``normalized`` (same command up to wrappers, ``python3``, absolute paths), else as a
+    ``prefix`` (the run began with the planned arguments and went on) or as ``flags`` (the planned
+    program and all its flags are present, in any order). A command that only sets the scene
+    (``cd /app``) may be missing from the run, which makes the match a ``prefix`` one. The weakest
+    command decides the kind; a single-token command only ever matches whole.
+    """
+
+    exact = _planned_outcome(run, planned.whole, planned.segments, planned.composition)
+    if exact is not None:
+        return PlannedMatch(exact, MATCH_EXACT)
+    if run.identity is None or not planned.probes:
+        return None
+    held = run.segments | {run.identity}
+    kinds: list[str] = []
+    skipped_scene = False
+    for probe in planned.probes:
+        if probe.exact in held:
+            kinds.append(MATCH_EXACT)
+        elif (probe.full is not None and probe.full in held) or (
+            probe.canonical_text is not None and probe.canonical_text in held
+        ):
+            kinds.append(MATCH_NORMALIZED)
+        elif probe.prefix is not None and probe.prefix in held:
+            kinds.append(MATCH_PREFIX)
+        elif probe.flags and all(flag in held for flag in probe.flags):
+            kinds.append(MATCH_FLAGS)
+        elif probe.scene and len(planned.probes) > 1:
+            skipped_scene = True
+        else:
+            return None
+    if not kinds:
+        return None
+    kind = max(kinds, key=_MATCH_RANK.__getitem__)
+    if skipped_scene and kind in {MATCH_EXACT, MATCH_NORMALIZED}:
+        kind = MATCH_PREFIX
+    return PlannedMatch(_attributed_outcome(run, planned.composition), kind)
 
 
 def _agent_linked_runs(
@@ -810,7 +977,9 @@ def non_counting_edits_exempt(projection: ProjectionState) -> frozenset[str]:
       fixed temporary root or contains one (a deliverable under ``/tmp``);
     * ``write yoetz_owned`` is not exempt when a requested non-input file has a Yoetz receipt or
       export name, or any requested non-input directory exists (a receipt saved into a declared
-      output directory changes that delivery).
+      output directory changes that delivery);
+    * ``write notes`` (the agent's own notes or logs, ADR-045) is not exempt when a requested
+      non-input file has a notes-like name or any requested non-input directory exists.
 
     Fixed roots only, so replay never depends on the environment.
     """
@@ -827,6 +996,10 @@ def non_counting_edits_exempt(projection: ProjectionState) -> frozenset[str]:
                 exempt.discard("write scratch")
             if item.item_kind is RequestedItemKind.DIRECTORY or yoetz_artifact_name(item.value):
                 exempt.discard("write yoetz_owned")
+            if item.item_kind is RequestedItemKind.DIRECTORY or notes_artifact_name(item.value):
+                # A declared output named like a notes file, or any declared directory (which may
+                # hold one), is a deliverable: writes to notes-like names keep counting (ADR-045).
+                exempt.discard("write notes")
     return frozenset(exempt)
 
 
@@ -849,6 +1022,7 @@ def _observed_state(
     exempt = non_counting_edits_exempt(projection)
     runs: list[_ObservedRun] = []
     latest_edit: int | None = None
+    latest_edit_event: EventId | None = None
     edit_tokens: set[str] = set()
     command_tokens: set[str] = set()
     acting = False
@@ -867,6 +1041,7 @@ def _observed_state(
             if payload.outcome is ResultOutcome.FAILURE or _non_counting_edit(description, exempt):
                 continue
             latest_edit = max(latest_edit or 0, result.source_frontier)
+            latest_edit_event = action.source_event_id
             edit_tokens.update(observed_action_runtime_tokens(description))
             acting = True
         elif action.payload.action_kind is ActionKind.COMMAND:
@@ -875,6 +1050,13 @@ def _observed_state(
             tokens = observed_action_runtime_tokens(description)
             command_tokens.update(tokens)
             if runner in _ACTING_RUNNERS:
+                acting = True
+            if tokens & SHELL_EDIT_TOKENS and payload.outcome is not ResultOutcome.FAILURE:
+                # ADR-045: a shell command that visibly wrote files (``cat > f``, ``sed -i``,
+                # ``cp a f``) changed the work as surely as an edit tool would.
+                latest_edit = max(latest_edit or 0, result.source_frontier)
+                latest_edit_event = action.source_event_id
+                edit_tokens.update(tokens & SHELL_EDIT_TOKENS)
                 acting = True
             runs.append(
                 _ObservedRun(
@@ -906,6 +1088,7 @@ def _observed_state(
             # An observed edit whose outcome has not arrived yet still changed the state under
             # test as far as the observer can tell; a stated failure above never counts.
             latest_edit = max(latest_edit or 0, action.source_frontier)
+            latest_edit_event = action.source_event_id
             edit_tokens.update(observed_action_runtime_tokens(payload.description))
             acting = True
         elif (
@@ -930,8 +1113,79 @@ def _observed_state(
             )
     runs.sort(key=lambda run: run.position)
     return _ObservedState(
-        tuple(runs), latest_edit, frozenset(edit_tokens), frozenset(command_tokens), acting
+        tuple(runs),
+        latest_edit,
+        frozenset(edit_tokens),
+        frozenset(command_tokens),
+        acting,
+        latest_edit_event,
     )
+
+
+def passing_verification_observed(
+    projection: ProjectionState,
+    observed: frozenset[EventId],
+    cooperative: frozenset[EventId],
+) -> bool:
+    """Whether a hook-observed ``test``, ``lint``, ``typecheck`` or ``build`` run succeeded.
+
+    ADR-045 reads it as the "passing recorded verification" half of a deliverable's basis: a file
+    that held content while such a run was on the record counts as delivered work even when no
+    obligation had been resolved yet.
+    """
+
+    state = _observed_state(projection, observed, cooperative)
+    return any(
+        run.runner in _VERIFICATION_RUNNERS and run.outcome is ResultOutcome.SUCCESS
+        for run in state.runs
+    )
+
+
+def observed_run_from_command(command: str | None) -> _ObservedRun | None:
+    """A minimal observed run read off an action's ``command`` field, or ``None`` (unkeyed).
+
+    Only the identity and segment commitments are known from a bare command field; the outcome
+    is unknown. ``command_attempts`` uses it to ask whether an observed action the agent linked
+    to a planned command is a run of that command, with no position or outcome claimed.
+    """
+
+    identity = command_identity(command)
+    if identity is None:
+        return None
+    segments, composition = _segment_fields(command)
+    return _ObservedRun(
+        0, ResultOutcome.UNKNOWN, identity, None, frozenset(), segments, composition
+    )
+
+
+def observed_planned_commands(
+    projection: ProjectionState,
+    observed: frozenset[EventId],
+    cooperative: frozenset[EventId],
+    values: Iterable[str],
+) -> frozenset[str]:
+    """The requested command values some hook-observed run matched, by any outcome (ADR-045).
+
+    ``requested_item_never_attempted`` used to ask only whether the agent's own published action
+    named the exact value in ``attempted_items``; a run the hook saw execute the planned command
+    (exactly, up to wrappers, or by its leading arguments or flags) is an attempt too. The
+    outcome is not asked here: a failed run still attempted it.
+    """
+
+    if not command_identity_key_registered():
+        return frozenset()
+    state = _observed_state(projection, observed, cooperative)
+    runs = [run for run in state.runs if run.identity is not None]
+    if not runs:
+        return frozenset()
+    matched: set[str] = set()
+    for value in values:
+        if requested_command_shape(value) != "command":
+            continue
+        planned = requested_planned_command(value)
+        if planned is not None and any(planned_match(run, planned) is not None for run in runs):
+            matched.add(value)
+    return frozenset(matched)
 
 
 def acting_started(
@@ -962,6 +1216,9 @@ class TaskFactSignals:
     markers: tuple[tuple[str, ObligationId | None], ...]
     acting_started: bool
     blocked: Mapping[ObligationId, str] = field(default_factory=lambda: MappingProxyType({}))
+    # ADR-045: where each fact came from (rule, the obligation item, the observed runs or edit it
+    # rests on). Derived with the markers, from the same prefix.
+    lineage: tuple[FactLineage, ...] = ()
 
     def __post_init__(self) -> None:
         if not set(self.codes) <= TASK_FACT_GAPS:
@@ -988,15 +1245,17 @@ def task_fact_signals(
     markers: set[tuple[str, ObligationId | None]] = set()
 
     # Planned verification.
+    lineage: list[FactLineage] = []
     keyed_runs = [run for run in state.runs if run.identity is not None]
     linked_runs = _agent_linked_runs(projection, prefix, state, observed)
+    planned_runs: list[_ObservedRun] = []
     if command_identity_key_registered():
         for obligation in effective_obligations(projection):
             if obligation in blocked or obligation in acknowledged:
                 continue
             payload = projection.obligations[obligation].payload
             assert payload is not None
-            for item in payload.requested_items:
+            for index, item in enumerate(payload.requested_items):
                 if item.item_kind is not RequestedItemKind.COMMAND:
                     continue
                 if requested_command_shape(item.value) != "command":
@@ -1004,49 +1263,157 @@ def task_fact_signals(
                     # before publication rejected it, or prose); no agent link changes that.
                     markers.add((PLANNED_VERIFICATION_UNOBSERVABLE_GAP, obligation))
                     continue
-                identities = requested_command_identities(item.value)
+                planned = requested_planned_command(item.value)
                 matching = (
                     []
-                    if identities is None
+                    if planned is None
                     else [
-                        (run, outcome)
+                        (run, match.outcome, match.kind)
                         for run in keyed_runs
-                        if (outcome := _planned_outcome(run, *identities)) is not None
+                        if (match := planned_match(run, planned)) is not None
                     ]
                 )
+                planned_runs.extend(run for run, _outcome, _kind in matching)
                 linked = [
-                    (run, run.outcome)
+                    (run, run.outcome, "agent_link")
                     for run in linked_runs.get((obligation, item.value), ())
-                    if all(run is not other for other, _ in matching)
+                    if all(run is not other for other, _outcome, _kind in matching)
                 ]
                 if not matching and not linked:
-                    markers.add(
-                        (
-                            PLANNED_VERIFICATION_NOT_OBSERVED_GAP
-                            if keyed_runs
-                            else PLANNED_VERIFICATION_UNOBSERVABLE_GAP,
-                            obligation,
+                    code = (
+                        PLANNED_VERIFICATION_NOT_OBSERVED_GAP
+                        if keyed_runs
+                        else PLANNED_VERIFICATION_UNOBSERVABLE_GAP
+                    )
+                    markers.add((code, obligation))
+                    lineage.append(
+                        FactLineage(
+                            code=code,
+                            rule=RULE_COMMAND_UNMATCHED,
+                            state="unmatched",
+                            obligation_id=obligation,
+                            item_index=index,
+                            frontier=projection.frontier,
                         )
                     )
                     continue
                 if not matching:
                     markers.add((PLANNED_VERIFICATION_AGENT_LINKED_GAP, obligation))
-                latest, outcome = max(matching + linked, key=lambda pair: pair[0].position)
+                latest, outcome, kind = max(matching + linked, key=lambda row: row[0].position)
+                match_state = {
+                    MATCH_EXACT: "matched_exact",
+                    MATCH_NORMALIZED: "matched_normalized",
+                    MATCH_PREFIX: "matched_prefix",
+                    MATCH_FLAGS: "matched_flags",
+                }.get(kind, "matched_agent_link")
+                sources = (latest.action_event,) if latest.action_event is not None else ()
+                if kind in LOOSE_MATCH_KINDS:
+                    # The run that decides the outcome matched only by its leading arguments or by
+                    # its program and flags: it counts as run, and the match is disclosed.
+                    markers.add((PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP, obligation))
+                    lineage.append(
+                        FactLineage(
+                            code=PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP,
+                            rule=RULE_COMMAND_MATCH,
+                            state=match_state,
+                            obligation_id=obligation,
+                            item_index=index,
+                            frontier=latest.position,
+                            proof="observed_run",
+                            source_event_ids=sources,
+                        )
+                    )
                 if outcome in {ResultOutcome.FAILURE, ResultOutcome.PARTIAL}:
                     markers.add((PLANNED_VERIFICATION_FAILED_GAP, obligation))
+                    lineage.append(
+                        FactLineage(
+                            code=PLANNED_VERIFICATION_FAILED_GAP,
+                            rule=RULE_COMMAND_MATCH,
+                            state="failed",
+                            obligation_id=obligation,
+                            item_index=index,
+                            frontier=latest.position,
+                            proof="observed_run",
+                            source_event_ids=sources,
+                        )
+                    )
                 elif outcome is ResultOutcome.UNKNOWN:
                     markers.add((PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP, obligation))
                 if state.latest_edit is not None and state.latest_edit > latest.position:
                     markers.add((PLANNED_VERIFICATION_STALE_GAP, obligation))
+                    lineage.append(
+                        FactLineage(
+                            code=PLANNED_VERIFICATION_STALE_GAP,
+                            rule=RULE_COMMAND_MATCH,
+                            state="stale",
+                            obligation_id=obligation,
+                            item_index=index,
+                            frontier=latest.position,
+                            prior_frontier=state.latest_edit,
+                            proof="observed_run",
+                            source_event_ids=tuple(
+                                sorted(
+                                    {
+                                        *sources,
+                                        *(
+                                            (state.latest_edit_event,)
+                                            if state.latest_edit_event is not None
+                                            else ()
+                                        ),
+                                    },
+                                    key=str.encode,
+                                )
+                            ),
+                        )
+                    )
 
-    # Edits after the last verification-class run.
-    verification_runs = [run for run in state.runs if run.runner in _VERIFICATION_RUNNERS]
+    # Edits after the last verification-class run. A run of a command the task itself asked for
+    # is a verification run whatever its class (``sage solve.sage ... && cmp`` is composed, so it
+    # classes ``compound``), so the planned matches count with the classed runs (ADR-045).
+    verification_runs = sorted(
+        {
+            id(run): run
+            for run in (
+                *(run for run in state.runs if run.runner in _VERIFICATION_RUNNERS),
+                *planned_runs,
+            )
+        }.values(),
+        key=lambda run: run.position,
+    )
     if (
         verification_runs
         and state.latest_edit is not None
         and state.latest_edit > verification_runs[-1].position
     ):
         markers.add((EDITED_AFTER_LAST_VERIFICATION_GAP, None))
+        last_run = verification_runs[-1]
+        lineage.append(
+            FactLineage(
+                code=EDITED_AFTER_LAST_VERIFICATION_GAP,
+                rule=RULE_EDIT_AFTER_RUN,
+                state="edited_after",
+                frontier=state.latest_edit,
+                prior_frontier=last_run.position,
+                proof="observed_run",
+                source_event_ids=tuple(
+                    sorted(
+                        {
+                            *(
+                                (last_run.action_event,)
+                                if last_run.action_event is not None
+                                else ()
+                            ),
+                            *(
+                                (state.latest_edit_event,)
+                                if state.latest_edit_event is not None
+                                else ()
+                            ),
+                        },
+                        key=str.encode,
+                    )
+                ),
+            )
+        )
 
     # Runtime facts.
     if "install yoetz_runtime" in state.command_tokens:
@@ -1080,6 +1447,7 @@ def task_fact_signals(
         markers=ordered,
         acting_started=state.acting,
         blocked=blocked,
+        lineage=tuple(sorted(dict.fromkeys(lineage), key=lambda item: item.sort_key)),
     )
 
 
@@ -1118,6 +1486,9 @@ class RequestedOutputState:
     # The size of an existing regular file inside the root, from the metadata-only probe
     # (tb4n2 R2: ``declared_output_emptied``); ``None`` when unknown or not a regular file.
     size_bytes: int | None = None
+    # The current line count of an existing declared file the bounded line-count read could
+    # count (tracked or untracked, ADR-045); ``None`` when not read, binary or too large.
+    lines: int | None = None
     # The root-relative path of an ``inside`` item (``.`` for the root), compared only in memory
     # to tell overlapping declarations of one path apart (tb4n2 R2); never stored or rendered.
     relative: str | None = field(default=None, repr=False)
@@ -1175,7 +1546,7 @@ def requested_output_facts(
             edited[obligation] = attempted_items_for_obligation(
                 projection, obligation, action_kind=ActionKind.EDIT
             )
-        # Exact value match, as for requested_item_never_attempted: no path normalization.
+        # Exact value match: no path normalization (the disclosures below stay conservative).
         written = role is RequestedItemRole.OUTPUT or (
             item is not None and item.value in edited[obligation]
         )

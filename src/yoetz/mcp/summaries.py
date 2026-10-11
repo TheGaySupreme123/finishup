@@ -21,6 +21,7 @@ from yoetz.domain.review_input_render import (
     has_agent_suppliable_missing,
     render_review_input_manifest_compact,
 )
+from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from yoetz.mcp.errors import VALIDATION_REASON_TOKENS
 from yoetz.protocol.canonical import JsonValue, ensure_canonical_value
 from yoetz.protocol.errors import PublicErrorCode, normalize_safe_details
@@ -1300,6 +1301,10 @@ def summary_for_check(envelope: object) -> str:
             extra = " " + sentence
             if len((prefix + suffix + extra).encode("ascii")) <= _MAX_SUMMARY_BYTES:
                 suffix += extra
+                # ADR-045: and why, from the same check's recorded provenance.
+                why = _lineage_sentence(source.get("fact_lineage"), code)
+                if why and len((prefix + suffix + " " + why).encode("ascii")) <= _MAX_SUMMARY_BYTES:
+                    suffix += " " + why
             break
     # PL2-1: the fixed agent line outranks every optional clause; shed those to keep it.
     if _semantic_redacted_value_tokens(source):
@@ -1589,6 +1594,25 @@ def _readiness_tokens(readiness: Mapping[str, JsonValue], key: str) -> tuple[str
     )
 
 
+def _lineage_sentence(raw: object, code: str | None = None) -> str:
+    """The first ``Why:`` sentence of a result's ``fact_lineage`` (ADR-045), or ``""``.
+
+    ``raw`` is the wire list; entries that do not parse are skipped. With *code*, only that
+    fact's provenance. ASCII by construction (ids, counts and closed tokens only).
+    """
+
+    if not isinstance(raw, list | tuple):
+        return ""
+    items: list[FactLineage] = []
+    for entry in cast(Sequence[object], raw):
+        try:
+            items.append(lineage_from_wire(entry))
+        except TypeError, ValueError:
+            continue
+    texts = lineage_texts(items, code)
+    return texts[0] if texts else ""
+
+
 def _closure_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
     """Name the closure-readiness state and its frozen directive (issue #913, ADR-032).
 
@@ -1637,8 +1661,14 @@ def _closure_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str
         )
     else:
         variants.extend((directive, head))
+    why = _lineage_sentence(typed.get("fact_lineage"))
     for variant in variants:
-        if variant and len(variant.encode("ascii")) <= byte_budget:
+        if not variant:
+            continue
+        # ADR-045: say why the first derived fact fired when the sentence fits beside the variant.
+        if why and len((variant + " " + why).encode("ascii")) <= byte_budget:
+            return variant + " " + why
+        if len(variant.encode("ascii")) <= byte_budget:
             return variant
     return ""
 
