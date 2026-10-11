@@ -206,20 +206,18 @@ _MAX_CLOSURE_RESULT_BYTES: Final = MAX_JSON_FRAME_BYTES - 65_536
 # URI-only request shape; otherwise validation fails before the caller receives continuation
 # metadata to reconstruct the document.
 _MAX_LEGACY_GUIDANCE_DOCUMENT_BYTES: Final = 65_536
-# Every closure-preparation reason is a protocol reason code of its own (so the text names the
-# selection to correct and its remedy), except the two that already have a more specific
-# long-standing meaning. The two file-output reasons belong to the CLI and never cross MCP.
+# Every closure-preparation reason is a protocol reason code of its own, so the text names the
+# selection to correct and its remedy. A mapped code such as ``frontier_changed`` would hand a read
+# a write's instruction (set ``expected_frontier``). The two file-output reasons belong to the CLI
+# and never cross MCP.
 _CLOSURE_CLI_ONLY_REASONS: Final = frozenset(
     {"closure_output_unwritable", "closure_output_not_durable"}
 )
 _CLOSURE_PUBLIC_REASON_CODES: Final = MappingProxyType(
     {
-        **{
-            reason: reason
-            for reason in PREPARATION_REMEDIATIONS
-            if reason not in _CLOSURE_CLI_ONLY_REASONS
-        },
-        "closure_snapshot_unavailable": "frontier_changed",
+        reason: reason
+        for reason in PREPARATION_REMEDIATIONS
+        if reason not in _CLOSURE_CLI_ONLY_REASONS
     }
 )
 _INVALID_URI_ESCAPE: Final = re.compile(r"%(?![0-9A-Fa-f]{2})", re.ASCII)
@@ -2442,8 +2440,15 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             operation=f"{operation}_response_projection_failed",
             request_id=request_id,
         )
+        # A failure the service reported (ok:false) was not a write that succeeded: it has the
+        # error-translation remedy, not the recorded-write one.
+        reported_failure = getattr(getattr(result, "root", result), "ok", True) is False
         return _internal_stage_error(
-            "bridge_result_validate_failed" if stage == "validate" else "bridge_result_wire_failed",
+            "bridge_error_mapping_failed"
+            if reported_failure
+            else "bridge_result_validate_failed"
+            if stage == "validate"
+            else "bridge_result_wire_failed",
             request_id=request_id,
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,

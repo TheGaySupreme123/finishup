@@ -107,6 +107,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "closure_response_decision_required",
     "closure_result_too_large",
     "closure_result_unavailable",
+    "closure_snapshot_unavailable",
     "closure_source_unknown",
     "closure_status_unavailable",
     "closure_unattempted_items",
@@ -403,7 +404,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
 )
 
 _REASON_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 344
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 345
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)

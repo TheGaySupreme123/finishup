@@ -716,9 +716,10 @@ async def test_closure_prepare_refuses_stale_inventory_without_writing(
     assert result.isError is True
     assert result.structuredContent is not None
     assert result.structuredContent["error"]["code"] == "INVALID_REQUEST"
+    # tb4n3: a preparation read is not a write; mapping this to `frontier_changed` handed it the
+    # write's "set expected_frontier" instruction, which closure_prepare rejects.
     assert result.structuredContent["error"]["safe_details"] == {
-        "reason_code": "frontier_changed",
-        "continuation": "frontier_refresh_required",
+        "reason_code": "closure_snapshot_unavailable"
     }
     await bridge.close_bridge_runtime(runtime)
 
@@ -733,7 +734,6 @@ async def test_closure_prepare_refuses_stale_inventory_without_writing(
         not in {
             "closure_output_unwritable",
             "closure_output_not_durable",
-            "closure_snapshot_unavailable",
             "closure_result_too_large",
         }
     ),
@@ -823,11 +823,11 @@ async def test_an_unexpected_invoke_failure_is_a_typed_stage_with_a_remedy(
     error = cast(dict[str, Any], result.structuredContent["error"])
     assert error["code"] == "INTERNAL_ERROR"
     assert error["safe_details"] == {"reason_code": reason}
-    assert "status view=operation" in error["message"]
+    assert "replay the same request_id (never a new one)" in error["message"]
     assert "must-not-reach-public-output" not in json.dumps(result.structuredContent)
     text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
     assert f"Reason: {reason}." in text
-    assert "Remedy:" in text and "status view=operation" in text
+    assert "Remedy:" in text and "replay the same request_id (never a new one)" in text
     await bridge.close_bridge_runtime(runtime)
 
 
@@ -1485,21 +1485,20 @@ async def test_service_post_commit_projection_failure_maps_to_the_same_retryable
     await bridge.close_bridge_runtime(runtime)
 
 
-@pytest.mark.anyio
-async def test_post_commit_structural_shaping_failure_names_the_stage_and_does_not_advise_replay(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """tb4n3 RC-2: a durable invoke whose result cannot be built reads as recorded, not replayable.
+class _CommittedCheckClient(_FakeClient):
+    """A service that answers every call with a successful, schema-valid check result."""
 
-    Replaying the same request_id rebuilds the same result and fails the same way, so the error
-    names the stage, points at status view=operation and does not offer a replay.
-    """
+    async def _call(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, name: str, request: Any, result_type: type[Any]
+    ) -> Any:
+        from tests.unit.protocol.test_models_and_schemas import (
+            _check_result_wire,  # pyright: ignore[reportPrivateUsage]
+        )
 
-    correlation_id = "err_00000000-0000-4000-8000-000000000097"
-    client = _FakeClient()
-    _install_clients(monkeypatch, [client])
-    request_id = cast(str, _requests()["publish_work"]["request_id"])
+        return result_type.model_validate(_check_result_wire())
 
+
+def _patch_wire_failure(monkeypatch: pytest.MonkeyPatch, correlation_id: str) -> None:
     def boom(_result: object) -> object:
         raise RuntimeError("post-commit-shape-failure")
 
@@ -1515,9 +1514,25 @@ async def test_post_commit_structural_shaping_failure_names_the_stage_and_does_n
 
     monkeypatch.setattr(bridge, "public_model_to_wire", boom)
     monkeypatch.setattr(bridge, "record_unexpected_exception_without_raising", record)
+
+
+@pytest.mark.anyio
+async def test_post_commit_structural_shaping_failure_names_the_stage_and_does_not_advise_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n3 RC-2: a successful call whose result cannot be built reads as recorded, not replayable.
+
+    Replaying the same request_id rebuilds the same result and fails the same way, so the error
+    names the stage, points at status view=operation and does not offer a replay.
+    """
+
+    correlation_id = "err_00000000-0000-4000-8000-000000000097"
+    _install_clients(monkeypatch, [_CommittedCheckClient()])
+    request_id = cast(str, _requests()["check"]["request_id"])
+    _patch_wire_failure(monkeypatch, correlation_id)
     runtime = bridge.build_bridge_runtime()
 
-    result = await bridge.dispatch_publish_work(_requests()["publish_work"], runtime)
+    result = await bridge.dispatch_check(_requests()["check"], runtime)
 
     assert result.isError is True
     assert result.structuredContent is not None
@@ -1539,6 +1554,30 @@ async def test_post_commit_structural_shaping_failure_names_the_stage_and_does_n
 
 
 @pytest.mark.anyio
+async def test_a_reported_failure_that_cannot_be_shaped_is_not_called_a_recorded_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A service-reported failure (here SESSION_CONFLICT before any write) is not a recorded
+    write: telling the agent never to resend it under a new request_id would be false."""
+
+    correlation_id = "err_00000000-0000-4000-8000-000000000096"
+    _install_clients(monkeypatch, [_FakeClient()])
+    _patch_wire_failure(monkeypatch, correlation_id)
+    runtime = bridge.build_bridge_runtime()
+
+    result = await bridge.dispatch_publish_work(_requests()["publish_work"], runtime)
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    error = cast(dict[str, object], result.structuredContent["error"])
+    assert error["safe_details"] == {"reason_code": "bridge_error_mapping_failed"}
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert "is recorded" not in text and "never resend" not in text
+    assert "Remedy:" in text and "status view=compact" in text
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
 async def test_a_text_projection_failure_never_fails_a_committed_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1549,17 +1588,7 @@ async def test_a_text_projection_failure_never_fails_a_committed_operation(
     the agent never saw a verdict (10 of 13 deterministic runs).
     """
 
-    from tests.unit.protocol.test_models_and_schemas import (
-        _check_result_wire,  # pyright: ignore[reportPrivateUsage]
-    )
-
     from yoetz.mcp import summaries
-
-    class _CommittedCheckClient(_FakeClient):
-        async def _call(  # pyright: ignore[reportIncompatibleMethodOverride]
-            self, name: str, request: Any, result_type: type[Any]
-        ) -> Any:
-            return result_type.model_validate(_check_result_wire())
 
     client = _CommittedCheckClient()
     _install_clients(monkeypatch, [client])

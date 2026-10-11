@@ -267,3 +267,90 @@ def test_every_builder_never_raises_and_keeps_its_core_at_a_512_byte_bound(
     assert "Receipt conclusion: insufficient_coverage" in receipt
     assert "frontier: 5; head_digest: " + HEAD in receipt
     assert "coverage limitations: 64" in receipt
+
+
+def test_the_recovery_directive_outranks_descriptive_clauses_at_a_tight_bound(
+    tight_bound: None,
+) -> None:
+    """A timed-out review's continuation is the first optional clause granted: it must not lose to
+    finding targets or the to-do counts that precede it in reading order."""
+
+    refs = [f"fnd_00000000-0000-4000-8000-{index:012d}" for index in range(1, 4)]
+    text = summary_for_check(
+        _check(
+            semantic_status="timeout",
+            semantic_reason="provider_timeout",
+            overall_next={
+                "action": "work_open_findings",
+                "status": "action_required",
+                "target_refs": refs,
+            },
+            finding_checklist={
+                "attempt_budget": "5",
+                "counts": {
+                    "open": "3",
+                    "open_at_budget": "0",
+                    "verified_resolved": "0",
+                    "acknowledged_not_done": "0",
+                    "rejection_accepted": "0",
+                },
+                "next": "work_open_findings",
+            },
+        )
+    )
+    assert len(text) <= 512
+    assert "Continuation: semantic_timeout." in text
+
+
+def test_a_failed_success_builder_keeps_the_start_identities_the_next_request_needs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def explode(_source: object) -> str:
+        raise RuntimeError("other-success-defect")
+
+    monkeypatch.setattr(summaries, "_summary_for_other_success", explode)
+    ids = {
+        "task_id": "tsk_00000000-0000-4000-8000-000000000001",
+        "session_id": "ses_00000000-0000-4000-8000-000000000002",
+        "writer_id": "wri_00000000-0000-4000-8000-000000000003",
+    }
+    rendered = render_safe_compact_summary_detailed(
+        {"outcome": "created", **ids, "result_frontier": {"sequence": "1", "head_digest": HEAD}}
+    )
+    for value in ids.values():
+        assert value in rendered.text
+    assert "frontier: 1; head_digest: " + HEAD in rendered.text
+    assert "summary_render_failed:operation" in rendered.text
+
+
+def test_a_long_standing_limitation_list_is_capped_and_never_displaces_a_required_ref() -> None:
+    standing = [f"standing_limitation_{index:02d}" for index in range(64)]
+    readiness = {
+        "state": "ready_with_limitations",
+        "open_obligation_count": "0",
+        "unanswered_finding_count": "0",
+        "receipt_blocking_finding_count": "0",
+        "acknowledged_obligation_count": "0",
+        "acknowledged_not_done_count": "0",
+        "agent_actionable": [],
+        "standing_limitations": standing,
+        "limitation_refs_required_count": "1",
+        "limitation_refs_required": ["res_00000000-0000-4000-8000-000000000001"],
+    }
+    envelope: dict[str, Any] = {
+        "view": "compact",
+        "head_frontier": {"sequence": "9", "head_digest": HEAD},
+        "closure_readiness": readiness,
+        "gaps": [],
+        "page": {"items": [{"freshness": "current", "open_obligations": []}]},
+    }
+    roomy = render_safe_compact_summary(envelope)
+    listed = roomy.split("Standing limitations: ", 1)[1]
+    assert len(listed) <= 1_100  # the list bound plus its closing sentence
+    assert "res_00000000-0000-4000-8000-000000000001" in roomy
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(summaries, "_MAX_SUMMARY_BYTES", 512)
+        tight = render_safe_compact_summary(envelope)
+    assert len(tight) <= 512
+    assert "res_00000000-0000-4000-8000-000000000001" in tight
+    assert "Closure: ready_with_limitations" in tight

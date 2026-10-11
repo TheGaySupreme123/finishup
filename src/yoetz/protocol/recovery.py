@@ -982,6 +982,7 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         "closure_pagination_invalid",
         "closure_resolution_decision_required",
         "closure_result_too_large",
+        "closure_snapshot_unavailable",
         "closure_response_decision_required",
         "closure_result_unavailable",
         "closure_source_unknown",
@@ -1003,14 +1004,15 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "nothing was recorded. Send the same call once more, then report the correlation_id."
         ),
         "bridge_invoke_failed": (
-            "The bridge failed while calling the local service. A write may or may not be "
-            "recorded: read status view=operation for this request_id, and replay the same "
-            "request_id (never a new one) only if it is absent. A read changed nothing."
+            "The bridge failed while calling the local service. A write (start, publish_work, "
+            "check, respond, receipt) may or may not be recorded: replay the same request_id "
+            "(never a new one); replay is idempotent and returns the stored result when the "
+            "write committed. A read changed nothing: repeat it. Report the correlation_id."
         ),
         "bridge_error_mapping_failed": (
-            "The service reported a failure the bridge could not translate. Read status "
-            "view=operation for this request_id before replaying the same request_id; report "
-            "the correlation_id."
+            "The service reported a failure that the bridge could not translate, so its code is "
+            "not shown. Read status view=compact for the current state before repeating the "
+            "call, and report the correlation_id."
         ),
         "bridge_result_wire_failed": (
             "The bridge could not serialize this call's result. A write (start, publish_work, "
@@ -1056,8 +1058,8 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
         ),
         "internal_error": (
             "The bridge failed while building its own error, so nothing more specific is known. "
-            "A write may or may not be recorded: read status view=operation for this request_id "
-            "before replaying the same request_id. Report the correlation_id."
+            "A write may or may not be recorded: replay the same request_id (never a new one). "
+            "Report the correlation_id."
         ),
         "start_state_inconsistent": (
             "The start state recorded for this request is inconsistent. Do not start a "

@@ -92,7 +92,7 @@ def test_the_last_resort_error_is_typed_and_its_remedy_renders() -> None:
     assert result["error"]["safe_details"] == {"reason_code": "internal_error"}  # type: ignore[index]
     text = render_safe_compact_summary(result)
     assert "Reason: internal_error." in text
-    assert "Remedy:" in text and "status view=operation" in text
+    assert "Remedy:" in text and "replay the same request_id (never a new one)" in text
 
 
 def test_the_start_catalog_helpers_type_their_internal_error() -> None:

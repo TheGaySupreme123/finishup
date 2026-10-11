@@ -211,6 +211,13 @@ class _Render:
         )
 
 
+def _closure_part(variants: tuple[str, ...]) -> Part:
+    """The closure-readiness sentence: the state is always present, the longer forms follow the
+    action clauses (limitation refs, acknowledged work) when room is scarce."""
+
+    return Part(variants, required=True, priority=_P_ACTION + 2)
+
+
 def _req(*variants: str) -> Part:
     """A part that is always present; later variants are the shorter forms."""
 
@@ -1506,7 +1513,8 @@ def summary_for_check(envelope: object) -> str:
                 *render.variants(
                     "continuation", lambda: _continuation_variants(status, reason, source)
                 ),
-                priority=_P_ACTION,
+                # The recovery directive is the first optional clause granted (ADR-043).
+                priority=_P_ACTION - 2,
             ),
             _opt(
                 render.text("gap_sentence", lambda: _check_time_change_sentence(source)),
@@ -1711,7 +1719,7 @@ def summary_for_status(envelope: object) -> str:
                     "details.",
                     priority=_P_ACTION,
                 ),
-                _req(*render.variants("closure", lambda: _closure_variants(source))),
+                _closure_part(render.variants("closure", lambda: _closure_variants(source))),
                 render.failure_part(),
             ]
         )
@@ -1762,7 +1770,7 @@ def summary_for_status(envelope: object) -> str:
             f"receipt-blocking findings: {receipt_blocking}; reported gaps: {gaps}."
         )
     )
-    parts.append(_req(*render.variants("closure", lambda: _closure_variants(source))))
+    parts.append(_closure_part(render.variants("closure", lambda: _closure_variants(source))))
     page = source.get("page")
     if isinstance(page, Mapping):
         typed_page = cast(Mapping[str, JsonValue], page)
@@ -1858,7 +1866,10 @@ def _closure_variants(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
     )
 
     def listed(base: str, label: str, values: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(f"{base} {variant}." for variant in list_variants(label, values, suffix=""))
+        variants = list_variants(label, values, suffix="")
+        # One named list never takes more than the list bound; the shortest form is always kept.
+        within = tuple(variant for variant in variants if len(variant) <= _LIST_MAX_CHARS)
+        return tuple(f"{base} {variant}." for variant in within or variants[-1:])
 
     variants: list[str] = []
     if state == "action_required":
@@ -1930,7 +1941,7 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
             [
                 head,
                 _req("page unavailable."),
-                _req(*render.variants("closure", lambda: _closure_variants(source))),
+                _closure_part(render.variants("closure", lambda: _closure_variants(source))),
                 render.failure_part(),
             ]
         )
@@ -1989,7 +2000,7 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
     parts.append(
         _opt("Read the structured page for child states and row identities.", priority=_P_STATE)
     )
-    parts.append(_req(*render.variants("closure", lambda: _closure_variants(source))))
+    parts.append(_closure_part(render.variants("closure", lambda: _closure_variants(source))))
     parts.append(render.failure_part())
     return _compose(parts)
 
@@ -2348,7 +2359,10 @@ def _minimal_summary(envelope: object, builder: str) -> str:
             return f"Receipt conclusion: {_safe_token(source.get('conclusion'))};"
         if builder == "closure_prepare":
             return "Closure preparation only;"
-        return f"Operation outcome: {_safe_token(source.get('outcome'), fallback='recorded')};"
+        return (
+            f"Operation outcome: {_safe_token(source.get('outcome'), fallback='recorded')}; "
+            f"{_identity_clause(source)}"
+        )
 
     parts = [
         _req(guarded(identity), "Result recorded;"),
