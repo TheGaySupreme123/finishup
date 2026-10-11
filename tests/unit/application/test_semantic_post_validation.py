@@ -1487,6 +1487,28 @@ def test_cargo_re_raises_named_by_restates_stay_one_open_finding() -> None:
         assert "Reviewer re-raised earlier findings" in review.review_summary
 
 
+def test_cargo_re_raises_citing_only_passing_runs_are_a_standing_disagreement() -> None:
+    """tb4n3 RC-7 (D-8): the latest passing test run every agent re-runs is not new material about
+    a rejected concern. The SUCCESS variant of the cargo shape therefore records the reviewer's
+    repeat as ``disputed_after_rebuttal`` (a standing disagreement, not a round), where the
+    failing-run variant above is ``answered_not_fixed``."""
+
+    case = _cargo_case(result_outcome=ResultOutcome.SUCCESS)
+    for number in range(1, 8):
+        review = validate_semantic_judgment(
+            case,
+            (),
+            SemanticJudgment("challenges_returned", (_re_raise(number, restates=str(fnd(1))),)),
+            _provenance(),
+            expected_frontier=case.frontier,
+            prior_finding_refs=frozenset({str(fnd(1))}),
+        )
+        assert review.candidates == ()
+        assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+            (str(fnd(1)), "disputed_after_rebuttal")
+        ]
+
+
 def test_restates_of_another_concern_mints_a_linked_finding_and_never_rules_on_the_target() -> None:
     """Adversarial review of #980: a ``code_defect`` naming a ``task_requirement_unmet`` finding
     is a different concern. Folding it would turn a new defect into 0 findings and a suppression;

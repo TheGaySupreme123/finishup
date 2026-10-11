@@ -1843,3 +1843,27 @@ its post share one action (described as observed via Claude Code hook), and a po
 keeps the standing `unpaired_event` record and triggers one "Yoetz notice (no response needed)"
 per new orphan scope instead of a recurring stale-observation advisory. Claude Code has no
 code-mode cell, so the stream wrapper rule does not apply.
+
+### Limitation requests, `reopened` and one dialogue per concern on Claude Code (tb4n3 RC-1 and RC-7, #1024, #1030)
+
+Host decision: supported, no host-specific code. The change lives in the shared kernel, `respond`
+and review paths (ADR-034 and ADR-040 amendments of 2026-10-11), so Claude Code behaves exactly as the
+other hosts. The Stop hook and the MCP `respond` tool take the shared path; a Claude Code session sees the same `respond` description and the same `closure_after`. What a Claude Code agent can rely on:
+
+- A reviewer finding that asks the agent to `state_unresolved_limitation` is a to-disclose item, not
+  repair work. `kernel/limitation.limitation_standing` reads it; `finding_blocks_receipt` is false
+  for it. One reasoned `respond` (`acknowledged`, `acknowledged_not_done`, or `self_verified`) or a
+  `yoetz-verification-limit:<obligation id>` decision settles it, with no recorded resolution attempt
+  required. It is never clean. How the Stop hook and readiness word an undisclosed request is owned
+  by the closure-classification change (ADR-046).
+- `acknowledged_not_done` is no longer a one-way door: `respond` with `reopened` and a reason takes
+  it back, and a qualifying `check` that tested the work after the answer resolves it (also for
+  `self_verified`).
+- One concern stays one finding: a re-raise over a settled item (or an open item of the same kind
+  over the same concern) is recorded on that item and listed in the check's review summary instead of
+  minting a new id; the agent's own earlier rebuttal stands after a later acknowledgement.
+- Never empty or withdraw a working deliverable over a finding or an "empty file if unsolved" clause.
+
+Verification: `tests/integration/application/test_tb4n3_limits_dialogue_shapes.py` drives the real
+check, respond, status and receipt operations with a compliant reviewer; a live Claude Code transcript on
+macOS, Linux and WSL 2 is not recorded for this change.
