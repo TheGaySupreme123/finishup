@@ -52,6 +52,7 @@ from yoetz.domain.findings import (
     is_limitation_request,
 )
 from yoetz.domain.values import EventId, FindingId, ObligationId
+from yoetz.kernel.check_standing import check_standing
 from yoetz.kernel.finding_todo import (
     FindingTodoState,
     duplicate_counting_id,
@@ -640,12 +641,44 @@ def _externally_evaluated(state: ProjectionState) -> frozenset[ObligationId]:
     return frozenset(item for item in declared if str(item) in cited)
 
 
+def _emptied_obligations(
+    state: ProjectionState, records: tuple[LedgerRecord, ...]
+) -> frozenset[ObligationId]:
+    """Obligations whose declared deliverable the newest applicable check found emptied.
+
+    The path-keyed fact ``declared_output_emptied`` (ADR-045) as the newest check recorded it: a
+    deliverable state whose ``change`` is ``emptied`` or ``truncated`` and that no
+    ``yoetz-assumption`` decision accepted (``accepted_by``). It speaks only while that check
+    still applies: a later material record (an edit that refills the file, the decision that
+    accepts the path) supersedes the check, the fact is then stale and the obligation reads
+    ``resolved`` again until the next check re-reads the file. Without ``records`` nothing is
+    inferred.
+    """
+
+    latest = state.latest_tested_state
+    if latest is None or not records:
+        return frozenset()
+    check = next((item for item in records if item.event_id == latest.source_check_event_id), None)
+    payload = getattr(check, "payload", None)
+    if type(payload) is not CheckRecordedPayload:
+        return frozenset()
+    emptied = frozenset(
+        item.obligation_id
+        for item in payload.deliverable_states
+        if item.change in {"emptied", "truncated"} and item.accepted_by is None
+    )
+    if not emptied or check_standing(state, records).superseded:
+        return frozenset()
+    return emptied
+
+
 def obligation_closures(
     state: ProjectionState, *, records: Iterable[LedgerRecord] = ()
 ) -> Mapping[ObligationId, ObligationClosure]:
     """Closures of every effective obligation of the current plan chain."""
 
     ledger = tuple(records)
+    emptied = _emptied_obligations(state, ledger)
     blocked = blocker_declarations(state, decision_batches(ledger))
     external = _externally_evaluated(state)
     closures: dict[ObligationId, ObligationClosure] = {}
@@ -656,7 +689,9 @@ def obligation_closures(
         status = payload.status
         sources: tuple[EventId, ...] = (record.source_event_id,)
         if status is ObligationStatus.RESOLVED:
-            basis = "resolved"
+            # A resolution whose deliverable was later emptied is not delivered (ADR-045): the
+            # agent can still restore it, and the receipt reads below clean until it does.
+            basis = "resolved_deliverable_emptied" if obligation in emptied else "resolved"
         elif obligation in external:
             basis = "externally_evaluated"
         elif status is ObligationStatus.ACKNOWLEDGED_NOT_DONE:

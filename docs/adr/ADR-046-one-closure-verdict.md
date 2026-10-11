@@ -272,10 +272,28 @@ readiness it is given (ADR-033 amendment).
 * Old ledgers replay unchanged. A receipt already issued is immutable. A new build asked for a
   receipt over an old ledger uses the *recorded* check verdict.
 * Residuals: a reasoned rejection reads `awaiting_ruling` until the reviewer-ruling frontier is
-  recorded (the lane that owns that reducer fact supplies it); the obligation basis
-  `resolved_deliverable_emptied` is in the vocabulary and is produced when the deliverable-state
-  fact is wired to the classifier; the optional counterfactual "if the actionable items were
-  cleared" is not computed.
+  recorded (the lane that owns that reducer fact supplies it); the optional counterfactual "if the
+  actionable items were cleared" is not computed.
+* **Not switched: lineage rollups stay strict.** A child's findings reach the parent as a frozen
+  `ChildFindingSnapshot` in the dependency manifest (`finding_id`, `kind`, `origin`, `priority`,
+  `actionable`, `resolved`, `resolution_event_id`, `self_verified`). The snapshot is recorded in the
+  parent's ledger and validated against the kind traits on replay; it carries no closure class or
+  basis, so the parent cannot tell a child's `settled_unmet` from `settled_disclosed`, and
+  `_child_finding_snapshot` (`application/lineage_coordinator.py`) deliberately keeps a child's
+  `rejection_accepted` and `acknowledged_not_done` rows actionable and unresolved (issue #905: the
+  child's own receipt discloses the terminal state; a rollup must not bend `actionable` or
+  `resolved` to mean "withdrawn"). Carrying the class would be a manifest wire change (a
+  protocol-gated design area) and would let a parent read a child's disclosure as clean, so the
+  rollup keeps the strict reading and `lineage_blocks` / `child_findings_actionable` stay the
+  reasons R2 and R5 name. A follow-up that wants the class on the manifest owns that wire bump.
+* **`resolved_deliverable_emptied` is produced.** An obligation recorded `resolved` whose declared
+  deliverable the newest applicable check found emptied or truncated (the path-keyed fact
+  `declared_output_emptied`, ADR-045, not accepted by a `yoetz-assumption` decision) reads
+  `resolved_deliverable_emptied` (agent work, `insufficient_coverage`) instead of `resolved`. A
+  later material record (the file refilled, the decision that accepts the path) supersedes that
+  check, so the stale fact is not read and the obligation returns to `resolved` until the next
+  check re-reads the file. The reviewer cannot approve around it: the fact is actionable on both
+  routes (section 2), so a review that raises nothing still leaves the check below clean.
 
 ## Host and platform decisions
 

@@ -116,8 +116,9 @@ Every non-`resolved` obligation reads below clean on the predicted receipt (reas
 `obligations_open`, `obligations_acknowledged`, `obligations_disclosed`), which names in the
 conclusion what the receipt already did implicitly. `status view=obligations` rows carry
 `closure_class` and `closure_basis`; `obligation_counts {open, acknowledged, disclosed}` is the same
-on every surface. `resolved_deliverable_emptied` is in the vocabulary and is produced when the
-path-keyed deliverable-state fact (ADR-045) is wired to the classifier. The once-per-frontier
+on every surface. A `resolved` obligation whose declared deliverable the newest applicable check
+found emptied (the path-keyed fact of ADR-045) reads `resolved_deliverable_emptied` until the file
+is restored or a `yoetz-assumption` decision names the path (ADR-046). The once-per-frontier
 re-reads the Stop gate may ask (resolved obligations' acceptance criteria, an acknowledgement, a
 claimed blocker, an acknowledged finding the reviewer disputes) are computed statelessly from the
 closures and announced on status as `rechecks`.
