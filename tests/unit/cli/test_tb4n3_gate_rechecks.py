@@ -621,17 +621,16 @@ def test_the_earliest_acceptance_invite_survives_the_memory_bound(tmp_path: Any)
         "ready_with_limitations", (), rechecks=(invite, ack_recheck(_OBL, since=410))
     )
     assert _gate(answered, sequence="500", reasked=memory) is None
-    # Later invites are bounded too: the earliest and the newest seven stay.
-    for index in range(20):
+    # Later invites are bounded too: trimming always keeps the earliest invite of the session.
+    for index in range(40):
         key = f"{acceptance_key([obligation_id(300 + index)])}@{500 + index}"
         assert gate_module.record_closure_gate_delivered(
-            "ses_b", "1:x", blocker_keys=(key, *noise[index * 4 : index * 4 + 4]), _state=tmp_path
+            "ses_b", "1:x", blocker_keys=(key, *noise[index * 2 : index * 2 + 2]), _state=tmp_path
         )
     kept = gate_module.closure_gate_reasked_blockers("ses_b", _state=tmp_path)
-    invites = sorted(item for item in kept if item.startswith("accept:"))
     assert len(kept) <= 64
-    assert len(invites) <= gate_module._MAX_INVITE_KEYS  # pyright: ignore[reportPrivateUsage]
     assert f"{acceptance_key([obligation_id(300)])}@500" in kept
+    assert f"{acceptance_key([obligation_id(339)])}@539" in kept
 
 
 _PREDICTION = SimpleNamespace(
@@ -701,4 +700,9 @@ def test_the_prediction_is_the_first_sentence_dropped_under_the_host_bound() -> 
     assert len(gate.text) <= 2000
     assert "will read" not in gate.text and "would read" not in gate.text
     assert gate_module._CLOSE_TEXT in gate.text  # pyright: ignore[reportPrivateUsage]
-    assert "Blocker re-check (asked once)" in gate.text
+    # Yielding the tail changes nothing else: the same readiness without a prediction composes
+    # to the same gate (nothing else was dropped to make room for it).
+    crowded.predicted_receipt = None
+    bare = _gate(crowded)
+    assert bare is not None
+    assert (bare.text, bare.items, bare.blocker_keys) == (gate.text, gate.items, gate.blocker_keys)
