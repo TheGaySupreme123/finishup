@@ -100,7 +100,7 @@ from yoetz.ports.control import (
 from yoetz.ports.integrations import YOETZ_MCP_TOOL_NAMES
 from yoetz.protocol.canonical import JsonValue, canonical_encode
 from yoetz.protocol.consent import CONSENT_PENDING_TTL_SECONDS
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from yoetz.protocol.errors import PublicErrorCode, PublicOperationError, SafeDetailValue
 from yoetz.protocol.guidance_uris import (
     FOCUSED_GUIDANCE_URIS,
     GUIDANCE_DOCUMENT_URIS,
@@ -304,22 +304,51 @@ _INTERNAL_STAGE_MESSAGES: Final = MappingProxyType(
 )
 
 
+# Stages whose remedy is a replay or a repeat. A ``retryable: false`` error is terminal except for
+# its typed continuation (guidance workflow.md "Errors and continuations"), so the remedy text alone
+# would leave a compliant agent stopped: each of these carries the same operation-kind continuation a
+# timeout does (read: repeat under a new id; write: look the operation up, replay only when absent;
+# start: replay under the same id). The result-serialization stages differ for start: a replayed
+# start would fail the same way and has no ids to look up, so no continuation travels there.
+_REPLAYABLE_STAGES: Final = frozenset(
+    {"bridge_request_validation_failed", "bridge_invoke_failed", "bridge_error_mapping_failed"}
+)
+_RECORDED_RESULT_STAGES: Final = frozenset(
+    {"bridge_result_wire_failed", "bridge_result_validate_failed"}
+)
+
+
+def _stage_continuation(reason: str, operation: str | None) -> str | None:
+    if reason not in _REPLAYABLE_STAGES and reason not in _RECORDED_RESULT_STAGES:
+        return None
+    kind = timeout_operation_kind(operation, write_operations=_WRITE_OPERATIONS)
+    if kind is None or (kind == "start" and reason in _RECORDED_RESULT_STAGES):
+        return None
+    return continuation_for_reason("request_timeout", operation_kind=kind)
+
+
 def _internal_stage_error(
     reason: str,
     *,
     request_id: str | None,
     correlation_id: str | None,
     host_profile: McpHostProfile,
+    operation: str | None = None,
 ) -> types.CallToolResult:
-    """An unexpected bridge failure as INTERNAL_ERROR with a typed stage and a remedy."""
+    """An unexpected bridge failure as INTERNAL_ERROR with a typed stage, a remedy and, where the
+    remedy is a replay or a lookup, the typed continuation that authorizes it."""
 
+    safe_details: dict[str, SafeDetailValue] = {"reason_code": reason}
+    continuation = _stage_continuation(reason, operation)
+    if continuation is not None:
+        safe_details["continuation"] = continuation
     return structured_error_result(
         PublicErrorCode.INTERNAL_ERROR,
         _INTERNAL_STAGE_MESSAGES[reason],
         retryable=False,
         request_id=request_id,
         correlation_id=correlation_id,
-        safe_details={"reason_code": reason},
+        safe_details=safe_details,
         host_profile=host_profile,
     )
 
@@ -1892,6 +1921,7 @@ def _control_error_result(
             request_id=request_id,
             correlation_id=error.correlation_id,
             host_profile=host_profile,
+            operation=operation,
         )
     correlation_id = record_unexpected_exception_without_raising(
         error,
@@ -1904,6 +1934,7 @@ def _control_error_result(
         request_id=request_id,
         correlation_id=correlation_id,
         host_profile=host_profile,
+        operation=operation,
     )
 
 
@@ -2304,6 +2335,7 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             request_id=request_id,
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
+            operation=operation,
         )
     inherited = await _prepare_availability(runtime, request_id)
     if inherited is not None:
@@ -2352,6 +2384,7 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
                 request_id=request_id,
                 correlation_id=correlation_id,
                 host_profile=runtime.host_profile,
+                operation=operation,
             )
     except ControlError as exc:
         if exc.reason in _AVAILABILITY_LATCH_REASONS:
@@ -2413,6 +2446,7 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             request_id=request_id,
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
+            operation=operation,
         )
 
     await _clear_availability(runtime)
@@ -2452,6 +2486,7 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             request_id=request_id,
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
+            operation=operation,
         )
 
 
@@ -2765,6 +2800,7 @@ async def dispatch_publish_work(
             request_id=request_id,
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
+            operation="publish_work",
         )
     return await _dispatch(
         arguments,
@@ -2859,6 +2895,7 @@ async def dispatch_closure_prepare(
             request_id=request_id,
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
+            operation="closure_prepare",
         )
 
     inherited = await _prepare_availability(runtime, request_id)
@@ -2923,6 +2960,7 @@ async def dispatch_closure_prepare(
                 request_id=request_id,
                 correlation_id=correlation_id,
                 host_profile=runtime.host_profile,
+                operation="closure_prepare",
             )
     except ControlError as exc:
         if exc.reason in _AVAILABILITY_LATCH_REASONS:

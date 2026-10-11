@@ -12,12 +12,16 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any, cast
+
+import pytest
 
 from yoetz.adapters.memory import start_catalog as memory_catalog
 from yoetz.adapters.sqlite import start_catalog as sqlite_catalog
 from yoetz.application.maintenance import (
     _internal_error as maintenance_internal_error,  # pyright: ignore[reportPrivateUsage]
 )
+from yoetz.mcp import server
 from yoetz.protocol.errors import PROTOCOL_REASON_CODES, PublicErrorCode
 from yoetz.protocol.recovery import REASON_REMEDIES
 
@@ -125,3 +129,41 @@ def test_every_typed_internal_stage_has_a_registered_reason_and_a_remedy_sentenc
     }
     assert stages <= PROTOCOL_REASON_CODES
     assert set(REASON_REMEDIES) == stages
+
+
+@pytest.mark.parametrize(
+    ("reason", "operation", "expected"),
+    [
+        ("bridge_error_mapping_failed", "start", "start_timeout_same_identity"),
+        ("bridge_invoke_failed", "start", "start_timeout_same_identity"),
+        ("bridge_invoke_failed", "publish_work", "write_timeout_same_identity"),
+        ("bridge_request_validation_failed", "check", "write_timeout_same_identity"),
+        ("bridge_invoke_failed", "status", "read_timeout_new_identity"),
+        ("bridge_result_wire_failed", "publish_work", "write_timeout_same_identity"),
+        ("bridge_result_validate_failed", "status", "read_timeout_new_identity"),
+        # A replayed start whose result cannot be serialized fails the same way and returns no ids
+        # to look up, so no continuation travels.
+        ("bridge_result_wire_failed", "start", None),
+        ("closure_prepare_failed", "closure_prepare", None),
+        ("bridge_invoke_failed", None, None),
+    ],
+)
+def test_a_replay_remedy_travels_with_the_continuation_that_authorizes_it(
+    reason: str, operation: str | None, expected: str | None
+) -> None:
+    """Codex review of #1025: a `retryable: false` error is terminal except for its typed
+    continuation (guidance workflow.md), so a remedy that says "replay" without the token leaves a
+    compliant agent stopped, e.g. a first `start` with no session/writer ids."""
+
+    result = server._internal_stage_error(  # pyright: ignore[reportPrivateUsage]
+        reason,
+        request_id="req_00000000-0000-4000-8000-000000000001",
+        correlation_id=None,
+        host_profile="generic",
+        operation=operation,
+    )
+    structured = cast(dict[str, Any], result.structuredContent)
+    details = structured["error"]["safe_details"]
+    assert details["reason_code"] == reason
+    assert details.get("continuation") == expected
+    assert structured["error"]["retryable"] is False
