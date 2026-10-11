@@ -53,6 +53,7 @@ from yoetz.kernel.limitation import (
     DISCLOSED_BY_DECISION,
     DISCLOSED_BY_RESPONSE,
     LIMITATION_REQUESTED,
+    externally_evaluated_obligations,
     limitation_disclosed_ids,
     limitation_requested_ids,
     limitation_standing,
@@ -62,6 +63,7 @@ from yoetz.kernel.projections import (
     StandingPosition,
     projection_from_snapshot,
     projection_snapshot,
+    unanswered_finding_ids,
 )
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.protocol.coverage import Coverage
@@ -161,6 +163,66 @@ def test_a_verification_limit_decision_on_the_obligation_discloses_it_but_an_ass
         decisions={evt(30): replace(limit_decision(30, obl(1)), superseded_by_event_id=evt(31))},
     )
     assert _limit_state(superseded) == LIMITATION_REQUESTED
+
+
+def test_a_limitation_request_disclosed_by_a_decision_is_no_longer_response_work() -> None:
+    """A decision line settles the request with no response (Q4), so the readiness count of
+    unanswered findings must not keep it; an undisclosed request is still response work, and an
+    ``act`` finding beside the same decision stays unanswered (G1)."""
+
+    findings = {
+        fnd(1): finding_record(reviewer_finding(1, str(obl(1)), next_step=LIMITATION), 10),
+        fnd(2): finding_record(reviewer_finding(2, str(obl(2)), next_step=LIMITATION), 11),
+        fnd(3): finding_record(reviewer_finding(3, str(obl(1)), next_step="act"), 12),
+    }
+    state = projection(
+        findings,
+        {},
+        obligations={obl(1): obligation_row(1), obl(2): obligation_row(2, 3)},
+        decisions={evt(20): limit_decision(20, obl(1))},
+    )
+    assert unanswered_finding_ids(state, ()) == frozenset({fnd(2), fnd(3)})
+    assert limitation_disclosed_ids(state) == (fnd(1),)
+    assert limitation_requested_ids(state) == (fnd(2),)
+
+
+def test_the_externally_evaluated_marker_needs_both_the_decision_line_and_the_request() -> None:
+    """Q4 related default: ``acceptance_externally_evaluated`` is the verification-limit decision
+    plus a live reviewer limitation request on the obligation. Neither alone, the agent's
+    acknowledgement alone, nor an ``act`` challenge beside the decision qualifies."""
+
+    request = {fnd(1): finding_record(reviewer_finding(1, str(obl(1)), next_step=LIMITATION), 10)}
+    act = {fnd(1): finding_record(reviewer_finding(1, str(obl(1)), next_step="act"), 10)}
+    obligations = {obl(1): obligation_row(1)}
+    decision = {evt(20): limit_decision(20, obl(1))}
+    both = projection(request, {}, obligations=obligations, decisions=decision)
+    assert externally_evaluated_obligations(both) == frozenset({obl(1)})
+    # The request alone (the agent only acknowledged it) does not mark the obligation.
+    acknowledged = projection(
+        request, {fnd(1): answer(1, D.ACKNOWLEDGED, 12)}, obligations=obligations
+    )
+    assert externally_evaluated_obligations(acknowledged) == frozenset()
+    # The decision line alone, or beside an `act` challenge (G1), does not either.
+    assert (
+        externally_evaluated_obligations(
+            projection({}, {}, obligations=obligations, decisions=decision)
+        )
+        == frozenset()
+    )
+    assert (
+        externally_evaluated_obligations(
+            projection(act, {}, obligations=obligations, decisions=decision)
+        )
+        == frozenset()
+    )
+    # A request a later check proved absent is history, not a limit.
+    gone = projection(
+        {fnd(1): finding_record(request[fnd(1)].payload, 10, resolved_by_check_event_id=evt(30))},  # type: ignore[arg-type]
+        {},
+        obligations=obligations,
+        decisions=decision,
+    )
+    assert externally_evaluated_obligations(gone) == frozenset()
 
 
 def test_g1_an_act_challenge_never_qualifies_even_beside_a_recorded_disclosure() -> None:

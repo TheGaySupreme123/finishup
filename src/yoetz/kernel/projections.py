@@ -1199,19 +1199,47 @@ def unanswered_finding_ids(
     response work would leave an agent that repaired before answering with a readiness item it
     can never clear (pilot blocker).
 
+    A reviewer's limitation request the agent disclosed with a ``yoetz-verification-limit``
+    decision is not response work either (tb4n3 RC-1); an undisclosed one still is.
+
     A ``duplicate_of`` answer (issue #996) answers the finding only while its link holds
     (``duplicate_link_holds``). Once a later check broke the link, or the earlier finding became
     unreadable, that answer no longer applies and the finding needs its own answer again.
     """
 
     limitations = observation_limitation_finding_ids(state, records)
-    return frozenset(
+    waiting = frozenset(
         key
         for key, record in state.findings.items()
         if (key not in state.responses or _duplicate_answer_lapsed(state, key))
         and key not in limitations
         and not (record.payload is not None and record.resolved_by_check_event_id is not None)
     )
+    return waiting - _disclosed_limitations(state, waiting)
+
+
+def _disclosed_limitations(
+    state: ProjectionState, candidates: frozenset[FindingId]
+) -> frozenset[FindingId]:
+    """Waiting reviewer limitation requests the agent already disclosed by a decision line.
+
+    A ``yoetz-verification-limit:<obligation id>`` decision settles a limitation request without
+    a response (tb4n3 RC-1, owner decision Q4), so the request is no longer response work. Only a
+    request still without an answer can be settled this way, hence only *candidates* are read.
+    The import is local: ``kernel.limitation`` reads the projection this module defines.
+    """
+
+    from yoetz.domain.findings import is_limitation_request
+    from yoetz.kernel.limitation import limitation_disclosed_ids
+
+    requests = frozenset(
+        key
+        for key in candidates
+        if (record := state.findings.get(key)) is not None
+        and record.payload is not None
+        and is_limitation_request(record.payload)
+    )
+    return frozenset(limitation_disclosed_ids(state, requests)) if requests else frozenset()
 
 
 def duplicate_link_holds(state: ProjectionState, key: FindingId) -> FindingId | None:

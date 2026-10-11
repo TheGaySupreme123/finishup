@@ -8,6 +8,7 @@ projection holding them. Nothing here reads a ledger; the reducer-level tests bu
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from types import MappingProxyType
 
@@ -50,8 +51,10 @@ from yoetz.domain.findings import (
 )
 from yoetz.domain.values import ClaimId, EventId, FindingId, Frontier, ObligationId, actor_id
 from yoetz.kernel.projections import (
+    ClaimProjectionRecord,
     DecisionProjectionRecord,
     FindingProjectionRecord,
+    ObligationProjectionRecord,
     ProjectionRecord,
     ProjectionState,
     empty_projection_state,
@@ -192,23 +195,23 @@ def claim_row(number: int, sequence: int, *obligations: ObligationId):
 
 
 def projection(
-    findings: dict[FindingId, FindingProjectionRecord] | None = None,
-    responses: dict[FindingId, ProjectionRecord[ResponseRecordedPayload]] | None = None,
+    findings: Mapping[FindingId, FindingProjectionRecord] | None = None,
+    responses: Mapping[FindingId, ProjectionRecord[ResponseRecordedPayload]] | None = None,
     *,
-    obligations: dict[ObligationId, object] | None = None,
-    decisions: dict[EventId, DecisionProjectionRecord] | None = None,
-    claims: dict[ClaimId, object] | None = None,
+    obligations: Mapping[ObligationId, ObligationProjectionRecord] | None = None,
+    decisions: Mapping[EventId, DecisionProjectionRecord] | None = None,
+    claims: Mapping[ClaimId, ClaimProjectionRecord] | None = None,
     frontier: int = 40,
 ) -> ProjectionState:
     return replace(
         empty_projection_state(),
         frontier=frontier,
         head_digest=_DIGEST,
-        findings=MappingProxyType(findings or {}),
-        responses=MappingProxyType(responses or {}),
-        obligations=MappingProxyType(obligations or {}),  # type: ignore[arg-type]
-        decisions=MappingProxyType(decisions or {}),
-        claims=MappingProxyType(claims or {}),  # type: ignore[arg-type]
+        findings=MappingProxyType(dict(findings or {})),
+        responses=MappingProxyType(dict(responses or {})),
+        obligations=MappingProxyType(dict(obligations or {})),
+        decisions=MappingProxyType(dict(decisions or {})),
+        claims=MappingProxyType(dict(claims or {})),
         freshness=LedgerFreshness.CURRENT,
     )
 

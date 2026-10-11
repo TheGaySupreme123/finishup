@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from typing import Final, Literal
 
 from yoetz.domain.findings import Finding, is_limitation_request
-from yoetz.domain.values import EventId, FindingId
+from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel.concern import subject_obligations
 from yoetz.kernel.finding_resolution import disclosing_response, finding_is_resolved
 from yoetz.kernel.projections import ProjectionState
@@ -52,6 +52,7 @@ __all__ = [
     "LIMITATION_DISCLOSED",
     "LIMITATION_REQUESTED",
     "LimitationStanding",
+    "externally_evaluated_obligations",
     "limitation_disclosed_ids",
     "limitation_requested_ids",
     "limitation_standing",
@@ -167,3 +168,33 @@ def limitation_disclosed_ids(
     """Limitation requests the agent disclosed (the "Verification limits" bucket), sorted."""
 
     return tuple(item.finding_id for item in _standings(projection, finding_ids) if item.disclosed)
+
+
+def externally_evaluated_obligations(projection: ProjectionState) -> frozenset[ObligationId]:
+    """Obligations marked ``acceptance_externally_evaluated`` (tb4n3 RC-1, owner decision Q4).
+
+    An obligation is externally evaluated when the agent recorded a
+    ``yoetz-verification-limit:<obligation id>`` decision for it **and** a live reviewer
+    limitation request concerns it (the request names it, or a claim or event it cites does).
+    Neither alone qualifies: the decision line alone is the agent's assertion, and a reviewer
+    request alone leaves the obligation ordinary work. The agent's own acknowledgement of the
+    obligation, or its words in a response, never mark it (guard G2). Derived from the decision
+    line and the request, so no event schema changed; a structured field on
+    ``obligation_published`` is a separate wire revision.
+    """
+
+    decisions = _verification_limit_decisions(projection)
+    if not decisions:
+        return frozenset()
+    concerned: set[str] = set()
+    for key in projection.findings:
+        if limitation_standing(projection, key, _decisions=decisions) is None:
+            continue
+        record = projection.findings[key]
+        assert record.payload is not None
+        concerned.update(
+            subject_obligations(projection, (str(ref) for ref in record.payload.subject_refs))
+        )
+    return frozenset(
+        ObligationId(obligation) for obligation in sorted(decisions) if obligation in concerned
+    )
