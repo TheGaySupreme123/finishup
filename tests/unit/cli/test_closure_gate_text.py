@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from builders.gate_readiness import ack_recheck, blocker_recheck, obligation_id, premise_recheck
 from yoetz.cli import closure_gate as gate_module
 from yoetz.cli.closure_gate import closure_gate_from_readiness
 
@@ -189,12 +190,7 @@ def test_every_item_and_a_blocker_recheck_fit_the_host_bound() -> None:
         ),
         open_obligation_count="18446744073709551615",
         receipt_blocking_finding_count="18446744073709551615",
-        blocked_obligations=(
-            SimpleNamespace(
-                obligation_id="obl_97700000-0000-4000-8000-000000000001",
-                blocker_kind="dependency_unavailable",
-            ),
-        ),
+        rechecks=(blocker_recheck(obligation_id(1)),),
     )
     gate = closure_gate_from_readiness(
         readiness,
@@ -229,13 +225,7 @@ def _worst_case(*, rows: int, pending: bool, limits: int = 0) -> Any:
             ),
             open_obligation_count="99",
             receipt_blocking_finding_count="99",
-            blocked_obligations=tuple(
-                SimpleNamespace(
-                    obligation_id=f"obl_97700000-0000-4000-8000-{index:012d}",
-                    blocker_kind="dependency_unavailable",
-                )
-                for index in range(rows)
-            ),
+            rechecks=tuple(blocker_recheck(obligation_id(index)) for index in range(rows)),
             # F3: required limitation ids (at most 64 listed) and an extreme count.
             limitation_refs_required=tuple(
                 f"res_97700000-0000-4000-8000-{index:012d}" for index in range(min(limits, 64))
@@ -313,17 +303,8 @@ def test_every_stop_gate_token_with_rechecks_never_reports_a_clipped_recheck_as_
             agent_actionable=tuple(gate_module._GATE_TOKENS),  # pyright: ignore[reportPrivateUsage]
             open_obligation_count="18446744073709551615",
             receipt_blocking_finding_count="18446744073709551615",
-            blocked_obligations=tuple(
-                SimpleNamespace(
-                    obligation_id=f"obl_97700000-0000-4000-8000-{index:012d}",
-                    blocker_kind="dependency_unavailable",
-                )
-                for index in range(rows)
-            ),
-            acknowledged_not_done=tuple(
-                f"obl_97700000-0000-4000-8000-{100 + index:012d}" for index in range(acknowledged)
-            ),
-            acknowledged_obligation_count=str(acknowledged),
+            rechecks=tuple(blocker_recheck(obligation_id(index)) for index in range(rows))
+            + tuple(ack_recheck(obligation_id(100 + index)) for index in range(acknowledged)),
             limitation_refs_required=tuple(
                 f"res_97700000-0000-4000-8000-{index:012d}" for index in range(64)
             ),
@@ -353,19 +334,12 @@ def test_the_recheck_only_gate_never_reports_a_clipped_acknowledgement_as_asked(
     readiness = SimpleNamespace(
         state="ready_with_limitations",
         agent_actionable=(),
-        blocked_obligations=tuple(
-            SimpleNamespace(
-                obligation_id=f"obl_97700000-0000-4000-8000-{index:012d}",
-                blocker_kind="dependency_unavailable",
-            )
-            for index in range(3)
+        rechecks=(
+            *(blocker_recheck(obligation_id(index)) for index in range(3)),
+            premise_recheck(3),
+            *(ack_recheck(obligation_id(100 + index)) for index in range(3)),
         ),
         standing_limitations=("finding_premise_disputed", "declared_output_content_moved"),
-        acknowledged_not_done_count="3",
-        acknowledged_not_done=tuple(
-            f"obl_97700000-0000-4000-8000-{100 + index:012d}" for index in range(3)
-        ),
-        acknowledged_obligation_count="3",
     )
     gate = closure_gate_from_readiness(
         readiness,

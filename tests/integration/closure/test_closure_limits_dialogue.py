@@ -31,7 +31,11 @@ from integration.closure.test_closure_shapes import (
     assert_surfaces_agree,
     receipt_artifact_1_3_0,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
-from yoetz.cli.closure_gate import PREMISE_RECHECK_ITEM, closure_gate_from_readiness
+from yoetz.cli.closure_gate import (
+    ACCEPTANCE_RECHECK_ITEM,
+    PREMISE_RECHECK_ITEM,
+    closure_gate_from_readiness,
+)
 from yoetz.domain.findings import FindingKind
 from yoetz.protocol.canonical import JsonValue
 
@@ -134,18 +138,14 @@ async def test_one_answer_discloses_a_limitation_and_it_is_not_a_requirement_lef
     document = gathered.receipts["json"].document
     assert document["limitation_disclosed_finding_ids"] == [finding.finding_id]
     # Disclosed, not "acknowledged, not done": it is not listed as an undone requirement and the
-    # Stop gate does not challenge the agent again over it.
+    # Stop gate does not challenge the agent again over it: the only re-check left is the
+    # announced acceptance re-read of the resolved obligation (RC-8), never the finding.
     assert not document.get("acknowledged_not_done_finding_ids")
     assert finding.finding_id not in tuple(readiness.acknowledged_not_done or ())
-    assert (
-        closure_gate_from_readiness(
-            readiness,
-            frontier_sequence="9",
-            frontier_digest="d",
-            observation_pending=False,
-        )
-        is None
+    gate = closure_gate_from_readiness(
+        readiness, frontier_sequence="9", frontier_digest="d", observation_pending=False
     )
+    assert gate is not None and gate.items == (ACCEPTANCE_RECHECK_ITEM,)
     for fmt in ("markdown", "text"):
         assert "Verification limits" in gathered.receipts[fmt].human_text
 

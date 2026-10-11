@@ -259,6 +259,9 @@ TASK_FACT_GAPS: Final = AGENT_ACTIONABLE_TASK_FACT_GAPS | STANDING_TASK_FACT_GAP
 STOP_GATE_TOKENS: Final = (
     "obligations_open",
     "receipt_findings_unresolved",
+    # A finding the agent rejected with a reason that awaits the reviewer's ruling (tb4n3 RC-8):
+    # the gate tells the agent to run the closing review, never to acknowledge what it disputes.
+    "finding_rejection_awaiting_ruling",
     # The closing AI-powered review the closure checklist requires after the last material change.
     "closing_review_required",
     PLANNED_VERIFICATION_FAILED_GAP,

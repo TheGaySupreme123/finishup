@@ -11,6 +11,12 @@ from typing import Any, cast
 
 import pytest
 
+from builders.gate_readiness import (
+    acceptance_recheck,
+    ack_recheck,
+    blocker_recheck,
+    premise_recheck,
+)
 from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
 from yoetz.adapters.integrations.observation_local import LocalObservationStore
 from yoetz.cli import closure_gate as gate_module
@@ -296,7 +302,7 @@ def test_active_stop_never_continues_for_ordinary_items(tmp_path: Path, host: _H
     # The active Stop reads status for a new blocker (#985) but open obligations alone never
     # continue it; only the loop guard is recorded.
     assert h.status_calls == 1
-    assert h.reasons() == ["closure_gate_loop_guard"]
+    assert h.reasons() == ["closure_gate_turn_end_after_continue"]
     assert not closure_gate_already_delivered(h.session_id, f"5:{_DIGEST}", _state=tmp_path)
 
 
@@ -351,14 +357,16 @@ _EVT = "evt_97700000-0000-4000-8000-000000000002"
 
 
 def _blocked(kind: str = "dependency_unavailable", obligation: str = _OBL) -> Any:
-    return SimpleNamespace(obligation_id=obligation, blocker_kind=kind, decision_event_id=_EVT)
+    """The blocker re-check status announces for one claimed blocker (tb4n3 RC-8)."""
+
+    return blocker_recheck(obligation, kind)
 
 
 def _blocked_readiness(
     *rows: Any, state: str = "ready_with_limitations", actionable: tuple[str, ...] = ()
 ) -> Any:
     readiness = _readiness(state=state, actionable=actionable)
-    readiness.blocked_obligations = rows or (_blocked(),)
+    readiness.rechecks = rows or (_blocked(),)
     return readiness
 
 
@@ -411,13 +419,30 @@ def test_blocker_recheck_joins_other_remaining_work() -> None:
 @pytest.mark.parametrize(
     "row",
     [
-        SimpleNamespace(obligation_id=_OBL, blocker_kind="data_missing", decision_event_id=_EVT),
-        SimpleNamespace(obligation_id="not-an-id", blocker_kind="consent", decision_event_id=_EVT),
-        "obl_x:consent",
+        SimpleNamespace(kind="blocker", key=f"blocker:{_OBL}:data_missing", subjects=()),
+        SimpleNamespace(kind="blocker", key="blocker:not-an-id:consent", subjects=()),
+        SimpleNamespace(kind="blocker", key=f"{_OBL}:consent", subjects=()),
+        SimpleNamespace(kind="unknown_kind", key=f"blocker:{_OBL}:consent", subjects=()),
+        "blocker:obl_x:consent",
+        None,
     ],
 )
-def test_malformed_blocker_rows_never_gate(row: object) -> None:
+def test_malformed_recheck_entries_never_gate(row: object) -> None:
     assert _gate(_blocked_readiness(row)) is None
+
+
+def test_a_readiness_without_the_recheck_list_announces_none() -> None:
+    """A service older than the gate sends no ``rechecks``: the gate asks none, never invents one."""
+
+    readiness = _readiness(state="ready_with_limitations", actionable=())
+    readiness.blocked_obligations = (
+        SimpleNamespace(obligation_id=_OBL, blocker_kind="consent", confirmation="claimed"),
+    )
+    readiness.acknowledged_not_done = (_OBL,)
+    readiness.acknowledged_obligation_count = "1"
+    readiness.standing_limitations = ("finding_premise_disputed",)
+    assert not hasattr(readiness, "rechecks")
+    assert _gate(readiness) is None
 
 
 def test_blocker_memory_round_trip_is_per_session_and_bounded(tmp_path: Path) -> None:
@@ -500,7 +525,7 @@ def test_blocker_published_after_the_gate_is_reasked_once_on_the_active_stop(
     h.sequence = "7"
     third = _stop(h, host, session, guarded=True)
     assert "closure gate" not in json.dumps(third)
-    assert h.reasons()[-1] == "closure_gate_loop_guard"
+    assert h.reasons()[-1] == "closure_gate_turn_end_after_continue"
 
 
 def test_active_stop_is_capped_at_two_gate_blocks_per_turn(tmp_path: Path, host: _Host) -> None:
@@ -518,7 +543,7 @@ def test_active_stop_is_capped_at_two_gate_blocks_per_turn(tmp_path: Path, host:
     calls = h.status_calls
     assert "closure gate" not in json.dumps(_stop(h, host, session, guarded=True))
     assert h.status_calls == calls
-    assert h.reasons()[-1] == "closure_gate_loop_guard"
+    assert h.reasons()[-1] == "closure_gate_turn_end_after_continue"
     # A new turn (a Stop the host did not continue) resets the cap; the unasked blocker is
     # re-asked once there.
     h.sequence = "8"
@@ -537,7 +562,7 @@ def test_active_stop_fails_open_when_status_fails(tmp_path: Path, host: _Host) -
     h.connect = broken
     output = _stop(h, host, session, guarded=True)
     assert "closure gate" not in json.dumps(output)
-    assert h.reasons() == ["closure_gate_loop_guard"]
+    assert h.reasons() == ["closure_gate_turn_end_after_continue"]
 
 
 def test_active_stop_fails_open_when_memory_is_unwritable(
@@ -556,21 +581,14 @@ def test_active_stop_fails_open_when_memory_is_unwritable(
     for _ in range(3):
         output = _stop(h, host, session, guarded=True)
         assert "closure gate" not in json.dumps(output)
-    assert set(h.reasons()) == {"closure_gate_loop_guard"}
+    assert set(h.reasons()) == {"closure_gate_turn_end_after_continue"}
 
 
-def test_a_confirmed_blocker_row_is_not_reasked() -> None:
-    row = SimpleNamespace(
-        obligation_id=_OBL,
-        blocker_kind="consent",
-        decision_event_id=_EVT,
-        confirmation="confirmed",
-    )
-    assert _gate(_blocked_readiness(row)) is None
-    claimed = SimpleNamespace(
-        obligation_id=_OBL, blocker_kind="consent", decision_event_id=_EVT, confirmation="claimed"
-    )
-    gate = _gate(_blocked_readiness(claimed))
+def test_a_blocker_status_no_longer_announces_is_not_asked() -> None:
+    """Confirmation is decided by the service: a confirmed blocker is simply not announced."""
+
+    assert _gate(_readiness(state="ready_with_limitations", actionable=())) is None
+    gate = _gate(_blocked_readiness(_blocked("consent")))
     assert gate is not None
     assert gate.blocker_keys == (f"{_OBL}:consent",)
 
@@ -697,3 +715,88 @@ def test_an_unwritable_memory_is_a_visible_diagnostic(
     # The active Stop still ends the turn: without memory it never re-asks (fail open).
     guarded = _stop(h, host, session, guarded=True)
     assert "closure gate" not in json.dumps(guarded)
+
+
+# --- tb4n3 RC-8: announced re-checks and the withdrawn deliverable, per host -----------------
+
+
+def test_stop_asks_the_announced_acceptance_reread_once_and_does_not_challenge_its_answer(
+    tmp_path: Path, host: _Host
+) -> None:
+    """cargo D (tb4n3): resolved obligations, no gate token. The re-read is announced by status,
+    asked once at the first Stop, and an acknowledgement published after it is not re-challenged."""
+
+    session = "gate-acceptance"
+    h = _Harness(tmp_path, host.key(session))
+    invite = acceptance_recheck()
+    h.readiness = _readiness(state="ready_with_limitations", actionable=())
+    h.readiness.rechecks = (invite,)
+    first = _stop(h, host, session)
+    text = _text(host, first)
+    assert "acceptance_criteria" in text
+    assert h.reasons() == ["closure_gate_continued", "closure_gate_acceptance_rechecked"]
+    assert gate_module.closure_gate_reasked_blockers(h.session_id, _state=tmp_path) == frozenset(
+        {f"{invite.key}@5"}
+    )
+
+    # The agent answers the invite by acknowledging an obligation (later frontier), then stops
+    # again. Status announces the acknowledgement, but it answers the invite: no second gate.
+    h.sequence = "9"
+    h.readiness.rechecks = (invite, ack_recheck(_OBL, since=8))
+    second = _stop(h, host, session, guarded=True)
+    assert "closure gate" not in json.dumps(second)
+    assert h.reasons()[-1] == "closure_gate_turn_end_after_continue"
+    third = _stop(h, host, session)
+    assert "closure gate" not in json.dumps(third)
+    assert h.reasons()[-1] == "closure_gate_not_required"
+
+
+def test_stop_never_gates_a_readiness_that_announces_nothing(tmp_path: Path, host: _Host) -> None:
+    session = "gate-silent"
+    h = _Harness(tmp_path, host.key(session))
+    h.readiness = _readiness(state="ready_with_limitations", actionable=())
+    h.readiness.acknowledged_not_done = (_OBL,)
+    h.readiness.acknowledged_obligation_count = "1"
+    h.readiness.rechecks = ()
+    for guarded in (False, True):
+        output = _stop(h, host, session, guarded=guarded)
+        assert "closure gate" not in json.dumps(output)
+
+
+def test_withdrawn_deliverable_is_voiced_on_the_active_stop_once(
+    tmp_path: Path, host: _Host
+) -> None:
+    """formal-crypto S (tb4n3): the first Stop's gate named other work; the solver was emptied
+    afterwards; every later Stop was active, so the emptied text was never shown."""
+
+    session = "gate-withdrawn"
+    h = _Harness(tmp_path, host.key(session))
+    # The first Stop re-checks a premise dispute and an acknowledged obligation (formal S 09:11):
+    # the push to work now also says to keep the working deliverable.
+    h.readiness.rechecks = (premise_recheck(1), ack_recheck(_OBL))
+    first = _text(host, _stop(h, host, session))
+    assert "Do that work unless it is genuinely impossible" in first
+    assert "keep the working deliverable; acknowledgement never requires withdrawing" in first
+    h.readiness = _readiness(actionable=(gate_module.DECLARED_OUTPUT_EMPTIED_GAP,))
+    h.readiness.fact_lineage = (
+        SimpleNamespace(
+            code=gate_module.DECLARED_OUTPUT_EMPTIED_GAP,
+            rule="deliverable_path_history",
+            state="emptied",
+            obligation_id=_OBL,
+            item_index="0",
+            basis="verified",
+        ),
+    )
+    h.sequence = "9"
+    second = _stop(h, host, session, guarded=True)
+    text = _text(host, second)
+    assert "You withdrew a deliverable that passed your verification run" in text
+    assert _OBL in text
+    assert h.reasons()[1:] == ["closure_gate_continued", "closure_gate_active_stop_rechecked"]
+    assert gate_module.closure_gate_turn_blocks(h.session_id, _state=tmp_path) == 2
+    # The per-turn cap (2) holds: the next active Stop ends the turn without reading status.
+    h.sequence = "10"
+    third = _stop(h, host, session, guarded=True)
+    assert "closure gate" not in json.dumps(third)
+    assert h.reasons()[-1] == "closure_gate_turn_end_after_continue"

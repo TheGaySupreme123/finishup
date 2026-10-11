@@ -14,6 +14,7 @@ import itertools
 from types import SimpleNamespace
 from typing import Any
 
+from builders.gate_readiness import ack_recheck, blocker_recheck, obligation_id, premise_recheck
 from yoetz.cli import closure_gate as gate
 from yoetz.cli.closure_gate import (
     ACKNOWLEDGEMENT_RECHECK_ITEM,
@@ -42,20 +43,11 @@ def _readiness(tokens: tuple[str, ...], *, blockers: int, acknowledged: int, pre
         agent_actionable=tokens,
         open_obligation_count="3",
         receipt_blocking_finding_count="2",
-        acknowledged_obligation_count=str(acknowledged),
-        acknowledged_not_done_count="1" if premise else "0",
-        acknowledged_not_done=tuple(
-            f"obl_97700000-0000-4000-8000-{index + 100:012d}" for index in range(acknowledged)
+        rechecks=(
+            *(blocker_recheck(obligation_id(index)) for index in range(blockers)),
+            *(ack_recheck(obligation_id(100 + index)) for index in range(acknowledged)),
+            *((premise_recheck(1),) if premise else ()),
         ),
-        blocked_obligations=tuple(
-            SimpleNamespace(
-                obligation_id=f"obl_97700000-0000-4000-8000-{index:012d}",
-                blocker_kind="dependency_unavailable",
-                confirmation=None,
-            )
-            for index in range(blockers)
-        ),
-        standing_limitations=("finding_premise_disputed",) if premise else (),
         limitation_refs_required=tuple(
             f"res_97700000-0000-4000-8000-{index:012d}" for index in range(5)
         ),
@@ -140,6 +132,10 @@ def test_a_re_check_that_cannot_fit_is_not_remembered_as_asked() -> None:
     assert _CLOSE in decision.text
     asked = BLOCKER_RECHECK_ITEM in decision.items
     assert asked == ("Blocker re-check (asked once)" in decision.text)
-    assert bool(decision.blocker_keys) == (
+    # Every token set carries a withdrawn-deliverable token, which records its own ``emptied:``
+    # key; the re-check keys are the others.
+    recheck_keys = tuple(key for key in decision.blocker_keys if not key.startswith("emptied:"))
+    assert bool(recheck_keys) == (
         asked or ACKNOWLEDGEMENT_RECHECK_ITEM in decision.items or "premise" in str(decision.items)
     )
+    assert any(key.startswith("emptied:") for key in decision.blocker_keys)
