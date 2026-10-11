@@ -9,6 +9,11 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, TypedDict, cast
 
+from yoetz.application.closure_basis import (
+    ClosureBasisUnavailable,
+    LoadedClosureBasis,
+    load_closure_basis,
+)
 from yoetz.application.ledger_snapshot import projection_for_records, trusted_projection_at
 from yoetz.application.missing_for_assessment import (
     MissingItemsReview,
@@ -22,7 +27,6 @@ from yoetz.domain.events import (
     CheckChangeShownFiles,
     ClaimKind,
     LedgerRecord,
-    ObligationStatus,
 )
 from yoetz.domain.findings import (
     DISPUTED_AFTER_REBUTTAL_VERDICT,
@@ -100,6 +104,14 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
+from yoetz.kernel.closure_class import (
+    FindingClosureClass,
+    ObligationClosure,
+    ObligationClosureClass,
+    closure_counts,
+    finding_closures,
+    obligation_closures,
+)
 from yoetz.kernel.delivered_set import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
@@ -122,10 +134,8 @@ from yoetz.kernel.deterministic_checks import (
     render_deterministic_finding_text,
 )
 from yoetz.kernel.deterministic_scope import (
-    CLEAN_COMPATIBLE_GAPS,
-    HOST_OBSERVATION_GUARDED_GAPS,
-    commands_complete,
     deterministic_scope_is_clean,
+    gaps_are_clean,
 )
 from yoetz.kernel.finding_resolution import (
     AGENT_SETTLED_DISPOSITION_VALUES,
@@ -160,6 +170,7 @@ from yoetz.kernel.policies.work_integrity import (
 from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionRecord, ProjectionState
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
+from yoetz.kernel.receipt_prediction import predict_receipt_conclusion
 from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
@@ -190,6 +201,7 @@ from yoetz.ports.ledger import (
     CheckChildrenPreview,
     CheckCommitResult,
     CheckFindingChecklist,
+    ChecklistClosureCounts,
     CheckOverallNext,
     CheckPhase,
     CheckPolicyExecution,
@@ -715,11 +727,23 @@ def _checklist_json(checklist: CheckFindingChecklist) -> JsonValue:
             "rejection_accepted": str(counts.rejection_accepted),
             "self_verified": str(counts.self_verified),
             "verified_resolved": str(counts.verified_resolved),
-            # Issue #1020: emitted only when non-zero, so earlier results keep their bytes.
+            # Issue #1020 and ADR-046: emitted only when non-zero, so earlier results keep their
+            # bytes.
             **(
                 {"disputed_after_rebuttal": str(counts.disputed_after_rebuttal)}
                 if counts.disputed_after_rebuttal
                 else {}
+            ),
+            **(
+                {}
+                if checklist.closure_counts is None
+                else {
+                    "to_do": str(checklist.closure_counts.to_do),
+                    "awaiting_ruling": str(checklist.closure_counts.awaiting_ruling),
+                    "unmet": str(checklist.closure_counts.unmet),
+                    "disclosed": str(checklist.closure_counts.disclosed),
+                    "to_disclose": str(checklist.closure_counts.to_disclose),
+                }
             ),
         },
         "items": tuple(
@@ -727,6 +751,14 @@ def _checklist_json(checklist: CheckFindingChecklist) -> JsonValue:
                 "finding_id": item.finding_id,
                 "todo_state": item.todo_state,
                 "review_rounds": str(item.review_rounds),
+                **(
+                    {}
+                    if item.closure_class is None or item.closure_basis is None
+                    else {
+                        "closure_class": item.closure_class,
+                        "closure_basis": item.closure_basis,
+                    }
+                ),
             }
             for item in checklist.items
         ),
@@ -746,6 +778,11 @@ def _overall_next_json(next_step: CheckOverallNext) -> JsonObject:
                 else {
                     "acknowledged_incomplete_endpoint": (next_step.acknowledged_incomplete_endpoint)
                 }
+            ),
+            **(
+                {}
+                if next_step.predicted_conclusion is None
+                else {"predicted_conclusion": next_step.predicted_conclusion}
             ),
         }
     )
@@ -1250,16 +1287,22 @@ async def _current_project_advisory_notes(
 
 
 def build_finding_checklist(
-    projection: ProjectionState, *, attempt_budget: int
+    projection: ProjectionState,
+    *,
+    attempt_budget: int,
+    records: tuple[LedgerRecord, ...] = (),
 ) -> CheckFindingChecklist:
     """The current actionable findings as a to-do list, with whole-list counts (issue #905).
 
     Items are the newest row per issue, open items first and otherwise in rank order, at most
     100; the counts and ``next`` cover every current actionable item, so a long list can never
-    read as done. Coverage limitations
-    are not to-dos and never drive ``next``.
+    read as done. Coverage limitations are not to-dos and never drive ``next``. Each item names
+    its closure class and basis (ADR-046), and a rejection that awaits a reviewer ruling is told
+    to ``request_ruling`` instead of being listed as work (``records`` lets the classifier know
+    whether the route can still rule).
     """
 
+    closures = finding_closures(projection, records=records, with_self_verify=False)
     todos = tuple(
         finding_todo(projection, finding.finding_id, attempt_budget=attempt_budget)
         for finding in current_receipt_findings(projection)
@@ -1268,24 +1311,53 @@ def build_finding_checklist(
     counts = todo_counts(
         projection, (todo.finding_id for todo in todos), attempt_budget=attempt_budget
     )
-    next_step: Literal["decide_at_budget", "request_receipt", "work_open_findings"] = (
-        "decide_at_budget"
-        if counts.budget_reached
-        else "work_open_findings"
-        if counts.open
-        else "request_receipt"
+    open_closures = tuple(
+        closures[todo.finding_id]
+        for todo in todos
+        if todo.state is FindingTodoState.OPEN and todo.finding_id in closures
     )
+    awaiting = sum(
+        closure.closure_class is FindingClosureClass.AWAITING_RULING for closure in open_closures
+    )
+    counted = closure_counts(closures.values(), ())
+    work = counts.open - awaiting
+    next_step: Literal[
+        "decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"
+    ]
+    if counts.budget_reached:
+        next_step = "decide_at_budget"
+    elif work > 0:
+        next_step = "work_open_findings"
+    elif awaiting > 0:
+        next_step = "request_ruling"
+    else:
+        next_step = "request_receipt"
     # Open items first (a stable sort keeps rank order inside each group), so a long history of
     # closed rows can never push the remaining work out of the listed hundred.
     listed = sorted(todos, key=lambda todo: todo.state is not FindingTodoState.OPEN)
     return CheckFindingChecklist(
         attempt_budget,
         tuple(
-            CheckChecklistItem(str(todo.finding_id), todo.state.value, todo.review_rounds)
+            CheckChecklistItem(
+                str(todo.finding_id),
+                todo.state.value,
+                todo.review_rounds,
+                None
+                if todo.finding_id not in closures
+                else closures[todo.finding_id].closure_class.value,
+                None if todo.finding_id not in closures else closures[todo.finding_id].basis,
+            )
             for todo in listed[:MAX_CHECKLIST_ITEMS]
         ),
         next_step,
         counts,
+        closure_counts=ChecklistClosureCounts(
+            to_do=counted.findings_to_do,
+            awaiting_ruling=counted.findings_awaiting_ruling,
+            unmet=counted.findings_unmet,
+            disclosed=counted.findings_disclosed,
+            to_disclose=counted.findings_to_disclose,
+        ),
     )
 
 
@@ -1294,8 +1366,17 @@ def build_overall_next(
     checklist: CheckFindingChecklist | None,
     projection: ProjectionState | None = None,
     coverage_by_ref: Mapping[FindingBasisRef, Coverage] | None = None,
+    *,
+    obligations: tuple[ObligationClosure, ...] | None = None,
+    predicted_conclusion: str | None = None,
 ) -> CheckOverallNext | None:
-    """Derive the task continuation without letting the finding list speak for the task (#963)."""
+    """Derive the task continuation without letting the finding list speak for the task (#963).
+
+    ADR-046: every branch reads the closure classes. Findings the agent owes a move on are work;
+    a rejection that awaits a reviewer ruling is ``request_ruling``; an obligation the agent
+    acknowledged as not done, or disclosed, is not work (the receipt discloses it), so the check
+    no longer disagrees with status about whether anything is left to do.
+    """
 
     if checklist is None:
         # Without the projection that supplies finding counts, claiming readiness would be
@@ -1314,32 +1395,72 @@ def build_overall_next(
             target_refs=_bounded_overall_refs(
                 ref for item in actionable_missing for ref in item.target_refs
             ),
+            predicted_conclusion=predicted_conclusion,
         )
     open_refs = _bounded_overall_refs(
-        item.finding_id for item in checklist.items if item.todo_state == "open"
+        item.finding_id
+        for item in checklist.items
+        if item.todo_state == "open" and item.closure_class != "awaiting_ruling"
     )
     if open_refs:
         return CheckOverallNext(
             status="action_required",
             action="work_open_findings",
             target_refs=open_refs,
+            predicted_conclusion=predicted_conclusion,
+        )
+    awaiting_refs = _bounded_overall_refs(
+        item.finding_id for item in checklist.items if item.closure_class == "awaiting_ruling"
+    )
+    if awaiting_refs:
+        return CheckOverallNext(
+            status="action_required",
+            action="request_ruling",
+            target_refs=awaiting_refs,
+            predicted_conclusion=predicted_conclusion,
         )
     recorded_work_refs, disclosed_live_failure = _recorded_work_refs(
-        result, projection, coverage_by_ref
+        result, projection, coverage_by_ref, obligations
     )
     if recorded_work_refs:
         return CheckOverallNext(
             status="action_required",
             action="review_recorded_work",
             target_refs=recorded_work_refs,
+            predicted_conclusion=predicted_conclusion,
         )
-    if disclosed_live_failure or result.missing_for_assessment or result.coverage.known_gaps:
+    counted_closures = checklist.closure_counts
+    settled = bool(
+        (
+            counted_closures is not None
+            and (
+                counted_closures.unmet or counted_closures.disclosed or counted_closures.to_disclose
+            )
+        )
+        or checklist.counts.acknowledged_not_done
+        or checklist.counts.self_verified
+        or checklist.counts.disputed_after_rebuttal
+    )
+    settled_obligations = any(
+        item.closure_class is not ObligationClosureClass.RESOLVED for item in obligations or ()
+    )
+    if (
+        disclosed_live_failure
+        or result.missing_for_assessment
+        or result.coverage.known_gaps
+        or settled
+        or settled_obligations
+        or predicted_conclusion not in {None, "no_unresolved_deterministic_findings"}
+    ):
         return CheckOverallNext(
             status="ready_with_limitations",
             action="request_receipt",
             acknowledged_incomplete_endpoint="receipt",
+            predicted_conclusion=predicted_conclusion,
         )
-    return CheckOverallNext(status="ready", action="request_receipt")
+    return CheckOverallNext(
+        status="ready", action="request_receipt", predicted_conclusion=predicted_conclusion
+    )
 
 
 class _PacketLimits(TypedDict):
@@ -1461,6 +1582,7 @@ def _recorded_work_refs(
     result: CheckCommitResult,
     projection: ProjectionState | None,
     coverage_by_ref: Mapping[FindingBasisRef, Coverage] | None = None,
+    obligations: tuple[ObligationClosure, ...] | None = None,
 ) -> tuple[tuple[str, ...], bool]:
     """Find open effective work that a coverage-limited result still requires.
 
@@ -1475,13 +1597,17 @@ def _recorded_work_refs(
         return (), False
     refs: set[str] = set()
     scope = current_plan_scope(projection.plans, projection.coverage_gaps)
-    if scope.readable and scope.effective_obligation_refs is not None:
-        for obligation_ref in scope.effective_obligation_refs:
-            record = projection.obligations.get(obligation_ref)
-            if record is not None and record.payload is not None:
-                # acknowledged_not_done (#1002) is not resolved: treated like open here.
-                if record.payload.status is not ObligationStatus.RESOLVED:
-                    refs.add(str(obligation_ref))
+    # ADR-046: only an obligation the agent can still act on is work here. One it acknowledged as
+    # not done, or disclosed (a confirmed blocker, an externally evaluated requirement), is
+    # settled: status and the receipt say so, so the next step must not call it open work.
+    classes = (
+        tuple(obligation_closures(projection).values()) if obligations is None else obligations
+    )
+    refs.update(
+        str(item.obligation_id)
+        for item in classes
+        if item.closure_class is ObligationClosureClass.AGENT_WORK
+    )
 
     if _overall_total_count(result, "commands", "live_failed") <= 0:
         return _bounded_overall_refs(refs), False
@@ -1554,8 +1680,31 @@ async def _attach_finding_checklist(
         )
         if projection is None:
             return result
-        checklist = build_finding_checklist(projection, attempt_budget=budget)
-        overall_next = build_overall_next(result, checklist, projection, coverage_by_ref)
+        # ADR-046: the receipt's own context at the result frontier gives the predicted
+        # conclusion and the records the classes need. A read that fails omits the prediction
+        # (never guesses one) and leaves a bounded diagnostic.
+        loaded: LoadedClosureBasis | None = None
+        try:
+            loaded = await load_closure_basis(runtime, result.result_frontier)
+        except (ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError) as exc:
+            record_unexpected_exception_without_raising(
+                exc, component="check", operation="closure_basis_read"
+            )
+        checklist = build_finding_checklist(
+            projection, attempt_budget=budget, records=() if loaded is None else loaded.records
+        )
+        overall_next = build_overall_next(
+            result,
+            checklist,
+            projection,
+            coverage_by_ref,
+            obligations=None if loaded is None else loaded.basis.obligations,
+            predicted_conclusion=(
+                None
+                if loaded is None
+                else predict_receipt_conclusion(loaded.basis).conclusion.value
+            ),
+        )
         return replace(
             result,
             finding_checklist=checklist,
@@ -4074,17 +4223,65 @@ def _recorded_route_required(
     return None if required else False
 
 
-def full_check_gaps_clean(known_gaps: Iterable[str], totals: Mapping[str, object]) -> bool:
-    """Whether a full check's gaps allow ``complete`` (#986): the one clean-compatible list.
+def _route_and_insufficiency(
+    mode: str | None,
+    policy_semantic: Literal["disabled", "optional", "required"],
+    *,
+    route_profile: Literal["policy", "strict"],
+    host_profile: McpHostProfile,
+    state: Path | None,
+    known_gaps: Iterable[str],
+) -> tuple[bool, bool]:
+    """``(route requires review, reviewer reported insufficiency)`` for one check (ADR-046).
 
-    The same list bounds the receipt and the scoped deterministic verdict. A host-observation
-    member counts only when the case's command counters show no unknown or live failed outcome.
+    The route is the value this check records (``semantic_route_required``); the insufficiency is
+    whether the same check's coverage carries a reviewer-reported "could not assess" gap, which is
+    what keeps a Yoetz review-packet budget a bound instead of a disclosure.
     """
 
-    extra = set(known_gaps) - CLEAN_COMPATIBLE_GAPS
-    if extra:
-        return False
-    return not (set(known_gaps) & HOST_OBSERVATION_GUARDED_GAPS) or commands_complete(totals)
+    required = (
+        _recorded_route_required(
+            mode,
+            policy_semantic,
+            route_profile=route_profile,
+            host_profile=host_profile,
+            _state=state,
+        )
+        is None
+    )
+    codes = tuple(known_gaps)
+    insufficient = any(
+        code in {"semantic_packet_insufficient", SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP}
+        or code.startswith("semantic_missing_")
+        for code in codes
+    )
+    return required, insufficient
+
+
+def full_check_gaps_clean(
+    known_gaps: Iterable[str],
+    totals: Mapping[str, object],
+    *,
+    route_requires_review: bool = True,
+    review_succeeded: bool = False,
+    reviewer_reported_insufficiency: bool = False,
+) -> bool:
+    """Whether a full check's gaps allow ``complete`` (#986): the receipt's own judgment.
+
+    ADR-046: the same table and the same context the receipt uses (``kernel.gap_effect``), so the
+    check's verdict and the receipt's conclusion cannot disagree about a gap. The route is the one
+    this check records; a host-observation member counts only when the case's command counters
+    show no unknown or live failed outcome; a Yoetz review-packet budget is disclosed only when the
+    review succeeded and the reviewer reported no insufficiency.
+    """
+
+    return gaps_are_clean(
+        known_gaps,
+        totals,
+        route_requires_review=route_requires_review,
+        review_succeeded=review_succeeded,
+        reviewer_reported_insufficiency=reviewer_reported_insufficiency,
+    )
 
 
 def _request_digest(
@@ -4935,6 +5132,16 @@ async def execute_check_commit(
         # finding cap.  This keeps suppressed actionable findings, unattempted requested items,
         # open obligations and relevant live failures from being hidden by a short result list.
         candidate_findings = deterministic + semantic
+        # The route this check records decides whether a missing review and the review's own
+        # bounds are limits or only disclosures: the same value the receipt reads back.
+        route_requires_review, reviewer_reported_insufficiency = _route_and_insufficiency(
+            request.mode,
+            app.verification_policy.semantic,
+            route_profile=route_profile,
+            host_profile=host_profile,
+            state=_state,
+            known_gaps=coverage.known_gaps,
+        )
         scoped_local_clean = (
             request.mode == "deterministic_only"
             and not policy_failed
@@ -4946,6 +5153,7 @@ async def execute_check_commit(
                     test_edits=deterministic_test_edit_facts,
                 ),
                 findings=candidate_findings,
+                route_requires_review=route_requires_review,
             )
         )
         completion_scope_incomplete = bool(
@@ -4967,6 +5175,9 @@ async def execute_check_commit(
                 build_check_totals(
                     frozen.case, candidate_findings, test_edits=deterministic_test_edit_facts
                 ),
+                route_requires_review=route_requires_review,
+                review_succeeded=semantic_result.status is SemanticStatus.SUCCEEDED,
+                reviewer_reported_insufficiency=reviewer_reported_insufficiency,
             )
             or semantic_failed
         ):

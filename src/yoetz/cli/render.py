@@ -47,7 +47,12 @@ from yoetz.protocol.models import (
     StatusSemanticProgressModel,
     StatusSuccessModel,
 )
-from yoetz.protocol.readiness_text import check_cause_sentence, readiness_directive
+from yoetz.protocol.readiness_text import (
+    check_cause_sentence,
+    closure_counts_variants,
+    predicted_receipt_variants,
+    readiness_directive,
+)
 from yoetz.protocol.recovery import (
     RecoveryDirective,
     TimeoutOperationKind,
@@ -210,6 +215,10 @@ _CHECKLIST_NEXT_TEXT: Final = {
         "do it. Checks are never throttled."
     ),
     "request_receipt": "No open findings remain on the list; request the receipt.",
+    "request_ruling": (
+        "You rejected finding(s) and the reviewer has not ruled yet: run check with "
+        "final_review: true so the reviewer rules. Do not acknowledge a finding you dispute."
+    ),
 }
 
 
@@ -242,6 +251,20 @@ def _render_checklist(
         )
     counts = checklist.counts
     at_budget = int(counts.open_at_budget)
+    if counts.to_do is not None and counts.awaiting_ruling is not None:
+        # ADR-046: the same finding counters status prints.
+        sentence = closure_counts_variants(
+            {
+                "to_do": counts.to_do,
+                "awaiting_ruling": counts.awaiting_ruling,
+                "unmet": counts.unmet,
+                "disclosed": counts.disclosed,
+                "to_disclose": counts.to_disclose,
+                "self_verify_eligible": "0",
+            },
+            None,
+        )
+        lines.extend(sentence[:1])
     lines.append(
         f"Counts: open {counts.open}"
         + (f" ({at_budget} at budget)" if at_budget else "")
@@ -280,6 +303,8 @@ def _render_overall_next(next_step: CheckOverallNextModel) -> str:
         )
     elif next_step.action == "work_open_findings":
         action = "Repair or answer the named open findings"
+    elif next_step.action == "request_ruling":
+        action = "Run check with final_review: true so the reviewer rules on the rejected findings"
     elif next_step.action == "review_recorded_work":
         action = "Review the recorded work for open obligations or undisclosed failures"
     else:
@@ -294,7 +319,14 @@ def _render_overall_next(next_step: CheckOverallNextModel) -> str:
     endpoint = ""
     if next_step.acknowledged_incomplete_endpoint is not None:
         endpoint = "; acknowledged incomplete endpoint: receipt"
-    return f"Overall next [{next_step.status}]: {action}{targets}{endpoint}."
+    predicted = ""
+    if next_step.predicted_conclusion is not None:
+        sentence = predicted_receipt_variants(
+            {"conclusion": next_step.predicted_conclusion, "reasons": ()},
+            state="action_required" if next_step.status == "action_required" else "ready",
+        )
+        predicted = f" {sentence[-1]}" if sentence else ""
+    return f"Overall next [{next_step.status}]: {action}{targets}{endpoint}.{predicted}"
 
 
 def render_human_check(result: CheckSuccessModel) -> str:
@@ -504,6 +536,17 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
             acknowledged=readiness.acknowledged_not_done_count,
         ),
     ]
+    if readiness.state != "unknown":
+        # ADR-046: the receipt conclusion this frontier would carry, appended after the
+        # owner-approved sentence, and the one set of counters every surface prints.
+        lines.extend(
+            predicted_receipt_variants(readiness.predicted_receipt, state=readiness.state)[:1]
+            if readiness.predicted_receipt is not None
+            else ()
+        )
+        lines.extend(
+            closure_counts_variants(readiness.finding_counts, readiness.obligation_counts)[:1]
+        )
     if readiness.agent_actionable and readiness.state != "unknown":
         lines.append("Agent-actionable: " + ", ".join(readiness.agent_actionable))
     if readiness.check_cause is not None and readiness.state != "unknown":
@@ -610,10 +653,6 @@ def render_human_status(result: StatusSuccessModel) -> str:
             else ()
         ),
         f"Unanswered findings: {_count(result.closure_readiness.unanswered_finding_count)}",
-        (
-            "Receipt-blocking findings: "
-            f"{_count(result.closure_readiness.receipt_blocking_finding_count)}"
-        ),
         *render_closure_readiness_lines(result.closure_readiness),
         *_credential_heuristic_lines(result),
     ]
