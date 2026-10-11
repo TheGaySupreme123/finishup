@@ -1789,8 +1789,9 @@ token_usage_record`, `Observed completion signal kind=...`), because #564 keeps 
 reads them as `yoetz_own_call` and `no_tool_activity`, so `check_current_as_of_earlier_frontier`
 no longer appears for a check followed only by Yoetz calls and a receipt. The rollout names an
 `McpToolCall` item by its tool alone (`status`), which is read as Yoetz's own tool. A nested
-`apply_patch`, an `exec_command` that is not in the hook's `exploration` runner class and a
-`wait` poll's output (no tool identity) stay `other` and keep the disclosure; a nested
+`apply_patch`, an `exec_command` that is not in the hook's `exploration` runner class and an unpaired
+stream output with no tool identity stay `other` and keep the disclosure; a `wait` poll (it only
+returns the output of a cell started earlier) is `no_tool_activity`; a nested
 deliverable or workspace `apply_patch` supersedes the check. A patch whose every path is
 `yoetz_receipt.*`, a Yoetz tree or scratch is `non_counting_write`. Tests:
 `tests/unit/application/test_tb4n3_later_material_host_shapes.py` drives real Codex hook payloads

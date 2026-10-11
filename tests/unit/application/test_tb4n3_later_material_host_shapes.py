@@ -146,6 +146,11 @@ _CODEX_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
         _C.YOETZ_OWN_CALL,
     ),
     (
+        "codex wait (a poll of a code-mode cell started earlier)",
+        _codex("wait", "call_w1", {"cell_id": "94", "yield_time_ms": 1000}, "cell output"),
+        _C.NO_TOOL_ACTIVITY,
+    ),
+    (
         "codex cat (exploration)",
         _codex("Bash", "call_x1", {"command": "cat results.json"}, '{"exit_code":0,"output":"{}"}'),
         _C.EXPLORATION,
@@ -404,3 +409,21 @@ def test_the_one_class_vocabulary() -> None:
     }
     # Evidence of a result is classified by the call it answers, never cleaner than the call.
     assert AcceptedEvent  # imported for the type used by the helpers above
+
+
+def test_every_spelling_the_delivery_policy_calls_yoetz_owned_is_classified_yoetz_own() -> None:
+    """The delivery policy (#564) and the later-material rule read one meaning of "Yoetz's own".
+
+    ``observation_local`` keeps its own prefix table; a spelling it adds without teaching
+    ``domain.yoetz_tools`` would be local-only there yet counted as later material here.
+    """
+
+    from yoetz.adapters.integrations.observation_local import YOETZ_OWNED_TOOL_NAMES
+    from yoetz.domain.yoetz_tools import YOETZ_MCP_TOOL_NAMES, yoetz_tool_spelling
+
+    assert YOETZ_OWNED_TOOL_NAMES
+    for name in sorted(YOETZ_OWNED_TOOL_NAMES):
+        assert yoetz_tool_spelling(name) is not None, name
+    # The support tool is advertised through MCP too (closure_prepare is read-only).
+    assert "closure_prepare" in YOETZ_MCP_TOOL_NAMES
+    assert yoetz_tool_spelling("mcp__yoetz__closure_prepare") == "server_scoped"

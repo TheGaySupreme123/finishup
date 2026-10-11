@@ -14,7 +14,8 @@ projection's action rows and the declared outputs, and names *why* (``LaterMater
 * ``EXPLORATION`` - an observed read-only run (the hook's closed ``exploration`` runner class, a
   native read tool) or a routine-read summary.
 * ``NO_TOOL_ACTIVITY`` - host stream bookkeeping that names no tool call: token counts, reasoning,
-  messages, a tool call's own announcement, completion signals.
+  messages, a tool call's own announcement, completion signals; and a host poll tool (Codex
+  ``wait``) that only returns the output of work started earlier.
 * ``NON_COUNTING_WRITE`` - an observed edit whose every path was scratch or Yoetz-owned (ADR-042).
 * ``RESPONSE`` - a cooperative answer to a finding; advisory, as before (ADR-040 section 7).
 * ``EDIT_OR_WRITE`` - an observed deliverable, workspace or outside-workspace edit. It supersedes
@@ -152,12 +153,22 @@ def supersession_exempt(projection: ProjectionState) -> frozenset[str]:
     return non_counting_edits_exempt(projection) | {"write yoetz_owned"}
 
 
+# Host tools that only poll something already running and record no work of their own: Codex's
+# ``wait`` returns the output of a code-mode cell started earlier (the work it ran has its own
+# rows). In the tb4n2 replay it was the one trailing call of 9 of 14 semantic-arm suffixes; left
+# unclassified it kept the bounding disclosure, and readiness would then ask for a costly extra
+# AI-powered review because the agent waited. A closed list, evidenced per tool.
+_HOST_POLL_TOOLS: Final = frozenset({"wait"})
+
+
 def _classify_action(
     payload: ActionRecordedPayload, projection: ProjectionState, exempt: frozenset[str] | None
 ) -> LaterMaterial:
     tool = observed_action_tool(payload.description)
     if tool is not None and yoetz_tool_spelling(tool) is not None:
         return LaterMaterial(LaterMaterialClass.YOETZ_OWN_CALL, "yoetz_tool_call", tool)
+    if tool is not None and tool.casefold() in _HOST_POLL_TOOLS:
+        return LaterMaterial(LaterMaterialClass.NO_TOOL_ACTIVITY, "host_poll_tool", tool)
     if payload.action_kind is ActionKind.EDIT:
         # Only an edit needs the declared outputs; every other record stays a string read.
         if observed_edit_counts(
