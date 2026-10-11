@@ -51,7 +51,7 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import Final, cast
 
-from yoetz.domain.shell_writes import shell_write_scope
+from yoetz.domain.shell_writes import bound_command, shell_write_scope
 from yoetz.domain.write_scope import classify_write_path, edit_write_scope
 from yoetz.protocol.canonical import JsonValue
 
@@ -99,7 +99,9 @@ def _raw_command(tool_input: Mapping[str, JsonValue]) -> str | None:
 
 
 def _segments(command: str) -> list[list[str]]:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    # ``shlex`` builds a token by repeated concatenation: bound the text it reads, as the shell
+    # write parser does, so a megabyte of one token cannot stall the hook.
+    lexer = shlex.shlex(bound_command(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)

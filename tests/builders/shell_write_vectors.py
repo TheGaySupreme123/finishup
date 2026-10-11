@@ -86,8 +86,14 @@ VECTORS: list[ShellWriteVector] = [
     _v("install -d yoetz_receipt.md", ["yoetz_receipt.md"], "workspace", "workspace", "install -d"),
     # macOS `sed -i ''` and GNU `sed -i ''` (an empty script) differ by their operand count.
     _v("gsed -i '' solve.py", ["solve.py"], "workspace", "workspace", "round 1: GNU empty script"),
-    _v("sed -i '' solve.py", ["solve.py"], "workspace", "workspace", "round 1: GNU empty script"),
-    _v("gsed -i '' 's/a/b/' NOTES.md", ["NOTES.md"], "notes", "notes", "gsed is GNU: two files"),
+    _v("sed -i '' solve.py", [], None, None, "round 2: macOS and GNU disagree: no guess"),
+    _v(
+        "gsed -i '' solve.py NOTES.md",
+        ["solve.py", "NOTES.md"],
+        "workspace",
+        "workspace",
+        "round 2: gsed is GNU: an empty script, two files",
+    ),
     _v("sed -i .bak 's/a/b/' f.py", ["f.py"], "workspace", "workspace", "macOS separate suffix"),
     # An ANSI-C-quoted heredoc delimiter is its decoded text.
     _v("cat <<$'EOF'\nEOF\n: > out", ["out"], "workspace", "workspace", "round 1: $'EOF'"),
@@ -111,6 +117,90 @@ VECTORS: list[ShellWriteVector] = [
     _v(": > /tmp/NOTES.md", ["/tmp/NOTES.md"], None, None, "scratch claims nothing"),
     # `1>& file` is an explicit stdout redirect; `2>& file` is ambiguous.
     _v(": 1>& out", ["out"], "workspace", "workspace", "round 1: explicit stdout"),
+    # Review round 2: nothing a cut, malformed or failed command did not run is a write.
+    _v("f() { cp a b; }", [], None, None, "round 2: a function definition runs nothing"),
+    _v("while false; do touch out; done", [], None, None, "round 2: control flow"),
+    _v("for x in; do touch out; done", [], None, None, "round 2: control flow"),
+    _v(": 2>& missing > out", [], None, None, "round 2: an ambiguous redirect runs nothing"),
+    _v(
+        ": > real.txt 2>& missing > ghost",
+        ["real.txt"],
+        "workspace",
+        "workspace",
+        "round 2: bash opens redirections left to right and stops at the failed one",
+    ),
+    _v("cat > ghost >", [], None, None, "round 2: a redirect with no target is a syntax error"),
+    _v(
+        "cat > real.txt\n>\n: > ghost",
+        ["real.txt"],
+        "workspace",
+        "workspace",
+        "round 2: bash runs the lines before a syntax error, and none after",
+    ),
+    # Heredocs inside substitutions and continued lines in a body.
+    _v("echo $(cat <<0\n) > ghost\n0\n)", [], None, None, "round 2: numeric delimiter"),
+    _v("echo $(cat <<!\n) > ghost\n!\n)", [], None, None, "round 2: punctuation delimiter"),
+    _v("echo $(cat <<$'EOF'\n) > ghost\nEOF\n)", [], None, None, "round 2: $'EOF' delimiter"),
+    _v('echo $(cat <<$"EOF"\n) > ghost\nEOF\n)', [], None, None, 'round 2: $"EOF" delimiter'),
+    _v("cat <<EOF\ntext\\\nEOF\n: > ghost\nEOF", [], None, None, "round 2: continued body line"),
+    _v(
+        "cat <<'EOF'\ntext\\\nEOF\n: > real.txt",
+        ["real.txt"],
+        "workspace",
+        "workspace",
+        "round 2: a quoted delimiter joins no lines",
+    ),
+    _v('echo "$(case x in x) echo "hi > ghost";; esac)"', [], None, None, "round 2: case pattern"),
+    _v("echo $((1<<2)) > real.txt", ["real.txt"], "workspace", "workspace", "round 2: shift"),
+    # Boolean operators and parentheses inside [[ ]] are test syntax.
+    _v("[[ x == y || tee == out ]]", [], None, None, "round 2: || in [[ ]]"),
+    _v("[[ x == y || touch > out ]]", [], None, None, "round 2: || in [[ ]]"),
+    _v(
+        "[[ ( a == b ) && c ]] && echo > out.txt",
+        ["out.txt"],
+        "workspace",
+        "workspace",
+        "round 2: after [[ ]]",
+    ),
+    # rsync that transfers nothing, and its option values.
+    _v("rsync --dry-run src/ dest/", [], None, None, "round 2: dry run"),
+    _v("rsync -an src/ dest/", [], None, None, "round 2: dry run"),
+    _v("rsync --list-only src/ dest/", [], None, None, "round 2: list only"),
+    _v("rsync src/ --exclude pattern", [], None, None, "round 2: an option value is no path"),
+    _v(
+        "rsync -a --exclude '*.pyc' -e ssh src/ dest/",
+        ["dest/"],
+        "workspace",
+        "workspace",
+        "round 2",
+    ),
+    # Wrappers that run nothing.
+    _v("bash -nc 'touch out'", [], None, None, "round 2: bash -n"),
+    _v("timeout --help 1 touch out", [], None, None, "round 2: wrapper --help"),
+    _v("env --help touch out", [], None, None, "round 2: wrapper --help"),
+    # Mandatory operands and the last `of=`.
+    _v("truncate out", [], None, None, "round 2: truncate needs -s or -r"),
+    _v("dd of=/opt/ghost of=NOTES.md count=0", ["NOTES.md"], "notes", "notes", "round 2: last of="),
+    # macOS and GNU sed agree only on the files after the script.
+    _v(
+        "sed -i .bak -e 's/a/b/' solve.py", ["solve.py"], "workspace", "workspace", "round 2: macOS"
+    ),
+    _v("sed -i -e 's/a/b/' .env", [".env"], "workspace", "workspace", "round 2: a dotted file"),
+    _v("sed -i 's/a/b/' .gitignore", [".gitignore"], "workspace", "workspace", "round 2: dotted"),
+    # `#` in a substitution is a comment only at the start of a word.
+    _v("echo ${#HOME} > real", ["real"], "workspace", "workspace", "round 2: ${#x}"),
+    _v(
+        'printf "%s" "${#HOME}" | tee result.txt',
+        ["result.txt"],
+        "workspace",
+        "workspace",
+        "round 2: ${#x}",
+    ),
+    _v("echo $(printf %s a\\ #) > real", ["real"], "workspace", "workspace", "round 2: a\\ #"),
+    # A file named `-` is a file (stdout only for touch).
+    _v(": > -", ["-"], "workspace", "workspace", "round 2: file named -"),
+    _v("dd of=- count=0", ["-"], "workspace", "workspace", "round 2: file named -"),
+    _v("touch -", [], None, None, "round 2: touch - is stdout"),
     # 1. A command substitution is opaque: its quotes are not the enclosing word's quotes.
     _v('echo "$(echo "x > solve.py")"', [], None, None, f"{_R} 1"),
     _v('echo "$(echo "$(echo "x > solve.py")")"', [], None, None, _C),
@@ -258,11 +348,11 @@ VECTORS: list[ShellWriteVector] = [
     _v("if [[ $x > 5 && $y < 3 ]]; then echo y; fi", [], None, None, "string comparison"),
     _v("[[ -f a ]] && echo y > out.txt", ["out.txt"], "workspace", "workspace", "after [[ ]]"),
     _v("test a \\> b && echo y", [], None, None, "escaped"),
-    # Compound statements run their commands.
-    _v("if true; then cp a b; fi", ["b"], "workspace", "workspace", "then"),
-    _v("for f in a b; do touch out.txt; done", ["out.txt"], "workspace", "workspace", "do"),
-    _v("! touch out.txt", ["out.txt"], "workspace", "workspace", "negation"),
-    _v("{ touch out.txt; }", ["out.txt"], "workspace", "workspace", "group"),
+    # Control flow is not modelled: whether a compound body runs is unknown, so it is not read.
+    _v("if true; then cp a b; fi", [], None, None, "control flow"),
+    _v("for f in a b; do touch out.txt; done", [], None, None, "control flow"),
+    _v("! touch out.txt", [], None, None, "negation: the bang is a command name here"),
+    _v("{ touch out.txt; }", [], None, None, "control flow"),
     # Text is not syntax.
     _v('echo ">" output.txt', [], None, None, "quoted operator"),
     _v("echo tee output.txt", [], None, None, "tee as an argument"),

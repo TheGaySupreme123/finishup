@@ -356,6 +356,20 @@ def test_the_hook_claims_the_scope_the_shared_vectors_name(vector: ShellWriteVec
     assert facts.get("write_scope") == vector.hook, vector.command
 
 
+def test_the_hook_bounds_every_parse_of_a_huge_command(tmp_path: Path) -> None:
+    """Review round 2: the install-target ``shlex`` pass read the whole megabyte of one token
+    (quadratic); it is bounded like the write parser, and a bounded parse claims nothing."""
+
+    import time
+
+    started = time.perf_counter()
+    facts = _facts("Bash", {"command": "echo " + "x" * 900_000 + " > out.txt"}, tmp_path)
+    elapsed = time.perf_counter() - started
+    assert "install_target" not in facts
+    assert "write_scope" not in facts
+    assert elapsed < 2.0
+
+
 def test_a_yoetz_receipt_copied_outside_the_workspace_is_yoetz_owned_not_outside(
     tmp_path: Path,
 ) -> None:

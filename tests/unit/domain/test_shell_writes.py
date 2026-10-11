@@ -110,6 +110,11 @@ _ADVERSARIAL: list[tuple[str, str]] = [
     ("many heredocs", "cat " + "<<A " * 3_000),
     ("many backslashes", "echo " + "\\\\" * 8_000),
     ("many arithmetic", "((" * 4_000),
+    ("nested arithmetic", "echo " + "$((" * 4_000),
+    ("many case words", "echo $(" + "case x " * 2_000),
+    ("continued heredoc", "cat <<EOF\n" + "x\\\n" * 5_000 + "EOF"),
+    ("many heredocs in a group", "echo $(" + "cat <<A\nx\nA\n" * 1_500 + ")"),
+    ("many comments in a group", "echo $(" + "# ) \n" * 3_000 + ")"),
     ("deep wrappers", "bash -c " * 1_000),
 ]
 
@@ -188,11 +193,38 @@ def test_a_write_after_the_cap_is_not_seen_and_a_cut_command_is_never_guessed() 
         (": > early\ncp src dest \\\n" + "p" * 16_384, ["early"]),
         # An expansion the cut leaves open.
         (": > early\necho $(cat <<EOF\n" + "p" * 16_384 + "\nEOF\n)", ["early"]),
+        # Review round 2 (1): a redirect of the command the cut interrupted is not a write either.
+        (": > ghost '\n" + "x" * 17_000, []),
+        (": > early\n: > ghost '\n" + "x" * 17_000, ["early"]),
+        (': > early\ncp a ghost "\n' + "x" * 17_000, ["early"]),
     ],
 )
 def test_the_cut_keeps_what_precedes_it(command: str, paths: list[str]) -> None:
     assert len(command) > MAX_SHELL_WRITE_CHARS
     assert shell_write_paths(command) == paths
+
+
+@pytest.mark.parametrize(
+    ("script", "paths"),
+    [
+        (": > ghost '\n" + "x" * 17_000, []),
+        (": > early\n: > ghost '\n" + "x" * 17_000, ["early"]),
+    ],
+)
+def test_the_cut_inside_the_recorded_bash_wrapper_keeps_what_precedes_it(
+    script: str, paths: list[str]
+) -> None:
+    command = shlex.join(["/bin/bash", "-lc", script])
+    assert len(command) > MAX_SHELL_WRITE_CHARS
+    assert shell_write_paths(command) == paths
+
+
+def test_a_write_in_a_nested_shell_is_seen_through_the_recorded_wrapper_too() -> None:
+    """The rollout wraps the agent's own ``bash -c`` once more than the hook sees it."""
+
+    inner = shlex.join(["bash", "-c", shlex.join(["bash", "-c", "cat > solve.py"])])
+    assert shell_write_paths(inner) == ["solve.py"]
+    assert shell_write_paths(shlex.join(["/bin/bash", "-lc", inner])) == ["solve.py"]
 
 
 def test_wrapper_stripping_never_sees_more_than_a_constant_number_of_words(

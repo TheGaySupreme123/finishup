@@ -181,10 +181,12 @@ matter and a false write is worse, so `domain/shell_writes` names no write when 
   compare) write nothing. `$(...)`, `${...}`, `$[...]`, `$'...'` and backticks are opaque, with
   their own quote and nesting state (`echo "$(echo "x > f")"` writes nothing); inside `$(...)` a
   comment's parenthesis and a heredoc body (the `git commit -m "$(cat <<'EOF' ... EOF)"` idiom)
-  close nothing. A heredoc starts only at an unquoted `<<`/`<<-`; its delimiter is the word with
+  close nothing, while a `case` there (its patterns end in an unmatched `)`) makes the command
+  unlexable. A heredoc starts only at an unquoted `<<`/`<<-`; its delimiter is the word with
   quotes removed (`'END-DATA'`, `$'EOF'`; an escape inside `$'...'` is not decoded, so the command
-  is unlexable); `<<-` strips leading tabs, and only tabs, when matching the closing line; an
-  unterminated body runs to the end, as in bash. The body of an unquoted heredoc is data here even
+  is unlexable); `<<-` strips leading tabs, and only tabs, when matching the closing line; in an
+  unquoted heredoc a body line ending in a backslash continues on the next, and the joined line is
+  what is compared; an unterminated body runs to the end, as in bash. The body of an unquoted heredoc is data here even
   though bash expands `$(...)` in it: a write hidden in one is a missed write, accepted. A write
   inside `bash -lc '...'` is attributed (the wrapper's command text is parsed in turn, to a bounded
   depth); a wrapper argument the outer shell expands (`bash -c "... '$OUT'"`) is unknown and names
@@ -197,23 +199,31 @@ matter and a false write is worse, so `domain/shell_writes` names no write when 
   the whole command name no write. The existing disclosure is unchanged: an unattributed write
   only means the kernel does not count that command as an edit.
 - *Redirections.* `>& file` and `1>& file` write a file; a descriptor target (`>&2`, `>&-`)
-  duplicates or closes, and `2>& file` is an ambiguous redirect in bash, so it names none. `<>`
-  opens read-write and creates an absent file, so it counts.
+  duplicates or closes, and `2>& file` is an ambiguous redirect in bash: the redirections before it
+  were opened, the ones after it and the command are not. `<>` opens read-write and creates an
+  absent file, so it counts. A redirection with no target is a syntax error: that command and
+  everything after it is not run. A file named `-` is a file (`touch -` is stdout).
 - *Options.* `sed` reads `-e`/`-f` attached or separate, `-i[SUFFIX]` (GNU: the suffix swallows the
-  rest of the word, so `-i.bak1` and `-ie`), the macOS separate suffix (`-i ''`, `-i .bak`, taken
-  as a suffix only when a script and a file follow it, since GNU treats `sed -i '' f` as an empty
-  script over `f`), `--in-place[=SUFFIX]` and `--`; `cp`/`mv`/`install` read `-t DIR`, `-tDIR`,
+  rest of the word, so `-i.bak1` and `-ie`), `--in-place[=SUFFIX]` and `--`. After a bare `-i`,
+  macOS takes the next word as the suffix (`-i ''`, `-i .bak`) where GNU takes it as the script or
+  a file; for `sed` only the files both readings agree on are writes (`sed -i '' 's/a/b/' f` is `f`,
+  `sed -i '' f` is none), and `gsed` is GNU. `cp`/`mv`/`install` read `-t DIR`, `-tDIR`,
   `--target-directory[=]DIR` and every operand of `install -d`; `touch -r REF` and
-  `truncate -r REF` read their reference; operands after `--` are operands even if they begin with
-  `-`; an rsync `host:path` or `rsync://` destination is remote and names no local file; `then`,
-  `do`, `else`, `{` and `!` heads run their command. An invocation that exits before writing
-  names nothing: `--help`/`--version`, `-t DIR` with no source, with `-T`, or given twice.
+  `truncate -r REF` read their reference (`truncate` needs `-s` or `-r`); the last `dd of=` wins;
+  operands after `--` are operands even if they begin with `-`; an rsync `host:path` or
+  `rsync://` destination is remote, `-n`/`--dry-run`/`--list-only` transfer nothing, and its
+  option values (`--exclude PATTERN`) are no paths. An invocation that exits before writing names
+  nothing: `--help`/`--version` (also of a wrapper such as `timeout`), `bash -n`, `-t DIR` with no
+  source, with `-T`, or given twice. The bodies of compound statements (`then`, `do`, `{ ... }`,
+  function definitions) are not read: whether they run is control flow, and a `[[ ... ]]` test's
+  `||`, `&&` and parentheses are test syntax. An expansion is assumed to yield a word.
 - *A directory destination is classified by where it is.* `cp -t DIR`, `install -d DIR` and
   `dest/` write files named after something else, so a notes or receipt *file name* never exempts
   the directory (`cp -t NOTES.md src.py` is a workspace write); a Yoetz tree or state directory
   still does.
 - *Bounded.* The parser is linear: no pattern backtracks, no region is rescanned and
-  `strip_wrappers` is handed a constant-size head of each command. Text longer than 16,384
+  `strip_wrappers` is handed a constant-size head of each command. The hook's other `shlex` pass
+  (install-target detection) reads the same bounded head (`bound_command`). Text longer than 16,384
   characters (the hook's command-normalization limit, `MAX_SHELL_WRITE_CHARS`) is analysed only up
   to its last newline inside that limit, so a long `cat > f <<'EOF'` body still names `f` (8 of the
   9 over-limit commands in the recorded n2 and n3 runs are exactly that) and so does the same
@@ -255,9 +265,13 @@ receipt, so a present-but-not-reviewed deliverable is named.
   it becomes its own once-per-frontier readiness item (owner decision 6, wave 2).
 - Shell-write attribution trades recall for honesty. Writes the parser does not read (`perl -pi`,
   `awk -i inplace`, `ln`, `curl -o`, a script that opens files itself, an expansion-built path, a
-  write after the 16,384-character bound, a heredoc body that runs `$(...)`) are missed writes: the
-  command is not counted as an edit and nothing says so. The tests lock the opposite direction
-  harder (every false write found by review is a vector).
+  write after the 16,384-character bound, a heredoc body that runs `$(...)`, a `then`/`do` body, a
+  command whose group holds a `case`) are missed writes: the command is not counted as an edit and
+  nothing says so. Known false-write direction, not seen in the 2,343 recorded commands: a relative
+  path written after a `cd` out of the workspace (`cd /tmp && echo x > f`) is read against the
+  workspace, as before; and a redirection whose target is an expansion that fails is assumed to
+  succeed. The tests lock the false-write direction harder (every false write found by review is a
+  vector).
 - Not done here, owned elsewhere: the Stop gate's active-Stop suppression of ordinary tokens and the
   premise text (RC-8, wave 2), the hook-observed-edit check invalidation (`c4`, lane LO), and a real
   reducer reopen of a resolved obligation.

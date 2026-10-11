@@ -17,7 +17,9 @@ glob or a command substitution, a script that opens files itself, an invocation 
 writing (``--help``, conflicting ``-t``/``-T``), a write after the analysed head of an over-long
 command. Text is not syntax: a quoted or escaped operator or keyword, a comment, a here-string, a
 heredoc body, a ``$(...)`` or backtick substitution (opaque, with its own quote state), the inside
-of ``[[ ... ]]`` and ``(( ... ))`` and the word ``tee`` as an argument write nothing.
+of ``[[ ... ]]`` and ``(( ... ))`` and the word ``tee`` as an argument write nothing. Control flow
+is not modelled, so the bodies of compound statements (``then``, ``do``, function definitions) are
+not read.
 
 The parser is linear in its input (no backtracking pattern, no rescanning) and bounded: text longer
 than ``MAX_SHELL_WRITE_CHARS`` (the hook's normalization limit) is analysed up to its last newline
@@ -38,7 +40,7 @@ from typing import Final, NamedTuple
 from yoetz.domain.command_segments import strip_wrappers, wrapped_shell_argument
 from yoetz.domain.write_scope import classify_write_path, scratch_path
 
-__all__ = ["MAX_SHELL_WRITE_CHARS", "shell_write_paths", "shell_write_scope"]
+__all__ = ["MAX_SHELL_WRITE_CHARS", "bound_command", "shell_write_paths", "shell_write_scope"]
 
 # The hook's command normalization limit (``domain.observation._MAX_OBSERVED_COMMAND_CHARS``; a
 # unit test pins the two together): longer text is analysed only up to its last newline inside it.
@@ -72,26 +74,57 @@ _OPERATORS_LONGEST_FIRST: Final = (
     "<&",
     "<>",
 )
-# Reserved words that begin a command inside a compound statement (``then cp a b``); only an
-# unquoted, unescaped one is syntax (``'then' cp a b`` runs a command named ``then``).
-_RESERVED_PREFIX: Final = frozenset(
-    {"if", "then", "else", "elif", "do", "while", "until", "!", "{"}
+# Words after which a command, so ``((`` or ``[[``, may begin. The bodies of compound statements
+# (``then cp a b``, ``f() { cp a b; }``) are not read: whether they run is control flow.
+_BEFORE_COMMAND: Final = frozenset(
+    {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "for"}
 )
-# Words after which ``((`` still begins an arithmetic command.
-_BEFORE_COMMAND: Final = _RESERVED_PREFIX | {"for"}
 # ``$(``, ``${`` and the legacy ``$[`` open an expansion this lexer does not read into.
 _EXPANSION_CLOSERS: Final = {"(": ")", "{": "}", "[": "]"}
+# Stack marks of arithmetic: ``$(( ... ))`` / ``(( ... ))`` (``A``, closed by ``)``) and the legacy
+# ``$[ ... ]`` (``B``, closed by ``]``). A ``<<`` inside either is a shift, never a heredoc.
+_ARITHMETIC: Final = "A"
+_ARITHMETIC_CLOSERS: Final = {"A": ")", "B": "]"}
 _DESCRIPTOR_TARGET: Final = re.compile(r"[0-9]+-?|-", re.ASCII)
 _BSD_SED_SUFFIX: Final = re.compile(r"\.[A-Za-z0-9_.~-]+", re.ASCII)
 
-_FILE_OPERAND_SKIP: Final = frozenset(
-    {"-", "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin"}
-)
+_FILE_OPERAND_SKIP: Final = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin"})
 _COPY_LIKE: Final = frozenset({"cp", "mv", "install", "rsync"})
 _SED_NAMES: Final = frozenset({"sed", "gsed"})
 _INFORMATIONAL: Final = frozenset({"--help", "--version"})
 _REMOTE_OPERAND: Final = re.compile(r"[^/]*:")
-_MAX_SHELL_DEPTH: Final = 3
+# rsync options that take a separate value (so the value is not a path) ...
+_RSYNC_VALUE_OPTIONS: Final = frozenset(
+    {
+        "--exclude",
+        "--include",
+        "--exclude-from",
+        "--include-from",
+        "--filter",
+        "--rsh",
+        "--files-from",
+        "--log-file",
+        "--bwlimit",
+        "--timeout",
+        "--port",
+        "--rsync-path",
+        "--temp-dir",
+        "--backup-dir",
+        "--suffix",
+        "--compare-dest",
+        "--copy-dest",
+        "--link-dest",
+        "--chmod",
+        "--chown",
+        "--partial-dir",
+        "--max-size",
+        "--min-size",
+    }
+)
+# ... and the ones after which it transfers nothing.
+_RSYNC_NO_TRANSFER: Final = frozenset({"-n", "--dry-run", "--list-only"})
+# The rollout records one more ``bash -lc`` than the hook sees, so the stream needs one level more.
+_MAX_SHELL_DEPTH: Final = 4
 # Wrappers (``env``, ``timeout``, ``nice`` ...) and their options come first; scanning only this
 # many words keeps ``strip_wrappers`` constant-cost whatever an adversary puts in a segment.
 _WRAPPER_SCAN: Final = 128
@@ -154,11 +187,22 @@ def _skip_ansi_c(text: str, index: int) -> int | None:
     return None
 
 
-def _heredoc_delimiter(text: str, index: int) -> tuple[tuple[str, bool], int] | None:
-    """``((delimiter, strips_tabs), end)`` of the heredoc whose operator ends just before *index*.
+def _expansion_closer(text: str, index: int) -> str:
+    """The closer of the ``$(``, ``$((``, ``${`` or ``$[`` expansion whose ``$`` is at *index*."""
+
+    opener = text[index + 1]
+    if opener == "(" and text.startswith("(", index + 2):
+        return "A"
+    if opener == "[":
+        return "B"
+    return _EXPANSION_CLOSERS[opener]
+
+
+def _heredoc_delimiter(text: str, index: int) -> tuple[tuple[str, bool, bool], int] | None:
+    """``((delimiter, strips_tabs, quoted), end)`` of the heredoc whose ``<<`` ends before *index*.
 
     Used inside a skipped group, where a heredoc body (quotes, parentheses and all) must not decide
-    where the group ends. ``None`` when the word is not plainly a delimiter (``1<<2``).
+    where the group ends. The delimiter is taken literally, quotes removed (``'EOF'``, ``$'EOF'``).
     """
 
     size = len(text)
@@ -169,40 +213,54 @@ def _heredoc_delimiter(text: str, index: int) -> tuple[tuple[str, bool], int] | 
         index += 1
     start = index
     parts: list[str] = []
+    quoted = False
     while index < size:
         char = text[index]
-        if char in "'\"":
+        if char == "$" and text[index + 1 : index + 2] in ("'", '"'):
+            index += 1  # ``$'EOF'`` and ``$"EOF"``: the quotes are the delimiter's
+            quoted = True
+            if text[index] == "'":
+                close = text.find("'", index + 1)
+                if close < 0 or "\\" in text[index + 1 : close]:
+                    return None
+                parts.append(text[index + 1 : close])
+                index = close + 1
+        elif char in "'\"":
             close = text.find(char, index + 1)
             if close < 0:
                 return None
             parts.append(text[index + 1 : close])
+            quoted = True
             index = close + 1
         elif char == "\\":
             if index + 1 >= size:
                 return None
             parts.append(text[index + 1])
+            quoted = True
             index += 2
         elif char in " \t\n;&|()<>":
             break
         else:
             parts.append(char)
             index += 1
-    if index == start or not (text[start] in "'\"\\_" or text[start].isalpha()):
+    if index == start:
         return None
-    return ("".join(parts), strips), index
+    return ("".join(parts), strips, quoted), index
 
 
 def _skip_group(text: str, index: int, closer: str) -> int | None:
     """The index after the delimiter closing a ``$(``, ``${``, ``$[``, backtick or ``((`` group.
 
-    *index* is just after the opener and *closer* its closing character. The group is opaque to
-    the lexer, but its own quotes, nested groups, comments and heredoc bodies decide where it ends,
-    so ``"$(echo "x > f")"`` and ``$(cat <<EOF`` ... ``)`` are each one word. One forward pass with
-    an explicit stack: linear in the group, never recursive. ``None`` when the group is not closed.
+    *index* is just after the opener and *closer* its closing mark. The group is opaque to the
+    lexer, but its own quotes, nested groups, comments and heredoc bodies decide where it ends, so
+    ``"$(echo "x > f")"`` and ``$(cat <<EOF`` ... ``)`` are each one word. One forward pass with an
+    explicit stack: linear in the group, never recursive. ``None`` when the group is not closed,
+    and when it holds a ``case`` (whose patterns end in an unmatched ``)``): unsure.
     """
 
     stack = [closer]
-    pending: list[tuple[str, bool]] = []
+    pending: list[tuple[str, bool, bool]] = []
+    arithmetic = 1 if closer in _ARITHMETIC_CLOSERS else 0
     size = len(text)
     start = index
     while index < size:
@@ -220,7 +278,9 @@ def _skip_group(text: str, index: int, closer: str) -> int | None:
                 stack.pop()
                 index += 1
             elif char == "$" and following in _EXPANSION_CLOSERS:
-                stack.append(_EXPANSION_CLOSERS[following])
+                mark = _expansion_closer(text, index)
+                arithmetic += mark in _ARITHMETIC_CLOSERS
+                stack.append(mark)
                 index += 2
             elif char == "`":
                 stack.append("`")
@@ -236,19 +296,25 @@ def _skip_group(text: str, index: int, closer: str) -> int | None:
             stack.append(char)
             index += 1
         elif char == "$" and following in _EXPANSION_CLOSERS:
-            stack.append(_EXPANSION_CLOSERS[following])
+            mark = _expansion_closer(text, index)
+            arithmetic += mark in _ARITHMETIC_CLOSERS
+            stack.append(mark)
             index += 2
         elif char == "$" and following == "'":
             skipped = _skip_ansi_c(text, index + 2)
             if skipped is None:
                 return None
             index = skipped
-        elif char == "#" and (index == start or text[index - 1] in " \t\n;&|("):
+        elif top == ")" and char == "#" and _starts_word(text, index, start):
             newline = text.find("\n", index)  # a comment: its parentheses close nothing
             index = size if newline < 0 else newline
-        elif text.startswith("<<<", index):
+        elif top == ")" and text.startswith("case", index) and _starts_word(text, index, start):
+            if text[index + 4 : index + 5] in (" ", "\t", "\n"):
+                return None
+            index += 4
+        elif not arithmetic and text.startswith("<<<", index):
             index += 3
-        elif text.startswith("<<", index):
+        elif not arithmetic and text.startswith("<<", index):
             parsed = _heredoc_delimiter(text, index + 2)
             if parsed is None:
                 index += 2
@@ -258,11 +324,11 @@ def _skip_group(text: str, index: int, closer: str) -> int | None:
         elif char == "\n" and pending:
             index = _skip_heredocs(text, index + 1, pending)
             pending.clear()
-        elif char == "(" and top == ")":
+        elif char == "(" and top in (")", "A"):
             stack.append(")")
             index += 1
-        elif char == top:
-            stack.pop()
+        elif char == _ARITHMETIC_CLOSERS.get(top, top):
+            arithmetic -= stack.pop() in _ARITHMETIC_CLOSERS
             index += 1
         else:
             index += 1
@@ -271,22 +337,46 @@ def _skip_group(text: str, index: int, closer: str) -> int | None:
     return None
 
 
-def _skip_heredocs(text: str, index: int, pending: list[tuple[str, bool]]) -> int:
+def _starts_word(text: str, index: int, start: int) -> bool:
+    """Whether *index* begins a shell word: after blanks, a separator or an opening parenthesis."""
+
+    if index == start:
+        return True
+    before = text[index - 1]
+    if before in " \t" and text[index - 2 : index - 1] == "\\":
+        return False  # an escaped blank belongs to the previous word
+    return before in " \t\n;&|("
+
+
+def _skip_heredocs(text: str, index: int, pending: list[tuple[str, bool, bool]]) -> int:
     """The index after the bodies of the heredocs started on the line that just ended.
 
     A body is data to the first line equal to its delimiter (a ``<<-`` body also ignores leading
-    tabs, and only tabs); an unterminated body runs to the end of the text, as in bash.
+    tabs, and only tabs); an unterminated body runs to the end of the text, as in bash. In an
+    unquoted heredoc a line ending in an odd number of backslashes continues on the next, and the
+    joined line is what is compared (``text\\`` then ``EOF`` is ``textEOF``).
     """
 
     size = len(text)
-    for delimiter, strip_tabs in pending:
+    for delimiter, strip_tabs, quoted in pending:
+        carry = ""  # the continued lines so far, while they could still equal the delimiter
+        dead = False  # ... and once they cannot
         while index < size:
             end = text.find("\n", index)
             if end < 0:
                 end = size
-            line = text[index:end]
+            physical = text[index:end]
             index = min(end + 1, size)
-            if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+            if not quoted and (len(physical) - len(physical.rstrip("\\"))) % 2 == 1:
+                if not dead:
+                    carry += physical[:-1]
+                    if len(carry.lstrip("\t")) > len(delimiter):
+                        carry, dead = "", True
+                continue
+            line = carry + physical
+            matched = not dead and (line.lstrip("\t") if strip_tabs else line) == delimiter
+            carry, dead = "", False
+            if matched:
                 break
     return index
 
@@ -322,7 +412,7 @@ def _lex(text: str, *, partial: bool) -> tuple[list[_Token], bool] | None:
 
     tokens: list[_Token] = []
     buffer: list[str] = []
-    pending: list[tuple[str, bool]] = []
+    pending: list[tuple[str, bool, bool]] = []
     in_word = False
     quoted = False
     literal = True
@@ -340,7 +430,7 @@ def _lex(text: str, *, partial: bool) -> tuple[list[_Token], bool] | None:
             previous = tokens[-1] if tokens else None
             tokens.append(_Token("word", word, literal, quoted, "", truncated))
             if delimiter_strips_tabs is not None:
-                pending.append((word, delimiter_strips_tabs))
+                pending.append((word, delimiter_strips_tabs, quoted))
                 delimiter_strips_tabs = None
             if not quoted:
                 if word == "[[" and _at_command(previous):
@@ -412,7 +502,7 @@ def _lex(text: str, *, partial: bool) -> tuple[list[_Token], bool] | None:
                             end = _skip_group(
                                 text,
                                 index + (1 if inner == "`" else 2),
-                                "`" if inner == "`" else _EXPANSION_CLOSERS[following],
+                                "`" if inner == "`" else _expansion_closer(text, index),
                             )
                             if end is None:
                                 raise _Stop
@@ -445,7 +535,7 @@ def _lex(text: str, *, partial: bool) -> tuple[list[_Token], bool] | None:
                 literal = False
                 in_word = True
                 if following in _EXPANSION_CLOSERS:
-                    end = _skip_group(text, index + 2, _EXPANSION_CLOSERS[following])
+                    end = _skip_group(text, index + 2, _expansion_closer(text, index))
                 elif following == "'":
                     end = _skip_ansi_c(text, index + 2)
                 else:
@@ -472,12 +562,12 @@ def _lex(text: str, *, partial: bool) -> tuple[list[_Token], bool] | None:
                 and _at_command(tokens[-1] if tokens else None)
             ):
                 # An arithmetic command, ``(( i > 5 ))`` or ``for ((i = n; i > 0; i--))``: opaque.
-                end = _skip_group(text, index + 1, ")")
+                end = _skip_group(text, index + 1, _ARITHMETIC)
                 if end is None:
                     raise _Stop
                 tokens.append(_Token("word", "((", False))
                 index = end
-            elif char in _OPERATOR_CHARS and not (in_test and char in "<>"):
+            elif char in _OPERATOR_CHARS and not (in_test and char in "<>()&|"):
                 operator = next(
                     (item for item in _OPERATORS_LONGEST_FIRST if text.startswith(item, index)),
                     char,
@@ -525,6 +615,9 @@ class _Options:
     values: dict[str, _Word] = field(default_factory=lambda: dict[str, _Word]())
     counts: dict[str, int] = field(default_factory=lambda: dict[str, int]())
     operands: list[_Word] = field(default_factory=lambda: list[_Word]())
+    # The word directly after a bare short option that takes only an attached value (``sed -i``):
+    # on macOS it is that option's value.
+    after_bare: dict[str, _Word] = field(default_factory=lambda: dict[str, _Word]())
 
     @property
     def informational(self) -> bool:
@@ -580,6 +673,8 @@ def _parse_options(
                 if letter in short_optional:
                     if position < len(text):
                         options.values[key] = _Word(text[position:], word.literal)
+                    elif index < size:
+                        options.after_bare[key] = words[index]
                     break
                 if letter in short_value:
                     options.counts[key] = options.counts.get(key, 0) + 1
@@ -592,7 +687,7 @@ def _parse_options(
     return options
 
 
-def _sed_files(rest: list[_Word]) -> list[_Word]:
+def _sed_files(name: str, rest: list[_Word]) -> list[_Word]:
     """The file operands of an in-place ``sed`` (the script is not one); ``[]`` if not in place."""
 
     options = _parse_options(
@@ -603,16 +698,21 @@ def _sed_files(rest: list[_Word]) -> list[_Word]:
     )
     if options.informational or not {"-i", "--in-place"} & options.flags:
         return []
-    operands = options.operands
-    if options.flags & {"-e", "-f", "--expression", "--file"}:
-        return operands  # the script was given by an option
-    if len(operands) >= 3 and (
-        operands[0].text == "" or _BSD_SED_SUFFIX.fullmatch(operands[0].text)
+    script_given = bool(options.flags & {"-e", "-f", "--expression", "--file"})
+    gnu = [word for word in options.operands[(0 if script_given else 1) :] if word.text != "-"]
+    suffix = options.after_bare.get("-i")
+    if (
+        name != "sed"
+        or suffix is None
+        or not (suffix.text == "" or _BSD_SED_SUFFIX.fullmatch(suffix.text))
     ):
-        # macOS: ``sed -i '' script file`` and ``sed -i .bak script file`` give the suffix as a
-        # separate word. GNU sed never has an empty or dotted script followed by two operands.
-        operands = operands[1:]
-    return operands[1:]
+        return gnu
+    # ``sed -i '' script file`` and ``sed -i .bak script file``: macOS takes the word after
+    # ``-i`` as the suffix, GNU takes it as the script (or a file). Only what both readings
+    # agree is a file is a write.
+    operands = [word for word in options.operands if word is not suffix]
+    bsd = {id(word) for word in operands[(0 if script_given else 1) :]}
+    return [word for word in gnu if id(word) in bsd]
 
 
 def _copy_destinations(name: str, rest: list[_Word]) -> list[tuple[_Word, bool]]:
@@ -620,7 +720,7 @@ def _copy_destinations(name: str, rest: list[_Word]) -> list[tuple[_Word, bool]]
 
     ``-t DIR`` names a directory (and needs a source and no ``-T`` and one ``-t``, or the command
     fails before writing); ``install -d`` creates every operand as a directory; otherwise the last
-    operand is the destination, a directory only if it ends with ``/``.
+    operand is the destination, a directory only if it ends with ``/``. A dry run writes nothing.
     """
 
     if name == "install":
@@ -639,7 +739,9 @@ def _copy_destinations(name: str, rest: list[_Word]) -> list[tuple[_Word, bool]]
             ),
         )
     elif name == "rsync":
-        options = _parse_options(rest)
+        options = _parse_options(rest, short_value="efBTM", long_value=_RSYNC_VALUE_OPTIONS)
+        if _RSYNC_NO_TRANSFER & options.flags:
+            return []
     else:
         options = _parse_options(
             rest,
@@ -669,17 +771,28 @@ def _copy_destinations(name: str, rest: list[_Word]) -> list[tuple[_Word, bool]]
     return [(destination, destination.text.endswith("/"))]
 
 
-def _bounded(command: str) -> tuple[str, bool]:
-    """``(text, cut)``: *command*, or its head up to the last newline inside the bound.
+def bound_command(command: str) -> str:
+    """*command*, or its head up to the last newline inside ``MAX_SHELL_WRITE_CHARS``.
 
-    A head with no newline is empty: no line is complete, so nothing is guessed.
+    The bound every caller applies before it parses a hook command, so no parser can be made to do
+    quadratic work on a megabyte of one token. A head with no newline is empty: no line is
+    complete, so nothing is guessed.
     """
+
+    return _bounded(command)[0]
+
+
+def _bounded(command: str) -> tuple[str, bool]:
+    """``(text, cut)``: *command*, or its head up to the last newline inside the bound."""
 
     if len(command) <= MAX_SHELL_WRITE_CHARS:
         return command, False
     head = command[:MAX_SHELL_WRITE_CHARS]
     cut = head.rfind("\n")
     return (head[:cut] if cut > 0 else ""), True
+
+
+_LINE_ENDS: Final = frozenset({"\n", ";", "&&", "||", "|", "|&", "&", ";;", ")"})
 
 
 def _scan(text: str, depth: int, partial: bool) -> dict[str, bool]:
@@ -691,6 +804,8 @@ def _scan(text: str, depth: int, partial: bool) -> dict[str, bool]:
     tokens, incomplete = lexed
     targets: dict[str, bool] = {}
     segment: list[_Word] = []
+    redirects: list[_Word] = []  # what the redirections of the segment write ...
+    ambiguous = False  # ... up to one that fails: bash opens them left to right, runs nothing after
 
     def add(path: str, directory: bool) -> None:
         targets[path] = targets.get(path, True) and directory
@@ -700,18 +815,24 @@ def _scan(text: str, depth: int, partial: bool) -> dict[str, bool]:
             add(word.text, directory)
 
     def flush(tail: bool = False) -> None:
+        nonlocal ambiguous
         words = list(segment)
+        written = list(redirects)
         segment.clear()
-        start = 0
-        while (
-            start < len(words) and not words[start].quoted and words[start].text in _RESERVED_PREFIX
-        ):
-            start += 1
-        words = words[start:]
+        redirects.clear()
+        not_run, ambiguous = ambiguous, False
+        if not tail:
+            for word in written:
+                emit(word)
+        if not_run:
+            return  # a failed redirection: the command itself is not run
         head_words = [word.text for word in words[:_WRAPPER_SCAN]]
         stripped = strip_wrappers(head_words)
         if not stripped:
             return  # nothing left to run, or too many wrappers to tell what runs
+        removed = head_words[: len(head_words) - len(stripped)]
+        if not _INFORMATIONAL.isdisjoint(removed):
+            return  # ``timeout --help cmd`` prints and exits
         words = words[len(head_words) - len(stripped) :]
         name = os.path.basename(words[0].text)
         rest = words[1:]
@@ -719,9 +840,10 @@ def _scan(text: str, depth: int, partial: bool) -> dict[str, bool]:
             inner = wrapped_shell_argument([word.text for word in words])
             if inner is not None:
                 # ``bash -lc 'cat > f'``: the shell the host wrapped the command in runs the real
-                # one. An argument with an expansion is expanded by the outer shell first: unsure.
+                # one. An argument with an expansion is expanded by the outer shell first, and
+                # ``bash -n`` runs nothing: unsure.
                 script = words[2]
-                if script.literal and (script.truncated or not tail):
+                if "n" not in words[1].text and script.literal and (script.truncated or not tail):
                     for path, directory in _scan(inner, depth + 1, script.truncated).items():
                         add(path, directory)
                 return
@@ -733,28 +855,31 @@ def _scan(text: str, depth: int, partial: bool) -> dict[str, bool]:
                 emit(word)
         elif name in _SED_NAMES:
             # ``sed -i 's/a/b/' f``: the first operand is the script unless ``-e``/``-f`` gave it.
-            for word in _sed_files(rest):
+            for word in _sed_files(name, rest):
                 emit(word)
         elif name in _COPY_LIKE:
             for word, directory in _copy_destinations(name, rest):
                 emit(word, directory)
         elif name == "touch":
-            # ``-r REF`` reads REF; ``-d``/``-t`` take a time, not a file.
+            # ``-r REF`` reads REF; ``-d``/``-t`` take a time, not a file; ``-`` is stdout.
             options = _parse_options(
                 rest, short_value="rdt", long_value=frozenset({"--reference", "--date", "--time"})
             )
             for word in () if options.informational else options.operands:
-                emit(word)
+                if word.text != "-":
+                    emit(word)
         elif name == "truncate":
             options = _parse_options(
                 rest, short_value="sr", long_value=frozenset({"--size", "--reference"})
             )
-            for word in () if options.informational else options.operands:
+            sized = {"-s", "-r", "--size", "--reference"} & options.flags
+            for word in () if options.informational or not sized else options.operands:
                 emit(word)
         elif name == "dd" and not any(word.text in _INFORMATIONAL for word in rest):
-            for word in rest:
-                if word.text.startswith("of="):
-                    emit(_Word(word.text[3:], word.literal, word.quoted))
+            outputs = [word for word in rest if word.text.startswith("of=")]
+            if outputs:  # the last ``of=`` wins
+                last = outputs[-1]
+                emit(_Word(last.text[3:], last.literal, last.quoted))
 
     index = 0
     while index < len(tokens):
@@ -771,17 +896,25 @@ def _scan(text: str, depth: int, partial: bool) -> dict[str, bool]:
                 target = _Word(
                     following.text, following.literal, following.quoted, following.truncated
                 )
-                if token.text in _REDIRECT_OPERATORS:
-                    emit(target)
-                elif (
-                    token.text == _DUPLICATING_REDIRECT
-                    and token.fd in ("", "1")
-                    and _DESCRIPTOR_TARGET.fullmatch(target.text) is None
-                ):
-                    # ``>& file`` and ``1>& file`` send the output to a file; ``>&2``/``>&-``
-                    # duplicate or close a descriptor, and ``2>& file`` is an ambiguous redirect.
-                    emit(target)
+                if ambiguous:
+                    pass  # opened after one that failed: never opened
+                elif token.text in _REDIRECT_OPERATORS:
+                    redirects.append(target)
+                elif token.text == _DUPLICATING_REDIRECT:
+                    if _DESCRIPTOR_TARGET.fullmatch(target.text) is not None:
+                        pass  # ``>&2`` and ``>&-`` duplicate or close a descriptor
+                    elif token.fd in ("", "1"):
+                        redirects.append(target)  # ``>& file`` and ``1>& file`` write a file
+                    else:
+                        ambiguous = True  # ``2>& file`` is an ambiguous redirect
                 index += 1  # the redirect's operand is never an argument of the command
+            elif following is None or following.text in _LINE_ENDS:
+                # A redirection with no target is a syntax error: that command is not run and
+                # bash reads no further.
+                segment.clear()
+                redirects.clear()
+                ambiguous = False
+                break
         elif token.kind == "word":
             segment.append(_Word(token.text, token.literal, token.quoted, token.truncated))
         index += 1
