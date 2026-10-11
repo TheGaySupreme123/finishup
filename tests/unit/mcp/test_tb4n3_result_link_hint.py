@@ -12,7 +12,8 @@ from pydantic import ValidationError
 
 from builders.projection_workflow import request_base
 from builders.start_application import protocol_id
-from yoetz.mcp.errors import invalid_request_message, safe_validation_locations
+from yoetz.mcp.errors import safe_validation_locations
+from yoetz.mcp.server import invalid_request_message
 from yoetz.protocol.models import PublishWorkRequest
 
 
