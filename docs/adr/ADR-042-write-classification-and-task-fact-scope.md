@@ -122,6 +122,15 @@ did not stop the agent:
    8 KiB mandatory budget, so it relies on that page); decision 1 makes a
    saved receipt a non-counting write even when an agent does.
 
+10. **An observed edit after a check supersedes it (tb4n3 RC-6, issue #1029).** The classification
+    above also decides whether a later write changes what a recorded check covered:
+    `kernel/later_material.later_material_class` reads the same closed `write ...` tokens and the
+    same declared-output precedence (`task_facts.non_counting_edits_exempt`). A deliverable,
+    workspace or real outside-workspace edit after the check makes it `check_not_applicable`
+    (ADR-040 section 7); scratch and Yoetz-owned writes do not. One difference: a Yoetz receipt or
+    export name stays non-counting even when a declared output directory makes it count for
+    verification staleness, because a receipt cannot be covered by the check it reports on.
+
 ## Consequences
 
 - Scratch work outside the workspace and a saved receipt no longer reopen closure or keep a stale fact alive; real

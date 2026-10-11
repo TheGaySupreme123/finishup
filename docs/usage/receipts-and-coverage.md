@@ -323,14 +323,26 @@ unchanged state; request the bounded receipt and disclose the current finding an
 Neither case supports a clean completion receipt.
 
 Responding does not throw the check away. A recorded check still counts toward a later receipt when
-the only events between the two are responses to findings that check itself returned,
-acknowledgements of observation-authored non-actionable findings, and/or a finding-free suffix made entirely of service-stamped observation records. The receipt folds the
-check's coverage, including `semantic_model_derived`, and carries the gap
-`check_current_as_of_earlier_frontier` naming the subject frontier that was tested. The verdict is
-current as of that earlier frontier, not the receipt's, so the receipt is still coverage-incomplete.
-The limitations text says which kind of record followed the check: responses to its findings (or
-to observation-authored coverage limitations), finding-free host observations, or both. Observation records are retained but were not evaluated by
-that check; a re-check evaluates them, and routine observation can move the ledger again afterwards.
+nothing after it can have changed the work the check read: responses to findings that check itself
+returned, acknowledgements of observation-authored non-actionable findings, and the records the
+host and Yoetz itself add around any tool call. Yoetz does not count your own `status`,
+`read_guidance`, `receipt` or `check` calls, read-only reads, the host's stream bookkeeping
+(messages, reasoning, token counts) or a receipt you save into the workspace, so checking and then
+asking for the receipt keeps a deterministic receipt clean.
+
+If something after the check might have changed the work and Yoetz cannot tell (a script run, a
+test or build, a tool it cannot attribute), the receipt folds the check's coverage, including
+`semantic_model_derived`, and carries the gap `check_current_as_of_earlier_frontier` naming the
+subject frontier that was tested and the first such record. The verdict is current as of that
+earlier frontier, not the receipt's, so the receipt is still coverage-incomplete. `status` lists
+the code as work: one more `check` evaluates those records and removes it.
+
+An observed edit to the deliverable or the workspace after the check is different: it changes
+what the check judged. The receipt then reports `check_not_applicable` and says which record did
+it (the tool, its ledger record and the check's subject frontier); `status` shows the same cause
+in `closure_readiness.check_cause`, and a closing AI-powered review is required again. Re-run
+`check` after your last edit. The hook records the tool and whether the write left the workspace,
+not the file path.
 
 Any other material event after the check — published work, a new finding (including an
 observation-authored finding), any other response to a finding the check did not return (a

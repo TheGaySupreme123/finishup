@@ -1332,6 +1332,17 @@ X-HOST evidence: the derivation is covered by service-side contract tests over a
 ledger replay; a dogfood transcript on this host across macOS, Linux and WSL 2 has not been
 recorded yet. That gap is owned by issue #913.
 
+### What follows the last check on Claude Code (tb4n3 RC-6, #1029)
+
+Claude Code names Yoetz's tools `mcp__plugin_yoetz_yoetz__<tool>` (or `mcp__yoetz__<tool>` for an
+external registration); both are read as Yoetz's own calls. `Read`, `Grep` and `Glob` are the
+hook's `exploration` class; `Edit`, `Write`, `MultiEdit` and `NotebookEdit` are edits that
+supersede a check unless every path is scratch or a Yoetz receipt; `Bash` is classified by its
+command (`exploration` only for a closed read-only set, otherwise `other`). The `Stop` hook's
+completion-signal evidence names no tool call. Decision: supported, same service-side rule as
+Codex; tested through the real ingress in
+`tests/unit/application/test_tb4n3_later_material_host_shapes.py`.
+
 ### Bounded workflow recovery examples (#613)
 
 These examples use the existing MCP operations on the pinned local Claude Code cell. Replace

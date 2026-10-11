@@ -1779,14 +1779,32 @@ recorded repair still gets its re-check. Which conditions raise the advisory, an
 the ledger rule on the memory and SQLite backends; a live Codex dogfood transcript on macOS, Linux
 and WSL 2 is not yet recorded. That gap is owned by issue #911.
 
+### What follows the last check on Codex (tb4n3 RC-6, #1029)
+
+The records that follow a deterministic arm's final check are the `check` call's own hook
+observation (its post lands after `check_recorded`; the nested hook names `mcp__yoetz__check`)
+and the rollout's stream bookkeeping (`Opaque observation kind=event_msg|response_item|
+token_usage_record`, `Observed completion signal kind=...`), because #564 keeps a successful
+`status`, `receipt` or `read_guidance` post local-only. `kernel/later_material.later_material_class`
+reads them as `yoetz_own_call` and `no_tool_activity`, so `check_current_as_of_earlier_frontier`
+no longer appears for a check followed only by Yoetz calls and a receipt. The rollout names an
+`McpToolCall` item by its tool alone (`status`), which is read as Yoetz's own tool. A nested
+`apply_patch`, an `exec_command` that is not in the hook's `exploration` runner class and a
+`wait` poll's output (no tool identity) stay `other` and keep the disclosure; a nested
+deliverable or workspace `apply_patch` supersedes the check. A patch whose every path is
+`yoetz_receipt.*`, a Yoetz tree or scratch is `non_counting_write`. Tests:
+`tests/unit/application/test_tb4n3_later_material_host_shapes.py` drives real Codex hook payloads
+through the ingress and the materializer.
+
 ### Closure readiness and standing limitations (#913)
 
 Codex sessions carry standing limitations that no agent action removes, so `closure_readiness`
 names them in `standing_limitations` instead of as work: `host_outcome_unavailable` (Codex hooks
 state no command outcome; #910 removes it where an outcome exists), `unpaired_event` (pairing
 loss, sticky by design; #917 owns how it surfaces), and commonly `content_unselected`,
-`observation_qualified_partial`, `advice_semantic_pending` and
-`check_current_as_of_earlier_frontier`. Observation status may also report
+`observation_qualified_partial` and `advice_semantic_pending`; `check_current_as_of_earlier_frontier`
+is standing only while answers to the check's own findings followed it, and agent-actionable (one
+more check) while unclassified observations bound the receipt (tb4n3 RC-6). Observation status may also report
 `pending_attempt_expired` and `unsupported_event`; both are standing. A finished Codex session whose
 remaining conditions are only these reads `ready_with_limitations`.
 
