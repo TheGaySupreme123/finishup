@@ -142,7 +142,9 @@ _REASON_PHRASES: Final[Mapping[str, str]] = {
     "child_findings_actionable": "{n} child finding(s) to do",
     "limitations_to_disclose": "{n} limitation(s) to disclose",
     "findings_disclosed": "{n} disclosed finding(s)",
-    "obligations_open": "{n} open obligation(s)",
+    # Not "open": a resolved obligation whose declared deliverable was emptied is agent work too,
+    # while readiness counts only status-open obligations as "open" (ADR-046).
+    "obligations_open": "{n} unfinished obligation(s)",
     "obligations_acknowledged": "{n} acknowledged obligation(s)",
     "obligations_disclosed": "{n} disclosed obligation(s)",
     "lineage_blocks": "a child task blocks completion",

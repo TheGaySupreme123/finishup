@@ -162,7 +162,7 @@ def closure_verdict(
         if obligations is not None
         else (
             facts.obligation_closures
-            if facts is not None and facts.obligation_closures
+            if facts is not None and facts.obligation_closures is not None
             else basis.obligations
         )
     )

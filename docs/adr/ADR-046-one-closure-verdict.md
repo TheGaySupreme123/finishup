@@ -111,7 +111,25 @@ Rules the tables encode:
   is the one work-integrity kind that records bookkeeping; acknowledging it as not done is
   `acknowledged_not_done_bookkeeping`. Every other kind keeps `acknowledged_not_done_requirement`.
 * **Duplicates count once.** A `duplicate_of` chain reads under the earliest finding
-  (`counts_as`), so counters and reasons never count a link twice.
+  (`counts_as`), so counters and reasons never count a link twice. The group is represented by
+  its most severe member, chosen by one function (`counted_findings`) that the counters, the
+  receipt-blocking count, readiness and the prediction all read: receipt effect first
+  (`unresolved_findings_remain`, then `insufficient_coverage`, then `none`), then class
+  (`agent_work`, `awaiting_ruling`, `settled_unmet`, `settled_disclosed`, `resolved`), then the
+  lowest finding id. A group therefore never reads cleaner than its worst member, and
+  `to do + unmet` always equals `receipt_blocking_finding_count`.
+* **The check continuation reads the class.** The checklist `next` and the overall `next` treat
+  only `agent_work` as work (a pending limitation request included, worded as a disclosure);
+  `awaiting_ruling` is `request_ruling`; a settled basis such as `limitation_disclosed` or
+  `rejected_review_unavailable` keeps its `open` to-do state but is never work. When the closure
+  basis cannot be read the check returns without the checklist rather than guess a class.
+* **Acknowledged lists follow the class.** An acknowledged obligation that is also
+  `externally_evaluated` is listed once, as disclosed, never under "acknowledged not done".
+  A `resolved_deliverable_emptied` obligation counts as unfinished work (the prediction says
+  "unfinished obligation(s)", not "open"); readiness' "open obligations" counts status-open ones
+  only, and the `declared_output_emptied` gap directs the agent to restore the file.
+* **`reopened`.** A finding whose latest response is `reopened` has basis `reopened`
+  (`agent_work`, `unresolved_findings_remain`).
 * **An absence proof wins.** A later qualifying check that proves a finding absent resolves it
   whatever the agent said before.
 

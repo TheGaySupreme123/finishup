@@ -234,3 +234,21 @@ def test_b5_the_full_check_verdict_reads_the_recorded_route_like_the_receipt() -
     assert not full_check_gaps_clean(
         ("check_time_change_truncated",), totals, route_requires_review=True
     )
+
+
+def test_an_unfinished_obligation_reason_does_not_call_an_emptied_deliverable_open() -> None:
+    """``obligations_open`` also names a resolved obligation whose deliverable was emptied; the
+    readiness line "open obligations: 0" counts status-open ones only, so the prediction says
+    "unfinished", which is true of both and contradicts neither."""
+
+    from types import SimpleNamespace
+
+    from yoetz.protocol.readiness_text import predicted_receipt_variants
+
+    prediction = {
+        "conclusion": "insufficient_coverage",
+        "reasons": (SimpleNamespace(code="obligations_open", rule="R4", count="1", refs=()),),
+    }
+    sentences = predicted_receipt_variants(prediction, state="action_required")
+    assert sentences and all("open obligation" not in item for item in sentences)
+    assert any("1 unfinished obligation(s)" in item for item in sentences)

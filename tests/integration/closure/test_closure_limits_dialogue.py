@@ -264,3 +264,86 @@ async def test_g2_pretrain_s_an_act_finding_given_up_on_keeps_its_premise_rechec
     assert finding.finding_id not in tuple(
         reopened.status["compact"].closure_readiness.acknowledged_not_done or ()
     )
+
+
+async def test_a_disclosed_limitation_is_not_open_work_in_the_check_continuation() -> None:
+    """The to-do state of a disclosed limitation stays ``open``, but the class is settled.
+
+    Status reads "ready with limitations"; the check's checklist ``next`` and overall
+    continuation must agree instead of saying "Repair the open findings".
+    """
+
+    run, checked = await _run_with(_LIMIT, 88)
+    finding = _reviewer_finding(checked)
+    attempt = await _attempt(run)
+    await run.check_in("semantic_if_configured")
+    await run.respond(
+        finding.finding_id,
+        checked.result_frontier,
+        "acknowledged",
+        _REASON,
+        evidence_refs=[attempt],
+    )
+    after = await run.check_in("semantic_if_configured")
+    assert after.finding_checklist is not None and after.overall_next is not None
+    assert [
+        (item.todo_state, item.closure_basis)
+        for item in after.finding_checklist.items
+        if item.finding_id == finding.finding_id
+    ] == [("open", "limitation_disclosed")]
+    assert after.finding_checklist.next == "request_receipt"
+    assert after.overall_next.action != "work_open_findings"
+    assert after.overall_next.status in {"ready_with_limitations", "ready"}
+    gathered = await _surfaces(run)
+    assert_surfaces_agree(gathered, conclusion=_INSUFFICIENT, counts=(0, 0, 0, 1, 0), check=after)
+
+
+async def test_a_limitation_request_cannot_be_acknowledged_without_a_reason() -> None:
+    """Owner decision Q4: the disclosure is made "with reason"; a bare acknowledgement is refused,
+    so the request stays something to disclose rather than becoming an answered, undisclosed one."""
+
+    from yoetz.protocol.errors import PublicOperationError
+
+    run, checked = await _run_with(_LIMIT, 89)
+    finding = _reviewer_finding(checked)
+    with pytest.raises(PublicOperationError) as refused:
+        await run.respond(finding.finding_id, checked.result_frontier, "acknowledged")
+    assert "reason" in str(refused.value).lower()
+    gathered = await _surfaces(run)
+    assert_surfaces_agree(gathered, conclusion=_INSUFFICIENT, counts=(0, 0, 0, 0, 1))
+
+
+async def test_an_acknowledged_obligation_disclosed_as_external_is_listed_once_as_disclosed() -> (
+    None
+):
+    """An obligation acknowledged as not done and also marked externally evaluated is counted
+    disclosed by the closure classes; readiness must not also list it as "acknowledged not done"."""
+
+    from typing import cast
+
+    from integration.closure.test_closure_shapes import _obligation
+
+    run, _ = await _run_with(_LIMIT, 90)
+    draft = _obligation(
+        run,
+        1,
+        status="acknowledged_not_done",
+        acknowledged_not_done_reason="Only a hidden evaluator can measure it.",
+    )
+    cast(dict[str, JsonValue], draft["schema"])["version"] = "1.1.0"
+    await run.publish(draft, _limit_decision(run))
+    await run.check_in("semantic_if_configured")
+    gathered = await _surfaces(run)
+    readiness = gathered.status["compact"].closure_readiness
+    assert readiness.obligation_counts is not None
+    assert (
+        readiness.obligation_counts.open,
+        readiness.obligation_counts.acknowledged,
+        readiness.obligation_counts.disclosed,
+    ) == ("0", "0", "1")
+    assert _OBLIGATION not in tuple(readiness.acknowledged_not_done or ())
+    from yoetz.mcp.summaries import summary_for_status
+
+    assert "acknowledged not done (not open)" not in summary_for_status(
+        gathered.status["compact"].as_json()
+    )

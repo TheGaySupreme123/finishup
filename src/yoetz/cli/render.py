@@ -322,9 +322,16 @@ def _open_limitation_requests(checklist: CheckFindingChecklistModel | None) -> t
 
     if checklist is None:
         return False, False
-    open_items = [item for item in checklist.items if item.todo_state == "open"]
+    # ADR-046: agent work is the closure class, not the to-do state (a disclosed limitation keeps
+    # an ``open`` to-do state but is settled).
+    open_items = [item for item in checklist.items if item.closure_class == "agent_work"]
     requests = [item for item in open_items if item.closure_basis == "limitation_requested"]
-    complete = len(open_items) == int(checklist.counts.open)
+    counts = checklist.counts
+    if counts.to_do is not None and counts.awaiting_ruling is not None:
+        total = int(counts.to_do) - int(counts.awaiting_ruling) + int(counts.to_disclose or "0")
+    else:
+        total = int(counts.open)
+    complete = len(open_items) == total
     return bool(requests), bool(requests) and complete and len(requests) == len(open_items)
 
 
