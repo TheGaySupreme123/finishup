@@ -33,6 +33,8 @@ from yoetz.domain.receipts import (
     ReceiptSectionKey,
     receipt_document_from_json,
     receipt_document_to_json,
+    resolved_finding_ids_for_render,
+    unresolved_findings_for_render,
 )
 from yoetz.domain.values import finding_id, obligation_id
 from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts
@@ -65,9 +67,13 @@ def _many_findings(count: int) -> tuple[Finding, ...]:
     return tuple(sorted(findings, key=rank_key))
 
 
-def _context(findings: tuple[Finding, ...], resolved: frozenset[str]) -> ReceiptBuildContext:
+def _context(
+    findings: tuple[Finding, ...],
+    resolved: frozenset[str],
+    verdict: CheckVerdict = CheckVerdict.ACTION_REQUIRED,
+) -> ReceiptBuildContext:
     check = _check(
-        CheckVerdict.ACTION_REQUIRED,
+        verdict,
         _coverage(),
         returned=tuple(
             finding.finding_id for finding in findings if finding.finding_id not in resolved
@@ -244,3 +250,127 @@ def test_a_child_with_more_findings_than_a_receipt_child_holds_still_builds() ->
         section for section in receipt.sections if section.key is ReceiptSectionKey.SUMMARY
     )
     assert "36 child findings" in summary.body
+
+
+def test_resolved_history_past_the_summary_item_bound_never_reads_as_unresolved() -> None:
+    """The summary section's items are the only resolution flag a receipt carries, and a section
+    holds 64 items: a retained resolved row beyond them would have read as unresolved."""
+
+    findings = _many_findings(130)
+    resolved = frozenset(finding.finding_id for finding in findings[10:])
+    receipt = _build(_context(findings, resolved))
+
+    assert receipt.conclusion is ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN
+    marked_resolved = resolved_finding_ids_for_render(receipt)
+    for finding in receipt.findings:
+        assert (finding.finding_id in marked_resolved) == (finding.finding_id in resolved)
+    assert len(marked_resolved) == 64
+    assert len(unresolved_findings_for_render(receipt)) == 10
+    assert len(receipt.findings) == 74
+
+
+def test_an_all_resolved_task_past_the_bounds_builds_a_clean_receipt_that_says_what_it_left_out() -> (
+    None
+):
+    findings = _many_findings(130)
+    resolved = frozenset(finding.finding_id for finding in findings)
+    receipt = _build(_context(findings, resolved, CheckVerdict.NO_ISSUE_DETECTED))
+
+    assert receipt.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    assert unresolved_findings_for_render(receipt) == ()
+    assert resolved_finding_ids_for_render(receipt) == {
+        finding.finding_id for finding in receipt.findings
+    }
+    summary = next(
+        section for section in receipt.sections if section.key is ReceiptSectionKey.SUMMARY
+    )
+    assert "66 findings" in summary.body
+
+
+def test_a_self_verified_child_finding_never_hides_one_that_still_needs_work() -> None:
+    """Every self-verified child finding is also actionable and unresolved; ranked equal to real
+    work it would have filled the 64 kept rows and dropped the only open finding."""
+
+    from dataclasses import replace as dc_replace
+
+    from yoetz.domain.coordination import (
+        LineageAcceptance,
+        LineageOrigin,
+        SessionHealth,
+        WorkState,
+    )
+    from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
+    from yoetz.domain.receipts import SchemaVersionEntry
+    from yoetz.domain.values import receipt_id, session_id, task_id, timestamp_from_string
+    from yoetz.kernel.deterministic_checks import CaseGap
+    from yoetz.kernel.lineage import (
+        ChildDependencySnapshot,
+        ChildFindingSnapshot,
+        LineageManifest,
+        evaluate_lineage,
+    )
+    from yoetz.kernel.receipt_builder import build_receipt
+    from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile
+
+    kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
+    rows = tuple(
+        ChildFindingSnapshot(
+            finding_id=finding_id(f"fnd_00000000-0000-4000-8000-{index:012d}"),
+            kind=kind,
+            origin=FindingOrigin.DETERMINISTIC,
+            priority=FINDING_KIND_TRAITS[kind][0],
+            resolved=False,
+            actionable=True,
+            self_verified=index <= 64,
+        )
+        for index in range(1, 66)
+    )
+    needs_work = rows[-1].finding_id
+    snapshot = ChildDependencySnapshot(
+        child_task_id=task_id("tsk_00000000-0000-4000-8000-000000000077"),
+        origin=LineageOrigin.PARENT_MINTED,
+        acceptance=LineageAcceptance.ACCEPTED,
+        work_state=WorkState.CLOSED,
+        session_health=SessionHealth.ENDED,
+        child_frontier=_FRONTIER,
+        child_check_id=_CHECK_EVENT_ID,
+        child_receipt_id=receipt_id("rcp_00000000-0000-4000-8000-000000000077"),
+        coverage=_coverage(),
+        findings=rows,
+        lineage_authority_revision="rev-1",
+        child_check_subject_frontier=_FRONTIER,
+        manifest_event_id=_SOURCE_EVENT_ID,
+    )
+    lineage = evaluate_lineage(LineageManifest((snapshot,)), base_coverage=_coverage())
+    assert needs_work in lineage.actionable_finding_ids
+    gaps = tuple(
+        CaseGap(
+            f"lineage:{code}:{snapshot.child_task_id}:{_SOURCE_EVENT_ID}", code, (_SOURCE_EVENT_ID,)
+        )
+        for code in sorted(lineage.coverage.known_gaps)
+    )
+    context = dc_replace(
+        _single_context(
+            check=_check(CheckVerdict.ACTION_REQUIRED, lineage.coverage),
+            coverage=lineage.coverage,
+            gaps=gaps,
+        ),
+        lineage=lineage,
+    )
+    receipt = build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        dc_replace(
+            _versions(),
+            schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+        ),
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+    (child,) = receipt.children.children
+    assert len(child.findings) == 64
+    assert needs_work in {row.finding_id for row in child.findings}
+    assert receipt.conclusion is ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN

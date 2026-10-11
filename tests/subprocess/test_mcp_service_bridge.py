@@ -1477,6 +1477,11 @@ async def test_service_post_commit_projection_failure_maps_to_the_same_retryable
     assert result.structuredContent["request_id"] == request_id
     assert "same request_id" in cast(str, error["message"])
     assert error.get("safe_details") == {"reason_code": "response_projection_failed"}
+    # The text channel names the committed state and when to stop replaying (tb4n3 RC-2).
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert "Remedy: The operation is recorded" in text
+    assert "if that replay also fails, stop replaying" in text
+    assert "status view=operation" in text
     await bridge.close_bridge_runtime(runtime)
 
 
@@ -1524,7 +1529,11 @@ async def test_post_commit_structural_shaping_failure_names_the_stage_and_does_n
     message = cast(str, error["message"])
     assert "stage: wire" in message and "status view=operation" in message
     assert "Replaying the same request_id" in message and "same way" in message
-    assert error.get("safe_details") == {"reason_code": "response_projection_failed"}
+    assert error.get("safe_details") == {"reason_code": "bridge_result_wire_failed"}
+    # The text channel carries the stage and the remedy too: a text-only host reads no message.
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert "Reason: bridge_result_wire_failed." in text
+    assert "Remedy:" in text and "status view=operation" in text
     await bridge.close_bridge_runtime(runtime)
 
 

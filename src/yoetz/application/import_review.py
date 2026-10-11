@@ -482,7 +482,8 @@ async def _publish(
     if type(public) is not PublishWorkInternalResult:
         raise _error(
             PublicErrorCode.INTERNAL_ERROR,
-            "Import publication failed (stage: publish); nothing was recorded by this import.",
+            "Import publication did not return an accepted result (stage: publish); it may or may "
+            "not be recorded. Read status view=compact before repeating the import.",
             safe_details={"reason_code": "import_publication_failed"},
         )
     return _append_from_public(public)

@@ -168,14 +168,15 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
 
 
 def test_text_only_closure_lists_remain_bounded_and_keep_both_receipt_classes() -> None:
-    obligation_ids = [f"obl_00000000-0000-4000-8000-{index:012x}" for index in range(1, 21)]
+    # More ids than one list is allowed to take of the 4,096-byte text (1,024 characters per list).
+    obligation_ids = [f"obl_00000000-0000-4000-8000-{index:012x}" for index in range(1, 61)]
     status: dict[str, JsonValue] = {
         "ok": True,
         "view": "obligations",
         "result_frontier": {"sequence": "12"},
         "page": {"items": [{"obligation_id": obligation_id} for obligation_id in obligation_ids]},
         "closure_readiness": {
-            "open_obligation_count": "20",
+            "open_obligation_count": "60",
             "unanswered_finding_count": "0",
             "receipt_blocking_finding_count": "0",
         },

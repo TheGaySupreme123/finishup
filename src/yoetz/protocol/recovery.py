@@ -74,7 +74,7 @@ WRITE_OPERATIONS: Final[frozenset[str]] = frozenset(
 # tight bound still holds a whole directive.
 _MAX_DIRECTIVE_BYTES: Final = 232
 _MAX_NUDGE_BYTES: Final = 128
-_MAX_REMEDY_BYTES: Final = 320
+_MAX_REMEDY_BYTES: Final = 420
 _GUIDANCE_URI_PATTERN: Final = re.compile(
     r"^yoetz://guidance/[a-z][a-z0-9-]*\.md(?:#[a-z0-9][a-z0-9-]*)?$", re.ASCII
 )
@@ -957,6 +957,8 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         # reaches the text channel through ``REASON_REMEDIES`` below rather than a continuation.
         "bridge_error_mapping_failed",
         "bridge_invoke_failed",
+        "bridge_result_validate_failed",
+        "bridge_result_wire_failed",
         "bridge_request_validation_failed",
         "check_pipeline_failed",
         "closure_prepare_failed",
@@ -1010,10 +1012,34 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "view=operation for this request_id before replaying the same request_id; report "
             "the correlation_id."
         ),
+        "bridge_result_wire_failed": (
+            "The operation is recorded, but the bridge could not serialize its result. "
+            "Replaying the same request_id rebuilds the same result and fails the same way: "
+            "read status view=operation for the committed outcome and view=compact for the "
+            "frontier, never send the work again under a new request_id, and report the "
+            "correlation_id."
+        ),
+        "bridge_result_validate_failed": (
+            "The operation is recorded, but its result did not match the response schema. "
+            "Replaying the same request_id rebuilds the same result and fails the same way: "
+            "read status view=operation for the committed outcome and view=compact for the "
+            "frontier, never send the work again under a new request_id, and report the "
+            "correlation_id."
+        ),
+        "response_projection_failed": (
+            "The operation is recorded, but its response could not be shaped. Replay the same "
+            "request_id once to load the stored result; if that replay also fails, stop "
+            "replaying: read status view=operation for the committed outcome and view=compact "
+            "for the frontier, and never send the work again under a new request_id."
+        ),
+        "read_projection_failed": (
+            "The read changed nothing; its response could not be shaped. Repeat it with a new "
+            "request_id, or read status view=versions for the authoritative frontier."
+        ),
         "check_pipeline_failed": (
-            "The check failed inside the service and was closed as failed; no verdict exists "
-            "for it. Read status view=compact, then run check again under a new request_id. "
-            "Report the correlation_id."
+            "The check failed inside the service and produced no verdict. Read status "
+            "view=operation for this request_id: when it reports the check failed, run check "
+            "again under a new request_id. Report the correlation_id."
         ),
         "closure_prepare_failed": (
             "Closure preparation failed unexpectedly and recorded nothing. Read status "
@@ -1021,17 +1047,18 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "report the correlation_id."
         ),
         "import_publication_failed": (
-            "The import could not publish its records; nothing was recorded. Report the "
-            "correlation_id and repeat the import after the service is healthy."
+            "The import's publication did not return an accepted result, so it may or may not "
+            "be recorded. Read status view=compact before repeating the import, and report the "
+            "correlation_id."
         ),
         "maintenance_state_unverified": (
             "Maintenance could not verify its own state and changed nothing. Preview the plan "
             "again, and report the correlation_id if it recurs."
         ),
         "start_state_inconsistent": (
-            "The stored start state disagrees with its own evidence; nothing new was started. "
-            "Replay the exact start once with the same request_id, then report the "
-            "correlation_id."
+            "The start state recorded for this request is inconsistent. Do not start a "
+            "replacement task to escape it: read status for the task you meant to attach to, "
+            "and report the correlation_id."
         ),
     }
 )

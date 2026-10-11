@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import BinaryIO, Final, cast
 
-from yoetz.domain.bounded_text import clip_to_limit
 from yoetz.protocol.canonical import (
     MAX_JSON_DEPTH,
     JsonValue,
@@ -101,7 +100,9 @@ _CONTEXT_CUT_MARKER: Final = " [Yoetz text cut at 2000 characters; read status o
 def _bounded_context(text: str) -> str:
     """Bound hook advice text; a cut ends with a marker so the agent can tell it is partial."""
 
-    return clip_to_limit(text, _MAX_CONTEXT_CHARS, marker=_CONTEXT_CUT_MARKER, ascii_only=False)
+    if len(text) <= _MAX_CONTEXT_CHARS:
+        return text
+    return text[: _MAX_CONTEXT_CHARS - len(_CONTEXT_CUT_MARKER)] + _CONTEXT_CUT_MARKER
 
 
 _MAX_CURSOR_IDENTITY_STRING_BYTES: Final = 8_192

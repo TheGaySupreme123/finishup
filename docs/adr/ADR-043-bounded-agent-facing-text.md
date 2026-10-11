@@ -69,7 +69,7 @@ token list as progressively shorter forms with an exact `+N more`.
 | One id or token list in a summary | 1,024 characters | fewer values and an exact `+N more` |
 | Stop-gate text | 2,000 characters | the ladder drops whole optional sentences; then the composed fallback keeps one instruction per present item family and the close instruction |
 | Hook advice text (Codex, Claude Code, Cursor) | 2,000 characters | ends with a visible cut marker |
-| Receipt document rows | 100 findings, obligations, responses, claim and evidence refs; 64 gaps | the rows that matter most are kept; the summary section says how many were left out |
+| Receipt document rows | 100 findings (at most 64 of them resolved history), obligations, responses, claim and evidence refs; 64 gaps; 64 findings per child | the rows that matter most are kept (unresolved actionable first; a self-verified child finding ranks below one that still needs work); the summary section says how many were left out |
 | Receipt section | 64 items, 32,768 body characters | the item remainder is counted; a body cut is marked |
 | Receipt `human_text` | 32,768 characters | shortened by section; every section keeps its heading; the marker names the shortened sections |
 
@@ -102,18 +102,25 @@ operation is durable, so a clause or section that fails to render is omitted, na
 builder whose required core fails falls back to the verdict or state token, the frontier, the
 failing builder's name and "read status view=compact". The structured result is returned as the
 call's result either way. Only a structural failure (the result cannot be serialized, or fails its
-response schema) still returns `INTERNAL_ERROR`, and it names the stage (`wire` or `validate`) and
-does not offer a replay that would rebuild the same result and fail the same way.
+response schema) still returns `INTERNAL_ERROR`, as the typed stage `bridge_result_wire_failed` or
+`bridge_result_validate_failed`; its remedy says the operation is recorded, points at
+`status view=operation` and does not offer a replay that would rebuild the same result and fail the
+same way. The remedy renders on the text channel as well as in the structured message.
 
 ### Errors say what went wrong
 
 Every `INTERNAL_ERROR` the bridge or a service operation path produces carries a typed
 `reason_code` and a fixed remedy that also reaches the text channel (`REASON_REMEDIES`):
 `bridge_request_validation_failed`, `bridge_invoke_failed`, `bridge_error_mapping_failed`,
-`closure_prepare_failed`, `check_pipeline_failed`, `import_publication_failed`,
-`maintenance_state_unverified` and `start_state_inconsistent`. Status faults were already typed by
-stage (`phase`). The service's own `response_projection_failed` keeps its retryable replay but says
-to stop replaying when the same `correlation_id` returns, and to read `status view=operation`.
+`bridge_result_wire_failed`, `bridge_result_validate_failed`, `closure_prepare_failed`,
+`check_pipeline_failed`, `import_publication_failed`, `maintenance_state_unverified` and
+`start_state_inconsistent`. Their messages claim only what the failing site knows: an invoke or
+import failure says the write may or may not be recorded; a failed check says it produced no
+verdict and to read `status view=operation` before running it again. Status faults were already
+typed by stage (`phase`). The service's own `response_projection_failed` keeps its retryable replay
+but says to replay once and, if that replay also fails, to stop and read `status view=operation`;
+it and `read_projection_failed` now carry their remedy on the text channel too, which they never
+did.
 
 ### closure_prepare
 

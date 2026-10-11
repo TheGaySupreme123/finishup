@@ -260,36 +260,11 @@ _INHERITED_AVAILABILITY_SUFFIX: Final = (
 )
 # The service's own post-commit projection failure (control reason `response_projection_failed`).
 # The operation stands. Replaying the same request_id loads the stored result and is safe, but it
-# re-runs the same projection: if it fails again under the same correlation_id the failure is
-# deterministic, so the message says to stop replaying and read status instead (tb4n3 RC-2).
+# re-runs the same projection: if that replay also fails the failure is deterministic, so the
+# message says to stop replaying and read status instead (tb4n3 RC-2). The remedy is the one the
+# text channel renders (`REASON_REMEDIES`), so the two cannot disagree.
 _RESPONSE_PROJECTION_FAILED_MESSAGE: Final = (
-    "The operation completed on the local service and is recorded, but its response could not "
-    "be shaped. Replay the same request_id once to load the stored result; if it fails again "
-    "with the same correlation_id the failure is deterministic: stop replaying, read status "
-    "view=operation for the committed outcome and view=compact for the frontier, and never "
-    "send the work again under a new request_id."
-)
-# The bridge's own structural failure after a commit: the result could not be turned into a valid
-# response (stage `wire`: the model would not serialize; stage `validate`: the serialized result
-# failed the response schema). A text-projection failure is not one of these: it never fails the
-# call (see `_result_text`). Replay would rebuild the same result, so none is advised.
-_BRIDGE_PROJECTION_FAILED_MESSAGES: Final = MappingProxyType(
-    {
-        "wire": (
-            "The operation completed on the local service and is recorded, but the bridge could "
-            "not serialize its result (stage: wire). Replaying the same request_id rebuilds the "
-            "same result and fails the same way, so read status view=operation for the committed "
-            "outcome and view=compact for the frontier. Never send the work again under a new "
-            "request_id; report the correlation_id."
-        ),
-        "validate": (
-            "The operation completed on the local service and is recorded, but its result did "
-            "not match the response schema (stage: validate). Replaying the same request_id "
-            "rebuilds the same result and fails the same way, so read status view=operation for "
-            "the committed outcome and view=compact for the frontier. Never send the work again "
-            "under a new request_id; report the correlation_id."
-        ),
-    }
+    "The operation completed on the local service. " + REASON_REMEDIES["response_projection_failed"]
 )
 _RESPONSE_PROJECTION_FAILED_DETAILS: Final = {"reason_code": "response_projection_failed"}
 # A text section that failed to render is recorded, but one runaway renderer must not write an
@@ -322,6 +297,8 @@ _INTERNAL_STAGE_HEADS: Final = MappingProxyType(
         "bridge_invoke_failed": "The bridge could not complete the operation (stage: service call).",
         "bridge_error_mapping_failed": "The bridge could not translate the service's failure (stage: error mapping).",
         "closure_prepare_failed": "Closure preparation failed unexpectedly (stage: preparation).",
+        "bridge_result_wire_failed": "The bridge could not serialize the result (stage: wire).",
+        "bridge_result_validate_failed": "The result failed its response schema (stage: validate).",
     }
 )
 _INTERNAL_STAGE_MESSAGES: Final = MappingProxyType(
@@ -2465,13 +2442,10 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             operation=f"{operation}_response_projection_failed",
             request_id=request_id,
         )
-        return structured_error_result(
-            PublicErrorCode.INTERNAL_ERROR,
-            _BRIDGE_PROJECTION_FAILED_MESSAGES[stage],
-            retryable=False,
+        return _internal_stage_error(
+            "bridge_result_validate_failed" if stage == "validate" else "bridge_result_wire_failed",
             request_id=request_id,
             correlation_id=correlation_id,
-            safe_details=dict(_RESPONSE_PROJECTION_FAILED_DETAILS),
             host_profile=runtime.host_profile,
         )
 

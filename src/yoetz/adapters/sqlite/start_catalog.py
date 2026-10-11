@@ -79,6 +79,7 @@ from yoetz.protocol.canonical import (
 )
 from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind, validate_actor_id, validate_id
+from yoetz.protocol.recovery import REASON_REMEDIES
 
 __all__ = [
     "CATALOG_SCHEMA_VERSION",
@@ -196,7 +197,9 @@ def _error(
         PublicErrorCode.BUNDLE_BUSY: "The task is temporarily busy.",
         PublicErrorCode.STORAGE_CORRUPT: "The local catalog is inconsistent.",
         PublicErrorCode.MIGRATION_REQUIRED: "The local catalog needs a newer schema migration.",
-        PublicErrorCode.INTERNAL_ERROR: "The start state is inconsistent.",
+        PublicErrorCode.INTERNAL_ERROR: (
+            "The start state is inconsistent. " + REASON_REMEDIES["start_state_inconsistent"]
+        ),
     }
     if code is PublicErrorCode.INTERNAL_ERROR and safe_details is None:
         # An inconsistent start state is a typed stage, never a bare internal error (tb4n3 RC-2).

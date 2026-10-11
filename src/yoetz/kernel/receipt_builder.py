@@ -205,10 +205,27 @@ _SECTION_BODY_CAP: Final = 32_768
 
 
 def _keep_by_rank[T](
-    values: tuple[T, ...], cap: int, rank: Callable[[T], int]
+    values: tuple[T, ...],
+    cap: int,
+    rank: Callable[[T], int],
+    *,
+    cap_rank: int | None = None,
 ) -> tuple[tuple[T, ...], int]:
-    """Keep the ``cap`` best-ranked values in their original order; return them and the rest."""
+    """Keep the ``cap`` best-ranked values in their original order; return them and the rest.
 
+    With ``cap_rank`` the cap applies to the values of that rank alone and every other value is
+    kept (used to bound one kind of row without touching the rest).
+    """
+
+    if cap_rank is not None:
+        capped = [index for index, value in enumerate(values) if rank(value) == cap_rank]
+        if len(capped) <= cap:
+            return values, 0
+        dropped = frozenset(capped[cap:])
+        return (
+            tuple(value for index, value in enumerate(values) if index not in dropped),
+            len(dropped),
+        )
     if len(values) <= cap:
         return values, 0
     best = frozenset(
@@ -959,13 +976,17 @@ _CHILD_FINDING_CAP: Final = 64
 
 
 def _child_finding_rank(finding: ReceiptChildFinding) -> int:
-    """0 unresolved actionable, 1 self-verified, 2 other unresolved, 3 resolved history."""
+    """0 unresolved actionable work, 1 self-verified, 2 other unresolved, 3 resolved history.
 
-    if finding.actionable and not finding.resolved:
-        return 0
+    A self-verified child finding is also actionable and unresolved, but it is not the parent's
+    work (ADR-034), so a finding that still needs work outranks it.
+    """
+
+    if finding.resolved:
+        return 3
     if finding.self_verified:
         return 1
-    return 3 if finding.resolved else 2
+    return 0 if finding.actionable else 2
 
 
 def _receipt_children(evaluation: LineageEvaluation | None) -> tuple[ReceiptChildren, int]:
@@ -2095,11 +2116,21 @@ def build_receipt(
     # findings, the terminal states the document discloses by id, open obligations, live gaps --
     # and counts the rest in the summary (tb4n3 RC-2, A6).
     unresolved_ids = frozenset(finding.finding_id for finding in unresolved_actionable)
+    # The summary section's items name every resolved finding the document retains (the only
+    # resolution flag a receipt carries), and a section holds at most 64 items: keep no more
+    # resolved history than that, or a retained resolved row would read as unresolved.
+    retained_findings, omitted_resolved = _keep_by_rank(
+        retained_findings,
+        _SECTION_ITEM_CAP,
+        lambda finding: 1 if states_by_id[finding.finding_id].resolved else 0,
+        cap_rank=1,
+    )
     retained_findings, omitted_findings = _keep_by_rank(
         retained_findings,
         _DOCUMENT_ROW_CAP,
         lambda finding: _finding_keep_rank(finding, states_by_id, unresolved_ids),
     )
+    omitted_findings += omitted_resolved
     retained_obligations, omitted_obligations = _keep_by_rank(
         retained_obligations,
         _DOCUMENT_ROW_CAP,

@@ -453,13 +453,14 @@ the exact service-derived predicate; the batch appends at the real head and repo
 `response_projection_failed` marks a post-commit shaping failure for non-`publish_work` writes (and
 for the genuinely impossible case where even the minimal publish envelope cannot be built): the
 write may already be durable, so the public error is retryable and one same-`request_id` replay
-loads the stored result; when the same `correlation_id` returns, the failure is deterministic and the
-caller reads `status view=operation` for the committed outcome and never repeats the work under a
-new `request_id`. A failure to build the MCP *text* of a committed result is not an error at all
+loads the stored result; if that replay also fails the failure is deterministic and the caller reads
+`status view=operation` for the committed outcome and never repeats the work under a new
+`request_id`. The remedy renders on the MCP text channel as well as in the message. A failure to build the MCP *text* of a committed result is not an error at all
 (ADR-043): the structured result is returned and the failure is a diagnostic. The bridge's own
-structural failure after a commit (the result cannot be serialized, stage `wire`, or does not match
-its response schema, stage `validate`) is `INTERNAL_ERROR` with that reason, non-retryable, and names
-`status view=operation` rather than a replay that would rebuild the same result. For `publish_work`, a post-commit projection failure after a successful append is
+structural failure after a commit (the result cannot be serialized, or does not match its response
+schema) is `INTERNAL_ERROR` with reason `bridge_result_wire_failed` or
+`bridge_result_validate_failed`, non-retryable, and names `status view=operation` rather than a
+replay that would rebuild the same result. For `publish_work`, a post-commit projection failure after a successful append is
 not reported as an error at all. The daemon returns a reduced total-acceptance success branch
 with `ok: true`, `response_completeness: "accepted_projection_unavailable"`,
 `reason_code: "response_projection_failed"`, a `correlation_id` for operator diagnostics, the
