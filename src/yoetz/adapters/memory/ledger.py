@@ -1791,7 +1791,7 @@ def _projection_items(
             )
         )
         unanswered_count = len(unanswered_ids)
-        receipt_blocking_count = receipt_blocking_finding_count(projection)
+        receipt_blocking_count = receipt_blocking_finding_count(projection, records)
         declared_count = (
             None
             if scope_refs is None

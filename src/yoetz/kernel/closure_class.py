@@ -36,17 +36,42 @@ counted as "to disclose", never as receipt-blocking work. After the disclosure i
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 from typing import Final, Literal
 
-from yoetz.domain.findings import FindingKind
+from yoetz.domain.events import CheckRecordedPayload, LedgerRecord, ObligationStatus
+from yoetz.domain.findings import (
+    FINDING_KIND_TRAITS,
+    Finding,
+    FindingKind,
+    FindingOrigin,
+    ResponseDisposition,
+    is_limitation_request,
+)
 from yoetz.domain.values import EventId, FindingId, ObligationId
+from yoetz.kernel.finding_todo import (
+    FindingTodoState,
+    duplicate_counting_id,
+    finding_standing,
+    finding_todo_state,
+    ruling_since,
+)
+from yoetz.kernel.projections import ProjectionState
+from yoetz.kernel.receipt_capacity import current_receipt_findings
+from yoetz.kernel.task_facts import (
+    blocker_declarations,
+    decision_batches,
+    disclosure_declarations,
+    effective_obligations,
+)
+from yoetz.protocol.models import SemanticStatus
 
 __all__ = [
     "BOOKKEEPING_KINDS",
+    "UNDELIVERABLE_SEMANTIC_STATUSES",
     "FINDING_BASES",
     "FINDING_REJECTION_AWAITING_RULING_GAP",
     "NEXT_ACTIONS",
@@ -61,6 +86,13 @@ __all__ = [
     "RecheckKind",
     "basis_class",
     "basis_effect",
+    "closure_counts",
+    "finding_closure",
+    "finding_closure_class",
+    "finding_closures",
+    "obligation_closure",
+    "obligation_closures",
+    "review_can_rule",
 ]
 
 # The readiness token raised for an ``awaiting_ruling`` finding (agent-actionable: a recorded
@@ -283,3 +315,418 @@ class Recheck:
             or self.since_frontier < 0
         ):
             raise ValueError("recheck_invalid")
+
+
+# ---------------------------------------------------------------------------------------------
+# The classifier: one function per item kind, replay-derived, no side effects
+# ---------------------------------------------------------------------------------------------
+
+# Statuses of an AI-powered review attempt that did not complete for a reason a recheck by the
+# agent cannot remove (policy, privacy, configuration or a human decision). A timeout or an
+# unavailable or failed provider is transient. Shared by the closing-review rule (closure
+# readiness) and by "can the reviewer still rule on a rejection" below.
+UNDELIVERABLE_SEMANTIC_STATUSES: Final = frozenset(
+    {
+        SemanticStatus.BLOCKED_BY_POLICY,
+        SemanticStatus.BLOCKED_FORBIDDEN_DATA,
+        SemanticStatus.NOT_CONFIGURED,
+        SemanticStatus.CLASSIFICATION_UNCERTAIN,
+        SemanticStatus.HUMAN_DENIED,
+        SemanticStatus.APPROVAL_EXPIRED,
+    }
+)
+_ACKNOWLEDGING: Final = frozenset(
+    {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.ACKNOWLEDGED_NOT_DONE}
+)
+
+
+def review_can_rule(state: ProjectionState, records: Iterable[LedgerRecord] = ()) -> bool:
+    """Whether a reviewer can still rule on a rejected AI-powered finding on this task's route.
+
+    Derived from the latest recorded check only, so status, check and the receipt (which cannot
+    see the serving route) agree: a route that recorded ``semantic_route_required: false`` with no
+    review requested never dispatches one (a strict MCP route, ADR-018), and a review attempt that
+    ended for a durable reason (policy, privacy, configuration, a human decision) will not
+    succeed on a retry. With no check recorded yet the answer is yes: the next ``check`` decides.
+    """
+
+    latest = state.latest_tested_state
+    if latest is None:
+        return True
+    check = next(
+        (
+            record.payload
+            for record in records
+            if record.event_id == latest.source_check_event_id
+            and type(record.payload) is CheckRecordedPayload
+        ),
+        None,
+    )
+    if check is None:
+        return True
+    if check.semantic_status in UNDELIVERABLE_SEMANTIC_STATUSES:
+        return False
+    return not (
+        check.semantic_route_required is False
+        and check.semantic_status is SemanticStatus.NOT_REQUESTED
+    )
+
+
+def _limitation_disclosure(
+    state: ProjectionState, finding: Finding, response_disposition: ResponseDisposition | None
+) -> EventId | None:
+    """The event that discloses a reviewer's limitation request (owner decision Q4), or ``None``.
+
+    Either the agent answered it (``acknowledged`` / ``acknowledged_not_done``) or a recorded
+    ``yoetz-verification-limit:<obligation>`` decision covers an obligation the finding cites.
+    Only recorded facts count; the agent's own prose never does (guard G2).
+    """
+
+    if response_disposition in _ACKNOWLEDGING:
+        return None  # the response event is the source; the caller names it
+    cited = {str(ref) for ref in finding.subject_refs}
+    for declaration in disclosure_declarations(state):
+        if declaration.kind == "verification_limit" and str(declaration.obligation_id) in cited:
+            return declaration.decision_event_id
+    return None
+
+
+def _make(
+    state: ProjectionState,
+    finding: Finding,
+    basis: str,
+    next_actions: tuple[str, ...],
+    *,
+    since: int | None,
+    sources: tuple[EventId, ...],
+) -> FindingClosure:
+    klass, effect = FINDING_BASES[basis]
+    return FindingClosure(
+        finding.finding_id,
+        klass,
+        basis,
+        effect,
+        next_actions,
+        since,
+        sources[:3],
+        duplicate_counting_id(state, finding.finding_id),
+    )
+
+
+def finding_closure(
+    state: ProjectionState,
+    finding_id: FindingId,
+    *,
+    records: tuple[LedgerRecord, ...] = (),
+    review_can_rule_: bool | None = None,
+    self_verify_eligible: bool = False,
+) -> FindingClosure | None:
+    """The class, basis and receipt effect of one finding; ``None`` for a coverage-only kind.
+
+    ``review_can_rule_`` defaults to ``review_can_rule(state, records)``. ``self_verify_eligible``
+    adds the ``self_verify`` next action; ``finding_closures`` computes it from ``records``.
+    """
+
+    record = state.findings.get(finding_id)
+    if record is None or record.payload is None:
+        return None
+    finding = record.payload
+    if not FINDING_KIND_TRAITS[finding.kind][1]:
+        return None
+    todo = finding_todo_state(state, finding_id)
+    response = state.responses.get(finding_id)
+    disposition = (
+        None if response is None or response.payload is None else response.payload.disposition
+    )
+    response_event = () if response is None else (response.source_event_id,)
+    response_frontier = None if response is None else response.source_frontier
+    limitation = is_limitation_request(finding)
+
+    if todo is FindingTodoState.VERIFIED_RESOLVED:
+        if disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE:
+            basis = "absence_proved_after_acknowledged_not_done"
+        elif disposition is ResponseDisposition.SELF_VERIFIED:
+            basis = "absence_proved_after_self_verified"
+        else:
+            basis = "absence_proved"
+        proof = record.resolved_by_check_event_id
+        return _make(
+            state,
+            finding,
+            basis,
+            ("none",),
+            since=response_frontier,
+            sources=() if proof is None else (proof,),
+        )
+    if todo is FindingTodoState.REJECTION_ACCEPTED:
+        ruling = record.rejection_accepted_by_check_event_id
+        return _make(
+            state,
+            finding,
+            "rejection_accepted",
+            ("none",),
+            since=response_frontier,
+            sources=(*response_event, *(() if ruling is None else (ruling,))),
+        )
+    if todo is FindingTodoState.DISPUTED_AFTER_REBUTTAL:
+        ruling = record.disputed_after_rebuttal_by_check_event_id
+        return _make(
+            state,
+            finding,
+            "disputed_after_rebuttal",
+            ("none",),
+            since=response_frontier,
+            sources=(*response_event, *(() if ruling is None else (ruling,))),
+        )
+    if todo is FindingTodoState.SELF_VERIFIED:
+        return _make(
+            state,
+            finding,
+            "self_verified",
+            ("recheck",),
+            since=response_frontier,
+            sources=response_event,
+        )
+    if todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE:
+        if limitation:
+            return _make(
+                state,
+                finding,
+                "limitation_disclosed",
+                ("none",),
+                since=response_frontier,
+                sources=response_event,
+            )
+        basis = (
+            "acknowledged_not_done_bookkeeping"
+            if finding.kind in BOOKKEEPING_KINDS
+            else "acknowledged_not_done_requirement"
+        )
+        return _make(
+            state,
+            finding,
+            basis,
+            ("reopen", "repair"),
+            since=response_frontier,
+            sources=response_event,
+        )
+
+    # Open: the agent still owes a move, or the reviewer owes a ruling.
+    standing = finding_standing(state, finding_id)
+    rejected = standing is not None and standing[0] == ResponseDisposition.REJECTED.value
+    if rejected and finding.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED:
+        ruled = ruling_since(state, finding_id)
+        assert standing is not None
+        if ruled is None or ruled < standing[1]:
+            can_rule = (
+                review_can_rule(state, records) if review_can_rule_ is None else review_can_rule_
+            )
+            if can_rule:
+                return _make(
+                    state,
+                    finding,
+                    "rejected_awaiting_ruling",
+                    ("recheck", "repair", "acknowledge_not_done"),
+                    since=standing[1],
+                    sources=response_event,
+                )
+            return _make(
+                state,
+                finding,
+                "rejected_review_unavailable",
+                ("recheck",),
+                since=standing[1],
+                sources=response_event,
+            )
+    if limitation and not rejected:
+        decision = _limitation_disclosure(state, finding, disposition)
+        if disposition in _ACKNOWLEDGING or decision is not None:
+            return _make(
+                state,
+                finding,
+                "limitation_disclosed",
+                ("none",),
+                since=response_frontier,
+                sources=response_event if decision is None else (decision,),
+            )
+        return _make(
+            state,
+            finding,
+            "limitation_requested",
+            ("acknowledge",),
+            since=None,
+            sources=(),
+        )
+    actions = ["repair", "reject", "acknowledge_not_done"]
+    if self_verify_eligible:
+        actions.append("self_verify")
+    return _make(
+        state,
+        finding,
+        "open_answered" if disposition is not None else "open_unanswered",
+        tuple(actions),
+        since=response_frontier,
+        sources=response_event,
+    )
+
+
+def finding_closure_class(
+    state: ProjectionState, finding_id: FindingId, **kwargs: object
+) -> FindingClosureClass | None:
+    """Convenience: the class of ``finding_closure`` or ``None``."""
+
+    closure = finding_closure(state, finding_id, **kwargs)  # type: ignore[arg-type]
+    return None if closure is None else closure.closure_class
+
+
+def finding_closures(
+    state: ProjectionState,
+    *,
+    records: tuple[LedgerRecord, ...] = (),
+    review_can_rule_: bool | None = None,
+    with_self_verify: bool = True,
+) -> Mapping[FindingId, FindingClosure]:
+    """Closures of every current finding (the newest readable row per receipt issue key).
+
+    A resolved finding is included (class ``resolved``): history is part of the verdict. With
+    ``records`` the ``self_verify`` next action is offered only for an agent-work finding that
+    ``respond`` would accept as ``self_verified`` (``self_verification_refusal``).
+    """
+
+    can_rule = review_can_rule(state, records) if review_can_rule_ is None else review_can_rule_
+    closures: dict[FindingId, FindingClosure] = {}
+    for finding in current_receipt_findings(state):
+        eligible = False
+        if records and with_self_verify:
+            first = finding_closure(
+                state, finding.finding_id, records=records, review_can_rule_=can_rule
+            )
+            if first is not None and first.basis in {"open_unanswered", "open_answered"}:
+                from yoetz.kernel.self_verification import self_verification_refusal
+
+                eligible = self_verification_refusal(state, finding.finding_id, records) is None
+        closure = finding_closure(
+            state,
+            finding.finding_id,
+            records=records,
+            review_can_rule_=can_rule,
+            self_verify_eligible=eligible,
+        )
+        if closure is not None:
+            closures[finding.finding_id] = closure
+    return MappingProxyType(closures)
+
+
+def _externally_evaluated(state: ProjectionState) -> frozenset[ObligationId]:
+    """Obligations the agent disclosed as verifiable only outside this environment (RC-1).
+
+    A recorded ``yoetz-verification-limit:<obl>`` decision plus a reviewer limitation request
+    that cites the obligation (marker ``acceptance_externally_evaluated``). Neither alone
+    qualifies, and the agent's own acknowledgement of the obligation does not either (guard G2).
+    """
+
+    declared = {
+        item.obligation_id
+        for item in disclosure_declarations(state)
+        if item.kind == "verification_limit"
+    }
+    if not declared:
+        return frozenset()
+    cited: set[str] = set()
+    for record in state.findings.values():
+        if record.payload is not None and is_limitation_request(record.payload):
+            cited.update(str(ref) for ref in record.payload.subject_refs)
+    return frozenset(item for item in declared if str(item) in cited)
+
+
+def obligation_closures(
+    state: ProjectionState, *, records: Iterable[LedgerRecord] = ()
+) -> Mapping[ObligationId, ObligationClosure]:
+    """Closures of every effective obligation of the current plan chain."""
+
+    ledger = tuple(records)
+    blocked = blocker_declarations(state, decision_batches(ledger))
+    external = _externally_evaluated(state)
+    closures: dict[ObligationId, ObligationClosure] = {}
+    for obligation in effective_obligations(state):
+        record = state.obligations[obligation]
+        payload = record.payload
+        assert payload is not None
+        status = payload.status
+        sources: tuple[EventId, ...] = (record.source_event_id,)
+        if status is ObligationStatus.RESOLVED:
+            basis = "resolved"
+        elif obligation in external:
+            basis = "externally_evaluated"
+        elif status is ObligationStatus.ACKNOWLEDGED_NOT_DONE:
+            basis = "acknowledged_not_done"
+        elif obligation in blocked:
+            declaration = blocked[obligation]
+            sources = (declaration.decision_event_id,)
+            if declaration.confirmation_event_id is not None:
+                sources = (*sources, declaration.confirmation_event_id)
+            basis = (
+                "blocker_confirmed"
+                if declaration.confirmation_event_id is not None
+                else "blocker_claimed"
+            )
+        else:
+            basis = "open"
+        klass, effect = OBLIGATION_BASES[basis]
+        closures[obligation] = ObligationClosure(
+            obligation, klass, basis, effect, record.source_frontier, sources[:3]
+        )
+    return MappingProxyType(closures)
+
+
+def obligation_closure(
+    state: ProjectionState, obligation_id: ObligationId, *, records: Iterable[LedgerRecord] = ()
+) -> ObligationClosure | None:
+    return obligation_closures(state, records=records).get(obligation_id)
+
+
+def closure_counts(
+    findings: Iterable[FindingClosure], obligations: Iterable[ObligationClosure]
+) -> ClosureCounts:
+    """The counters every surface prints; a linked ``duplicate_of`` pair counts once."""
+
+    seen: dict[FindingId, FindingClosure] = {}
+    for closure in findings:
+        prior = seen.get(closure.counts_as)
+        if prior is None or closure.finding_id == closure.counts_as:
+            seen[closure.counts_as] = closure
+    to_do = awaiting = unmet = disclosed = to_disclose = eligible = 0
+    for closure in seen.values():
+        klass = closure.closure_class
+        if klass is FindingClosureClass.AGENT_WORK:
+            if closure.basis == "limitation_requested":
+                to_disclose += 1
+            else:
+                to_do += 1
+                eligible += "self_verify" in closure.next_actions
+        elif klass is FindingClosureClass.AWAITING_RULING:
+            to_do += 1
+            awaiting += 1
+        elif klass is FindingClosureClass.SETTLED_UNMET:
+            unmet += 1
+        elif klass is FindingClosureClass.SETTLED_DISCLOSED:
+            disclosed += 1
+    open_ = acknowledged = disclosed_obligations = 0
+    for obligation in obligations:
+        if obligation.closure_class is ObligationClosureClass.AGENT_WORK:
+            open_ += 1
+        elif obligation.closure_class is ObligationClosureClass.SETTLED_UNMET:
+            acknowledged += 1
+        elif obligation.closure_class is ObligationClosureClass.SETTLED_DISCLOSED:
+            disclosed_obligations += 1
+    return ClosureCounts(
+        findings_to_do=to_do,
+        findings_awaiting_ruling=awaiting,
+        findings_unmet=unmet,
+        findings_disclosed=disclosed,
+        findings_to_disclose=to_disclose,
+        findings_self_verify_eligible=eligible,
+        obligations_open=open_,
+        obligations_acknowledged=acknowledged,
+        obligations_disclosed=disclosed_obligations,
+    )

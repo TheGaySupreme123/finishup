@@ -48,6 +48,7 @@ from yoetz.domain.values import (
     timestamp_from_datetime,
 )
 from yoetz.kernel.check_standing import check_standing
+from yoetz.kernel.closure_class import finding_closures
 from yoetz.kernel.deterministic_checks import CaseGap, build_deterministic_case, case_coverage
 from yoetz.kernel.finding_resolution import (
     unverified_resolution_finding_ids,
@@ -437,8 +438,13 @@ async def _records_through(
     return records, projection
 
 
-def _finding_states(projection: object) -> tuple[ReceiptFindingState, ...]:
+def _finding_states(
+    projection: object, records: tuple[LedgerRecord, ...] = ()
+) -> tuple[ReceiptFindingState, ...]:
     assert type(projection) is ProjectionState
+    # ADR-046: the class, basis and receipt effect of each finding come from the one classifier
+    # status reads, so the label this receipt carries is the label status predicted.
+    closures = finding_closures(projection, records=records, with_self_verify=False)
     # Resolution is proof-based: the projection carries which later qualifying check, if any,
     # proved each current issue absent, and a response disposition never sets it. Reading the
     # shared rule here is what keeps the receipt and ``receipt_blocking_finding_count`` equal.
@@ -455,6 +461,7 @@ def _finding_states(projection: object) -> tuple[ReceiptFindingState, ...]:
                 disputed_after_rebuttal=todo is FindingTodoState.DISPUTED_AFTER_REBUTTAL,
                 # Issue #996: the flags above are derived from the linked earlier finding.
                 duplicate_of_finding_id=duplicate_link_target(projection, item.finding_id),
+                closure=closures.get(item.finding_id),
             )
         )
     return tuple(states)
@@ -496,7 +503,7 @@ def _context(
     assert type(case) is DeterministicCase
     applicable: CheckRecordedPayload | None = None
     check_suffix: CheckSuffixClass | None = None
-    finding_states = _finding_states(projection)
+    finding_states = _finding_states(projection, records)
     gaps = list(case.gaps)
     latest = projection.latest_tested_state
     check_record: LedgerRecord | None = None

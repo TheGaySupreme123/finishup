@@ -27,7 +27,6 @@ from yoetz.domain.events import (
 )
 from yoetz.domain.findings import (
     FINDING_KIND_TRAITS,
-    CheckVerdict,
     Finding,
     FindingOrigin,
     ResponseDisposition,
@@ -102,6 +101,15 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
+from yoetz.kernel.closure_class import (
+    BOOKKEEPING_KINDS,
+    FINDING_BASES,
+    FindingClosure,
+    FindingClosureClass,
+    ObligationClosure,
+    ReceiptEffect,
+    obligation_closures,
+)
 from yoetz.kernel.closure_readiness import premise_disputed_finding_ids
 from yoetz.kernel.command_attempts import command_attempts
 from yoetz.kernel.completion_scope import (
@@ -113,15 +121,13 @@ from yoetz.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     CaseGap,
 )
-from yoetz.kernel.deterministic_scope import (
-    CLEAN_COMPATIBLE_GAPS,
-    HOST_OBSERVATION_GUARDED_GAPS,
-)
+from yoetz.kernel.deterministic_scope import commands_complete
 from yoetz.kernel.finding_resolution import (
     finding_resolution_explanation,
     issue_key,
     unverified_resolution_finding_ids,
 )
+from yoetz.kernel.gap_effect import GapContext, judge_gaps
 from yoetz.kernel.later_material import LaterMaterialClass, counted_later_material
 from yoetz.kernel.lineage import LineageEvaluation, LineageRollupState
 from yoetz.kernel.observed_failures import (
@@ -131,6 +137,13 @@ from yoetz.kernel.observed_failures import (
 )
 from yoetz.kernel.plan_scope import CurrentPlanScope, current_plan_scope
 from yoetz.kernel.projections import ObligationProjectionRecord, ProjectionRecord, ProjectionState
+from yoetz.kernel.receipt_prediction import (
+    AppliedCheck,
+    ClosureBasis,
+    LineageBasis,
+    ReceiptPrediction,
+    predict_receipt_conclusion,
+)
 from yoetz.kernel.reducers import is_material_event_family
 from yoetz.kernel.task_facts import (
     acknowledged_obligation_ids,
@@ -144,6 +157,9 @@ __all__ = [
     "ReceiptBuildContext",
     "ReceiptFindingState",
     "build_receipt",
+    "closure_basis_from_context",
+    "predict_context_conclusion",
+    "route_did_not_require_review",
 ]
 
 _CONTEXT_INVALID: Final = "receipt_build_context_invalid"
@@ -287,8 +303,16 @@ class ReceiptFindingState:
     # Issue #996: the earlier finding a holding ``duplicate_of`` link names. The flags above are
     # then the ones derived from it (``finding_todo``); the link is disclosed by ids.
     duplicate_of_finding_id: FindingId | None = None
+    # tb4n3 RC-3 (ADR-046): the finding's closure class, basis and receipt effect, computed once by
+    # ``kernel.closure_class`` from the same projection. A hand-built state without it is read
+    # from the flags above (``closure_basis_from_context``).
+    closure: FindingClosure | None = None
 
     def __post_init__(self) -> None:
+        if self.closure is not None and (
+            type(self.closure) is not FindingClosure or self.closure.finding_id != self.finding_id
+        ):
+            raise ValueError(_CONTEXT_INVALID)
         try:
             object.__setattr__(self, "finding_id", finding_id(self.finding_id))
             if self.duplicate_of_finding_id is not None:
@@ -1164,86 +1188,182 @@ def route_did_not_require_review(check: CheckRecordedPayload | None) -> bool:
     )
 
 
-def _conclusion(
-    context: ReceiptBuildContext,
-    unresolved_actionable: tuple[Finding, ...],
-    *,
-    self_verified: bool = False,
-    obligations_not_done: bool = False,
-    historical_codes: frozenset[str] = frozenset(),
-) -> ReceiptConclusion:
-    # One clean-compatible list for the receipt and the scoped deterministic verdict (#986).
-    advisory_gaps = CLEAN_COMPATIBLE_GAPS
-    # Issue #1017: a gap a later check cleared is history; only live gaps bound the conclusion.
-    live_codes = set(context.coverage.known_gaps) - historical_codes
-    if _COMPLETION_SCOPE_GAPS & live_codes:
-        # These two closed gaps bound completion itself. Findings remain visible and actionable,
-        # but they cannot make an empty completion scope read as sufficiently covered.
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    if unresolved_actionable or (
-        context.lineage is not None and context.lineage.actionable_finding_ids
-    ):
-        return ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN
-    if self_verified:
-        # Issue #984 (ADR-034): only the agent verified these repairs; Yoetz could not prove
-        # them, so the receipt is at best ``insufficient_coverage``, never clean. The same holds
-        # for a ``disputed_after_rebuttal`` finding (issue #1020): the disagreement is unsettled.
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    if obligations_not_done:
-        # Issue #997 (ADR-032 slice C): the agent acknowledged an obligation as not done, so the
-        # declared scope is not complete; the receipt never reads clean.
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    if context.lineage is not None and context.lineage.blocks_clean_completion:
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    check = context.applicable_check
-    if check is None:
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    if check.suppressed_count > 0:
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    if check.verdict in {
-        CheckVerdict.INSUFFICIENT_COVERAGE,
-        CheckVerdict.INCOMPLETE_CHECK,
+def _flag_closure(
+    context: ReceiptBuildContext, state: ReceiptFindingState, *, terminal_sections: bool
+) -> FindingClosure | None:
+    """The closure of a state that carries only the per-state flags (a hand-built context).
+
+    The application always supplies ``closure`` from ``kernel.closure_class``; this mirrors its
+    bases for the flags a context can state, so a hand-built context reads the same rules.
+    """
+
+    record = context.projection.findings.get(state.finding_id)
+    if record is None or record.payload is None:
+        return None
+    finding = record.payload
+    if not FINDING_KIND_TRAITS[finding.kind][1]:
+        return None
+    if state.resolved:
+        basis = "absence_proved"
+    elif state.acknowledged_not_done:
+        basis = (
+            "acknowledged_not_done_bookkeeping"
+            if finding.kind in BOOKKEEPING_KINDS
+            else "acknowledged_not_done_requirement"
+        )
+    elif state.rejection_accepted:
+        basis = "rejection_accepted"
+    elif state.self_verified:
+        basis = "self_verified"
+    elif state.disputed_after_rebuttal:
+        basis = "disputed_after_rebuttal"
+    else:
+        basis = "open_answered"
+    if not terminal_sections and basis in {
+        "rejection_accepted",
+        "self_verified",
+        "disputed_after_rebuttal",
     }:
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    if check.verdict is CheckVerdict.ACTION_REQUIRED:
-        raise ValueError(_CONTEXT_INVALID)
+        # An artifact older than the terminal sections cannot disclose these by id, so they still
+        # block there (issue #905): read them as open work.
+        basis = "open_answered"
+    klass, effect = FINDING_BASES[basis]
+    return FindingClosure(
+        state.finding_id,
+        klass,
+        basis,
+        effect,
+        ("none",),
+        None,
+        (),
+        state.duplicate_of_finding_id or state.finding_id,
+    )
+
+
+def _context_closures(
+    context: ReceiptBuildContext, *, terminal_sections: bool
+) -> tuple[FindingClosure, ...]:
+    closures: list[FindingClosure] = []
+    for state in context.finding_states:
+        closure = state.closure
+        if closure is None:
+            closure = _flag_closure(context, state, terminal_sections=terminal_sections)
+        elif not terminal_sections and closure.basis in {
+            "rejection_accepted",
+            "self_verified",
+            "disputed_after_rebuttal",
+        }:
+            closure = _flag_closure(context, state, terminal_sections=False)
+        if closure is not None:
+            closures.append(closure)
+    return tuple(closures)
+
+
+def _gap_context(context: ReceiptBuildContext, historical: frozenset[str]) -> GapContext:
+    """What the applicable check and the suffix say about each gap (one computation).
+
+    The route comes from the check's own record (only an explicit ``semantic_route_required:
+    false`` on a local-only check relaxes anything, issue #986); the host-observation guard from
+    the gaps that check carried; the earlier-frontier bound from the suffix that followed it.
+    """
+
+    check = context.applicable_check
+    carried: frozenset[str] = (
+        frozenset(check.coverage.known_gaps) if check is not None else frozenset[str]()
+    )
+    if context.check_suffix is not None:
+        bounds = context.check_suffix is not CheckSuffixClass.RESPONSES_ONLY
+    elif context.check_standing is not None:
+        bounds = context.check_standing.bounds_conclusion
+    else:
+        bounds = True
+    return GapContext(
+        route_requires_review=not route_did_not_require_review(check),
+        review_succeeded=check is not None and check.semantic_status is SemanticStatus.SUCCEEDED,
+        reviewer_reported_insufficiency=bool(
+            carried
+            & {
+                "semantic_packet_insufficient",
+                SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
+            }
+            or any(code.startswith("semantic_missing_") for code in carried)
+        ),
+        check_carried=carried,
+        commands_complete=(
+            True if check is None or check.totals is None else commands_complete(check.totals)
+        ),
+        earlier_frontier_bounds=bounds,
+        historical=historical,
+    )
+
+
+def _applied_check(check: CheckRecordedPayload | None) -> AppliedCheck | None:
+    if check is None:
+        return None
     # A pack that ran to completion, or that had nothing to judge on the whole case
     # (``skipped/not_applicable``: no root of its kind exists, e.g. the coordination pack on a
     # single-agent run), leaves nothing unexamined (#986). ``scope_excluded`` (a scoped check
     # left roots of the pack unexamined) and ``material_unavailable`` (its roots were
     # unreadable) are real coverage loss and stay incomplete, as does ``failed``.
-    executions_complete = all(
+    complete = all(
         (execution.outcome == "run" and execution.reason == "completed")
         or (execution.outcome == "skipped" and execution.reason == "not_applicable")
         for execution in check.policy_executions
     )
-    # A host-observation gap is advisory only when the applicable check itself carried it: that
-    # check reached its clean verdict only after its command counters showed no unknown or live
-    # failed outcome. One that arrived after the check was never so guarded (#986).
-    advisory_gaps = advisory_gaps - (HOST_OBSERVATION_GUARDED_GAPS - set(check.coverage.known_gaps))
-    if route_did_not_require_review(check):
-        # Issue #986 (owner decision E2, "record route; don't block"): the applicable check
-        # recorded that its route did not require AI-powered review, so the missing review is a
-        # disclosure. A check without the field (older builds, or a route that required review)
-        # keeps it blocking.
-        advisory_gaps = advisory_gaps | {SEMANTIC_REVIEW_NOT_REQUESTED_GAP}
-    if context.check_suffix is CheckSuffixClass.RESPONSES_ONLY:
-        # Issue #1021 (tb4n2 P1-4a): only the agent's answers to that check's own findings
-        # followed it. They change no work the check read, and the finding states above already
-        # reflect them, so the earlier-frontier note is a disclosure here, not a coverage bound.
-        # Observations or other later material keep it blocking.
-        advisory_gaps = advisory_gaps | {CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP}
-    if (
-        not executions_complete
-        or any(
-            gap.code not in advisory_gaps
-            for gap in context.gaps
-            if gap.code not in historical_codes
-        )
-        or (live_codes - advisory_gaps)
-    ):
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    return ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    return AppliedCheck(check.verdict, check.suppressed_count, complete)
+
+
+def closure_basis_from_context(
+    context: ReceiptBuildContext,
+    *,
+    terminal_sections: bool = True,
+    obligations: tuple[ObligationClosure, ...] | None = None,
+) -> ClosureBasis:
+    """The basis the receipt conclusion reads, built from one frozen receipt context.
+
+    ``terminal_sections`` is false only for an artifact older than the terminal-state sections
+    (``receipt_document_carries_terminal_sections``), which cannot disclose a settled finding by
+    id and so keeps it blocking. Status builds the same context and calls the same function, so
+    the label it prints is the label the receipt carries.
+    """
+
+    historical: frozenset[str] = (
+        frozenset(code for code, _ in context.historical_gaps)
+        if terminal_sections
+        else frozenset[str]()
+    )
+    live_codes = tuple(sorted(set(context.coverage.known_gaps) - historical, key=_ascii_key))
+    gap_context = _gap_context(context, historical)
+    gaps = judge_gaps(live_codes, gap_context)
+    if context.applicable_check is None:
+        # No check covers the state, so the missing check is the reason; its own gap is a symptom.
+        gaps = tuple(gap for gap in gaps if gap.code not in _CHECK_ABSENCE_GAPS)
+    lineage = context.lineage
+    return ClosureBasis(
+        context.subject_frontier,
+        _context_closures(context, terminal_sections=terminal_sections),
+        tuple(obligation_closures(context.projection, records=context.records).values())
+        if obligations is None
+        else obligations,
+        gaps,
+        _applied_check(context.applicable_check),
+        None
+        if lineage is None
+        else LineageBasis(
+            tuple(str(item) for item in lineage.actionable_finding_ids),
+            lineage.blocks_clean_completion,
+        ),
+    )
+
+
+def predict_context_conclusion(
+    context: ReceiptBuildContext, *, terminal_sections: bool = True
+) -> ReceiptPrediction:
+    """The prediction (conclusion and every reason) for one receipt context."""
+
+    return predict_receipt_conclusion(
+        closure_basis_from_context(context, terminal_sections=terminal_sections)
+    )
 
 
 def _count_phrase(count: int, singular: str, plural: str) -> str:
@@ -2172,16 +2292,17 @@ def build_receipt(
     # A ``rejection_accepted`` row stops blocking only on an artifact that also discloses it in its
     # own section (issue #905); an older artifact has no such section, so there it still blocks.
     settles_rejections = receipt_document_carries_terminal_sections(versions)
-    # A ``self_verified`` row (issue #984) likewise stops counting as agent work only where its
-    # own section discloses it; it still keeps the conclusion from reading clean.
+    # The closure classes (ADR-046) decide what is unresolved: a finding whose receipt effect is
+    # ``unresolved_findings_remain`` (open, awaiting a ruling, or an acknowledged requirement).
+    # ``self_verified``, disputed, disclosed-limitation and bookkeeping-acknowledged findings stay
+    # disclosed by id but are not agent work and cap the conclusion at ``insufficient_coverage``.
+    closures = _context_closures(context, terminal_sections=settles_rejections)
+    closure_by_id = {closure.finding_id: closure for closure in closures}
     unresolved_actionable = tuple(
         finding
         for finding in findings
-        if not states_by_id[finding.finding_id].resolved
-        and not (settles_rejections and states_by_id[finding.finding_id].rejection_accepted)
-        and not (settles_rejections and states_by_id[finding.finding_id].self_verified)
-        and not (settles_rejections and states_by_id[finding.finding_id].disputed_after_rebuttal)
-        and FINDING_KIND_TRAITS[finding.kind][1]
+        if (closure := closure_by_id.get(finding.finding_id)) is not None
+        and closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
     )
     # Issue #997: obligations the agent acknowledged as not done (ADR-032 slice C).
     acknowledged_obligations = tuple(
@@ -2190,17 +2311,15 @@ def build_receipt(
     # Issue #1017: only the 1.3.0 artifact can mark a gap historical; earlier artifacts keep
     # every gap live, exactly as they were issued.
     historical = dict(context.historical_gaps) if settles_rejections else {}
-    conclusion = _conclusion(
-        context,
-        unresolved_actionable,
-        self_verified=any(
-            states_by_id[finding.finding_id].self_verified
-            or states_by_id[finding.finding_id].disputed_after_rebuttal
-            for finding in findings
-        ),
-        obligations_not_done=bool(acknowledged_obligations),
-        historical_codes=frozenset(historical),
+    obligation_classes = tuple(
+        obligation_closures(context.projection, records=context.records).values()
     )
+    prediction = predict_receipt_conclusion(
+        closure_basis_from_context(
+            context, terminal_sections=settles_rejections, obligations=obligation_classes
+        )
+    )
+    conclusion = ReceiptConclusion(prediction.conclusion.value)
     obligations = _select_obligations(context, findings)
     responses = _select_responses(context, frozenset(finding.finding_id for finding in findings))
     claim_refs = _select_claim_refs(context, findings)
@@ -2224,7 +2343,17 @@ def build_receipt(
     # Past the document's row bounds the receipt keeps what matters most -- unresolved actionable
     # findings, the terminal states the document discloses by id, open obligations, live gaps --
     # and counts the rest in the summary (tb4n3 RC-2, A6).
-    unresolved_ids = frozenset(finding.finding_id for finding in unresolved_actionable)
+    # A finding the agent still owes a move on (including a limitation to disclose) is kept first.
+    unresolved_ids = frozenset(
+        closure.finding_id
+        for closure in closures
+        if closure.closure_class
+        in {
+            FindingClosureClass.AGENT_WORK,
+            FindingClosureClass.AWAITING_RULING,
+            FindingClosureClass.SETTLED_UNMET,
+        }
+    )
     # The summary section's items name every resolved finding the document retains (the only
     # resolution flag a receipt carries), and a section holds at most 64 items: keep no more
     # resolved history than that, or a retained resolved row would read as unresolved.
