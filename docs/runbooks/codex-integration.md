@@ -1961,7 +1961,7 @@ Codex consumes structured MCP results, so the `continuation` token arrives in `s
 bounded text projection repeats the resolved directive for parity. No Codex-specific behavior is
 configured.
 
-The observed Codex failure this covers: 
+The observed Codex failure this covers:
 
 **Bounded text and committed operations (ADR-043, issue #1025).** Codex shows the model the
 serialized `structuredContent` outside code mode and the bounded text summary inside it; that
