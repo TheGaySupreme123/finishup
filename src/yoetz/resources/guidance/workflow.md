@@ -236,8 +236,10 @@ temporary scratch files and Yoetz receipt files never count), a git-ignored requ
 you once with that list; restore that delivered file where the task needs it, or correct the
 requested item if the task asked for the deletion. The same happens once when a deliverable of an
 obligation you resolved or claimed is now empty or truncated (`declared_output_emptied`): that
-obligation no longer counts as done. Restore the deliverable; never empty or withdraw a working
-deliverable because of an open finding. If it is genuinely not done, republish the obligation
+obligation no longer counts as done. Restore the deliverable. Never empty or withdraw a working
+deliverable, over a finding or under a task's "empty file if unsolved" clause: a deliverable that
+passes your tests is a partial solution, not "unsolved"; deliver it and disclose its limits (an
+empty file always grades as no solution). If it is genuinely not done, republish the obligation
 `acknowledged_not_done` with the reason and leave it out of your completion claim: an acknowledged
 obligation is outside completion coverage, so omitting it is not a scope gap. A deliverable that
 names a file you created but did not declare is disclosed (`deliverable_references_undeclared_file`;
@@ -254,7 +256,8 @@ to reconsider it, even right after an earlier continuation: if the task says the
 dependency is recoverable, continue the work; if it is genuinely outside your control, follow the
 confirmation step that re-check gives you, then stop. A Stop also asks you once about findings you
 marked `acknowledged_not_done` that the review says the task itself requires
-(`finding_premise_disputed`): do that work unless it is genuinely impossible.
+(`finding_premise_disputed`): do that work unless it is genuinely impossible, and if you cannot
+finish it keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
 If a script ran the planned command for you (for example `python run_tests.py` calling the
 planned `pytest` command internally), link that run: publish an `action_recorded` with
 `action_kind` `command`, the planned item's exact `value` in `attempted_items`, and the observed

@@ -214,6 +214,14 @@ asks you to change also justifies that test edit. A `command` item is never byte
 hook-observed run (hooks keep only a keyed commitment), so it stays a disclosed
 `command_attempt_uncorroborated` limitation; resolve the obligation citing the observed run.
 
+A criterion only a hidden evaluator, a private reference or an answer only the user has can
+establish is not its own obligation: it can never be resolved, so it would stay an unmet
+requirement forever. Put it in the `acceptance_criteria` of the deliverable obligation it judges,
+resolve that obligation with the evidence you can produce, and disclose the limit in a
+`publish_work` decision (below) whose `statement` holds the exact line
+`yoetz-verification-limit:<obligation id>` and whose `rationale` says what cannot be verified
+and why. Never empty or withdraw the deliverable because of it.
+
 ```json
 {
   "protocol_version": "0.1",
@@ -816,6 +824,14 @@ frontier (the result frontier of the `check` that returned it also works). No hi
 search is needed. Only a frontier before that record is rejected, including the finding's
 `subject_frontier`, which names the state the check tested. A response records a disposition; it
 never erases the finding. Observation-authored non-actionable findings need no response.
+
+A reviewer finding whose `requested_next_step` is `state_unresolved_limitation` asks you to state a
+limit, not to do work: answer it once with `acknowledged` and a `reason` that says what cannot be
+verified and why (or record the `yoetz-verification-limit:<obligation id>` decision line), and it is
+settled as a disclosed verification limit; no recorded resolution attempt is needed. If you
+answered `acknowledged_not_done` and then do the work, send `disposition: "reopened"` with a
+`reason`; a later check that tested the work after your answer and proves the issue absent
+resolves the finding by itself.
 
 ```json
 {
