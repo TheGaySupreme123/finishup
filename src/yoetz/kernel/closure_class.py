@@ -51,6 +51,9 @@ from yoetz.domain.findings import (
     ResponseDisposition,
     is_limitation_request,
 )
+from yoetz.domain.task_fact_tokens import (
+    FINDING_REJECTION_AWAITING_RULING_GAP as FINDING_REJECTION_AWAITING_RULING_GAP,
+)
 from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel.check_standing import check_standing
 from yoetz.kernel.finding_todo import (
@@ -97,9 +100,8 @@ __all__ = [
     "review_can_rule",
 ]
 
-# The readiness token raised for an ``awaiting_ruling`` finding (agent-actionable: a recorded
-# action clears it). Frozen here so the Stop gate, status and the check agree on the literal.
-FINDING_REJECTION_AWAITING_RULING_GAP: Final = "finding_rejection_awaiting_ruling"
+# The readiness token raised for an ``awaiting_ruling`` finding is frozen in the dependency-free
+# token module so the Stop gate, status and the check agree on the literal.
 
 
 class FindingClosureClass(str, Enum):  # noqa: UP042 - exact wire enum base
