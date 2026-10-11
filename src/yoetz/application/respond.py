@@ -770,6 +770,8 @@ def _closure_after(
         )
         simulated = replace(
             projection,
+            frontier=sequence,
+            head_digest=record.entry_digest,
             findings={**projection.findings, payload.finding_id: updated},
             responses={**projection.responses, payload.finding_id: answer},
         )
