@@ -822,7 +822,11 @@ async def test_an_unexpected_invoke_failure_is_a_typed_stage_with_a_remedy(
     assert result.structuredContent is not None
     error = cast(dict[str, Any], result.structuredContent["error"])
     assert error["code"] == "INTERNAL_ERROR"
-    assert error["safe_details"] == {"reason_code": reason}
+    assert error["safe_details"] == {
+        "reason_code": reason,
+        # #1025: a replay remedy travels with the continuation that authorizes it (write op).
+        "continuation": "write_timeout_same_identity",
+    }
     assert "replay the same request_id (never a new one)" in error["message"]
     assert "must-not-reach-public-output" not in json.dumps(result.structuredContent)
     text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
@@ -1545,7 +1549,10 @@ async def test_post_commit_structural_shaping_failure_names_the_stage_and_does_n
     assert "stage: wire" in message and "status view=operation" in message
     assert "replaying its request_id fails the same way" in message
     assert "A read or dry run changed nothing" in message
-    assert error.get("safe_details") == {"reason_code": "bridge_result_wire_failed"}
+    assert error.get("safe_details") == {
+        "reason_code": "bridge_result_wire_failed",
+        "continuation": "write_timeout_same_identity",
+    }
     # The text channel carries the stage and the remedy too: a text-only host reads no message.
     text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
     assert "Reason: bridge_result_wire_failed." in text
@@ -1570,7 +1577,10 @@ async def test_a_reported_failure_that_cannot_be_shaped_is_not_called_a_recorded
     assert result.isError is True
     assert result.structuredContent is not None
     error = cast(dict[str, object], result.structuredContent["error"])
-    assert error["safe_details"] == {"reason_code": "bridge_error_mapping_failed"}
+    assert error["safe_details"] == {
+        "reason_code": "bridge_error_mapping_failed",
+        "continuation": "write_timeout_same_identity",
+    }
     text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
     assert "is recorded" not in text and "never resend" not in text
     assert "Remedy:" in text and "status view=compact" in text

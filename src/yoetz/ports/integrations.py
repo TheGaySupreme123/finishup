@@ -602,7 +602,7 @@ class IntegrationResult:
 
 
 @dataclass(frozen=True, slots=True)
-class IntegrationError(Exception):
+class _IntegrationErrorFields(Exception):
     reason: IntegrationReason
     safe_details: Mapping[str, JsonValue]
 
@@ -621,6 +621,19 @@ class IntegrationError(Exception):
             raise _port_error("integration_error_invalid")
         object.__setattr__(self, "safe_details", details)
         Exception.__init__(self, self.reason.value)
+
+
+class IntegrationError(_IntegrationErrorFields):
+    """Typed integration failure with frozen ``reason`` and ``safe_details``.
+
+    The frozen dataclass ``__setattr__`` rejects every attribute assignment on its own exact
+    class, including the ``__traceback__`` assignment Python 3.14 ``contextlib`` performs when an
+    error propagates through a ``@contextmanager``, which masked the real error with
+    ``FrozenInstanceError``. Raising through this thin subclass keeps the fields frozen and value
+    equality while leaving interpreter-owned exception state assignable.
+    """
+
+    __slots__ = ()
 
 
 class IntegrationsPort(Protocol):
