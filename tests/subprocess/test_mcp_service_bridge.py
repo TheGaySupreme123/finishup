@@ -806,19 +806,14 @@ async def test_closure_prepare_scopes_a_draft_phase_to_the_selection(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("failure", "reason"),
-    [
-        (RuntimeError("must-not-reach-public-output"), "bridge_invoke_failed"),
-    ],
-)
 async def test_an_unexpected_invoke_failure_is_a_typed_stage_with_a_remedy(
-    monkeypatch: pytest.MonkeyPatch, failure: Exception, reason: str
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """tb4n3 RC-2: no bare "The bridge could not complete the operation"; the agent is told whether
     its write may be recorded and what to read first."""
 
-    _install_clients(monkeypatch, [_FakeClient(failure)])
+    reason = "bridge_invoke_failed"
+    _install_clients(monkeypatch, [_FakeClient(RuntimeError("must-not-reach-public-output"))])
     runtime = bridge.build_bridge_runtime("policy", host_profile="codex")
 
     result = await bridge.dispatch_publish_work(_requests()["publish_work"], runtime)

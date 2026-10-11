@@ -100,7 +100,6 @@ _GAP_CODE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
 # F3: the status summary names at most this many required limitation ids, then "+N more"; the
 # structured closure_readiness lists up to 64.
 _MAX_SUMMARY_LIMITATION_IDS: Final = 3
-_CLOSURE_CLAUSE_RESERVE: Final = 96
 _RESULT_REF: Final = re.compile(
     r"^res_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.ASCII
 )
