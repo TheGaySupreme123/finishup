@@ -41,6 +41,7 @@ from yoetz.domain.findings import (
     FindingKind,
     FindingOrigin,
     ResponseDisposition,
+    is_limitation_request,
 )
 from yoetz.domain.receipts import (
     CHECK_TIME_CHANGE_GAPS,
@@ -136,6 +137,7 @@ __all__ = [
     "apply_check_rulings",
     "check_change_limits_tolerated",
     "check_change_resolution_unverified",
+    "disclosing_response",
     "unverified_resolution_finding_ids",
     "finding_is_resolved",
     "finding_resolution_attempt",
@@ -2011,6 +2013,27 @@ def next_standing_position(
     return current
 
 
+def disclosing_response(
+    response: ProjectionRecord[ResponseRecordedPayload] | None,
+) -> bool:
+    """Whether a finding's current answer is a reasoned acknowledgement (the Q4 disclosure form).
+
+    ``acknowledged`` and ``acknowledged_not_done`` with a non-blank reason disclose a reviewer's
+    limitation request; a rejection disputes it instead (the reviewer then rules on it),
+    ``reopened`` takes a disclosure back, and every other disposition says nothing about it.
+    """
+
+    if response is None or response.payload is None or response.redacted:
+        return False
+    payload = response.payload
+    return (
+        payload.disposition
+        in {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.ACKNOWLEDGED_NOT_DONE}
+        and payload.reason is not None
+        and bool(payload.reason.strip())
+    )
+
+
 def standing_position_of(
     record: FindingProjectionRecord | None,
     latest: ProjectionRecord[ResponseRecordedPayload] | None,
@@ -2137,6 +2160,13 @@ def apply_check_rulings(
             latest is not None
             and latest.payload is not None
             and latest.payload.disposition.value in AGENT_SETTLED_DISPOSITION_VALUES
+        ) or (
+            # tb4n3 RC-1 (Q4): a limitation request the agent disclosed with a reasoned
+            # acknowledgement is settled too; a repeat is a re-raise, never a review round.
+            record is not None
+            and record.payload is not None
+            and is_limitation_request(record.payload)
+            and disclosing_response(latest)
         )
         if (
             settled
@@ -2241,16 +2271,6 @@ def _break_duplicate_links(
                     check_event_id,
                 ),
             )
-
-
-def _readable_rejection(response: ProjectionRecord[ResponseRecordedPayload] | None) -> bool:
-    """Whether the finding's latest response is a readable, reasoned ``rejected``."""
-
-    return (
-        response is not None
-        and response.payload is not None
-        and response.payload.disposition is ResponseDisposition.REJECTED
-    )
 
 
 def reopen_findings_resolved_by(

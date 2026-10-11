@@ -1752,10 +1752,10 @@ def _record_from_snapshot(
                 raise _invalid()
             standing = StandingPosition(kind_value, frontier_value)
         for frontier_name in ("last_ruling_frontier", "resolution_frontier"):
-            if frontier_name in source and (
-                type(source[frontier_name]) is not int or source[frontier_name] < 1
-            ):
-                raise _invalid()
+            if frontier_name in source:
+                frontier_raw = source[frontier_name]
+                if type(frontier_raw) is not int or frontier_raw < 1:
+                    raise _invalid()
 
         def event_ids(name: str) -> tuple[EventId, ...]:
             raw = source.get(name)

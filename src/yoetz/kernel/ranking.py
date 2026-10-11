@@ -7,11 +7,12 @@ from enum import Enum
 from typing import Final
 
 from yoetz.domain.findings import (
-    FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
     FindingOrigin,
     RankedFindings,
+    finding_demands_work,
+    is_limitation_request,
     rank_key,
 )
 from yoetz.domain.receipts import (
@@ -138,8 +139,12 @@ def _verdict(
         return CheckVerdict.INSUFFICIENT_COVERAGE
     if context.completeness is CheckCompleteness.REQUIRED_INCOMPLETE:
         return CheckVerdict.INCOMPLETE_CHECK
-    if any(FINDING_KIND_TRAITS[finding.kind][1] for finding in selected):
+    if any(finding_demands_work(finding) for finding in selected):
         return CheckVerdict.ACTION_REQUIRED
+    if any(is_limitation_request(finding) for finding in selected):
+        # tb4n3 RC-1 (Q4): a reviewer's limitation request asks the agent to state a limit, not to
+        # do work, so the check is not ``action_required``; it is never clean either.
+        return CheckVerdict.INSUFFICIENT_COVERAGE
     if context.completeness is CheckCompleteness.COVERAGE_INCOMPLETE:
         return CheckVerdict.INSUFFICIENT_COVERAGE
     if context.completeness is CheckCompleteness.SCOPED_COMPLETE:

@@ -39,16 +39,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final, Literal
 
-from yoetz.domain.events import ResponseRecordedPayload
-from yoetz.domain.findings import (
-    Finding,
-    ResponseDisposition,
-    is_limitation_request,
-)
+from yoetz.domain.findings import Finding, is_limitation_request
 from yoetz.domain.values import EventId, FindingId
 from yoetz.kernel.concern import subject_obligations
-from yoetz.kernel.finding_resolution import finding_is_resolved
-from yoetz.kernel.projections import ProjectionRecord, ProjectionState
+from yoetz.kernel.finding_resolution import disclosing_response, finding_is_resolved
+from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.task_facts import DisclosureDeclaration, disclosure_declarations
 
 __all__ = [
@@ -57,7 +52,6 @@ __all__ = [
     "LIMITATION_DISCLOSED",
     "LIMITATION_REQUESTED",
     "LimitationStanding",
-    "disclosing_response",
     "limitation_disclosed_ids",
     "limitation_requested_ids",
     "limitation_standing",
@@ -67,10 +61,6 @@ LIMITATION_REQUESTED: Final = "limitation_requested"
 LIMITATION_DISCLOSED: Final = "limitation_disclosed"
 DISCLOSED_BY_RESPONSE: Final = "respond_acknowledgement"
 DISCLOSED_BY_DECISION: Final = "verification_limit_decision"
-
-_DISCLOSING_DISPOSITIONS: Final = frozenset(
-    {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.ACKNOWLEDGED_NOT_DONE}
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,26 +80,6 @@ class LimitationStanding:
     @property
     def disclosed(self) -> bool:
         return self.state == LIMITATION_DISCLOSED
-
-
-def disclosing_response(
-    response: ProjectionRecord[ResponseRecordedPayload] | None,
-) -> bool:
-    """Whether a finding's current answer is a reasoned acknowledgement (the Q4 response form).
-
-    ``acknowledged`` and ``acknowledged_not_done`` with a non-blank reason disclose; a rejection
-    disputes the request instead (the reviewer then rules on it), ``reopened`` takes a
-    disclosure back, and every other disposition says nothing about it.
-    """
-
-    if response is None or response.payload is None or response.redacted:
-        return False
-    payload = response.payload
-    return (
-        payload.disposition in _DISCLOSING_DISPOSITIONS
-        and payload.reason is not None
-        and bool(payload.reason.strip())
-    )
 
 
 def _verification_limit_decisions(

@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from typing import Final, cast
 
 from yoetz.domain.check_totals import validate_check_totals
-from yoetz.domain.findings import FINDING_KIND_TRAITS, Finding
+from yoetz.domain.findings import Finding, finding_demands_work
 from yoetz.domain.receipts import (
     PREEXISTING_TEST_INFORMATIONAL_GAPS,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
@@ -120,7 +120,7 @@ def deterministic_scope_is_clean(
         return False
     if any(type(finding) is not Finding for finding in findings):
         return False
-    if any(FINDING_KIND_TRAITS[finding.kind][1] for finding in findings):
+    if any(finding_demands_work(finding) for finding in findings):
         return False
     values = checked
     if _counter(values, "obligations", "scope_known") != 1:
