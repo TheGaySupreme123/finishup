@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final, Literal, Protocol, cast
 
 from yoetz.application.ledger_snapshot import projection_for_records
@@ -25,6 +25,7 @@ from yoetz.domain.findings import (
     FindingOrigin,
     ResponseDisposition,
     WaiverScope,
+    is_limitation_request,
 )
 from yoetz.domain.values import (
     Actor,
@@ -39,12 +40,16 @@ from yoetz.domain.values import (
     timestamp_from_datetime,
     timestamp_from_string,
 )
+from yoetz.kernel.finding_resolution import next_standing_position
 from yoetz.kernel.finding_todo import (
-    TERMINAL_TODO_STATES,
+    ABSOLUTELY_FINAL_TODO_STATES,
+    REOPENABLE_TODO_STATES,
+    FindingTodoState,
     duplicate_link_target,
     finding_todo_state,
 )
-from yoetz.kernel.projections import FindingProjectionRecord, ProjectionState
+from yoetz.kernel.limitation import limitation_standing
+from yoetz.kernel.projections import FindingProjectionRecord, ProjectionRecord, ProjectionState
 from yoetz.kernel.self_verification import (
     FINDING_NOT_RECHECKED,
     self_verification_blocking_reasons,
@@ -80,6 +85,7 @@ from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOpe
 from yoetz.protocol.ids import IdKind
 from yoetz.protocol.models import (
     RespondAcceptedEventModel,
+    RespondClosureAfterModel,
     RespondEvidenceSummaryModel,
     RespondRequest,
     RespondResponseModel,
@@ -126,9 +132,12 @@ class RespondInternalResult:
     warning_codes: tuple[Literal["waiver_expired_at_recording"], ...]
     engine_version: str
     projection_version: str
+    # tb4n3 RC-7: where the finding stands once this answer is recorded (``None`` on an
+    # idempotent replay, which recomputes nothing).
+    closure_after: RespondClosureAfterModel | None = None
 
     def as_json(self) -> dict[str, JsonValue]:
-        return {
+        document: dict[str, JsonValue] = {
             "protocol_version": self.protocol_version,
             "schema_version": self.schema_version,
             "request_id": self.request_id,
@@ -153,6 +162,11 @@ class RespondInternalResult:
                 "policy_packs": _POLICY_PACKS,
             },
         }
+        if self.closure_after is not None:
+            document["closure_after"] = cast(
+                JsonValue, self.closure_after.model_dump(mode="json", exclude_none=True)
+            )
+        return document
 
 
 def _error(
@@ -519,10 +533,12 @@ def self_verification_refusal_message(blocking: tuple[str, ...]) -> str:
     return (
         f"{reasons_text}.{hint_text} If the finding asks for something you inherently cannot"
         " run (a hidden verifier, a private reference), that is not a Yoetz limit either: finish"
-        " the work and disclose it with a decision line yoetz-verification-limit:<obligation id>,"
-        " then respond rejected explaining that. Respond rejected if the finding is wrong;"
-        " acknowledged_not_done only if you truly will not or cannot do it. Do not retry"
-        " self_verified until a later check changes these reasons."
+        " the work and disclose it with a decision line yoetz-verification-limit:<obligation id>."
+        " When the reviewer's finding asks you to state that limit (a limitation request), that"
+        " decision or one acknowledged response with a reason settles it: do not withdraw or empty"
+        " working work over it. Respond rejected if the finding is wrong; acknowledged_not_done"
+        " only if you truly will not or cannot do the work. Do not retry self_verified until a"
+        " later check changes these reasons."
     )
 
 
@@ -725,10 +741,52 @@ async def _accepted_record(runtime: TaskRuntime, result: AppendResult) -> Ledger
     return record
 
 
+def _closure_after(
+    projection: ProjectionState, payload: ResponseRecordedPayload, record: LedgerRecord
+) -> RespondClosureAfterModel | None:
+    """Where the finding stands once *payload* is recorded, from the same pure rules (RC-7).
+
+    The pre-answer projection plus the new answer, folded with the reducer's own functions, so
+    the answer and the next status can never disagree. Never raises: a committed answer is not
+    failed over a diagnostic.
+    """
+
+    try:
+        finding = projection.findings.get(payload.finding_id)
+        if finding is None or finding.payload is None:
+            return None
+        sequence = record.ledger.ingestion_sequence
+        answer = ProjectionRecord(
+            payload=payload,
+            payload_digest=finding.payload_digest,
+            redacted=False,
+            source_event_id=record.event_id,
+            source_frontier=sequence,
+        )
+        updated = replace(
+            finding,
+            standing_position=next_standing_position(finding.standing_position, payload, sequence),
+        )
+        simulated = replace(
+            projection,
+            findings={**projection.findings, payload.finding_id: updated},
+            responses={**projection.responses, payload.finding_id: answer},
+        )
+        todo = finding_todo_state(simulated, payload.finding_id)
+        limitation = limitation_standing(simulated, payload.finding_id)
+        return RespondClosureAfterModel(
+            todo_state=todo.value,
+            limitation=None if limitation is None else limitation.state,
+        )
+    except TypeError, ValueError:
+        return None
+
+
 async def _public_result(
     request: RespondRequest,
     runtime: TaskRuntime,
     result: AppendResult,
+    projection: ProjectionState | None = None,
 ) -> RespondInternalResult:
     record = await _accepted_record(runtime, result)
     payload = cast(ResponseRecordedPayload, record.payload)
@@ -777,6 +835,67 @@ async def _public_result(
         warning_codes,
         runtime.engine_version,
         runtime.projection_version,
+        None if projection is None else _closure_after(projection, payload, record),
+    )
+
+
+def _admit_todo_state(disposition: str, todo: FindingTodoState) -> None:
+    """Refuse an answer the finding's to-do state does not take (issue #905; tb4n3 RC-7, #1030).
+
+    ``verified_resolved``, ``rejection_accepted`` and ``disputed_after_rebuttal`` are absolutely
+    final. ``acknowledged_not_done`` takes exactly one answer, ``reopened``; ``self_verified``
+    takes none, but a later qualifying check upgrades it. ``reopened`` is refused on any other
+    state: there is nothing to take back. Every refusal says what actually happened and the way
+    out, never "answer it there" on an item respond refuses.
+    """
+
+    if disposition == "reopened":
+        if todo in REOPENABLE_TODO_STATES:
+            return
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                f"The finding is {todo.value}; reopened takes back an acknowledged_not_done "
+                "answer and there is nothing to reopen here. Nothing was recorded."
+            ),
+            reason_code="response_fields_invalid",
+            field="/disposition",
+        )
+    if todo is FindingTodoState.OPEN:
+        return
+    if todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE:
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "The finding is acknowledged_not_done and nothing was recorded. To do the work "
+                "after all, respond reopened with a reason; or just repair it and run check: a "
+                "qualifying check that tests the work after your answer proves it absent and "
+                "resolves the finding."
+            ),
+            reason_code="finding_terminal",
+            field="/finding_id",
+        )
+    if todo is FindingTodoState.SELF_VERIFIED:
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "The finding is self_verified and nothing was recorded. It stays disclosed until "
+                "a qualifying check that tests the work after your answer proves the issue "
+                "absent, which resolves it; run check after your next change."
+            ),
+            reason_code="finding_terminal",
+            field="/finding_id",
+        )
+    assert todo in ABSOLUTELY_FINAL_TODO_STATES
+    raise _error(
+        PublicErrorCode.INVALID_REQUEST,
+        (
+            f"The finding is already {todo.value}; that state is final and nothing was "
+            "recorded. New evidence about the same problem is raised by a later check as a new "
+            "finding."
+        ),
+        reason_code="finding_terminal",
+        field="/finding_id",
     )
 
 
@@ -802,6 +921,7 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
             raise _error(PublicErrorCode.INVALID_REQUEST, "The waiver is not authorized.")
         digest = request_digest(_identity(request, policy_digest=app.waiver_policy_digest))
         result = await _preflight(runtime, request, digest)
+        answered_from: ProjectionState | None = None
         if result is None:
             finding_frontier = Frontier(
                 int(request.finding_frontier.sequence), request.finding_frontier.head_digest
@@ -810,6 +930,7 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                 int(request.expected_frontier.sequence), request.expected_frontier.head_digest
             )
             current_records, current_projection = await _records_through(runtime, current)
+            answered_from = current_projection
             finding_record = _finding_from_current_prefix(
                 current_records, current_projection, finding_frontier, request.finding_id
             )
@@ -832,25 +953,23 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                     field="finding_frontier",
                 )
             todo = finding_todo_state(current_projection, finding_id(request.finding_id))
-            if todo in TERMINAL_TODO_STATES:
-                # Issue #905: a terminal item is final. Nothing is recorded, so a repeat is an
-                # idempotent no-op; new evidence about the same problem becomes a new finding.
-                raise _error(
-                    PublicErrorCode.INVALID_REQUEST,
-                    (
-                        f"The finding is already {todo.value}; that state is final and nothing "
-                        "was recorded. New evidence about the same problem is raised by a later "
-                        "check as a new finding."
-                    ),
-                    reason_code="finding_terminal",
-                    field="/finding_id",
-                )
+            _admit_todo_state(request.disposition, todo)
             if request.disposition == "acknowledged_not_done" and (
                 request.reason is None or not request.reason.strip()
             ):
                 raise _error(
                     PublicErrorCode.INVALID_REQUEST,
                     "acknowledged_not_done requires a non-empty reason.",
+                    reason_code="response_fields_invalid",
+                    field="/reason",
+                )
+            if request.disposition == "reopened" and (
+                request.reason is None or not request.reason.strip()
+            ):
+                raise _error(
+                    PublicErrorCode.INVALID_REQUEST,
+                    "reopened requires a non-empty reason: say what changed and that you will do "
+                    "the work.",
                     reason_code="response_fields_invalid",
                     field="/reason",
                 )
@@ -885,6 +1004,9 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                 and finding_record.payload.challenge is not None
                 and finding_record.payload.challenge.requested_next_step == "answer_question"
             )
+            # tb4n3 RC-1 (Q4): a reviewer's limitation request asks for a disclosure, not for a
+            # repair, so acknowledging it needs no recorded resolution attempt.
+            limitation = reviewer_finding and is_limitation_request(finding_record.payload)
             attempted = False
             # Structural ids the caller cited that exist but predate the finding; named in the
             # rejection so the caller knows the citation, not the shape, is the problem.
@@ -926,6 +1048,7 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                 request.disposition == "acknowledged"
                 and reviewer_finding
                 and not question
+                and not limitation
                 and not attempted
                 and not _process_finding_answered_by_completed_review(
                     current_records, finding_record
@@ -1025,7 +1148,7 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                     command,
                 ),
             )
-        return await _public_result(request, runtime, result)
+        return await _public_result(request, runtime, result, answered_from)
     except ProtocolValueError as exc:
         raise _error(PublicErrorCode.INVALID_REQUEST, "The response request is invalid.") from exc
     finally:
