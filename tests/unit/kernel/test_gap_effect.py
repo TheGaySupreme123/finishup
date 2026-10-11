@@ -129,7 +129,7 @@ def test_exactly_the_documented_rows_are_marked_changed() -> None:
 @pytest.mark.parametrize("route_requires_review", [False, True])
 def test_unchanged_rows_keep_the_behaviour_of_the_base_build(route_requires_review: bool) -> None:
     context = GapContext(route_requires_review=route_requires_review, check_carried=_CARRIED)
-    drift = []
+    drift: list[str] = []
     for code, row in GAP_EFFECT_TABLE.items():
         if row.changed or code in _READINESS_ONLY:
             continue

@@ -48,10 +48,12 @@ from yoetz.protocol.models import (
     StatusSuccessModel,
 )
 from yoetz.protocol.readiness_text import (
+    awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
     predicted_receipt_variants,
     readiness_directive,
+    recheck_note,
 )
 from yoetz.protocol.recovery import (
     RecoveryDirective,
@@ -547,6 +549,12 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         lines.extend(
             closure_counts_variants(readiness.finding_counts, readiness.obligation_counts)[:1]
         )
+        # The rejected findings that wait for a reviewer ruling and the re-reads a Stop will ask
+        # once (tb4n3 RC-8), so "nothing further to do" is never followed by a surprise gate.
+        lines.extend(awaiting_ruling_variants(readiness)[:1])
+        announced = recheck_note(readiness)
+        if announced is not None:
+            lines.append(announced)
     if readiness.agent_actionable and readiness.state != "unknown":
         lines.append("Agent-actionable: " + ", ".join(readiness.agent_actionable))
     if readiness.check_cause is not None and readiness.state != "unknown":

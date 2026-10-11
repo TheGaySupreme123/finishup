@@ -4661,6 +4661,14 @@ class StatusRecheckModel(_ClosedModel):
         return self
 
 
+class StatusAwaitingRulingFindingModel(_ClosedModel):
+    """A finding the agent rejected with a reason that no reviewer ruling has answered yet."""
+
+    finding_id: FindingIdWire
+    # The frontier of the agent's standing rejection: the answer the ruling is owed to.
+    since_frontier: CanonicalUInt64Wire
+
+
 class StatusClosureReadinessModel(_ClosedModel):
     """What currently bounds a completion conclusion, before a check or receipt is spent.
 
@@ -4734,6 +4742,9 @@ class StatusClosureReadinessModel(_ClosedModel):
     finding_counts: StatusFindingCountsModel | None = None
     obligation_counts: StatusObligationCountsModel | None = None
     rechecks: tuple[StatusRecheckModel, ...] | None = None
+    # The findings counted in ``finding_counts.awaiting_ruling`` (at most eight, ordered by id),
+    # so the Stop gate and the status text name them and the frontier of the rejection.
+    awaiting_ruling_findings: tuple[StatusAwaitingRulingFindingModel, ...] | None = None
 
     optional_non_null_fields = frozenset(
         {
@@ -4742,6 +4753,7 @@ class StatusClosureReadinessModel(_ClosedModel):
             "finding_counts",
             "obligation_counts",
             "rechecks",
+            "awaiting_ruling_findings",
             "acknowledged_obligation_count",
             "state",
             "gap_classification_version",
@@ -4798,6 +4810,7 @@ class StatusClosureReadinessModel(_ClosedModel):
                 self.finding_counts,
                 self.obligation_counts,
                 self.rechecks,
+                self.awaiting_ruling_findings,
             )
         ):
             raise ValueError("closure_readiness_unknown_verdict")
@@ -4950,6 +4963,15 @@ class StatusClosureReadinessModel(_ClosedModel):
                 raise ValueError("closure_readiness_finding_counts_mismatch")
         if self.rechecks is not None:
             _require_unique(tuple(item.key for item in self.rechecks), limit=128)
+        if self.awaiting_ruling_findings is not None:
+            named = tuple(item.finding_id for item in self.awaiting_ruling_findings)
+            _require_unique(named, limit=8)
+            if named != tuple(sorted(named, key=str.encode)):
+                raise ValueError("closure_readiness_awaiting_ruling_findings_mismatch")
+            if self.finding_counts is None or len(named) != min(
+                int(self.finding_counts.awaiting_ruling), 8
+            ):
+                raise ValueError("closure_readiness_awaiting_ruling_findings_mismatch")
 
 
 class StatusRequestedItemModel(_ClosedModel):
@@ -6508,6 +6530,8 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "rechecks/*/subjects/*",
             "rechecks/*/rule",
             "rechecks/*/since_frontier",
+            "awaiting_ruling_findings/*/finding_id",
+            "awaiting_ruling_findings/*/since_frontier",
         ),
     )
     # Closed state tokens only (issue #982).
@@ -7299,8 +7323,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1526
-    ):  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +44
+        len(result) != 1528
+    ):  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

@@ -29,8 +29,12 @@ from yoetz.protocol.models import (
     StatusSuccessModel,
     public_model_to_wire,
 )
+from yoetz.protocol.readiness_text import (
+    predicted_receipt_variants,
+    recheck_note,
+)
 
-__all__ = ["PREPARATION_REMEDIATIONS", "Selection", "prepare_closure"]
+__all__ = ["PREPARATION_REMEDIATIONS", "Selection", "prepare_closure", "recheck_note"]
 
 PREPARATION_REMEDIATIONS = {
     "closure_status_unavailable": "Read status for this session and writer before preparing again.",
@@ -210,6 +214,18 @@ async def prepare_closure(
             "GitHub workflow evidence uses the API run id, never run_number; this tool does not manufacture it.",
         ],
     }
+    announced = recheck_note(compact.closure_readiness)
+    if announced is not None:
+        cast(list[str], output["notes"]).append(announced)
+    # The same predicted receipt conclusion every surface prints (owner decision Q1), appended
+    # after the notes above and never edited into them.
+    readiness_state = getattr(compact.closure_readiness, "state", None)
+    predicted = predicted_receipt_variants(
+        getattr(compact.closure_readiness, "predicted_receipt", None),
+        state=readiness_state if type(readiness_state) is str else "ready",
+    )
+    if predicted:
+        cast(list[str], output["notes"]).append(predicted[0])
     if selection.phase == "inventory":
         return output
     obligations = {cast(str, item["obligation_id"]): item for item in inventory["obligations"]}

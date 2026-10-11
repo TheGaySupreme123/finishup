@@ -4963,6 +4963,20 @@ def _add_status_closure_verdict(definitions: dict[str, JsonValue]) -> None:
                 "maxItems": 128,
                 "type": "array",
             },
+            "awaiting_ruling_findings": {
+                "items": {
+                    "additionalProperties": False,
+                    "properties": {
+                        "finding_id": {"$ref": "#/$defs/finding_id"},
+                        "since_frontier": {"$ref": "#/$defs/canonical_uint"},
+                    },
+                    "required": ["finding_id", "since_frontier"],
+                    "type": "object",
+                },
+                "maxItems": 8,
+                "type": "array",
+                "uniqueItems": True,
+            },
         }
     )
     finding_item = cast(dict[str, JsonValue], definitions["finding_item"])

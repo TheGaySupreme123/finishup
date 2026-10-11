@@ -41,7 +41,7 @@ from yoetz.domain.values import (
     repository_grant_continuation,
     review_input_continuation,
 )
-from yoetz.kernel.closure_class import closure_counts
+from yoetz.kernel.closure_class import FindingClosureClass, closure_counts
 from yoetz.kernel.closure_readiness import (
     GAP_CLASSIFICATION_VERSION,
     ClosureReadinessFacts,
@@ -109,6 +109,7 @@ from yoetz.protocol.models import (
     StatusAdvicePageModel,
     StatusAssignmentFilterModel,
     StatusAssignmentPageModel,
+    StatusAwaitingRulingFindingModel,
     StatusBlockedObligationModel,
     StatusCandidateFindingItemModel,
     StatusCandidateFindingsFilterModel,
@@ -1286,6 +1287,7 @@ def _check_cause_model(
     )
 
 
+_MAX_AWAITING_RULING_FINDINGS: Final = 8
 _CHECK_ABSENCE_CODES: Final = frozenset(
     {"check_not_recorded", "check_not_applicable", "check_payload_unavailable"}
 )
@@ -1339,6 +1341,24 @@ def _closure_verdict_fields(
             acknowledged=str(counts.obligations_acknowledged),
             disclosed=str(counts.obligations_disclosed),
         )
+        awaiting = sorted(
+            {
+                item.counts_as: item
+                for item in findings
+                if item.closure_class is FindingClosureClass.AWAITING_RULING
+            }.values(),
+            key=lambda item: str(item.finding_id).encode(),
+        )[:_MAX_AWAITING_RULING_FINDINGS]
+        if awaiting:
+            fields["awaiting_ruling_findings"] = tuple(
+                StatusAwaitingRulingFindingModel.model_validate(
+                    {
+                        "finding_id": str(item.finding_id),
+                        "since_frontier": str(item.since_frontier or 0),
+                    }
+                )
+                for item in awaiting
+            )
         fields["rechecks"] = tuple(
             StatusRecheckModel.model_validate(
                 {

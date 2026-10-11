@@ -18,11 +18,13 @@ from typing import Final, Literal, cast
 
 __all__ = [
     "READINESS_STATES",
+    "awaiting_ruling_variants",
     "check_cause_sentence",
     "closure_counts_variants",
     "predicted_receipt_variants",
     "readiness_directive",
     "reason_phrases",
+    "recheck_note",
 ]
 
 type ReadinessState = Literal["action_required", "ready", "ready_with_limitations", "unknown"]
@@ -285,3 +287,85 @@ def reason_phrases(reasons: object) -> tuple[str, ...]:
         return ()
     items = tuple(cast("tuple[object, ...] | list[object]", reasons))
     return tuple(phrase for item in items if (phrase := _reason_phrase(item)) is not None)
+
+
+# ---------------------------------------------------------------------------------------------
+# Announced re-reads and awaiting-ruling findings (tb4n3 RC-8, ADR-046)
+# ---------------------------------------------------------------------------------------------
+
+_RECHECK_PHRASES: Final[Mapping[str, str]] = {
+    "acceptance": "the acceptance criteria of your resolved obligations",
+    "acknowledgement": "obligations you recorded as not done",
+    "blocker": "a blocker you recorded",
+    "premise": "findings you acknowledged that the review says the task requires",
+}
+_MAX_NAMED_RULING_FINDINGS: Final = 3
+
+
+def recheck_note(readiness: object) -> str | None:
+    """One sentence naming the re-checks the Stop gate will ask once (tb4n3 RC-8).
+
+    ``closure_readiness.rechecks`` is the list status, ``closure_prepare`` and the Stop gate all
+    read, so a surface that says "nothing further" never precedes a gate for an item it did not
+    name. ``readiness`` is the wire mapping or the typed model. ``None`` when the readiness
+    announces none (or an older service sent no list).
+    """
+
+    raw = _field(readiness, "rechecks")
+    if not isinstance(raw, (tuple, list)):
+        return None
+    kinds: list[str] = []
+    for entry in tuple(cast("tuple[object, ...] | list[object]", raw)):
+        kind = _field(entry, "kind")
+        if type(kind) is str and kind in _RECHECK_PHRASES and kind not in kinds:
+            kinds.append(kind)
+    if not kinds:
+        return None
+    named = "; ".join(_RECHECK_PHRASES[kind] for kind in kinds)
+    return (
+        "At Stop you will be asked once to re-read: "
+        f"{named}. closure_readiness.rechecks lists each with its key."
+    )
+
+
+def awaiting_ruling_variants(readiness: object) -> tuple[str, ...]:
+    """Name the rejected findings that await a reviewer ruling, longest variant first.
+
+    Built from ``closure_readiness.awaiting_ruling_findings`` (service-minted ids and the frontier
+    of the agent's rejection) and ``finding_counts.awaiting_ruling``. ``()`` when nothing awaits a
+    ruling or an older service sent no list.
+    """
+
+    counts = _field(readiness, "finding_counts")
+    try:
+        total = _count(_field(counts, "awaiting_ruling"))
+    except ValueError:
+        return ()
+    if not total:
+        return ()
+    raw = _field(readiness, "awaiting_ruling_findings")
+    entries: list[str] = []
+    if isinstance(raw, (tuple, list)):
+        for entry in tuple(cast("tuple[object, ...] | list[object]", raw)):
+            finding = _field(entry, "finding_id")
+            frontier = _field(entry, "since_frontier")
+            try:
+                since = _count(frontier)
+            except ValueError:
+                continue
+            if type(finding) is str and finding.isascii():
+                entries.append(f"{finding} (rejected at frontier {since})")
+    lead = f"{total} finding(s) you rejected await a reviewer ruling"
+    variants: list[str] = []
+    if entries:
+        shown = entries[:_MAX_NAMED_RULING_FINDINGS]
+        more = total - len(shown)
+        variants.append(
+            f"{lead}: {', '.join(shown)}" + (f" and {more} more" if more > 0 else "") + "."
+        )
+        variants.append(
+            f"{lead}: {shown[0]}" + (f" and {total - 1} more" if total > 1 else "") + "."
+        )
+    variants.append(f"{lead}; request a check for it, or status view=findings lists them.")
+    variants.append(f"{lead}.")
+    return tuple(dict.fromkeys(variants))

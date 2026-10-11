@@ -36,10 +36,12 @@ from yoetz.protocol.guidance_uris import ALL_GUIDANCE_URIS
 from yoetz.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
 from yoetz.protocol.readiness_text import (
     READINESS_STATES,
+    awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
     predicted_receipt_variants,
     readiness_directive,
+    recheck_note,
 )
 from yoetz.protocol.recovery import (
     REASON_REMEDIES,
@@ -135,6 +137,7 @@ _P_DETAIL: Final = 50  # supporting detail; the structured result carries it in 
 # The lineage of a listed closure token (check_cause) is granted right after the action clauses
 # and ahead of every boilerplate sentence, the operation-progress text included (tb4n3 RC-6).
 _P_CAUSE: Final = _P_ACTION + 1
+_RECHECK_SHORT: Final = "At Stop you will be asked once to re-read what you recorded."
 # One id or token list never takes more than this of the bounded text, so a 100-finding check
 # still leaves room for the instruction, the checklist and the disclosures beside it; the exact
 # remainder is stated as "+N more" and the structured result carries every row.
@@ -2044,6 +2047,15 @@ def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]
     predicted = _predicted_variants(readiness.get("predicted_receipt"), state)
     if predicted:
         parts.append(Part(predicted, priority=_P_ACTION + 3))
+    # The rejected findings that wait for a reviewer ruling, by id and rejection frontier, and the
+    # once-per-frontier re-reads a Stop will ask (tb4n3 RC-8): a "nothing further to do" is never
+    # followed by a gate for an item this text did not announce.
+    awaiting = awaiting_ruling_variants(readiness)
+    if awaiting:
+        parts.append(Part(awaiting, priority=_P_ACTION + 2))
+    announced = recheck_note(readiness)
+    if announced is not None:
+        parts.append(Part((announced, _RECHECK_SHORT), priority=_P_ACTION + 3))
     counts = closure_counts_variants(
         readiness.get("finding_counts"), readiness.get("obligation_counts")
     )
