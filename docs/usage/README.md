@@ -28,6 +28,8 @@ the decisions behind it see [`docs/adr/`](../adr/).
   credential ceremony.
 - [Upgrade Yoetz](upgrading.md) — update the package while preserving existing tasks, settings,
   permissions, host integrations, and compatible bundle data.
+- [When your agent's context is compacted](after-compaction.md) — the recap Yoetz adds when a host
+  restarts the agent after a compaction, what each line means, and where it appears.
 - [Receipts and coverage](receipts-and-coverage.md) — how to read a receipt and why the wording is
   deliberately narrow.
 

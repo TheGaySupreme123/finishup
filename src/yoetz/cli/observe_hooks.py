@@ -98,6 +98,7 @@ from yoetz.domain.command_segments import (
     MAX_SEGMENT_COMMITMENTS,
     command_segment_commitments,
 )
+from yoetz.domain.compaction_recap import RECAP_CONTEXT_LIMIT, RecapFacts
 from yoetz.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationContentChunk,
@@ -298,6 +299,10 @@ _HOOK_TOTAL_BUDGET_SECONDS: Final = (
 # is bounded, and the remainder is kept for the output write and interpreter
 # start. Individual acquisitions keep their own two-second cap (#689).
 _HOOK_STORE_LOCK_BUDGET_BY_WINDOW: Final = {3: 2.0, 5: 3.5, 10: 7.0}
+# The post-compaction recap's extra obligations reads may run only in the first four seconds of a
+# SessionStart pass (a 10 s host window), so they add nothing to the worst case that exists when the
+# status read itself is slow and the drain and the output write keep their room.
+_RECAP_READ_WINDOW_SECONDS: Final = 4.0
 
 
 def _hook_host_window_seconds(source: ObservationSource, event: str | None) -> int:
@@ -3947,6 +3952,8 @@ def _session_start_source(payload: Mapping[str, JsonValue]) -> str | None:
     if type(action) is str:
         if action == "claude_session_clear" or action == "cursor_session_clear":
             return "clear"
+        if action == "claude_session_compact" or action == "cursor_session_compact":
+            return "compact"
     return None
 
 
@@ -4392,6 +4399,9 @@ class _SessionStartAttach:
     pending_mapping_deferred: bool
     additional: str
     attach_advisory_only: bool
+    # The bounded post-compaction recap (ADR-044), kept apart from ``additional`` so the
+    # admission notice and release recommendation are composed against their own bound first.
+    recap: str = ""
 
 
 def _session_start_attach(
@@ -4411,6 +4421,8 @@ def _session_start_attach(
     skip_advice_loop: bool,
     session_lock_owned: bool,
     _state: Path | None,
+    recap: bool = False,
+    recap_time_left: Callable[[], float] | None = None,
 ) -> _SessionStartAttach:
     """Recover, auto-attach or status-read a non-clear SessionStart's mapping.
 
@@ -4440,6 +4452,7 @@ def _session_start_attach(
     )
 
     additional = ""
+    recap_text = ""
     attach_reason: str | None = None
     attach_advisory_only = False
     session_lifecycle_lock = (
@@ -4532,14 +4545,25 @@ def _session_start_attach(
                         active_mapping,
                         connect=connector,
                         actor_id=f"yoetz:{harness_id}-hooks",
+                        recap=recap,
+                        recap_time_left=recap_time_left,
                     )
 
+                # The rows pending when the facts are read are the ones those facts cannot
+                # include, even if the sweeper acknowledges them before the output (ADR-044).
+                pending_before = (
+                    _pending_work_rows(store, workspace_commitment, codex_session_id)
+                    if recap
+                    else None
+                )
                 outcome = cast(StatusOutcome, resolve_runner()(_status))
                 kind, updated = outcome.kind, outcome.mapping
                 if kind == "active" and updated is not None:
                     store_mapping(updated, _state=_state)
                     mapping = updated
                     additional = _active_context(updated, updated.last_frontier)
+                    if outcome.recap is not None:
+                        recap_text = _compaction_recap_text(outcome.recap, pending_before)
                 elif kind == "stale":
                     # The service answered: only the stored mapping is stale
                     # (re-started elsewhere). Repair flows through the agent's
@@ -4586,7 +4610,32 @@ def _session_start_attach(
         pending_mapping_deferred=pending_mapping_deferred,
         additional=additional,
         attach_advisory_only=attach_advisory_only,
+        recap=recap_text,
     )
+
+
+def _pending_work_rows(
+    store: LocalObservationStore, workspace_commitment: str, codex_session_id: str
+) -> int | None:
+    """This session's undelivered local rows that would add ledger work, or ``None``."""
+
+    try:
+        from yoetz.cli.compaction_recap import pending_work_rows
+
+        return pending_work_rows(store, workspace_commitment, codex_session_id)
+    except Exception:
+        return None
+
+
+def _compaction_recap_text(facts: RecapFacts, pending_rows: int | None) -> str:
+    """Render the post-compaction recap (ADR-044); an unrenderable recap is no recap."""
+
+    try:
+        from yoetz.cli.compaction_recap import compact_recap_text
+
+        return compact_recap_text(facts, pending_rows=pending_rows)
+    except Exception:
+        return ""
 
 
 def handle_observe(
@@ -4611,6 +4660,7 @@ def handle_observe(
     _content_payload: Mapping[str, JsonValue] | None = None,
     _ingress_gap: str | None = None,
     _include_admission_notice: bool = True,
+    _include_recap: bool = True,
     _pass_timing: HookPassTiming | None = None,
     _derived_runner_class: RunnerClass | None = None,
 ) -> int:
@@ -4721,11 +4771,14 @@ def handle_observe(
         # Assigned only by the Stop-time closure gate below (#977); every earlier render sees None.
         closure_gate: ClosureGate | None = None
 
-        def _render_context(additional_context: str) -> dict[str, JsonValue]:
+        def _render_context(
+            additional_context: str, *, limit: int | None = None
+        ) -> dict[str, JsonValue]:
             """Render advice in the receiving host's own stdout contract.
 
             Cursor keeps its raw event name; Claude Code gets its documented
-            non-error Stop feedback instead of Codex's `decision: block`.
+            non-error Stop feedback instead of Codex's `decision: block`. ``limit`` is the larger
+            character bound only the post-compaction recap is designed against (ADR-044).
             """
 
             if source is ObservationSource.CURSOR_HOOK:
@@ -4737,15 +4790,23 @@ def handle_observe(
                     return _cursor_context_output(
                         raw_cursor_event, additional_context, allow_stop_followup=True
                     )
+                if limit is not None:
+                    return _cursor_context_output(raw_cursor_event, additional_context, limit=limit)
                 return _cursor_context_output(raw_cursor_event, additional_context)
             if source is ObservationSource.CLAUDE_HOOK:
                 # Claude requires hookSpecificOutput.hookEventName to name the
                 # event that actually fired. PostToolUseFailure is normalized to
                 # PostToolUse for Yoetz's internal observation/advice cadence, so
                 # render with the preserved host event instead (#435).
+                if limit is not None:
+                    return _claude_context_output(
+                        _output_event_name or resolved_event, additional_context, limit=limit
+                    )
                 return _claude_context_output(
                     _output_event_name or resolved_event, additional_context
                 )
+            if limit is not None:
+                return _context_output(resolved_event, additional_context, limit=limit)
             return _context_output(resolved_event, additional_context)
 
         content_omitted = False
@@ -5698,6 +5759,7 @@ def handle_observe(
             if resolved_event == "Stop"
             else None
         )
+        session_recap = ""
         if resolved_event == "SessionStart":
             session_source_value = _session_start_source(payload)
             if session_source_value != "clear":
@@ -5717,11 +5779,20 @@ def handle_observe(
                     skip_advice_loop=skip_advice_loop,
                     session_lock_owned=_session_lock_owned,
                     _state=_state,
+                    # Codex runs its re-ground hook and this pass concurrently on a compact
+                    # start; whichever holds the session lifecycle lock reads status and carries
+                    # the active context, so it must carry the recap too (the other emits at
+                    # most the admission notice). Claude Code and Cursor have this pass only.
+                    recap=session_source_value == "compact" and _include_recap,
+                    recap_time_left=lambda: (
+                        entry_started + _RECAP_READ_WINDOW_SECONDS - _monotonic()
+                    ),
                 )
                 mapping = attach.mapping
                 pending_mapping_deferred = attach.pending_mapping_deferred
                 additional = attach.additional
                 attach_advisory_only = attach.attach_advisory_only
+                session_recap = attach.recap
             elif (
                 source is ObservationSource.CURSOR_HOOK
                 and mapping is None
@@ -6043,7 +6114,11 @@ def handle_observe(
                     _state=_state,
                 )
 
-            rendered_output = _render_context(additional) if additional else {}
+            context_limit: int | None = None
+            if session_recap and resolved_event == "SessionStart":
+                additional = f"{additional}\n{session_recap}".strip()
+                context_limit = RECAP_CONTEXT_LIMIT
+            rendered_output = _render_context(additional, limit=context_limit) if additional else {}
             host_consumable = bool(rendered_output)
             if additional:
                 emitted = _stdout_json(rendered_output, stdout)

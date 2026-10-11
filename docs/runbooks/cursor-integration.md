@@ -1656,6 +1656,21 @@ route as on the others, which keeps the canonical JSON copy inside the MCP frame
 frontier. Hook `additional_context` and `followup_message` over Yoetz's own 2,000-character cap end
 with a cut marker (the cap is Yoetz's, not a documented Cursor limit).
 
+## Post-compaction recap (issue #1027, ADR-044)
+
+Decision for Cursor: **not supported here.** The certified profile (cursor-ide-3.17.8) registers
+`sessionStart` once per conversation and documents no post-compaction event or context channel.
+`sessionStart` is fire-and-forget (the agent loop does not wait for the hook), so even a start that
+fired would not be guaranteed to land before the agent's next action. The agent re-grounds with
+`status` and its held ids as before.
+
+The shared observe pass is source-driven: if Cursor's `sessionStart` reports `source: compact` (the
+wrapper maps it to `cursor_session_compact`) it composes exactly the recap Claude Code gets, within the
+same bounds, and a hook-level test covers that path. There is no live Cursor evidence for it.
+Follow-up: re-read Cursor's hooks reference for a post-compaction event with an injection channel
+(a `preCompact`/`postCompact` hook with `additional_context`); if one exists, add it to
+`CURSOR_ORDINARY_HOOK_EVENTS` and certify it before claiming support.
+
 ## Cold service attachment and recovery (issue #670)
 
 Cursor sessionStart returns the shared result through Cursor's `additional_context` contract,

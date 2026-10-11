@@ -1534,6 +1534,22 @@ or account identity. A read from a different session or writer of the same task 
 retryable `BUNDLE_BUSY` while the check runs. This is shared service behavior, not evidence of a
 fresh installed native Claude Code dogfood run.
 
+## Post-compaction recap (issue #1027, ADR-044)
+
+Decision for Claude Code: **supported.** Claude Code reports `source: compact` on the `SessionStart`
+that follows a compaction; the wrapper encodes it as the structural action `claude_session_compact`
+and the shared observe pass reads the mapped session's compact `status`, then one bounded `obligations`
+view, and appends the receipt-style recap to `hookSpecificOutput.additionalContext` after the held-ids
+cue and the admission notice. The whole context is at most 4,000 characters (the recap at most 2,400;
+every other hook context keeps 2,000). Each line names its source, withheld text stays withheld, and any
+failure leaves the held-ids cue unchanged. `startup`, `resume` and `clear` starts are unchanged.
+
+No `PreCompact` hook is registered, and none is needed: the recap is composed after the compaction from
+the ledger, and the ordinary pass already drained the outbox when the last tool hook ran. Claude
+Code's own limit on hook context size is not asserted here; the 4,000-character bound is Yoetz's.
+Native acceptance of the recap on an installed Claude Code remains a pending dogfood lane; the
+behavior is covered by hook-level tests only.
+
 ## Cold service attachment and recovery (issue #670)
 
 Claude Code SessionStart returns its result through synchronous `additionalContext`, within

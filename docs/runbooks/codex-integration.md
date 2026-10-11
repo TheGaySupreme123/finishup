@@ -2012,6 +2012,33 @@ stdout is not a TTY; its failure keeps the exact wire body on stdout and writes 
 lines to stderr. This is CLI behavior shared by every host; no Codex-specific behavior is
 configured.
 
+## Post-compaction recap (issue #1027, ADR-044)
+
+Decision for Codex: **supported.** When Codex starts the session again after a context compaction
+(`SessionStart`, `source: compact`), the `yoetz hooks session-start` re-ground hook (registered by the
+plugin for `resume|compact`, 15 s timeout) reads the mapped session's compact `status`, then up to three
+bounded (1.5 s each, started within the hook's first four seconds) `obligations` pages for the declared
+deliverables of the current plan, and appends a receipt-style recap
+after the held-ids cue and the admission notice. The whole context is at most 4,000 characters
+(the recap at most 2,400; every other hook context keeps 2,000). Each line names its source, withheld
+text stays withheld, and any failure leaves the held-ids cue unchanged. A `resume` start is unchanged.
+
+Facts about the host, from the tb4n3 sglang S rollout (Codex 0.159.3): compaction ran for about four
+minutes with no tool call (`PreCompact` at 08:45:09, `PostCompact` at 08:49:06, `SessionStart` at
+08:49:08); the hook output arrived as two `hooks.additional_context` developer messages (the admission
+notice and the held-ids cue). Codex runs the re-ground hook and the plugin's `observe SessionStart`
+hook concurrently; the one that wins the session lifecycle lock reads `status` and carries the
+held-ids cue and the recap, and the other emits at most the admission notice (which is why the rollout
+shows the notice and the cue as separate messages, once each). Either hook can therefore carry the
+recap, and only the lock holder composes it. `PreCompact` and
+`PostCompact` are registered async; their ordinary observe pass reconciles the rollout and drains the
+outbox, so no extra drain is added (ADR-044 decision 5). A recap line states how many undelivered local
+rows were pending when it was read.
+
+Open question (not claimed): whether `PreCompact` accepts model-visible context, which would put the
+recap into the summarization itself. No certified Codex profile documents it. Verify against the exact
+host before using it.
+
 ## Cold service attachment and recovery (issue #670)
 
 Codex SessionStart is synchronous even when tool hooks use the supported async profile. It

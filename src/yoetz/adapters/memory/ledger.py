@@ -136,7 +136,7 @@ from yoetz.kernel.reducers import (
     replay_extension_with_index,
     replay_with_index,
 )
-from yoetz.kernel.task_facts import task_fact_signals
+from yoetz.kernel.task_facts import effective_obligations, task_fact_signals
 from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.change_capture import TASK_CHANGE_BASE_MEDIA_TYPE
 from yoetz.ports.clock import ClockPort
@@ -233,6 +233,7 @@ from yoetz.protocol.models import (
     StatusFindingItemModel,
     StatusHistoryItemModel,
     StatusHistoryItemV14Model,
+    StatusLatestCheckModel,
     StatusLatestCheckTestEditsModel,
     StatusObligationItemModel,
     StatusObservedRunModel,
@@ -1172,6 +1173,30 @@ def compact_status_coverage(
     return coverage
 
 
+def _latest_check(
+    records: tuple[LedgerRecord, ...], projection: ProjectionState
+) -> StatusLatestCheckModel | None:
+    """Name the recorded check the latest tested state points at, with its closed verdict (#1027)."""
+
+    latest = projection.latest_tested_state
+    if latest is None:
+        return None
+    check_record = next(
+        (record for record in records if record.event_id == latest.source_check_event_id),
+        None,
+    )
+    if check_record is None or type(check_record.payload) is not CheckRecordedPayload:
+        return None
+    return StatusLatestCheckModel(
+        check_event_id=str(check_record.event_id),
+        checked_frontier=FrontierModel(
+            sequence=str(latest.subject_frontier.sequence),
+            head_digest=latest.subject_frontier.head_digest,
+        ),
+        verdict=check_record.payload.verdict.value,
+    )
+
+
 def _latest_check_test_edits(
     records: tuple[LedgerRecord, ...], projection: ProjectionState
 ) -> StatusLatestCheckTestEditsModel | None:
@@ -1224,6 +1249,7 @@ def _obligation_item(
     record: object,
     assigned_actor_ids: tuple[str, ...],
     attempted_items: frozenset[str],
+    in_current_plan: bool | None = None,
 ) -> StatusObligationItemModel:
     from yoetz.kernel.projections import ObligationProjectionRecord
 
@@ -1238,7 +1264,7 @@ def _obligation_item(
     unattempted_items = tuple(
         item for item in requested_items if item["value"] not in attempted_items
     )
-    values = dict(
+    values: dict[str, object] = dict(
         obligation_id=obligation,
         # Issue #997/#1002: the row is the not-done marker: ``acknowledged_not_done`` with the
         # agent's reason (status-result 1.4.0). Closure readiness counts it once, as not done.
@@ -1256,6 +1282,8 @@ def _obligation_item(
         values["acceptance_criteria"] = typed.payload.acceptance_criteria
     if typed.payload.acknowledged_not_done_reason is not None:
         values["acknowledged_not_done_reason"] = typed.payload.acknowledged_not_done_reason
+    if in_current_plan is not None:
+        values["in_current_plan"] = in_current_plan
     return StatusObligationItemModel.model_validate(values)
 
 
@@ -1581,12 +1609,20 @@ def _projection_items(
                 continue
             for obligation in assignment.payload.obligation_ids:
                 actors.setdefault(obligation, set()).add(assignment.payload.assignee_actor_id)
+        # Membership in the current plan's effective scope; unknown when the scope is unreadable.
+        plan_scope = current_plan_scope(projection.plans, projection.coverage_gaps)
+        effective_refs = (
+            None
+            if plan_scope.effective_obligation_refs is None
+            else frozenset(effective_obligations(projection))
+        )
         return tuple(
             _obligation_item(
                 obligation,
                 record,
                 tuple(sorted(actors.get(obligation, ()), key=str.encode)),
                 attempted_items_for_obligation(projection, obligation),
+                None if effective_refs is None else obligation in effective_refs,
             ).model_copy(
                 update={"command_attempts": command_attempts(projection, records, obligation)}
             )
@@ -1834,6 +1870,9 @@ def _projection_items(
         latest_check_test_edits = _latest_check_test_edits(records, projection)
         if latest_check_test_edits is not None:
             compact_item_fields["latest_check_test_edits"] = latest_check_test_edits
+        latest_check = _latest_check(records, projection)
+        if latest_check is not None:
+            compact_item_fields["latest_check"] = latest_check
         return (StatusCompactItemModel.model_validate(compact_item_fields),)
     if view is ProjectionView.VERSIONS:
         facts = build_status_version_slice_facts()
@@ -2801,6 +2840,21 @@ class MemoryLedgerAdapter:
         async with self._lock:
             record = self._state.projection.actions.get(key)
         return None if record is None else str(record.source_event_id)
+
+    async def committed_event_ids(self, event_ids: Iterable[str]) -> frozenset[str]:
+        """Return which of ``event_ids`` the task ledger already holds (#1027).
+
+        Task-wide and read-only. The observation coordinator uses it to tell a batch whose
+        every event is already committed (a duplicate of an earlier delivery, however that
+        delivery was shaped) from one the ledger would refuse as a content conflict.
+        """
+
+        wanted = frozenset(str(item) for item in event_ids)
+        if not wanted:
+            return frozenset()
+        async with self._lock:
+            records = self._state.records
+        return frozenset(str(record.event_id) for record in records if record.event_id in wanted)
 
     async def lookup_task_operation(
         self, writer_id: str, operation_id: str

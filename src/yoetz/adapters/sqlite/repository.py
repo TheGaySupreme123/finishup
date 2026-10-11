@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -2175,6 +2175,12 @@ class SqliteLedger:
 
         await self._ensure_recovered()
         return await self._oracle().projected_action_event(action)
+
+    async def committed_event_ids(self, event_ids: Iterable[str]) -> frozenset[str]:
+        """Return which of ``event_ids`` the task ledger already holds (#1027)."""
+
+        await self._ensure_recovered()
+        return await self._oracle().committed_event_ids(event_ids)
 
     async def lookup_task_operation(
         self, writer_id: str, operation_id: str

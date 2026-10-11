@@ -97,12 +97,13 @@ _MAX_CONTEXT_CHARS: Final = 2_000
 _CONTEXT_CUT_MARKER: Final = " [Yoetz text cut at 2000 characters; read status or the receipt]"
 
 
-def _bounded_context(text: str) -> str:
-    """Bound hook advice text; a cut ends with a marker so the agent can tell it is partial."""
+def _bounded_context(text: str, limit: int = _MAX_CONTEXT_CHARS) -> str:
+    """Bound hook advice text to ``limit``; a cut ends with a marker so the agent can tell it is
+    partial (tb4n3 RC-2). ``limit`` is wider for the post-compaction recap (ADR-044)."""
 
-    if len(text) <= _MAX_CONTEXT_CHARS:
+    if len(text) <= limit:
         return text
-    return text[: _MAX_CONTEXT_CHARS - len(_CONTEXT_CUT_MARKER)] + _CONTEXT_CUT_MARKER
+    return text[: max(0, limit - len(_CONTEXT_CUT_MARKER))] + _CONTEXT_CUT_MARKER
 
 
 _MAX_CURSOR_IDENTITY_STRING_BYTES: Final = 8_192
@@ -287,19 +288,23 @@ def stdout_json(value: JsonValue, stream: BinaryIO | None = None) -> bool:
         return False
 
 
-def context_output(event_name: str, additional_context: str) -> dict[str, JsonValue]:
+def context_output(
+    event_name: str, additional_context: str, *, limit: int = _MAX_CONTEXT_CHARS
+) -> dict[str, JsonValue]:
     """Return the Codex-valid stdout object for one event's advice text.
 
     SessionStart / PostToolUse / UserPromptSubmit inject model-visible
     ``additionalContext``. Stop / SubagentStop have no such field: the only
     way to reach the model is ``decision: block`` plus ``reason``. Every other
-    event, including SessionEnd (stdout discarded), emits ``{}``.
+    event, including SessionEnd (stdout discarded), emits ``{}``. ``limit`` raises the character
+    bound for the one caller whose text is designed against a larger one (the post-compaction
+    recap, ADR-044); every other caller keeps the default.
     """
 
     text = additional_context.strip()
     if not text:
         return {}
-    text = _bounded_context(text)
+    text = _bounded_context(text, limit)
     if event_name in STOP_CONTROL_EVENTS:
         return {"decision": "block", "reason": text}
     if event_name in ADDITIONAL_CONTEXT_EVENTS:
@@ -312,7 +317,9 @@ def context_output(event_name: str, additional_context: str) -> dict[str, JsonVa
     return {}
 
 
-def claude_context_output(event_name: str, additional_context: str) -> dict[str, JsonValue]:
+def claude_context_output(
+    event_name: str, additional_context: str, *, limit: int = _MAX_CONTEXT_CHARS
+) -> dict[str, JsonValue]:
     """Return the Claude Code-valid stdout object for one event's advice text.
 
     Every supported advice-bearing event, including Stop / SubagentStop, injects
@@ -325,7 +332,7 @@ def claude_context_output(event_name: str, additional_context: str) -> dict[str,
     text = additional_context.strip()
     if not text:
         return {}
-    text = _bounded_context(text)
+    text = _bounded_context(text, limit)
     if event_name in CLAUDE_ADDITIONAL_CONTEXT_EVENTS:
         return {
             "hookSpecificOutput": {
@@ -358,6 +365,7 @@ def cursor_context_output(
     text: str,
     *,
     allow_stop_followup: bool = False,
+    limit: int = _MAX_CONTEXT_CHARS,
 ) -> dict[str, JsonValue]:
     """Return the Cursor-native stdout object for one raw hook event.
 
@@ -379,7 +387,7 @@ def cursor_context_output(
     bounded = text.strip()
     if not bounded:
         return {}
-    bounded = _bounded_context(bounded)
+    bounded = _bounded_context(bounded, limit)
     if raw_event in {"sessionStart", "postToolUse"}:
         return {"additional_context": bounded}
     if raw_event == "stop" and allow_stop_followup:

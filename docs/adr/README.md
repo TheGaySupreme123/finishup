@@ -41,6 +41,7 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [040](ADR-040-reviewer-disagreement-and-route-derived-review.md) | Binding rules for reviewer disagreement (`disputed_after_rebuttal`); review requirement derived from the route |
 | [041](ADR-041-obligation-status-re-derived-and-refusal-reasons.md) | Obligation status re-derived from current evidence, one obligation version rule, refusals that say why |
 | [043](ADR-043-bounded-agent-facing-text.md) | Bounded agent-facing text: one never-failing composer, and a committed operation never fails on its text |
+| [044](ADR-044-post-compaction-recap.md) | A bounded, sourced recap of Yoetz state when a host resumes after compaction |
 
 Unresolved gates are centralized in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md), not scattered
 through individual ADRs.
