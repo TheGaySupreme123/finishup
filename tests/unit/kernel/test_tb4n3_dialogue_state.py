@@ -22,7 +22,7 @@ from builders.dialogue import (
     reviewer_finding,
     ruling_check,
 )
-from builders.policy_cases import clm, evt, finding_record, fnd, obl, res
+from builders.policy_cases import clm, evd, evt, finding_record, fnd, obl, res
 from yoetz.domain.events import ResponseRecordedPayload
 from yoetz.domain.findings import (
     CheckVerdict,
@@ -76,7 +76,15 @@ def _ks_state(*responses_for: tuple[int, ResponseDisposition, int]) -> Projectio
     """ks S shape: one reviewer limitation request on the hidden-accuracy obligation."""
 
     findings = {fnd(1): finding_record(reviewer_finding(1, str(obl(1)), next_step=LIMITATION), 10)}
-    responses = {fnd(n): answer(n, disposition, seq) for n, disposition, seq in responses_for}
+    responses = {
+        fnd(n): answer(
+            n,
+            disposition,
+            seq,
+            evidence=(evd(1),) if disposition is D.SELF_VERIFIED else (),
+        )
+        for n, disposition, seq in responses_for
+    }
     return projection(findings, responses, obligations={obl(1): obligation_row(1)})
 
 

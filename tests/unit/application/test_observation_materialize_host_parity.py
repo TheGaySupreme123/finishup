@@ -144,9 +144,12 @@ _CURSOR_POSTS: tuple[tuple[str, dict[str, Any], str | None], ...] = (
 # ingress now records ``runner_class`` in the structural payload, which moves the
 # derived event/evidence ids, and post-only action descriptions gain the closed
 # ``(runner <class>)`` suffix. No other draft byte changed.
+# Re-pinned for tb4n3 RC-5 (#1028, ADR-045): a two-argument command such as ``pytest -q`` now
+# carries ``command_composition`` and its canonical flag commitment in the structural payload, so
+# the derived evidence ids of the unpaired results move. The action and result payloads do not.
 _PINNED = {
-    "claude": "sha256:5385e6afc06d6e890f1b42be57cc3fed1691e09cf1450b34d03e1d36d1cbed3f",
-    "cursor": "sha256:25a77cc6e104fa650bcdcc5d5d0a100d6abd18557f657876ab1923679082e2a0",
+    "claude": "sha256:9ca41d959b716cee3ab2b8776632137f1b87196ec161c06429b659090b4978be",
+    "cursor": "sha256:5d800c50f0c6f4d6793fa1602e397050ed6616b28748e68b68d9c9e17c3b1dd6",
 }
 
 

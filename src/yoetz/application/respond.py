@@ -509,6 +509,13 @@ _BLOCKING_HINTS: Final[tuple[tuple[frozenset[str], str], ...]] = (
         ),
         "re-run your planned verification after your last edit, then check",
     ),
+    (
+        frozenset({"coverage:declared_output_emptied", "coverage:declared_output_removed"}),
+        # ADR-045: the fact keys on the file, so acknowledging or republishing the obligation does
+        # not clear it; `status` (readiness) says why it fired, with the earlier size it saw.
+        "a declared deliverable that held content is empty, truncated or gone: restore it (status"
+        " readiness says which and why), then check",
+    ),
 )
 
 

@@ -2236,6 +2236,7 @@ def _check_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     }
     _add_semantic_redacted_values(definitions, properties)
     _add_semantic_route_required(properties)
+    _add_deliverable_states(definitions, properties)
     _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz check recorded {entry.schema_version}"
@@ -3334,6 +3335,138 @@ def _add_semantic_route_required(properties: dict[str, JsonValue]) -> None:
     properties["semantic_route_required"] = {"type": "boolean"}
 
 
+def _fact_lineage_definition() -> dict[str, JsonValue]:
+    """ADR-045: where one derived fact came from. Closed tokens, counts and ids; never a path."""
+
+    uint: dict[str, JsonValue] = {"$ref": "#/$defs/canonical_uint"}
+    # Inline id patterns: the check result's ``$defs`` carry no ``event_id`` / ``obligation_id``.
+    event_ref: dict[str, JsonValue] = {
+        "pattern": r"^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "type": "string",
+    }
+    obligation_ref: dict[str, JsonValue] = {
+        "pattern": r"^obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "type": "string",
+    }
+    return {
+        "additionalProperties": False,
+        "properties": {
+            "accepted_by": event_ref,
+            "basis": {"enum": ["delivered", "present", "verified"], "type": "string"},
+            "check_event_id": event_ref,
+            "code": {"$ref": "#/$defs/code"},
+            "frontier": uint,
+            "item_index": {"pattern": r"^(?:[0-9]|[1-5][0-9]|6[0-3])$", "type": "string"},
+            "now_lines": uint,
+            "now_size_bytes": uint,
+            "obligation_id": obligation_ref,
+            "prior_event_id": event_ref,
+            "prior_frontier": uint,
+            "prior_lines": uint,
+            "prior_size_bytes": uint,
+            "proof": {"enum": ["earlier_check", "observed_run", "task_base"], "type": "string"},
+            "rule": {
+                "enum": [
+                    "deliverable_path_history",
+                    "deliverable_read",
+                    "edit_after_verification_run",
+                    "planned_command_match",
+                    "planned_command_unmatched",
+                ],
+                "type": "string",
+            },
+            "source_event_ids": {
+                "items": event_ref,
+                "maxItems": 8,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "state": {
+                "enum": [
+                    "accepted",
+                    "edited_after",
+                    "emptied",
+                    "failed",
+                    "matched_agent_link",
+                    "matched_exact",
+                    "matched_flags",
+                    "matched_normalized",
+                    "matched_prefix",
+                    "removed",
+                    "stale",
+                    "truncated",
+                    "unmatched",
+                    "unreviewable",
+                ],
+                "type": "string",
+            },
+        },
+        "required": ["code", "rule", "state"],
+        "type": "object",
+    }
+
+
+def _fact_lineage_array() -> dict[str, JsonValue]:
+    return {
+        "items": {"$ref": "#/$defs/fact_lineage"},
+        "maxItems": 64,
+        "type": "array",
+        "uniqueItems": True,
+    }
+
+
+def _add_deliverable_states(
+    definitions: dict[str, JsonValue], properties: dict[str, JsonValue]
+) -> None:
+    """ADR-045 (tb4n3 RC-5): how each declared output file stood at a check. Optional/additive.
+
+    Sizes, counts, closed tokens, ids and a keyed path commitment; never a path. Absent on a
+    check that read no declared output file, so those checks keep their bytes.
+    """
+
+    count: dict[str, JsonValue] = {"maximum": 9007199254740991, "minimum": 0, "type": "integer"}
+    event_ref: dict[str, JsonValue] = {
+        "pattern": r"^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "type": "string",
+    }
+    definitions["deliverable_state"] = {
+        "additionalProperties": False,
+        "properties": {
+            "accepted_by": dict(event_ref),
+            "base_lines": dict(count),
+            "basis": {"enum": ["delivered", "present", "verified"], "type": "string"},
+            "change": {
+                "enum": ["emptied", "removed", "truncated", "unchanged"],
+                "type": "string",
+            },
+            "item_index": {"maximum": 63, "minimum": 0, "type": "integer"},
+            "lines": dict(count),
+            "obligation_id": {
+                "pattern": (
+                    r"^obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                ),
+                "type": "string",
+            },
+            "path_key": {"pattern": r"^hmac-sha256:[0-9a-f]{64}$", "type": "string"},
+            "prior_event_id": dict(event_ref),
+            "prior_frontier": dict(count),
+            "prior_lines": dict(count),
+            "prior_size_bytes": dict(count),
+            "proof": {"enum": ["earlier_check", "task_base"], "type": "string"},
+            "size_bytes": dict(count),
+            "unreviewable": {"const": True},
+        },
+        "required": ["basis", "item_index", "obligation_id"],
+        "type": "object",
+    }
+    properties["deliverable_states"] = {
+        "items": {"$ref": "#/$defs/deliverable_state"},
+        "maxItems": 64,
+        "type": "array",
+        "uniqueItems": True,
+    }
+
+
 def _add_semantic_redacted_values(
     definitions: dict[str, JsonValue],
     properties: dict[str, JsonValue],
@@ -3579,6 +3712,8 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     values.sort(key=lambda item: str(item).encode("ascii"))
     _add_semantic_redacted_values(definitions, properties)
     _add_semantic_route_required(properties)
+    definitions["fact_lineage"] = _fact_lineage_definition()
+    properties["fact_lineage"] = _fact_lineage_array()
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz check result {entry.schema_version}"
@@ -4504,6 +4639,9 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
 
     readiness = cast(dict[str, JsonValue], definitions["closure_readiness"])
     properties = cast(dict[str, JsonValue], readiness["properties"])
+    # ADR-045: where each derived fact the checklist lists came from. Optional and independent.
+    definitions["fact_lineage"] = _fact_lineage_definition()
+    properties["fact_lineage"] = _fact_lineage_array()
     properties.update(
         {
             "acknowledged_not_done": {
@@ -4535,7 +4673,9 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
             # "5" adds ``finding_disputed_after_rebuttal`` (#1020); "6" adds
             # ``declared_output_emptied`` and ``deliverable_references_undeclared_file`` (#1022);
             # "7" is the table derived from ``kernel.gap_effect`` (#1026) with the
-            # ``finding_rejection_awaiting_ruling`` readiness token.
+            # ``finding_rejection_awaiting_ruling`` readiness token, and adds
+            # ``planned_verification_matched_by_prefix`` and ``declared_output_not_reviewable``
+            # (tb4n3 RC-5, ADR-045).
             "gap_classification_version": {
                 "enum": ["1", "2", "3", "4", "5", "6", "7"],
                 "type": "string",

@@ -51,6 +51,7 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import Final, cast
 
+from yoetz.domain.shell_writes import shell_write_paths, shell_write_scope
 from yoetz.domain.write_scope import classify_write_path, edit_write_scope, scratch_path
 from yoetz.protocol.canonical import JsonValue
 
@@ -303,42 +304,14 @@ def install_target_class(command: str, workspace: str | None) -> str | None:
 
 
 def _write_targets(command: str) -> list[str]:
-    """Absolute redirect and ``tee`` targets, read from shell tokens so quoted text never counts.
+    """Absolute paths a shell command visibly writes, read from shell tokens (ADR-045).
 
-    Each heredoc body is dropped first (its lines are data, not shell), then the remaining text is
-    tokenized with shell punctuation; only a token that follows a redirect operator, or a ``tee``
-    operand, is a target. A command that does not tokenize names no target.
+    One parser for every surface (``domain.shell_writes.shell_write_paths``): quoted text and
+    heredoc bodies are data, a quoted operator or the word ``tee`` is not a write, and a write
+    inside ``bash -lc '...'`` counts. A command that does not tokenize names no target.
     """
 
-    lines: list[str] = []
-    delimiter: str | None = None
-    for line in command.split("\n"):
-        if delimiter is not None:
-            if line.strip() == delimiter:
-                delimiter = None
-            continue
-        lines.append(line)
-        match = _HEREDOC.search(line)
-        if match is not None:
-            delimiter = match.group(2)
-    lexer = shlex.shlex("\n".join(lines), posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return []
-    targets: list[str] = []
-    for index, token in enumerate(tokens):
-        following = tokens[index + 1] if index + 1 < len(tokens) else None
-        if token in _REDIRECT_OPERATORS and following is not None:
-            targets.append(following)
-        elif token == "tee":
-            for operand in tokens[index + 1 :]:
-                if operand in _SEPARATORS or operand in _REDIRECT_OPERATORS:
-                    break
-                if not operand.startswith("-"):
-                    targets.append(operand)
-    return [target for target in targets if target.startswith("/")]
+    return [path for path in shell_write_paths(command) if path.startswith("/")]
 
 
 def _scratch_path(path: str, workspace: str | None = None) -> bool:
@@ -445,6 +418,13 @@ def runtime_structural_facts(
         facts["install_target"] = target
     if workspace_locator is not None and _shell_writes_outside(command, inside, workspace_locator):
         facts["write_scope"] = "outside_workspace"
+    elif workspace_locator is not None:
+        # ADR-045: a command that visibly writes into the workspace is an edit, not a bare run.
+        scope = shell_write_scope(
+            command, workspace=workspace_locator, inside=inside, owned_roots=_owned_roots()
+        )
+        if scope is not None:
+            facts["write_scope"] = scope
     geteuid = getattr(os, "geteuid", None)
     if callable(geteuid):
         facts["effective_user"] = "root" if geteuid() == 0 else "non_root"

@@ -3572,6 +3572,94 @@ class CheckTotalsModel(_ClosedModel):
     test_edits: CheckTestEditTotalsModel
 
 
+class FactLineageModel(_ClosedModel):
+    """Where one derived fact came from (ADR-045): rule, subject, observing check, prior state.
+
+    Closed tokens, counts and service-minted ids only: never a path, command text or prose. The
+    obligation item is named by id and index (``status view=obligations`` resolves it). Counts are
+    canonical decimal strings like every other count on the wire. A reader renders the same
+    sentence from it on every surface (``kernel.fact_lineage.lineage_text``). The literals below
+    repeat ``kernel.fact_lineage``'s closed sets; a test pins them equal.
+    """
+
+    optional_non_null_fields = frozenset(
+        {
+            "obligation_id",
+            "item_index",
+            "check_event_id",
+            "frontier",
+            "prior_event_id",
+            "prior_frontier",
+            "prior_size_bytes",
+            "prior_lines",
+            "now_size_bytes",
+            "now_lines",
+            "proof",
+            "basis",
+            "accepted_by",
+        }
+    )
+
+    code: CodeWire
+    rule: Literal[
+        "deliverable_path_history",
+        "deliverable_read",
+        "planned_command_match",
+        "planned_command_unmatched",
+        "edit_after_verification_run",
+    ]
+    state: Literal[
+        "emptied",
+        "truncated",
+        "removed",
+        "accepted",
+        "unreviewable",
+        "matched_exact",
+        "matched_normalized",
+        "matched_prefix",
+        "matched_flags",
+        "matched_agent_link",
+        "unmatched",
+        "failed",
+        "stale",
+        "edited_after",
+    ]
+    obligation_id: ObligationIdWire | None = None
+    item_index: Annotated[str, Field(pattern=r"^(?:[0-9]|[1-5][0-9]|6[0-3])$")] | None = None
+    check_event_id: EventIdWire | None = None
+    frontier: CanonicalUInt64Wire | None = None
+    prior_event_id: EventIdWire | None = None
+    prior_frontier: CanonicalUInt64Wire | None = None
+    prior_size_bytes: CanonicalUInt64Wire | None = None
+    prior_lines: CanonicalUInt64Wire | None = None
+    now_size_bytes: CanonicalUInt64Wire | None = None
+    now_lines: CanonicalUInt64Wire | None = None
+    proof: Literal["task_base", "earlier_check", "observed_run"] | None = None
+    basis: Literal["delivered", "verified", "present"] | None = None
+    source_event_ids: tuple[EventIdWire, ...] = ()
+    accepted_by: EventIdWire | None = None
+
+    @model_validator(mode="after")
+    def _validate_fact_lineage(self) -> FactLineageModel:
+        _require_unique(self.source_event_ids, limit=8)
+        if (self.item_index is None) != (
+            self.obligation_id is None
+        ) and self.item_index is not None:
+            raise ValueError("fact_lineage_subject_mismatch")
+        return self
+
+
+def _validate_fact_lineage_models(values: tuple[FactLineageModel, ...] | None) -> None:
+    if values is None:
+        return
+    if len(values) > 64:
+        raise ValueError("fact_lineage_count_invalid")
+    _require_unique(
+        tuple((item.code, item.rule, item.obligation_id, item.item_index) for item in values),
+        limit=64,
+    )
+
+
 class CheckObservationsAwaitedModel(_ClosedModel):
     """Outcome of the optional pre-check wait for this task's hook rows (issue #1012)."""
 
@@ -3591,6 +3679,7 @@ class CheckSuccessModel(_ClosedModel):
             "semantic_withheld_items",
             "semantic_redacted_values",
             "semantic_route_required",
+            "fact_lineage",
             "review_input_manifest",
             "semantic_conclusion",
             "review_summary",
@@ -3640,6 +3729,9 @@ class CheckSuccessModel(_ClosedModel):
     # Issue #986: ``false`` only when the check's route did not require AI-powered review; absent
     # when it did or on results from older builds (the missing review then still blocks).
     semantic_route_required: bool | None = None
+    # ADR-045: where each derived task fact this check carries came from (rule, obligation item,
+    # observing check frontier, prior state). Absent when the check carries no such fact.
+    fact_lineage: tuple[FactLineageModel, ...] = ()
     coverage: CoverageModel
     versions: CheckVersionSliceModel
     privacy_projection: PrivacyProjectionModel
@@ -3672,6 +3764,7 @@ class CheckSuccessModel(_ClosedModel):
             limit=64,
         )
         _validate_semantic_redacted_value_models(self.semantic_redacted_values)
+        _validate_fact_lineage_models(self.fact_lineage)
         if not 1 <= len(self.policy_executions) <= 3 or len(set(self.policy_executions)) != len(
             self.policy_executions
         ):
@@ -4526,11 +4619,16 @@ class StatusClosureReadinessModel(_ClosedModel):
     # work) or the bounding standing ``check_current_as_of_earlier_frontier``. Optional on the
     # unreleased 1.4.0 wire: absent when neither is listed, and from an earlier 0.3 build.
     check_cause: StatusCheckCauseModel | None = None
+    # ADR-045: where each derived fact the checklist lists came from (rule, obligation item,
+    # observing check and frontier, prior state, observed runs). Optional on the unreleased 1.4.0
+    # wire: an earlier 0.3 build omits it, and absence never means the facts have no source.
+    fact_lineage: tuple[FactLineageModel, ...] | None = None
 
     optional_non_null_fields = frozenset(
         {
             "check_cause",
             "acknowledged_obligation_count",
+            "fact_lineage",
             "state",
             "gap_classification_version",
             "agent_actionable",
@@ -4560,6 +4658,7 @@ class StatusClosureReadinessModel(_ClosedModel):
             _require_unique(
                 tuple(item.obligation_id for item in self.blocked_obligations), limit=64
             )
+        _validate_fact_lineage_models(self.fact_lineage)
         self._validate_checklist()
         # Absent counts mean the compact singleton could not be read (an unreadable task title
         # omits it). Reporting zero there would assert "nothing is open" from missing data, so
@@ -5957,6 +6056,27 @@ _PUBLISH_STRUCTURAL_POINTERS: Final = (
     )
 )
 
+# ADR-045: closed tokens, counts and service-minted ids only (no path, command text or prose).
+_FACT_LINEAGE_LEAVES: Final = (
+    "accepted_by",
+    "basis",
+    "check_event_id",
+    "code",
+    "frontier",
+    "item_index",
+    "now_lines",
+    "now_size_bytes",
+    "obligation_id",
+    "prior_event_id",
+    "prior_frontier",
+    "prior_lines",
+    "prior_size_bytes",
+    "proof",
+    "rule",
+    "source_event_ids/*",
+    "state",
+)
+
 _CHECK_STRUCTURAL_POINTERS: Final = (
     _COMMON_SUCCESS_LEAVES
     + (
@@ -5995,6 +6115,7 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         ("disposition", "item_id", "lines/*", "source_ref"),
     )
     + _prefix_leaf_patterns("/review_input_manifest", _REVIEW_INPUT_MANIFEST_LEAVES)
+    + _prefix_leaf_patterns("/fact_lineage/*", _FACT_LINEAGE_LEAVES)
     + _prefix_leaf_patterns(
         "/specification_preflight",
         (
@@ -6227,6 +6348,8 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "check_cause/material_class",
             "check_cause/rule",
             "check_cause/tool",
+            # ADR-045: closed tokens, counts and service-minted ids only.
+            *(f"fact_lineage/*/{leaf}" for leaf in _FACT_LINEAGE_LEAVES),
         ),
     )
     # Closed state tokens only (issue #982).
@@ -7004,8 +7127,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1484
-    ):  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +5, LO +9, W2-B +2
+        len(result) != 1518
+    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, LF +34 (fact_lineage: check 17, status 17), W2-B +2
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

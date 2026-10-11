@@ -234,20 +234,29 @@ edit to the work after your last test, lint, typecheck or build run (`edited_aft
 temporary scratch files and Yoetz receipt files never count), a git-ignored requested output, or a declared deliverable you deleted or renamed away
 (`declared_output_removed`: a requested `file` item marked as an output), the Stop hook continues
 you once with that list; restore that delivered file where the task needs it, or correct the
-requested item if the task asked for the deletion. The same happens once when a deliverable of an
-obligation you resolved or claimed is now empty or truncated (`declared_output_emptied`): that
-obligation no longer counts as done. Restore the deliverable. Never empty or withdraw a working
-deliverable, over a finding or under a task's "empty file if unsolved" clause: a deliverable that
-passes your tests is a partial solution, not "unsolved"; deliver it and disclose its limits (an
-empty file always grades as no solution). If it is genuinely not done, republish the obligation
-`acknowledged_not_done` with the reason and leave it out of your completion claim: an acknowledged
-obligation is outside completion coverage, so omitting it is not a scope gap. A deliverable that
+requested item if the task asked for the deletion. The same happens when a declared deliverable
+that held content is now empty or truncated (`declared_output_emptied`): the fact follows the
+file, not the obligation, so acknowledging or republishing the obligation does not clear it, and
+status says why (what the file held, and at which check). Restore it from your copy. Never empty or
+withdraw a working deliverable, over a finding or under a task's "empty file if unsolved" clause:
+a deliverable that passes your tests is a partial solution, and an empty file always grades as no
+solution. Only if the task asked for this exact file to be empty regardless of outcome, record a
+decision with the line `yoetz-assumption:<obligation id>` that names the file path, then run
+`check`. A file you created empty on purpose (an empty requirements list) never raises it.
+Separately, if an obligation is genuinely not done, republish it `acknowledged_not_done` with the
+reason and leave it out of your completion claim: an acknowledged obligation is outside completion
+coverage, so omitting it is not a scope gap. A deliverable that
 names a file you created but did not declare is disclosed (`deliverable_references_undeclared_file`;
 it never stops you): a grader may receive only the declared files, so embed it, build it at run
 time, or declare it. A delivered file that lost most of its lines
 while files outside the delivered set changed or hold about as many lines is disclosed on the receipt
 (`declared_output_content_moved`; it never stops you): check the deliverable still works where
-the task delivers it. Repair first. If
+the task delivers it. A declared output of a type the review never receives (a binary) is named
+on the receipt (`declared_output_not_reviewable`; it never stops you): verify it yourself and
+say how. A planned command counts as run when an observed run matches it exactly or after
+dropping wrappers (`timeout`, `env`, `python3` for `python`); a run that only began with the
+planned arguments, or carried its program and flags in another order, also counts and is
+disclosed (`planned_verification_matched_by_prefix`). Repair first. If
 you repaired a finding and Yoetz still cannot prove it (a Yoetz limit), verify it yourself, record
 that evidence, and respond `self_verified`; respond `acknowledged_not_done` only if you truly
 cannot or will not do it. A Yoetz limit is never a `yoetz-blocker`: record a blocker only for an
