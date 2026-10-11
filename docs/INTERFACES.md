@@ -6799,7 +6799,12 @@ unless every receipt-blocking finding's latest response is `acknowledged_not_don
 `no_plan_published`, `no_obligations_declared`, `projection_stale`), then `check_in_progress`
 while a check holds the session frontier (read at the head through the ledger's
 `has_active_frozen_case`; an unanswerable probe counts as in flight), then `check_not_recorded` or
-`check_not_applicable` from the receipt applicability rule, then `closing_review_required` (issue
+`check_not_applicable` from the receipt applicability rule (an observed deliverable or workspace edit
+after the check counts; Yoetz's own calls, read-only reads and host bookkeeping do not,
+`kernel/later_material`, tb4n3 RC-6), then `check_current_as_of_earlier_frontier` while the counted
+suffix after the check bounds the receipt (`ClosureReadinessFacts.earlier_frontier_bounds`; the gap's
+static class stays standing, so `gap_classification_version` is unchanged), then
+`closing_review_required` (issue
 #976: AI-powered review is required on the route or completed on the task, and no completed
 final-phase review, or undeliverable review attempt, is current since the last material change),
 then every actionable gap code and
@@ -6826,7 +6831,11 @@ lineage token from the catalog comparison is disclosed only when a recorded eval
 carries its code (`live_lineage_blockers`; `lineage_child_read_gap` is recorded as
 `lineage_child_unavailable`); otherwise it is agent-actionable whatever its class, because a
 receipt folds recorded lineage only and cannot disclose it yet. No gap is dropped from `gaps` or
-`known_gaps`. `state` is `unknown` exactly with `readiness_unknown`
+`known_gaps`. The optional `check_cause` (`StatusCheckCauseModel`, present only beside the token it explains: `effect`
+`superseded|bounds_conclusion`, `event_id`, `ledger_sequence`, `check_event_id`,
+`check_subject_frontier`, `family`, `material_class`, `rule`, optional `tool`) names the first later
+record that decided it; MCP text, the CLI and the terminal interface render the one frozen sentence
+`readiness_text.check_cause_sentence`. `state` is `unknown` exactly with `readiness_unknown`
 (then `agent_actionable` is `("readiness_unknown",)` and the other groups are empty); otherwise it
 is `action_required` while `agent_actionable` is non-empty, `ready_with_limitations` when only
 standing or acknowledged entries remain, and `ready` when nothing remains. The five agent
