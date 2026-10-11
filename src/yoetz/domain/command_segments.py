@@ -80,6 +80,7 @@ __all__ = [
     "planned_segments",
     "requested_command_shape",
     "strip_wrappers",
+    "wrapped_shell_argument",
 ]
 
 # At most this many segment commitments travel with one observed command: the first and last
@@ -103,6 +104,11 @@ _MAX_TEXT_CHARS: Final = 16_384
 _SHELLS: Final = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
 _SHELL_COMMAND_FLAG_RE: Final = re.compile(r"^-[a-z]*c[a-z]*$", re.ASCII)
 _ASSIGNMENT_RE: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=", re.ASCII)
+_AMBIGUOUS_WORD_RE: Final = re.compile(r"[\s'\"\\]")
+# ``env`` options that take a separate operand (``env -u NAME cmd``, ``env -C DIR cmd``).
+_ENV_OPTIONS_WITH_OPERAND: Final = frozenset(
+    {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}
+)
 _REDIRECTION_RE: Final = re.compile(r"^(?:[0-9]+|&)?(>>|>\||>&|>|<<<|<<-|<<|<&|<>|<)(.*)$", re.S)
 _LEADING_KEYWORDS: Final = frozenset(
     {"if", "then", "do", "else", "elif", "while", "until", "{", "!", "nohup", "exec"}
@@ -332,6 +338,7 @@ def _clean_segment(segment: str) -> _Cleaned:
     leading = True
     after_time = False
     in_env = False
+    skip_env_operand = False
     writes = False
     pending_target = False
     for word in words:
@@ -366,6 +373,12 @@ def _clean_segment(segment: str) -> _Cleaned:
             if word == "env":
                 in_env = True
                 continue
+            if in_env and word in _ENV_OPTIONS_WITH_OPERAND:
+                skip_env_operand = True
+                continue
+            if in_env and skip_env_operand:
+                skip_env_operand = False
+                continue
             if in_env and (word.startswith("-") or _ASSIGNMENT_RE.match(word)):
                 continue
             if _ASSIGNMENT_RE.match(word):
@@ -383,6 +396,17 @@ def _clean_segment(segment: str) -> _Cleaned:
         )
     )
     return _Cleaned(" ".join(kept) or None, negated, shell_reads_stdin, writes)
+
+
+def wrapped_shell_argument(words: Sequence[str]) -> str | None:
+    """``X`` for the words of ``bash -lc X`` / ``sh -c X`` (any shell path), else ``None``."""
+
+    if len(words) != 3:
+        return None
+    shell = words[0].replace("\\", "/").rsplit("/", 1)[-1]
+    if shell not in _SHELLS or _SHELL_COMMAND_FLAG_RE.fullmatch(words[1]) is None:
+        return None
+    return words[2]
 
 
 def _wrapped_argument(text: str) -> str | None:
@@ -576,9 +600,10 @@ _RUN_OPTIONS_WITH_VALUE: Final = frozenset(
         "--env",
     }
 )
-# Python interpreter options that change nothing about what is verified.
-_PYTHON_NEUTRAL_OPTIONS: Final = frozenset({"-u", "-B", "-O", "-OO", "-E", "-s", "-S", "-I", "-q"})
-_PYTHON_OPTIONS_WITH_OPERAND: Final = frozenset({"-X", "-W"})
+# Python interpreter options that change nothing about what is verified. ``-O``/``-OO`` (asserts
+# disabled), ``-W``/``-X`` (warnings as errors, dev mode) and ``-E``/``-I``/``-s``/``-S`` (import
+# and environment) can change a verifier's outcome, so they stay in the canonical argv.
+_PYTHON_NEUTRAL_OPTIONS: Final = frozenset({"-u", "-B", "-q"})
 _MAX_WRAPPER_ROUNDS: Final = 8
 _SCENE_SETTING: Final = frozenset({"cd", "pushd", "export", "source", "."})
 # Shell builtins that never verify anything: no canonical commitment is spent on them.
@@ -628,7 +653,7 @@ def _strip_one_wrapper(words: list[str]) -> bool:
         words.pop(0)
         while words and (words[0].startswith("-") or _ASSIGNMENT_RE.match(words[0])):
             option = words.pop(0)
-            if option in {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"} and words:
+            if option in _ENV_OPTIONS_WITH_OPERAND and words:
                 words.pop(0)
         return True
     if head == "nice":
@@ -701,7 +726,7 @@ def canonical_words(words: Sequence[str]) -> tuple[str, ...]:
     (``timeout``, ``nice``, ``ionice``, ``nohup``, ``stdbuf``, ``env``, ``setsid``, ``time``,
     ``command``, ``exec`` and ``uv``/``poetry``/``pipenv``/``pdm``/``hatch``/``rye run``), reduces
     argv[0] to its basename, ``python3`` and ``pythonX.Y`` to ``python`` (dropping interpreter
-    options that verify nothing, such as ``-u``), ``python -m pytest`` and ``py.test`` to
+    options that cannot change the outcome: ``-u``, ``-B``, ``-q``), ``python -m pytest`` and ``py.test`` to
     ``pytest``. Arguments are never reordered, rewritten or dropped otherwise: two commands that
     run different things never share a canonical form, and a missed equivalence only keeps two
     forms apart.
@@ -714,12 +739,8 @@ def canonical_words(words: Sequence[str]) -> tuple[str, ...]:
     if _PYTHON_NAME_RE.fullmatch(head) is not None:
         head = "python"
         arguments = rest[1:]
-        while arguments and (
-            arguments[0] in _PYTHON_NEUTRAL_OPTIONS or arguments[0] in _PYTHON_OPTIONS_WITH_OPERAND
-        ):
-            option = arguments.pop(0)
-            if option in _PYTHON_OPTIONS_WITH_OPERAND and arguments:
-                arguments.pop(0)
+        while arguments and arguments[0] in _PYTHON_NEUTRAL_OPTIONS:
+            arguments.pop(0)
         if arguments[:2] == ["-m", "pytest"]:
             return ("pytest", *arguments[2:])
         if arguments[:1] == ["-mpytest"]:
@@ -831,7 +852,11 @@ def planned_segments(key_material: bytes, normalized: str) -> tuple[PlannedSegme
                 prefix,
                 flags,
                 bool(_SCENE_SETTING.intersection(words[:1])),
-                observed_command_commitment(key_material, " ".join(words)),
+                # Plain text only when it is unambiguous: ``pytest -k "foo bar"`` joined is
+                # ``pytest -k foo bar``, which is another command's text.
+                None
+                if any(_AMBIGUOUS_WORD_RE.search(word) for word in words)
+                else observed_command_commitment(key_material, " ".join(words)),
             )
         )
     return tuple(output)

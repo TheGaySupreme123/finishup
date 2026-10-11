@@ -193,3 +193,46 @@ def test_the_gate_text_says_why_beside_the_token_it_explains() -> None:
         quiet, frontier_sequence="340", frontier_digest="d", observation_pending=False
     )
     assert other is not None and "Why:" not in other.text
+
+
+def test_a_stale_or_failed_command_fact_says_what_happened_not_that_it_matched() -> None:
+    """The stale and failed sentences name the run and the edit; the edit is never a "run"."""
+
+    stale = FactLineage(
+        code="planned_verification_stale",
+        rule="planned_command_match",
+        state="stale",
+        obligation_id=obligation_id("obl_00000000-0000-4000-8000-0000000000a1"),
+        item_index=0,
+        frontier=40,
+        prior_frontier=52,
+        proof="observed_run",
+        source_event_ids=(
+            event_id("evt_00000000-0000-4000-8000-0000000000a1"),
+            event_id("evt_00000000-0000-4000-8000-0000000000a2"),
+        ),
+    )
+    text = lineage_text(stale)
+    assert "last run at frontier 40" in text and "edit followed at frontier 52" in text
+    assert "Observed run(s)" not in text and "matched by" not in text
+    failed = FactLineage(
+        code="planned_verification_failed",
+        rule="planned_command_match",
+        state="failed",
+        obligation_id=obligation_id("obl_00000000-0000-4000-8000-0000000000a1"),
+        item_index=0,
+        frontier=40,
+        proof="observed_run",
+    )
+    assert "failed" in lineage_text(failed) and "matched by" not in lineage_text(failed)
+    edit = FactLineage(
+        code="edited_after_last_verification",
+        rule="edit_after_verification_run",
+        state="edited_after",
+        frontier=52,
+        prior_frontier=40,
+        proof="observed_run",
+    )
+    text = lineage_text(edit)
+    assert "edit at frontier 52 followed the last verification run" in text
+    assert "last verification run being at frontier 40" in text

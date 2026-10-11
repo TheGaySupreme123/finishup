@@ -911,6 +911,14 @@ def planned_match(run: _ObservedRun, planned: PlannedCommand) -> PlannedMatch | 
     kind = max(kinds, key=_MATCH_RANK.__getitem__)
     if skipped_scene and kind in {MATCH_EXACT, MATCH_NORMALIZED}:
         kind = MATCH_PREFIX
+    if (
+        len(planned.probes) == 1
+        and planned.probes[0].canonical_text == run.identity
+        and planned.composition != "masked"
+    ):
+        # The run's whole text is the planned command's canonical form (``pytest`` for a planned
+        # ``python -m pytest``): one simple command, so its own outcome is the part's.
+        return PlannedMatch(run.outcome, kind)
     return PlannedMatch(_attributed_outcome(run, planned.composition), kind)
 
 
@@ -1051,12 +1059,16 @@ def _observed_state(
             command_tokens.update(tokens)
             if runner in _ACTING_RUNNERS:
                 acting = True
-            if tokens & SHELL_EDIT_TOKENS and payload.outcome is not ResultOutcome.FAILURE:
+            if tokens & SHELL_EDIT_TOKENS or (
+                tokens & NON_COUNTING_WRITE_TOKENS and observed_edit_counts(description, exempt)
+            ):
                 # ADR-045: a shell command that visibly wrote files (``cat > f``, ``sed -i``,
-                # ``cp a f``) changed the work as surely as an edit tool would.
+                # ``cp a f``) changed the work as surely as an edit tool would, and it did so
+                # whatever its exit status (``: > f; false`` emptied ``f``). A write to the
+                # agent's notes counts only when the task declares a notes-like output.
                 latest_edit = max(latest_edit or 0, result.source_frontier)
                 latest_edit_event = action.source_event_id
-                edit_tokens.update(tokens & SHELL_EDIT_TOKENS)
+                edit_tokens.update(tokens & (SHELL_EDIT_TOKENS | NON_COUNTING_WRITE_TOKENS))
                 acting = True
             runs.append(
                 _ObservedRun(
@@ -1135,8 +1147,13 @@ def passing_verification_observed(
     """
 
     state = _observed_state(projection, observed, cooperative)
+    # A composition that masks its own status (``pytest -q; true``, ``pytest | tail``) says
+    # nothing about the verifying part, so only a plain command or a successful ``&&`` chain is a
+    # passing run.
     return any(
-        run.runner in _VERIFICATION_RUNNERS and run.outcome is ResultOutcome.SUCCESS
+        run.runner in _VERIFICATION_RUNNERS
+        and run.outcome is ResultOutcome.SUCCESS
+        and run.composition in {None, "single", "and_chain"}
         for run in state.runs
     )
 
@@ -1489,6 +1506,9 @@ class RequestedOutputState:
     # The current line count of an existing declared file the bounded line-count read could
     # count (tracked or untracked, ADR-045); ``None`` when not read, binary or too large.
     lines: int | None = None
+    # The bounded line-count read left changed or untracked files out, so ``undeclared_lines_added``
+    # is only a lower bound: it can prove a move, never rule one out (ADR-045).
+    counts_truncated: bool = False
     # The root-relative path of an ``inside`` item (``.`` for the root), compared only in memory
     # to tell overlapping declarations of one path apart (tb4n2 R2); never stored or rendered.
     relative: str | None = field(default=None, repr=False)

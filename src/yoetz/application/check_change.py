@@ -806,6 +806,7 @@ async def _with_declared_line_counts(
         annotated[item] = replace(
             states[item],
             lines=lines,
+            counts_truncated=raw_counts.truncated,
             # ADR-035's fields keep their meaning: a tracked file the change modified.
             base_lines=base,
             lines_lost=lost if path in modified else None,

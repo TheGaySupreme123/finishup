@@ -54,6 +54,13 @@ def test_the_hook_bound_is_the_domain_bound() -> None:
         (["nohup", "stdbuf", "-oL", "make", "test"], ("make", "test")),
         (["env", "FOO=1", "-u", "BAR", "pytest"], ("pytest",)),
         (["FOO=1", "BAR=2", "pytest", "-x"], ("pytest", "-x")),
+        # Options that can change a verifier's outcome stay in the form (asserts disabled, warnings
+        # as errors); only options that cannot are dropped.
+        (["python", "-O", "verify.py"], ("python", "-O", "verify.py")),
+        (["python3", "-W", "error", "verify.py"], ("python", "-W", "error", "verify.py")),
+        (["python", "-u", "-B", "verify.py"], ("python", "verify.py")),
+        (["env", "-u", "PYTHONPATH", "pytest", "-q"], ("pytest", "-q")),
+        (["env", "-C", "/app", "pytest", "-q"], ("pytest", "-q")),
         (["python", "-m", "pytest", "-q", "tests/"], ("pytest", "-q", "tests/")),
         (["python3", "-mpytest", "-q"], ("pytest", "-q")),
         (["py.test", "-q"], ("pytest", "-q")),
@@ -133,6 +140,29 @@ def test_the_canonical_budget_is_bounded_and_keeps_full_forms_first() -> None:
     assert list(commitments) == sorted(set(commitments))
 
 
+def test_env_operands_do_not_become_the_command_in_a_normalized_run() -> None:
+    """``env -u NAME pytest`` once became ``NAME pytest`` in the segment text, so it never matched."""
+
+    for command in ("env -u PYTHONPATH pytest -q", "env -C /app pytest -q"):
+        normalized = normalize_observed_command(command)
+        assert normalized is not None
+        structure = command_structure(normalized)
+        assert structure is not None
+        assert [item.words for item in structure.commands] == [("pytest", "-q")]
+
+
+def test_a_quoted_argument_with_a_space_is_not_another_commands_plain_text() -> None:
+    """``pytest -k "foo bar"`` joined is ``pytest -k foo bar``: a different argv's own text."""
+
+    planned = planned_segments(_KEY, normalize_observed_command('pytest -k "foo bar"') or "")
+    assert planned is not None
+    (probe,) = planned
+    assert probe.canonical_text is None
+    plain = planned_segments(_KEY, normalize_observed_command("pytest -k foo bar") or "")
+    assert plain is not None
+    assert plain[0].canonical_text is not None
+
+
 def test_command_structure_names_each_simple_command_and_file_writes() -> None:
     normalized = normalize_observed_command("cd /app && pytest -q 2>&1 | tee run.log > out.txt")
     assert normalized is not None
@@ -160,6 +190,14 @@ def test_command_structure_names_each_simple_command_and_file_writes() -> None:
         ("python - <<'PY'\nopen('x', 'w').write('y')\nPY", []),
         ("mv -t outdir a b", ["outdir"]),
         ("truncate -s 0 foo.txt", ["foo.txt"]),
+        # Text is not syntax: a quoted operator or the word ``tee`` writes nothing.
+        ('echo ">" output.txt', []),
+        ("echo tee output.txt", []),
+        ("echo 'a > b'", []),
+        # The shell a host wraps a command in runs the real one.
+        ("/bin/bash -lc 'cat > solve.py'", ["solve.py"]),
+        ('zsh -c "echo hi | tee -a out.txt"', ["out.txt"]),
+        ('echo x > "my file.txt"', ["my file.txt"]),
     ],
 )
 def test_shell_write_paths(command: str, paths: list[str]) -> None:
@@ -177,7 +215,10 @@ def test_shell_write_scope_classifies_like_an_edit_tool() -> None:
     assert scope("cp build/out.json /app/out.json") == "workspace"
     assert scope("echo x > /etc/motd") == "outside_workspace"
     assert scope("echo x > /tmp/scratch.txt") is None
-    assert scope("echo x > NOTES.md") is None
+    # The agent's notes carry the non-counting ``notes`` scope, so a declared output of that name
+    # keeps counting (the kernel's exemption set decides, as for an edit tool).
+    assert scope("echo x > NOTES.md") == "notes"
+    assert scope("echo x > NOTES.md && cp a.txt b.txt") == "workspace"
     assert scope("pytest -q") is None
     assert (
         shell_write_scope("echo x > /app/a", workspace=None, inside=inside, relative_only=True)

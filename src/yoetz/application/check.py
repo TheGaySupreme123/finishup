@@ -166,6 +166,7 @@ from yoetz.kernel.policies.work_integrity import (
 from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionRecord, ProjectionState
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
+from yoetz.kernel.reducers import replay
 from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
@@ -2429,9 +2430,48 @@ def _with_fact_lineage(
     return replace(
         result,
         fact_lineage=_check_fact_lineage(
-            case, records, case.frontier.sequence, result.deliverable_states
+            case.projection, records, case.frontier.sequence, result.deliverable_states
         ),
     )
+
+
+async def _attach_replayed_fact_lineage(
+    runtime: TaskRuntime, result: CheckCommitResult
+) -> CheckCommitResult:
+    """A same-request replay with the lineage its first answer carried.
+
+    The lineage is derived, never stored: the recorded deliverable states plus the task facts
+    of the exact ledger prefix the check froze, so a retry reads the same story (ADR-045).
+    """
+
+    if result.fact_lineage:
+        return result
+    try:
+        records = tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, through=result.subject_frontier.sequence
+                )
+            ]
+        )
+        if not records:
+            return result
+        lineage = _check_fact_lineage(
+            replay(records),
+            records,
+            result.subject_frontier.sequence,
+            result.deliverable_states,
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component="check",
+            operation="replayed_fact_lineage_read",
+            request_id=None,
+        )
+        return result
+    return replace(result, fact_lineage=lineage)
 
 
 async def _read_declared_outputs(
@@ -2492,7 +2532,7 @@ async def _frozen_prefix_records(
 
 
 def _check_fact_lineage(
-    case: DeterministicCase,
+    projection: ProjectionState,
     records: tuple[LedgerRecord, ...],
     subject_frontier: int,
     states: tuple[DeliverableState, ...],
@@ -2505,8 +2545,8 @@ def _check_fact_lineage(
     """
 
     items = list(deliverable_lineage(None, subject_frontier, states))
-    if records and len(records) == case.projection.frontier:
-        items.extend(task_fact_signals(case.projection, records).lineage)
+    if records and len(records) == projection.frontier:
+        items.extend(task_fact_signals(projection, records).lineage)
     return tuple(sorted(dict.fromkeys(items), key=lambda item: item.sort_key)[:64])
 
 
@@ -2555,7 +2595,7 @@ async def _requested_output_inputs(
         # counts as delivered (agent work, Stop-gate token). Never raised for a file created
         # empty or one a ``yoetz-assumption`` decision names.
         codes.add(DECLARED_OUTPUT_EMPTIED_GAP)
-    if content_moved_declared_items(case.projection, states, blocked=confirmed):
+    if content_moved_declared_items(case.projection, states, blocked=confirmed, history=history):
         # A non-blocking disclosure (ADR-035): never a Stop-gate token, never a finding.
         codes.add(DECLARED_OUTPUT_CONTENT_MOVED_GAP)
     if (
@@ -4707,6 +4747,7 @@ async def execute_check_commit(
             )
         if isinstance(frozen_or_replay, CheckCommitResult):
             replayed = await _attach_replayed_lineage_preview(runtime, frozen_or_replay)
+            replayed = await _attach_replayed_fact_lineage(runtime, replayed)
             replayed = await _attach_finding_checklist(app, runtime, replayed)
             # The ledger replay is frozen; only the additive project-advice projection is current.
             return await _attach_current_project_advisory_notes(app, runtime.task_id, replayed)

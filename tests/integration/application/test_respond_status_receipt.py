@@ -9046,6 +9046,10 @@ async def test_an_emptied_deliverable_tells_the_same_story_on_every_surface(
         assert wire["fact_lineage"] and DECLARED_OUTPUT_EMPTIED_GAP in cast(
             list[str], cast(dict[str, Any], wire["coverage"])["known_gaps"]
         )
+        # A same-request retry answers with the same story (the first answer is frozen).
+        replayed = await check(acknowledged.result_frontier, 14)
+        assert replayed.fact_lineage == checked.fact_lineage
+        assert check_internal_json(replayed)["fact_lineage"] == wire["fact_lineage"]
 
         # 2. Status readiness: the same code and the same lineage.
         status = await app.status(

@@ -20,7 +20,7 @@ import shlex
 from collections.abc import Callable
 from typing import Final
 
-from yoetz.domain.command_segments import strip_wrappers
+from yoetz.domain.command_segments import strip_wrappers, wrapped_shell_argument
 from yoetz.domain.write_scope import classify_write_path, scratch_path
 
 __all__ = ["shell_write_paths", "shell_write_scope"]
@@ -48,7 +48,18 @@ def _attributable(path: str) -> bool:
     )
 
 
-def shell_write_paths(command: str) -> list[str]:
+_MAX_SHELL_DEPTH: Final = 3
+
+
+def _unquote(token: str) -> str:
+    """*token* without its enclosing quotes (the lexer keeps them to tell operators from text)."""
+
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "'\"":
+        return token[1:-1]
+    return token
+
+
+def shell_write_paths(command: str, _depth: int = 0) -> list[str]:
     """Every path a shell command visibly writes, absolute or relative (ADR-045).
 
     Reads shell tokens, never output or file content: a redirect target, a ``tee`` operand, the
@@ -69,7 +80,8 @@ def shell_write_paths(command: str) -> list[str]:
         match = _HEREDOC.search(line)
         if match is not None:
             delimiter = match.group(2)
-    lexer = shlex.shlex("\n".join(lines), posix=True, punctuation_chars=True)
+    # Non-POSIX mode keeps a quoted token's quotes, so ``echo ">" f`` is text, not a redirect.
+    lexer = shlex.shlex("\n".join(lines), posix=False, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)
@@ -79,14 +91,25 @@ def shell_write_paths(command: str) -> list[str]:
     segment: list[str] = []
 
     def flush() -> None:
-        words = strip_wrappers([word for word in segment if word not in _REDIRECT_OPERATORS])
+        words = [
+            _unquote(word)
+            for word in strip_wrappers(
+                [word for word in segment if word not in _REDIRECT_OPERATORS]
+            )
+        ]
         segment.clear()
         if not words:
             return
         head = os.path.basename(words[0])
         rest = words[1:]
         operands = [word for word in rest if not word.startswith("-")]
-        if head in _SED_NAMES and any(_SED_IN_PLACE.match(word) for word in rest):
+        inner = wrapped_shell_argument(words) if _depth < _MAX_SHELL_DEPTH else None
+        if inner is not None:
+            # ``bash -lc 'cat > f'``: the shell the host wrapped the command in runs the real one.
+            paths.extend(shell_write_paths(inner, _depth + 1))
+        elif head == "tee":
+            paths.extend(operands)
+        elif head in _SED_NAMES and any(_SED_IN_PLACE.match(word) for word in rest):
             # ``sed -i 's/a/b/' f``: the first operand is the script unless ``-e``/``-f`` gave it.
             scripted = any(
                 word in {"-e", "-f"} or word.startswith(("-e", "-f", "--expression"))
@@ -127,16 +150,8 @@ def shell_write_paths(command: str) -> list[str]:
         if token in _SEPARATORS or token == "\n":
             flush()
         elif token in _REDIRECT_OPERATORS and following is not None:
-            paths.append(following)
+            paths.append(_unquote(following))
             index += 1
-        elif token == "tee":
-            segment.append(token)
-            for operand in tokens[index + 1 :]:
-                if operand in _SEPARATORS or operand in _REDIRECT_OPERATORS:
-                    break
-                if not operand.startswith("-"):
-                    paths.append(operand)
-                index += 1
         else:
             segment.append(token)
         index += 1
@@ -157,8 +172,8 @@ def shell_write_scope(
     Each visible write path is classified by the rules edit tools use (``domain.write_scope``):
     a real write outside the workspace wins; a write into the workspace that is not the agent's
     own notes or log, not scratch and not Yoetz-owned makes the command an edit
-    (``workspace``); a command that writes only scratch, notes or Yoetz material, or nothing
-    visible, claims nothing. ``relative_only`` reads only relative paths: a caller that knows no
+    (``workspace``); a command that writes only notes, Yoetz material or scratch carries that
+    non-counting scope, and one that writes nothing visible claims nothing. ``relative_only`` reads only relative paths: a caller that knows no
     workspace root (the Codex rollout stream) cannot tell an absolute path inside it from one
     outside, so it claims only what a working directory makes certain.
     """
@@ -188,4 +203,9 @@ def shell_write_scope(
         return "outside_workspace"
     if "workspace" in classes:
         return "workspace"
+    # Only the agent's notes, Yoetz's own material or scratch: the same closed token an edit tool
+    # carries, so a declared output of that kind keeps counting (``non_counting_edits_exempt``).
+    for scope in ("notes", "yoetz_owned", "scratch"):
+        if scope in classes:
+            return scope
     return None

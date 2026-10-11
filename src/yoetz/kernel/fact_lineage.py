@@ -215,6 +215,21 @@ def lineage_text(item: FactLineage) -> str:
             f"Why: the declared output of {_subject(item)} {verb}{reading}{where}"
             f"{prior}.{basis_text}{accepted} Rule {item.rule}."
         )
+    if item.rule == RULE_COMMAND_MATCH and item.state in {"failed", "stale"}:
+        events = ", ".join(str(ref) for ref in item.source_event_ids)
+        refs = f" Events: {events}." if events else ""
+        if item.state == "failed":
+            happened = "the observed run of the planned command"
+            happened += f" of {_subject(item)} failed{where}."
+        else:
+            # ``frontier`` is the last run of the planned command, ``prior_frontier`` the edit.
+            after = (
+                ""
+                if item.prior_frontier is None
+                else f"; an observed edit followed at frontier {item.prior_frontier}"
+            )
+            happened = f"the planned command of {_subject(item)} was last run{where}{after}."
+        return f"Why: {happened}{refs} Rule {item.rule}."
     if item.rule == RULE_COMMAND_MATCH:
         by = {
             "matched_exact": "an exact match",
@@ -242,8 +257,13 @@ def lineage_text(item: FactLineage) -> str:
     if item.rule == RULE_EDIT_AFTER_RUN:
         sources = ", ".join(str(ref) for ref in item.source_event_ids)
         refs = f" Events: {sources}." if sources else ""
+        ran = (
+            ""
+            if item.prior_frontier is None
+            else f", the last verification run being at frontier {item.prior_frontier}"
+        )
         return (
-            f"Why: an observed edit followed the last verification run{where}.{refs}"
+            f"Why: an observed edit{where} followed the last verification run{ran}.{refs}"
             f" Rule {item.rule}."
         )
     return f"Why: {item.code} ({item.state}) about {_subject(item)}{where}. Rule {item.rule}."

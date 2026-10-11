@@ -230,6 +230,7 @@ def content_moved_declared_items(
     states: Mapping[tuple[ObligationId, int], RequestedOutputState],
     *,
     blocked: Iterable[ObligationId] | None = None,
+    history: Sequence[DeliverableSnapshot] = (),
 ) -> tuple[tuple[ObligationId, int], ...]:
     """Declared delivered files whose content the check-time change moved to undeclared files.
 
@@ -237,7 +238,9 @@ def content_moved_declared_items(
     line-count fields are all known with ``lines_lost >= CONTENT_MOVED_MIN_LINES``,
     ``2 * lines_lost >= base_lines`` and ``2 * undeclared_lines_added >= lines_lost``. Lines moved
     into another declared output, or a shrink with no matching growth outside the declared set,
-    never qualify. Integer arithmetic only, so the answer is deterministic.
+    never qualify. Integer arithmetic only, so the answer is deterministic. A file the task base
+    does not hold (created in this task) is measured against its largest earlier recorded
+    reading, so a new solver whose lines moved to an undeclared file is disclosed too (ADR-045).
     """
 
     moved: list[tuple[ObligationId, int]] = []
@@ -248,20 +251,29 @@ def content_moved_declared_items(
             or state.location != "inside"
             or state.exists is not True
             or state.deleted
-            or state.base_lines is None
-            or state.lines_lost is None
             or state.undeclared_lines_added is None
         ):
             continue
-        if _content_moved(state):
+        if _content_moved(state, _path_history(state, history)):
             moved.append((obligation, index))
     return tuple(moved)
 
 
-def _content_moved(state: RequestedOutputState) -> bool:
-    if state.base_lines is None or state.lines_lost is None or state.undeclared_lines_added is None:
+def _content_moved(state: RequestedOutputState, history: Sequence[DeliverableSnapshot]) -> bool:
+    if state.undeclared_lines_added is None:
         return False
-    return _content_moved_shape(state.lines_lost, state.base_lines, state.undeclared_lines_added)
+    if state.base_lines is not None and state.lines_lost is not None:
+        reference, lost = state.base_lines, state.lines_lost
+    else:
+        reference = 0
+        lost = 0
+    held_lines = max((item.state.lines or 0 for item in history), default=0)
+    lines = _current_lines(state)
+    if lines is not None and held_lines > reference:
+        reference, lost = held_lines, held_lines - lines
+    if reference <= 0:
+        return False
+    return _content_moved_shape(lost, reference, state.undeclared_lines_added)
 
 
 def _content_moved_shape(lost: int, reference: int, undeclared_added: int | None) -> bool:
@@ -379,6 +391,18 @@ def _held_content(snapshots: Sequence[DeliverableSnapshot]) -> DeliverableSnapsh
     return None
 
 
+def _peak_content(snapshots: Sequence[DeliverableSnapshot]) -> DeliverableSnapshot | None:
+    """The earlier reading with the most lines (the newest on a tie), or ``None``."""
+
+    best: DeliverableSnapshot | None = None
+    for item in snapshots:
+        if (item.state.size_bytes or 0) <= 0:
+            continue
+        if best is None or (item.state.lines or 0) >= (best.state.lines or 0):
+            best = item
+    return best
+
+
 def _current_lines(state: RequestedOutputState) -> int | None:
     if state.lines is not None:
         return state.lines
@@ -419,6 +443,7 @@ def deliverable_state_change(
 
     if state.location != "inside":
         return None
+    path_history = history
     held = _held_content(history)
     if state.exists is False:
         if state.deleted:
@@ -453,13 +478,18 @@ def deliverable_state_change(
         lost = reference - lines
         if _content_moved_shape(lost, reference, state.undeclared_lines_added):
             return DeliverableChange("unchanged")
+        if state.counts_truncated:
+            # The line-count read left files out: the lines may have moved there, and a lower
+            # bound cannot say they did not. Unknown, not changed.
+            return None
         if other_growth is None or 2 * other_growth >= lost:
             return DeliverableChange("unchanged")
         from_history = held is not None and held_lines >= base
         return DeliverableChange(
             "truncated",
             "earlier_check" if from_history else "task_base",
-            held if from_history else None,
+            # The reading the comparison used: the largest known, not merely the newest.
+            _peak_content(path_history) if from_history else None,
             reference,
             held_bytes or None,
         )
@@ -470,7 +500,15 @@ def deliverable_state_change(
         and EMPTIED_KEPT_FRACTION * state.size_bytes < held_bytes
         and (other_growth is not None and other_growth <= 0)
     ):
-        return DeliverableChange("truncated", "earlier_check", held, held_lines or None, held_bytes)
+        if state.counts_truncated:
+            return None
+        return DeliverableChange(
+            "truncated",
+            "earlier_check",
+            _peak_content(path_history),
+            held_lines or None,
+            held_bytes,
+        )
     return DeliverableChange("unchanged")
 
 
@@ -687,14 +725,20 @@ def assess_deliverables(
         verdicts[path] = _PathVerdict(basis, change, accepted, withdrawn and accepted is None)
     recorded: list[DeliverableState] = []
     emptied: list[tuple[ObligationId, int]] = []
+    removed = removed_declared_items(projection, states, blocked=blocked, history=history)
     for obligation, index, kind, value in rows:
         verdict = verdicts.get(path_of((obligation, index, kind, value)))
         state = states.get((obligation, index))
         if verdict is None or state is None:
             continue
         key = deliverable_path_identity(state.relative) if state.relative is not None else None
+        change = verdict.change
+        if change is None and (obligation, index) in removed:
+            # A published edit named the file and it is gone, with no earlier reading or tracked
+            # deletion to prove it: the removal is still recorded, so every surface can say why.
+            change = DeliverableChange("removed")
         recorded.append(
-            _record(obligation, index, state, key, verdict.basis, verdict.change, verdict.accepted)
+            _record(obligation, index, state, key, verdict.basis, change, verdict.accepted)
         )
         if verdict.fires:
             emptied.append((obligation, index))
@@ -703,7 +747,7 @@ def assess_deliverables(
             sorted(recorded, key=lambda item: (str(item.obligation_id).encode(), item.item_index))
         )[:64],
         tuple(emptied),
-        removed_declared_items(projection, states, blocked=blocked, history=history),
+        removed,
     )
 
 

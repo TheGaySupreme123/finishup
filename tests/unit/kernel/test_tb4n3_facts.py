@@ -30,17 +30,23 @@ from yoetz.domain.events import (
     RequestedItem,
     RequestedItemKind,
     RequestedItemRole,
+    ResultOutcome,
 )
 from yoetz.domain.values import event_id, evidence_id, obligation_id
 from yoetz.kernel.delivered_set import DeliverableSnapshot, emptied_declared_items
 from yoetz.kernel.reducers import replay
 from yoetz.kernel.task_facts import (
     EDITED_AFTER_LAST_VERIFICATION_GAP,
+    PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
+    PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
     PLANNED_VERIFICATION_STALE_GAP,
     RequestedOutputState,
+    cooperative_event_ids_from_records,
     deliverable_path_identity,
+    observed_event_ids_from_records,
+    passing_verification_observed,
     register_command_identity_key,
     task_fact_signals,
 )
@@ -243,3 +249,81 @@ def test_c3b_timeout_wrapper_matches_planned_command() -> None:
     assert PLANNED_VERIFICATION_STALE_GAP not in codes
     # Wrappers and the interpreter alias are the same command: a clean match, not a disclosure.
     assert PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP not in codes
+
+
+# --- Codex review round 1 (issue #1028): limits of the canonical rule and of shell writes ------
+
+
+def test_c2e_a_failed_shell_write_still_stales_the_verification() -> None:
+    """``: > solve.py; false`` empties the file whatever its exit status says."""
+
+    ledger = _ledger()
+    ledger.passes("pytest -q")
+    ledger.run(": > solve.py; false", ResultOutcome.FAILURE, exit_status=1, write_scope="workspace")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
+def test_c2f_a_shell_write_to_notes_counts_only_when_notes_are_declared_output() -> None:
+    ledger = _ledger()
+    ledger.passes("pytest -q")
+    ledger.run("echo x > NOTES.md", ResultOutcome.SUCCESS, exit_status=0, write_scope="notes")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    declared = _ledger(_out("/app/NOTES.md"))
+    declared.passes("pytest -q")
+    declared.run("echo x > NOTES.md", ResultOutcome.SUCCESS, exit_status=0, write_scope="notes")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(declared)
+
+
+def test_c3c_a_bare_run_of_the_canonical_form_has_a_known_outcome() -> None:
+    """Planned ``python -m pytest``, run as bare ``pytest``: one simple command, so its own
+    outcome, not ``unknown`` (a bare command carries no composition suffix)."""
+
+    planned = RequestedItem(RequestedItemKind.COMMAND, "python -m pytest")
+    ledger = _ledger(planned)
+    ledger.passes("pytest")
+    codes = _codes(ledger)
+    assert PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP not in codes
+    assert PLANNED_VERIFICATION_FAILED_GAP not in codes
+    failing = _ledger(planned)
+    failing.fail("pytest")
+    assert PLANNED_VERIFICATION_FAILED_GAP in _codes(failing)
+
+
+def test_c3d_a_quoted_argument_with_a_space_is_not_two_arguments() -> None:
+    ledger = _ledger(RequestedItem(RequestedItemKind.COMMAND, 'pytest -k "foo bar"'))
+    ledger.passes("pytest -k foo bar")
+    codes = _codes(ledger)
+    assert PLANNED_VERIFICATION_NOT_OBSERVED_GAP in codes
+    assert PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP not in codes
+
+
+def test_c3e_an_interpreter_option_that_changes_the_outcome_is_a_disclosed_match() -> None:
+    """``python -O verify.py`` disables asserts: not the planned ``python verify.py`` cleanly."""
+
+    ledger = _ledger(RequestedItem(RequestedItemKind.COMMAND, "python verify.py"))
+    ledger.passes("python -O verify.py")
+    codes = _codes(ledger)
+    assert PLANNED_VERIFICATION_NOT_OBSERVED_GAP not in codes
+    assert PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP in codes
+    clean = _ledger(RequestedItem(RequestedItemKind.COMMAND, "python verify.py"))
+    clean.passes("python3 -u verify.py")
+    assert PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP not in _codes(clean)
+
+
+def test_a_masked_success_is_not_a_passing_verification() -> None:
+    """``pytest -q; true`` exits 0 whatever pytest did; only a plain run or ``&&`` chain proves."""
+
+    def passing(command: str) -> bool:
+        ledger = _ledger()
+        ledger.passes(command)
+        records = ledger.prefix
+        return passing_verification_observed(
+            replay(records),
+            observed_event_ids_from_records(records),
+            cooperative_event_ids_from_records(records),
+        )
+
+    assert passing("pytest -q")
+    assert passing("cd /app && pytest -q")
+    assert not passing("pytest -q; true")
+    assert not passing("pytest -q | tail -3")

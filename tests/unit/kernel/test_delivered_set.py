@@ -29,9 +29,11 @@ from yoetz.kernel.delivered_set import (
     DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
     DeliverableSnapshot,
+    assess_deliverables,
     content_moved_declared_items,
     declared_delivered_items,
     declared_output_removed,
+    deliverable_lineage,
     emptied_declared_items,
 )
 from yoetz.kernel.projections import ProjectionState
@@ -957,3 +959,104 @@ def test_a_history_for_another_path_proves_nothing() -> None:
         emptied_declared_items(projection, _emptied_solver(), history=(_earlier("other.sage"),))
         == ()
     )
+
+
+# --- Codex review round 1 (issue #1028) --------------------------------------------------------
+
+
+def test_a_clipped_line_count_read_is_unknown_not_a_truncation() -> None:
+    """Moving 195 of a solver's 200 lines into an untracked file beyond the read bound: the
+    undeclared growth is a lower bound, so it can prove a move but never rule one out."""
+
+    projection = _lifecycle(_OPEN, _RESOLVED)
+    history = (_earlier("solve.sage", size=9_800, lines=300),)
+    stub = {(_OBLIGATION, 0): _sized(14, lines=1, relative="solve.sage")}
+    assert emptied_declared_items(projection, stub, history=history) == ((_OBLIGATION, 0),)
+    clipped = {(_OBLIGATION, 0): _sized(14, lines=1, relative="solve.sage", counts_truncated=True)}
+    assert emptied_declared_items(projection, clipped, history=history) == ()
+    # An emptied file stays emptied: a clipped read cannot move bytes into a 0-byte file.
+    zero = {(_OBLIGATION, 0): _sized(0, lines=0, relative="solve.sage", counts_truncated=True)}
+    assert emptied_declared_items(projection, zero, history=history) == ((_OBLIGATION, 0),)
+
+
+def test_content_moved_covers_a_file_the_task_base_does_not_hold() -> None:
+    """A new 300-line solver cut to one line with 300 lines added elsewhere is disclosed (ADR-035)."""
+
+    projection = _lifecycle(_OPEN, _RESOLVED)
+    history = (_earlier("solve.sage", size=9_800, lines=300),)
+    moved = {
+        (_OBLIGATION, 0): _sized(14, lines=1, relative="solve.sage", undeclared_lines_added=300)
+    }
+    assert content_moved_declared_items(projection, moved, history=history) == ((_OBLIGATION, 0),)
+    assert content_moved_declared_items(projection, moved) == ()
+    # And the move is not also a withdrawal.
+    assert emptied_declared_items(projection, moved, history=history) == ()
+    # Growth that does not match the loss is no move.
+    elsewhere = {
+        (_OBLIGATION, 0): _sized(14, lines=1, relative="solve.sage", undeclared_lines_added=20)
+    }
+    assert content_moved_declared_items(projection, elsewhere, history=history) == ()
+
+
+def test_a_truncation_cites_the_reading_it_compared_against() -> None:
+    """Readings of 300, then 60, then 20 lines: the fact compares with 300 and says so."""
+
+    projection = _lifecycle(_OPEN, _RESOLVED)
+    first = _earlier("solve.sage", size=9_800, lines=300, frontier=10)
+    second = _earlier("solve.sage", size=2_000, lines=60, frontier=20)
+    third = DeliverableSnapshot(
+        second.state, event_id("evt_00000000-0000-4000-8000-0000000000c2"), 30
+    )
+    now = {(_OBLIGATION, 0): _sized(500, lines=20, relative="solve.sage")}
+    assessment = assess_deliverables(projection, now, history=(first, second, third))
+    (recorded,) = assessment.states
+    assert recorded.change == "truncated"
+    assert (recorded.prior_lines, recorded.prior_frontier) == (300, 10)
+    (lineage,) = deliverable_lineage(None, 40, assessment.states)
+    assert (lineage.prior_lines, lineage.prior_frontier) == (300, 10)
+
+
+def test_a_removal_proved_only_by_a_published_edit_still_has_lineage() -> None:
+    """A new file written in the session and gone before its first check: no earlier reading and
+    no tracked deletion, but the removal is recorded and explained like the other routes."""
+
+    from yoetz.domain.events import ActionKind, ActionRecordedPayload
+    from yoetz.domain.values import action_id
+
+    ledger = ObservedLedger()
+    ledger.append(
+        EventSchema("obligation_published", "1.0.0"),
+        ObligationPublishedPayload(
+            obligation_id=_OBLIGATION,
+            description="Deliver the score",
+            evidence_expectation="The file",
+            status=ObligationStatus.OPEN,
+            requested_items=(_file("/app/harmony.musicxml"),),
+        ),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", (_OBLIGATION,)),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("action_recorded", "1.0.0"),
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000001"),
+            ActionKind.EDIT,
+            "Wrote the score",
+            obligation_refs=(_OBLIGATION,),
+            attempted_items=("/app/harmony.musicxml",),
+        ),
+        observed=False,
+    )
+    gone = {
+        (_OBLIGATION, 0): RequestedOutputState("inside", exists=False, relative="harmony.musicxml")
+    }
+    assessment = assess_deliverables(replay(ledger.prefix), gone)
+    assert assessment.removed == ((_OBLIGATION, 0),)
+    (recorded,) = assessment.states
+    assert recorded.change == "removed"
+    (lineage,) = deliverable_lineage(None, 12, assessment.states)
+    assert (lineage.code, lineage.state) == (DECLARED_OUTPUT_REMOVED_GAP, "removed")
