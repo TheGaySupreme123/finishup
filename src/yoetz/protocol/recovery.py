@@ -1011,8 +1011,9 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
         ),
         "bridge_error_mapping_failed": (
             "The service reported a failure that the bridge could not translate, so its code is "
-            "not shown. Read status view=compact for the current state before repeating the "
-            "call, and report the correlation_id."
+            "not shown. If you hold session and writer ids, read status view=compact before "
+            "repeating the call; a start that returned no ids is replayed once under the same "
+            "request_id. Report the correlation_id."
         ),
         "bridge_result_wire_failed": (
             "The bridge could not serialize this call's result. A write (start, publish_work, "

@@ -211,13 +211,6 @@ class _Render:
         )
 
 
-def _closure_part(variants: tuple[str, ...]) -> Part:
-    """The closure-readiness sentence: the state is always present, the longer forms follow the
-    action clauses (limitation refs, acknowledged work) when room is scarce."""
-
-    return Part(variants, required=True, priority=_P_ACTION + 2)
-
-
 def _req(*variants: str) -> Part:
     """A part that is always present; later variants are the shorter forms."""
 
@@ -1719,7 +1712,7 @@ def summary_for_status(envelope: object) -> str:
                     "details.",
                     priority=_P_ACTION,
                 ),
-                _closure_part(render.variants("closure", lambda: _closure_variants(source))),
+                *render.guarded_parts("closure", lambda: _closure_parts(source)),
                 render.failure_part(),
             ]
         )
@@ -1770,7 +1763,7 @@ def summary_for_status(envelope: object) -> str:
             f"receipt-blocking findings: {receipt_blocking}; reported gaps: {gaps}."
         )
     )
-    parts.append(_closure_part(render.variants("closure", lambda: _closure_variants(source))))
+    parts.extend(render.guarded_parts("closure", lambda: _closure_parts(source)))
     page = source.get("page")
     if isinstance(page, Mapping):
         typed_page = cast(Mapping[str, JsonValue], page)
@@ -1839,57 +1832,60 @@ def _readiness_tokens(readiness: Mapping[str, JsonValue], key: str) -> tuple[str
     )
 
 
-def _closure_variants(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
     """Name the closure-readiness state and its frozen directive (issue #913, ADR-032).
 
     Only the closed state token, service counts and classified gap or condition tokens appear.
-    Variants run from the most informative to the bare state; the composer takes the first that
-    fits. ``ready_with_limitations`` always keeps the owner-approved stop sentence whole and
-    shrinks the named limitations first; for ``action_required`` the named items are the
-    instruction, so they outrank the generic sentence.
+    The state is always present. For ``ready_with_limitations`` the owner-approved stop sentence is
+    required beside it (its short form when room is scarce) and the named limitations are an
+    optional part granted after the action clauses; for ``action_required`` the named items are the
+    instruction, so they are granted before the generic sentence. One named list never takes more
+    than the list bound.
     """
 
     readiness = source.get("closure_readiness")
     if not isinstance(readiness, Mapping):
-        return ()
+        return []
     typed = cast(Mapping[str, JsonValue], readiness)
     state = typed.get("state")
     if type(state) is not str or state not in READINESS_STATES:
-        return ()
+        return []
     standing = _readiness_tokens(typed, "standing_limitations")
     acknowledged = _safe_count(typed.get("acknowledged_not_done_count"))
     if acknowledged == "unavailable":
-        return ()
+        return []
     head = f"Closure: {state}."
-    directive = (
-        head + " " + readiness_directive(state, standing=len(standing), acknowledged=acknowledged)
-    )
+    sentence = readiness_directive(state, standing=len(standing), acknowledged=acknowledged)
 
-    def listed(base: str, label: str, values: tuple[str, ...]) -> tuple[str, ...]:
+    def listed(label: str, values: tuple[str, ...]) -> tuple[str, ...]:
         variants = list_variants(label, values, suffix="")
-        # One named list never takes more than the list bound; the shortest form is always kept.
         within = tuple(variant for variant in variants if len(variant) <= _LIST_MAX_CHARS)
-        return tuple(f"{base} {variant}." for variant in within or variants[-1:])
+        return tuple(f"{variant}." for variant in within or variants[-1:])
 
-    variants: list[str] = []
     if state == "action_required":
+        parts = [
+            Part((head,), required=True),
+            Part((sentence,), priority=_P_ACTION + 2),
+        ]
         actionable = _readiness_tokens(typed, "agent_actionable")
-        every = listed(directive, "Agent-actionable: ", actionable)
-        if every:
-            variants.append(every[0])  # the complete list beside the generic directive
-        variants.extend((*listed(head, "Agent-actionable: ", actionable), directive, head))
-    elif state == "ready_with_limitations":
-        variants.extend(
-            (
-                *listed(directive, "Standing limitations: ", standing),
-                directive,
-                head + " Nothing further to do. Request the receipt.",
-                head,
+        if actionable:
+            parts.append(Part(listed("Agent-actionable: ", actionable), priority=_P_ACTION))
+        return parts
+    if state == "ready_with_limitations":
+        parts = [
+            Part(
+                (
+                    f"{head} {sentence}",
+                    f"{head} Nothing further to do. Request the receipt.",
+                    head,
+                ),
+                required=True,
             )
-        )
-    else:
-        variants.extend((directive, head))
-    return tuple(variants)
+        ]
+        if standing:
+            parts.append(Part(listed("Standing limitations: ", standing), priority=_P_ACTION + 2))
+        return parts
+    return [Part((f"{head} {sentence}", head), required=True)]
 
 
 def _operation_progress_clause(source: Mapping[str, JsonValue]) -> str:
@@ -1941,7 +1937,7 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
             [
                 head,
                 _req("page unavailable."),
-                _closure_part(render.variants("closure", lambda: _closure_variants(source))),
+                *render.guarded_parts("closure", lambda: _closure_parts(source)),
                 render.failure_part(),
             ]
         )
@@ -2000,7 +1996,7 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
     parts.append(
         _opt("Read the structured page for child states and row identities.", priority=_P_STATE)
     )
-    parts.append(_closure_part(render.variants("closure", lambda: _closure_variants(source))))
+    parts.extend(render.guarded_parts("closure", lambda: _closure_parts(source)))
     parts.append(render.failure_part())
     return _compose(parts)
 

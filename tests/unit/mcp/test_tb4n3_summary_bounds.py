@@ -354,3 +354,38 @@ def test_a_long_standing_limitation_list_is_capped_and_never_displaces_a_require
     assert len(tight) <= 512
     assert "res_00000000-0000-4000-8000-000000000001" in tight
     assert "Closure: ready_with_limitations" in tight
+
+
+def test_the_closure_instruction_survives_optional_references_at_a_tight_bound() -> None:
+    """ready_with_limitations with one acknowledged obligation and three required limitation refs
+    kept only "Closure: ready_with_limitations." at 512 bytes: the refs took the room the owner-
+    approved stop sentence needs. The state and its stop sentence are core; at the real bound
+    nothing is displaced."""
+
+    refs = [f"res_00000000-0000-4000-8000-{index:012d}" for index in range(1, 4)]
+    envelope: dict[str, Any] = {
+        "view": "compact",
+        "head_frontier": {"sequence": "9", "head_digest": HEAD},
+        "closure_readiness": {
+            "state": "ready_with_limitations",
+            "open_obligation_count": "0",
+            "unanswered_finding_count": "0",
+            "receipt_blocking_finding_count": "0",
+            "acknowledged_obligation_count": "1",
+            "acknowledged_not_done_count": "1",
+            "agent_actionable": [],
+            "standing_limitations": ["capture_truncated"],
+            "limitation_refs_required_count": "3",
+            "limitation_refs_required": refs,
+        },
+        "gaps": [],
+        "page": {"items": [{"freshness": "current", "open_obligations": []}]},
+    }
+    roomy = render_safe_compact_summary(envelope)
+    assert "Request the receipt." in roomy and all(ref in roomy for ref in refs)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(summaries, "_MAX_SUMMARY_BYTES", 512)
+        tight = render_safe_compact_summary(envelope)
+    assert len(tight) <= 512
+    assert "Closure: ready_with_limitations." in tight
+    assert "Request the receipt." in tight
