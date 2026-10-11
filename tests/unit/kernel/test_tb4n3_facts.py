@@ -16,13 +16,19 @@ where each failed as the defect). Provenance per test:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from dataclasses import replace
+from typing import cast
 
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
+from yoetz.application.observation_materialize import materialize_observation_envelope
+from yoetz.cli.observe_hooks import map_hook_payload_to_envelope, workspace_relative_edit_path
+from yoetz.cli.runtime_facts import runtime_structural_facts
 from yoetz.domain.events import (
     DeliverableState,
+    EventPayload,
     EventSchema,
     ObligationPublishedPayload,
     ObligationStatus,
@@ -32,8 +38,9 @@ from yoetz.domain.events import (
     RequestedItemRole,
     ResultOutcome,
 )
+from yoetz.domain.observation import ObservationEnvelope
 from yoetz.domain.shell_writes import shell_write_scope
-from yoetz.domain.values import event_id, evidence_id, obligation_id
+from yoetz.domain.values import JsonObject, event_id, evidence_id, obligation_id
 from yoetz.kernel.delivered_set import DeliverableSnapshot, emptied_declared_items
 from yoetz.kernel.reducers import replay
 from yoetz.kernel.task_facts import (
@@ -51,6 +58,7 @@ from yoetz.kernel.task_facts import (
     register_command_identity_key,
     task_fact_signals,
 )
+from yoetz.protocol.canonical import JsonValue
 
 _OBL = obligation_id("obl_00000000-0000-4000-8000-0000000000c1")
 
@@ -205,6 +213,99 @@ def test_c2c_in_workspace_note_edit_does_not_stale_verification() -> None:
     assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
 
 
+_WORKSPACE = "/app"
+_PATCH = "*** Begin Patch\n*** Update File: {path}\n@@\n-old\n+new\n*** End Patch\n"
+_EDIT_CALLS: tuple[tuple[str, str, dict[str, JsonValue]], ...] = (
+    # (id, tool, tool_input): the edit-tool shapes the three hosts send.
+    ("codex_apply_patch", "apply_patch", {"command": _PATCH}),
+    ("claude_write", "Write", {"file_path": "{path}", "content": "x"}),
+    ("claude_edit", "Edit", {"file_path": "{path}", "old_string": "a", "new_string": "b"}),
+    ("cursor_write", "Write", {"path": "{path}", "contents": "x"}),
+)
+
+
+def _hook_edit(
+    ledger: ObservedLedger, tool: str, tool_input: dict[str, JsonValue], path: str
+) -> str | None:
+    """Record the edit a real PostToolUse hook leaves in the ledger, and return its write scope.
+
+    The chain is the hook's own: the host payload becomes an observation envelope, the runtime
+    classifier (``runtime_structural_facts``, called by ``handle_observe`` with this same ``inside``
+    rule) adds the closed ``write_scope`` fact, and the materializer turns the envelope into the
+    action and result the ledger holds. Nothing here names a scope by hand.
+    """
+
+    filled: dict[str, JsonValue] = {
+        key: value.replace("{path}", path) if isinstance(value, str) else value
+        for key, value in tool_input.items()
+    }
+    payload: dict[str, JsonValue] = {
+        "hook_event_name": "PostToolUse",
+        "session_id": "codex-c2c",
+        "tool_name": tool,
+        "tool_use_id": f"call-{ledger.runs + 1}",
+        "tool_input": filled,
+        "tool_response": "Exit code: 0\nOutput:\nSuccess.",
+    }
+    envelope: ObservationEnvelope = map_hook_payload_to_envelope(
+        "PostToolUse",
+        payload,
+        session_commitment="hmac-sha256:" + "5" * 64,
+        event_ordinal=ledger.runs + 1,
+        key_material=INSTALLATION_KEY,
+    )
+    facts = runtime_structural_facts(
+        payload,
+        tool_name=cast(str, envelope.structural_payload["tool_name"]),
+        workspace_locator=_WORKSPACE,
+        inside=lambda value: workspace_relative_edit_path(value, _WORKSPACE) is not None,
+    )
+    envelope = replace(
+        envelope, structural_payload=JsonObject({**envelope.structural_payload, **facts})
+    )
+    batch = materialize_observation_envelope(
+        envelope, task_id="tsk_00000000-0000-4000-8000-0000000000c2"
+    )
+    assert batch.skip_reason is None
+    for item in batch.drafts:
+        ledger.append(item.draft.schema, cast(EventPayload, item.draft.payload), observed=True)
+    ledger.runs += 1
+    scope = cast(Mapping[str, JsonValue], envelope.structural_payload).get("write_scope")
+    return scope if isinstance(scope, str) else None
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [pytest.param(tool, tool_input, id=name) for name, tool, tool_input in _EDIT_CALLS],
+)
+def test_c2c_the_hook_itself_names_a_notes_edit_and_it_does_not_stale_verification(
+    tool: str, tool_input: dict[str, JsonValue]
+) -> None:
+    """tb4n3 C (c2c, issue #1028). The scope in the test above is only as good as the hook that
+    produces it: for each host's edit tool, a write of /app/NOTES.md must come out of the real
+    hook chain as ``notes`` and leave the verification standing, while an edit of /app/solve.py
+    through the same chain carries no scope and makes it stale."""
+
+    ledger = _ledger()
+    ledger.passes("pytest -q")
+    assert _hook_edit(ledger, tool, tool_input, "/app/NOTES.md") == "notes"
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+
+    assert _hook_edit(ledger, tool, tool_input, "/app/solve.py") is None
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
+def test_c2c_a_notes_edit_that_is_a_declared_output_still_stales_verification() -> None:
+    """A deliverable that happens to be named NOTES.md is not the agent's scratch notes."""
+
+    declared = _ledger(_out("/app/NOTES.md"))
+    declared.passes("pytest -q")
+    assert _hook_edit(
+        declared, "Write", {"file_path": "{path}", "content": "x"}, "/app/NOTES.md"
+    ) == ("notes")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(declared)
+
+
 def test_c2d_a_run_of_the_planned_command_is_a_verification_run() -> None:
     """formal-crypto D (tb4n2): the check the task asked for (``python /app/solve.py --check``)
     ran after the last edit but classes ``other``; only the earlier pytest was a verification
@@ -242,9 +343,19 @@ def test_c3_task_quoted_flag_prefix_matches_the_real_compile() -> None:
     assert PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP in codes
 
 
-def test_c3b_timeout_wrapper_matches_planned_command() -> None:
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The original repro, verbatim.
+        "timeout 3000 python /app/pretrain.py",
+        # ADR-045 canonical form: the wrapper and the interpreter alias are the same command.
+        "timeout 3000 python3 /app/pretrain.py",
+        "env PYTHONUNBUFFERED=1 nice -n 5 python3.12 /app/pretrain.py",
+    ],
+)
+def test_c3b_timeout_wrapper_matches_planned_command(command: str) -> None:
     ledger = _ledger(RequestedItem(RequestedItemKind.COMMAND, "python /app/pretrain.py"))
-    ledger.passes("timeout 3000 python3 /app/pretrain.py")
+    ledger.passes(command)
     codes = _codes(ledger)
     assert PLANNED_VERIFICATION_NOT_OBSERVED_GAP not in codes
     assert PLANNED_VERIFICATION_STALE_GAP not in codes

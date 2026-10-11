@@ -59,28 +59,30 @@ import re
 from collections.abc import Awaitable, Callable, Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from yoetz import __version__
 from yoetz.config.paths import ensure_owner_only_dir, state_dir
 from yoetz.domain.bounded_text import Part, compose_parts
-from yoetz.kernel.closure_class import FINDING_REJECTION_AWAITING_RULING_GAP
-from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
-from yoetz.kernel.task_facts import (
+from yoetz.domain.task_fact_tokens import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
     EDITED_AFTER_LAST_VERIFICATION_GAP,
+    FINDING_REJECTION_AWAITING_RULING_GAP,
     PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     PLANNED_VERIFICATION_STALE_GAP,
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
     STOP_GATE_TOKENS,
 )
-from yoetz.ports.control import ControlClientKind
+from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import OperationFailureModel, StatusRequest
 from yoetz.protocol.readiness_text import predicted_receipt_variants
+
+if TYPE_CHECKING:
+    from yoetz.ports.control import ControlClientKind
+    from yoetz.protocol.models import StatusRequest
 
 try:
     import fcntl
@@ -1146,6 +1148,9 @@ def closure_gate_from_readiness(
 
 
 def _status_request(session_id: str, writer_id: str, actor_id: str) -> StatusRequest:
+    # Lazy: the protocol models load pydantic, which the ordinary hook path must not import.
+    from yoetz.protocol.models import StatusRequest
+
     return StatusRequest.model_validate(
         {
             "protocol_version": "0.1",
@@ -1179,6 +1184,10 @@ async def read_closure_gate(
     could not answer raises ``ClosureGateUnavailable`` so the caller records it as unavailable;
     either way the agent may stop.
     """
+
+    # Lazy: only a status read needs the control port and the protocol models (pydantic).
+    from yoetz.ports.control import ControlClientKind
+    from yoetz.protocol.models import OperationFailureModel
 
     client: object | None = None
     try:

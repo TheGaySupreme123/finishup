@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -129,6 +131,35 @@ def retained(
 _NOW = datetime(2026, 9, 27, tzinfo=UTC)
 
 
+def _rewrite_keeping_size_and_mtime(path: Path, data: bytes) -> None:
+    """Rewrite *path* in place with same-size bytes and its old mtime, so only ctime can tell.
+
+    ctime is the kernel's coarse clock: one tick per jiffy (1 ms on the CI-equivalent box, 4 to
+    10 ms elsewhere; fine-grained only since Linux 6.13). The fixture's last ``chmod`` is often
+    less than a tick old, so a single rewrite can land on the very ctime the memo fingerprinted
+    and the memo, correctly by its inputs, stays cached. Repeat the rewrite until the clock has
+    moved past the recorded ctime; the deadline bounds it, nothing sleeps.
+    """
+
+    before = path.stat()
+    deadline = time.monotonic() + 5.0
+    while True:
+        path.chmod(0o700)
+        path.write_bytes(data)
+        path.chmod(0o500)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = path.stat()
+        if after.st_ctime_ns != before.st_ctime_ns:
+            break
+        assert time.monotonic() < deadline, "the filesystem clock did not advance"
+    assert (after.st_ino, after.st_size, after.st_mtime_ns, after.st_mode) == (
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_mode,
+    )
+
+
 @pytest.mark.anyio
 async def test_repeated_structural_readiness_hashes_once_off_the_event_loop(
     retained: tuple[ExternalRuntimeProfileConfig, _Hashes],
@@ -155,8 +186,6 @@ async def test_repeated_structural_readiness_hashes_once_off_the_event_loop(
 async def test_a_changed_retained_file_forces_a_rehash(
     retained: tuple[ExternalRuntimeProfileConfig, _Hashes], change: str
 ) -> None:
-    import os
-
     from yoetz.service.ready_composition import SubscriptionReadinessMemo
 
     binding, hashes = retained
@@ -174,11 +203,7 @@ async def test_a_changed_retained_file_forces_a_rehash(
         os.replace(replacement, host)
         expected = False
     elif change == "rewrite_executable":
-        stat = executable.stat()
-        executable.chmod(0o700)
-        executable.write_bytes(_EXE[:-1] + b"!")
-        executable.chmod(0o500)
-        os.utime(executable, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        _rewrite_keeping_size_and_mtime(executable, _EXE[:-1] + b"!")
         expected = False
     elif change == "touch":
         os.utime(host, ns=(1, 1))

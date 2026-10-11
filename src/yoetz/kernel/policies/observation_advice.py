@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from yoetz.domain.advice_actions import STANDING_MACHINE_ACTIONS as STANDING_MACHINE_ACTIONS
 from yoetz.domain.events import ResultOutcome
 from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind
 from yoetz.domain.observation import ObservationEnvelope, ObservationGapCode, ObservationLifecycle
@@ -85,15 +86,6 @@ type AdviceNextAction = Literal[
     "attempt_semantic_dispatch",
     "reground_status",
 ]
-
-# Next-action tokens naming conditions of the machine/installation, not of the
-# work: the agent cannot discharge them, so evidence-sensitivity is the wrong
-# redelivery trigger and they get a bounded cadence instead (#241).
-# refresh_observation is deliberately excluded: it reflects live coverage
-# degradation the agent should hear about once per distinct occurrence.
-STANDING_MACHINE_ACTIONS: Final = frozenset(
-    {"connect_provider", "renew_provider_sign_in", "repair_semantic_provider", "update_yoetz"}
-)
 
 _EDIT_TOOLS: Final = frozenset(
     {

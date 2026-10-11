@@ -113,6 +113,68 @@ def test_the_round_stopped_lead_and_a_final_endpoint_fit_and_name_the_stop() -> 
     assert "verify it yourself" in text
 
 
+def _closing_check_shapes() -> dict[str, dict[str, Any]]:
+    """Every closing-check envelope the original N3-1 and A1/A2 repros built, by name."""
+
+    return {
+        # vpp D / music D / cargo D: deterministic route, hooks awaited, final endpoint.
+        "route_false_awaited_final": _check(
+            semantic_route_required=False,
+            observations_awaited={"state": "complete", "pending_count": "0"},
+            overall_next=FINAL_ENDPOINT,
+        ),
+        # cad D: 502 bytes of 512, ten bytes of headroom.
+        "route_false_final": _check(semantic_route_required=False, overall_next=FINAL_ENDPOINT),
+        # The shape before tb4n2 added the route field.
+        "route_omitted_awaited_final": _check(
+            observations_awaited={"state": "complete", "pending_count": "0"},
+            overall_next=FINAL_ENDPOINT,
+        ),
+        # A1 latent sibling: failed review, bounded await, one advisory note, final endpoint.
+        "failed_review_timeout_note_final": _check(
+            semantic_status="failed",
+            semantic_reason="response_content_invalid",
+            observations_awaited={"state": "bounded_timeout", "pending_count": "12"},
+            advisory_notes=[{}],
+            overall_next=FINAL_ENDPOINT,
+        ),
+        # A2 (semantic arm): round stopped after insufficient packets, then the closing check.
+        "round_stopped_final": _check(
+            semantic_reason="semantic_insufficient_packet",
+            coverage={"known_gaps": ["semantic_review_skipped_insufficient_packet"]},
+            overall_next=FINAL_ENDPOINT,
+        ),
+        # N3-1 semantic-arm exposure: the ~250-byte skipped lead plus await plus final, with the
+        # route field omitted (the original test's shape; the test above carries route=False).
+        "round_stopped_awaited_final": _check(
+            semantic_reason="semantic_insufficient_packet",
+            coverage={"known_gaps": ["semantic_review_skipped_insufficient_packet"]},
+            observations_awaited={"state": "complete", "pending_count": "0"},
+            overall_next=FINAL_ENDPOINT,
+        ),
+    }
+
+
+@pytest.mark.parametrize("bound", [MAX_SUMMARY_BYTES, 512], ids=["the_real_4096_cap", "limit_512"])
+@pytest.mark.parametrize("shape", sorted(_closing_check_shapes()))
+def test_each_original_closing_check_fits_the_real_cap_and_survives_the_old_512_bound(
+    shape: str, bound: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The original repros asserted ``<= 512`` and raised on 26e9cecf (``response_projection_failed``
+    after the check had committed). The owner moved the cap to 4096 (ADR-043), so each real-run
+    shape must fit the real cap, and at the old 512 bound the composer must still not raise, must
+    still stay inside the bound and must still keep the required core: the verdict, the next
+    instruction, the review status and the frontier with its head digest."""
+
+    monkeypatch.setattr(summaries, "_MAX_SUMMARY_BYTES", bound)
+    text = summary_for_check(_closing_check_shapes()[shape])
+    assert len(text.encode("ascii")) <= bound
+    _assert_core(text)
+    assert "AI-powered review status/reason: " in text
+    # A clause that failed to render would be named; none may fail on these inputs at any bound.
+    assert "summary_render_failed" not in text
+
+
 def test_public_error_keeps_its_location_beside_the_outcome_hint() -> None:
     """A3: an outcome pointer plus other rejected locations collapsed the text to bare identity."""
 

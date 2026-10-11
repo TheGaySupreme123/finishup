@@ -94,6 +94,7 @@ from yoetz.cli.hook_io import (
 )
 from yoetz.cli.hook_timing import HookPassTiming, record_hook_pass_timing
 from yoetz.cli.runtime_facts import runtime_structural_facts
+from yoetz.domain.advice_actions import STANDING_MACHINE_ACTIONS as _STANDING_MACHINE_ACTIONS
 from yoetz.domain.command_segments import (
     COMMAND_COMPOSITIONS,
     MAX_COMMAND_COMMITMENTS,
@@ -150,9 +151,6 @@ from yoetz.domain.values import (
 )
 from yoetz.domain.values import (
     JsonValue as DomainJsonValue,
-)
-from yoetz.kernel.policies.observation_advice import (
-    STANDING_MACHINE_ACTIONS as _STANDING_MACHINE_ACTIONS,
 )
 from yoetz.ports.integrations import (
     YOETZ_SUPPORT_TOOL_NAMES,
