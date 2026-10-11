@@ -3613,10 +3613,10 @@ def validate_semantic_judgment(
                 # problem and its state; a second row would only restart it. Disclosed on the
                 # check, and recorded on the open item so it can never close by silence.
                 restatements += 1
-                if named is not None:
-                    # The reviewer's renewed words reach the agent in the review summary, named
-                    # by the item they were recorded on (issue #980).
-                    re_raised.append((named, challenge))
+                # The reviewer's renewed words reach the agent in the review summary, named by
+                # the item they were recorded on (issue #980). tb4n3 RC-7: also when the reviewer
+                # did not name it (``restates`` is optional), so a fold never hides the repeat.
+                re_raised.append((named if named is not None else restated, challenge))
                 continue
         policy_id, policy_version = _policy_identity(challenge.finding_kind)
         priority, _actionable = FINDING_KIND_TRAITS[challenge.finding_kind]

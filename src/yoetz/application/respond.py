@@ -777,10 +777,10 @@ def _closure_after(
         )
         todo = finding_todo_state(simulated, payload.finding_id)
         limitation = limitation_standing(simulated, payload.finding_id)
-        return RespondClosureAfterModel(
-            todo_state=todo.value,
-            limitation=None if limitation is None else limitation.state,
-        )
+        # ``limitation`` is an optional non-null field: absent, never an explicit null.
+        if limitation is None:
+            return RespondClosureAfterModel(todo_state=todo.value)
+        return RespondClosureAfterModel(todo_state=todo.value, limitation=limitation.state)
     except TypeError, ValueError:
         return None
 
