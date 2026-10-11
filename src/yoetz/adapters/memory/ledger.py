@@ -233,6 +233,7 @@ from yoetz.protocol.models import (
     StatusFindingItemModel,
     StatusHistoryItemModel,
     StatusHistoryItemV14Model,
+    StatusLatestCheckModel,
     StatusLatestCheckTestEditsModel,
     StatusObligationItemModel,
     StatusObservedRunModel,
@@ -1172,6 +1173,30 @@ def compact_status_coverage(
     return coverage
 
 
+def _latest_check(
+    records: tuple[LedgerRecord, ...], projection: ProjectionState
+) -> StatusLatestCheckModel | None:
+    """Name the recorded check the latest tested state points at, with its closed verdict (#1027)."""
+
+    latest = projection.latest_tested_state
+    if latest is None:
+        return None
+    check_record = next(
+        (record for record in records if record.event_id == latest.source_check_event_id),
+        None,
+    )
+    if check_record is None or type(check_record.payload) is not CheckRecordedPayload:
+        return None
+    return StatusLatestCheckModel(
+        check_event_id=str(check_record.event_id),
+        checked_frontier=FrontierModel(
+            sequence=str(latest.subject_frontier.sequence),
+            head_digest=latest.subject_frontier.head_digest,
+        ),
+        verdict=check_record.payload.verdict.value,
+    )
+
+
 def _latest_check_test_edits(
     records: tuple[LedgerRecord, ...], projection: ProjectionState
 ) -> StatusLatestCheckTestEditsModel | None:
@@ -1834,6 +1859,9 @@ def _projection_items(
         latest_check_test_edits = _latest_check_test_edits(records, projection)
         if latest_check_test_edits is not None:
             compact_item_fields["latest_check_test_edits"] = latest_check_test_edits
+        latest_check = _latest_check(records, projection)
+        if latest_check is not None:
+            compact_item_fields["latest_check"] = latest_check
         return (StatusCompactItemModel.model_validate(compact_item_fields),)
     if view is ProjectionView.VERSIONS:
         facts = build_status_version_slice_facts()

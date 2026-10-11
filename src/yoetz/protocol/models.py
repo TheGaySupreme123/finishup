@@ -3981,8 +3981,24 @@ class StatusCompactObligationModel(_ClosedModel):
         return self
 
 
+class StatusLatestCheckModel(_ClosedModel):
+    """The latest recorded check the compact status names, and what it concluded (#1027).
+
+    Read off the recorded ``check_recorded`` event the projection's latest tested state points at:
+    the event id, the frontier the check examined and its closed verdict. It is a pointer for an
+    agent that lost its context (a post-compaction recap names it); it records nothing, is not a
+    readiness claim, and a check recorded later than ``checked_frontier`` is not reflected here.
+    """
+
+    check_event_id: EventIdWire
+    checked_frontier: FrontierModel
+    verdict: Literal[
+        "action_required", "incomplete_check", "insufficient_coverage", "no_issue_detected"
+    ]
+
+
 class StatusCompactItemModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"latest_check_test_edits"})
+    optional_non_null_fields = frozenset({"latest_check_test_edits", "latest_check"})
 
     task_id: TaskIdWire
     session_id: SessionIdWire
@@ -4006,6 +4022,7 @@ class StatusCompactItemModel(_ClosedModel):
     coverage: CoverageModel
     gaps: tuple[CodeWire, ...]
     latest_check_test_edits: StatusLatestCheckTestEditsModel | None = None
+    latest_check: StatusLatestCheckModel | None = None
 
     @model_validator(mode="after")
     def _validate_compact_item(self) -> StatusCompactItemModel:
@@ -6234,6 +6251,14 @@ _STATUS_COMPACT_STRUCTURAL_POINTERS: Final = (
         "/page/items/*/latest_check_test_edits/checked_frontier",
         FRONTIER_LEAVES,
     )
+    + _prefix_leaf_patterns(
+        "/page/items/*/latest_check",
+        ("check_event_id", "verdict"),
+    )
+    + _prefix_leaf_patterns(
+        "/page/items/*/latest_check/checked_frontier",
+        FRONTIER_LEAVES,
+    )
 )
 
 _STATUS_EVIDENCE_STRUCTURAL_POINTERS: Final = (
@@ -6873,7 +6898,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1468:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3
+    if len(result) != 1472:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +4
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

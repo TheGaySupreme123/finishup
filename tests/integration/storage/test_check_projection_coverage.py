@@ -342,6 +342,50 @@ async def test_check_populates_durable_aggregate_and_status_coverage(tmp_path: P
 
 
 @pytest.mark.anyio
+async def test_compact_status_names_the_latest_check_and_its_verdict(tmp_path: Path) -> None:
+    """#1027: the compact item carries the check the latest tested state points at.
+
+    A recap read after a context compaction names the check by its recorded event id, the
+    frontier it examined and its closed verdict; a task that was never checked carries none.
+    """
+
+    from yoetz.ports.ledger import ProjectionQuery
+    from yoetz.protocol.models import StatusCompactItemModel
+
+    records = replay_records("projection-rebuild")[:1]
+    command, objects = command_from_records(records)
+    ledger, db = file_sqlite_for(command, objects, tmp_path / "latest-check.sqlite3")
+    accepted = await ledger.append_batch(command)
+
+    async def compact_item() -> StatusCompactItemModel:
+        head = await ledger.load_frontier()
+        page = await ledger.query_projection(
+            ProjectionQuery(command.session_id, "compact", None, head, 1, None, None)
+        )
+        return cast(StatusCompactItemModel, page.items[0])
+
+    assert (await compact_item()).latest_check is None
+    await _commit_check(
+        ledger,
+        command,
+        objects,
+        accepted.result_frontier,
+        request_number=91_031,
+        coverage=_checked_coverage(command.entries[0].coverage),
+        verdict=CheckVerdict.INCOMPLETE_CHECK,
+    )
+    row = _projection_row(db)
+
+    latest = (await compact_item()).latest_check
+    assert latest is not None
+    assert latest.check_event_id == row["latest_check_event_id"]
+    assert latest.verdict == CheckVerdict.INCOMPLETE_CHECK.value == row["latest_verdict"]
+    assert latest.checked_frontier.sequence == str(row["latest_subject_frontier_seq"])
+    assert latest.checked_frontier.head_digest == row["latest_subject_frontier_digest"]
+    db.close()
+
+
+@pytest.mark.anyio
 async def test_ordinary_publish_after_check_does_not_resurrect_none(tmp_path: Path) -> None:
     """Ordinary append must not wipe applicable-check coverage back to envelope none.
 

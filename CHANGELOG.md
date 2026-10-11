@@ -8,6 +8,18 @@ reverse-chronological released versions.
 
 ### Added
 
+- When a host starts your agent again after a context compaction, Yoetz now adds a short recap of
+  what it recorded to the context the agent is given: the held task, session and writer ids, the
+  head frontier, the plan counts, the readiness state, open obligations, findings waiting for an
+  answer, the latest check's verdict and frontier, the declared deliverables, and one next-step
+  sentence. Every line names its source (the status view and ledger position, the check, the hook
+  mapping or the local outbox), withheld text stays withheld, and it is bounded to about two and a
+  half thousand characters with a line naming anything left out. It is a read of `status`: it
+  records nothing and is not evidence. Codex and Claude Code show it; Cursor does not report a
+  compaction, so nothing changes there (#1027, ADR-044, `docs/usage/after-compaction.md`). The
+  compact `status` item also carries `latest_check` (the latest check's event, examined frontier and
+  verdict) when a check is recorded.
+
 - When the external reviewer's copy of your work had a possible credential replaced or an item
   withheld, checks, receipts and `status view=operation` now name the item and its line numbers
   (`semantic_redacted_values`; never the value) and tell the agent, once, that local checks saw the
@@ -204,6 +216,13 @@ reverse-chronological released versions.
   budget without dropping any rule.
 
 ### Fixed
+
+- After a Codex context compaction, every command's real exit status was lost: each stream completion
+  was refused by the ledger and quarantined as `ledger_rejected`, so post-compaction test runs stayed
+  `unknown` (183 outcomes across 7 of 7 compacted tb4n3 attempts). The completion is now bound to its
+  hook call's generation before its captured content is looked up, and a delivery whose every event
+  the ledger already holds is treated as the duplicate it is, with its explicit outcome still applied
+  to the recorded action (#1027, ADR-022).
 
 - Withholding a credential-like value from the external reviewer no longer taints the whole check
   (#982, a regression from per-item withholding). Only the value is replaced, in place, by

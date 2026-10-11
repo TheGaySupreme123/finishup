@@ -3833,6 +3833,29 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     cast(dict[str, JsonValue], compact_item["properties"])["latest_check_test_edits"] = {
         "$ref": "#/$defs/latest_check_test_edits"
     }
+    # #1027: which recorded check the latest tested state points at and its closed verdict, so a
+    # post-compaction recap can name it. Optional on the compact item, absent when no check exists.
+    definitions["latest_check"] = {
+        "additionalProperties": False,
+        "properties": {
+            "check_event_id": {"$ref": "#/$defs/event_id"},
+            "checked_frontier": {"$ref": SCHEMA_NAMESPACE + "common/frontier-1.0.0.schema.json"},
+            "verdict": {
+                "enum": [
+                    "action_required",
+                    "incomplete_check",
+                    "insufficient_coverage",
+                    "no_issue_detected",
+                ],
+                "type": "string",
+            },
+        },
+        "required": ["check_event_id", "checked_frontier", "verdict"],
+        "type": "object",
+    }
+    cast(dict[str, JsonValue], compact_item["properties"])["latest_check"] = {
+        "$ref": "#/$defs/latest_check"
+    }
     definitions.setdefault(
         "opaque_ref",
         {

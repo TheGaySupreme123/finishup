@@ -302,7 +302,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     ),
     (CheckProjectedFindingModel, frozenset({"challenge"})),
     (CheckVerifiedItemModel, frozenset({"requirement_or_claim", "snippet"})),
-    (StatusCompactItemModel, frozenset({"latest_check_test_edits"})),
+    (StatusCompactItemModel, frozenset({"latest_check_test_edits", "latest_check"})),
     (StatusFindingsPageModel, frozenset({"attempt_budget"})),
     (StatusHistoryItemV14Model, frozenset({"review_input_manifest"})),
     (ReviewInputManifestModel, frozenset({"review_phase", "omitted_item_total"})),
@@ -1415,7 +1415,7 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
                 ),
                 "gaps": (),
             },
-            ("latest_check_test_edits",),
+            ("latest_check_test_edits", "latest_check"),
         ),
         (StatusFindingsPageModel, {"items": [], "next_cursor": None}, ("attempt_budget",)),
         (
@@ -1683,7 +1683,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         ),
         ("CheckProjectedFindingModel", ("challenge",)),
         ("CheckVerifiedItemModel", ("snippet",)),
-        ("StatusCompactItemModel", ("latest_check_test_edits",)),
+        ("StatusCompactItemModel", ("latest_check_test_edits", "latest_check")),
         ("StatusFindingsPageModel", ("attempt_budget",)),
         ("StatusProjectPageModel", ("title", "description", "title_ref", "description_ref")),
         (

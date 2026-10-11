@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import Literal, cast
+from dataclasses import replace
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -44,7 +45,11 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.observation import ObservationIngestRequest, ObservationSource
+from yoetz.domain.observation import (
+    ObservationEnvelope,
+    ObservationIngestRequest,
+    ObservationSource,
+)
 from yoetz.kernel.task_facts import EDITED_AFTER_LAST_VERIFICATION_GAP, task_fact_signals
 
 type Bump = Literal["compact", "resume", "clear"]
@@ -399,3 +404,89 @@ async def test_a_refusal_after_the_commit_check_is_still_classified_as_a_duplica
     assert replay.store.list_quarantine(replay.commitment) == ()
     (results,) = _ledger_calls(replay).values()
     assert results == [(ResultOutcome.UNKNOWN, None), (ResultOutcome.FAILURE, 1)]
+
+
+def _post_only_envelope(
+    cell: Replay, source: ObservationSource, *, corr: str | None
+) -> ObservationEnvelope:
+    """A Claude Code or Cursor ordinary-profile post: post-only, one call id (or none)."""
+
+    from yoetz.domain.observation import ObservationCursor
+    from yoetz.domain.observation_profiles import (
+        CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
+        CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
+    )
+    from yoetz.domain.values import JsonObject, Timestamp
+
+    profile = (
+        CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+        if source is ObservationSource.CLAUDE_HOOK
+        else CURSOR_ORDINARY_OBSERVATION_PROFILE_ID
+    )
+    structural: dict[str, object] = {
+        "tool_name": "Bash",
+        "capability_profile_id": profile,
+        "exit_status": 0,
+    }
+    if corr is not None:
+        structural["tool_call_id"] = corr
+    return ObservationEnvelope(
+        session_commitment=cell.session,
+        event_kind="PostToolUse",
+        source_identity=f"{source.value}:post:{corr}",
+        source=source,
+        cursor=ObservationCursor(1, 0, 1, f"hmac-sha256:{'ab' * 32}", "obs/1.0.0"),
+        receipt_time=Timestamp("2026-01-01T00:00:00.000Z"),
+        structural_payload=JsonObject(structural),
+        content_object_refs=(),
+        gap_codes=(),
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "source",
+    [ObservationSource.CLAUDE_HOOK, ObservationSource.CURSOR_HOOK],
+    ids=["claude", "cursor"],
+)
+async def test_post_only_hosts_get_the_same_duplicate_classification(
+    replay: Replay, source: ObservationSource
+) -> None:
+    """tb4n3 N3-7 item 4: Claude Code and Cursor have no generation alignment to collide with.
+
+    They never re-key an identity, so the alignment shape cannot occur. The general shape, a
+    delivery whose role set cannot be reconstructed but whose event ids the ledger holds, can, and
+    the classification is host-neutral for a post that names its call. A post with no call id
+    mints ids from its source identity, which another call can reuse, so the same collision there
+    stays a refusal (#560).
+    """
+
+    from types import SimpleNamespace
+
+    from yoetz.application.observation_coordinator import _AlreadyCommitted
+    from yoetz.application.observation_materialize import materialize_observation_envelope
+    from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+
+    coordinator = build_coordinator(replay)
+    command: Any = SimpleNamespace(
+        session_id=replay.mapping.yoetz_session_id, writer_id=replay.mapping.yoetz_writer_id
+    )
+    runtime = await coordinator.runtime.route(command)  # type: ignore[attr-defined]
+
+    async def reshaped_copy(corr: str | None) -> object:
+        envelope = _post_only_envelope(replay, source, corr=corr)
+        batch = materialize_observation_envelope(envelope, task_id=replay.task_id)
+        assert batch.skip_reason is None and len(batch.drafts) >= 1
+        first = await coordinator._append_materialized(runtime, envelope, batch)
+        assert isinstance(first, tuple)
+        # The same events under a different role set: what a lost or pruned content manifest does.
+        renamed = replace(
+            batch,
+            drafts=tuple(replace(item, role=f"{item.role}_reshaped") for item in batch.drafts),
+        )
+        return await coordinator._append_materialized(runtime, envelope, renamed)
+
+    assert isinstance(await reshaped_copy("call-posted"), _AlreadyCommitted)
+    with pytest.raises(PublicOperationError) as refused:
+        await reshaped_copy(None)
+    assert refused.value.code is PublicErrorCode.EVENT_INVALID

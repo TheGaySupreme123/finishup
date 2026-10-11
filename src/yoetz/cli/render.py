@@ -604,6 +604,12 @@ def render_human_status(result: StatusSuccessModel) -> str:
     ]
     if isinstance(result.page, StatusCompactPageModel):
         for item in result.page.items:
+            latest_check = item.latest_check
+            if latest_check is not None:
+                lines.append(
+                    f"Latest check: {latest_check.verdict}; checked frontier "
+                    f"{latest_check.checked_frontier.sequence}; event {latest_check.check_event_id}"
+                )
             edits = item.latest_check_test_edits
             if edits is not None:
                 lines.append(

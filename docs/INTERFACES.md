@@ -2300,7 +2300,26 @@ pending file is the durable last-write queue: an owner operation coalesces an ol
 before apply, while a later producer remains the later operation. While that fence cannot be
 completed, SessionStart and hook delivery defer service access and retain the operation for a later
 retry. Claude and Cursor SessionStart wrappers preserve the reviewed closed lifecycle meaning
-through their structural action, including `clear`; unknown source values are discarded.
+through their structural action, including `clear` and `compact`; unknown source values are
+discarded.
+
+**Post-compaction recap (ADR-044, issue #1027).** A host's post-compaction start (`SessionStart`
+source `compact`) appends one bounded block to the held-ids cue: a receipt-style recap of what
+`status` returned for the mapped session just now. Codex carries it from the `hooks session-start`
+re-ground hook (compact view, then one bounded `obligations` view for the declared deliverables);
+Claude Code and Cursor carry it from the shared observe pass; `startup`, `resume`, `clear` and every
+other event are unchanged. The recap is at most 2,400 ASCII characters inside a 4,000-character
+context (`RECAP_LIMIT`, `RECAP_CONTEXT_LIMIT`; every other hook context keeps its 2,000-character
+bound) and states: the held task, session and writer ids, the head frontier, the plan counts, the
+readiness `state` and `agent_actionable` tokens, up to ten open obligations and ten unanswered
+findings (id plus a quoted 80-character excerpt, the rest counted), the latest check's verdict, the
+frontier it examined and its event id, the declared `file`/`directory` outputs with their obligations'
+status, one plain-words next-action sentence for the readiness `state`, and a count of undelivered
+local rows. Every line ends `[source ...]` naming the status view and frontier, the check event, the
+hook mapping or the local outbox. Text `status` withheld stays withheld; a field the result did not
+carry reads "not reported"; a section the budget cannot hold is named in an "Omitted for space" line.
+The recap is a trigger-hook output (§ harness integration port, decision 8): it records nothing,
+earns no coverage and is not evidence. Any failure leaves the held-ids cue unchanged.
 
 Raw refs never enter structural durable state; only their commitments do. The caller-controlled
 `workspace_ref_commitment` is an attachment selector, not a repository-privacy commitment, and
@@ -6769,6 +6788,14 @@ When the latest persisted check has test-edit totals, the compact singleton may 
 the modified, renamed, deleted, skipped, unjustified, and unknown counts. `unavailable` means no
 admitted capture was available; `unknown` means the capture or baseline was incomplete. It never
 includes a repository path or captured content.
+
+The compact singleton may also carry `latest_check` (status-result 1.4.0, optional, absent when no
+check is recorded; issue #1027, ADR-044): `check_event_id` (the recorded `check_recorded` event the
+projection's latest tested state points at), `checked_frontier` (the frontier that check examined)
+and `verdict` (`action_required|incomplete_check|insufficient_coverage|no_issue_detected`). It is a
+pointer, not a readiness claim; a check recorded later than `checked_frontier` is not reflected
+until the projection's latest tested state advances. The CLI status render prints it as
+`Latest check: <verdict>; checked frontier <n>; event <id>`.
 
 Every projection view reports one coverage definition in the status envelope (ADR-032, issue
 #913): `coverage` and `gaps` are the task coverage the compact view reports — the applicable
