@@ -47,7 +47,7 @@ from yoetz.protocol.models import (
     StatusSemanticProgressModel,
     StatusSuccessModel,
 )
-from yoetz.protocol.readiness_text import readiness_directive
+from yoetz.protocol.readiness_text import check_cause_sentence, readiness_directive
 from yoetz.protocol.recovery import (
     RecoveryDirective,
     TimeoutOperationKind,
@@ -506,6 +506,21 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
     ]
     if readiness.agent_actionable and readiness.state != "unknown":
         lines.append("Agent-actionable: " + ", ".join(readiness.agent_actionable))
+    if readiness.check_cause is not None and readiness.state != "unknown":
+        # tb4n3 RC-6 (owner lineage rule): the record the check's standing rests on.
+        cause = readiness.check_cause
+        lines.append(
+            check_cause_sentence(
+                effect=cause.effect,
+                event_id=cause.event_id,
+                ledger_sequence=cause.ledger_sequence,
+                check_subject_frontier=cause.check_subject_frontier,
+                family=cause.family,
+                material_class=cause.material_class,
+                rule=cause.rule,
+                tool=cause.tool,
+            )
+        )
     if readiness.standing_limitations:
         lines.append("Standing limitations: " + ", ".join(readiness.standing_limitations))
     if readiness.blocked_obligations:

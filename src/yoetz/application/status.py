@@ -38,6 +38,7 @@ from yoetz.domain.values import (
 )
 from yoetz.kernel.closure_readiness import (
     GAP_CLASSIFICATION_VERSION,
+    ClosureReadinessFacts,
     derive_closure_readiness,
     live_lineage_blockers,
 )
@@ -103,6 +104,7 @@ from yoetz.protocol.models import (
     StatusCandidateFindingsFilterModel,
     StatusCandidateFindingsPageModel,
     StatusCheckAdmissionModel,
+    StatusCheckCauseModel,
     StatusClosureReadinessModel,
     StatusCompactItemModel,
     StatusCompactPageModel,
@@ -1236,6 +1238,39 @@ def _unknown_structural_coverage() -> Coverage:
     )
 
 
+def _check_cause_model(
+    facts: ClosureReadinessFacts, actionable: tuple[str, ...]
+) -> StatusCheckCauseModel | None:
+    """The lineage of ``check_not_applicable`` / a bounding earlier-frontier code, when listed.
+
+    Emitted only beside the token it explains (tb4n3 RC-6, owner lineage rule), so a reader never
+    sees a cause for a condition the checklist does not list as work.
+    """
+
+    cause = facts.check_cause
+    if cause is None:
+        return None
+    token = (
+        "check_not_applicable"
+        if cause.effect == "superseded"
+        else "check_current_as_of_earlier_frontier"
+    )
+    if token not in actionable:
+        return None
+    material = cause.record.material
+    return StatusCheckCauseModel(
+        effect=cause.effect,
+        event_id=str(cause.record.event_id),
+        ledger_sequence=str(cause.record.ingestion_sequence),
+        check_event_id=str(cause.check_event_id),
+        check_subject_frontier=str(cause.check_subject_sequence),
+        family=cause.record.family,
+        material_class=material.material_class.value,
+        rule=material.rule,
+        **({} if material.tool is None else {"tool": material.tool}),
+    )
+
+
 def _readiness_unknown() -> StatusClosureReadinessModel:
     # Unknown is never "nothing to do": the one checklist entry is to read status again once the
     # projection can be read.
@@ -1385,6 +1420,9 @@ async def _closure_readiness(
         lineage_self_verified=lineage_self_verified,
     )
     confirmations = dict(facts.blocked_obligation_confirmations)
+    # An optional field is omitted, never null, when there is no cause to name.
+    cause = _check_cause_model(facts, checklist.agent_actionable)
+    cause_fields: dict[str, StatusCheckCauseModel] = {} if cause is None else {"check_cause": cause}
     return StatusClosureReadinessModel(
         declared_obligation_count=str(declared_obligations),
         no_obligations_reason=no_obligations_reason,
@@ -1415,6 +1453,7 @@ async def _closure_readiness(
             )
             for obligation, kind, decision in facts.blocked_obligation_details[:64]
         ),
+        **cause_fields,
         # F3: what a whole-task completion claim must name in limitation_refs (ids only).
         limitation_refs_required=tuple(facts.limitation_refs_required[:64]),
         limitation_refs_required_count=str(len(facts.limitation_refs_required)),

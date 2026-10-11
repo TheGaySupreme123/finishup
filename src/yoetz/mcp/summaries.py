@@ -26,7 +26,11 @@ from yoetz.protocol.canonical import JsonValue, ensure_canonical_value
 from yoetz.protocol.errors import PublicErrorCode, normalize_safe_details
 from yoetz.protocol.guidance_uris import ALL_GUIDANCE_URIS
 from yoetz.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
-from yoetz.protocol.readiness_text import READINESS_STATES, readiness_directive
+from yoetz.protocol.readiness_text import (
+    READINESS_STATES,
+    check_cause_sentence,
+    readiness_directive,
+)
 from yoetz.protocol.recovery import (
     RecoveryDirective,
     continuation_for_semantic_outcome,
@@ -1502,6 +1506,9 @@ def summary_for_status(envelope: object) -> str:
     suffix += _closure_clause(
         source, byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii"))
     )
+    suffix += _check_cause_clause(
+        source, byte_budget=_MAX_SUMMARY_BYTES - len((prefix + clause + suffix).encode("ascii"))
+    )
     obligation_ids = _obligation_ids_from_status(source, view)
     clause += _bounded_list_clause(
         "obligation IDs: ",
@@ -1587,6 +1594,55 @@ def _readiness_tokens(readiness: Mapping[str, JsonValue], key: str) -> tuple[str
         for value in values
         if type(value) is str and _READINESS_ITEM.fullmatch(value) is not None
     )
+
+
+def _check_cause_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:
+    """The lineage sentence for ``check_not_applicable`` or a bounding earlier-frontier code.
+
+    Built from the closed ``closure_readiness.check_cause`` fields by the shared frozen text
+    (``yoetz.protocol.readiness_text.check_cause_sentence``), so the MCP text, the CLI and the
+    terminal interface say the same words (tb4n3 RC-6, owner lineage rule). Dropped whole when it
+    does not fit; an invalid or absent cause adds nothing.
+    """
+
+    readiness = source.get("closure_readiness")
+    if not isinstance(readiness, Mapping):
+        return ""
+    cause = cast(Mapping[str, JsonValue], readiness).get("check_cause")
+    if not isinstance(cause, Mapping):
+        return ""
+    fields = cast(Mapping[str, JsonValue], cause)
+    texts = {
+        key: fields.get(key)
+        for key in (
+            "effect",
+            "event_id",
+            "ledger_sequence",
+            "check_subject_frontier",
+            "family",
+            "material_class",
+            "rule",
+        )
+    }
+    tool = fields.get("tool")
+    if any(type(value) is not str for value in texts.values()) or (
+        tool is not None and type(tool) is not str
+    ):
+        return ""
+    try:
+        sentence = " " + check_cause_sentence(
+            effect=cast(str, texts["effect"]),
+            event_id=cast(str, texts["event_id"]),
+            ledger_sequence=texts["ledger_sequence"],
+            check_subject_frontier=texts["check_subject_frontier"],
+            family=cast(str, texts["family"]),
+            material_class=cast(str, texts["material_class"]),
+            rule=cast(str, texts["rule"]),
+            tool=tool,
+        )
+    except ValueError:
+        return ""
+    return sentence if sentence.isascii() and len(sentence) <= byte_budget else ""
 
 
 def _closure_clause(source: Mapping[str, JsonValue], *, byte_budget: int) -> str:

@@ -90,6 +90,7 @@ from yoetz.domain.values import (
     timestamp_from_datetime,
     writer_id,
 )
+from yoetz.kernel.check_standing import check_standing
 from yoetz.kernel.check_totals import build_check_totals
 from yoetz.kernel.closure_readiness import ClosureReadinessFacts, closure_readiness_facts
 from yoetz.kernel.command_attempts import attempted_items_for_obligation, command_attempts
@@ -119,7 +120,6 @@ from yoetz.kernel.projections import (
     EvidenceProjectionRecord,
     ProjectionState,
     empty_projection_state,
-    observation_limitation_finding_ids,
     projection_digest,
     unanswered_finding_ids,
 )
@@ -129,8 +129,6 @@ from yoetz.kernel.receipt_capacity import (
     receipt_blocking_finding_count,
 )
 from yoetz.kernel.reducers import (
-    invalidates_recorded_check,
-    is_material_event_family,
     replay,
     replay_extension,
     replay_extension_with_index,
@@ -1129,32 +1127,14 @@ def compact_status_coverage(
     """
 
     baseline = with_completion_scope_coverage(records[-1].coverage, projection)
-    latest = projection.latest_tested_state
-    if latest is None:
-        return baseline
-    check_record = next(
-        (record for record in records if record.event_id == latest.source_check_event_id),
-        None,
-    )
+    standing = check_standing(projection, records)
+    check_record = standing.check_record
     if check_record is None or type(check_record.payload) is not CheckRecordedPayload:
         return baseline
-    limitations = observation_limitation_finding_ids(projection, records)
-    if any(
-        invalidates_recorded_check(
-            record,
-            check_record.ledger.ingestion_sequence,
-            latest.returned_finding_ids,
-            limitation_finding_ids=limitations,
-        )
-        for record in records
-    ):
+    if standing.superseded:
         return baseline
     coverage = weakest(baseline, check_record.payload.coverage)
-    if any(
-        is_material_event_family(record.schema.name)
-        and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
-        for record in records
-    ):
+    if standing.counted:
         # The same attributable suffix that the receipt builder discloses still leaves the check
         # useful, but only as of its tested subject frontier. Keep the current observation
         # records visible in status and add the bounded qualification instead of manufacturing

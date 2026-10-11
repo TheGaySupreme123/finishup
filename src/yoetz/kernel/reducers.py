@@ -73,6 +73,11 @@ from yoetz.kernel.finding_resolution import (
     apply_check_rulings,
     reopen_findings_resolved_by,
 )
+from yoetz.kernel.later_material import (
+    LaterMaterialClass,
+    classify_later_material,
+    later_material_class,
+)
 from yoetz.kernel.observed_failures import is_observed_run_record
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import (
@@ -98,12 +103,14 @@ from yoetz.protocol.coverage import LedgerFreshness
 
 __all__ = [
     "EvidenceObjectSource",
+    "LaterMaterialClass",
     "ReplayIndex",
     "build_replay_index",
     "empty_replay_index",
     "extend_replay_index",
     "invalidates_recorded_check",
     "is_material_event_family",
+    "later_material_class",
     "reduce_event",
     "replay_with_index",
     "replay_extension",
@@ -221,30 +228,42 @@ def invalidates_recorded_check(
     returned_finding_ids: tuple[FindingId, ...],
     *,
     limitation_finding_ids: frozenset[FindingId],
+    projection: ProjectionState,
 ) -> bool:
     """True when *record* supersedes the check recorded at *check_sequence*.
 
     ``limitation_finding_ids`` is ``projections.observation_limitation_finding_ids`` over the same
     projection and records, so every surface applies the reducer's issue #911 rule identically.
+    ``projection`` is the one the caller holds for the same prefix: an observed edit supersedes
+    the check by the shared ``later_material_class`` rule (tb4n3 RC-6), which reads the declared
+    outputs to decide which writes count and the action row a result answers.
     """
 
     if record.ledger.ingestion_sequence <= check_sequence:
         return False
-    return _record_supersedes_recorded_check(record, returned_finding_ids, limitation_finding_ids)
+    return _record_supersedes_recorded_check(
+        record, returned_finding_ids, limitation_finding_ids, projection
+    )
 
 
 def _record_supersedes_recorded_check(
     record: LedgerRecord,
     returned_finding_ids: tuple[FindingId, ...],
     limitation_finding_ids: frozenset[FindingId],
+    projection: ProjectionState,
 ) -> bool:
     """Apply the shared authorship-aware supersession rule to a later record."""
 
     if is_observation_authored(record):
         # Hook delivery reports what the harness observed; it does not publish new cooperative
         # work on the participant's behalf. Keep the check attributable across that motion unless
-        # the observation suffix materialized a finding that the older check could not cover.
-        return record.schema.name == "finding_recorded"
+        # the observation suffix materialized a finding that the older check could not cover, or
+        # an observed deliverable/workspace edit changed the state the check read (tb4n3 RC-6,
+        # C7). Yoetz's own calls, exploration and host bookkeeping never do.
+        return (
+            record.schema.name == "finding_recorded"
+            or classify_later_material(record, projection).supersedes
+        )
     return supersedes_recorded_check(
         record.schema.name, record.payload, returned_finding_ids, limitation_finding_ids
     )
@@ -1294,6 +1313,7 @@ def reduce_event(
             event,
             latest.returned_finding_ids,
             _answered_limitation_ids(state, accepted, replay_index),
+            state,
         ):
             stale = True
 

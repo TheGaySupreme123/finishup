@@ -73,11 +73,16 @@ Findings form a to-do list that ends. Each finding is `open` or in a final state
 
 ## Coverage attribution
 
-A recorded check remains attributable to a later receipt when the only events between them are responses to findings that same check returned, acknowledgements of observation-authored non-actionable findings, and/or a finding-free suffix made entirely of service-stamped observation records. Answering a check's own findings reports on the check, and observation reports what the harness saw rather than publishing new cooperative work on the participant's behalf. The receipt then folds the check's coverage — including `semantic_model_derived` — and carries the gap `check_current_as_of_earlier_frontier`, naming the subject frontier that was actually tested. The limitations sentence also names what followed the check: responses to its findings (or to observation-authored limitations), finding-free host observations, or both. Observation records are retained in the receipt but were not evaluated by that check; ingestion order is not occurrence time, and routine observation can advance the ledger again after any re-check.
+A recorded check remains attributable to a later receipt when nothing after it can have changed the work the check read. Yoetz classifies every record accepted after the check (`later_material_class`):
 
-That gap is a limitation: the verdict is current as of the tested frontier, not the receipt's. When only your answers to that check's own findings followed it, the gap is disclosed and does not by itself keep the receipt from a clean conclusion; after any other later material the receipt is still coverage-incomplete and must not be described as a clean completion receipt.
+- Not counted, no gap: observations of Yoetz's own tool calls (`status`, `read_guidance`, `receipt`, `check`, `respond`, `publish_work`, `start`, `closure_prepare`, in every host spelling), read-only reads (the hook's `exploration` runner, a native read tool, a routine-read summary), host stream bookkeeping that names no tool call (token counts, reasoning, messages, completion signals), and writes whose every path is scratch or Yoetz-owned (a saved `yoetz_receipt.md`). Checking, polling status and requesting the receipt never make the receipt "current as of an earlier frontier".
+- Advisory: your answers to the findings that same check returned, and acknowledgements of observation-authored non-actionable findings. Answering a check's own findings reports on the check.
+- Superseding: an observed deliverable, workspace or outside-workspace edit (a patch, a file write) accepted after the check. The check no longer covers the current state. The receipt reports `check_not_applicable` and names the edit (tool, ledger record, rule); status lists `check_not_applicable` as work, and a closing AI-powered review is required again. Re-run `check` (with `final_review: true` where a closing review applies) after the last edit.
+- Disclosed: any other record Yoetz cannot prove harmless (a script, build or test run, a tool whose name it cannot attribute, an unpaired host result, a subagent, a lineage manifest). The receipt then folds the check's coverage - including `semantic_model_derived` - and carries the gap `check_current_as_of_earlier_frontier`, naming the subject frontier that was actually tested and the first such record. Ingestion order is not occurrence time: those records are retained but were not evaluated by that check.
 
-Any other material event after the check — published work, a new finding (including an observation-authored finding), any other response to a finding the check did not return (a rejection of an observation-authored finding included), or a response whose payload is redacted or unreadable (it cannot prove which finding it answered) — requires a re-check before the receipt. The receipt reports `check_not_applicable` and the check contributes nothing until you re-run it at the current frontier.
+That gap is a limitation: the verdict is current as of the tested frontier, not the receipt's. When only your answers to that check's own findings followed it, the gap is disclosed and does not by itself keep the receipt from a clean conclusion. After any other disclosed record the receipt is coverage-incomplete and must not be described as a clean completion receipt, and `status` lists `check_current_as_of_earlier_frontier` as work: one more `check`, then the receipt, removes it.
+
+Any other material event after the check - published work, a new finding (including an observation-authored finding), any other response to a finding the check did not return (a rejection of an observation-authored finding included), or a response whose payload is redacted or unreadable (it cannot prove which finding it answered) - requires a re-check before the receipt. The receipt reports `check_not_applicable` and the check contributes nothing until you re-run it at the current frontier.
 
 Lifecycle records are not material: `work_closed` (and the other work-state and delegation lifecycle events) never supersede a check and never require a re-check.
 
@@ -130,11 +135,14 @@ each status read and never cached across frontiers:
   agent action (for example
   `completion_plan_not_claimed`, `completion_claim_outside_plan`, `missing_ref`, and
   `instruction_requirement_unmapped`: a recorded task statement that no effective obligation
-  cites in `source_refs`; the other plan-drift codes stay standing diagnostics).
+  cites in `source_refs`; the other plan-drift codes stay standing diagnostics), and
+  `check_current_as_of_earlier_frontier` while later records Yoetz could not prove harmless bound
+  the receipt (one more `check` removes it; it is a standing disclosure when only answers to the
+  check's own findings followed it).
 - `standing_limitations`: gap codes that no action available under this host, profile and
   privacy policy removes, such as `host_outcome_unavailable`, `unpaired_event`,
   `content_unselected`, `content_capture_unavailable`, `content_redacted`,
-  `check_current_as_of_earlier_frontier`, and the bounded-selection and capture disclosures of an
+  and the bounded-selection and capture disclosures of an
   AI-powered review (`semantic_reference_scope_reduced`, `semantic_packet_insufficient`,
   `truncated_payload`). They are disclosed on the receipt, never instructions.
 - `acknowledged_not_done`: findings answered `acknowledged_not_done`, with the required reason.
