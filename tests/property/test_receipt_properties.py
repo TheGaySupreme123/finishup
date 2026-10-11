@@ -161,9 +161,10 @@ def test_no_child_receipt_matches_frozen_pre_lineage_bytes() -> None:
 
     The digest is the independently recorded output of this fixed context from pre-lineage
     commit ``95aa2065`` using the frozen child-free receipt-document 1.1 artifact.  The current
-    writer is allowed exactly three changes for the additive artifact: its schema-version entry, an
-    empty ``children`` object and the ``conclusion_basis`` object that names the rules behind the
-    conclusion (ADR-046).
+    writer is allowed exactly these changes for the additive artifact: its schema-version entry, an
+    empty ``children`` object and, from ADR-046, the ``conclusion_basis`` object that names the rules
+    behind the conclusion, each gap's ``effect`` and a Summary that continues the frozen first
+    sentence with the counters and one "Why <conclusion>" sentence.
     """
 
     context = _context()
@@ -193,6 +194,18 @@ def test_no_child_receipt_matches_frozen_pre_lineage_bytes() -> None:
     del compatible["children"]
     assert "conclusion_basis" in compatible
     del compatible["conclusion_basis"]
+    compatible["gaps"] = [
+        {key: value for key, value in dict(cast(dict[str, object], gap)).items() if key != "effect"}
+        for gap in cast(list[object], compatible["gaps"])
+    ]
+    sections = [
+        dict(cast(dict[str, object], item)) for item in cast(list[object], compatible["sections"])
+    ]
+    frozen_sections = cast(list[dict[str, object]], historical["sections"])
+    assert str(sections[0]["body"]).startswith(str(frozen_sections[0]["body"]))
+    assert "Why " in str(sections[0]["body"])
+    sections[0]["body"] = frozen_sections[0]["body"]
+    compatible["sections"] = sections
     versions = dict(cast(dict[str, object], compatible["versions"]))
     schema_versions = [
         dict(cast(dict[str, object], item))

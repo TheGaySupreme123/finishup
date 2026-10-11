@@ -231,20 +231,35 @@ def _challenge(
 async def _ai_finding(
     run: _Run, *, kind: FindingKind, next_step: str, script: list[str], number: int = 1
 ) -> CheckCommitResult:
-    """Publish a requirement and a completion claim about it, then run the semantic check."""
+    """Resolve a requirement on recorded evidence, claim it complete, then run the semantic check.
+
+    The reviewer (``_challenge``) then disputes the claim, so the only finding is the AI-powered
+    one and no deterministic finding rides beside it.
+    """
 
     obligation = protocol_id("obl_", 7000 + number)
     claim = protocol_id("clm_", 7200 + number)
+    evidence = protocol_id("evd_", 7300 + number)
+    await run.publish(_obligation(run, number), _plan(run, number))
     await run.publish(
-        _obligation(run, number),
-        _plan(run, number),
+        run.draft(
+            "evidence_recorded",
+            {
+                "evidence_id": evidence,
+                "evidence_kind": "test_result",
+                "strength": "metadata_only",
+                "observed_at": "2026-09-28T12:00:00.000Z",
+                "description": "The focused test run passed.",
+            },
+        ),
+        _obligation(run, number, status="resolved", resolution_evidence_refs=[evidence]),
         run.draft(
             "claim_recorded",
             {
                 "claim_id": claim,
                 "claim_kind": "completion",
                 "statement": "The work is complete.",
-                "supporting_refs": [obligation],
+                "supporting_refs": [evidence],
                 "obligation_refs": [obligation],
                 "limitation_refs": [],
                 "supersedes_claim_refs": [],
@@ -254,6 +269,12 @@ async def _ai_finding(
     checked = await run.check_in("semantic_if_configured")
     assert any(item.origin.value == "semantic_model_derived" for item in checked.findings)
     return checked
+
+
+def _reviewer_finding(checked: CheckCommitResult) -> Any:
+    """The AI-powered finding of a check (the only one the recipe above produces)."""
+
+    return next(item for item in checked.findings if item.origin.value == "semantic_model_derived")
 
 
 # -- One reading of every surface -------------------------------------------------------------
@@ -465,8 +486,10 @@ async def test_a_clean_deterministic_run_with_only_its_own_calls_predicts_and_re
     assert_surfaces_agree(gathered, conclusion=_CLEAN, counts=_NO_FINDINGS)
     readiness = gathered.status["compact"].closure_readiness
     assert readiness.predicted_receipt is not None and not readiness.predicted_receipt.reasons
-    # The only receipt-only item a reader sees is the review that was never requested.
-    assert readiness.state in {"ready", "ready_with_limitations"}
+    # The agent's own calls after the check do not supersede it: no check item is listed as work.
+    assert not {"check_not_recorded", "check_not_applicable"} & set(
+        readiness.agent_actionable or ()
+    )
 
 
 # -- Shape (c): cargo D, acknowledged obligations and bookkeeping findings ----------------------
@@ -549,9 +572,9 @@ async def test_a_rejected_finding_awaits_a_ruling_and_is_never_offered_acknowled
     checked = await _ai_finding(
         run, kind=FindingKind.TASK_REQUIREMENT_UNMET, next_step="act", script=script
     )
-    assert checked.findings[0].kind is FindingKind.TASK_REQUIREMENT_UNMET
+    assert _reviewer_finding(checked).kind is FindingKind.TASK_REQUIREMENT_UNMET
     await run.respond(
-        checked.findings[0].finding_id,
+        _reviewer_finding(checked).finding_id,
         checked.result_frontier,
         "rejected",
         "The accuracy is measured by a hidden evaluator; nothing to repair.",
@@ -568,7 +591,7 @@ async def test_a_rejected_finding_awaits_a_ruling_and_is_never_offered_acknowled
     row = next(
         item
         for item in cast(Any, gathered.status["findings"].page).items
-        if item.finding_id == checked.findings[0].finding_id
+        if item.finding_id == _reviewer_finding(checked).finding_id
     )
     assert (row.closure_class, row.closure_basis) == ("awaiting_ruling", "rejected_awaiting_ruling")
     assert "acknowledge" not in (row.next_actions or ())
@@ -617,7 +640,7 @@ async def test_a_limitation_request_needs_one_disclosure_then_reads_as_a_verific
     )
 
     await run.respond(
-        checked.findings[0].finding_id,
+        _reviewer_finding(checked).finding_id,
         checked.result_frontier,
         "acknowledged",
         "The evaluator is hidden; I cannot measure it here.",
@@ -628,7 +651,7 @@ async def test_a_limitation_request_needs_one_disclosure_then_reads_as_a_verific
     assert readiness.state == "ready_with_limitations"
     assert_surfaces_agree(after, conclusion=_INSUFFICIENT, counts=(0, 0, 0, 1, 0))
     document = after.receipts["json"].document
-    assert document["limitation_disclosed_finding_ids"] == [checked.findings[0].finding_id]
+    assert document["limitation_disclosed_finding_ids"] == [_reviewer_finding(checked).finding_id]
     for fmt in ("markdown", "text"):
         assert "Verification limits" in after.receipts[fmt].human_text
 
@@ -657,7 +680,7 @@ async def test_control_lake_s_a_genuine_unmet_requirement_stays_unresolved() -> 
         run, kind=FindingKind.TASK_REQUIREMENT_UNMET, next_step="act", script=script
     )
     await run.respond(
-        checked.findings[0].finding_id,
+        _reviewer_finding(checked).finding_id,
         checked.result_frontier,
         "acknowledged_not_done",
         "I could not reach that accuracy.",
@@ -688,6 +711,12 @@ async def test_control_cad_d_digest_only_evidence_keeps_a_deterministic_run_insu
                 "content_digest": "sha256:" + "1" * 64,
                 "observed_at": "2026-08-04T12:00:02.000Z",
                 "description": "The focused test passed.",
+                "digest_binding": {
+                    "subject": "test_stdout",
+                    "content_availability": "digest_only",
+                    "byte_count": 2048,
+                    "provenance": "caller_asserted",
+                },
             },
         ),
         _obligation(run, 1, status="resolved", resolution_evidence_refs=[evidence]),

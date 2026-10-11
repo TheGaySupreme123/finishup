@@ -152,7 +152,8 @@ def test_b1_readiness_done_never_hides_the_conclusion_the_receipt_will_carry() -
     assert {item.receipt_effect for item in closures.values()} == {
         ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
     }
-    facts = closure_readiness_facts(state, ())
+    # The finding came from a check, so the check applies; the hand-built state carries no check.
+    facts = replace(closure_readiness_facts(state, ()), check_applicability="applicable")
     split = derive_closure_readiness(
         ("receipt_findings_unresolved",),
         (),
