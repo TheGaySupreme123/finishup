@@ -4794,7 +4794,10 @@ async def test_acknowledging_a_limitation_request_needs_no_resolution_attempt() 
     finding = next(
         item for item in checked.findings if item.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
     )
-    assert checked.verdict.value == "insufficient_coverage"
+    # The request is a disclosure to acknowledge, not work (other findings of the bootstrap may
+    # still make the check action_required).
+    assert finding.challenge is not None
+    assert finding.challenge.requested_next_step == "state_unresolved_limitation"
     recorded = await app.respond(
         RespondRequest.model_validate(
             {

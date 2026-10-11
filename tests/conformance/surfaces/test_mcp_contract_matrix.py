@@ -796,6 +796,7 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
         "duplicate_of",
         "provenance_disputed",
         "rejected",
+        "reopened",
         "self_verified",
         "waived",
     )
