@@ -280,10 +280,10 @@ def _hook_edit(
 def test_c2c_the_hook_itself_names_a_notes_edit_and_it_does_not_stale_verification(
     tool: str, tool_input: dict[str, JsonValue]
 ) -> None:
-    """The scope in the test above is only as good as the hook that produces it: for each host's
-    edit tool, a write of /app/NOTES.md must come out of the real hook chain as ``notes`` and leave
-    the verification standing, while an edit of /app/solve.py through the same chain carries no
-    scope and makes it stale."""
+    """tb4n3 C (c2c, issue #1028). The scope in the test above is only as good as the hook that
+    produces it: for each host's edit tool, a write of /app/NOTES.md must come out of the real
+    hook chain as ``notes`` and leave the verification standing, while an edit of /app/solve.py
+    through the same chain carries no scope and makes it stale."""
 
     ledger = _ledger()
     ledger.passes("pytest -q")
