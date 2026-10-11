@@ -851,7 +851,7 @@ the evidence ids; it then stops being your work and the receipt names it as self
 `yoetz-blocker`. Only if a new finding restates the SAME issue as an earlier one you answered (same
 origin and kind), respond `duplicate_of` with `duplicate_of_finding_id` set to the earlier finding;
 linking never resolves the new finding, its own check must. Request the receipt and keep the final claim no stronger than
-its conclusion, coverage, freshness, receipt-blocking findings, and limitations. A local-check
+its conclusion, coverage, freshness, unresolved findings, and limitations. A local-check
 recheck can still qualify when only `captured_object_unavailable`, `content_unselected`,
 `host_outcome_unavailable`, or `unpaired_event` limits its case-wide host-observation coverage and
 the original finding coverage was readable; those gaps remain receipt limitations and the exception

@@ -212,7 +212,8 @@ closure order is [Repair then finish](coverage-and-receipts.md#repair-then-finis
 Closure is a checklist. `closure_readiness.state` names the next move:
 
 - `action_required`: do each item in `agent_actionable` — open obligations, unanswered findings,
-  an unacknowledged receipt-blocking finding, `check_in_progress` (recover the running check's
+  a finding you can still repair, `finding_rejection_awaiting_ruling` (a rejected finding waits for
+  a reviewer ruling: run `check`), `check_in_progress` (recover the running check's
   result through `status view=operation`), `check_not_recorded` or `check_not_applicable` (run a
   check after the material change), or an actionable gap such as `completion_plan_not_claimed`.
   `closure_readiness.check_cause` names the record behind `check_not_applicable` (for example an
@@ -228,7 +229,7 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 - `ready`: nothing further to do and nothing to disclose; request the receipt.
 - `unknown`: read `status` again once the projection is readable.
 
-If you stop while `agent_actionable` still names open obligations, an unrepaired receipt-blocking
+If you stop while `agent_actionable` still names open obligations, an unrepaired
 finding, a planned verification that was not observed, failed, or ran before your last edit, an
 edit to the work after your last test, lint, typecheck or build run (`edited_after_last_verification`;
 temporary scratch files and Yoetz receipt files never count), a git-ignored requested output, or a declared deliverable you deleted or renamed away

@@ -218,7 +218,7 @@ operations and does not add a composer or a new protocol field:
    repair, a response to another older finding, or any other material record follows the check,
    run another check before requesting a receipt.
 6. Request `receipt`, then publish `work_closed` when the work is complete. Read `closure_readiness.unanswered_finding_count` and
-   `closure_readiness.receipt_blocking_finding_count`, then report a scope-first summary of what was
+   `closure_readiness.receipt_blocking_finding_count` (findings to do plus acknowledged requirements), then report a scope-first summary of what was
    verified/not verified alongside the receipt's checked frontier, AI-powered review status/reason,
    and material coverage limits. Never lead with a bare zero-findings count. After
    one current-state recheck still fails to qualify, stop repeating an unchanged check, continue any
