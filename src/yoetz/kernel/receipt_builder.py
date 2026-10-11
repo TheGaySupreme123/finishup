@@ -245,8 +245,8 @@ def _omitted_rows_sentence(omitted: Mapping[str, int]) -> str:
     return (
         " Not listed in this receipt (the document holds at most "
         f"{_DOCUMENT_ROW_CAP} rows of a kind, {_GAP_ROW_CAP} gaps): {', '.join(named)}. "
-        "Unresolved actionable findings and open obligations are listed first; status lists "
-        "every row."
+        "Unresolved actionable findings and open obligations are listed first, and the coverage "
+        "list still names every limitation; status lists every row."
     )
 
 
@@ -2150,10 +2150,13 @@ def build_receipt(
         evidence_refs[:_DOCUMENT_ROW_CAP],
         max(0, len(evidence_refs) - _DOCUMENT_ROW_CAP),
     )
+    # A cleared (historical) gap row is the only thing that keeps its code from reading as a
+    # current limitation, while a live code stays in the coverage list and the limitations
+    # section whether or not its detail row is kept: cleared rows are kept first.
     retained_gaps, omitted_gaps = _keep_by_rank(
         retained_gaps,
         _GAP_ROW_CAP,
-        lambda gap: 0 if gap.status is ReceiptGapStatus.LIVE else 1,
+        lambda gap: 0 if gap.status is ReceiptGapStatus.HISTORICAL else 1,
     )
     omitted_rows = {
         "finding": omitted_findings,
@@ -2161,7 +2164,7 @@ def build_receipt(
         "response": omitted_responses,
         "claim reference": omitted_claims,
         "evidence reference": omitted_evidence,
-        "gap": omitted_gaps,
+        "gap detail row": omitted_gaps,
         "child finding": omitted_child_findings,
     }
     engine_derived_suffix, host_observation_suffix, limitation_response_suffix = (

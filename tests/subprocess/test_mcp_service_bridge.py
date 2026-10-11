@@ -1528,7 +1528,8 @@ async def test_post_commit_structural_shaping_failure_names_the_stage_and_does_n
     assert result.structuredContent["request_id"] == request_id
     message = cast(str, error["message"])
     assert "stage: wire" in message and "status view=operation" in message
-    assert "Replaying the same request_id" in message and "same way" in message
+    assert "replaying its request_id fails the same way" in message
+    assert "A read or dry run changed nothing" in message
     assert error.get("safe_details") == {"reason_code": "bridge_result_wire_failed"}
     # The text channel carries the stage and the remedy too: a text-only host reads no message.
     text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))

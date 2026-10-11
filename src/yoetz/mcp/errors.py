@@ -2036,6 +2036,9 @@ def build_last_resort_internal_error_result() -> dict[str, JsonValue]:
             "message": _LAST_RESORT_MESSAGE,
             "retryable": False,
             "correlation_id": _LAST_RESORT_CORRELATION_ID,
+            # The one error the bridge cannot describe further (building its typed error failed);
+            # the reason is still named so the text channel carries a remedy (tb4n3 RC-2).
+            "safe_details": {"reason_code": "internal_error"},
         },
     }
 

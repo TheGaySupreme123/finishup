@@ -1013,18 +1013,16 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "the correlation_id."
         ),
         "bridge_result_wire_failed": (
-            "The operation is recorded, but the bridge could not serialize its result. "
-            "Replaying the same request_id rebuilds the same result and fails the same way: "
-            "read status view=operation for the committed outcome and view=compact for the "
-            "frontier, never send the work again under a new request_id, and report the "
-            "correlation_id."
+            "The bridge could not serialize this call's result. A write (start, publish_work, "
+            "check, respond, receipt) is recorded: replaying its request_id fails the same way, "
+            "so read status view=operation and view=compact, and never resend it under a new "
+            "request_id. A read or dry run changed nothing: repeat it. Report the correlation_id."
         ),
         "bridge_result_validate_failed": (
-            "The operation is recorded, but its result did not match the response schema. "
-            "Replaying the same request_id rebuilds the same result and fails the same way: "
-            "read status view=operation for the committed outcome and view=compact for the "
-            "frontier, never send the work again under a new request_id, and report the "
-            "correlation_id."
+            "This call's result did not match its response schema. A write (start, publish_work, "
+            "check, respond, receipt) is recorded: replaying its request_id fails the same way, "
+            "so read status view=operation and view=compact, and never resend it under a new "
+            "request_id. A read or dry run changed nothing: repeat it. Report the correlation_id."
         ),
         "response_projection_failed": (
             "The operation is recorded, but its response could not be shaped. Replay the same "
@@ -1037,9 +1035,10 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "request_id, or read status view=versions for the authoritative frontier."
         ),
         "check_pipeline_failed": (
-            "The check failed inside the service and produced no verdict. Read status "
-            "view=operation for this request_id: when it reports the check failed, run check "
-            "again under a new request_id. Report the correlation_id."
+            "The check hit an internal failure and may not have produced a verdict. Replay the "
+            "same request_id once: a check that committed returns its stored verdict. If the "
+            "replay fails the same way, run check again under a new request_id. Report the "
+            "correlation_id."
         ),
         "closure_prepare_failed": (
             "Closure preparation failed unexpectedly and recorded nothing. Read status "
@@ -1054,6 +1053,11 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
         "maintenance_state_unverified": (
             "Maintenance could not verify its own state and changed nothing. Preview the plan "
             "again, and report the correlation_id if it recurs."
+        ),
+        "internal_error": (
+            "The bridge failed while building its own error, so nothing more specific is known. "
+            "A write may or may not be recorded: read status view=operation for this request_id "
+            "before replaying the same request_id. Report the correlation_id."
         ),
         "start_state_inconsistent": (
             "The start state recorded for this request is inconsistent. Do not start a "

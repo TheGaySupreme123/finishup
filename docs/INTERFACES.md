@@ -357,8 +357,9 @@ stay frozen. Advice and status `semantic_state` is the recorded attempt status (
 `ready`, and `disabled` means no attempt was requested or configured. The state does not widen
 coverage: only validated AI-powered finding ids add `semantic_model_derived` to advice coverage.
 
-Every MCP result also carries a bounded ASCII text projection (at most 4,096 bytes; 512 until
-tb4n3, ADR-043) for hosts that drop `structuredContent`. The projection is composed, not
+Every MCP result also carries a bounded ASCII text projection (the compact summary is at most 4,096
+bytes; 512 until tb4n3, ADR-043; the check-totals line, manifest line, reviewer output and publish
+blocker notices follow it under their own bounds) for hosts that drop `structuredContent`. The projection is composed, not
 concatenated: the verdict or state, the task continuation, the frontier with its head digest and the
 review status/reason are reserved first and optional clauses are granted room by priority, so it
 never raises and no data-only change can turn a committed operation into an error. A clause that
@@ -459,8 +460,8 @@ loads the stored result; if that replay also fails the failure is deterministic 
 (ADR-043): the structured result is returned and the failure is a diagnostic. The bridge's own
 structural failure after a commit (the result cannot be serialized, or does not match its response
 schema) is `INTERNAL_ERROR` with reason `bridge_result_wire_failed` or
-`bridge_result_validate_failed`, non-retryable, and names `status view=operation` rather than a
-replay that would rebuild the same result. For `publish_work`, a post-commit projection failure after a successful append is
+`bridge_result_validate_failed`, non-retryable; for a write it names `status view=operation` rather
+than a replay that would rebuild the same result, and for a read or dry run it says nothing changed. For `publish_work`, a post-commit projection failure after a successful append is
 not reported as an error at all. The daemon returns a reduced total-acceptance success branch
 with `ok: true`, `response_completeness: "accepted_projection_unavailable"`,
 `reason_code: "response_projection_failed"`, a `correlation_id` for operator diagnostics, the

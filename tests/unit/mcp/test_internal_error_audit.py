@@ -59,6 +59,42 @@ def test_every_internal_error_producer_carries_a_typed_reason() -> None:
     assert untyped == [], untyped
 
 
+def test_no_dictionary_literal_builds_an_untyped_internal_error() -> None:
+    """The constructor scan above cannot see a hand-built wire dictionary (the last-resort
+    result): every dict literal naming code INTERNAL_ERROR must carry safe_details."""
+
+    untyped: list[str] = []
+    for path in sorted(_SRC.rglob("*.py")):
+        relative = path.relative_to(_SRC).as_posix()
+        if relative.startswith("resources/"):
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Dict):
+                continue
+            keys = [key.value for key in node.keys if isinstance(key, ast.Constant)]
+            names_it = any(
+                isinstance(key, ast.Constant)
+                and key.value == "code"
+                and isinstance(value, ast.Constant)
+                and value.value == "INTERNAL_ERROR"
+                for key, value in zip(node.keys, node.values, strict=True)
+            )
+            if names_it and "safe_details" not in keys:
+                untyped.append(f"{relative}:{node.lineno}")
+    assert untyped == [], untyped
+
+
+def test_the_last_resort_error_is_typed_and_its_remedy_renders() -> None:
+    from yoetz.mcp.errors import build_last_resort_internal_error_result
+    from yoetz.mcp.summaries import render_safe_compact_summary
+
+    result = build_last_resort_internal_error_result()
+    assert result["error"]["safe_details"] == {"reason_code": "internal_error"}  # type: ignore[index]
+    text = render_safe_compact_summary(result)
+    assert "Reason: internal_error." in text
+    assert "Remedy:" in text and "status view=operation" in text
+
+
 def test_the_start_catalog_helpers_type_their_internal_error() -> None:
     for module in (memory_catalog, sqlite_catalog):
         error = module._error(PublicErrorCode.INTERNAL_ERROR)  # pyright: ignore[reportPrivateUsage]
@@ -78,6 +114,7 @@ def test_every_typed_internal_stage_has_a_registered_reason_and_a_remedy_sentenc
         "bridge_error_mapping_failed",
         "bridge_result_wire_failed",
         "bridge_result_validate_failed",
+        "internal_error",
         "response_projection_failed",
         "read_projection_failed",
         "closure_prepare_failed",

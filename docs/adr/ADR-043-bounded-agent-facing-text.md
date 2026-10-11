@@ -65,7 +65,7 @@ token list as progressively shorter forms with an exact `+N more`.
 
 | Surface | Bound | On overflow |
 |---|---|---|
-| MCP text summary (check, status, receipt, public error, awaiting, closure, other) | 4,096 bytes (`MAX_SUMMARY_BYTES`, was 512) | optional clauses shrink or drop by priority; required core cut only as a last resort |
+| MCP compact text summary (check, status, receipt, public error, awaiting, closure, other) | 4,096 bytes (`MAX_SUMMARY_BYTES`, was 512) | optional clauses shrink or drop by priority; required core cut only as a last resort |
 | One id or token list in a summary | 1,024 characters | fewer values and an exact `+N more` |
 | Stop-gate text | 2,000 characters | the ladder drops whole optional sentences; then the composed fallback keeps one instruction per present item family and the close instruction |
 | Hook advice text (Codex, Claude Code, Cursor) | 2,000 characters | ends with a visible cut marker |
@@ -75,6 +75,11 @@ token list as progressively shorter forms with an exact `+N more`.
 
 The 2,000-character figure is Yoetz's own conservative cap. No host document available to this
 repository states a limit for Codex, Claude Code or Cursor hook text, so it is not claimed as one.
+
+The 4,096-byte bound is on the compact summary, as the 512-byte bound was. The returned text
+appends, each with its own bound, the check-totals line (fixed counters), the review-input manifest
+line, the reviewer output (12 KiB), publish blocker notices and, only when something degraded, one
+sentence naming it; those are not part of the summary and are not budgeted against it.
 
 ### Budget priority
 
@@ -103,9 +108,10 @@ builder whose required core fails falls back to the verdict or state token, the 
 failing builder's name and "read status view=compact". The structured result is returned as the
 call's result either way. Only a structural failure (the result cannot be serialized, or fails its
 response schema) still returns `INTERNAL_ERROR`, as the typed stage `bridge_result_wire_failed` or
-`bridge_result_validate_failed`; its remedy says the operation is recorded, points at
-`status view=operation` and does not offer a replay that would rebuild the same result and fail the
-same way. The remedy renders on the text channel as well as in the structured message.
+`bridge_result_validate_failed`; its remedy covers both cases the bridge cannot tell apart at that
+point -- a write is recorded (read `status view=operation`, never resend it, replaying rebuilds the
+same result and fails the same way) and a read or dry run changed nothing (repeat it) -- and renders
+on the text channel as well as in the structured message.
 
 ### Errors say what went wrong
 
@@ -115,8 +121,9 @@ Every `INTERNAL_ERROR` the bridge or a service operation path produces carries a
 `bridge_result_wire_failed`, `bridge_result_validate_failed`, `closure_prepare_failed`,
 `check_pipeline_failed`, `import_publication_failed`, `maintenance_state_unverified` and
 `start_state_inconsistent`. Their messages claim only what the failing site knows: an invoke or
-import failure says the write may or may not be recorded; a failed check says it produced no
-verdict and to read `status view=operation` before running it again. Status faults were already
+import failure says the write may or may not be recorded; a failed check says it may not have
+produced a verdict, to replay its request_id once (a committed check returns its stored verdict) and
+only then to run it again under a new request_id. Status faults were already
 typed by stage (`phase`). The service's own `response_projection_failed` keeps its retryable replay
 but says to replay once and, if that replay also fails, to stop and read `status view=operation`;
 it and `read_projection_failed` now carry their remedy on the text channel too, which they never

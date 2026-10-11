@@ -374,3 +374,66 @@ def test_a_self_verified_child_finding_never_hides_one_that_still_needs_work() -
     assert len(child.findings) == 64
     assert needs_work in {row.finding_id for row in child.findings}
     assert receipt.conclusion is ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN
+
+
+def test_a_cleared_gap_stays_cleared_when_live_gaps_exceed_the_row_bound() -> None:
+    """A historical row is the only thing that keeps its code from reading as a current
+    limitation: trimming gaps must drop live detail rows (their codes stay in the coverage list),
+    never the cleared row."""
+
+    from dataclasses import replace as dc_replace
+
+    from yoetz.domain.receipts import (
+        SchemaVersionEntry,
+        historical_receipt_gaps,
+        live_receipt_gap_codes,
+    )
+    from yoetz.domain.values import (
+        Frontier,
+        receipt_id,
+        session_id,
+        task_id,
+        timestamp_from_string,
+    )
+    from yoetz.kernel.deterministic_checks import CaseGap
+    from yoetz.kernel.receipt_builder import build_receipt
+    from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile
+
+    cleared = "planned_verification_not_observed"
+    live_codes = tuple(f"live_gap_{index:03d}" for index in range(63))
+    codes = tuple(sorted((*live_codes, cleared), key=str.encode))
+    context = dc_replace(
+        _single_context(
+            check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage(gaps=codes)),
+            coverage=_coverage(gaps=codes),
+            # One code can carry several rows: 63 live codes x 2 rows + 1 cleared row = 127 rows.
+            gaps=(
+                *(
+                    CaseGap(f"retained_finding_coverage:{code}:{copy}", code, ())
+                    for code in live_codes
+                    for copy in range(2)
+                ),
+                CaseGap(f"retained_finding_coverage:{cleared}", cleared, ()),
+            ),
+        ),
+        historical_gaps=((cleared, Frontier(1, _HEAD)),),
+    )
+    for include in (ReceiptInclude.SUMMARY, ReceiptInclude.STANDARD, ReceiptInclude.FULL):
+        for profile in ReceiptRedactionProfile:
+            receipt = build_receipt(
+                context,
+                receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+                task_id("tsk_00000000-0000-4000-8000-000000000001"),
+                session_id("ses_00000000-0000-4000-8000-000000000001"),
+                timestamp_from_string("2026-07-19T00:00:00.000Z"),
+                dc_replace(
+                    _versions(),
+                    schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+                ),
+                profile,
+                include,
+            )
+            assert len(receipt.gaps) == 64
+            assert [gap.code for gap in historical_receipt_gaps(receipt)] == [cleared]
+            assert cleared not in live_receipt_gap_codes(receipt)
+            assert len(live_receipt_gap_codes(receipt)) == 63
