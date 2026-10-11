@@ -646,8 +646,8 @@ impossibility research. The owner decided:
    Stop and on an already-continued Stop (within the per-turn cap), once per resolved set; the extra
    Stop turn it costs on a run that resolves obligations is accepted. It is not composed beside open
    obligations (acknowledgement stays the challenged last resort, #997), beside a rejected finding
-   awaiting a ruling, or beside a withdrawn deliverable; it then stays unasked and is asked at a
-   later Stop. Its sentence gains the verification-limit branch: when the criteria can only be
+   awaiting a ruling, or beside a withdrawn deliverable, whether or not that Stop names the item (an
+   already-continued Stop does not): it then stays unasked and is asked at a later Stop. Its sentence gains the verification-limit branch: when the criteria can only be
    checked outside this environment (a hidden verifier, a withheld artifact) and the agent did the
    work, keep the obligation resolved and record `yoetz-verification-limit:<obligation id>`; "I
    could not find it" never qualifies, so the pretrain S rescue is unchanged.
@@ -667,27 +667,40 @@ impossibility research. The owner decided:
    and `declared_output_removed` bypass the active-Stop suppression, within `MAX_GATE_BLOCKS_PER_TURN`,
    keyed `emptied:<h8 of the declaring obligation items>` (a path is never put in the key or the text;
    an obligation item is one path), and recorded when a first-Stop gate voices them too. The text:
-   "You withdrew a deliverable that passed your tests; an empty file scores as no solution; restore it
-   and disclose its limits." with the rule and obligation ids from `fact_lineage` (ADR-045). "Passed
-   your tests" is said only when the lineage basis is `verified`; otherwise the deliverable "held
-   content".
+   "You withdrew a deliverable that passed your verification run; an empty file scores as no
+   solution; restore it and disclose its limits." with the rule and obligation ids from
+   `fact_lineage` (ADR-045). The owner's draft said "passed your tests"; a lineage basis `verified`
+   means a test, lint, typecheck or build run passed while the file had content, so the sentence
+   says "verification run" (Codex review round 1). It is said only when the basis is `verified`;
+   otherwise the deliverable "held content".
 6. **The premise and acknowledgement texts keep the working deliverable.** Both gain "If you cannot
    finish it, keep the working deliverable; acknowledgement never requires withdrawing or emptying
    it." after the unchanged push to work, so the ack re-check still sends an agent that gave up back
    to work (pretrain S) without teaching the formal-crypto S fallback.
-7. **Composition** stays on the bounded composer (ADR-043): every new sentence is a part with a
+7. **The predicted receipt conclusion** (ADR-046, owner decision Q1) is appended to the gate text as
+   its lowest-priority sentence, from `closure_readiness.predicted_receipt` through the shared
+   `predicted_receipt_variants`; it is the first sentence dropped under the bound and never makes a
+   gate fire. The acceptance invite memory is protected from eviction: when the 64-key memory is
+   trimmed the earliest invite (its frontier decides which acknowledgement answered it) and the
+   newest seven are kept, so a long run cannot turn an answered acknowledgement back into a
+   challenge.
+8. **Composition** stays on the bounded composer (ADR-043): every new sentence is a part with a
    priority, the withdrawn-deliverable instruction is a required family instruction, the acceptance
    sentence is the first optional sentence dropped, and a re-check whose whole sentence did not fit
    is not recorded as asked.
-8. **Diagnostics.** `closure_gate_loop_guard` is renamed `closure_gate_turn_end_after_continue`: it is
+9. **Diagnostics.** `closure_gate_loop_guard` is renamed `closure_gate_turn_end_after_continue`: it is
    the normal end of a continued turn, not a defect and not a loop guard. `closure_gate_acceptance_rechecked`
    counts the extra Stop turns the acceptance re-read costs.
-9. **Hosts.** Codex, Claude Code and Cursor share the gate, its re-check list, texts and memory
+10. **Hosts.** Codex, Claude Code and Cursor share the gate, its re-check list, texts and memory
    (`handle_observe`, `handle_claude_observe`, `handle_cursor_observe`); the only difference is how
    an already-continued Stop is detected (`stop_hook_active`; Cursor `loop_count > 0`), already
    normalised to `active_stop`. Each runbook records "supported, same code path". No OS-specific path
    is added; the memory files use POSIX `fcntl`, which WSL 2 provides.
 
 Cost and risk: one extra gate turn on a run that resolves obligations (owner decision 6); the
-per-turn cap of two still holds; a gate that reads a service older than itself asks no re-check
-until the service restarts onto the new build.
+per-turn cap of two still holds, so in a single-turn run whose first two Stops were spent on other
+gates the acceptance re-read is not asked (it has no reserved third continuation; raising the cap
+is an owner decision, not made here); a gate that reads a service older than itself asks no
+re-check until the service restarts onto the new build; an acknowledgement published after any
+acceptance invite counts as its answer even many Stops later (the invite's frontier is the only
+memory), which is the owner's rule and is bounded by the one-per-key asking.

@@ -353,7 +353,7 @@ def test_an_emptied_deliverable_is_voiced_on_an_active_stop() -> None:
     assert gate is not None
     assert gate.items == (DECLARED_OUTPUT_EMPTIED_GAP,)
     assert (
-        "You withdrew a deliverable that passed your tests; an empty file scores as no solution;"
+        "You withdrew a deliverable that passed your verification run; an empty file scores as no solution;"
         " restore it and disclose its limits."
     ) in gate.text
     # Rule and obligation id, never a path.
@@ -395,7 +395,7 @@ def test_a_deliverable_not_known_to_have_passed_is_not_said_to_have_passed() -> 
         "You withdrew a deliverable that held content; an empty file scores as no solution"
         in held.text
     )
-    assert "passed your tests" not in held.text
+    assert "passed your verification run" not in held.text
     bare = _gate(_emptied(lineage=()), active=True)
     assert bare is not None
     assert "held content" in bare.text
@@ -572,3 +572,133 @@ def test_the_awaiting_ruling_text_names_the_finding_and_the_frontier_of_the_reje
     bare = _gate(_awaiting())
     assert bare is not None
     assert "status view=findings lists them" in bare.text
+
+
+# --- Codex review round 1 (W2-C) ----------------------------------------------------------------
+
+
+def test_the_acceptance_invitation_is_withheld_on_an_active_stop_beside_unvoiced_items() -> None:
+    """An active Stop computes no ordinary items, but a rejected finding awaiting a ruling, open
+    obligations or a withdrawn deliverable that is present still keep the invitation to
+    acknowledge unasked (and unremembered): Codex round 1, finding 1."""
+
+    for token in (_AWAITING, "obligations_open"):
+        announced = readiness("action_required", (token,), rechecks=(acceptance_recheck(),))
+        assert _gate(announced, active=True) is None, token
+    # A withdrawn deliverable already voiced still excludes it.
+    voiced = _emptied(rechecks=(acceptance_recheck(),))
+    first = _gate(voiced, active=True)
+    assert first is not None
+    assert first.items == (DECLARED_OUTPUT_EMPTIED_GAP,)
+    assert _gate(voiced, active=True, reasked=frozenset(first.blocker_keys)) is None
+    # With none of them present the same invitation is asked.
+    clear = readiness(
+        "action_required", ("closing_review_required",), rechecks=(acceptance_recheck(),)
+    )
+    gate = _gate(clear, active=True)
+    assert gate is not None
+    assert gate.items == (ACCEPTANCE_RECHECK_ITEM,)
+
+
+def test_the_earliest_acceptance_invite_survives_the_memory_bound(tmp_path: Any) -> None:
+    """Codex round 1, finding 3: the invite's frontier is the only memory of which acknowledgement
+    answered it; 64 later keys must not evict it."""
+
+    invite = acceptance_recheck()
+    first = _gate(readiness("ready_with_limitations", (), rechecks=(invite,)), sequence="400")
+    assert first is not None
+    assert gate_module.record_closure_gate_delivered(
+        "ses_a", first.identity, blocker_keys=first.blocker_keys, _state=tmp_path
+    )
+    noise = tuple(f"obl_{index:04d}:consent" for index in range(80))
+    assert gate_module.record_closure_gate_delivered(
+        "ses_a", "9:x", blocker_keys=noise, _state=tmp_path
+    )
+    memory = gate_module.closure_gate_reasked_blockers("ses_a", _state=tmp_path)
+    assert len(memory) <= 64
+    assert first.blocker_keys[0] in memory
+    answered = readiness(
+        "ready_with_limitations", (), rechecks=(invite, ack_recheck(_OBL, since=410))
+    )
+    assert _gate(answered, sequence="500", reasked=memory) is None
+    # Later invites are bounded too: the earliest and the newest seven stay.
+    for index in range(20):
+        key = f"{acceptance_key([obligation_id(300 + index)])}@{500 + index}"
+        assert gate_module.record_closure_gate_delivered(
+            "ses_b", "1:x", blocker_keys=(key, *noise[index * 4 : index * 4 + 4]), _state=tmp_path
+        )
+    kept = gate_module.closure_gate_reasked_blockers("ses_b", _state=tmp_path)
+    invites = sorted(item for item in kept if item.startswith("accept:"))
+    assert len(kept) <= 64
+    assert len(invites) <= gate_module._MAX_INVITE_KEYS  # pyright: ignore[reportPrivateUsage]
+    assert f"{acceptance_key([obligation_id(300)])}@500" in kept
+
+
+_PREDICTION = SimpleNamespace(
+    conclusion="insufficient_coverage",
+    reasons=(
+        SimpleNamespace(code="obligations_acknowledged", rule="R3", count="2", refs=()),
+        SimpleNamespace(code="findings_disclosed", rule="R4", count="1", refs=()),
+    ),
+)
+
+
+def test_the_gate_ends_with_the_predicted_receipt_conclusion_and_drops_it_first() -> None:
+    """DESIGN_RC3 3.4(7) and owner decision Q1: the same prediction every surface prints, as the
+    lowest-priority optional sentence; Codex round 1, finding 5."""
+
+    announced = readiness(
+        "ready_with_limitations",
+        (),
+        rechecks=(acceptance_recheck(),),
+        predicted_receipt=_PREDICTION,
+    )
+    gate = _gate(announced)
+    assert gate is not None
+    assert gate.text.endswith(
+        "The receipt will read insufficient_coverage: 2 acknowledged obligation(s), 1 disclosed"
+        " finding(s)."
+    )
+    assert "acceptance_criteria" in gate.text
+    # Work remaining reads as a counterfactual, never as a promise.
+    work = readiness(
+        "action_required",
+        ("closing_review_required",),
+        predicted_receipt=SimpleNamespace(conclusion="unresolved_findings_remain", reasons=()),
+    )
+    work_gate = _gate(work)
+    assert work_gate is not None
+    assert work_gate.text.endswith("A receipt requested now would read unresolved_findings_remain.")
+    # It never makes a gate fire, and a service without it adds nothing.
+    assert _gate(readiness("ready_with_limitations", (), predicted_receipt=_PREDICTION)) is None
+    assert (
+        "will read"
+        not in _gate(readiness("ready_with_limitations", (), rechecks=(acceptance_recheck(),))).text
+    )  # type: ignore[union-attr]
+
+
+def test_the_prediction_is_the_first_sentence_dropped_under_the_host_bound() -> None:
+    """With every token and re-check the 2,000-character bound is full: the prediction yields
+    before the acceptance sentence, the premise ask or any re-check does."""
+
+    crowded = readiness(
+        "action_required",
+        tuple(gate_module._GATE_TOKENS),  # pyright: ignore[reportPrivateUsage]
+        rechecks=(
+            *(blocker_recheck(obligation_id(index)) for index in range(3)),
+            premise_recheck(3),
+            *(ack_recheck(obligation_id(100 + index)) for index in range(3)),
+            acceptance_recheck(),
+        ),
+        predicted_receipt=_PREDICTION,
+        limitation_refs_required=tuple(
+            f"res_97700000-0000-4000-8000-{index:012d}" for index in range(5)
+        ),
+        limitation_refs_required_count="40",
+    )
+    gate = _gate(crowded)
+    assert gate is not None
+    assert len(gate.text) <= 2000
+    assert "will read" not in gate.text and "would read" not in gate.text
+    assert gate_module._CLOSE_TEXT in gate.text  # pyright: ignore[reportPrivateUsage]
+    assert "Blocker re-check (asked once)" in gate.text

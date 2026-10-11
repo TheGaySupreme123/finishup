@@ -79,6 +79,7 @@ from yoetz.kernel.task_facts import (
 from yoetz.ports.control import ControlClientKind
 from yoetz.protocol.ids import IdKind, new_id
 from yoetz.protocol.models import OperationFailureModel, StatusRequest
+from yoetz.protocol.readiness_text import predicted_receipt_variants
 
 try:
     import fcntl
@@ -112,6 +113,9 @@ _STANDING_FILE_NAME: Final = "stop-withheld-standing-advice.json"
 _LOCK_NAME: Final = "closure-gate.lock"
 _MAX_SESSIONS: Final = 128
 _MAX_BLOCKER_KEYS: Final = 64
+# Acceptance invites kept when the memory is trimmed: the earliest (its frontier decides which
+# acknowledgement answered an invite) and the newest few (what was already asked).
+_MAX_INVITE_KEYS: Final = 8
 # The closed item a blocker re-check adds to ``ClosureGate.items`` (#977).
 BLOCKER_RECHECK_ITEM: Final = "blocker_recheck"
 # D7a (#984): the closed item a one-time premise-dispute ask adds.
@@ -581,13 +585,14 @@ def _withdrawn_key(readiness: object, tokens: tuple[str, ...]) -> str:
 def _withdrawn_text(readiness: object, tokens: tuple[str, ...]) -> str:
     """The withdrawn-deliverable instruction, with the rule and obligation ids (never a path).
 
-    "Passed your tests" is said only when every lineage entry's basis is ``verified`` (a
-    verification run passed while the file had content); otherwise the deliverable "held content".
+    "Passed your verification run" is said only when every lineage entry's basis is ``verified`` (a
+    test, lint, typecheck or build run passed while the file had content); otherwise the
+    deliverable "held content". It never says "tests": a lint or build run also verifies.
     """
 
     entries = _withdrawn_entries(readiness, tokens)
     verified = bool(entries) and all(basis == "verified" for *_rest, basis in entries)
-    what = "passed your tests" if verified else "held content"
+    what = "passed your verification run" if verified else "held content"
     gone = "an empty file" if DECLARED_OUTPUT_EMPTIED_GAP in tokens else "a missing file"
     sentence = (
         f"You withdrew a deliverable that {what}; {gone} scores as no solution; restore it and"
@@ -687,6 +692,7 @@ def _fallback_parts(
     finding_texts: tuple[str, str],
     withdrawn_text: str,
     accept_text: str,
+    prediction: tuple[str, ...] = (),
 ) -> list[tuple[str, Part]]:
     """The gate's sentences as named parts, in reading order, for the composed fallback.
 
@@ -735,6 +741,8 @@ def _fallback_parts(
         parts.append(("drain", Part((drain_note,), priority=9)))
     if moved_note:
         parts.append(("moved", Part((moved_note,), priority=9)))
+    if prediction:
+        parts.append(("prediction", Part(prediction, priority=10)))
     return parts
 
 
@@ -800,6 +808,18 @@ def closure_gate_from_readiness(
             present = tokens
         elif not active_stop:
             return None
+    # The acceptance invitation offers `acknowledged_not_done`. It is never asked while open
+    # obligations remain (acknowledgement stays the challenged last resort, #997), while a rejected
+    # finding awaits its ruling (it would concede what the agent disputes) or while a deliverable
+    # is withdrawn (acknowledging never clears it), whether or not the gate names those items on
+    # this Stop. It stays unasked and is asked at a later Stop.
+    accept_excluded = bool(
+        present & {"obligations_open", FINDING_REJECTION_AWAITING_RULING_GAP, *_WITHDRAWN_TOKENS}
+    )
+    accept_allowed = acceptance is not None and not accept_excluded
+    prediction = predicted_receipt_variants(
+        getattr(readiness, "predicted_receipt", None), state=state
+    )
     items: tuple[str, ...] = ()
     drain_changed_decision = False
     if active_stop:
@@ -817,7 +837,7 @@ def closure_gate_from_readiness(
         )
         drain_changed_decision = observation_pending and bool(present & _OBSERVATION_DEPENDENT)
     if not items:
-        if not rows and premise is None and not ack_keys and acceptance is None:
+        if not rows and premise is None and not ack_keys and not accept_allowed:
             return None
         opener = (
             "Yoetz closure gate (shown once for these blockers):"
@@ -825,7 +845,7 @@ def closure_gate_from_readiness(
             else "Yoetz closure gate (shown once):"
         )
         blocker = _blocker_text(rows) if rows else ""
-        accept_sentence = _ACCEPTANCE_TEXT if acceptance is not None else ""
+        accept_sentence = _ACCEPTANCE_TEXT if accept_allowed else ""
         # ADR-035: the standing content-moved disclosure rides gate text that fires anyway.
         moved = _content_moved_note(readiness).strip()
         # Keep only whole sentences under the host bound, choosing by priority (blocker re-check,
@@ -850,6 +870,11 @@ def closure_gate_from_readiness(
         asked_acceptance = "acceptance" in chosen
         if not (asked_rows or asked_ack or asked_premise_only or asked_acceptance):
             return None
+        # The predicted receipt conclusion is the lowest-priority sentence (owner decision Q1):
+        # the longest variant that still fits, else none.
+        tail = next(
+            (variant for variant in prediction if used + 1 + len(variant) <= _MAX_TEXT_CHARS), ""
+        )
         short_text = " ".join(
             sentence
             for name, sentence in (
@@ -859,8 +884,9 @@ def closure_gate_from_readiness(
                 ("ack", ack_text),
                 ("acceptance", accept_sentence),
                 ("moved", moved),
+                ("prediction", tail),
             )
-            if name == "opener" or name in chosen
+            if sentence and (name in {"opener", "prediction"} or name in chosen)
         )
         return ClosureGate(
             identity,
@@ -904,19 +930,7 @@ def closure_gate_from_readiness(
     withdrawn_items = tuple(token for token in _WITHDRAWN_TOKENS if token in items)
     withdrawn_text = _withdrawn_text(readiness, withdrawn_items) if withdrawn_items else ""
     why_text = _awaiting_clause(readiness) if FINDING_REJECTION_AWAITING_RULING_GAP in items else ""
-    # The acceptance invitation offers `acknowledged_not_done`. It is never offered beside open
-    # obligations (acknowledgement stays the challenged last resort, #997), beside a rejected
-    # finding awaiting a ruling (it would concede what the agent disputes) or beside a withdrawn
-    # deliverable (acknowledging never clears it). It stays unasked, so it is asked at a later Stop.
-    accept_text = (
-        _ACCEPTANCE_TEXT
-        if acceptance is not None
-        and not (
-            {"obligations_open", FINDING_REJECTION_AWAITING_RULING_GAP, *_WITHDRAWN_TOKENS}
-            & set(items)
-        )
-        else ""
-    )
+    accept_text = _ACCEPTANCE_TEXT if accept_allowed else ""
     # `self_verified` is offered only when `respond` would accept it for some finding; an older
     # service sends no counts and keeps the offer.
     self_verify = eligible is None or eligible > 0
@@ -933,6 +947,7 @@ def closure_gate_from_readiness(
         verification: bool,
         limits: bool = True,
         premise_sentence: bool = True,
+        tail: str = "",
     ) -> str:
         parts = [head]
         if why_text:
@@ -969,6 +984,9 @@ def closure_gate_from_readiness(
         # ADR-035: the standing content-moved disclosure, dropped first with the drain note.
         if drain and moved_note:
             parts.append(moved_note)
+        # The predicted receipt conclusion (owner decision Q1): the first sentence dropped.
+        if tail:
+            parts.append(tail)
         return " ".join(parts)
 
     # Every host clips at 2,000 characters. Drop whole optional sentences, never the re-check:
@@ -978,22 +996,27 @@ def closure_gate_from_readiness(
     delivered_rows = bool(rows)
     delivered_ack = bool(ack_keys)
     asked_acceptance = False
-    for drain, short_obligation, verification, limits, premise_sentence in (
-        (True, False, True, True, True),
-        (False, False, True, True, True),
-        (False, True, True, True, True),
+    # The predicted receipt conclusion (longest variant first, then none) goes before anything else.
+    rungs: list[tuple[bool, bool, bool, bool, bool, str]] = [
+        (True, False, True, True, True, tail) for tail in (*prediction, "")
+    ]
+    rungs += [
+        (False, False, True, True, True, ""),
+        (False, True, True, True, True, ""),
         # tb4n3 RC-2 (A5): the required limitation ids go before a present family's instruction
         # does; the composed fallback below shortens the rest and never drops one.
-        (False, True, True, False, True),
+        (False, True, True, False, True, ""),
         # D7a: the premise ask goes before the re-check does.
-        (False, True, True, False, False),
-    ):
+        (False, True, True, False, False, ""),
+    ]
+    for drain, short_obligation, verification, limits, premise_sentence, tail in rungs:
         text = compose(
             drain=drain,
             short_obligation=short_obligation,
             verification=verification,
             limits=limits,
             premise_sentence=premise_sentence,
+            tail=tail,
         )
         if len(text) <= _MAX_TEXT_CHARS:
             asked_premise = premise is not None and premise_sentence
@@ -1023,6 +1046,7 @@ def closure_gate_from_readiness(
             finding_texts=finding_texts,
             withdrawn_text=withdrawn_text,
             accept_text=accept_text,
+            prediction=prediction,
         )
         composed = compose_parts([part for _, part in parts], _MAX_TEXT_CHARS, ascii_only=False)
         text = composed.text
@@ -1215,6 +1239,24 @@ def reset_closure_gate_turn(session_id: str, *, _state: Path | None = None) -> N
                 _store(directory, path, _TURN_FILE_NAME, entries)
 
 
+def _bounded_keys(keys: list[str]) -> list[str]:
+    """The newest keys within the memory bound, keeping the acceptance invites that matter.
+
+    The earliest invite's frontier decides which acknowledgement answered an invite, so evicting
+    it would turn a later acknowledgement back into a challenge (invite-then-challenge), and an
+    evicted invite key would ask the same re-read again. The earliest invite and the newest few
+    are kept; everything else ages out oldest first.
+    """
+
+    if len(keys) <= _MAX_BLOCKER_KEYS:
+        return keys
+    invites = [key for key in keys if key.startswith("accept:")]
+    kept_invites = set(invites[:1] + invites[-(_MAX_INVITE_KEYS - 1) :])
+    others = [key for key in keys if key not in kept_invites]
+    kept = set(others[-(_MAX_BLOCKER_KEYS - len(kept_invites)) :]) | kept_invites
+    return [key for key in keys if key in kept]
+
+
 def record_closure_gate_delivered(
     session_id: str,
     identity: str,
@@ -1237,7 +1279,7 @@ def record_closure_gate_delivered(
             if blocker_keys:
                 blockers = _load(blocker_path)
                 known = [key for key in blockers.pop(session_id, "").split(" ") if key]
-                merged = list(dict.fromkeys((*known, *blocker_keys)))[-_MAX_BLOCKER_KEYS:]
+                merged = _bounded_keys(list(dict.fromkeys((*known, *blocker_keys))))
                 blockers[session_id] = " ".join(merged)
                 _store(directory, blocker_path, _BLOCKER_FILE_NAME, blockers)
             turns = _load(turn_path)

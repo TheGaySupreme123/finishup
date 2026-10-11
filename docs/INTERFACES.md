@@ -9137,8 +9137,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   is never composed beside open obligations, a rejected finding awaiting a ruling or a withdrawn
   deliverable (it then stays unasked). `finding_counts` (`to_do`, `awaiting_ruling`,
   `self_verify_eligible`) decides the finding count and whether `self_verified` is offered;
-  `awaiting_ruling_findings` and `fact_lineage` give the ids and rules the text names. When the
-  gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the text
+  `awaiting_ruling_findings` and `fact_lineage` give the ids and rules the text names, and
+  `predicted_receipt` supplies the lowest-priority tail sentence (`predicted_receipt_variants`).
+  When the gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the text
   carries one informational note; that code alone never fires the gate.
   `read_closure_gate(...)` reads compact status and raises `ClosureGateUnavailable` when it cannot;
   `closure_gate_already_delivered` / `record_closure_gate_delivered(..., blocker_keys=)` keep the

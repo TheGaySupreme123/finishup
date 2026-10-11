@@ -791,7 +791,7 @@ def test_withdrawn_deliverable_is_voiced_on_the_active_stop_once(
     h.sequence = "9"
     second = _stop(h, host, session, guarded=True)
     text = _text(host, second)
-    assert "You withdrew a deliverable that passed your tests" in text
+    assert "You withdrew a deliverable that passed your verification run" in text
     assert _OBL in text
     assert h.reasons()[1:] == ["closure_gate_continued", "closure_gate_active_stop_rechecked"]
     assert gate_module.closure_gate_turn_blocks(h.session_id, _state=tmp_path) == 2
