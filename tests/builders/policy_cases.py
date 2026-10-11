@@ -55,6 +55,7 @@ from yoetz.kernel.projections import (
     PlanProjectionRecord,
     ProjectionRecord,
     ProjectionState,
+    StandingPosition,
 )
 from yoetz.protocol.canonical import canonical_digest
 from yoetz.protocol.coverage import (
