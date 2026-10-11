@@ -83,7 +83,6 @@ __all__ = [
     "REOPENABLE_TODO_STATES",
     "TERMINAL_TODO_STATES",
     "TODO_TRANSITIONS",
-    "FindingStanding",
     "FindingTodo",
     "FindingTodoCounts",
     "FindingTodoState",
@@ -314,41 +313,6 @@ def standing_answer_frontier(state: ProjectionState, finding_id: FindingId) -> i
     return None
 
 
-@dataclass(frozen=True, slots=True)
-class FindingStanding:
-    """Where the dialogue about one finding stands (tb4n3 RC-7), as closed facts."""
-
-    position_kind: str | None
-    position_frontier: int | None
-    last_ruling_frontier: int | None
-    # A reviewer ruling was recorded after the agent's standing position: the rejection (or
-    # acknowledgement) has been answered by a review, so it is not "awaiting a ruling".
-    ruled_since_position: bool
-
-
-def finding_standing(state: ProjectionState, finding_id: FindingId) -> FindingStanding:
-    record = state.findings.get(finding_id)
-    frontier = standing_answer_frontier(state, finding_id)
-    ruling = None if record is None else record.last_ruling_frontier
-    kind: str | None = None
-    if record is not None and record.standing_position is not None:
-        kind = record.standing_position.kind
-    elif frontier is not None:
-        kind = "rejected"
-    return FindingStanding(
-        kind,
-        frontier,
-        ruling,
-        frontier is not None and ruling is not None and ruling > frontier,
-    )
-
-
-def ruling_since(state: ProjectionState, finding_id: FindingId) -> bool:
-    """Whether a reviewer ruling was recorded after the agent's standing position."""
-
-    return finding_standing(state, finding_id).ruled_since_position
-
-
 def finding_todo_state(state: ProjectionState, finding_id: FindingId) -> FindingTodoState:
     """The one shared to-do state of a recorded finding."""
 
@@ -532,3 +496,34 @@ def todo_counts(
         self_verified=values[FindingTodoState.SELF_VERIFIED],
         disputed_after_rebuttal=values[FindingTodoState.DISPUTED_AFTER_REBUTTAL],
     )
+
+
+def finding_standing(state: ProjectionState, finding_id: FindingId) -> tuple[str, int] | None:
+    """The agent's standing position on a finding as ``(kind, frontier)``, or ``None``.
+
+    The accessor the closure classifier asks what the agent holds and since when (tb4n3 RC-3 /
+    RC-7, issues #1026 and #1030). ``kind`` is the reducer's ``StandingPosition.kind`` (a
+    disposition value: ``rejected`` once any reasoned rejection stands, else the first reasoned
+    answer's) and ``frontier`` is ``standing_answer_frontier``: the earliest unretracted reasoned
+    answer, so an acknowledgement after a rebuttal never erases the rebuttal. ``None`` when the
+    agent holds no reasoned position (no answer, only an unreasoned or retracted one).
+    """
+
+    record = state.findings.get(finding_id)
+    frontier = standing_answer_frontier(state, finding_id)
+    if record is None or frontier is None:
+        return None
+    kind = "rejected" if record.standing_position is None else record.standing_position.kind
+    return kind, frontier
+
+
+def ruling_since(state: ProjectionState, finding_id: FindingId) -> int | None:
+    """The frontier of the newest reviewer ruling on a finding, or ``None`` when none is recorded.
+
+    ``FindingProjectionRecord.last_ruling_frontier`` (tb4n3 RC-7): the ledger sequence of the
+    check that recorded the newest admitted ruling. Callers compare it with
+    ``finding_standing``'s frontier: a rejection no ruling followed is awaiting a ruling.
+    """
+
+    record = state.findings.get(finding_id)
+    return None if record is None else record.last_ruling_frontier
