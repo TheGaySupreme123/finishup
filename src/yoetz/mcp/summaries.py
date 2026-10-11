@@ -130,7 +130,7 @@ _P_DETAIL: Final = 50  # supporting detail; the structured result carries it in 
 # One id or token list never takes more than this of the bounded text, so a 100-finding check
 # still leaves room for the instruction, the checklist and the disclosures beside it; the exact
 # remainder is stated as "+N more" and the structured result carries every row.
-_LIST_MAX_CHARS: Final = 1536
+_LIST_MAX_CHARS: Final = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -1435,7 +1435,13 @@ def summary_for_check(envelope: object) -> str:
     input_action_required = has_agent_suppliable_missing(source.get("missing_for_assessment"))
     overall = render.guarded_parts("overall_next", lambda: _overall_next_parts(source))
     parts: list[Part | None] = [
-        _req(*_check_lead_variants(source, verdict, status, reason)),
+        # The lead's shortest form already names the verdict and its coverage bound; the longer
+        # forms explain, so they are granted room after the instructions and ids.
+        Part(
+            _check_lead_variants(source, verdict, status, reason),
+            required=True,
+            priority=_P_DISCLOSURE,
+        ),
         _opt(
             *render.variants("route", lambda: _route_variants(status, source)),
             priority=_P_DISCLOSURE,

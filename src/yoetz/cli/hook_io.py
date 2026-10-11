@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import BinaryIO, Final, cast
 
+from yoetz.domain.bounded_text import clip_to_limit
 from yoetz.protocol.canonical import (
     MAX_JSON_DEPTH,
     JsonValue,
@@ -89,7 +90,20 @@ _MAX_SKIM_STRUCTURE_TOKENS: Final = 262_144
 # An unterminated string consumes to the end of input, so a malformed body cannot make
 # the match restart at every quote (quadratic time; found in review of #999).
 _JSON_STRING_TOKEN: Final = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*(?:"|\\?\Z)')
+# Yoetz's own cap on the advice text a hook hands a host. It is NOT a documented host limit
+# (tb4n3 RC-2: no host document available to this repository states one for Codex, Claude Code or
+# Cursor), it is the conservative bound every renderer and the Stop gate compose against. Text
+# over it used to be cut mid-word with nothing to say so; it now ends with a visible marker.
 _MAX_CONTEXT_CHARS: Final = 2_000
+_CONTEXT_CUT_MARKER: Final = " [Yoetz text cut at 2000 characters; read status or the receipt]"
+
+
+def _bounded_context(text: str) -> str:
+    """Bound hook advice text; a cut ends with a marker so the agent can tell it is partial."""
+
+    return clip_to_limit(text, _MAX_CONTEXT_CHARS, marker=_CONTEXT_CUT_MARKER, ascii_only=False)
+
+
 _MAX_CURSOR_IDENTITY_STRING_BYTES: Final = 8_192
 _MAX_CURSOR_IDENTITY_DEPTH: Final = 6
 _MAX_CURSOR_IDENTITY_ITEMS: Final = 32
@@ -284,8 +298,7 @@ def context_output(event_name: str, additional_context: str) -> dict[str, JsonVa
     text = additional_context.strip()
     if not text:
         return {}
-    if len(text) > _MAX_CONTEXT_CHARS:
-        text = text[:_MAX_CONTEXT_CHARS]
+    text = _bounded_context(text)
     if event_name in STOP_CONTROL_EVENTS:
         return {"decision": "block", "reason": text}
     if event_name in ADDITIONAL_CONTEXT_EVENTS:
@@ -311,8 +324,7 @@ def claude_context_output(event_name: str, additional_context: str) -> dict[str,
     text = additional_context.strip()
     if not text:
         return {}
-    if len(text) > _MAX_CONTEXT_CHARS:
-        text = text[:_MAX_CONTEXT_CHARS]
+    text = _bounded_context(text)
     if event_name in CLAUDE_ADDITIONAL_CONTEXT_EVENTS:
         return {
             "hookSpecificOutput": {
@@ -331,7 +343,7 @@ def claude_permission_denied_output(system_message: str, *, retry: bool) -> dict
     (Claude Code 2.1.281 schema and docs checked 2026-09-26).
     """
 
-    shown = system_message.strip()[:_MAX_CONTEXT_CHARS]
+    shown = _bounded_context(system_message.strip())
     if not shown:
         return {}
     return {
@@ -366,8 +378,7 @@ def cursor_context_output(
     bounded = text.strip()
     if not bounded:
         return {}
-    if len(bounded) > _MAX_CONTEXT_CHARS:
-        bounded = bounded[:_MAX_CONTEXT_CHARS]
+    bounded = _bounded_context(bounded)
     if raw_event in {"sessionStart", "postToolUse"}:
         return {"additional_context": bounded}
     if raw_event == "stop" and allow_stop_followup:

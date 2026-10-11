@@ -85,10 +85,18 @@ def test_cursor_outputless_and_unknown_events_emit_empty_object() -> None:
         assert cursor_context_output(event, "advice that has no output channel") == {}
 
 
-def test_cursor_context_is_bounded_by_the_codex_context_limit() -> None:
+def test_cursor_context_is_bounded_and_a_cut_ends_with_a_visible_marker() -> None:
+    """Yoetz's own 2,000-character cap (not a documented host limit); a cut says so (tb4n3)."""
+
     advice = "x" * 2_001
-    assert cursor_context_output("sessionStart", advice) == {"additional_context": "x" * 2_000}
-    assert cursor_context_output("postToolUse", advice) == {"additional_context": "x" * 2_000}
+    for event in ("sessionStart", "postToolUse"):
+        delivered = cursor_context_output(event, advice)["additional_context"]
+        assert isinstance(delivered, str)
+        assert len(delivered) == 2_000
+        assert delivered.endswith("[Yoetz text cut at 2000 characters; read status or the receipt]")
+        assert delivered.startswith("x" * 100)
+    exact = "y" * 2_000
+    assert cursor_context_output("sessionStart", exact) == {"additional_context": exact}
 
 
 def test_cursor_post_tool_use_stdout_is_canonical_and_bounded() -> None:
@@ -144,9 +152,11 @@ def test_claude_session_end_blank_and_unknown_events_emit_empty_object() -> None
 
 
 def test_claude_context_is_bounded_by_the_shared_context_limit() -> None:
-    assert claude_context_output("Stop", "x" * 2_001) == {
-        "hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": "x" * 2_000}
-    }
+    delivered = claude_context_output("Stop", "x" * 2_001)["hookSpecificOutput"]
+    assert isinstance(delivered, dict)
+    text = delivered["additionalContext"]
+    assert isinstance(text, str) and len(text) == 2_000
+    assert text.endswith("[Yoetz text cut at 2000 characters; read status or the receipt]")
 
 
 @pytest.mark.parametrize("host", ("codex", "claude", "cursor"))
