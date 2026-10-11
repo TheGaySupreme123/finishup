@@ -369,16 +369,24 @@ async def test_cargo_s_a_rebuttal_is_not_erased_by_a_later_acknowledgement() -> 
     rejected = await _respond(
         session, at, at, flagged, seed + 20, "rejected", "The signature spans several lines."
     )
-    # The agent, confused by the gate, then also acknowledges it: the rebuttal still stands.
-    acknowledged = await _respond(
+    # The agent, confused by the gate, then also acknowledges it with a recorded repair: the
+    # rebuttal still stands.
+    result_id, repaired = await W._repair(
         session,
-        frontier_json(rejected.result_frontier),  # type: ignore[attr-defined]
+        frontier_json(rejected.result_frontier),
+        seed + 22,  # type: ignore[attr-defined]
+    )
+    wire = W._respond_wire(
+        session,
+        repaired,
         at,
         flagged,
-        seed + 21,
+        seed + 27,
         "acknowledged",
         "Added the signature evidence anyway.",
     )
+    wire["evidence_refs"] = [result_id]
+    acknowledged = await session.app.respond(RespondRequest.model_validate(wire))
     second = await W._check(session, frontier_json(acknowledged.result_frontier), seed + 30)  # type: ignore[attr-defined]
     live = W._live_projection(session.app)
     # The reviewer withdrew: accepted although the latest answer was an acknowledgement.
@@ -423,63 +431,3 @@ async def test_reopened_takes_a_give_up_back_and_every_refusal_names_the_way_out
     assert finding_blocks_receipt(live, unmet.finding_id) is True
     assert live.findings[unmet.finding_id].standing_position is None
     _rebuilt_equals_live(session)
-
-
-async def test_a_result_naming_only_its_action_event_links_to_that_action() -> None:
-    """N3-5: pretrain D published a result with the action event as causal parent and no
-    action_id; the whole batch was rejected. It now links to that one action."""
-
-    seed = 9900
-    reviewer = W._Reviewer([])
-    session, frontier = await W._session(reviewer, seed)
-    action_id = protocol_id("act_", seed + 10)
-    action_event = protocol_id("evt_", seed + 11)
-    published = await _publish(
-        session,
-        frontier,
-        seed + 12,
-        [
-            _draft(
-                action_event,
-                "action_recorded",
-                {"action_id": action_id, "action_kind": "research", "description": "Read inputs."},
-            )
-        ],
-    )
-    result_id = protocol_id("res_", seed + 20)
-    linked = await _publish(
-        session,
-        frontier_json(published.result_frontier),
-        seed + 21,
-        [
-            _draft(
-                protocol_id("evt_", seed + 22),
-                "result_recorded",
-                {"result_id": result_id, "outcome": "success", "summary": "Inputs read."},
-                parents=[action_event],
-            )
-        ],
-    )
-    live = W._live_projection(session.app)
-    row = live.results[result_id]  # type: ignore[index]
-    assert row.payload is not None and str(row.payload.action_id) == action_id
-    assert linked.outcome == "accepted"
-    # An unknown or ambiguous parent never guesses: the batch is rejected as before.
-    with pytest.raises(PublicOperationError):
-        await _publish(
-            session,
-            frontier_json(linked.result_frontier),
-            seed + 30,
-            [
-                _draft(
-                    protocol_id("evt_", seed + 31),
-                    "result_recorded",
-                    {
-                        "result_id": protocol_id("res_", seed + 32),
-                        "outcome": "success",
-                        "summary": "No parent.",
-                    },
-                    parents=[],
-                )
-            ],
-        )

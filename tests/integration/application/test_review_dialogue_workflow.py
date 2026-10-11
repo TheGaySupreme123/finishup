@@ -1359,7 +1359,10 @@ async def test_a_reviewer_restating_a_self_verified_issue_with_newer_material_mi
     assert successor.finding_id != raised.finding_id
     assert "semantic_restatements_suppressed" not in third.coverage.known_gaps
     live = _live_projection(session.app)
-    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.SELF_VERIFIED
+    # The successor cites more than the original (the failing run), so it is a different issue:
+    # the check that raised it no longer returns the original, and a qualifying check that tested
+    # the work after the self_verified answer proves the original absent (the reverse edge).
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.VERIFIED_RESOLVED
     assert finding_todo_state(live, successor.finding_id) is FindingTodoState.OPEN
     assert receipt_blocking_finding_count(live) == 1
     assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(live)

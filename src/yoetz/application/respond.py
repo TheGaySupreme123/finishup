@@ -71,6 +71,7 @@ from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
 from yoetz.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand, TaskRuntime
 from yoetz.protocol.canonical import (
     JsonValue,
+    canonical_digest,
     canonical_encode,
     request_digest,
     strict_json_parse,
@@ -758,7 +759,7 @@ def _closure_after(
         sequence = record.ledger.ingestion_sequence
         answer = ProjectionRecord(
             payload=payload,
-            payload_digest=finding.payload_digest,
+            payload_digest=canonical_digest(encode_payload(payload)),
             redacted=False,
             source_event_id=record.event_id,
             source_frontier=sequence,
