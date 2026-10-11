@@ -82,8 +82,10 @@ __all__ = [
     "is_premise_challenge",
     "premise_dispute_basis",
     "standing_premise_disputes",
+    "finding_standing",
     "finding_todo",
     "finding_todo_state",
+    "ruling_since",
     "todo_counts",
 ]
 
@@ -410,3 +412,30 @@ def todo_counts(
         self_verified=values[FindingTodoState.SELF_VERIFIED],
         disputed_after_rebuttal=values[FindingTodoState.DISPUTED_AFTER_REBUTTAL],
     )
+
+
+def finding_standing(state: ProjectionState, finding_id: FindingId) -> tuple[str, int] | None:
+    """The agent's standing answer on a finding as ``(disposition value, frontier)``, or ``None``.
+
+    Seam for tb4n3 RC-3 / RC-7 (issue #1026). The closure classifier asks only this accessor what
+    the agent last said and when, so the dialogue lane can replace the body (the earliest
+    unretracted reasoned answer, ``standing_answer_frontier``) without touching any consumer. This
+    body is today's behaviour: the latest recorded response and the frontier it was recorded at.
+    """
+
+    response = state.responses.get(finding_id)
+    if response is None or response.payload is None:
+        return None
+    return str(response.payload.disposition.value), response.source_frontier
+
+
+def ruling_since(state: ProjectionState, finding_id: FindingId) -> int | None:
+    """The frontier of the newest reviewer ruling on a finding, or ``None`` when none is recorded.
+
+    Seam for tb4n3 RC-3 / RC-7 (issue #1026). ``None`` means "no ruling frontier is recorded", so
+    a rejected finding reads as awaiting a ruling until the dialogue lane records
+    ``last_ruling_frontier`` and replaces this body. Callers compare it with ``finding_standing``.
+    """
+
+    del state, finding_id
+    return None
