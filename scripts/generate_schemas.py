@@ -4531,9 +4531,11 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
             # "3" is the current table (#984 ``finding_self_verified``); "1" and "2" stay admitted
             # for a result an earlier 0.3 build shaped.
             # "5" adds ``finding_disputed_after_rebuttal`` (#1020); "6" adds
-            # ``declared_output_emptied`` and ``deliverable_references_undeclared_file`` (#1022).
+            # ``declared_output_emptied`` and ``deliverable_references_undeclared_file`` (#1022);
+            # "7" is the table derived from ``kernel.gap_effect`` (#1026) with the
+            # ``finding_rejection_awaiting_ruling`` readiness token.
             "gap_classification_version": {
-                "enum": ["1", "2", "3", "4", "5", "6"],
+                "enum": ["1", "2", "3", "4", "5", "6", "7"],
                 "type": "string",
             },
             "standing_limitations": {
