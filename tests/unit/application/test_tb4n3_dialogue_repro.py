@@ -18,30 +18,74 @@ defect:
   check), the replay-derived fact that tells a proof recorded after the answer from one before it.
 """
 
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 from dataclasses import replace
 
 from builders.policy_cases import clm, evt, finding_record, fnd, obl, record, res
 from unit.application import test_semantic_post_validation as T
-from yoetz.application.check import validate_semantic_judgment
+from yoetz.application.check import SemanticJudgmentReview, validate_semantic_judgment
 from yoetz.domain.events import ResponseDisposition, ResponseRecordedPayload
 from yoetz.domain.findings import (
     FINDING_KIND_TRAITS,
+    CandidateFinding,
+    Finding,
     FindingKind,
     finding_demands_work,
     finding_policy_identity,
     is_limitation_request,
 )
+from yoetz.kernel.deterministic_checks import DeterministicCase
 from yoetz.kernel.finding_todo import FindingTodoState, finding_blocks_receipt, finding_todo_state
-from yoetz.ports.semantic import SemanticJudgment
+from yoetz.ports.semantic import ReviewerChallenge, SemanticJudgment
 
 _FOREIGN = "evd_99999999-9999-4999-8999-999999999999"
 
 
-def _review(case, judgment, **kw):
+def _review(
+    case: DeterministicCase,
+    judgment: SemanticJudgment,
+    *,
+    prior_finding_refs: frozenset[str] | None = None,
+    settled_finding_refs: frozenset[str] | None = None,
+) -> SemanticJudgmentReview:
     return validate_semantic_judgment(
-        case, (), judgment, T._provenance(), expected_frontier=case.frontier, **kw
+        case,
+        (),
+        judgment,
+        T._provenance(),
+        expected_frontier=case.frontier,
+        prior_finding_refs=prior_finding_refs,
+        settled_finding_refs=settled_finding_refs,
+    )
+
+
+def _payload(case: DeterministicCase) -> Finding:
+    payload = case.projection.findings[fnd(1)].payload
+    assert payload is not None
+    return payload
+
+
+def _as_finding(candidate: CandidateFinding) -> Finding:
+    """The finding the commit path records for an accepted candidate."""
+
+    return Finding(
+        finding_id=fnd(9),
+        kind=candidate.kind,
+        origin=candidate.origin,
+        priority=candidate.priority,
+        summary=candidate.summary,
+        detail=candidate.detail,
+        subject_refs=candidate.subject_refs,
+        policy_id=candidate.policy_id,
+        policy_version=candidate.policy_version,
+        subject_frontier=candidate.subject_frontier,
+        coverage=candidate.coverage,
+        provenance=candidate.provenance,
+        challenge=candidate.challenge,
+        related_finding_ids=candidate.related_finding_ids,
     )
 
 
@@ -97,18 +141,19 @@ def test_a_state_unresolved_limitation_challenge_is_not_receipt_blocking_work() 
     review = _review(case, SemanticJudgment("challenges_returned", (challenge,)))
     # Owner decision Q4: the request is minted (a to-disclose item the agent acknowledges once),
     # but it never demands work and never counts as receipt-blocking.
-    assert [is_limitation_request(c) for c in review.candidates] == [True]
-    blocking = [c for c in review.candidates if finding_demands_work(c)]
+    minted = [_as_finding(c) for c in review.candidates]
+    assert [is_limitation_request(f) for f in minted] == [True]
+    blocking = [f for f in minted if finding_demands_work(f)]
     assert blocking == [], "a limitation-only challenge must not mint receipt-blocking agent work"
 
 
 # --- D-3 (vpp S): re-raise over a settled answer under another kind mints a fresh finding --------
 
 
-def _settled_case(disposition: ResponseDisposition):
+def _settled_case(disposition: ResponseDisposition) -> DeterministicCase:
     base = T._formal_crypto_case()
     finding = replace(
-        base.projection.findings[fnd(1)].payload,
+        _payload(base),
         kind=FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS,
         priority=FINDING_KIND_TRAITS[FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS][0],
         policy_id=finding_policy_identity(FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS)[0],
@@ -131,7 +176,7 @@ def _settled_case(disposition: ResponseDisposition):
     )
 
 
-def _bookkeeping_reraise(restates: str | None):
+def _bookkeeping_reraise(restates: str | None) -> ReviewerChallenge:
     return replace(
         T._challenge(str(obl(1)), str(clm(1)), summary="Reference comparison still not done"),
         finding_kind=FindingKind.TASK_REQUIREMENT_UNMET,  # vpp: kind flipped on the re-raise
@@ -199,7 +244,7 @@ def test_a_later_absence_proof_supersedes_acknowledged_not_done() -> None:
         reason="Cannot link the result.",
     )
     proved = finding_record(
-        base.projection.findings[fnd(1)].payload,
+        _payload(base),
         5,
         resolved_by_check_event_id=evt(20),
         resolution_frontier=20,

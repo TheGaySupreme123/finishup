@@ -12,6 +12,8 @@ review; the code side is what failed). The shapes are the recorded runs:
   agent's own republish is not new material.
 """
 
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -22,6 +24,7 @@ import pytest
 from builders.projection_workflow import frontier_json, request_base
 from builders.start_application import protocol_id
 from integration.application import test_review_dialogue_workflow as W
+from yoetz.application.respond import RespondInternalResult
 from yoetz.domain.findings import FindingKind, FindingOrigin
 from yoetz.kernel.finding_todo import (
     FindingTodoState,
@@ -34,7 +37,11 @@ from yoetz.kernel.projections import projection_snapshot
 from yoetz.kernel.receipt_capacity import receipt_blocking_finding_count
 from yoetz.kernel.reducers import replay
 from yoetz.ports.ledger import FrozenCase
-from yoetz.ports.semantic import PriorFindingVerdict, ReviewerChallenge, SemanticJudgment
+from yoetz.ports.semantic import (
+    ReviewerChallenge,
+    ReviewerNextStep,
+    SemanticJudgment,
+)
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.errors import PublicOperationError
 from yoetz.protocol.models import PublishWorkRequest, RespondRequest
@@ -51,7 +58,7 @@ def _obligation(frozen: FrozenCase) -> str:
     return str(next(iter(frozen.case.projection.obligations)))
 
 
-def _raise(kind: FindingKind, next_step: str, *extra: str) -> _Script:
+def _raise(kind: FindingKind, next_step: ReviewerNextStep, *extra: str) -> _Script:
     """A compliant reviewer challenge on the plan's obligation with the given next step."""
 
     def script(frozen: FrozenCase) -> SemanticJudgment:
@@ -80,7 +87,7 @@ async def _respond(
     seed: int,
     disposition: str,
     reason: str | None,
-) -> object:
+) -> RespondInternalResult:
     return await session.app.respond(
         RespondRequest.model_validate(
             W._respond_wire(
@@ -288,6 +295,126 @@ async def test_a_self_verified_answer_folds_a_repeat_without_newer_material() ->
     _rebuilt_equals_live(session)
 
 
+# --- (b3) formal-crypto S: a concern that first appears in a re-raise folds onto the settled item --
+
+
+def _raise_on(kind: FindingKind, next_step: ReviewerNextStep, *refs: str) -> _Script:
+    """A compliant reviewer challenge citing exactly *refs* (sorted)."""
+
+    def script(frozen: FrozenCase) -> SemanticJudgment:
+        del frozen
+        challenge = ReviewerChallenge(
+            kind,
+            "The required reference comparison is not established",
+            tuple(sorted(refs)),
+            "The packet shows no comparison against the reference.",
+            "The reference may be withheld by the task design.",
+            "Main agent: do the comparison.",
+            next_step,
+            "Only the withheld reference would settle it.",
+        )
+        return SemanticJudgment("challenges_returned", (challenge,))
+
+    return script
+
+
+async def _second_obligation(
+    session: W._Session, frontier: JsonValue, seed: int
+) -> tuple[str, JsonValue]:
+    obligation = protocol_id("obl_", seed)
+    published = await _publish(
+        session,
+        frontier,
+        seed + 1,
+        [
+            _draft(
+                protocol_id("evt_", seed + 2),
+                "obligation_published",
+                {
+                    "obligation_id": obligation,
+                    "description": "Cover the second reference vector.",
+                    "acceptance_criteria": "The vector matches.",
+                    "evidence_expectation": "A recorded test result.",
+                    "requested_items": [{"item_kind": "change", "value": "vector"}],
+                    "status": "open",
+                },
+            )
+        ],
+    )
+    return obligation, frontier_json(published.result_frontier)
+
+
+async def test_formal_crypto_s_a_concern_first_named_in_a_reraise_stays_one_finding() -> None:
+    """formal-crypto S: five ids for one give-up. The second review re-raised the settled item
+    with an obligation the first never named; the third named only that obligation. The settled
+    item remembers what its re-raise cited, so the third folds instead of minting."""
+
+    seed = 9900
+    second_obligation = protocol_id("obl_", seed + 70)
+    session_probe = protocol_id("obl_", seed + 1)  # the session's own obligation id
+    reviewer = W._Reviewer(
+        [
+            _raise_on(FindingKind.TASK_REQUIREMENT_UNMET, "act", session_probe),
+            _raise_on(FindingKind.TASK_REQUIREMENT_UNMET, "act", session_probe, second_obligation),
+            _raise_on(FindingKind.TASK_REQUIREMENT_UNMET, "act", second_obligation),
+        ]
+    )
+    session, frontier = await W._session(reviewer, seed)
+    first = await W._check(session, frontier, seed + 10)
+    unmet = W._semantic(first)
+    at = frontier_json(first.result_frontier)
+    gave_up = await _respond(
+        session, at, at, unmet, seed + 20, "acknowledged_not_done", "No solver is feasible."
+    )
+    added, after = await _second_obligation(
+        session,
+        frontier_json(gave_up.result_frontier),
+        seed + 70,
+    )
+    assert added == second_obligation
+    second = await W._check(session, after, seed + 30)
+    assert _semantic_findings(session) == (unmet.finding_id,)
+    live = W._live_projection(session.app)
+    assert live.findings[unmet.finding_id].settled_reraise_count == 1
+    assert second_obligation in live.findings[unmet.finding_id].absorbed_refs
+
+    third = await W._check(session, frontier_json(second.result_frontier), seed + 40)
+    assert "semantic_restatements_suppressed" in third.coverage.known_gaps
+    assert _semantic_findings(session) == (unmet.finding_id,)
+    live = W._live_projection(session.app)
+    assert live.findings[unmet.finding_id].settled_reraise_count == 2
+    _rebuilt_equals_live(session)
+
+
+async def test_formal_crypto_s_control_a_different_obligation_alone_is_a_distinct_finding() -> None:
+    """The fold is earned by the re-raise, not by the obligation being new: with no re-raise
+    that cited it, a challenge naming only the second obligation is its own issue."""
+
+    seed = 10000
+    second_obligation = protocol_id("obl_", seed + 70)
+    reviewer = W._Reviewer(
+        [
+            _raise_on(FindingKind.TASK_REQUIREMENT_UNMET, "act", protocol_id("obl_", seed + 1)),
+            _raise_on(FindingKind.TASK_REQUIREMENT_UNMET, "act", second_obligation),
+        ]
+    )
+    session, frontier = await W._session(reviewer, seed)
+    first = await W._check(session, frontier, seed + 10)
+    unmet = W._semantic(first)
+    at = frontier_json(first.result_frontier)
+    gave_up = await _respond(
+        session, at, at, unmet, seed + 20, "acknowledged_not_done", "No solver is feasible."
+    )
+    _added, after = await _second_obligation(
+        session,
+        frontier_json(gave_up.result_frontier),
+        seed + 70,
+    )
+    await W._check(session, after, seed + 30)
+    assert len(_semantic_findings(session)) == 2
+    assert W._live_projection(session.app).findings[unmet.finding_id].absorbed_refs == ()
+
+
 # --- controls: lake S and pretrain S ---------------------------------------------------------------
 
 
@@ -324,7 +451,7 @@ async def test_pretrain_s_control_the_give_up_is_disputed_and_a_later_repair_res
     gave_up = await _respond(
         session, at, at, unmet, seed + 20, "acknowledged_not_done", "The inputs cannot be found."
     )
-    after_give_up = frontier_json(gave_up.result_frontier)  # type: ignore[attr-defined]
+    after_give_up = frontier_json(gave_up.result_frontier)
     second = await W._check(session, after_give_up, seed + 30)
     live = W._live_projection(session.app)
     # Re-raised after the give-up: the standing premise dispute the Stop gate challenges once.
@@ -350,15 +477,6 @@ async def test_pretrain_s_control_the_give_up_is_disputed_and_a_later_repair_res
 
 async def test_cargo_s_a_rebuttal_is_not_erased_by_a_later_acknowledgement() -> None:
     seed = 9700
-    withdrawn = W._withdraw_first_finding
-
-    def repeat_without_newer(frozen: FrozenCase) -> SemanticJudgment:
-        finding = next(iter(frozen.case.projection.findings))
-        return SemanticJudgment(
-            "no_material_discrepancy", (), (PriorFindingVerdict(str(finding), "still_present", ()),)
-        )
-
-    del withdrawn
     reviewer = W._Reviewer(
         [_raise(FindingKind.TASK_REQUIREMENT_UNMET, "act"), W._withdraw_first_finding]
     )
@@ -374,7 +492,7 @@ async def test_cargo_s_a_rebuttal_is_not_erased_by_a_later_acknowledgement() -> 
     result_id, repaired = await W._repair(
         session,
         frontier_json(rejected.result_frontier),
-        seed + 22,  # type: ignore[attr-defined]
+        seed + 22,
     )
     wire = W._respond_wire(
         session,
@@ -387,7 +505,7 @@ async def test_cargo_s_a_rebuttal_is_not_erased_by_a_later_acknowledgement() -> 
     )
     wire["evidence_refs"] = [result_id]
     acknowledged = await session.app.respond(RespondRequest.model_validate(wire))
-    second = await W._check(session, frontier_json(acknowledged.result_frontier), seed + 30)  # type: ignore[attr-defined]
+    second = await W._check(session, frontier_json(acknowledged.result_frontier), seed + 30)
     live = W._live_projection(session.app)
     # The reviewer withdrew: accepted although the latest answer was an acknowledgement.
     assert finding_todo_state(live, flagged.finding_id) is FindingTodoState.REJECTION_ACCEPTED
@@ -415,7 +533,7 @@ async def test_reopened_takes_a_give_up_back_and_every_refusal_names_the_way_out
     gave_up = await _respond(
         session, at, at, unmet, seed + 20, "acknowledged_not_done", "The inputs cannot be found."
     )
-    after = frontier_json(gave_up.result_frontier)  # type: ignore[attr-defined]
+    after = frontier_json(gave_up.result_frontier)
     with pytest.raises(PublicOperationError) as terminal:
         await _respond(session, after, at, unmet, seed + 21, "rejected", "Changed my mind.")
     assert W._refusal(terminal) == "finding_terminal"
@@ -425,7 +543,8 @@ async def test_reopened_takes_a_give_up_back_and_every_refusal_names_the_way_out
     reopened = await _respond(
         session, after, at, unmet, seed + 22, "reopened", "Recovered the inputs; doing the work."
     )
-    assert reopened.closure_after.todo_state == "open"  # type: ignore[attr-defined]
+    assert reopened.closure_after is not None
+    assert reopened.closure_after.todo_state == "open"
     live = W._live_projection(session.app)
     assert finding_todo_state(live, unmet.finding_id) is FindingTodoState.OPEN
     assert finding_blocks_receipt(live, unmet.finding_id) is True

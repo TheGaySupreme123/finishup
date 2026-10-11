@@ -139,7 +139,13 @@ from yoetz.ports.objects import (
 )
 from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
 from yoetz.ports.runtime import BundleProvisionCommand, BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.ports.semantic import ReviewerChallenge, SamplingParams, SemanticCase, SemanticJudgment
+from yoetz.ports.semantic import (
+    ReviewerChallenge,
+    ReviewerNextStep,
+    SamplingParams,
+    SemanticCase,
+    SemanticJudgment,
+)
 from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from yoetz.protocol.coverage import (
     ArtifactObservation,
@@ -4743,7 +4749,10 @@ async def test_succeeded_review_records_assessable_conclusion_durably(
 
 
 def _semantic_challenge_evaluator(
-    claim_ref: str, *, subjects: tuple[str, ...] = (), next_step: str = "provide_evidence"
+    claim_ref: str,
+    *,
+    subjects: tuple[str, ...] = (),
+    next_step: ReviewerNextStep = "provide_evidence",
 ) -> Callable[..., Awaitable[object]]:
     """Raise one AI-powered challenge about *claim_ref*, also citing any further *subjects*.
 
