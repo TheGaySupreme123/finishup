@@ -622,9 +622,23 @@ def test_truncation_rule(base: int, lost: int, elsewhere: int, emptied: bool) ->
     assert bool(emptied_declared_items(projection, {(_OBLIGATION, 0): state})) is emptied
 
 
-def test_check_adds_emptied_and_the_gate_names_it(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_adds_emptied_and_every_stop_voices_it_without_a_rider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Producer to gate, end to end (tb4n3 RC-8, formal-crypto S).
+
+    Replaces ``test_check_adds_emptied_and_the_gate_names_it``, which asserted that the emptied
+    gate text carried the A-12 ``acceptance_criteria`` sentence: that rode on the token by
+    accident and is the coupling the gate no longer has (the acceptance re-read is its own
+    announced readiness item). What must hold is the contract the owner asked for: the check
+    produces the gap, the real readiness derivation lists it agent-actionable, the first-Stop gate
+    names it, and a Stop the host already continued (every later Stop of formal-crypto S) voices
+    it once, by key, instead of staying silent.
+    """
+
     from yoetz.application import check, check_change
     from yoetz.cli.closure_gate import closure_gate_from_readiness
+    from yoetz.kernel.closure_readiness import ClosureReadinessFacts, derive_closure_readiness
 
     projection = _resolved_projection(_file("/app/solve.sage"))
 
@@ -642,21 +656,62 @@ def test_check_adds_emptied_and_the_gate_names_it(monkeypatch: pytest.MonkeyPatc
         )
     )
     assert DECLARED_OUTPUT_EMPTIED_GAP in gaps
-    readiness = SimpleNamespace(
-        state="action_required",
-        agent_actionable=(DECLARED_OUTPUT_EMPTIED_GAP,),
-        standing_limitations=(),
-        open_obligation_count=0,
-        receipt_blocking_finding_count=0,
-        blocked_obligations=(),
+    split = derive_closure_readiness(
+        ("coverage_gaps_declared",),
+        tuple(gaps),
+        ClosureReadinessFacts(
+            check_applicability="applicable",
+            semantic_review_current=True,
+            receipt_blocking_finding_ids=(),
+            acknowledged_finding_ids=(),
+            acknowledged_obligation_ids=(),
+            open_obligations_unreadable=False,
+            closing_review_current=True,
+            semantic_review_used=True,
+        ),
+        semantic_review_required=False,
     )
-    gate = closure_gate_from_readiness(
+    assert split.state == "action_required"
+    assert DECLARED_OUTPUT_EMPTIED_GAP in split.agent_actionable
+    readiness = SimpleNamespace(
+        state=split.state,
+        agent_actionable=split.agent_actionable,
+        standing_limitations=split.standing_limitations,
+        open_obligation_count="0",
+        receipt_blocking_finding_count="0",
+        rechecks=(),
+    )
+    first = closure_gate_from_readiness(
         readiness, frontier_sequence="9", frontier_digest="d", observation_pending=False
     )
-    assert gate is not None
-    assert DECLARED_OUTPUT_EMPTIED_GAP in gate.items
-    assert "no longer counts as delivered" in gate.text
-    assert "acceptance_criteria" in gate.text
+    assert first is not None
+    assert DECLARED_OUTPUT_EMPTIED_GAP in first.items
+    assert "no longer counts as delivered" in first.text
+    assert "You withdrew a deliverable" in first.text
+    # No unannounced rider: the acceptance re-read is not part of this gate.
+    assert "acceptance_criteria" not in first.text
+    assert not any(key.startswith("accept:") for key in first.blocker_keys)
+
+    # A later Stop the host already continued: voiced once per key, then never again.
+    silent = closure_gate_from_readiness(
+        readiness,
+        frontier_sequence="10",
+        frontier_digest="d",
+        observation_pending=False,
+        reasked_blockers=frozenset(first.blocker_keys),
+        active_stop=True,
+    )
+    assert silent is None
+    voiced = closure_gate_from_readiness(
+        readiness,
+        frontier_sequence="10",
+        frontier_digest="d",
+        observation_pending=False,
+        active_stop=True,
+    )
+    assert voiced is not None
+    assert voiced.items == (DECLARED_OUTPUT_EMPTIED_GAP,)
+    assert "You withdrew a deliverable" in voiced.text
 
 
 def test_an_overlapping_declaration_of_the_same_file_is_not_another_output() -> None:
