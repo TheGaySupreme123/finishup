@@ -87,6 +87,7 @@ __all__ = [
     "basis_class",
     "basis_effect",
     "closure_counts",
+    "counted_findings",
     "finding_closure",
     "finding_closure_class",
     "finding_closures",
@@ -685,16 +686,27 @@ def obligation_closure(
     return obligation_closures(state, records=records).get(obligation_id)
 
 
-def closure_counts(
-    findings: Iterable[FindingClosure], obligations: Iterable[ObligationClosure]
-) -> ClosureCounts:
-    """The counters every surface prints; a linked ``duplicate_of`` pair counts once."""
+def counted_findings(findings: Iterable[FindingClosure]) -> dict[FindingId, FindingClosure]:
+    """One closure per counted finding: a linked ``duplicate_of`` chain reads as its earliest finding.
+
+    Every counter, reason and list that names findings reads this one selection, so a count and
+    the ids it summarises can never differ.
+    """
 
     seen: dict[FindingId, FindingClosure] = {}
     for closure in findings:
         prior = seen.get(closure.counts_as)
         if prior is None or closure.finding_id == closure.counts_as:
             seen[closure.counts_as] = closure
+    return seen
+
+
+def closure_counts(
+    findings: Iterable[FindingClosure], obligations: Iterable[ObligationClosure]
+) -> ClosureCounts:
+    """The counters every surface prints; a linked ``duplicate_of`` pair counts once."""
+
+    seen = counted_findings(findings)
     to_do = awaiting = unmet = disclosed = to_disclose = eligible = 0
     for closure in seen.values():
         klass = closure.closure_class

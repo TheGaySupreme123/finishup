@@ -41,7 +41,7 @@ from yoetz.domain.values import (
     repository_grant_continuation,
     review_input_continuation,
 )
-from yoetz.kernel.closure_class import FindingClosureClass, closure_counts
+from yoetz.kernel.closure_class import FindingClosureClass, closure_counts, counted_findings
 from yoetz.kernel.closure_readiness import (
     GAP_CLASSIFICATION_VERSION,
     ClosureReadinessFacts,
@@ -1344,11 +1344,11 @@ def _closure_verdict_fields(
             disclosed=str(counts.obligations_disclosed),
         )
         awaiting = sorted(
-            {
-                item.counts_as: item
-                for item in findings
+            (
+                item
+                for item in counted_findings(findings).values()
                 if item.closure_class is FindingClosureClass.AWAITING_RULING
-            }.values(),
+            ),
             key=lambda item: str(item.finding_id).encode(),
         )[:_MAX_AWAITING_RULING_FINDINGS]
         if awaiting:

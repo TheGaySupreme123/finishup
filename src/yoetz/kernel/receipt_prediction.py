@@ -29,6 +29,7 @@ from yoetz.kernel.closure_class import (
     FindingClosureClass,
     ObligationClosure,
     ReceiptEffect,
+    counted_findings,
 )
 from yoetz.kernel.gap_effect import GapEffect, GapEffectKind
 
@@ -190,11 +191,7 @@ def _reasons(basis: ClosureBasis) -> list[PredictionReason]:
     scope = [gap for gap in live if gap.code in _COMPLETION_SCOPE_GAPS]
     add("completion_scope_gap", len(scope), (gap.code for gap in scope), None)
 
-    counted: dict[str, FindingClosure] = {}
-    for closure in basis.findings:
-        held = counted.get(closure.counts_as)
-        if held is None or closure.finding_id == closure.counts_as:
-            counted[closure.counts_as] = closure
+    counted = counted_findings(basis.findings)
     work = [
         item
         for item in counted.values()

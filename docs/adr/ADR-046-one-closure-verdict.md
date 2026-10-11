@@ -267,6 +267,8 @@ readiness it is given (ADR-033 amendment).
 * The host-observation guard (G) on the receipt now also requires the check's command counters to be
   complete; before, the check carrying the code was the only guard. It moved no label in the
   replayed corpus (the same checks were already below clean).
+* `start` results keep the counter semantics they were frozen with (a durable object; their
+  `receipt_blocking_finding_count` is not recomputed). Status is the live reading.
 * Old ledgers replay unchanged. A receipt already issued is immutable. A new build asked for a
   receipt over an old ledger uses the *recorded* check verdict.
 * Residuals: a reasoned rejection reads `awaiting_ruling` until the reviewer-ruling frontier is
