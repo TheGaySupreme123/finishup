@@ -59,14 +59,16 @@ def test_step_zero_stops_on_an_empty_guidance_read() -> None:
     )
     combined = f"{collapsed} {safety_floor}"
     assert "resolve without any repository checkout" not in collapsed
-    assert "If a body is empty, carries a truncation marker, or is nonempty but clipped" in combined
-    assert "call `read_guidance` with the same URI" in combined
-    assert (
-        "UTF-8 byte counts, offsets, markers, revision, continuation, and final digest" in combined
-    )
-    assert "structuredContent.text" in combined
-    assert "`references/<name>.md`" in combined
-    assert "Do not call `start` on incomplete guidance" in combined
+    # Compaction (#984 budgets) folded the long recovery prose into one sentence: an empty or
+    # clipped body is re-read through ``read_guidance`` (same URI, verified text and byte counts),
+    # then the installed reference, and the skill itself says to page and verify before ``start``.
+    assert "If a body is empty or clipped, call `read_guidance` with the same URI" in combined
+    assert "verify the text and byte counts" in combined
+    assert "`page_size` is 4 to 16,384 UTF-8 bytes" in combined
+    assert "use installed `references/<name>.md`" in combined
+    assert "page and verify empty or clipped guidance" in collapsed
+    assert "The first workflow operation is `start`" in collapsed
+    assert "do not work without a task" in collapsed
     # The skill routes to the compact core; it does not claim that any full document is already in
     # the host context. Other procedures remain addressable through the topic catalog.
     assert "yoetz://guidance/agent-instructions.md" in collapsed
@@ -156,10 +158,18 @@ def test_skill_routes_to_the_readable_cadence_owner() -> None:
     """The entrypoint routes to one maintained cadence, rather than copying its whole table."""
 
     skill = _skill_text()
+    safety_floor = (_PACKAGED_ROOT / "guidance" / "agent-instructions.md").read_text(
+        encoding="utf-8"
+    )
+    # The compact skill names the operations it directs (`start`, `check`, `receipt`) and routes to
+    # the safety floor plus the workflow owner; the one-line cadence naming `publish_work` lives in
+    # the floor the skill tells the agent to read first.
     assert "yoetz://guidance/workflow.md" in skill
+    assert "yoetz://guidance/agent-instructions.md" in skill
     workflow = read_resource("yoetz://guidance/workflow.md").decode("utf-8")
+    combined = f"{skill} {safety_floor}"
     for operation in ("start", "publish_work", "check", "receipt"):
-        assert f"`{operation}`" in skill
+        assert f"`{operation}`" in combined
         assert _cadence_row(workflow, operation)
     cadence = _cadence_row(workflow, "check")
     assert "A check with no new events since the last one adds nothing" in cadence
