@@ -54,4 +54,6 @@ A resumed session (as opposed to a compacted one) and a brand-new session are un
 
 Ask the agent to call `status` with its held session and writer ids. The recap and `status` read the
 same ledger, so a difference means work happened after the recap was read. If a recap never appears
-on a host that should show it, `yoetz observe status` lists the session-start hook's diagnostics.
+on a host that should show it, the session-start hook could not read `status` in time; the agent then
+gets the ordinary start-up text for that situation (for example, that the service is unavailable)
+instead of the recap.

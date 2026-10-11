@@ -1424,6 +1424,12 @@ def session_workspace_locator(workspace: str | None) -> str | None:
 
 
 _RECAP_OBLIGATIONS_DEADLINE_MS: Final = 1_500
+# The re-ground hook runs under a 15 s host timeout; the recap's extra read must finish within the
+# first eight seconds so the observation pass it delegates to keeps its own window.
+_RECAP_WINDOW_SECONDS: Final = 8.0
+# Below this many milliseconds the hook skips the obligations read (deliverables are then named
+# unavailable) rather than risk the host window.
+_RECAP_OBLIGATIONS_MIN_MS: Final = 250
 _RECAP_OBLIGATIONS_LIMIT: Final = "100"
 
 
@@ -1433,11 +1439,13 @@ async def _read_recap_facts(
     mapping: LifecycleMapping,
     *,
     actor_id: str,
+    time_left: Callable[[], float] | None = None,
 ) -> RecapFacts | None:
     """Build the post-compaction recap facts from the compact result already in hand.
 
-    One more bounded ``obligations`` read names the declared deliverables; if it fails or is
-    slow the recap says they are unavailable. Nothing here may raise into the hook.
+    One more bounded ``obligations`` read names the declared deliverables; if it fails, is slow, or
+    the hook has no time left for it (``time_left`` reports the seconds the host window still
+    allows this read), the recap says they are unavailable. Nothing here may raise into the hook.
     """
 
     from yoetz.cli.compaction_recap import recap_facts_from_status, recap_with_deliverables
@@ -1451,6 +1459,11 @@ async def _read_recap_facts(
         )
         if facts is None:
             return None
+        budget_ms = _RECAP_OBLIGATIONS_DEADLINE_MS
+        if time_left is not None:
+            budget_ms = min(budget_ms, int(time_left() * 1_000))
+        if budget_ms < _RECAP_OBLIGATIONS_MIN_MS:
+            return facts
         try:
             result = await client.status(
                 _status_request(
@@ -1459,7 +1472,7 @@ async def _read_recap_facts(
                     view="obligations",
                     limit=_RECAP_OBLIGATIONS_LIMIT,
                 ),
-                deadline_ms=_RECAP_OBLIGATIONS_DEADLINE_MS,
+                deadline_ms=budget_ms,
             )
             branch = getattr(result, "root", result)
             obligations = None if isinstance(branch, OperationFailureModel) else branch
@@ -1477,6 +1490,7 @@ async def _read_status(
     actor_id: str = "yoetz:codex-hooks",
     workspace_locator: str | None = None,
     recap: bool = False,
+    recap_time_left: Callable[[], float] | None = None,
 ) -> StatusOutcome:
     """Read the mapped session's status through a repository-bound connection.
 
@@ -1524,6 +1538,7 @@ async def _read_status(
                 branch,
                 updated,
                 actor_id=actor_id,
+                time_left=recap_time_left,
             )
             if recap
             else None
@@ -1718,6 +1733,7 @@ def handle_session_start(
                     connect=connect,
                     workspace_locator=selection.locator,
                     recap=source == "compact",
+                    recap_time_left=lambda: entered + _RECAP_WINDOW_SECONDS - time.monotonic(),
                 )
 
             outcome = cast(StatusOutcome, runner(_run))

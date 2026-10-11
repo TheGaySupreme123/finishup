@@ -299,6 +299,9 @@ _HOOK_TOTAL_BUDGET_SECONDS: Final = (
 # is bounded, and the remainder is kept for the output write and interpreter
 # start. Individual acquisitions keep their own two-second cap (#689).
 _HOOK_STORE_LOCK_BUDGET_BY_WINDOW: Final = {3: 2.0, 5: 3.5, 10: 7.0}
+# The post-compaction recap's extra obligations read may start only in the first 6.5 seconds of a
+# SessionStart pass (a 10 s host window), so the drain and the output write keep their room.
+_RECAP_READ_WINDOW_SECONDS: Final = 6.5
 
 
 def _hook_host_window_seconds(source: ObservationSource, event: str | None) -> int:
@@ -4418,6 +4421,7 @@ def _session_start_attach(
     session_lock_owned: bool,
     _state: Path | None,
     recap: bool = False,
+    recap_time_left: Callable[[], float] | None = None,
 ) -> _SessionStartAttach:
     """Recover, auto-attach or status-read a non-clear SessionStart's mapping.
 
@@ -4541,6 +4545,7 @@ def _session_start_attach(
                         connect=connector,
                         actor_id=f"yoetz:{harness_id}-hooks",
                         recap=recap,
+                        recap_time_left=recap_time_left,
                     )
 
                 outcome = cast(StatusOutcome, resolve_runner()(_status))
@@ -5764,6 +5769,9 @@ def handle_observe(
                     # Codex re-grounds a compaction through its own ``hooks session-start``
                     # (which carries the recap); the shared pass serves Claude Code and Cursor.
                     recap=session_source_value == "compact" and harness_id != "codex",
+                    recap_time_left=lambda: (
+                        entry_started + _RECAP_READ_WINDOW_SECONDS - _monotonic()
+                    ),
                 )
                 mapping = attach.mapping
                 pending_mapping_deferred = attach.pending_mapping_deferred

@@ -180,6 +180,20 @@ def test_the_recap_names_deliverables_unavailable_when_the_second_read_fails(
     assert service.compact.finding_ids[0] in context  # everything else survives
 
 
+def test_the_obligations_read_is_skipped_when_the_host_window_has_no_room_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from yoetz.cli import hooks as hooks_module
+
+    monkeypatch.setattr(hooks_module, "_RECAP_WINDOW_SECONDS", -1.0)
+    service = _service()
+    context, _ = _codex_context(tmp_path, service, source="compact")
+
+    assert "obligations" not in service.views
+    assert "declared deliverables: unavailable, the obligations view was not read" in context
+    assert service.compact.finding_ids[0] in context  # the compact-view facts all remain
+
+
 def test_a_status_without_a_frontier_or_page_leaves_the_startup_context_unchanged(
     tmp_path: Path,
 ) -> None:
