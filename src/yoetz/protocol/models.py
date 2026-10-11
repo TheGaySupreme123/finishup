@@ -7004,8 +7004,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1482
-    ):  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +5, tb4n3 LO +9
+        len(result) != 1484
+    ):  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +5, LO +9, W2-B +2
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 
