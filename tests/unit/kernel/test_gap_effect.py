@@ -1,6 +1,6 @@
 """One table of what each gap code does to a receipt (tb4n3 RC-3, issue #1026, ADR-046).
 
-The 176 unchanged rows must keep today's behaviour under both routes; the 35 changed rows are
+The 178 unchanged rows must keep today's behaviour under both routes; the 35 changed rows are
 named here, each with its rule, so a reviewer reads exactly which codes the round re-labels.
 """
 
@@ -22,8 +22,9 @@ from yoetz.kernel.gap_effect import (
     judge_gaps,
 )
 
-# The gaps a clean deterministic conclusion could carry at 26e9cecf (``CLEAN_COMPATIBLE_GAPS``),
-# frozen here so the table is checked against the behaviour it replaces, not against itself.
+# The gaps a clean deterministic conclusion could carry before the table (``CLEAN_COMPATIBLE_GAPS`` at
+# 26e9cecf, plus the two standing task-fact disclosures tb4n3 LF added at 51169693d), frozen here so
+# the table is checked against the behaviour it replaces, not against itself.
 _CLEAN_COMPATIBLE_AT_BASE = frozenset(
     {
         "capture_handoff_retired",
@@ -31,6 +32,7 @@ _CLEAN_COMPATIBLE_AT_BASE = frozenset(
         "content_redacted",
         "content_unselected",
         "declared_output_content_moved",
+        "declared_output_not_reviewable",
         "deliverable_references_undeclared_file",
         "host_outcome_unavailable",
         "install_into_private_env",
@@ -39,6 +41,7 @@ _CLEAN_COMPATIBLE_AT_BASE = frozenset(
         "obligation_evidence_stale_after_scope_edit",
         "plan_unrefined_before_first_edit",
         "planned_verification_agent_linked",
+        "planned_verification_matched_by_prefix",
         "planned_verification_outcome_unknown",
         "planned_verification_unobservable",
         "preexisting_test_deleted",
@@ -112,7 +115,7 @@ _CARRIED = frozenset(_GUARDED_AT_BASE)
 
 def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group() -> None:
     assert set(GAP_EFFECT_TABLE) == set(GAP_CLASSIFICATION)
-    assert len(GAP_EFFECT_TABLE) == 212  # the 211 recorded codes + the awaiting-ruling token
+    assert len(GAP_EFFECT_TABLE) == 214  # the 213 recorded codes + the awaiting-ruling token
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
