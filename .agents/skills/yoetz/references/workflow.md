@@ -217,8 +217,10 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   check after the material change), or an actionable gap such as `completion_plan_not_claimed`.
   `closure_readiness.check_cause` names the record behind `check_not_applicable` (for example an
   observed edit made after the check) or behind the standing `check_current_as_of_earlier_frontier`.
-- `ready_with_limitations`: nothing further to do. (An obligation you acknowledged as not done
-  is still challenged once at Stop: do it unless it is genuinely impossible.) Every remaining condition is a
+- `ready_with_limitations`: nothing further to do. (`closure_readiness.rechecks` lists what a Stop
+  will still ask you once: the acceptance criteria of your resolved obligations, an obligation you
+  acknowledged as not done, a recorded blocker, a premise dispute. A Stop asks nothing that list
+  does not name.) Every remaining condition is a
   `standing_limitations` code this host, profile or privacy policy always has (or a disclosure
   you recorded, such as `assumption_disclosed`), or an item in `acknowledged_not_done` (a finding
   or an obligation you recorded as not done). Request
@@ -229,7 +231,9 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 - `unknown`: read `status` again once the projection is readable.
 
 If you stop while `agent_actionable` still names open obligations, an unrepaired receipt-blocking
-finding, a planned verification that was not observed, failed, or ran before your last edit, an
+finding, a finding you rejected that still awaits the reviewer's ruling
+(`finding_rejection_awaiting_ruling`: run `check` with `final_review: true` so the reviewer rules;
+do not acknowledge a finding you dispute), a planned verification that was not observed, failed, or ran before your last edit, an
 edit to the work after your last test, lint, typecheck or build run (`edited_after_last_verification`;
 temporary scratch files and Yoetz receipt files never count), a git-ignored requested output, or a declared deliverable you deleted or renamed away
 (`declared_output_removed`: a requested `file` item marked as an output), the Stop hook continues
@@ -237,7 +241,8 @@ you once with that list; restore that delivered file where the task needs it, or
 requested item if the task asked for the deletion. The same happens once when a deliverable of an
 obligation you resolved or claimed is now empty or truncated (`declared_output_emptied`): that
 obligation no longer counts as done. Restore the deliverable; never empty or withdraw a working
-deliverable because of an open finding. If it is genuinely not done, republish the obligation
+deliverable because of an open finding. That text is shown once even when the Stop is a second
+continuation in the same turn. If it is genuinely not done, republish the obligation
 `acknowledged_not_done` with the reason and leave it out of your completion claim: an acknowledged
 obligation is outside completion coverage, so omitting it is not a scope gap. A deliverable that
 names a file you created but did not declare is disclosed (`deliverable_references_undeclared_file`;
@@ -254,7 +259,14 @@ to reconsider it, even right after an earlier continuation: if the task says the
 dependency is recoverable, continue the work; if it is genuinely outside your control, follow the
 confirmation step that re-check gives you, then stop. A Stop also asks you once about findings you
 marked `acknowledged_not_done` that the review says the task itself requires
-(`finding_premise_disputed`): do that work unless it is genuinely impossible.
+(`finding_premise_disputed`): do that work unless it is genuinely impossible. If you cannot
+finish it, keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
+A Stop asks once to read each resolved obligation's `acceptance_criteria` against your final output:
+if the output does not meet them, republish that obligation `acknowledged_not_done` with the reason;
+if the criteria can only be checked outside this environment (a hidden verifier, a withheld
+artifact) and you did the work, keep it resolved and record a decision with the line
+`yoetz-verification-limit:<obligation id>`. An acknowledgement you publish in answer to that
+question is not challenged again.
 If a script ran the planned command for you (for example `python run_tests.py` calling the
 planned `pytest` command internally), link that run: publish an `action_recorded` with
 `action_kind` `command`, the planned item's exact `value` in `attempted_items`, and the observed
