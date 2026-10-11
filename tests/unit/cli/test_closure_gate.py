@@ -11,7 +11,12 @@ from typing import Any, cast
 
 import pytest
 
-from builders.gate_readiness import acceptance_recheck, ack_recheck, blocker_recheck
+from builders.gate_readiness import (
+    acceptance_recheck,
+    ack_recheck,
+    blocker_recheck,
+    premise_recheck,
+)
 from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
 from yoetz.adapters.integrations.observation_local import LocalObservationStore
 from yoetz.cli import closure_gate as gate_module
@@ -766,7 +771,12 @@ def test_withdrawn_deliverable_is_voiced_on_the_active_stop_once(
 
     session = "gate-withdrawn"
     h = _Harness(tmp_path, host.key(session))
-    host.assert_gate(_stop(h, host, session))
+    # The first Stop re-checks a premise dispute and an acknowledged obligation (formal S 09:11):
+    # the push to work now also says to keep the working deliverable.
+    h.readiness.rechecks = (premise_recheck(1), ack_recheck(_OBL))
+    first = _text(host, _stop(h, host, session))
+    assert "Do that work unless it is genuinely impossible" in first
+    assert "keep the working deliverable; acknowledgement never requires withdrawing" in first
     h.readiness = _readiness(actionable=(gate_module.DECLARED_OUTPUT_EMPTIED_GAP,))
     h.readiness.fact_lineage = (
         SimpleNamespace(
