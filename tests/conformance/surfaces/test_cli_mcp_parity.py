@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from yoetz.mcp.summaries import render_safe_compact_summary
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
 from yoetz.protocol.canonical import JsonValue
 
 
@@ -24,7 +24,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
         "head_digest: sha256:" + "0" * 64 + "."
     )
     assert secret not in summary
-    assert len(summary.encode("ascii")) <= 512
+    assert len(summary.encode("ascii")) <= MAX_SUMMARY_BYTES
 
     status: dict[str, JsonValue] = {
         "ok": True,
@@ -185,7 +185,7 @@ def test_text_only_closure_lists_remain_bounded_and_keep_both_receipt_classes() 
     status_summary = render_safe_compact_summary(status)
     assert "obligation IDs: obl_00000000-0000-4000-8000-000000000001" in status_summary
     assert "more" in status_summary
-    assert len(status_summary.encode("ascii")) <= 512
+    assert len(status_summary.encode("ascii")) <= MAX_SUMMARY_BYTES
 
     receipt: dict[str, JsonValue] = {
         "ok": True,
@@ -208,4 +208,4 @@ def test_text_only_closure_lists_remain_bounded_and_keep_both_receipt_classes() 
     assert "open obligation IDs:" in receipt_summary
     assert "gap codes:" in receipt_summary
     assert "more" in receipt_summary
-    assert len(receipt_summary.encode("ascii")) <= 512
+    assert len(receipt_summary.encode("ascii")) <= MAX_SUMMARY_BYTES

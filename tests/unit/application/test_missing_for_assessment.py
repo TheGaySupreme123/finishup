@@ -78,7 +78,7 @@ from yoetz.kernel.projections import (
     PendingMissingForAssessment,
     ProjectionRecord,
 )
-from yoetz.mcp.summaries import summary_for_check
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check
 from yoetz.ports.change_capture import CheckChangeCapture
 from yoetz.ports.runtime import TaskRuntime
 from yoetz.ports.semantic import (
@@ -144,7 +144,7 @@ def test_check_summary_names_missing_items_with_closed_tokens_only() -> None:
     assert "verification_output=agent_suppliable" in text
     assert "command_identity=structurally_unavailable_on_this_host" in text
     assert "</script>" not in text
-    assert len(text.encode("ascii")) <= 512
+    assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
 
 
 def test_durable_semantic_response_keeps_named_items_and_reads_legacy_bytes() -> None:

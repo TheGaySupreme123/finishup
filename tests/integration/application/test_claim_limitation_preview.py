@@ -18,7 +18,7 @@ from builders.start_application import protocol_id, start_request
 from yoetz.application.service import Application
 from yoetz.cli.closure_gate import closure_gate_from_readiness
 from yoetz.cli.render import render_closure_readiness_lines
-from yoetz.mcp.summaries import summary_for_status
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_status
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.errors import PublicOperationError
 from yoetz.protocol.models import PublishWorkRequest, StatusRequest
@@ -190,7 +190,7 @@ async def test_a_first_claim_built_from_status_is_accepted_and_every_surface_nam
     summary = summary_for_status(status.as_json())
     assert "limitation_refs a whole-task completion claim must name (3): " in summary
     assert surfaced[0] in summary
-    assert len(summary.encode()) <= 512
+    assert len(summary.encode()) <= MAX_SUMMARY_BYTES
     lines = render_closure_readiness_lines(readiness)
     assert any(all(value in line for value in surfaced) for line in lines)
     gate = closure_gate_from_readiness(

@@ -15,6 +15,7 @@ from typing import Final
 
 import pytest
 
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.readiness_text import READINESS_STATES, readiness_directive
 
@@ -175,4 +176,4 @@ def test_every_status_view_summary_names_the_closure_state(view: str) -> None:
             "Nothing further to do. 2 standing limitation(s) and 0 acknowledged item(s) will be "
             "disclosed on the receipt. Request the receipt." in summary
         )
-    assert len(summary.encode("ascii")) <= 512
+    assert len(summary.encode("ascii")) <= MAX_SUMMARY_BYTES

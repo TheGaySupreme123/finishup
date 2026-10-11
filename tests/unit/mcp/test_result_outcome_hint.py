@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from yoetz.mcp.summaries import summary_for_public_error
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_public_error
 
 
 def _error(field: str) -> dict[str, object]:
@@ -29,7 +29,7 @@ def test_rejected_outcome_names_the_closed_set_and_the_blocker_line() -> None:
     assert "only for an open obligation genuinely blocked outside your control" in text
     # #995: a best-effort guess or a check the agent cannot run is disclosed, never a blocker.
     assert "yoetz-assumption: or yoetz-verification-limit:<obl id>" in text
-    assert len(text.encode("ascii")) <= 512
+    assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
 
 
 def test_other_rejections_carry_no_outcome_hint() -> None:
