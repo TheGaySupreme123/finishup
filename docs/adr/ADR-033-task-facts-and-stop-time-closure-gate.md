@@ -687,7 +687,10 @@ impossibility research. The owner decided:
 8. **Composition** stays on the bounded composer (ADR-043): every new sentence is a part with a
    priority, the withdrawn-deliverable instruction is a required family instruction, the acceptance
    sentence is the first optional sentence dropped, and a re-check whose whole sentence did not fit
-   is not recorded as asked.
+   is not recorded as asked. The fact-lineage sentence (ADR-045, where a fact came from) is the
+   lowest-priority optional part and is trimmed right after the predicted conclusion; every token
+   still says why it fired without it (its item clause, the awaiting-ruling `Why:` and the
+   withdrawn-deliverable sentence with its rule and obligation).
 9. **Diagnostics.** `closure_gate_loop_guard` is renamed `closure_gate_turn_end_after_continue`: it is
    the normal end of a continued turn, not a defect and not a loop guard. `closure_gate_acceptance_rechecked`
    counts the extra Stop turns the acceptance re-read costs.
