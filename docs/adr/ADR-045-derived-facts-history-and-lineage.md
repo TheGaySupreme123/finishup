@@ -175,16 +175,20 @@ hook as in the Codex stream: the hook has no separate outside-workspace precheck
 verification is stale (steering, burned time); a missed write hides an edit made after it. Both
 matter and a false write is worse, so `domain/shell_writes` names no write when it cannot be sure:
 
-- *Text is not syntax.* The lexer is the module's own, not `shlex`. A quoted or escaped operator, a
-  comment, the word `tee` as an argument, a here-string, a heredoc body, and the inside of
-  `[[ ... ]]` and `(( ... ))` (where `>` and `<` compare) write nothing. `$(...)`, `${...}`,
-  `$'...'` and backticks are opaque, with their own quote and nesting state
-  (`echo "$(echo "x > f")"` writes nothing). A heredoc starts only at an unquoted `<<`/`<<-`; its
-  delimiter is the word with quotes removed (`'END-DATA'`); `<<-` strips leading tabs, and only
-  tabs, when matching the closing line; an unterminated body runs to the end, as in bash. The body
-  of an unquoted heredoc is data here even though bash expands `$(...)` in it: a write hidden in
-  one is a missed write, accepted. A write inside `bash -lc '...'` is attributed (the wrapper's
-  command text is parsed in turn, to a bounded depth).
+- *Text is not syntax.* The lexer is the module's own, not `shlex`. A quoted or escaped operator
+  or keyword (`'!' touch f` runs a command named `!`), a comment, the word `tee` as an argument, a
+  here-string, a heredoc body, and the inside of `[[ ... ]]` and `(( ... ))` (where `>` and `<`
+  compare) write nothing. `$(...)`, `${...}`, `$[...]`, `$'...'` and backticks are opaque, with
+  their own quote and nesting state (`echo "$(echo "x > f")"` writes nothing); inside `$(...)` a
+  comment's parenthesis and a heredoc body (the `git commit -m "$(cat <<'EOF' ... EOF)"` idiom)
+  close nothing. A heredoc starts only at an unquoted `<<`/`<<-`; its delimiter is the word with
+  quotes removed (`'END-DATA'`, `$'EOF'`; an escape inside `$'...'` is not decoded, so the command
+  is unlexable); `<<-` strips leading tabs, and only tabs, when matching the closing line; an
+  unterminated body runs to the end, as in bash. The body of an unquoted heredoc is data here even
+  though bash expands `$(...)` in it: a write hidden in one is a missed write, accepted. A write
+  inside `bash -lc '...'` is attributed (the wrapper's command text is parsed in turn, to a bounded
+  depth); a wrapper argument the outer shell expands (`bash -c "... '$OUT'"`) is unknown and names
+  nothing.
 - *A path is attributable only if it is literal.* Each word records whether an unquoted `$`,
   backtick, glob character, brace or leading `~` could change it. Quoting or an escape makes those
   characters literal, so `'/opt/$report.txt'` and `/opt/file\*.py` are real (outside-workspace)
@@ -192,24 +196,32 @@ matter and a false write is worse, so `domain/shell_writes` names no write when 
 - *Unlexable is silent.* Unbalanced quotes, an unterminated expansion or a trailing backslash make
   the whole command name no write. The existing disclosure is unchanged: an unattributed write
   only means the kernel does not count that command as an edit.
-- *Redirections.* `>& file` writes a file; a descriptor target (`>&2`, `>&-`) duplicates or
-  closes, and `2>& file` is an ambiguous redirect in bash, so it names none. `<>` opens
-  read-write and creates an absent file, so it counts.
+- *Redirections.* `>& file` and `1>& file` write a file; a descriptor target (`>&2`, `>&-`)
+  duplicates or closes, and `2>& file` is an ambiguous redirect in bash, so it names none. `<>`
+  opens read-write and creates an absent file, so it counts.
 - *Options.* `sed` reads `-e`/`-f` attached or separate, `-i[SUFFIX]` (GNU: the suffix swallows the
-  rest of the word, so `-i.bak1` and `-ie`), macOS `-i ''`, `--in-place[=SUFFIX]` and `--`;
-  `cp`/`mv`/`install` read `-t DIR`, `-tDIR`, `--target-directory[=]DIR` (the directory is the
-  written path) and every operand of `install -d`; `touch -r REF` and `truncate -r REF` read their
-  reference; operands after `--` are operands even if they begin with `-`; an rsync `host:path` or
-  `rsync://` destination is remote and names no local file. `then`, `do`, `else`, `{` and `!` heads
-  run their command.
-- *Bounded.* The parser is linear: no pattern backtracks and no region is rescanned. A command
-  longer than 16,384 characters (the hook's command-normalization limit, `MAX_SHELL_WRITE_CHARS`)
-  is analysed only up to its last complete line inside that limit, so a long
-  `cat > f <<'EOF'` body still names `f` (8 of the 9 over-limit commands in the recorded n2 and n3
-  runs are exactly that) while a write after the limit is not seen and a line cut by the limit is
-  never guessed. A command with no complete line inside the limit names nothing. This never raises
-  and never blocks the hook; it is a coverage limit of the same kind as an unattributable path, not
-  an error.
+  rest of the word, so `-i.bak1` and `-ie`), the macOS separate suffix (`-i ''`, `-i .bak`, taken
+  as a suffix only when a script and a file follow it, since GNU treats `sed -i '' f` as an empty
+  script over `f`), `--in-place[=SUFFIX]` and `--`; `cp`/`mv`/`install` read `-t DIR`, `-tDIR`,
+  `--target-directory[=]DIR` and every operand of `install -d`; `touch -r REF` and
+  `truncate -r REF` read their reference; operands after `--` are operands even if they begin with
+  `-`; an rsync `host:path` or `rsync://` destination is remote and names no local file; `then`,
+  `do`, `else`, `{` and `!` heads run their command. An invocation that exits before writing
+  names nothing: `--help`/`--version`, `-t DIR` with no source, with `-T`, or given twice.
+- *A directory destination is classified by where it is.* `cp -t DIR`, `install -d DIR` and
+  `dest/` write files named after something else, so a notes or receipt *file name* never exempts
+  the directory (`cp -t NOTES.md src.py` is a workspace write); a Yoetz tree or state directory
+  still does.
+- *Bounded.* The parser is linear: no pattern backtracks, no region is rescanned and
+  `strip_wrappers` is handed a constant-size head of each command. Text longer than 16,384
+  characters (the hook's command-normalization limit, `MAX_SHELL_WRITE_CHARS`) is analysed only up
+  to its last newline inside that limit, so a long `cat > f <<'EOF'` body still names `f` (8 of the
+  9 over-limit commands in the recorded n2 and n3 runs are exactly that) and so does the same
+  command inside the `/bin/bash -lc '...'` argv the rollout records (the wrapper's cut script is
+  analysed in turn). A write after the limit is not seen. The command a cut interrupts (an open
+  quote, an expansion, a continued line) is dropped whole, never completed by a guess, and a text
+  with no newline inside the limit names nothing. This never raises and never blocks the hook; it
+  is a coverage limit of the same kind as an unattributable path, not an error.
 
 ### 4. What counts as an attempt
 

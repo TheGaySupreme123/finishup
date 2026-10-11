@@ -9031,9 +9031,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   requested command values some observed run matched; `command_attempts.same_requested_path` /
   `value_in_attempted` match a file in another spelling. `domain/shell_writes.shell_write_paths(
   command)` (literal, attributable paths only; linear; analyses at most `MAX_SHELL_WRITE_CHARS` =
-  16,384 characters, up to the last complete line) and `shell_write_scope(command, *, workspace,
+  16,384 characters, up to the last newline, and drops the command a cut interrupts) and `shell_write_scope(command, *, workspace,
   inside, owned_roots=, relative_only=)` (outside wins, then `workspace`, then a single non-counting
-  class; two non-counting classes count as `workspace`; the hook calls it alone, with no separate
+  class; two non-counting classes count as `workspace`; a directory destination is classified by
+  where it is, not by a notes or receipt file name; the hook calls it alone, with no separate
   outside-workspace check);
   `write_scope` admits `notes` (non-counting) and `workspace` (a shell command that writes the
   workspace; counts as an edit with `outside_workspace`; `observed_failures.SHELL_EDIT_TOKENS`).
