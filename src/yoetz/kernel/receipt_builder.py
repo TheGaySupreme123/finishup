@@ -955,11 +955,29 @@ def _apply_profile(
     )
 
 
-def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
-    """Project the pure lineage evaluation into the receipt's bounded child section."""
+_CHILD_FINDING_CAP: Final = 64
+
+
+def _child_finding_rank(finding: ReceiptChildFinding) -> int:
+    """0 unresolved actionable, 1 self-verified, 2 other unresolved, 3 resolved history."""
+
+    if finding.actionable and not finding.resolved:
+        return 0
+    if finding.self_verified:
+        return 1
+    return 3 if finding.resolved else 2
+
+
+def _receipt_children(evaluation: LineageEvaluation | None) -> tuple[ReceiptChildren, int]:
+    """Project the pure lineage evaluation into the receipt's bounded child section.
+
+    Lineage allows 100 findings per child while a receipt child outcome holds 64 (tb4n3 RC-2, A6):
+    a child past that used to fail the whole receipt. The rest are counted, not silently dropped.
+    """
 
     if evaluation is None:
-        return ReceiptChildren()
+        return ReceiptChildren(), 0
+    omitted_child_findings = 0
     snapshots = {snapshot.child_task_id: snapshot for snapshot in evaluation.snapshots}
     children: list[ReceiptChildOutcome] = []
     for rollup in evaluation.children:
@@ -983,6 +1001,8 @@ def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
                 )
                 for finding in snapshot.findings
             )
+            findings, omitted = _keep_by_rank(findings, _CHILD_FINDING_CAP, _child_finding_rank)
+            omitted_child_findings += omitted
         # ``blocked`` is the evaluator's internal state for unresolved actionable child findings;
         # receipts expose the bounded child outcome vocabulary, where that state is an open gap
         # accompanied by the actionable finding rows.
@@ -1010,7 +1030,7 @@ def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
                 findings=findings,
             )
         )
-    return ReceiptChildren(tuple(children))
+    return ReceiptChildren(tuple(children)), omitted_child_findings
 
 
 def route_did_not_require_review(check: CheckRecordedPayload | None) -> bool:
@@ -2056,7 +2076,7 @@ def build_receipt(
     claim_refs = _select_claim_refs(context, findings)
     evidence_refs = _select_evidence_refs(context, claim_refs, obligations, responses)
     gaps = _select_gaps(context, historical)
-    children = _receipt_children(context.lineage)
+    children, omitted_child_findings = _receipt_children(context.lineage)
     (
         retained_findings,
         retained_obligations,
@@ -2111,6 +2131,7 @@ def build_receipt(
         "claim reference": omitted_claims,
         "evidence reference": omitted_evidence,
         "gap": omitted_gaps,
+        "child finding": omitted_child_findings,
     }
     engine_derived_suffix, host_observation_suffix, limitation_response_suffix = (
         _suffix_record_kinds(context)
