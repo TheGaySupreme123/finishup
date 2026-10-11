@@ -30,15 +30,18 @@ from typing import Any, Literal, cast
 import pytest
 
 import integration.application.test_respond_status_receipt as h
+from builders.observed_runs import INSTALLATION_KEY
 from builders.start_application import protocol_id, start_request
 from integration.application import test_tb4n3_own_calls_cross_surface as own_calls
 from integration.application.test_closure_readiness_checklist import _Session, public_status
+from yoetz.application import check_change
 from yoetz.application.check import CheckCommitResult, FinalSemanticEvaluation
 from yoetz.application.status import StatusInternalResult
 from yoetz.cli.closure import Selection, prepare_closure
 from yoetz.cli.render import render_closure_readiness_lines, render_human_status
 from yoetz.domain.findings import FindingKind
 from yoetz.domain.receipts import SchemaVersionEntry
+from yoetz.kernel.task_facts import RequestedOutputState, register_command_identity_key
 from yoetz.mcp.summaries import summary_for_closure_prepare, summary_for_status
 from yoetz.ports.semantic import ReviewerChallenge, SemanticJudgment
 from yoetz.protocol.canonical import JsonValue
@@ -123,6 +126,7 @@ class _Run(_Session):
         finding_frontier: Any,
         disposition: str,
         reason: str | None = None,
+        evidence_refs: list[str] | None = None,
     ) -> None:
         result = await self.app.respond(
             RespondRequest.model_validate(
@@ -135,6 +139,7 @@ class _Run(_Session):
                     "finding_frontier": h._frontier(finding_frontier),
                     "disposition": disposition,
                     **({} if reason is None else {"reason": reason}),
+                    **({} if evidence_refs is None else {"evidence_refs": evidence_refs}),
                 }
             )
         )
@@ -142,7 +147,7 @@ class _Run(_Session):
 
 
 def _obligation(run: _Run, number: int, **fields: JsonValue) -> dict[str, JsonValue]:
-    return run.draft(
+    draft = run.draft(
         "obligation_published",
         {
             "obligation_id": protocol_id("obl_", 7000 + number),
@@ -153,6 +158,9 @@ def _obligation(run: _Run, number: int, **fields: JsonValue) -> dict[str, JsonVa
             **fields,
         },
     )
+    if "requested_items" in fields:
+        cast(dict[str, JsonValue], draft["schema"])["version"] = "1.1.0"
+    return draft
 
 
 def _action(run: _Run, number: int) -> dict[str, JsonValue]:
@@ -607,7 +615,7 @@ async def test_a_limitation_request_needs_one_disclosure_then_reads_as_a_verific
 
     claim = protocol_id("clm_", 7201)
     obligation = protocol_id("obl_", 7001)
-    script = ["challenge"]
+    script = ["challenge", "challenge", "challenge"]
     run = await _begin(
         seed=73,
         semantic="optional",
@@ -639,12 +647,34 @@ async def test_a_limitation_request_needs_one_disclosure_then_reads_as_a_verific
         ("acknowledge",),
     )
 
+    # Acknowledging a reviewer finding needs one recorded attempt after it (issue #885).
+    attempt = protocol_id("evd_", 7390)
+    await run.publish(
+        run.draft(
+            "evidence_recorded",
+            {
+                "evidence_id": attempt,
+                "evidence_kind": "test_result",
+                "strength": "metadata_only",
+                "observed_at": "2026-09-28T12:05:00.000Z",
+                "description": "I tried to measure the accuracy; no evaluator is reachable here.",
+            },
+        )
+    )
+    # The attempt supersedes the review, so the reviewer reviews again (and, still unable to see a
+    # measurement, repeats the same request) before the agent answers it.
+    rechecked = await run.check_in("semantic_if_configured")
+    assert not rechecked.findings  # the same open request is carried, not raised twice
     await run.respond(
         _reviewer_finding(checked).finding_id,
         checked.result_frontier,
         "acknowledged",
         "The evaluator is hidden; I cannot measure it here.",
+        evidence_refs=[attempt],
     )
+    # The answer is a response to a finding the last check did not return, so it supersedes that
+    # check; the reviewer reads the acknowledgement and repeats the same request.
+    await run.check_in("semantic_if_configured")
     after = await _surfaces(run)
     readiness = after.status["compact"].closure_readiness
     assert readiness.agent_actionable == ()
@@ -656,17 +686,251 @@ async def test_a_limitation_request_needs_one_disclosure_then_reads_as_a_verific
         assert "Verification limits" in after.receipts[fmt].human_text
 
 
+# -- Shape (e): formal-crypto S, a resolved obligation whose deliverable was emptied ------------
+
+
+@dataclass
+class _Deliverable:
+    """The declared file as the check reads it (patched in for the workspace read)."""
+
+    state: RequestedOutputState
+
+
+async def _emptied_run(monkeypatch: pytest.MonkeyPatch, seed: int) -> tuple[_Run, _Deliverable]:
+    """A solver obligation resolved on a delivered ``/app/solve.sage`` that is then emptied.
+
+    Returns after the first check read the delivered file; the caller empties it
+    (``deliverable.state``) and checks again. The reviewer always succeeds with no challenge, so
+    nothing but the path-keyed fact (ADR-045) can stop the receipt reading clean.
+    """
+
+    delivered = _Deliverable(
+        RequestedOutputState(
+            "inside", exists=True, changed=True, size_bytes=15_975, lines=310, relative="solve.sage"
+        )
+    )
+    obligation = protocol_id("obl_", 7001)
+
+    async def states(**_kwargs: object) -> dict[tuple[object, int], RequestedOutputState]:
+        return {(obligation, 0): delivered.state}
+
+    async def approves(
+        frozen: object,
+        findings: object,
+        runtime: object | None = None,
+        lineage_evaluation: object | None = None,
+    ) -> object:
+        return await h._semantic_succeeds(frozen, findings)
+
+    monkeypatch.setattr(check_change, "requested_output_states", states)
+    register_command_identity_key(INSTALLATION_KEY)
+    run = await _begin(seed=seed, semantic="optional", evaluator=approves)
+    evidence = protocol_id("evd_", 7301)
+    item = {"item_kind": "file", "value": "/app/solve.sage", "role": "output"}
+    await run.publish(
+        _obligation(run, 1, requested_items=[item]),
+        _plan(run, 1),
+        run.draft(
+            "action_recorded",
+            {
+                "action_id": protocol_id("act_", 7101),
+                "action_kind": "other",
+                "description": "Wrote the solver",
+                "obligation_refs": [obligation],
+                "attempted_items": ["/app/solve.sage"],
+            },
+        ),
+        run.draft(
+            "result_recorded",
+            {
+                "result_id": protocol_id("res_", 7400),
+                "action_id": protocol_id("act_", 7101),
+                "outcome": "success",
+                "summary": "Wrote the solver.",
+            },
+        ),
+        run.draft(
+            "evidence_recorded",
+            {
+                "evidence_id": evidence,
+                "evidence_kind": "test_result",
+                "strength": "metadata_only",
+                "observed_at": "2026-09-28T12:00:00.000Z",
+                "description": "The solver passed the timed runs.",
+            },
+        ),
+        _obligation(
+            run,
+            1,
+            status="resolved",
+            resolution_evidence_refs=[evidence],
+            requested_items=[item],
+        ),
+        run.draft(
+            "claim_recorded",
+            {
+                "claim_id": protocol_id("clm_", 7201),
+                "claim_kind": "completion",
+                "statement": "The solver is delivered.",
+                "supporting_refs": [evidence],
+                "obligation_refs": [obligation],
+                "limitation_refs": [],
+                "supersedes_claim_refs": [],
+            },
+        ),
+    )
+    first = await run.check_in("semantic_if_configured")
+    assert "declared_output_emptied" not in first.coverage.known_gaps
+    return run, delivered
+
+
+async def _obligation_row(run: _Run) -> tuple[str, str]:
+    status = await run.status("obligations")
+    row = next(iter(cast(Any, status.page).items))
+    return row.closure_class, row.closure_basis
+
+
+async def test_a_resolved_obligation_whose_deliverable_is_emptied_is_agent_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """formal-crypto S: ``resolved`` stops counting once its file is emptied, on every surface.
+
+    The reviewer succeeds and raises nothing, yet the check is not clean and the receipt cannot
+    be (the reviewer never approves an emptied deliverable: the fact is actionable on both
+    routes). The obligation reads ``resolved_deliverable_emptied`` (agent work, below clean) in
+    status, in ``obligation_counts`` and in the receipt reasons, and the prediction is the
+    receipt's conclusion.
+    """
+
+    try:
+        run, deliverable = await _emptied_run(monkeypatch, 78)
+        deliverable.state = RequestedOutputState(
+            "inside", exists=True, changed=True, size_bytes=0, lines=0, relative="solve.sage"
+        )
+        checked = await run.check_in("semantic_if_configured")
+        assert "declared_output_emptied" in checked.coverage.known_gaps
+        assert checked.verdict.value != "no_issue_detected"
+        assert await _obligation_row(run) == ("agent_work", "resolved_deliverable_emptied")
+
+        gathered = await _surfaces(run)
+        readiness = gathered.status["compact"].closure_readiness
+        assert "declared_output_emptied" in (readiness.agent_actionable or ())
+        assert readiness.obligation_counts is not None
+        assert (readiness.obligation_counts.open, readiness.obligation_counts.acknowledged) == (
+            "1",
+            "0",
+        )
+        assert_surfaces_agree(gathered, conclusion=_INSUFFICIENT, counts=_NO_FINDINGS)
+        predicted = readiness.predicted_receipt
+        assert predicted is not None
+        assert "obligations_open" in {item.code for item in predicted.reasons}
+    finally:
+        register_command_identity_key(None)
+
+
+async def test_a_yoetz_assumption_naming_the_path_returns_the_obligation_to_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner default: an assumption that names the emptied path clears the fact.
+
+    The decision is material, so it supersedes the check that carried the fact (the stale fact is
+    not read); the next check records the path as accepted and the obligation stays ``resolved``.
+    """
+
+    try:
+        run, deliverable = await _emptied_run(monkeypatch, 79)
+        deliverable.state = RequestedOutputState(
+            "inside", exists=True, changed=True, size_bytes=0, lines=0, relative="solve.sage"
+        )
+        await run.check_in("semantic_if_configured")
+        assert await _obligation_row(run) == ("agent_work", "resolved_deliverable_emptied")
+
+        await run.publish(
+            run.draft(
+                "decision_recorded",
+                {
+                    "statement": f"The solver is deliberately empty.\nyoetz-assumption:{protocol_id('obl_', 7001)}",
+                    "rationale": "The task statement says /app/solve.sage must be empty.",
+                    "authority": "harness:codex",
+                    "affected_obligation_ids": [protocol_id("obl_", 7001)],
+                },
+            )
+        )
+        assert await _obligation_row(run) == ("resolved", "resolved")
+        checked = await run.check_in("semantic_if_configured")
+        assert "declared_output_emptied" not in checked.coverage.known_gaps
+        assert await _obligation_row(run) == ("resolved", "resolved")
+    finally:
+        register_command_identity_key(None)
+
+
 # -- Controls: what must not change -------------------------------------------------------------
 
 
-async def test_control_lake_s_a_genuine_unmet_requirement_stays_unresolved() -> None:
-    """lake S: the reviewer said ``act`` and the agent gave up; the label stays unresolved."""
+@pytest.mark.parametrize(
+    "kind",
+    [
+        FindingKind.TASK_REQUIREMENT_UNMET,
+        FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS,
+        FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED,
+        FindingKind.EVIDENCE_DOES_NOT_SUPPORT_CLAIM,
+        FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE,
+    ],
+)
+async def test_control_lake_s_a_genuine_unmet_requirement_stays_unresolved(
+    kind: FindingKind,
+) -> None:
+    """lake S: the reviewer said ``act`` and the agent gave up; the label stays unresolved.
+
+    Every requirement kind a reviewer may raise as a limitation request is covered: an ``act``
+    challenge never qualifies as a limitation request (only ``state_unresolved_limitation`` does),
+    so acknowledging it as not done is an unmet requirement, never a verification limit.
+    """
 
     claim = protocol_id("clm_", 7201)
     obligation = protocol_id("obl_", 7001)
     script = ["challenge"]
     run = await _begin(
-        seed=74,
+        seed=100 + [*FindingKind].index(kind),
+        semantic="optional",
+        evaluator=_challenge(
+            claim,
+            obligation,
+            kind=kind,
+            next_step="act",
+            script=script,
+        ),
+    )
+    checked = await _ai_finding(run, kind=kind, next_step="act", script=script)
+    await run.respond(
+        _reviewer_finding(checked).finding_id,
+        checked.result_frontier,
+        "acknowledged_not_done",
+        "I could not reach that accuracy.",
+    )
+    gathered = await _surfaces(run)
+    readiness = gathered.status["compact"].closure_readiness
+    assert readiness.agent_actionable == ()
+    assert readiness.state == "ready_with_limitations"
+    assert_surfaces_agree(gathered, conclusion=_UNRESOLVED, counts=(0, 0, 1, 0, 0))
+    row = next(iter(cast(Any, gathered.status["findings"].page).items))
+    assert row.closure_basis == "acknowledged_not_done_requirement"
+
+
+async def test_control_lake_s_a_recheck_that_raises_nothing_new_keeps_the_label() -> None:
+    """lake S after a re-check: a review that merely raises nothing is not an absence proof.
+
+    The ``act`` finding is acknowledged as not done and the agent re-checks; the reviewer returns
+    no new challenge. The acknowledged requirement stays ``settled_unmet`` (only a recorded
+    absence proof releases it), so the receipt still reads ``unresolved_findings_remain`` and the
+    status prediction before the receipt is that conclusion.
+    """
+
+    claim = protocol_id("clm_", 7201)
+    obligation = protocol_id("obl_", 7001)
+    script = ["challenge", "none"]
+    run = await _begin(
+        seed=77,
         semantic="optional",
         evaluator=_challenge(
             claim,
@@ -685,13 +949,15 @@ async def test_control_lake_s_a_genuine_unmet_requirement_stays_unresolved() -> 
         "acknowledged_not_done",
         "I could not reach that accuracy.",
     )
+    await run.check_in("semantic_if_configured")
     gathered = await _surfaces(run)
-    readiness = gathered.status["compact"].closure_readiness
-    assert readiness.agent_actionable == ()
-    assert readiness.state == "ready_with_limitations"
+    assert gathered.status["compact"].closure_readiness.agent_actionable == ()
     assert_surfaces_agree(gathered, conclusion=_UNRESOLVED, counts=(0, 0, 1, 0, 0))
     row = next(iter(cast(Any, gathered.status["findings"].page).items))
-    assert row.closure_basis == "acknowledged_not_done_requirement"
+    assert (row.closure_class, row.closure_basis) == (
+        "settled_unmet",
+        "acknowledged_not_done_requirement",
+    )
 
 
 async def test_control_cad_d_digest_only_evidence_keeps_a_deterministic_run_insufficient() -> None:
