@@ -228,6 +228,9 @@ def read_semantic_destination_disclosure(
         if parse_minimal_safe_config(selected_env, {}).config_path_used is None:
             return disclose_semantic_destination(None)
         config = load_config({}, selected_env, None)
+        return disclose_semantic_destination(config)
     except Exception:
+        # Rendering is inside the guard too: a wording change that pushed the sentence past its
+        # bound (a 253-character host) must render "unknown", not keep the bridge from starting
+        # (tb4n3 A10).
         return disclose_semantic_destination(None)
-    return disclose_semantic_destination(config)
