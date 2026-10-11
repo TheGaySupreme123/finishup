@@ -288,13 +288,28 @@ class PlanProjectionRecord(ProjectionRecord[PlanPublishedPayload | PlanRevisedPa
 
 @dataclass(frozen=True, slots=True)
 class ObligationProjectionRecord(ProjectionRecord[ObligationPublishedPayload]):
+    """One recorded obligation plus its plan-change facts.
+
+    ``introduced_frontier`` (tb4n3 RC-7, issue #1030) is the ledger sequence of the obligation's
+    *first* publication. A republication may change only its status (the meaning fields must
+    repeat), so it is bookkeeping about an obligation that already existed; an obligation first
+    published after an answer is new material. ``None`` means ``source_frontier`` (a first
+    publication, or a record built without the fact).
+    """
+
     plan_change: ObligationChangeKind | None = None
     plan_change_reason: str | None = None
     superseded_by_obligation_ids: tuple[ObligationId, ...] = ()
+    introduced_frontier: int | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.payload is not None and type(self.payload) is not ObligationPublishedPayload:
+            raise _invalid()
+        if self.introduced_frontier is not None and (
+            type(self.introduced_frontier) is not int
+            or not 1 <= self.introduced_frontier <= self.source_frontier
+        ):
             raise _invalid()
         if self.plan_change is not None and type(self.plan_change) is not ObligationChangeKind:
             raise _invalid()
@@ -1259,6 +1274,9 @@ def _record_snapshot(record: _ProjectionRecordLike) -> dict[str, JsonValue]:
             if record.plan_change_reason is not None:
                 result["plan_change_reason"] = record.plan_change_reason
             result["superseded_by_obligation_ids"] = list(record.superseded_by_obligation_ids)
+        # tb4n3 RC-7: emitted only for a republication, so earlier snapshots keep their bytes.
+        if record.introduced_frontier is not None:
+            result["introduced_frontier"] = canonical_integer_string(record.introduced_frontier)
     elif type(record) is ClaimProjectionRecord:
         # Emitted only when set, so every snapshot of a task without a claim correction stays
         # byte-identical to the generation-1 shape frozen before versioned claim correction.
@@ -1606,6 +1624,7 @@ def _record_from_snapshot(
                 "plan_change",
                 "plan_change_reason",
                 "superseded_by_obligation_ids",
+                "introduced_frontier",
             }
         )
     elif collection == "claims":
@@ -1683,6 +1702,11 @@ def _record_from_snapshot(
             superseded_by_obligation_ids=cast(
                 tuple[ObligationId, ...],
                 _snapshot_array(raw_replacements),
+            ),
+            introduced_frontier=(
+                _snapshot_uint(source["introduced_frontier"], safe=True)
+                if "introduced_frontier" in source
+                else None
             ),
         )
     if collection == "claims":

@@ -43,15 +43,15 @@ __all__ = [
     "own_answer_evidence",
 ]
 
-_BOOKKEEPING_PREFIXES: Final = frozenset({"fnd_", "clm_", "obl_"})
+_BOOKKEEPING_PREFIXES: Final = frozenset({"fnd_", "clm_"})
 _MATERIAL_EVENT_SCHEMAS: Final = frozenset(
-    {"evidence_recorded", "result_recorded", "action_recorded"}
+    {"evidence_recorded", "result_recorded", "action_recorded", "obligation_published"}
 )
 
 
 @dataclass(frozen=True, slots=True)
 class _Row:
-    kind: str  # "evidence" | "result" | "action"
+    kind: str  # "evidence" | "result" | "action" | "obligation"
     ref: str  # the typed id (evd_, res_ or act_)
     sequence: int
 
@@ -76,6 +76,12 @@ class _CaseIndex:
         for action_key, action_row in projection.actions.items():
             self.event_rows[str(action_row.source_event_id)] = _Row(
                 "action", str(action_key), action_row.source_frontier
+            )
+        for obligation_key, obligation_row in projection.obligations.items():
+            self.event_rows[str(obligation_row.source_event_id)] = _Row(
+                "obligation",
+                str(obligation_key),
+                obligation_row.introduced_frontier or obligation_row.source_frontier,
             )
         self.event_schemas: dict[str, str] = {
             str(event.event_id): event.schema_name for event in case.history
@@ -104,6 +110,17 @@ class _CaseIndex:
         if ref.startswith("act_"):
             action = projection.actions.get(cast(ActionId, ref))
             return None if action is None else _Row("action", ref, action.source_frontier)
+        if ref.startswith("obl_"):
+            obligation = projection.obligations.get(cast(ObligationId, ref))
+            return (
+                None
+                if obligation is None
+                else _Row(
+                    "obligation",
+                    ref,
+                    obligation.introduced_frontier or obligation.source_frontier,
+                )
+            )
         if ref.startswith("evt_"):
             return self.event_rows.get(ref)
         return None
@@ -164,6 +181,11 @@ def own_answer_evidence(case: DeterministicCase) -> frozenset[str]:
 
 def _is_material(index: _CaseIndex, row: _Row, concern: ConcernKey) -> bool:
     projection = index.case.projection
+    if row.kind == "obligation":
+        # An obligation first published after the agent's answer is new material about the
+        # concern it was cited in. A republication (status only: the meaning fields must repeat)
+        # keeps its first-publication sequence, so the agent's own bookkeeping never counts.
+        return True
     if not concern.obligations:
         return True
     if row.ref in index.linked_refs(concern.obligations):

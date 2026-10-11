@@ -764,6 +764,13 @@ def _apply_obligation(
         superseded_by_obligation_ids=(
             () if existing is None else existing.superseded_by_obligation_ids
         ),
+        # A republication only changes status (the meaning fields must repeat), so the obligation
+        # keeps the sequence it was first published at (tb4n3 RC-7).
+        introduced_frontier=(
+            None
+            if existing is None or existing.payload is None
+            else (existing.introduced_frontier or existing.source_frontier)
+        ),
     )
 
 

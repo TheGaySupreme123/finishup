@@ -636,7 +636,44 @@ def _reason_code_of(exc: BaseException, fallback: str = "invalid_event_value_typ
     return reason if reason in PROTOCOL_REASON_CODES else fallback
 
 
-def _decode_draft(value: JsonValue, event_index: int) -> _PreparedDraft:
+def _result_action_link(
+    source: Mapping[str, JsonValue],
+    raw_payload: DomainJsonValue,
+    action_links: Mapping[str, str],
+) -> DomainJsonValue:
+    """Fill a result's ``action_id`` from the one action event it names as a causal parent.
+
+    tb4n3 N3-5: an agent that knew only the event id of an action (the subject of its
+    ``action_without_result`` finding) published ``result_recorded`` with that event as the
+    causal parent and no ``action_id``, and Yoetz rejected the whole batch. A result with no
+    ``action_id`` whose causal parents name exactly one ``action_recorded`` event, in this batch
+    or in the ledger, links to that action. Anything else is left untouched and rejected as
+    before: an ``action_id`` the caller wrote is never replaced, and an ambiguous or unknown
+    parent never guesses.
+    """
+
+    if not isinstance(raw_payload, Mapping) or "action_id" in raw_payload:
+        return raw_payload
+    parents = source.get("causal_parents")
+    if type(parents) not in {tuple, list}:
+        return raw_payload
+    linked = {
+        action_links[parent]
+        for parent in cast(tuple[JsonValue, ...] | list[JsonValue], parents)
+        if type(parent) is str and parent in action_links
+    }
+    if len(linked) != 1:
+        return raw_payload
+    return freeze_json(
+        {**cast(Mapping[str, DomainJsonValue], raw_payload), "action_id": linked.pop()}
+    )
+
+
+def _decode_draft(
+    value: JsonValue,
+    event_index: int,
+    action_links: Mapping[str, str] = MappingProxyType({}),
+) -> _PreparedDraft:
     """Decode one draft, attributing any rejection to that draft and its owning field."""
 
     source = _mapping(value)
@@ -667,6 +704,8 @@ def _decode_draft(value: JsonValue, event_index: int) -> _PreparedDraft:
         ),
     )
     raw_payload = _locate("payload", lambda: freeze_json(_field(source, "payload")))
+    if schema.name == "result_recorded":
+        raw_payload = _result_action_link(source, raw_payload, action_links)
     if schema in PAYLOAD_TYPES:
         payload: EventPayload | DomainJsonValue = _locate(
             "payload", lambda: decode_payload(schema, raw_payload)
@@ -790,15 +829,25 @@ def prepare_publication(
     *,
     channel: PublicationChannel,
     app: Application,
+    action_links: Mapping[str, str] = MappingProxyType({}),
 ) -> PreparedPublication:
-    """Decode, normalize, authorize, and cross-check one bounded batch."""
+    """Decode, normalize, authorize, and cross-check one bounded batch.
+
+    ``action_links`` maps the event id of an already recorded action to its ``act_`` id
+    (``_ledger_action_links``); with the actions earlier in this batch it lets a result name its
+    action by causal parent (tb4n3 N3-5).
+    """
 
     if not 1 <= len(request.event_drafts) <= MAX_EVENTS_PER_BATCH:
         raise _error(PublicErrorCode.INVALID_REQUEST, "The event batch size is invalid.")
     decoded: list[_PreparedDraft] = []
+    links = dict(action_links)
     for index, value in enumerate(request.event_drafts):
         try:
-            decoded.append(_decode_draft(value, index))
+            decoded.append(_decode_draft(value, index, links))
+            earlier = decoded[-1].draft
+            if type(earlier.payload) is ActionRecordedPayload:
+                links[str(earlier.event_id)] = str(earlier.payload.action_id)
         except PublicOperationError:
             raise
         except (TypeError, ValueError) as exc:
@@ -1598,6 +1647,59 @@ def _validate_new_completion_scope(
             )
 
 
+def _results_naming_a_parent_only(request: PublishWorkRequestModel) -> frozenset[str]:
+    """Parent event ids of result drafts that carry no ``action_id`` (tb4n3 N3-5)."""
+
+    parents: set[str] = set()
+    for value in request.event_drafts:
+        if not isinstance(value, Mapping):
+            continue
+        schema = value.get("schema")
+        payload = value.get("payload")
+        if (
+            isinstance(schema, Mapping)
+            and schema.get("name") == "result_recorded"
+            and isinstance(payload, Mapping)
+            and "action_id" not in payload
+        ):
+            raw = value.get("causal_parents")
+            if type(raw) in {tuple, list}:
+                parents.update(
+                    parent
+                    for parent in cast(tuple[JsonValue, ...] | list[JsonValue], raw)
+                    if type(parent) is str
+                )
+    return frozenset(parents)
+
+
+async def _ledger_action_links(
+    runtime: TaskRuntime, request: PublishWorkRequestModel
+) -> Mapping[str, str]:
+    """Event id to ``act_`` id for the recorded actions a result-without-action_id names.
+
+    Read only when such a result exists, so an ordinary batch pays nothing. The projection read
+    is best-effort: when it is unavailable the draft is rejected as before, never guessed.
+    """
+
+    wanted = _results_naming_a_parent_only(request)
+    if not wanted:
+        return MappingProxyType({})
+    try:
+        frontier = await runtime.ledger.load_frontier()
+        projection = await trusted_projection_at(runtime.ledger, runtime.session_id, frontier)
+    except TypeError, ValueError, OSError:
+        return MappingProxyType({})
+    if projection is None:
+        return MappingProxyType({})
+    return MappingProxyType(
+        {
+            str(row.source_event_id): str(key)
+            for key, row in projection.actions.items()
+            if str(row.source_event_id) in wanted and row.payload is not None
+        }
+    )
+
+
 async def _execute_dry_run(
     app: Application,
     request: PublishWorkRequestModel,
@@ -1607,7 +1709,12 @@ async def _execute_dry_run(
     """Validate a batch and return a non-evidential preview without any durable side effects."""
 
     # Intentionally skip operation lookup: dry_run must not consume or conflict on request_id.
-    prepared = prepare_publication(request, channel=channel, app=app)
+    prepared = prepare_publication(
+        request,
+        channel=channel,
+        app=app,
+        action_links=await _ledger_action_links(runtime, request),
+    )
     _validate_new_completion_scope(request, prepared)
     current, coverage, projected = await _preflight_dry_run_feasibility(runtime, request, prepared)
     notices = _blocker_notices(projected, prepared)
@@ -1699,7 +1806,12 @@ async def execute_publish_work(
                 )
             stored = _decode_stored_append_result(existing.result_canonical)
             try:
-                prepared = prepare_publication(request, channel=channel, app=app)
+                prepared = prepare_publication(
+                    request,
+                    channel=channel,
+                    app=app,
+                    action_links=await _ledger_action_links(runtime, request),
+                )
                 commitments, digest = await _commitments_and_digest(runtime, request, prepared)
             except PublicOperationError:
                 # Body cannot be prepared; the operation still stands. Surface the committed
@@ -1749,7 +1861,12 @@ async def execute_publish_work(
                     ) from envelope_exc
 
         # No prior operation: ordinary publish path. Body validation and expected_frontier apply.
-        prepared = prepare_publication(request, channel=channel, app=app)
+        prepared = prepare_publication(
+            request,
+            channel=channel,
+            app=app,
+            action_links=await _ledger_action_links(runtime, request),
+        )
         _validate_new_completion_scope(request, prepared)
         commitments, digest = await _commitments_and_digest(runtime, request, prepared)
         refs: list[ObjectRef] = []
