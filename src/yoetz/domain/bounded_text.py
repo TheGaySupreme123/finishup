@@ -100,8 +100,10 @@ class Part:
 
     ``variants`` are alternative renderings, longest first. A ``required`` part is always present
     (its shortest variant is reserved up front). An optional part is present only when one of its
-    variants fits. ``priority`` orders who is granted room first (lower first); it defaults to the
-    part's list position, with every required part ahead of every optional one.
+    variants fits. ``priority`` orders who is granted room first, required or not (lower first,
+    ties by list position). Without one, a required part is granted before every part that has a
+    priority and an optional part after them, so an explicit priority can place a required part's
+    longer variant behind a more important optional sentence.
     """
 
     variants: tuple[str, ...]
@@ -213,6 +215,18 @@ def _cut_longest(parts: list[str], limit: int, sep: str, marker: str) -> bool:
     return cut
 
 
+_REQUIRED_DEFAULT_RANK: Final = -1_000_000
+_OPTIONAL_DEFAULT_RANK: Final = 1_000_000
+
+
+def _grant_rank(part: Part) -> int:
+    """Who is granted room first: an explicit priority, else required before optional."""
+
+    if part.priority is not None:
+        return part.priority
+    return _REQUIRED_DEFAULT_RANK if part.required else _OPTIONAL_DEFAULT_RANK
+
+
 def compose_parts(
     parts: Sequence[Part],
     limit: int,
@@ -265,11 +279,7 @@ def compose_parts(
     count = len(present)
     order = sorted(
         (index for index in range(len(parts)) if variants[index]),
-        key=lambda index: (
-            0 if parts[index].required else 1,
-            parts[index].priority if parts[index].priority is not None else index,
-            index,
-        ),
+        key=lambda index: (_grant_rank(parts[index]), index),
     )
     for index in order:
         held = len(text_of(index))
