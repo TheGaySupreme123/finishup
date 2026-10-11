@@ -692,7 +692,6 @@ def _fallback_parts(
     finding_texts: tuple[str, str],
     withdrawn_text: str,
     accept_text: str,
-    prediction: tuple[str, ...] = (),
 ) -> list[tuple[str, Part]]:
     """The gate's sentences as named parts, in reading order, for the composed fallback.
 
@@ -741,8 +740,6 @@ def _fallback_parts(
         parts.append(("drain", Part((drain_note,), priority=9)))
     if moved_note:
         parts.append(("moved", Part((moved_note,), priority=9)))
-    if prediction:
-        parts.append(("prediction", Part(prediction, priority=10)))
     return parts
 
 
@@ -872,8 +869,16 @@ def closure_gate_from_readiness(
             return None
         # The predicted receipt conclusion is the lowest-priority sentence (owner decision Q1):
         # the longest variant that still fits, else none.
-        tail = next(
-            (variant for variant in prediction if used + 1 + len(variant) <= _MAX_TEXT_CHARS), ""
+        wanted = sum(
+            1 for sentence in (blocker, ack_text, premise_text, accept_sentence, moved) if sentence
+        )
+        tail = (
+            next(
+                (variant for variant in prediction if used + 1 + len(variant) <= _MAX_TEXT_CHARS),
+                "",
+            )
+            if len(chosen) == wanted
+            else ""
         )
         short_text = " ".join(
             sentence
@@ -1046,9 +1051,22 @@ def closure_gate_from_readiness(
             finding_texts=finding_texts,
             withdrawn_text=withdrawn_text,
             accept_text=accept_text,
-            prediction=prediction,
         )
         composed = compose_parts([part for _, part in parts], _MAX_TEXT_CHARS, ascii_only=False)
+        # The predicted conclusion yields before anything else: it is added only when the whole
+        # gate fits at full length without it being squeezed in beside a dropped or shortened
+        # sentence (Codex round 2).
+        if prediction and not (composed.dropped or composed.shortened or composed.cut_required):
+            with_tail = [*parts, ("prediction", Part(prediction, priority=10))]
+            candidate = compose_parts(
+                [part for _, part in with_tail], _MAX_TEXT_CHARS, ascii_only=False
+            )
+            last = len(with_tail) - 1
+            if not candidate.cut_required and all(
+                index == last or (index in candidate.kept and index not in candidate.shortened)
+                for index in range(len(with_tail))
+            ):
+                parts, composed = with_tail, candidate
         text = composed.text
         included = {parts[index][0] for index in composed.kept}
         delivered_rows = bool(recheck) and "recheck" in included

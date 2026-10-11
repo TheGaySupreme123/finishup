@@ -706,3 +706,60 @@ def test_the_prediction_is_the_first_sentence_dropped_under_the_host_bound() -> 
     bare = _gate(crowded)
     assert bare is not None
     assert (bare.text, bare.items, bare.blocker_keys) == (gate.text, gate.items, gate.blocker_keys)
+
+
+@pytest.mark.parametrize("tokens_name", ["none", "findings", "obligations", "all"])
+@pytest.mark.parametrize("blockers", [0, 1, 3])
+@pytest.mark.parametrize("acknowledgements", [0, 1, 3])
+@pytest.mark.parametrize("premise", [False, True])
+@pytest.mark.parametrize("acceptance", [False, True])
+def test_the_prediction_never_changes_what_else_the_gate_says(
+    tokens_name: str, blockers: int, acknowledgements: int, premise: bool, acceptance: bool
+) -> None:
+    """Codex round 2: the predicted conclusion is the first sentence dropped. Whatever the mix,
+    the gate with a prediction is the gate without one, plus at most that one tail sentence: it is
+    never squeezed in beside a re-check or instruction that was dropped or shortened."""
+
+    tokens = {
+        "none": (),
+        "findings": ("receipt_findings_unresolved",),
+        "obligations": ("obligations_open", "receipt_findings_unresolved"),
+        "all": tuple(gate_module._GATE_TOKENS),  # pyright: ignore[reportPrivateUsage]
+    }[tokens_name]
+    announced = (
+        *(blocker_recheck(obligation_id(index)) for index in range(blockers)),
+        *(ack_recheck(obligation_id(100 + index)) for index in range(acknowledgements)),
+        *((premise_recheck(3),) if premise else ()),
+        *((acceptance_recheck(),) if acceptance else ()),
+    )
+    if not tokens and not announced:
+        return
+
+    def build(prediction: object) -> Any:
+        return readiness(
+            "action_required" if tokens else "ready_with_limitations",
+            tokens,
+            rechecks=announced,
+            predicted_receipt=prediction,
+            open_obligation_count="3",
+            receipt_blocking_finding_count="2",
+            limitation_refs_required=tuple(
+                f"res_97700000-0000-4000-8000-{index:012d}" for index in range(5)
+            ),
+            limitation_refs_required_count="40",
+        )
+
+    bare = _gate(build(None))
+    with_tail = _gate(build(_PREDICTION))
+    assert (bare is None) == (with_tail is None)
+    if bare is None or with_tail is None:
+        return
+    assert (with_tail.items, with_tail.blocker_keys) == (bare.items, bare.blocker_keys)
+    assert len(with_tail.text) <= 2000
+    state = "action_required" if tokens else "ready_with_limitations"
+    from yoetz.protocol.readiness_text import predicted_receipt_variants
+
+    tails = {f" {variant}" for variant in predicted_receipt_variants(_PREDICTION, state=state)}
+    assert with_tail.text == bare.text or any(
+        with_tail.text == bare.text + tail for tail in tails
+    ), (tokens_name, blockers, acknowledgements, premise, acceptance)
