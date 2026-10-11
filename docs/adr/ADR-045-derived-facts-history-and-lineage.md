@@ -163,7 +163,7 @@ already carried `outside_workspace`); the kernel counts both as edits. The agent
 (`NOTES.md`, `todo.txt`; `.log` is never named by extension) are the new non-counting `notes` scope,
 overridden by a declared output of that name. A command that writes only notes, Yoetz material or
 scratch carries that same non-counting scope (so the declared-output override applies to a shell
-write as to an edit tool), a quoted operator or the word `tee` is text and not a write, a write
+write as to an edit tool), a quoted or escaped operator, a comment and the word `tee` as an argument are text and not a write (a newline ends a command; the lexer is the module's own, not `shlex`), a write
 inside `bash -lc '...'` is attributed, and a shell command that wrote counts as an edit whatever its
 exit status (`: > f; false` emptied `f`).
 

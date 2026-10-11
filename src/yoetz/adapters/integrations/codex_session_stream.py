@@ -1234,7 +1234,9 @@ def structural_from_stream_record(
                 scope = shell_write_scope(
                     raw_command, workspace=None, inside=lambda _path: False, relative_only=True
                 )
-                if scope == "workspace":
+                if scope is not None:
+                    # The closed token as the hook would send it (workspace, or the non-counting
+                    # notes / yoetz_owned scope a declared output of that kind overrides).
                     fields["write_scope"] = scope
                 if compound_verification_gap_required(command_payload):
                     # Preserve the host's outer result. The bounded gap records that a

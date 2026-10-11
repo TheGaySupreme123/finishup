@@ -278,7 +278,13 @@ def test_shell_redirect_scope(tmp_path: Path) -> None:
 def test_printing_an_operator_or_tee_is_not_an_outside_write(tmp_path: Path) -> None:
     """Text is not syntax, at the hook entry point and for absolute paths (Codex review, #1028)."""
 
-    for printed in ('echo ">" /etc/motd', "echo tee /etc/motd", "echo 'a > /etc/motd'"):
+    for printed in (
+        'echo ">" /etc/motd',
+        "echo tee /etc/motd",
+        "echo 'a > /etc/motd'",
+        "echo \\> /etc/motd",
+        "echo hi # > /etc/motd",
+    ):
         assert "write_scope" not in _facts("Bash", {"command": printed}, tmp_path), printed
     # The shell the host wraps the command in still runs the real write.
     wrapped = _facts("Bash", {"command": "/bin/bash -lc 'echo x > /etc/motd'"}, tmp_path)

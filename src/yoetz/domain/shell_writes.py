@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 from collections.abc import Callable
 from typing import Final
 
@@ -25,8 +24,30 @@ from yoetz.domain.write_scope import classify_write_path, scratch_path
 
 __all__ = ["shell_write_paths", "shell_write_scope"]
 
+# Operators that write their next word (a redirect target) ...
 _REDIRECT_OPERATORS: Final = frozenset({">", ">>", ">|", "&>", "&>>"})
-_SEPARATORS: Final = frozenset({"&&", "||", ";", "|", "&", ";;", "(", ")"})
+# ... redirects that only read or duplicate (their next word is a source, a descriptor or a
+# heredoc delimiter, never a write) ...
+_OTHER_REDIRECTS: Final = frozenset({">&", "<", "<<", "<<<", "<<-", "<&", "<>"})
+# ... and the operators that end one simple command and begin another.
+_SEPARATORS: Final = frozenset({"&&", "||", ";", "|", "|&", "&", ";;", "(", ")", "\n"})
+_OPERATOR_CHARS: Final = frozenset(";&|()<>")
+_OPERATORS_LONGEST_FIRST: Final = (
+    "&>>",
+    "<<<",
+    "<<-",
+    "&&",
+    "||",
+    "|&",
+    ";;",
+    ">>",
+    ">|",
+    ">&",
+    "&>",
+    "<<",
+    "<&",
+    "<>",
+)
 _HEREDOC: Final = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 _FILE_OPERAND_SKIP: Final = frozenset(
@@ -51,12 +72,118 @@ def _attributable(path: str) -> bool:
 _MAX_SHELL_DEPTH: Final = 3
 
 
-def _unquote(token: str) -> str:
-    """*token* without its enclosing quotes (the lexer keeps them to tell operators from text)."""
+def _lex(text: str) -> list[tuple[str, str]] | None:
+    """``(kind, text)`` tokens of *text*, ``kind`` being ``word`` or ``op``; ``None`` if unlexable.
 
-    if len(token) >= 2 and token[0] == token[-1] and token[0] in "'\"":
-        return token[1:-1]
-    return token
+    A purpose-built shell lexer, because a quoted or escaped operator is text and ``shlex`` cannot
+    say so: in ``echo ">" f``, ``echo \\> f`` and ``echo 'a > b'`` nothing is redirected. Words
+    lose their quotes and backslashes; an operator is only ever an unquoted, unescaped one;
+    a newline ends a command; an unquoted ``#`` at the start of a word begins a comment; a word
+    of digits directly before ``>``/``<`` is a descriptor, not an argument.
+    """
+
+    tokens: list[tuple[str, str]] = []
+    buffer: list[str] = []
+    in_word = False
+    quoted = False
+    index = 0
+    size = len(text)
+
+    def end_word() -> None:
+        nonlocal in_word, quoted
+        if in_word:
+            tokens.append(("word", "".join(buffer)))
+        buffer.clear()
+        in_word = False
+        quoted = False
+
+    while index < size:
+        char = text[index]
+        if char in " \t\r":
+            end_word()
+            index += 1
+        elif char == "\n":
+            end_word()
+            tokens.append(("op", "\n"))
+            index += 1
+        elif char == "\\":
+            if index + 1 >= size:
+                return None
+            following = text[index + 1]
+            if following != "\n":  # a backslash-newline joins lines
+                buffer.append(following)
+                in_word = True
+                quoted = True
+            index += 2
+        elif char == "'":
+            close = text.find("'", index + 1)
+            if close < 0:
+                return None
+            buffer.append(text[index + 1 : close])
+            in_word = True
+            quoted = True
+            index = close + 1
+        elif char == '"':
+            index += 1
+            while True:
+                if index >= size:
+                    return None
+                inner = text[index]
+                if inner == '"':
+                    index += 1
+                    break
+                if inner == "\\" and index + 1 < size and text[index + 1] in '"\\$`\n':
+                    if text[index + 1] != "\n":
+                        buffer.append(text[index + 1])
+                    index += 2
+                    continue
+                buffer.append(inner)
+                index += 1
+            in_word = True
+            quoted = True
+        elif char == "#" and not in_word:
+            while index < size and text[index] != "\n":
+                index += 1
+        elif char in _OPERATOR_CHARS:
+            operator = next(
+                (item for item in _OPERATORS_LONGEST_FIRST if text.startswith(item, index)), char
+            )
+            if in_word and not quoted and operator[0] in "<>" and "".join(buffer).isdigit():
+                buffer.clear()
+                in_word = False  # ``2>file``: the descriptor is not an argument
+            end_word()
+            tokens.append(("op", operator))
+            index += len(operator)
+        else:
+            buffer.append(char)
+            in_word = True
+            index += 1
+    end_word()
+    return tokens
+
+
+def _sed_files(rest: list[str]) -> list[str]:
+    """The file operands of an in-place ``sed`` (the script is not one)."""
+
+    script_given = False
+    skip = False
+    operands: list[str] = []
+    for word in rest:
+        if skip:
+            skip = False
+            continue
+        if word in {"-e", "-f", "--expression", "--file"} or re.fullmatch(
+            r"-[A-Za-hj-z]*[ef]", word
+        ):
+            script_given = True
+            skip = True
+        elif word.startswith(("--expression=", "--file=")):
+            script_given = True
+        elif word.startswith("-") and word != "-":
+            continue
+        else:
+            operands.append(word)
+    return operands if script_given else operands[1:]
 
 
 def shell_write_paths(command: str, _depth: int = 0) -> list[str]:
@@ -80,23 +207,14 @@ def shell_write_paths(command: str, _depth: int = 0) -> list[str]:
         match = _HEREDOC.search(line)
         if match is not None:
             delimiter = match.group(2)
-    # Non-POSIX mode keeps a quoted token's quotes, so ``echo ">" f`` is text, not a redirect.
-    lexer = shlex.shlex("\n".join(lines), posix=False, punctuation_chars=True)
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
+    tokens = _lex("\n".join(lines))
+    if tokens is None:
         return []
     paths: list[str] = []
     segment: list[str] = []
 
     def flush() -> None:
-        words = [
-            _unquote(word)
-            for word in strip_wrappers(
-                [word for word in segment if word not in _REDIRECT_OPERATORS]
-            )
-        ]
+        words = strip_wrappers(segment)
         segment.clear()
         if not words:
             return
@@ -111,11 +229,7 @@ def shell_write_paths(command: str, _depth: int = 0) -> list[str]:
             paths.extend(operands)
         elif head in _SED_NAMES and any(_SED_IN_PLACE.match(word) for word in rest):
             # ``sed -i 's/a/b/' f``: the first operand is the script unless ``-e``/``-f`` gave it.
-            scripted = any(
-                word in {"-e", "-f"} or word.startswith(("-e", "-f", "--expression"))
-                for word in rest
-            )
-            paths.extend(operands if scripted else operands[1:])
+            paths.extend(_sed_files(rest))
         elif head in _COPY_LIKE:
             target = next(
                 (
@@ -145,14 +259,16 @@ def shell_write_paths(command: str, _depth: int = 0) -> list[str]:
 
     index = 0
     while index < len(tokens):
-        token = tokens[index]
+        kind, token = tokens[index]
         following = tokens[index + 1] if index + 1 < len(tokens) else None
-        if token in _SEPARATORS or token == "\n":
+        if kind == "op" and token in _SEPARATORS:
             flush()
-        elif token in _REDIRECT_OPERATORS and following is not None:
-            paths.append(_unquote(following))
-            index += 1
-        else:
+        elif kind == "op" and token in _REDIRECT_OPERATORS | _OTHER_REDIRECTS:
+            if following is not None and following[0] == "word":
+                if token in _REDIRECT_OPERATORS:
+                    paths.append(following[1])
+                index += 1  # the redirect's operand is never an argument of the command
+        elif kind == "word":
             segment.append(token)
         index += 1
     flush()
