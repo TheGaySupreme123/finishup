@@ -30,7 +30,7 @@ from yoetz.protocol.models import (
     public_model_to_wire,
 )
 
-__all__ = ["PREPARATION_REMEDIATIONS", "Selection", "prepare_closure"]
+__all__ = ["PREPARATION_REMEDIATIONS", "Selection", "prepare_closure", "recheck_note"]
 
 PREPARATION_REMEDIATIONS = {
     "closure_status_unavailable": "Read status for this session and writer before preparing again.",
@@ -76,6 +76,43 @@ def _base(
         "actor": {"actor_id": "harness:closure-composer", "actor_type": "harness"},
         "client": {"kind": client_kind, "version": __version__, "integration": integration},
     }
+
+
+_RECHECK_PHRASES = {
+    "acceptance": "the acceptance criteria of your resolved obligations",
+    "acknowledgement": "obligations you recorded as not done",
+    "blocker": "a blocker you recorded",
+    "premise": "findings you acknowledged that the review says the task requires",
+}
+
+
+def recheck_note(readiness: object) -> str | None:
+    """One sentence naming the re-checks the Stop gate will ask once (tb4n3 RC-8).
+
+    ``closure_readiness.rechecks`` is the list status, this preparation and the Stop gate all
+    read, so a preparation that says "nothing further" never precedes a gate for an item it did
+    not name. ``None`` when the readiness announces none (or an older service sent no list).
+    """
+
+    raw = getattr(readiness, "rechecks", None)
+    if not isinstance(raw, (tuple, list)):
+        return None
+    kinds: list[str] = []
+    for entry in tuple(cast(tuple[object, ...], raw)):
+        kind: object = (
+            cast(dict[str, object], entry).get("kind")
+            if isinstance(entry, dict)
+            else getattr(entry, "kind", None)
+        )
+        if type(kind) is str and kind in _RECHECK_PHRASES and kind not in kinds:
+            kinds.append(kind)
+    if not kinds:
+        return None
+    named = "; ".join(_RECHECK_PHRASES[kind] for kind in kinds)
+    return (
+        "At Stop you will be asked once to re-read: "
+        f"{named}. closure_readiness.rechecks lists each with its key."
+    )
 
 
 def scope_inventory_to_selection(
@@ -210,6 +247,9 @@ async def prepare_closure(
             "GitHub workflow evidence uses the API run id, never run_number; this tool does not manufacture it.",
         ],
     }
+    announced = recheck_note(compact.closure_readiness)
+    if announced is not None:
+        cast(list[str], output["notes"]).append(announced)
     if selection.phase == "inventory":
         return output
     obligations = {cast(str, item["obligation_id"]): item for item in inventory["obligations"]}

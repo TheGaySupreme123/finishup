@@ -517,3 +517,28 @@ def test_an_unreadable_state_never_gates(state: object, active: bool) -> None:
     announced = readiness(str(state), (), rechecks=(acceptance_recheck(),))
     announced.state = state
     assert _gate(announced, active=active) is None
+
+
+# --- closure_prepare reads the same list ------------------------------------------------------
+
+
+def test_closure_prepare_names_the_rechecks_the_gate_will_ask() -> None:
+    from yoetz.domain.closure import recheck_note
+
+    announced = readiness(
+        "ready_with_limitations",
+        (),
+        rechecks=(acceptance_recheck(), ack_recheck(_OBL), ack_recheck(obligation_id(101))),
+    )
+    note = recheck_note(announced)
+    assert note is not None
+    assert note.startswith("At Stop you will be asked once to re-read: ")
+    assert "the acceptance criteria of your resolved obligations" in note
+    assert "obligations you recorded as not done" in note
+    assert note.count("obligations you recorded as not done") == 1
+    # What the note names is exactly what the gate asks.
+    gate = _gate(announced)
+    assert gate is not None
+    assert gate.items == (ACKNOWLEDGEMENT_RECHECK_ITEM, ACCEPTANCE_RECHECK_ITEM)
+    assert recheck_note(readiness("ready", (), rechecks=())) is None
+    assert recheck_note(readiness("ready", (), rechecks=None)) is None
