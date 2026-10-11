@@ -25,7 +25,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import Final
 
-from yoetz.domain.bounded_text import Part, compose_parts, list_variants
+from yoetz.domain.bounded_text import Part, ascii_safe, compose_parts, list_variants
 
 __all__ = [
     "RECAP_CONTEXT_LIMIT",
@@ -197,10 +197,20 @@ def _clean_facts(facts: RecapFacts) -> RecapFacts:
     )
 
 
+def _flat_text(text: str) -> str:
+    """User text as one ASCII line that cannot contain a double quote.
+
+    Typographic quotes fold to ``"`` when text becomes ASCII, so the fold runs first and the quote
+    replacement after it: no quote character, ASCII or not, can close the excerpt it sits in.
+    """
+
+    return _WHITESPACE.sub(" ", ascii_safe(text)).strip().replace('"', "'")
+
+
 def _excerpt(text: str | None) -> str:
     if text is None:
         return "(text withheld by the disclosure policy)"
-    flat = _WHITESPACE.sub(" ", text).strip().replace('"', "'")
+    flat = _flat_text(text)
     if len(flat) > _EXCERPT_CHARS:
         flat = flat[: _EXCERPT_CHARS - 3].rstrip() + "..."
     return f'"{flat}"' if flat else "(no text)"
@@ -257,15 +267,20 @@ def compose_compaction_recap(facts: RecapFacts, *, limit: int = RECAP_LIMIT) -> 
         ("declared deliverables", 5, False, _deliverable_variants(facts, seq)),
     )
     names = [name for name, _priority, _required, _variants in sections]
+    # Sections the note names are left out of the composition, so the note is true by
+    # construction. A fixed point on "what the composition dropped" is not guaranteed (the note
+    # takes room, which can change what fits), so the set only grows: every pass either drops
+    # nothing more, or adds at least one section, and the loop ends within len(sections) + 1.
     omitted: list[str] = []
     text = ""
-    for _attempt in range(3):
+    for _attempt in range(len(sections) + 1):
+        included = [section for section in sections if section[0] not in omitted]
         note = f"Omitted for space, ask status: {', '.join(omitted)}." if omitted else ""
         parts = [Part((header,), required=True), Part((ids,), required=True)]
         parts.append(Part((frontier,), required=True))
         parts.extend(
             Part(variants, required=required, priority=priority)
-            for _name, priority, required, variants in sections
+            for _name, priority, required, variants in included
         )
         parts.append(Part((next_line,), required=True))
         if facts.pending_observation_rows:
@@ -286,13 +301,13 @@ def compose_compaction_recap(facts: RecapFacts, *, limit: int = RECAP_LIMIT) -> 
         text = composition.text
         first_section = 3
         dropped = [
-            names[index - first_section]
+            included[index - first_section][0]
             for index in composition.dropped
-            if first_section <= index < first_section + len(sections)
+            if first_section <= index < first_section + len(included)
         ]
-        if not dropped or sorted(dropped) == sorted(omitted):
+        if not dropped:
             break
-        omitted = [name for name in names if name in dropped]
+        omitted = [name for name in names if name in omitted or name in dropped]
     return text
 
 
@@ -470,7 +485,7 @@ def _quoted_path(value: str | None) -> str:
 
     if value is None:
         return "(path withheld)"
-    flat = _WHITESPACE.sub(" ", value).strip().replace('"', "'")
+    flat = _flat_text(value)
     if len(flat) > _PATH_CHARS:
         flat = flat[: _PATH_CHARS - 3].rstrip() + "..."
     return f'"{flat}"' if flat else "(empty path)"

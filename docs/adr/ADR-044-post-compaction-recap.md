@@ -71,9 +71,10 @@ the same change.
    identity, frontier, next-action and closing lines are required. Findings and open obligations are
    required in their shortest form (a count that points at `status`) and are upgraded first; plan,
    readiness, last check and deliverables yield in that order. A section the budget cannot hold is
-   named in one line ("Omitted for space, ask status: ..."); nothing is dropped silently, and text
-   taken from the task or a reviewer is flattened to one quoted 80-character excerpt that cannot
-   close its own quotes.
+   named in one line ("Omitted for space, ask status: ..."); the note takes room itself, so a section
+   it names is left out of the composition and the note is true by construction: a section is named
+   exactly when its line is absent, and nothing is dropped silently. Text taken from the task or a
+   reviewer is flattened to one quoted 80-character excerpt that cannot close its own quotes.
 
 4. **Where it is emitted.** Only on a host's post-compaction start (`SessionStart`, `source:
    compact`), never on `startup`, `resume`, `clear` or any other event, and after the held-ids cue
@@ -126,8 +127,9 @@ the same change.
 8. **Provenance is per read, and text is quoted.** The deliverables line names the obligations
    read's own head frontier, not the compact read's. Every value interpolated outside a quoted
    excerpt is reduced to a safe token (no whitespace, quote or control character), and every
-   piece of task, reviewer or path text is flattened to a quoted single-line excerpt, so a field
-   cannot start a line of its own or forge a `[source ...]` label.
+   piece of task, reviewer or path text is folded to ASCII first (typographic quotes become
+   quotes), then flattened to a quoted single-line excerpt that holds no quote character, so a
+   field cannot close its own quotes, start a line of its own or forge a `[source ...]` label.
 
 ## Per-host decisions
 
