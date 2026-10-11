@@ -29,6 +29,7 @@ from yoetz.kernel.later_material import (
     LaterMaterial,
     LaterMaterialClass,
     classify_later_material,
+    observed_actions_by_event,
     supersession_exempt,
 )
 from yoetz.kernel.projections import (
@@ -84,6 +85,10 @@ class CheckStanding:
     counted: tuple[LedgerRecord, ...]
     counted_first: LaterRecord | None
     ignored: Mapping[LaterMaterialClass, int]
+    # The first counted observation-authored record (the one that bounds), and the first of those
+    # that names the tool call it observed. A cooperative response never stands in for either.
+    bounding_first: LaterRecord | None = None
+    clearing_first: LaterRecord | None = None
 
     @property
     def superseded(self) -> bool:
@@ -98,9 +103,9 @@ class CheckStanding:
         if self.superseded_by is not None:
             effect: Literal["superseded", "bounds_conclusion"] = "superseded"
             record = self.superseded_by
-        elif self.counted_first is not None and self.bounds_conclusion:
+        elif self.clearing_first is not None:
             effect = "bounds_conclusion"
-            record = self.counted_first
+            record = self.clearing_first
         else:
             return None
         return CheckCause(
@@ -116,6 +121,18 @@ class CheckStanding:
         """
 
         return any(is_observation_authored(record) for record in self.counted)
+
+    @property
+    def recheck_clears(self) -> bool:
+        """Whether one more check would remove the earlier-frontier disclosure for good.
+
+        True only when a counted observation names the tool call it saw: the next check's own
+        observation is an identified Yoetz call, so the disclosure cannot regenerate. Records with
+        no tool identity (a post-only host result, a lineage manifest) are made again by every
+        check on a host that observes that way: readiness must not ask for a recheck for them.
+        """
+
+        return self.clearing_first is not None
 
 
 def _later(record: LedgerRecord, material: LaterMaterial) -> LaterRecord:
@@ -140,9 +157,12 @@ def check_standing(projection: ProjectionState, records: tuple[LedgerRecord, ...
     sequence = check_record.ledger.ingestion_sequence
     limitations = observation_limitation_finding_ids(projection, records)
     exempt = supersession_exempt(projection)
+    actions = observed_actions_by_event(records)
     superseded: LaterRecord | None = None
     counted: list[LedgerRecord] = []
     counted_first: LaterRecord | None = None
+    bounding_first: LaterRecord | None = None
+    clearing_first: LaterRecord | None = None
     ignored: Counter[LaterMaterialClass] = Counter()
     for record in records:
         if record.ledger.ingestion_sequence <= sequence:
@@ -154,16 +174,29 @@ def check_standing(projection: ProjectionState, records: tuple[LedgerRecord, ...
             limitation_finding_ids=limitations,
             projection=projection,
         ):
-            superseded = _later(record, classify_later_material(record, projection, exempt=exempt))
+            superseded = _later(
+                record,
+                classify_later_material(
+                    record, projection, exempt=exempt, actions_by_event=actions
+                ),
+            )
         if not is_material_event_family(record.schema.name):
             continue
-        material = classify_later_material(record, projection, exempt=exempt)
+        material = classify_later_material(
+            record, projection, exempt=exempt, actions_by_event=actions
+        )
         if material.ignored:
             ignored[material.material_class] += 1
             continue
         counted.append(record)
+        later = _later(record, material)
         if counted_first is None:
-            counted_first = _later(record, material)
+            counted_first = later
+        if later.observation_authored:
+            if bounding_first is None:
+                bounding_first = later
+            if clearing_first is None and material.names_a_call:
+                clearing_first = later
     return CheckStanding(
         latest,
         check_record,
@@ -171,4 +204,6 @@ def check_standing(projection: ProjectionState, records: tuple[LedgerRecord, ...
         tuple(counted),
         counted_first,
         MappingProxyType(dict(sorted(ignored.items(), key=lambda item: item[0].value))),
+        bounding_first,
+        clearing_first,
     )

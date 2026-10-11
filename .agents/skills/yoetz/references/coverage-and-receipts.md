@@ -136,9 +136,9 @@ each status read and never cached across frontiers:
   `completion_plan_not_claimed`, `completion_claim_outside_plan`, `missing_ref`, and
   `instruction_requirement_unmapped`: a recorded task statement that no effective obligation
   cites in `source_refs`; the other plan-drift codes stay standing diagnostics), and
-  `check_current_as_of_earlier_frontier` while later records Yoetz could not prove harmless bound
-  the receipt (one more `check` removes it; it is a standing disclosure when only answers to the
-  check's own findings followed it).
+  `check_current_as_of_earlier_frontier` while a later tool call Yoetz could not prove harmless
+  bounds the receipt (one more `check` removes it; it is a standing disclosure when only answers to
+  the check's own findings followed it, or when the later record names no tool).
 - `standing_limitations`: gap codes that no action available under this host, profile and
   privacy policy removes, such as `host_outcome_unavailable`, `unpaired_event`,
   `content_unselected`, `content_capture_unavailable`, `content_redacted`,

@@ -1464,7 +1464,10 @@ follow-up owner: the Cursor ordinary-profile issue). The server-scoped spellings
 and `plugin-yoetz-yoetz:<tool>` are exact. `Write` is an edit that supersedes a check;
 `StrReplace`, `Delete` and any other tool the materializer records as an `other` action, and the
 structural profile's `afterFileEdit` / `afterMCPExecution` post-only results (no tool identity),
-are `other`: they keep the `check_current_as_of_earlier_frontier` disclosure and never supersede.
+are `other`: they keep the `check_current_as_of_earlier_frontier` disclosure and never supersede. A
+record that names no tool (the structural profile's post-only result of every call, including each
+check's own) bounds the receipt but is not offered as work in `closure_readiness`: every check on
+that profile would regenerate it, so the receipt says so and status does not ask for a recheck.
 That is a known Cursor capability gap, shared with `edited_after_last_verification`.
 
 ### Bounded workflow recovery examples (#613)

@@ -1805,7 +1805,7 @@ state no command outcome; #910 removes it where an outcome exists), `unpaired_ev
 loss, sticky by design; #917 owns how it surfaces), and commonly `content_unselected`,
 `observation_qualified_partial` and `advice_semantic_pending`; `check_current_as_of_earlier_frontier`
 is standing only while answers to the check's own findings followed it, and agent-actionable (one
-more check) while unclassified observations bound the receipt (tb4n3 RC-6). Observation status may also report
+more check) while an unclassified tool call bounds the receipt (tb4n3 RC-6). Observation status may also report
 `pending_attempt_expired` and `unsupported_event`; both are standing. A finished Codex session whose
 remaining conditions are only these reads `ready_with_limitations`.
 

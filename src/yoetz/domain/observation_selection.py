@@ -548,7 +548,18 @@ def _classify_argv(argv: list[str]) -> RunnerClass | None:
         return "other"
     if command == "find" and any(
         argument.casefold()
-        in {"-exec", "-execdir", "-delete", "-write", "-fprint", "-fls", "-fprintf", "-ok"}
+        in {
+            "-exec",
+            "-execdir",
+            "-delete",
+            "-write",
+            "-fprint",
+            "-fprint0",
+            "-fls",
+            "-fprintf",
+            "-ok",
+            "-okdir",
+        }
         for argument in argv[1:]
     ):
         return "other"

@@ -500,3 +500,52 @@ async def test_a_saved_yoetz_receipt_or_scratch_write_never_supersedes_the_check
     assert _NOT_APPLICABLE not in surfaces["capacity"]
     assert _CCAOEF not in surfaces["capacity"]
     assert surfaces["receipts"]["json"].conclusion == "no_unresolved_deterministic_findings"
+
+
+@pytest.mark.parametrize("backend", ("memory", "sqlite"))
+async def test_a_mixed_suffix_names_the_observation_that_bounds_not_the_response(
+    backend: Literal["memory", "sqlite"],
+) -> None:
+    """Codex review 1: an answer to the check's finding followed by a script run. The cause on
+    status and the cited records on the receipt are the observation; the advisory answer never
+    stands in for it."""
+
+    from yoetz.protocol.models import RespondRequest
+
+    app, runtime, _ = h._build_app(seed_offset=64, ledger_backend=backend)
+    started, checked, _obligation = await h._bootstrap_finding(app, seed=6400)
+    finding = checked.findings[0]
+    responded = await app.respond(
+        RespondRequest.model_validate(
+            {
+                **h._request_base(protocol_id("req_", 6410)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": h._frontier(checked.result_frontier),
+                "finding_id": finding.finding_id,
+                "finding_frontier": h._frontier(checked.result_frontier),
+                "disposition": "acknowledged",
+            }
+        )
+    )
+    appended = await _append_observed(
+        app,
+        runtime,
+        started,
+        (_action(6420, ActionKind.COMMAND, "exec_command", "other"), _result(6421, 6420)),
+        seed=6420,
+        expected_frontier=responded.result_frontier.sequence,
+    )
+    surfaces = await _surfaces(app, runtime, started, appended.result_frontier, 6700)
+    readiness = surfaces["status"].closure_readiness
+    cause = readiness.check_cause
+    assert cause is not None and cause.effect == "bounds_conclusion"
+    assert (cause.family, cause.material_class, cause.tool) == (
+        "action_recorded",
+        "other",
+        "exec_command",
+    )
+    gap = next(g for g in surfaces["receipts"]["json"].document["gaps"] if g["code"] == _CCAOEF)
+    # The observation is cited first; the answer follows it.
+    assert cause.event_id in gap["subject_refs"]
+    assert len(gap["subject_refs"]) == 3  # the script's action, its result, the answer

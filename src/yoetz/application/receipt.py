@@ -539,10 +539,20 @@ def _context(
                 CaseGap(
                     CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
                     CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
-                    # The first records after the check, in ledger order (a receipt gap cites
-                    # at most 16); the explanation says how many there were.
+                    # A receipt gap cites at most 16 records: the observations that bound come
+                    # first (in ledger order), then the answers that followed; the explanation
+                    # says how many there were.
                     tuple(
-                        sorted((record.event_id for record in later_material[:16]), key=str.encode)
+                        sorted(
+                            (
+                                record.event_id
+                                for record in (
+                                    *(r for r in later_material if is_observation_authored(r)),
+                                    *(r for r in later_material if not is_observation_authored(r)),
+                                )[:16]
+                            ),
+                            key=str.encode,
+                        )
                     ),
                 )
             )

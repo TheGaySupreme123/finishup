@@ -736,7 +736,7 @@ def _later_material_text(context: ReceiptBuildContext, code: str) -> str | None:
             )
         return sentence
     if code == CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP:
-        first = standing.counted_first
+        first = standing.bounding_first or standing.counted_first
         if standing.superseded_by is not None or first is None:
             return None
         answers = sum(1 for record in standing.counted if not is_observation_authored(record))
@@ -1392,14 +1392,19 @@ def _suffix_record_kinds(context: ReceiptBuildContext) -> tuple[str | None, bool
         return None, False, False
     # The same filter the application used to derive ``check_suffix`` (tb4n3 RC-6): records the
     # shared ``later_material_class`` rule proves harmless are not part of the disclosed suffix.
-    later_material = counted_later_material(
-        (
-            record
-            for record in context.records
-            if is_material_event_family(record.schema.name)
-            and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
-        ),
-        context.projection,
+    later_material = (
+        context.check_standing.counted
+        if context.check_standing is not None
+        else counted_later_material(
+            (
+                record
+                for record in context.records
+                if is_material_event_family(record.schema.name)
+                and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
+            ),
+            context.projection,
+            all_records=context.records,
+        )
     )
     lineage_records = tuple(
         record for record in later_material if is_lineage_service_stamped(record)

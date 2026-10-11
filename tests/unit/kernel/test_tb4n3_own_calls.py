@@ -123,7 +123,7 @@ def _surfaces(records: tuple[LedgerRecord, ...]) -> _Surfaces:
         compact_gaps=frozenset(coverage.known_gaps),
         freshness=projection.freshness,
         readiness_applicability=facts.check_applicability,
-        readiness_bounds=facts.earlier_frontier_bounds,
+        readiness_bounds=facts.earlier_frontier_recheck_clears,
         readiness_actionable=split.agent_actionable,
         readiness_standing=split.standing_limitations,
     )
@@ -174,9 +174,23 @@ def test_b4_earlier_frontier_gap_class_agrees_with_receipt_bound() -> None:
     assert _CCAOEF not in bounded.readiness_standing
     assert bounded.freshness is not LedgerFreshness.STALE_AFTER_MATERIAL_CHANGE
 
-    # The three surfaces cannot disagree on any variant: the code is in the receipt-capacity fold,
-    # the compact coverage and the readiness work list together, or in none of them.
-    for state in (quiet, bounded):
+    # A host result that names no tool (Cursor's structural afterMCPExecution is such a post-only
+    # result for every call, including each check's own) bounds the receipt like any record Yoetz
+    # cannot prove harmless, but one more check cannot clear it: the next check is observed the
+    # same way. Readiness must not turn that into an instruction that never ends (Codex review 1).
+    blind = _after_check()
+    _evidence(blind, 9300, "Observed post-only tool result")
+    anonymous = _surfaces(blind.prefix)
+    assert anonymous.counted == 1
+    assert _CCAOEF in anonymous.capacity_codes and _CCAOEF in anonymous.compact_gaps
+    assert anonymous.readiness_bounds is False
+    assert _CCAOEF not in anonymous.readiness_actionable
+    assert _CCAOEF in anonymous.readiness_standing
+
+    # The surfaces cannot disagree on any variant: the code is in the receipt-capacity fold and
+    # the compact coverage together or in neither, exactly when a record is counted; and readiness
+    # lists it as work exactly when a recheck would clear it.
+    for state in (quiet, bounded, anonymous):
         in_capacity = _CCAOEF in state.capacity_codes
         assert in_capacity == (_CCAOEF in state.compact_gaps)
         assert in_capacity == (state.counted > 0)
@@ -366,3 +380,96 @@ def test_a_receipt_saved_into_a_declared_output_directory_never_supersedes() -> 
     assert {
         classify_later_material(record, projection).material_class for record in ledger.prefix[-2:]
     } == {_C.NON_COUNTING_WRITE}
+
+
+def test_captured_content_takes_the_class_of_the_call_it_was_recorded_under() -> None:
+    """Codex review 1: saving yoetz_receipt.md with captured patch content records an evidence row
+    under the action. That row is the call's output, not a second, unclassified observation: it
+    must not turn an ignored write into a counted record (and then a recheck loop)."""
+
+    ledger = _after_check()
+    check_sequence = ledger.prefix[-1].ledger.ingestion_sequence
+    ledger.edit(write_scope="yoetz_owned")
+    action = ledger.prefix[-2]
+    from yoetz.domain.values import timestamp_from_string
+
+    ledger.append(
+        EventSchema("evidence_recorded", "1.0.0"),
+        EvidenceRecordedPayload(
+            evidence_id("evd_00000000-0000-4000-8000-000000009401"),
+            EvidenceKind.OTHER,
+            EvidenceImmutability.METADATA_ONLY,
+            timestamp_from_string("2026-09-29T17:58:11.363Z"),
+            description="Observation-captured workspace_diff",
+        ),
+        observed=True,
+        causal_parents=(action.event_id,),
+    )
+    standing = check_standing(replay(ledger.prefix), ledger.prefix)
+    assert check_sequence < ledger.prefix[-1].ledger.ingestion_sequence
+    assert standing.superseded is False
+    assert standing.counted == ()
+    assert standing.ignored[_C.NON_COUNTING_WRITE] == 3  # the action, its result, its evidence
+    # An unknown description without that lineage stays disclosed.
+    orphan = _after_check()
+    _evidence(orphan, 9402, "Observation-captured workspace_diff")
+    assert len(check_standing(replay(orphan.prefix), orphan.prefix).counted) == 1
+
+
+def test_a_declared_yoetz_tree_deliverable_keeps_counting() -> None:
+    """Codex review 1: the receipt exemption is for the receipt, not for a task whose product is
+    the packaged plugin or skill (a declared output under .agents/skills/yoetz)."""
+
+    from yoetz.domain.events import (
+        ObligationStatus,
+        PlanPublishedPayload,
+        RequestedItem,
+        RequestedItemKind,
+        RequestedItemRole,
+    )
+
+    obligation = obligation_id("obl_00000000-0000-4000-8000-0000000000b6")
+    ledger = ObservedLedger()
+    ledger.append(
+        EventSchema("obligation_published", "1.1.0"),
+        ObligationPublishedPayload(
+            obligation_id=obligation,
+            description="Deliver",
+            evidence_expectation="files",
+            status=ObligationStatus.OPEN,
+            requested_items=(
+                RequestedItem(
+                    RequestedItemKind.FILE,
+                    "/app/.agents/skills/yoetz/SKILL.md",
+                    role=RequestedItemRole.OUTPUT,
+                ),
+            ),
+        ),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", (obligation,)),
+        observed=False,
+    )
+    ledger.edit(write_scope="yoetz_owned")
+    projection = replay(ledger.prefix)
+    assert {
+        classify_later_material(record, projection).material_class for record in ledger.prefix[-2:]
+    } == {_C.EDIT_OR_WRITE}
+
+
+def test_a_find_that_writes_a_file_is_not_exploration() -> None:
+    """Codex review 1: ``find -fprint0 FILE`` writes FILE; the read-only runner class must not
+    admit it, because the later-material rule now ignores exploration entirely."""
+
+    from yoetz.domain.observation_selection import command_runner_class
+
+    for command in (
+        "find . -fprint0 manifest.bin",
+        "find . -fprint list.txt",
+        "find . -okdir rm {} +",
+        "find . -delete",
+    ):
+        assert command_runner_class({"command": command}) != "exploration", command
+    assert command_runner_class({"command": "find . -name '*.py'"}) == "exploration"

@@ -148,13 +148,22 @@ builder. Classes:
 A result is classified by the action it answers. A Yoetz receipt or export the agent saved is
 exempt even when a declared output directory would otherwise make a lexical `yoetz_owned` write
 count for verification staleness (ADR-042 decision 1): it is the output about the check, so no
-check could cover it, and counting it would invalidate the check that produced it.
+check could cover it, and counting it would invalidate the check that produced it. The exemption
+ends where a declared output is itself a packaged Yoetz tree (`.agents/...`): a write there may be
+the deliverable and keeps counting.
 
-When the suffix still bounds (`other` records), readiness lists
-`check_current_as_of_earlier_frontier` as agent-actionable, because one more check removes it,
-instead of "nothing further to do" beside a receipt it will bound. It stays a standing disclosure
-when only responses followed. The gap table and its version are unchanged: the move is made by
-the `earlier_frontier_bounds` readiness fact, like `check_not_applicable`.
+When the suffix still bounds, readiness lists `check_current_as_of_earlier_frontier` as
+agent-actionable (one more check removes it) instead of "nothing further to do" beside a receipt
+it will bound, but only while a counted observation names the tool call it saw
+(`CheckStanding.recheck_clears`): the next check's own observation is an identified Yoetz call,
+so the condition cannot regenerate. A bounding record with no tool identity (Cursor's structural
+`afterMCPExecution` result of every call, an unpaired host result, a lineage manifest) is regenerated
+by every check on a host that observes that way, so readiness keeps it a standing disclosure and
+never turns it into an instruction that cannot be followed to the end; the receipt still discloses
+and bounds. It stays a standing disclosure when only responses followed. The gap table and its
+version are unchanged: the move is made by the `earlier_frontier_recheck_clears` readiness fact,
+like `check_not_applicable`. Content the host captured for a call (tool output, a workspace diff)
+is evidence recorded under that call's action and takes the action's class.
 
 Provenance (owner lineage rule): the receipt gap cites the superseding or first counted record
 (`subject_refs`), and the limitations text names the record, its ledger sequence, the closed rule

@@ -6801,9 +6801,10 @@ while a check holds the session frontier (read at the head through the ledger's
 `has_active_frozen_case`; an unanswerable probe counts as in flight), then `check_not_recorded` or
 `check_not_applicable` from the receipt applicability rule (an observed deliverable or workspace edit
 after the check counts; Yoetz's own calls, read-only reads and host bookkeeping do not,
-`kernel/later_material`, tb4n3 RC-6), then `check_current_as_of_earlier_frontier` while the counted
-suffix after the check bounds the receipt (`ClosureReadinessFacts.earlier_frontier_bounds`; the gap's
-static class stays standing, so `gap_classification_version` is unchanged), then
+`kernel/later_material`, tb4n3 RC-6), then `check_current_as_of_earlier_frontier` while a counted
+observation after the check names the tool call it saw and bounds the receipt
+(`ClosureReadinessFacts.earlier_frontier_recheck_clears`; the gap's static class stays standing, so
+`gap_classification_version` is unchanged; a bounding record with no tool identity stays standing), then
 `closing_review_required` (issue
 #976: AI-powered review is required on the route or completed on the task, and no completed
 final-phase review, or undeliverable review attempt, is current since the last material change),

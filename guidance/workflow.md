@@ -214,8 +214,8 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 - `action_required`: do each item in `agent_actionable` — open obligations, unanswered findings,
   an unacknowledged receipt-blocking finding, `check_in_progress` (recover the running check's
   result through `status view=operation`), `check_not_recorded` or `check_not_applicable` (run a
-  check after the material change), `check_current_as_of_earlier_frontier` (later records Yoetz
-  could not prove harmless bound the receipt: run one more check), or an actionable gap such as
+  check after the material change), `check_current_as_of_earlier_frontier` (a later tool call Yoetz
+  could not prove harmless bounds the receipt: run one more check), or an actionable gap such as
   `completion_plan_not_claimed`. `closure_readiness.check_cause` names the record behind
   `check_not_applicable` (for example an observed edit made after the check) or the bounding
   `check_current_as_of_earlier_frontier`.

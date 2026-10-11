@@ -599,11 +599,14 @@ class ClosureReadinessFacts:
     open_obligations_unreadable: bool = True
     # Issue #984 (D7a): acknowledged-not-done findings whose premise the reviewer disputes.
     premise_disputed_finding_ids: tuple[FindingId, ...] = ()
-    # tb4n3 RC-6. The records that follow the applicable check include observations Yoetz could not
-    # prove harmless (``kernel.later_material``), so the receipt carries
-    # ``check_current_as_of_earlier_frontier`` and that code bounds its conclusion. A re-check
-    # evaluates them and removes the code, so readiness lists it as work instead of "nothing to do".
-    earlier_frontier_bounds: bool = False
+    # tb4n3 RC-6. The records that follow the applicable check include an observation of a named
+    # tool call that Yoetz could not prove harmless (``kernel.later_material``), so the receipt
+    # carries ``check_current_as_of_earlier_frontier`` and that code bounds its conclusion. One
+    # more check evaluates the call and removes the code for good (the next check's own
+    # observation is an identified Yoetz call), so readiness lists it as work instead of "nothing
+    # to do". A suffix with no tool identity (a post-only host result) is not asked to be
+    # rechecked: every check on such a host regenerates it.
+    earlier_frontier_recheck_clears: bool = False
     # Why the check is not applicable, or why the earlier-frontier code bounds: the first later
     # record that decided it (event id, ledger sequence, family, class, closed rule, tool token).
     check_cause: CheckCause | None = None
@@ -620,7 +623,7 @@ class ClosureReadinessFacts:
             or type(self.semantic_review_current) is not bool
             or type(self.closing_review_current) is not bool
             or type(self.semantic_review_used) is not bool
-            or type(self.earlier_frontier_bounds) is not bool
+            or type(self.earlier_frontier_recheck_clears) is not bool
             or (self.check_cause is not None and type(self.check_cause) is not CheckCause)
         ):
             raise ValueError("closure_readiness_facts_invalid")
@@ -937,7 +940,7 @@ def closure_readiness_facts(
     applicability, standing = _check_applicability(state, records)
     return ClosureReadinessFacts(
         check_applicability=applicability,
-        earlier_frontier_bounds=applicability == "applicable" and standing.bounds_conclusion,
+        earlier_frontier_recheck_clears=applicability == "applicable" and standing.recheck_clears,
         check_cause=standing.cause if applicability in {"applicable", "not_applicable"} else None,
         semantic_review_current=_semantic_review_current(state, records, limitations),
         receipt_blocking_finding_ids=tuple(sorted(blocking, key=str.encode)),
@@ -1074,7 +1077,7 @@ def derive_closure_readiness(
     split_standing = split.standing_limitations
     if (
         facts is not None
-        and facts.earlier_frontier_bounds
+        and facts.earlier_frontier_recheck_clears
         and CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP in split_standing
     ):
         # tb4n3 RC-6 (B5): the receipt will be bounded by this code and one more check removes it,

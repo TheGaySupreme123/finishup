@@ -334,8 +334,9 @@ If something after the check might have changed the work and Yoetz cannot tell (
 test or build, a tool it cannot attribute), the receipt folds the check's coverage, including
 `semantic_model_derived`, and carries the gap `check_current_as_of_earlier_frontier` naming the
 subject frontier that was tested and the first such record. The verdict is current as of that
-earlier frontier, not the receipt's, so the receipt is still coverage-incomplete. `status` lists
-the code as work: one more `check` evaluates those records and removes it.
+earlier frontier, not the receipt's, so the receipt is still coverage-incomplete. When the record
+names the tool call it saw, `status` lists the code as work: one more `check` evaluates it and
+removes it. A record that names no tool stays a disclosure on the receipt only.
 
 An observed edit to the deliverable or the workspace after the check is different: it changes
 what the check judged. The receipt then reports `check_not_applicable` and says which record did

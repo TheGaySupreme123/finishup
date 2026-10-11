@@ -33,6 +33,7 @@ __all__ = [
     "edit_write_scope",
     "scratch_overlap",
     "yoetz_artifact_name",
+    "yoetz_tree_overlap",
     "scratch_path",
 ]
 
@@ -128,6 +129,20 @@ def yoetz_artifact_name(path: str) -> bool:
     path in a packaged Yoetz tree (pure; the state and isolation roots are not consulted)."""
 
     return type(path) is str and bool(path) and _yoetz_owned(_normalize(path), ())
+
+
+def yoetz_tree_overlap(path: str) -> bool:
+    """Whether a declared path lies in, or contains, a packaged Yoetz tree (pure).
+
+    A declared deliverable there (a repository whose product is the Yoetz plugin) is the work
+    itself; a saved receipt is not. Any ``.agents`` path segment is treated as overlapping, so a
+    declared ``/app/.agents`` directory counts too.
+    """
+
+    if type(path) is not str or not path:
+        return False
+    padded = "/" + _normalize(path).lstrip("/") + "/"
+    return "/.agents/" in padded or any(f"/{tree}/" in padded for tree in _YOETZ_TREES)
 
 
 def scratch_overlap(path: str) -> bool:
