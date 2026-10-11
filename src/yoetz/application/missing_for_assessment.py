@@ -64,6 +64,7 @@ __all__ = [
     "YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE",
     "MissingItemsReview",
     "check_change_binary_paths",
+    "check_change_text_paths",
     "observed_image_evidence",
     "review_missing_for_assessment",
     "supplied_since",
@@ -81,7 +82,10 @@ YOETZ_LIMIT_PACKET_ROOM: Final = "yoetz_limit_packet_room"
 # Content the review packet never carries: images, audio, video, documents, archives, disk
 # images, CAD/EDA, fonts, ROMs, data and model files, databases, native objects and captures
 # (tb4n2 A11). Matched on the file name a target records, case-insensitively, on its last suffix
-# (so ``x.tar.zst`` matches ``.zst``). A few suffixes also name text formats (``.key`` a PEM key,
+# (so ``x.tar.zst`` matches ``.zst``). The check-time change's own NUL-byte sniff decides first
+# (ADR-045): a file Git found binary is unsupported, and a file it found text is not, whatever its
+# suffix; the suffix decides only for a file the change did not list. ISO 10303-21 ``.step`` and
+# ``.stp`` are ASCII, so they are not here. A few suffixes also name text formats (``.key`` a PEM key,
 # ``.nc`` G-code, ``.hdr`` an ENVI header, ``.brd``/``.svf``/``.fig``/``.gb`` text board, vector,
 # figure or GenBank files): they are listed anyway, because a false Yoetz limit only means the
 # agent verifies the file itself under a disclosed limit, while a false "agent work" pushes the
@@ -239,9 +243,7 @@ _UNSUPPORTED_SUFFIXES: Final = frozenset(
         ".so",
         ".sqlite",
         ".sqlite3",
-        ".step",
         ".stl",
-        ".stp",
         ".svf",
         ".tar",
         ".tflite",
@@ -1024,6 +1026,7 @@ def review_missing_for_assessment(
     privacy_withheld_refs: frozenset[str] = frozenset(),
     change_clipped: bool = False,
     binary_paths: frozenset[str] = frozenset(),
+    text_paths: frozenset[str] = frozenset(),
 ) -> MissingItemsReview:
     """Fence what the reviewer named to the packet it was shown and classify who can supply it.
 
@@ -1074,6 +1077,7 @@ def review_missing_for_assessment(
         _Links.of(projection, _ALL_ROWS, observed, captured_edit_paths or {}, workspace_root),
         captured_edit_paths or {},
         binary_paths,
+        text_paths,
     )
     gaps: set[str] = set()
     kept: dict[tuple[str, tuple[str, ...]], str] = {}
@@ -1157,31 +1161,42 @@ class _TargetFiles:
     captured: Mapping[str, frozenset[str]]
     # Workspace-relative paths the check-time change marks binary (tb4n2 A11).
     binary: frozenset[str] = frozenset()
+    # Workspace-relative paths the same change lists as text (ADR-045): Git's NUL sniff found no
+    # NUL byte, so their suffix says nothing (a ``.step`` file is ASCII).
+    text: frozenset[str] = frozenset()
 
-    def unsupported(self, name: str) -> bool:
-        """Whether a recorded file name is a type the packet never carries.
-
-        By suffix, or because Git found the file binary when the check-time change was captured
-        (a suffix-less ``solver`` or firmware blob). An absolute name counts only inside the
-        workspace root; names compare normalized but exact, never resolved.
-        """
-
-        if _unsupported_data_type(name):
-            return True
-        if not self.binary:
-            return False
+    def _relative(self, name: str) -> str | None:
         path = _normal_path(name, self.links.roots, known_path=True)
-        if path is None and name.strip() and "://" not in name:
+        if path is not None:
+            return path[0]
+        if name.strip() and "://" not in name:
             # ``_normal_path`` refuses inner whitespace (prose is not a path), but Git names a
             # binary ``my solver`` exactly; an exact match against Git's own list is safe.
             text = name.strip()
-            relative = (
+            return (
                 _inside(os.path.normpath(text), self.links.roots)
                 if text.startswith("/")
                 else "/".join(part for part in text.split("/") if part not in {"", "."})
             )
-            return relative is not None and relative in self.binary
-        return path is not None and path[0] in self.binary
+        return None
+
+    def unsupported(self, name: str) -> bool:
+        """Whether a recorded file name is a type the packet never carries.
+
+        Git's own NUL sniff decides first (ADR-045): the check-time change found the file binary
+        (a suffix-less ``solver`` or firmware blob) or found it text (a ``.step`` file). Only a
+        file the change did not list falls back to its suffix. An absolute name counts only
+        inside the workspace root; names compare normalized but exact, never resolved.
+        """
+
+        if self.binary or self.text:
+            relative = self._relative(name)
+            if relative is not None:
+                if relative in self.binary:
+                    return True
+                if relative in self.text:
+                    return False
+        return _unsupported_data_type(name)
 
     def __call__(self, target: str) -> frozenset[str]:
         projection = self.links.projection
@@ -1301,6 +1316,45 @@ def unsupported_data_type(name: str) -> bool:
 _CHANGE_HEADER_END: Final = b"\nEnd of header. The unified diff follows.\n"
 _CHANGE_LISTED_BINARY: Final = re.compile(r"^  [A-Z?]+ (\S.*?) \(binary\)(?: .*)?$")
 _CHANGE_BINARY_LINE: Final = re.compile(rb"^Binary files (.+) differ$", re.MULTILINE)
+
+
+# A listed text entry: ``  <status> <path> (+<added> -<removed>)``. Git prints numeric line counts
+# only for a file its NUL-byte heuristic found text; a binary file reads ``(binary)`` and a file
+# whose counts were withheld or unknown prints none, which proves nothing either way.
+_CHANGE_LISTED: Final = re.compile(r"^  [A-Z?]+ (\S.*?) \(\+[0-9]+ -[0-9]+\)(?: .*)?$")
+
+
+def check_change_text_paths(capture: CheckChangeCapture | None) -> frozenset[str]:
+    """The repository-relative paths the check-time change lists as text (ADR-045).
+
+    The header lists each changed file once, with ``(binary)`` when Git's NUL-byte heuristic
+    found it binary. Every other listed file was sniffed as text, so its suffix is no evidence:
+    ``part.step`` (ISO 10303-21, ASCII) is reviewable. A quoted, cut-short or non-UTF-8 name is
+    skipped, as for ``check_change_binary_paths``; a skipped name falls back to its suffix.
+    """
+
+    if capture is None:
+        return frozenset()
+    text = capture.text
+    end = text.find(_CHANGE_HEADER_END)
+    header = text if end < 0 else text[:end]
+    binary = check_change_binary_paths(capture)
+    paths: set[str] = set()
+    for line in header.decode("utf-8", errors="replace").split("\n"):
+        if _CHANGE_LISTED_BINARY.match(line) is not None:
+            continue
+        match = _CHANGE_LISTED.match(line)
+        if match is None:
+            continue
+        listed = match.group(1)
+        if listed.startswith('"'):
+            unquoted = _git_unquote(listed)
+            if unquoted is None or unquoted[1] != len(listed):
+                continue
+            listed = unquoted[0]
+        if listed and not listed.endswith("...") and "\ufffd" not in listed:
+            paths.add(listed)
+    return frozenset(paths - binary)
 
 
 def check_change_binary_paths(capture: CheckChangeCapture | None) -> frozenset[str]:

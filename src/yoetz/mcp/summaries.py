@@ -29,6 +29,7 @@ from yoetz.domain.review_input_render import (
     has_agent_suppliable_missing,
     render_review_input_manifest_compact,
 )
+from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from yoetz.mcp.errors import VALIDATION_REASON_TOKENS
 from yoetz.protocol.canonical import JsonValue, ensure_canonical_value
 from yoetz.protocol.errors import PublicErrorCode, normalize_safe_details
@@ -36,8 +37,12 @@ from yoetz.protocol.guidance_uris import ALL_GUIDANCE_URIS
 from yoetz.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
 from yoetz.protocol.readiness_text import (
     READINESS_STATES,
+    awaiting_ruling_variants,
     check_cause_sentence,
+    closure_counts_variants,
+    predicted_receipt_variants,
     readiness_directive,
+    recheck_note,
 )
 from yoetz.protocol.recovery import (
     REASON_REMEDIES,
@@ -130,9 +135,18 @@ _P_IDENTITY: Final = 20  # ids and refs the next request must carry
 _P_STATE: Final = 30  # counts and checklists that describe state
 _P_DISCLOSURE: Final = 40  # disclosures of what the check did not cover
 _P_DETAIL: Final = 50  # supporting detail; the structured result carries it in full
-# The lineage of a listed closure token (check_cause) is granted right after the action clauses
-# and ahead of every boilerplate sentence, the operation-progress text included (tb4n3 RC-6).
+# The status text's lineage and boilerplate bands, in grant order after the core and the action
+# clauses (tb4n3 RC-6, RC-5): the lineage of a listed closure token (check_cause), then the first
+# derived-fact provenance sentence (fact_lineage, ADR-045), then every boilerplate sentence (the
+# generic closure sentence, the named standing list, the operation-progress text), then the counts
+# sentence of the full ready_with_limitations directive. None of them is required, so none can
+# displace the closure state, the stop instruction or the agent-actionable items.
 _P_CAUSE: Final = _P_ACTION + 1
+_P_FACT_WHY: Final = _P_ACTION + 2
+_P_BOILERPLATE: Final = _P_ACTION + 3
+_P_COUNTS_SENTENCE: Final = _P_ACTION + 4
+# The once-per-frontier re-reads a Stop will ask, in their short form (tb4n3 RC-8).
+_RECHECK_SHORT: Final = "At Stop you will be asked once to re-read what you recorded."
 # One id or token list never takes more than this of the bounded text, so a 100-finding check
 # still leaves room for the instruction, the checklist and the disclosures beside it; the exact
 # remainder is stated as "+N more" and the structured result carries every row.
@@ -342,7 +356,9 @@ _TODO_STATES: Final = (
     "self_verified",
     "disputed_after_rebuttal",
 )
-_CHECKLIST_NEXT: Final = frozenset({"decide_at_budget", "request_receipt", "work_open_findings"})
+_CHECKLIST_NEXT: Final = frozenset(
+    {"decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"}
+)
 _BUDGET: Final = re.compile(r"^(?:[1-9]|[1-4][0-9]|50)$", re.ASCII)
 _ROUNDS: Final = re.compile(r"^(?:0|[1-9][0-9]{0,17})$", re.ASCII)
 
@@ -434,6 +450,28 @@ def _checklist_budget_cue(budget: object, next_step: object) -> str:
     return f"finding checklist next: decide_at_budget{suffix}; "
 
 
+def _closure_counter_clause(counts: Mapping[str, JsonValue]) -> str:
+    """The ADR-046 finding counters of a check's ``counts`` object, or ``""`` when absent."""
+
+    keys = ("to_do", "awaiting_ruling", "unmet", "disclosed", "to_disclose")
+    if not all(
+        type(counts.get(key)) is str and _ROUNDS.fullmatch(cast(str, counts[key])) for key in keys
+    ):
+        return ""
+    variants = closure_counts_variants(
+        {
+            "to_do": counts["to_do"],
+            "awaiting_ruling": counts["awaiting_ruling"],
+            "unmet": counts["unmet"],
+            "disclosed": counts["disclosed"],
+            "to_disclose": counts["to_disclose"],
+            "self_verify_eligible": "0",
+        },
+        None,
+    )
+    return variants[0] if variants else ""
+
+
 def _checklist_counts_clause(
     counts: object,
     budget: object,
@@ -470,6 +508,20 @@ def _checklist_counts_clause(
         int(raw_disputed) if type(raw_disputed) is str and _ROUNDS.fullmatch(raw_disputed) else 0
     )
     budget_text = budget if type(budget) is str and _BUDGET.fullmatch(budget) else None
+    closure = _closure_counter_clause(source)
+    if closure:
+        # ADR-046: the one set of finding counters (the numbers status prints), then what the
+        # checklist adds: items proved absent, and the budget cue.
+        clause = closure[:-1] + (
+            f"; verified {values['verified_resolved']}" if values["verified_resolved"] else ""
+        )
+        if values["open_at_budget"] and budget_text is not None:
+            clause += f"; {values['open_at_budget']} at budget {budget_text}"
+        clause += "; "
+        if type(next_step) is str and next_step in _CHECKLIST_NEXT:
+            label = "finding checklist next" if input_action_required else "next"
+            clause += f"{label}: {next_step}; "
+        return clause
     clause = (
         f"to-do: open {values['open']}"
         + (
@@ -508,6 +560,7 @@ def _overall_next_parts(source: Mapping[str, JsonValue]) -> list[Part]:
     if action not in {
         "supply_missing_input",
         "work_open_findings",
+        "request_ruling",
         "review_recorded_work",
         "request_receipt",
     }:
@@ -524,12 +577,20 @@ def _overall_next_parts(source: Mapping[str, JsonValue]) -> list[Part]:
         if isinstance(raw_refs, (list, tuple))
         else ()
     )
-    if action in {"work_open_findings", "review_recorded_work"} and not refs:
+    if action in {"work_open_findings", "request_ruling", "review_recorded_work"} and not refs:
         return []
     if action == "request_receipt" and refs:
         return []
     endpoint = next_source.get("acknowledged_incomplete_endpoint")
     parts = [_req(f"overall next: {action}; status: {status};")]
+    predicted = next_source.get("predicted_conclusion")
+    if type(predicted) is str:
+        sentence = predicted_receipt_variants(
+            {"conclusion": predicted, "reasons": ()},
+            state="action_required" if status == "action_required" else "ready",
+        )
+        if sentence:
+            parts.append(_opt(*sentence, priority=_P_ACTION + 3))
     if endpoint == "receipt":
         parts.append(_opt("acknowledged incomplete endpoint: receipt;", priority=_P_ACTION))
     if status == "ready_with_limitations" and endpoint == "receipt":
@@ -1412,6 +1473,25 @@ def _continuation_variants(
     )
 
 
+def _lineage_sentence(raw: object, code: str | None = None) -> str:
+    """The first ``Why:`` sentence of a result's ``fact_lineage`` (ADR-045), or ``""``.
+
+    ``raw`` is the wire list; entries that do not parse are skipped. With *code*, only that
+    fact's provenance. ASCII by construction (ids, counts and closed tokens only).
+    """
+
+    if not isinstance(raw, list | tuple):
+        return ""
+    items: list[FactLineage] = []
+    for entry in cast(Sequence[object], raw):
+        try:
+            items.append(lineage_from_wire(entry))
+        except TypeError, ValueError:
+            continue
+    texts = lineage_texts(items, code)
+    return texts[0] if texts else ""
+
+
 def _check_time_change_sentence(source: Mapping[str, JsonValue]) -> str:
     # Why the check-time change was unavailable (ADR-031): a fixed sentence per closed code.
     for code in _safe_gap_codes(source):
@@ -1419,6 +1499,23 @@ def _check_time_change_sentence(source: Mapping[str, JsonValue]) -> str:
         if sentence is not None:
             return sentence
     return ""
+
+
+def _check_fact_why_part(source: Mapping[str, JsonValue]) -> Part | None:
+    """Why the first derived fact this check reports fired (ADR-045), from its own provenance.
+
+    The check result carries ``fact_lineage`` beside the known gap codes it explains (an emptied
+    declared deliverable, a loosely matched planned command); the sentence is the first one for a
+    code the check reports. Optional and at the disclosure priority, so it shrinks away before the
+    verdict, the next instruction or the frontier.
+    """
+
+    raw = source.get("fact_lineage")
+    for code in _safe_gap_codes(source):
+        why = _lineage_sentence(raw, code)
+        if why:
+            return Part((why,), priority=_P_DISCLOSURE)
+    return None
 
 
 def summary_for_check(envelope: object) -> str:
@@ -1520,6 +1617,7 @@ def summary_for_check(envelope: object) -> str:
                 render.text("gap_sentence", lambda: _check_time_change_sentence(source)),
                 priority=_P_DISCLOSURE,
             ),
+            render.guarded_one("fact_lineage", lambda: _check_fact_why_part(source)),
             render.guarded_one(
                 "redacted_values_line", lambda: _semantic_redacted_values_line_part(source)
             ),
@@ -1723,7 +1821,7 @@ def summary_for_status(envelope: object) -> str:
                 render.failure_part(),
             ]
         )
-    freshness, obligations, unanswered, receipt_blocking = _compact_status_fields(source, view)
+    freshness, obligations, unanswered, _receipt_blocking = _compact_status_fields(source, view)
     gaps = _item_count(source.get("gaps"))
     parts: list[Part | None] = [
         _req(f"Status view: {view}; {_frontier_clause(source)};"),
@@ -1759,7 +1857,7 @@ def summary_for_status(envelope: object) -> str:
                     "semantic progress: see structured page;",
                 ),
                 required=True,
-                priority=_P_CAUSE + 1,
+                priority=_P_BOILERPLATE,
             )
         )
     if view == "findings":
@@ -1770,12 +1868,7 @@ def summary_for_status(envelope: object) -> str:
             )
         )
     parts.extend(_status_list_parts(render, source, view))
-    parts.append(
-        _req(
-            f"unanswered findings: {unanswered}; "
-            f"receipt-blocking findings: {receipt_blocking}; reported gaps: {gaps}."
-        )
-    )
+    parts.append(_req(f"unanswered findings: {unanswered}; reported gaps: {gaps}."))
     parts.extend(_closure_section(render, source))
     page = source.get("page")
     if isinstance(page, Mapping):
@@ -1919,12 +2012,29 @@ def _check_cause_part(source: Mapping[str, JsonValue]) -> Part | None:
     return Part(variants, priority=_P_CAUSE)
 
 
+def _fact_why_part(source: Mapping[str, JsonValue]) -> Part | None:
+    """Why the first derived task fact fired (ADR-045), from ``closure_readiness.fact_lineage``.
+
+    The record behind a listed fact token (the emptied deliverable, the loosely matched planned
+    command). It ranks right behind the cause of the check's applicability and ahead of every
+    boilerplate sentence, and it is optional, so it is dropped before anything required or the
+    cause. An absent or unreadable lineage adds no part.
+    """
+
+    readiness = source.get("closure_readiness")
+    if not isinstance(readiness, Mapping):
+        return None
+    why = _lineage_sentence(cast(Mapping[str, JsonValue], readiness).get("fact_lineage"))
+    return Part((why,), priority=_P_FACT_WHY) if why else None
+
+
 def _closure_section(render: _Render, source: Mapping[str, JsonValue]) -> list[Part | None]:
-    """The closure checklist and the lineage of the item it lists; each fails on its own."""
+    """The closure checklist and the lineage of what it lists; each fails on its own."""
 
     return [
         *render.guarded_parts("closure", lambda: _closure_parts(source)),
         render.guarded_one("check_cause", lambda: _check_cause_part(source)),
+        render.guarded_one("fact_lineage", lambda: _fact_why_part(source)),
     ]
 
 
@@ -1953,6 +2063,9 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
         return []
     head = f"Closure: {state}."
     sentence = readiness_directive(state, standing=len(standing), acknowledged=acknowledged)
+    # ADR-046: the receipt conclusion this frontier would carry (appended after the owner-approved
+    # sentence, never edited into it) and the one set of counters every surface prints.
+    verdict_parts = _verdict_parts(typed, state)
 
     def listed(label: str, values: tuple[str, ...]) -> tuple[str, ...]:
         variants = list_variants(label, values, suffix="")
@@ -1962,7 +2075,7 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
     if state == "action_required":
         parts = [
             Part((head,), required=True),
-            Part((sentence,), priority=_P_ACTION + 2),
+            Part((sentence,), priority=_P_BOILERPLATE),
         ]
         actionable = _readiness_tokens(typed, "agent_actionable")
         if actionable:
@@ -1970,10 +2083,11 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
             parts.append(
                 Part(listed("Agent-actionable: ", actionable), required=True, priority=_P_ACTION)
             )
-        return parts
+        return [*parts, *verdict_parts]
     if state == "ready_with_limitations":
         # Core: the state and the stop instruction. The counts sentence of the full directive is
-        # boilerplate: it is granted after the lineage of the listed limitation (_P_CAUSE).
+        # boilerplate: it is granted after the lineage of the listed limitation (_P_CAUSE) and the
+        # provenance of the derived fact (_P_FACT_WHY).
         parts = [
             Part(
                 (
@@ -1981,13 +2095,43 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
                     f"{head} Nothing further to do. Request the receipt.",
                 ),
                 required=True,
-                priority=_P_CAUSE + 2,
+                priority=_P_COUNTS_SENTENCE,
             )
         ]
         if standing:
-            parts.append(Part(listed("Standing limitations: ", standing), priority=_P_ACTION + 2))
-        return parts
-    return [Part((f"{head} {sentence}", head), required=True)]
+            parts.append(Part(listed("Standing limitations: ", standing), priority=_P_BOILERPLATE))
+        return [*parts, *verdict_parts]
+    return [Part((f"{head} {sentence}", head), required=True), *verdict_parts]
+
+
+def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]:
+    """The predicted receipt conclusion and the counters, each an optional, shrinkable part."""
+
+    parts: list[Part] = []
+    predicted = _predicted_variants(readiness.get("predicted_receipt"), state)
+    if predicted:
+        parts.append(Part(predicted, priority=_P_BOILERPLATE))
+    # The rejected findings that wait for a reviewer ruling, by id and rejection frontier, and the
+    # once-per-frontier re-reads a Stop will ask (tb4n3 RC-8): a "nothing further to do" is never
+    # followed by a gate for an item this text did not announce.
+    awaiting = awaiting_ruling_variants(readiness)
+    if awaiting:
+        parts.append(Part(awaiting, priority=_P_FACT_WHY))
+    announced = recheck_note(readiness)
+    if announced is not None:
+        parts.append(Part((announced, _RECHECK_SHORT), priority=_P_BOILERPLATE))
+    counts = closure_counts_variants(
+        readiness.get("finding_counts"), readiness.get("obligation_counts")
+    )
+    if counts:
+        parts.append(Part(counts, priority=_P_STATE))
+    return parts
+
+
+def _predicted_variants(prediction: JsonValue | None, state: str) -> tuple[str, ...]:
+    if not isinstance(prediction, Mapping):
+        return ()
+    return predicted_receipt_variants(prediction, state=state)
 
 
 def _operation_progress_clause(source: Mapping[str, JsonValue]) -> str:
@@ -2329,11 +2473,24 @@ def summary_for_closure_prepare(envelope: object) -> str:
             counts.append(f"{view} {_item_count(typed_inventory.get(view))}")
     rows = ", ".join(counts) if counts else "unavailable"
     operation = _safe_token(source.get("operation"), fallback="inventory")
+    # ADR-046: the same closure state, predicted receipt conclusion and counters every other
+    # surface prints (the structured result carries the readiness verbatim).
+    verdict: list[Part] = []
+    readiness = source.get("closure_readiness")
+    if isinstance(readiness, Mapping):
+        typed_readiness = cast(Mapping[str, JsonValue], readiness)
+        state = typed_readiness.get("state")
+        if type(state) is str and state in READINESS_STATES:
+            verdict = [
+                Part((f"Closure: {state}.",), priority=_P_ACTION + 3),
+                *_verdict_parts(typed_readiness, state),
+            ]
     return _compose(
         [
             _req(f"Closure preparation only; {_frontier_clause(source)};"),
             _req(f"inventory rows: {rows};"),
             _req(f"next operation: {operation};"),
+            *verdict,
             _req("review structuredContent before submitting any request."),
         ]
     )

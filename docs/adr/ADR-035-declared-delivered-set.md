@@ -145,3 +145,20 @@ now re-derived from the current deliverable (ADR-041):
   hide an emptied deliverable.
 - **Limits.** An untracked file truncated to a non-zero size is not seen (no earlier size is
   stored); an unread size or line count never raises the fact.
+
+## Amendment (tb4n3 RC-5, issue #1028, ADR-045): emptied is a history fact keyed on the path
+
+The rule above was a state test ("0 bytes") used for a change fact ("emptied"), and it was keyed on
+the obligation. ADR-045 replaces it: each check records the size and line count of every declared
+output file, including untracked ones (`DeliverableState`, `check_recorded` 1.4.0
+`deliverable_states`), and `deliverable_state_change` answers `emptied`, `truncated`, `removed`,
+`unchanged` or `None` only with **proof of earlier content** (task-base lines, or an earlier check
+that read it with content). A file created empty never fires; a new file cut to a stub does; a
+truncated capture is unknown, not changed. The fact is keyed on the path: it fires while an
+obligation declaring the path is delivered, or the path was recorded with content while delivered
+or verified, whatever the obligation's status is now, so an `acknowledged_not_done` republish or a
+new "empty fallback" obligation cannot clear it. The single exit is a `yoetz-assumption` decision of
+an obligation declaring the path that names the path. The lines "clears ... once the obligation is
+republished open or acknowledged_not_done" and "An untracked file truncated ... is not seen" above
+no longer hold. The content-moved disclosure is unchanged and now also covers untracked
+deliverables.

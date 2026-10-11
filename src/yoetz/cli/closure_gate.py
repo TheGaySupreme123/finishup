@@ -65,6 +65,7 @@ from yoetz import __version__
 from yoetz.config.paths import ensure_owner_only_dir, state_dir
 from yoetz.domain.bounded_text import Part, compose_parts
 from yoetz.kernel.closure_class import FINDING_REJECTION_AWAITING_RULING_GAP
+from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
@@ -207,10 +208,12 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
         " never justify moving, splitting or deleting deliverables"
     ),
     DECLARED_OUTPUT_EMPTIED_GAP: (
-        "a declared deliverable of a resolved or claimed obligation is now empty or truncated, so"
-        " that obligation no longer counts as delivered; restore the deliverable, or republish"
-        " the obligation open (or acknowledged_not_done) if it is not done. Never empty or"
-        " withdraw a working deliverable because of an open finding"
+        "a declared deliverable that held content is now empty or truncated, so it no longer"
+        " counts as delivered; restore it from your copy and disclose its limits: a working"
+        " partial is a delivery, and an empty file always grades as no solution. Acknowledging or"
+        " republishing the obligation does not clear this. Only if the task asked for this exact"
+        " file to be empty regardless of outcome, record a decision with the line"
+        " `yoetz-assumption:<obligation id>` that names the file path, then run `check`"
     ),
 }
 # Repair-first guidance, one sentence per present item family (F1, #984). Acknowledgement is the
@@ -339,6 +342,38 @@ _RECHECK_KEY_SHAPES: Final[Mapping[str, re.Pattern[str]]] = {
     ),
     "premise": re.compile(r"premise:(?:[0-9]{1,8}|\?)"),
 }
+
+
+def _lineage_variants(readiness: object, items: tuple[str, ...]) -> tuple[str, ...]:
+    """Why each present token fired (ADR-045): the provenance readiness carries, as sentences.
+
+    Only lineage whose fact code is one of the tokens the gate is naming; at most
+    ``_MAX_NAMED_LINEAGE`` sentences, the rest counted. Unreadable entries are skipped. The second
+    variant, when there is one, names only the first sentence (the composed fallback's short form).
+    """
+
+    raw = getattr(readiness, "fact_lineage", None)
+    if not isinstance(raw, (tuple, list)):
+        return ()
+    wanted = frozenset(items)
+    parsed: list[FactLineage] = []
+    for entry in tuple(cast(tuple[object, ...], raw)):
+        try:
+            item = lineage_from_wire(entry)
+        except TypeError, ValueError:
+            continue
+        if item.code in wanted:
+            parsed.append(item)
+    texts = lineage_texts(parsed)
+    if not texts:
+        return ()
+    hidden = len(texts) - _MAX_NAMED_LINEAGE
+    shown = " ".join(texts[:_MAX_NAMED_LINEAGE]) + (
+        f" (+{hidden} more in `status`.)" if hidden > 0 else ""
+    )
+    if len(texts) == 1:
+        return (shown,)
+    return (shown, texts[0] + f" (+{len(texts) - 1} more in `status`.)")
 
 
 def _field(entry: object, name: str) -> object:
@@ -692,6 +727,7 @@ def _fallback_parts(
     finding_texts: tuple[str, str],
     withdrawn_text: str,
     accept_text: str,
+    lineage: tuple[str, ...] = (),
 ) -> list[tuple[str, Part]]:
     """The gate's sentences as named parts, in reading order, for the composed fallback.
 
@@ -699,7 +735,7 @@ def _fallback_parts(
     verification, receipt-blocking findings, a withdrawn deliverable) and the close instruction.
     Optional, in priority order: the blocker re-check, the acknowledgement re-check, the
     unconfirmed-blocker sentence, the blocker offer, the required limitation ids, the provenance
-    sentence, the premise ask, the first-stop acceptance re-read, then the notes. This changes
+    sentence, the premise ask, the first-stop acceptance re-read, then the notes and, last, the fact-lineage sentence (where the fact came from). This changes
     composition only: the short forms drop elaboration and keep the instruction.
     """
 
@@ -708,6 +744,9 @@ def _fallback_parts(
         parts.append(("why", Part((why,), priority=5)))
     if premise_text:
         parts.append(("premise", Part((premise_text,), priority=6)))
+    if lineage:
+        # ADR-045: where a fact came from. The lowest-priority optional sentence: the first to go.
+        parts.append(("lineage", Part(lineage, priority=10)))
     if "obligations_open" in items:
         parts.append(
             (
@@ -950,6 +989,7 @@ def closure_gate_from_readiness(
         if self_verify
         else (_FINDING_NO_SELF_VERIFY_TEXT, _FINDING_NO_SELF_VERIFY_SHORT_TEXT)
     )
+    lineage_variants = _lineage_variants(readiness, items)
 
     def compose(
         *,
@@ -958,11 +998,15 @@ def closure_gate_from_readiness(
         verification: bool,
         limits: bool = True,
         premise_sentence: bool = True,
+        lineage_sentence: bool = True,
         tail: str = "",
     ) -> str:
         parts = [head]
         if why_text:
             parts.append(why_text)
+        if lineage_sentence and lineage_variants:
+            # ADR-045: where the fact came from; the first sentence to be trimmed.
+            parts.append(lineage_variants[0])
         if premise_text and premise_sentence:
             parts.append(premise_text)
         if "obligations_open" in items:
@@ -1007,26 +1051,30 @@ def closure_gate_from_readiness(
     delivered_rows = bool(rows)
     delivered_ack = bool(ack_keys)
     asked_acceptance = False
-    # The predicted receipt conclusion (longest variant first, then none) goes before anything else.
-    rungs: list[tuple[bool, bool, bool, bool, bool, str]] = [
-        (True, False, True, True, True, tail) for tail in (*prediction, "")
+    # The predicted receipt conclusion (longest variant first, then none) goes before anything else,
+    # then the fact-lineage sentence (tb4n3 RC-5: the lowest-priority sentence). The cause of each
+    # token stays: it is the token's own "Remaining" clause, and the awaiting-ruling "Why".
+    rungs: list[tuple[bool, bool, bool, bool, bool, bool, str]] = [
+        (True, False, True, True, True, True, tail) for tail in (*prediction, "")
     ]
     rungs += [
-        (False, False, True, True, True, ""),
-        (False, True, True, True, True, ""),
+        (True, False, True, True, True, False, ""),
+        (False, False, True, True, True, False, ""),
+        (False, True, True, True, True, False, ""),
         # tb4n3 RC-2 (A5): the required limitation ids go before a present family's instruction
         # does; the composed fallback below shortens the rest and never drops one.
-        (False, True, True, False, True, ""),
+        (False, True, True, False, True, False, ""),
         # D7a: the premise ask goes before the re-check does.
-        (False, True, True, False, False, ""),
+        (False, True, True, False, False, False, ""),
     ]
-    for drain, short_obligation, verification, limits, premise_sentence, tail in rungs:
+    for drain, short_obligation, verification, limits, premise_sentence, lineage_on, tail in rungs:
         text = compose(
             drain=drain,
             short_obligation=short_obligation,
             verification=verification,
             limits=limits,
             premise_sentence=premise_sentence,
+            lineage_sentence=lineage_on,
             tail=tail,
         )
         if len(text) <= _MAX_TEXT_CHARS:
@@ -1057,6 +1105,7 @@ def closure_gate_from_readiness(
             finding_texts=finding_texts,
             withdrawn_text=withdrawn_text,
             accept_text=accept_text,
+            lineage=lineage_variants,
         )
         composed = compose_parts([part for _, part in parts], _MAX_TEXT_CHARS, ascii_only=False)
         # The predicted conclusion yields before anything else: it is added only when the whole

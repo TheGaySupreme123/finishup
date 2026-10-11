@@ -222,9 +222,15 @@ def test_materialized_command_action_carries_only_the_keyed_identity() -> None:
         for item in batch.drafts
         if item.draft.schema.name == "action_recorded"
     ]
-    assert [action.command for action in actions] == [
-        "omitted:" + str(envelope.structural_payload["command_commitment"])
-    ]
+    (command,) = [action.command or "" for action in actions]
+    identity = "omitted:" + str(envelope.structural_payload["command_commitment"])
+    # ADR-045: a command of three or more arguments also carries domain-separated canonical
+    # commitments (a prefix and flags); every other word of the field is a keyed commitment.
+    assert command.split(" ")[0] == identity
+    assert all(
+        word == "single" or word.startswith("hmac-sha256:") for word in command.split(" ")[1:]
+    )
+    assert _CANARY not in command
     legacy = observe_hooks.map_hook_payload_to_envelope(
         "PostToolUse",
         {
@@ -421,10 +427,23 @@ def test_a_composed_command_carries_keyed_segment_commitments_never_text() -> No
         ("omitted:" + str(structural["command_commitment"]), "and_chain", *segments)
     )
     assert _CANARY not in (action.command or "")
-    # A simple command keeps the historical single-identity field byte for byte.
-    simple = _codex_envelope(_exec_command("pytest -q", "call-simple"))
+    # A one-word command, with no wrapper or alias to see through, keeps the historical
+    # single-identity field byte for byte (ADR-045 adds canonical commitments only where a
+    # canonical form differs or the command has arguments to commit).
+    simple = _codex_envelope(_exec_command("pytest", "call-simple"))
     assert "command_segment_commitments" not in simple.structural_payload
     assert "command_composition" not in simple.structural_payload
+    flagged = _codex_envelope(_exec_command("pytest -q", "call-flagged"))
+    assert flagged.structural_payload["command_composition"] == "single"
+    # A wrapped one carries the canonical full form, and never any text.
+    wrapped = _codex_envelope(_exec_command(f"timeout 60 python3 {_CANARY}.py", "call-wrapped"))
+    assert wrapped.structural_payload["command_composition"] == "single"
+    assert (
+        len(cast(tuple[str, ...], wrapped.structural_payload["command_segment_commitments"])) >= 1
+    )
+    assert _CANARY.encode() not in canonical_encode(
+        cast(JsonValue, dict(wrapped.structural_payload))
+    )
 
 
 def test_claude_ordinary_redirected_run_commits_to_the_bare_command(tmp_path: Path) -> None:
@@ -457,9 +476,11 @@ def test_claude_ordinary_redirected_run_commits_to_the_bare_command(tmp_path: Pa
     (envelope,) = LocalObservationStore(_state=state).list_envelopes(workspace)
     key = LocalObservationStore(_state=state).key_material()
     assert envelope.structural_payload["command_composition"] == "single"
-    assert envelope.structural_payload["command_segment_commitments"] == (
-        observed_command_commitment(key, f"bash /app/{_CANARY}.sh"),
-    )
+    segments = cast(tuple[str, ...], envelope.structural_payload["command_segment_commitments"])
+    # The segment commitment of the bare command (ADR-045 adds a domain-separated canonical
+    # commitment beside it for the flag-less program and script).
+    assert observed_command_commitment(key, f"bash /app/{_CANARY}.sh") in segments
+    assert all(item.startswith("hmac-sha256:") for item in segments)
     assert _CANARY.encode() not in _state_bytes(state)
 
 

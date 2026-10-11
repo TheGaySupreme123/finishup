@@ -25,6 +25,23 @@ An unterminated quote, substitution or here-document makes the command unsplitta
 whole-command identity then exists, exactly as before. The result exists only to be committed by
 the caller; segment text is never stored, displayed, logged or sent.
 
+**Canonical commitments (ADR-045, tb4n3 RC-5).** A planned verification used to match only when
+its text equalled the run's text, the run's whole command, or one of the run's segments. Real
+agents wrap and reshape what they run: ``timeout 3000 python3 /app/x.py``, ``env FOO=1 pytest``,
+``/usr/bin/g++ ...`` with the source files appended to a task-quoted flag set, ``python -m pytest``
+for ``pytest``. ``canonical_words`` reduces one simple command to its canonical argv (wrappers
+``timeout``/``nice``/``ionice``/``nohup``/``stdbuf``/``env``/``setsid`` and ``VAR=`` assignments
+dropped, ``uv run``-style launchers dropped, argv[0] reduced to its basename, ``python3`` and
+``pythonX.Y`` to ``python``, ``python -m pytest`` to ``pytest``). From it ``canonical_commitments``
+derives three kinds of domain-separated keyed commitments, committed beside the segment
+commitments (never confusable with them): ``full`` (the whole canonical argv: a clean,
+normalized match), ``prefix`` (each leading run of at least two tokens: the run kept going after
+the planned command) and ``flag`` (one per argument after argv[0]: the planned program and its
+flags are all present, in any order). The planned side computes the same kinds from its own text,
+so a match carries *which* kind matched; ``full`` is clean, ``prefix`` and ``flag`` count as a run
+but are disclosed as such (``planned_verification_matched_by_prefix``), never as clean
+verification. A single-token planned command only ever matches whole.
+
 The composition says what the whole command's outcome means for one of its segments: ``single``
 (one simple command with prefixes or redirections: its outcome is the segment's), ``and_chain``
 (``&&`` only: a success means every segment succeeded, a failure names no segment) and ``masked``
@@ -33,31 +50,65 @@ The composition says what the whole command's outcome means for one of its segme
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
 import shlex
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
 from yoetz.domain.observation import normalize_observed_command, observed_command_commitment
 
 __all__ = [
+    "CANONICAL_KINDS",
     "COMMAND_COMPOSITIONS",
+    "MAX_CANONICAL_COMMITMENTS",
+    "MAX_COMMAND_COMMITMENTS",
     "MAX_SEGMENT_COMMITMENTS",
     "CommandSegments",
+    "CommandStructure",
+    "PlannedSegment",
+    "SimpleCommand",
+    "canonical_command_commitments",
+    "canonical_commitment",
+    "canonical_words",
     "command_segment_commitments",
     "command_segments",
+    "exact_segment_commitments",
+    "command_structure",
+    "planned_segments",
     "requested_command_shape",
+    "strip_wrappers",
+    "wrapped_shell_argument",
 ]
 
 # At most this many segment commitments travel with one observed command: the first and last
 # half of the distinct segments in command order, so a script's final verification line survives.
 MAX_SEGMENT_COMMITMENTS: Final = 32
+# Canonical commitments (ADR-045) travel beside them, in their own bounded budget; the observed
+# command carries at most ``MAX_COMMAND_COMMITMENTS`` in all (the action ``command`` text has a
+# fixed byte bound, and every commitment is 76 bytes).
+MAX_CANONICAL_COMMITMENTS: Final = 48
+MAX_COMMAND_COMMITMENTS: Final = MAX_SEGMENT_COMMITMENTS + MAX_CANONICAL_COMMITMENTS
+# The longest leading run of arguments committed as a prefix, and the most arguments committed
+# as flags, per simple command.
+_MAX_PREFIX_TOKENS: Final = 10
+_MAX_FLAG_TOKENS: Final = 24
+_MAX_TOKEN_CHARS: Final = 512
+CANONICAL_KINDS: Final = ("full", "prefix", "flag")
+_CANONICAL_DOMAIN: Final = b"yoetz/command-canonical/v1/"
 COMMAND_COMPOSITIONS: Final = frozenset({"single", "and_chain", "masked"})
 _MAX_DEPTH: Final = 3
 _MAX_TEXT_CHARS: Final = 16_384
 _SHELLS: Final = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
 _SHELL_COMMAND_FLAG_RE: Final = re.compile(r"^-[a-z]*c[a-z]*$", re.ASCII)
 _ASSIGNMENT_RE: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=", re.ASCII)
+_AMBIGUOUS_WORD_RE: Final = re.compile(r"[\s'\"\\]")
+# ``env`` options that take a separate operand (``env -u NAME cmd``, ``env -C DIR cmd``).
+_ENV_OPTIONS_WITH_OPERAND: Final = frozenset(
+    {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}
+)
 _REDIRECTION_RE: Final = re.compile(r"^(?:[0-9]+|&)?(>>|>\||>&|>|<<<|<<-|<<|<&|<>|<)(.*)$", re.S)
 _LEADING_KEYWORDS: Final = frozenset(
     {"if", "then", "do", "else", "elif", "while", "until", "{", "!", "nohup", "exec"}
@@ -269,6 +320,12 @@ class _Cleaned:
     text: str | None
     negated: bool
     shell_reads_stdin: bool
+    # The segment sends its output into a file (``> f``, ``>> f``, ``>| f``), not ``/dev/null``
+    # and not a file-descriptor duplication (``2>&1``).
+    writes: bool = False
+
+
+_OUTPUT_FILE_OPERATORS: Final = frozenset({">", ">>", ">|"})
 
 
 def _clean_segment(segment: str) -> _Cleaned:
@@ -281,12 +338,24 @@ def _clean_segment(segment: str) -> _Cleaned:
     leading = True
     after_time = False
     in_env = False
+    skip_env_operand = False
+    writes = False
+    pending_target = False
     for word in words:
         if skip_next:
             skip_next = False
+            if pending_target:
+                pending_target = False
+                writes = writes or not (word == "/dev/null" or word.startswith("&"))
             continue
         redirection = _REDIRECTION_RE.match(word)
         if redirection is not None:
+            if redirection.group(1) in _OUTPUT_FILE_OPERATORS:
+                target = redirection.group(2)
+                if target:
+                    writes = writes or not (target == "/dev/null" or target.startswith("&"))
+                else:
+                    pending_target = True
             if not redirection.group(2):
                 skip_next = True
             continue
@@ -304,6 +373,12 @@ def _clean_segment(segment: str) -> _Cleaned:
             if word == "env":
                 in_env = True
                 continue
+            if in_env and word in _ENV_OPTIONS_WITH_OPERAND:
+                skip_env_operand = True
+                continue
+            if in_env and skip_env_operand:
+                skip_env_operand = False
+                continue
             if in_env and (word.startswith("-") or _ASSIGNMENT_RE.match(word)):
                 continue
             if _ASSIGNMENT_RE.match(word):
@@ -320,7 +395,18 @@ def _clean_segment(segment: str) -> _Cleaned:
             word.startswith("-") and _SHELL_COMMAND_FLAG_RE.match(word) is None for word in kept[1:]
         )
     )
-    return _Cleaned(" ".join(kept) or None, negated, shell_reads_stdin)
+    return _Cleaned(" ".join(kept) or None, negated, shell_reads_stdin, writes)
+
+
+def wrapped_shell_argument(words: Sequence[str]) -> str | None:
+    """``X`` for the words of ``bash -lc X`` / ``sh -c X`` (any shell path), else ``None``."""
+
+    if len(words) != 3:
+        return None
+    shell = words[0].replace("\\", "/").rsplit("/", 1)[-1]
+    if shell not in _SHELLS or _SHELL_COMMAND_FLAG_RE.fullmatch(words[1]) is None:
+        return None
+    return words[2]
 
 
 def _wrapped_argument(text: str) -> str | None:
@@ -338,8 +424,46 @@ def _wrapped_argument(text: str) -> str | None:
     return words[2]
 
 
-def _collect(text: str, depth: int, out: list[str]) -> tuple[bool, bool, bool]:
-    """Append ``text``'s segments to ``out``; return ``(splittable, masked, chained)``."""
+@dataclass(frozen=True, slots=True)
+class SimpleCommand:
+    """One simple command of a composed command: its normalized text and canonical argv.
+
+    ``words`` is ``canonical_words`` of the segment (wrappers and assignments dropped, argv[0]
+    reduced to its basename, ``python3`` to ``python``), ``text`` the normalized segment text
+    exactly as ``command_segments`` lists it, and ``writes`` whether the segment sends its output
+    into a file. Exists only to be committed or classified; never stored, displayed or sent.
+    """
+
+    text: str
+    words: tuple[str, ...]
+    writes: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CommandStructure:
+    """The simple commands of one normalized command, in command order, and how they compose.
+
+    ``commands`` holds every distinct simple command (a shell wrapper's argument and a shell
+    heredoc's lines contribute theirs; the wrapper itself does not). ``composition`` is
+    ``single``, ``and_chain`` or ``masked`` as for ``CommandSegments``; ``compound`` is true when
+    the command is more than one simple command or uses any shell composition.
+    """
+
+    commands: tuple[SimpleCommand, ...]
+    composition: str
+    compound: bool
+
+
+def _collect(
+    text: str,
+    depth: int,
+    out: list[str],
+    commands: list[SimpleCommand] | None = None,
+) -> tuple[bool, bool, bool]:
+    """Append ``text``'s segments to ``out``; return ``(splittable, masked, chained)``.
+
+    ``commands`` (when given) receives each simple command, not the shell wrappers around them.
+    """
 
     split = _split_top_level(text)
     if split is None:
@@ -355,8 +479,14 @@ def _collect(text: str, depth: int, out: list[str]) -> tuple[bool, bool, bool]:
             inner = _wrapped_argument(cleaned.text)
             if inner is None and normalized != cleaned.text:
                 inner = normalized
+            if commands is not None and inner is None:
+                commands.append(
+                    SimpleCommand(
+                        normalized, canonical_words(_split_words(normalized)), cleaned.writes
+                    )
+                )
             if inner is not None and depth < _MAX_DEPTH:
-                ok, inner_masked, inner_chained = _collect(inner, depth + 1, out)
+                ok, inner_masked, inner_chained = _collect(inner, depth + 1, out, commands)
                 masked = masked or (ok and inner_masked)
                 chained = chained or (ok and inner_chained)
         for body in split.bodies.get(position, ()):
@@ -364,8 +494,15 @@ def _collect(text: str, depth: int, out: list[str]) -> tuple[bool, bool, bool]:
                 # A script fed to a shell: its lines are commands, and the whole outcome is the
                 # script's, which says nothing about one line.
                 masked = True
-                _collect(body, depth + 1, out)
+                _collect(body, depth + 1, out, commands)
     return True, masked, chained
+
+
+def _split_words(text: str) -> list[str]:
+    try:
+        return shlex.split(text, posix=True)
+    except ValueError:
+        return text.split()
 
 
 def command_segments(normalized: str) -> CommandSegments | None:
@@ -388,13 +525,359 @@ def command_segments(normalized: str) -> CommandSegments | None:
     return CommandSegments(distinct, composition)
 
 
-def command_segment_commitments(
+def command_structure(normalized: str) -> CommandStructure | None:
+    """The distinct simple commands of one normalized command with their canonical argv.
+
+    ``None`` when the text is empty, over-long or unsplittable (an unterminated quote,
+    substitution or here-document): nothing is then known about its parts.
+    """
+
+    if type(normalized) is not str or not normalized or len(normalized) > _MAX_TEXT_CHARS:
+        return None
+    collected: list[str] = []
+    commands: list[SimpleCommand] = []
+    splittable, masked, chained = _collect(normalized, 0, collected, commands)
+    if not splittable:
+        return None
+    distinct: dict[str, SimpleCommand] = {}
+    for item in commands:
+        if item.text and "\x00" not in item.text:
+            previous = distinct.get(item.text)
+            distinct[item.text] = (
+                item
+                if previous is None
+                else SimpleCommand(item.text, item.words, previous.writes or item.writes)
+            )
+    composition = "masked" if masked else "and_chain" if chained else "single"
+    compound = masked or chained or len(distinct) > 1
+    return CommandStructure(tuple(distinct.values()), composition, compound)
+
+
+# ---------------------------------------------------------------------------------------------
+# Canonical argv and its commitments (ADR-045)
+# ---------------------------------------------------------------------------------------------
+
+_PYTHON_NAME_RE: Final = re.compile(r"^python(?:[0-9]+(?:\.[0-9]+)*)?$", re.ASCII)
+_DURATION_RE: Final = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$", re.ASCII)
+_NICE_LEVEL_RE: Final = re.compile(r"^-[0-9]+$", re.ASCII)
+_PLAIN_WRAPPERS: Final = frozenset({"nohup", "command", "exec", "time", "setsid", "builtin"})
+_RUN_LAUNCHERS: Final = frozenset({"uv", "poetry", "pipenv", "pdm", "hatch", "rye"})
+_RUN_SCRIPT_OPTIONS: Final = frozenset({"--script", "-s", "--gui-script"})
+# ``uv run`` options that take a separate value (``uv run --with numpy python x.py``).
+_RUN_OPTIONS_WITH_VALUE: Final = frozenset(
+    {
+        "--with",
+        "-w",
+        "--with-editable",
+        "--with-requirements",
+        "--python",
+        "-p",
+        "--project",
+        "--directory",
+        "--env-file",
+        "--extra",
+        "--group",
+        "--only-group",
+        "--no-group",
+        "--package",
+        "--index",
+        "--index-url",
+        "--default-index",
+        "--extra-index-url",
+        "--find-links",
+        "-f",
+        "--index-strategy",
+        "--config-setting",
+        "-C",
+        "--resolution",
+        "--prerelease",
+        "--exclude-newer",
+        "--link-mode",
+        "--cache-dir",
+        "--color",
+        "--config-file",
+        "-e",
+        "--env",
+    }
+)
+# Python interpreter options that change nothing about what is verified. ``-O``/``-OO`` (asserts
+# disabled), ``-W``/``-X`` (warnings as errors, dev mode) and ``-E``/``-I``/``-s``/``-S`` (import
+# and environment) can change a verifier's outcome, so they stay in the canonical argv.
+_PYTHON_NEUTRAL_OPTIONS: Final = frozenset({"-u", "-B", "-q"})
+_MAX_WRAPPER_ROUNDS: Final = 8
+_SCENE_SETTING: Final = frozenset({"cd", "pushd", "export", "source", "."})
+# Shell builtins that never verify anything: no canonical commitment is spent on them.
+_NEVER_VERIFICATION: Final = frozenset(
+    {"cd", "pwd", "echo", "printf", "true", "false", "export", "set", "unset", "source", ".", ":"}
+)
+
+
+def _basename(word: str) -> str:
+    return word.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+
+
+def _drop_options(words: list[str], with_operand: frozenset[str], flags: frozenset[str]) -> None:
+    """Drop leading options of a wrapper in place: ``flags`` alone, ``with_operand`` plus operand."""
+
+    while words and words[0].startswith("-") and words[0] != "-":
+        option = words[0]
+        if option == "--":
+            words.pop(0)
+            return
+        name = option.partition("=")[0]
+        if name in with_operand and "=" not in option:
+            del words[:2]
+        elif name in with_operand or name in flags or option.startswith("--"):
+            words.pop(0)
+        elif len(option) > 2 and option[:2] in with_operand:
+            words.pop(0)  # attached operand: ``-s9``
+        else:
+            words.pop(0)
+
+
+def _strip_one_wrapper(words: list[str], *, launchers: bool = True) -> bool:
+    """Drop one leading wrapper (and its own options) from *words* in place; ``True`` if dropped.
+
+    ``launchers=False`` keeps a package-manager ``run`` launcher (``uv run``, ``poetry run`` ...)
+    in place: it syncs, and with ``--upgrade`` rewrites, the lock file and the environment before it
+    runs the command, so it is not a transparent wrapper to a caller that must not treat a wrapped
+    read as read-only (tb4n3 RC-6, ``domain.observation_selection``).
+    """
+
+    if not words:
+        return False
+    if _ASSIGNMENT_RE.match(words[0]):
+        words.pop(0)
+        return True
+    head = _basename(words[0])
+    if head in _PLAIN_WRAPPERS:
+        words.pop(0)
+        if head == "time" and words[:1] == ["-p"]:
+            words.pop(0)
+        return True
+    if head == "env":
+        words.pop(0)
+        while words and (words[0].startswith("-") or _ASSIGNMENT_RE.match(words[0])):
+            option = words.pop(0)
+            if option in _ENV_OPTIONS_WITH_OPERAND and words:
+                words.pop(0)
+        return True
+    if head == "nice":
+        words.pop(0)
+        if words[:1] in (["-n"], ["--adjustment"]) and len(words) >= 2:
+            del words[:2]
+        elif words and (_NICE_LEVEL_RE.match(words[0]) or words[0].startswith("--adjustment=")):
+            words.pop(0)
+        return True
+    if head == "ionice":
+        words.pop(0)
+        _drop_options(
+            words,
+            frozenset({"-c", "-n", "-p", "-P", "-u", "--class", "--classdata"}),
+            frozenset({"-t", "--ignore"}),
+        )
+        return True
+    if head == "stdbuf":
+        words.pop(0)
+        _drop_options(
+            words,
+            frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+            frozenset(),
+        )
+        return True
+    if head == "timeout":
+        words.pop(0)
+        _drop_options(
+            words,
+            frozenset({"-k", "-s", "--kill-after", "--signal"}),
+            frozenset({"--foreground", "--preserve-status", "-v", "--verbose"}),
+        )
+        if words and _DURATION_RE.match(words[0]):
+            words.pop(0)
+        return True
+    if launchers and head in _RUN_LAUNCHERS and words[1:2] == ["run"]:
+        if any(word in _RUN_SCRIPT_OPTIONS for word in words[2:]):
+            # ``uv run --script build_model.py`` runs the agent's own script by its launcher.
+            return False
+        del words[:2]
+        while words and words[0].startswith("-"):
+            option = words.pop(0)
+            if option == "--":
+                break
+            if option in _RUN_OPTIONS_WITH_VALUE and words:
+                words.pop(0)
+        return True
+    return False
+
+
+def strip_wrappers(words: Sequence[str], *, launchers: bool = True) -> list[str]:
+    """*words* without the leading assignments and wrappers that do not change what is run.
+
+    The wrappers are those ``canonical_words`` lists. argv[0] keeps its path and spelling, so a
+    caller that classifies a command by its program (``domain.observation_selection``) can still
+    tell ``/usr/bin/pytest`` from the agent's own ``./pytest``. With ``launchers=False`` a
+    package-manager ``run`` launcher stays at the head, for a caller that classifies it itself.
+    """
+
+    rest = [word for word in words if type(word) is str]
+    for _ in range(_MAX_WRAPPER_ROUNDS):
+        if not _strip_one_wrapper(rest, launchers=launchers):
+            break
+    return rest
+
+
+def canonical_words(words: Sequence[str]) -> tuple[str, ...]:
+    """The canonical argv of one simple command (ADR-045); ``()`` when nothing is left.
+
+    Drops leading ``VAR=value`` assignments and the wrappers that do not change what is run
+    (``timeout``, ``nice``, ``ionice``, ``nohup``, ``stdbuf``, ``env``, ``setsid``, ``time``,
+    ``command``, ``exec`` and ``uv``/``poetry``/``pipenv``/``pdm``/``hatch``/``rye run``), reduces
+    argv[0] to its basename, ``python3`` and ``pythonX.Y`` to ``python`` (dropping interpreter
+    options that cannot change the outcome: ``-u``, ``-B``, ``-q``), ``python -m pytest`` and ``py.test`` to
+    ``pytest``. Arguments are never reordered, rewritten or dropped otherwise: two commands that
+    run different things never share a canonical form, and a missed equivalence only keeps two
+    forms apart.
+    """
+
+    rest = strip_wrappers(words)
+    if not rest:
+        return ()
+    head = _basename(rest[0]) or rest[0]
+    if _PYTHON_NAME_RE.fullmatch(head) is not None:
+        head = "python"
+        arguments = rest[1:]
+        while arguments and arguments[0] in _PYTHON_NEUTRAL_OPTIONS:
+            arguments.pop(0)
+        if arguments[:2] == ["-m", "pytest"]:
+            return ("pytest", *arguments[2:])
+        if arguments[:1] == ["-mpytest"]:
+            return ("pytest", *arguments[1:])
+        return (head, *arguments)
+    if head == "py.test":
+        head = "pytest"
+    return (head, *rest[1:])
+
+
+def canonical_commitment(key_material: bytes, kind: str, payload: str) -> str:
+    """The domain-separated keyed commitment to one canonical form (never a segment commitment)."""
+
+    if kind not in CANONICAL_KINDS or type(key_material) is not bytes:
+        raise ValueError("canonical_commitment_invalid")
+    if not 16 <= len(key_material) <= 64 or type(payload) is not str or "\x00" in payload:
+        raise ValueError("canonical_commitment_invalid")
+    digest = hmac.new(
+        key_material,
+        _CANONICAL_DOMAIN + kind.encode("ascii") + b"\x00" + payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"hmac-sha256:{digest}"
+
+
+def _joined(words: Sequence[str]) -> str:
+    return "\x1f".join(words)
+
+
+def _flag_payload(words: Sequence[str], token: str) -> str:
+    return f"{words[0]}\x1f{token}"
+
+
+def canonical_command_commitments(
+    key_material: bytes, argv: Sequence[str]
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """``(full, prefixes, flags)`` canonical commitments of one simple command's argv.
+
+    ``full`` is one commitment to the whole canonical argv; ``prefixes`` one per leading run of
+    two or more arguments shorter than the whole (up to ``_MAX_PREFIX_TOKENS``), so a planned
+    command that is the start of a longer run is recognised; ``flags`` one per distinct argument
+    after argv[0], keyed with argv[0], so the planned program with all of its planned flags is
+    recognised in any order. A command of a single argument has only ``full``.
+    """
+
+    words = canonical_words(argv)
+    if not words:
+        return (), (), ()
+    full = (canonical_commitment(key_material, "full", _joined(words)),)
+    prefixes = tuple(
+        canonical_commitment(key_material, "prefix", _joined(words[:size]))
+        for size in range(2, min(len(words) - 1, _MAX_PREFIX_TOKENS) + 1)
+    )
+    tokens = tuple(
+        dict.fromkeys(token for token in words[1:] if 0 < len(token) <= _MAX_TOKEN_CHARS)
+    )[:_MAX_FLAG_TOKENS]
+    flags = tuple(
+        canonical_commitment(key_material, "flag", _flag_payload(words, token)) for token in tokens
+    )
+    return full, prefixes, flags
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedSegment:
+    """The probes of one planned simple command, ready to test against an observed run.
+
+    ``exact`` is the segment's own keyed commitment (what ``command_segment_commitments`` has
+    always committed); ``full`` its canonical whole; ``prefix`` the prefix commitment of the
+    entire planned argv (``None`` under two arguments); ``flags`` one commitment per planned
+    argument after argv[0] (empty under two arguments).
+    """
+
+    exact: str
+    full: str | None
+    prefix: str | None
+    flags: tuple[str, ...]
+    # The command only sets the scene for the next one (``cd``, ``export``): a run of the other
+    # commands matches without it.
+    scene: bool = False
+    # The segment commitment of the canonical argv spelled as plain text: it is what a run whose
+    # own text already is its canonical form committed (such a run omits its ``full`` twin).
+    canonical_text: str | None = None
+
+
+def planned_segments(key_material: bytes, normalized: str) -> tuple[PlannedSegment, ...] | None:
+    """Probes for each simple command of a planned command, or ``None`` when unsplittable."""
+
+    structure = command_structure(normalized)
+    if structure is None:
+        return None
+    output: list[PlannedSegment] = []
+    for command in structure.commands:
+        words = command.words
+        if not words:
+            continue
+        flags: tuple[str, ...] = ()
+        prefix: str | None = None
+        if len(words) >= 2:
+            prefix = canonical_commitment(key_material, "prefix", _joined(words))
+            flags = tuple(
+                canonical_commitment(key_material, "flag", _flag_payload(words, token))
+                for token in dict.fromkeys(words[1:])
+                if 0 < len(token) <= _MAX_TOKEN_CHARS
+            )
+        output.append(
+            PlannedSegment(
+                observed_command_commitment(key_material, command.text),
+                canonical_commitment(key_material, "full", _joined(words)),
+                prefix,
+                flags,
+                bool(_SCENE_SETTING.intersection(words[:1])),
+                # Plain text only when it is unambiguous: ``pytest -k "foo bar"`` joined is
+                # ``pytest -k foo bar``, which is another command's text.
+                None
+                if any(_AMBIGUOUS_WORD_RE.search(word) for word in words)
+                else observed_command_commitment(key_material, " ".join(words)),
+            )
+        )
+    return tuple(output)
+
+
+def exact_segment_commitments(
     key_material: bytes, normalized: str
 ) -> tuple[tuple[str, ...], str] | None:
     """Sorted keyed commitments to ``normalized``'s segments, and its composition, or ``None``.
 
     The whole-command commitment is never repeated here. Beyond ``MAX_SEGMENT_COMMITMENTS``
-    distinct segments only the first and last halves in command order are committed.
+    distinct segments only the first and last halves in command order are committed. These are
+    the commitments planned-verification matching has always compared, without the canonical
+    ones (``command_segment_commitments`` adds those on the observed side).
     """
 
     segments = command_segments(normalized)
@@ -414,6 +897,45 @@ def command_segment_commitments(
         half = MAX_SEGMENT_COMMITMENTS // 2
         commitments = commitments[:half] + commitments[-half:]
     return tuple(sorted(commitments)), segments.composition
+
+
+def command_segment_commitments(
+    key_material: bytes, normalized: str
+) -> tuple[tuple[str, ...], str] | None:
+    """What a hook commits beside the whole command: segments and canonical forms (ADR-045).
+
+    The sorted keyed commitments to ``normalized``'s segments (``exact_segment_commitments``)
+    together with the domain-separated canonical commitments of every simple command, at most
+    ``MAX_CANONICAL_COMMITMENTS`` of them: the ``full`` forms first, then prefixes, then flags, so
+    a bound only ever costs the looser matches. Also returns the composition. A command with
+    nothing to add (an unsplittable one, or a simple command whose canonical form is itself and
+    has no further arguments) returns ``None``, as it always did.
+    """
+
+    structure = command_structure(normalized)
+    if structure is None:
+        return None
+    whole = observed_command_commitment(key_material, normalized)
+    exact = exact_segment_commitments(key_material, normalized)
+    commitments = [] if exact is None else list(exact[0])
+    ranked: list[tuple[int, int, str]] = []
+    for order, command in enumerate(structure.commands):
+        if not command.words or command.words[0] in _NEVER_VERIFICATION:
+            continue
+        full, prefixes, flags = canonical_command_commitments(key_material, command.words)
+        if " ".join(command.words) == command.text:
+            # The segment's own commitment already identifies it; a ``full`` twin adds nothing.
+            full = ()
+        ranked.extend((0, order, value) for value in full)
+        ranked.extend((1, order, value) for value in prefixes)
+        ranked.extend((2, order, value) for value in flags)
+    taken = dict.fromkeys(value for _tier, _order, value in sorted(ranked))
+    canonical = [value for value in taken if value != whole and value not in commitments]
+    merged = sorted({*commitments, *canonical[:MAX_CANONICAL_COMMITMENTS]})
+    if not merged:
+        return None
+    composition = exact[1] if exact is not None else structure.composition
+    return tuple(merged), composition
 
 
 def _unquoted(value: str) -> str:

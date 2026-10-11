@@ -304,8 +304,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:bbb25999ea58f9f275c1eacd1a20b4793098c49a8892b067f29f74a79932f997",
-        "strict": "sha256:61fc5da787955d9278413533e155601274edae098cee996141a7d701a30688d6",
+        "policy": "sha256:eccf87f6c8228d8b67ad2c559cb9f76d3f3db2583b985d2fbd3f114ee1feb3a1",
+        "strict": "sha256:0a86df4ac03fdbbafb4e725c3d00f42a0013d0b03c2e5e5c882f7292c4dde224",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -796,6 +796,7 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
         "duplicate_of",
         "provenance_disputed",
         "rejected",
+        "reopened",
         "self_verified",
         "waived",
     )

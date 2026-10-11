@@ -212,7 +212,8 @@ closure order is [Repair then finish](coverage-and-receipts.md#repair-then-finis
 Closure is a checklist. `closure_readiness.state` names the next move:
 
 - `action_required`: do each item in `agent_actionable` — open obligations, unanswered findings,
-  an unacknowledged receipt-blocking finding, `check_in_progress` (recover the running check's
+  a finding you can still repair, `finding_rejection_awaiting_ruling` (a rejected finding waits for
+  a reviewer ruling: run `check`), `check_in_progress` (recover the running check's
   result through `status view=operation`), `check_not_recorded` or `check_not_applicable` (run a
   check after the material change), or an actionable gap such as `completion_plan_not_claimed`.
   `closure_readiness.check_cause` names the record behind `check_not_applicable` (for example an
@@ -230,7 +231,7 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 - `ready`: nothing further to do and nothing to disclose; request the receipt.
 - `unknown`: read `status` again once the projection is readable.
 
-If you stop while `agent_actionable` still names open obligations, an unrepaired receipt-blocking
+If you stop while `agent_actionable` still names open obligations, an unrepaired
 finding, a finding you rejected that still awaits the reviewer's ruling
 (`finding_rejection_awaiting_ruling`: run `check` with `final_review: true` so the reviewer rules;
 do not acknowledge a finding you dispute), a planned verification that was not observed, failed, or ran before your last edit, an
@@ -238,19 +239,29 @@ edit to the work after your last test, lint, typecheck or build run (`edited_aft
 temporary scratch files and Yoetz receipt files never count), a git-ignored requested output, or a declared deliverable you deleted or renamed away
 (`declared_output_removed`: a requested `file` item marked as an output), the Stop hook continues
 you once with that list; restore that delivered file where the task needs it, or correct the
-requested item if the task asked for the deletion. The same happens once when a deliverable of an
-obligation you resolved or claimed is now empty or truncated (`declared_output_emptied`): that
-obligation no longer counts as done. Restore the deliverable; never empty or withdraw a working
-deliverable because of an open finding. That text is shown once even when the Stop is a second
-continuation in the same turn. If it is genuinely not done, republish the obligation
-`acknowledged_not_done` with the reason and leave it out of your completion claim: an acknowledged
-obligation is outside completion coverage, so omitting it is not a scope gap. A deliverable that
+requested item if the task asked for the deletion. The same happens when a declared deliverable
+that held content is now empty or truncated (`declared_output_emptied`): the fact follows the
+file, not the obligation, so acknowledging or republishing the obligation does not clear it, and
+status says why (what the file held, and at which check). The Stop shows this text once even when it is a second continuation in the same turn. Restore it from your copy. Never empty or
+withdraw a working deliverable, over a finding or under a task's "empty file if unsolved" clause:
+a deliverable that passes your tests is a partial solution, and an empty file always grades as no
+solution. Only if the task asked for this exact file to be empty regardless of outcome, record a
+decision with the line `yoetz-assumption:<obligation id>` that names the file path, then run
+`check`. A file you created empty on purpose (an empty requirements list) never raises it.
+Separately, if an obligation is genuinely not done, republish it `acknowledged_not_done` with the
+reason and leave it out of your completion claim: an acknowledged obligation is outside completion
+coverage, so omitting it is not a scope gap. A deliverable that
 names a file you created but did not declare is disclosed (`deliverable_references_undeclared_file`;
 it never stops you): a grader may receive only the declared files, so embed it, build it at run
 time, or declare it. A delivered file that lost most of its lines
 while files outside the delivered set changed or hold about as many lines is disclosed on the receipt
 (`declared_output_content_moved`; it never stops you): check the deliverable still works where
-the task delivers it. Repair first. If
+the task delivers it. A declared output of a type the review never receives (a binary) is named
+on the receipt (`declared_output_not_reviewable`; it never stops you): verify it yourself and
+say how. A planned command counts as run when an observed run matches it exactly or after
+dropping wrappers (`timeout`, `env`, `python3` for `python`); a run that only began with the
+planned arguments, or carried its program and flags in another order, also counts and is
+disclosed (`planned_verification_matched_by_prefix`). Repair first. If
 you repaired a finding and Yoetz still cannot prove it (a Yoetz limit), verify it yourself, record
 that evidence, and respond `self_verified`; respond `acknowledged_not_done` only if you truly
 cannot or will not do it. A Yoetz limit is never a `yoetz-blocker`: record a blocker only for an

@@ -55,6 +55,7 @@ from yoetz.kernel.projections import (
     PlanProjectionRecord,
     ProjectionRecord,
     ProjectionState,
+    StandingPosition,
 )
 from yoetz.protocol.canonical import canonical_digest
 from yoetz.protocol.coverage import (
@@ -160,6 +161,10 @@ def finding_record(
     number: int,
     *,
     resolved_by_check_event_id: EventId | None = None,
+    resolution_frontier: int | None = None,
+    standing_position: StandingPosition | None = None,
+    last_ruling_frontier: int | None = None,
+    absorbed_refs: tuple[str, ...] = (),
 ) -> FindingProjectionRecord:
     return FindingProjectionRecord(
         payload=payload,
@@ -168,6 +173,10 @@ def finding_record(
         source_event_id=evt(number),
         source_frontier=number,
         resolved_by_check_event_id=resolved_by_check_event_id,
+        resolution_frontier=resolution_frontier,
+        standing_position=standing_position,
+        last_ruling_frontier=last_ruling_frontier,
+        absorbed_refs=absorbed_refs,
     )
 
 

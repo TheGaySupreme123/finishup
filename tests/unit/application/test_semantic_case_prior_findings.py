@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
+from types import MappingProxyType
 from typing import cast
 
 import pytest
 
+from builders.dialogue import limit_decision
 from builders.policy_cases import (
     BASE_COVERAGE,
     FRONTIER,
@@ -56,9 +58,13 @@ from yoetz.domain.findings import (
 )
 from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from yoetz.domain.receipts import SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP
-from yoetz.domain.values import FindingId, timestamp_from_string
+from yoetz.domain.values import FindingId, ObligationId, timestamp_from_string
 from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.projections import FindingProjectionRecord, ProjectionRecord
+from yoetz.kernel.projections import (
+    FindingProjectionRecord,
+    ObligationProjectionRecord,
+    ProjectionRecord,
+)
 from yoetz.ports.semantic import SemanticCase
 from yoetz.protocol.canonical import JsonValue, strict_json_parse
 from yoetz.protocol.coverage import EvidenceImmutability
@@ -657,6 +663,103 @@ def test_a_settled_finding_is_carried_nameable_but_never_rulable() -> None:
         ids.index(f"settled-finding-{fnd(7)}") > ids.index(f"prior-finding-{ref}")
         for ref in case.packet.prior_finding_refs
     )
+
+
+def _limitation_request(number: int) -> Finding:
+    return replace(
+        _semantic(number, challenge=_CHALLENGE),
+        challenge=replace(_CHALLENGE, requested_next_step="state_unresolved_limitation"),
+    )
+
+
+def _with_limit_decision(
+    case: DeterministicCase,
+    extra_obligation: tuple[ObligationId, ObligationProjectionRecord] | None = None,
+) -> DeterministicCase:
+    """The case with a ``yoetz-verification-limit`` decision on obl(1) (and one more obligation)."""
+
+    obligations = dict(case.projection.obligations)
+    allowed = set(case.allowed_ids)
+    coverage = dict(case.coverage_by_ref)
+    if extra_obligation is not None:
+        obligations[extra_obligation[0]] = extra_obligation[1]
+        allowed.add(extra_obligation[0])
+        coverage[extra_obligation[0]] = BASE_COVERAGE
+    return replace(
+        case,
+        projection=replace(
+            case.projection,
+            obligations=MappingProxyType(obligations),
+            decisions=MappingProxyType({evt(20): limit_decision(20, obl(1))}),
+        ),
+        allowed_ids=frozenset(allowed),
+        coverage_by_ref=coverage,
+    )
+
+
+def test_a_limitation_the_agent_disclosed_travels_as_already_disclosed() -> None:
+    """tb4n3 RC-1 (Q4): the reviewer is told the limit it asked for was stated, so it does not
+    ask again or rule the item as work; an undisclosed request stays an open question."""
+
+    disclosed_answer = ResponseRecordedPayload(
+        finding_id=fnd(7),
+        finding_frontier=FRONTIER,
+        disposition=ResponseDisposition.ACKNOWLEDGED,
+        reason="The hidden accuracy reference is withheld by the task design.",
+    )
+    case = _build(
+        _numba_case(
+            extra_findings={
+                fnd(7): finding_record(_limitation_request(7), 11),
+                fnd(8): finding_record(_limitation_request(8), 12),
+            },
+            extra_responses={fnd(7): record(disclosed_answer, 17)},
+        )
+    )
+    settled = _row(case, f"settled-finding-{fnd(7)}")
+    assert settled["rulable"] is False
+    assert settled["limitation_already_disclosed"] is True
+    assert settled["limitation_disclosed_by"] == "respond_acknowledgement"
+    assert f"prior-finding-{fnd(7)}" not in case.packet.prior_finding_item_ids
+    # The request nobody disclosed is still an open question the reviewer may rule on.
+    assert f"prior-finding-{fnd(8)}" in case.packet.prior_finding_item_ids
+    assert "limitation_already_disclosed" not in _row(case, f"prior-finding-{fnd(8)}")
+
+
+def test_a_limitation_disclosed_by_a_decision_line_is_carried_without_an_answer() -> None:
+    case = _numba_case(extra_findings={fnd(7): finding_record(_limitation_request(7), 11)})
+    built = _build(_with_limit_decision(case))
+    row = _row(built, f"settled-finding-{fnd(7)}")
+    assert row["limitation_already_disclosed"] is True
+    assert row["limitation_disclosed_by"] == "verification_limit_decision"
+    assert row["disposition"] == "none"
+    assert f"prior-finding-{fnd(7)}" not in built.packet.prior_finding_item_ids
+
+
+def test_an_obligation_the_agent_already_disclosed_says_so_beside_the_obligation() -> None:
+    case = _numba_case()
+    acknowledged = obligation_record(
+        ObligationPublishedPayload(
+            obl(2),
+            "Match the hidden benchmark",
+            "the hidden accuracy matches",
+            ObligationStatus.ACKNOWLEDGED_NOT_DONE,
+            acknowledged_not_done_reason="The hidden benchmark is withheld by the task design.",
+        ),
+        3,
+    )
+    built = _build(_with_limit_decision(case, extra_obligation=(obl(2), acknowledged)))
+    plain = _row(_build(case), f"obligation-{obl(1)}")
+    assert "yoetz_already_disclosed" not in plain
+    by_decision = cast(
+        Mapping[str, JsonValue], _row(built, f"obligation-{obl(1)}")["yoetz_already_disclosed"]
+    )
+    assert by_decision["already_disclosed"] is True
+    assert "verification_limit" in by_decision
+    by_status = cast(
+        Mapping[str, JsonValue], _row(built, f"obligation-{obl(2)}")["yoetz_already_disclosed"]
+    )
+    assert by_status == {"acknowledged_not_done": True, "already_disclosed": True}
 
 
 def test_unanswered_local_finding_is_not_carried() -> None:

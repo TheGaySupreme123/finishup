@@ -318,14 +318,15 @@ def test_atrx_vep_crispr_det_missing_report_blocks_the_receipt_and_continues_the
             )
     gate, _signals = _stop_gate(replayed, states)
 
+    # tb4n3 RC-5 (ADR-045): the published action named the inputs of other obligations and
+    # nothing of the report's, so it is no work on the report's obligation: no per-item finding
+    # is raised before a completion claim. The agent never made one and stopped with five
+    # obligations open, which is what the gate asks about; the report is still missing.
     assert gate is not None
-    assert gate.items == ("obligations_open", "receipt_findings_unresolved")
+    assert gate.items == ("obligations_open",)
     # The export recorded open_obligation_count 5 at session end.
-    assert "Remaining: 5 open obligation(s); 1 receipt-blocking finding(s)" in gate.text
-    # #984: findings are repaired first, then self-verified when only a Yoetz limit remains.
-    assert "repair what you can" in gate.text
-    assert "respond `self_verified`" in gate.text
-    assert gate.text.index("repair what you can") < gate.text.index("`acknowledged_not_done`")
+    assert "Remaining: 5 open obligation(s)" in gate.text
+    assert "Finish each open obligation" in gate.text
 
 
 def test_atrx_findings_without_open_obligations_offer_no_blocker() -> None:

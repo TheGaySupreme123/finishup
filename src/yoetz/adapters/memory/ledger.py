@@ -27,6 +27,7 @@ from yoetz.domain.events import (
     ClaimRecordedPayloadV1_1,
     ClaimRevisionMismatch,
     DecisionRecordedPayload,
+    DeliverableState,
     EventDraft,
     EventPayload,
     EventSchema,
@@ -92,6 +93,12 @@ from yoetz.domain.values import (
 )
 from yoetz.kernel.check_standing import check_standing
 from yoetz.kernel.check_totals import build_check_totals
+from yoetz.kernel.closure_class import (
+    finding_closure,
+    finding_closures,
+    obligation_closures,
+    review_can_rule,
+)
 from yoetz.kernel.closure_readiness import ClosureReadinessFacts, closure_readiness_facts
 from yoetz.kernel.command_attempts import attempted_items_for_obligation, command_attempts
 from yoetz.kernel.completion_scope import completion_scope_codes, with_completion_scope_coverage
@@ -1596,6 +1603,7 @@ def _projection_items(
             if plan_scope.effective_obligation_refs is None
             else frozenset(effective_obligations(projection))
         )
+        obligation_classes = obligation_closures(projection, records=records)
         return tuple(
             _obligation_item(
                 obligation,
@@ -1604,7 +1612,17 @@ def _projection_items(
                 attempted_items_for_obligation(projection, obligation),
                 None if effective_refs is None else obligation in effective_refs,
             ).model_copy(
-                update={"command_attempts": command_attempts(projection, records, obligation)}
+                update={
+                    "command_attempts": command_attempts(projection, records, obligation),
+                    **(
+                        {
+                            "closure_class": obligation_classes[obligation].closure_class.value,
+                            "closure_basis": obligation_classes[obligation].basis,
+                        }
+                        if obligation in obligation_classes
+                        else {}
+                    ),
+                }
             )
             for obligation, record in sorted(
                 projection.obligations.items(), key=lambda item: item[0].encode()
@@ -1660,6 +1678,10 @@ def _projection_items(
             ),
             key=rank_key,
         )
+        # ADR-046: each row says who owes the next move and why, from the one classifier status,
+        # the check and the receipt all read.
+        can_rule = review_can_rule(projection, records)
+        row_closures = finding_closures(projection, records=records, review_can_rule_=can_rule)
         for finding in ordered:
             response_record = projection.responses.get(finding.finding_id)
             response = None if response_record is None else response_record.payload
@@ -1717,6 +1739,13 @@ def _projection_items(
                     else FrontierModel.model_validate(dict(finding_frontier.as_wire()))
                 ),
             }
+            closure = row_closures.get(finding.finding_id) or finding_closure(
+                projection, finding.finding_id, records=records, review_can_rule_=can_rule
+            )
+            if closure is not None:
+                finding_fields["closure_class"] = closure.closure_class.value
+                finding_fields["closure_basis"] = closure.basis
+                finding_fields["next_actions"] = closure.next_actions
             # Issue #996: present exactly while a ``duplicate_of`` link holds.
             duplicate_of = duplicate_link_target(projection, finding.finding_id)
             if duplicate_of is not None:
@@ -1791,7 +1820,7 @@ def _projection_items(
             )
         )
         unanswered_count = len(unanswered_ids)
-        receipt_blocking_count = receipt_blocking_finding_count(projection)
+        receipt_blocking_count = receipt_blocking_finding_count(projection, records)
         declared_count = (
             None
             if scope_refs is None
@@ -3920,6 +3949,7 @@ class MemoryLedgerAdapter:
         totals: JsonObject | None = None,
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
         semantic_route_required: bool | None = None,
+        deliverable_states: tuple[DeliverableState, ...] = (),
     ) -> CheckCommitResult:
         key = (frozen.lease.writer_id, frozen.lease.operation_id)
         async with self._lock:
@@ -4037,6 +4067,7 @@ class MemoryLedgerAdapter:
             semantic_withheld_item_ids=semantic_withheld_item_ids,
             semantic_redacted_values=semantic_redacted_values,
             semantic_route_required=semantic_route_required,
+            deliverable_states=deliverable_states,
             review_input_manifest=review_input_manifest,
             totals=(
                 build_check_totals(frozen.case, findings.findings, findings.suppressed_count)
@@ -4176,6 +4207,7 @@ class MemoryLedgerAdapter:
             totals=check_payload.totals,
             semantic_redacted_values=check_payload.semantic_redacted_values,
             semantic_route_required=check_payload.semantic_route_required,
+            deliverable_states=check_payload.deliverable_states,
         )
         canonical = canonical_encode(
             {

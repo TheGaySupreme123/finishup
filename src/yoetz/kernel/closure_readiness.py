@@ -42,11 +42,22 @@ from yoetz.kernel import finding_todo as _finding_todo_module
 from yoetz.kernel.check_standing import CheckCause, CheckStanding, check_standing
 from yoetz.kernel.claim_limitations import required_limitation_ids_for_projection
 from yoetz.kernel.claims import completion_claim_present
+from yoetz.kernel.closure_class import (
+    FINDING_REJECTION_AWAITING_RULING_GAP,
+    UNDELIVERABLE_SEMANTIC_STATUSES,
+    FindingClosure,
+    FindingClosureClass,
+    ObligationClosure,
+    ReceiptEffect,
+    finding_closures,
+    obligation_closures,
+)
+from yoetz.kernel.delivered_set import deliverable_lineage
+from yoetz.kernel.fact_lineage import MAX_FACT_LINEAGE_ITEMS, FactLineage
 from yoetz.kernel.finding_resolution import finding_is_resolved
 from yoetz.kernel.finding_todo import (
     FindingTodoState,
     duplicate_counting_id,
-    finding_blocks_receipt,
     finding_todo_state,
 )
 from yoetz.kernel.gap_effect import (
@@ -71,6 +82,7 @@ from yoetz.kernel.task_facts import (
     decision_batches,
     disclosure_declarations,
     open_effective_obligations,
+    task_fact_signals,
 )
 from yoetz.protocol.models import SemanticStatus
 
@@ -86,7 +98,9 @@ __all__ = [
     "AGENT_READINESS_CONDITIONS",
     "ASSUMPTION_DISCLOSED_GAP",
     "FINDING_DISPUTED_AFTER_REBUTTAL_GAP",
+    "FINDING_LIMITATION_DISCLOSED_GAP",
     "FINDING_PREMISE_DISPUTED_GAP",
+    "FINDING_REJECTION_UNREVIEWABLE_GAP",
     "premise_disputed_finding_ids",
     "VERIFICATION_LIMIT_DISCLOSED_GAP",
     "FINDING_SELF_VERIFIED_GAP",
@@ -102,6 +116,7 @@ __all__ = [
     "GapSplit",
     "classify_gap",
     "closure_readiness_facts",
+    "current_fact_lineage",
     "derive_closure_readiness",
     "finding_acknowledged_not_done",
     "gap_base_code",
@@ -120,7 +135,10 @@ __all__ = [
 # task fact ``declared_output_emptied`` and the standing disclosure
 # ``deliverable_references_undeclared_file`` (tb4n2 R2, issue #1022, ADR-035) were added. "7": the
 # table became a derived view of ``kernel.gap_effect`` (tb4n3 RC-3, issue #1026, ADR-046), and the
-# agent-actionable readiness token ``finding_rejection_awaiting_ruling`` was added.
+# agent-actionable readiness token ``finding_rejection_awaiting_ruling`` was added. The standing
+# disclosures ``planned_verification_matched_by_prefix`` and
+# ``declared_output_not_reviewable`` were added and ``declared_output_emptied`` became a path-keyed
+# fact with provenance (tb4n3 RC-5, issue #1028, ADR-045).
 GAP_CLASSIFICATION_VERSION: Final = "7"
 # Issue #1020 (ADR-040): a current AI-powered finding the reviewer repeated over the agent's
 # reasoned rejection without newer material. A standing disagreement; never agent work.
@@ -136,6 +154,10 @@ VERIFICATION_LIMIT_DISCLOSED_GAP: Final = "verification_limit_disclosed"
 # challenge says the task itself requires the work. Terminal, so never agent work: disclosed, and
 # the Stop gate asks once.
 FINDING_PREMISE_DISPUTED_GAP: Final = "finding_premise_disputed"
+# tb4n3 RC-3 (ADR-046, owner decision Q4): a reviewer's limitation request the agent disclosed, and
+# a rejection no reviewer on this route can rule on. Settled and disclosed, never agent work.
+FINDING_LIMITATION_DISCLOSED_GAP: Final = "finding_limitation_disclosed"
+FINDING_REJECTION_UNREVIEWABLE_GAP: Final = "finding_rejection_unreviewable"
 _DISCLOSURE_CODES: Final[Mapping[str, str]] = MappingProxyType(
     {"assumption": ASSUMPTION_DISCLOSED_GAP, "verification_limit": VERIFICATION_LIMIT_DISCLOSED_GAP}
 )
@@ -321,6 +343,14 @@ class ClosureReadinessFacts:
     # Why the check is not applicable, or why the earlier-frontier code bounds: the first later
     # record that decided it (event id, ledger sequence, family, class, closed rule, tool token).
     check_cause: CheckCause | None = None
+    # tb4n3 RC-3 (ADR-046): the closure of every current finding and every effective obligation,
+    # computed once by ``kernel.closure_class``. ``None`` marks a hand-built fact set that predates
+    # the classes: readiness then falls back to the id lists above (acknowledged and self-verified
+    # findings settle ``receipt_findings_unresolved``) exactly as before.
+    finding_closures: tuple[FindingClosure, ...] | None = None
+    obligation_closures: tuple[ObligationClosure, ...] = ()
+    # ADR-045: where each derived task fact came from, so the agent sees why a code fired.
+    fact_lineage: tuple[FactLineage, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -335,6 +365,15 @@ class ClosureReadinessFacts:
             or type(self.closing_review_current) is not bool
             or type(self.semantic_review_used) is not bool
             or (self.check_cause is not None and type(self.check_cause) is not CheckCause)
+            or (
+                self.finding_closures is not None
+                and (
+                    type(self.finding_closures) is not tuple
+                    or any(type(item) is not FindingClosure for item in self.finding_closures)
+                )
+            )
+            or type(self.obligation_closures) is not tuple
+            or any(type(item) is not ObligationClosure for item in self.obligation_closures)
         ):
             raise ValueError("closure_readiness_facts_invalid")
         for values in (
@@ -478,16 +517,7 @@ def _semantic_review_current(
 # agent cannot remove (policy, privacy, configuration or a human decision). A timeout or an
 # unavailable or failed provider is transient: the closing review stays actionable. Their own gaps disclose it, and
 # closure does not also demand a closing review the route cannot deliver.
-_UNDELIVERABLE_SEMANTIC_STATUSES: Final = frozenset(
-    {
-        SemanticStatus.BLOCKED_BY_POLICY,
-        SemanticStatus.BLOCKED_FORBIDDEN_DATA,
-        SemanticStatus.NOT_CONFIGURED,
-        SemanticStatus.CLASSIFICATION_UNCERTAIN,
-        SemanticStatus.HUMAN_DENIED,
-        SemanticStatus.APPROVAL_EXPIRED,
-    }
-)
+_UNDELIVERABLE_SEMANTIC_STATUSES: Final = UNDELIVERABLE_SEMANTIC_STATUSES
 
 
 def _closing_review_facts(
@@ -607,20 +637,28 @@ def closure_readiness_facts(
         for finding in current_receipt_findings(state)
         if not finding_is_resolved(state, finding.finding_id)
     )
-    # Same predicate as receipt_blocking_finding_count (``finding_todo.finding_blocks_receipt``): an
-    # actionable finding kind that no later qualifying check resolved and that is not a terminal
-    # ``rejection_accepted`` item (issue #905). A linked ``duplicate_of`` item (issue #996) is
-    # named by the finding that answers for it (``duplicate_counting_id``), so a pair counts once.
+    # ADR-046: one classifier decides who owes the next move and what each finding does to the
+    # receipt. The id lists below are views of it (a linked ``duplicate_of`` item is named by the
+    # finding that answers for it, ``duplicate_counting_id``, so a pair counts once).
+    finding_classes = finding_closures(state, records=records)
     blocking = {
-        duplicate_counting_id(state, finding.finding_id)
-        for finding in current
-        if finding_blocks_receipt(state, finding.finding_id)
+        closure.counts_as
+        for closure in finding_classes.values()
+        if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
     }
     acknowledged = {
         duplicate_counting_id(state, finding.finding_id)
         for finding in current
-        if finding_acknowledged_not_done(state, finding.finding_id)
-        or finding_todo_state(state, finding.finding_id) is FindingTodoState.ACKNOWLEDGED_NOT_DONE
+        if (
+            finding_acknowledged_not_done(state, finding.finding_id)
+            or finding_todo_state(state, finding.finding_id)
+            is FindingTodoState.ACKNOWLEDGED_NOT_DONE
+        )
+        # A disclosed limitation request is settled, not a requirement left undone (ADR-046).
+        and not (
+            finding.finding_id in finding_classes
+            and finding_classes[finding.finding_id].basis == "limitation_disclosed"
+        )
     }
     self_verified = {
         duplicate_counting_id(state, finding.finding_id)
@@ -637,10 +675,18 @@ def closure_readiness_facts(
     # #997: an acknowledged obligation is never open work here, whichever counting regime the
     # projection uses (L6 counts it among open obligations); it is listed once, as acknowledged.
     acknowledged_obligations = _acknowledged_obligation_ids(state)
+    obligation_classes = obligation_closures(state, records=records)
+    # An open obligation the agent disclosed as verifiable only outside this environment
+    # (``externally_evaluated``, RC-1) is disclosed, not work: it leaves ``obligations_open``.
+    externally_evaluated = {
+        item.obligation_id
+        for item in obligation_classes.values()
+        if item.basis == "externally_evaluated"
+    }
     open_obligations = tuple(
         item
         for item in open_effective_obligations(state)
-        if item not in set(acknowledged_obligations)
+        if item not in set(acknowledged_obligations) and item not in externally_evaluated
     )
     blocked = blocker_declarations(state, decision_batches(records))
     blocked_open = tuple(
@@ -678,7 +724,49 @@ def closure_readiness_facts(
             for item in disclosure_declarations(state)
         ),
         premise_disputed_finding_ids=premise_disputed_finding_ids(state),
+        finding_closures=tuple(
+            finding_classes[key] for key in sorted(finding_classes, key=str.encode)
+        ),
+        obligation_closures=tuple(
+            obligation_classes[key] for key in sorted(obligation_classes, key=str.encode)
+        ),
+        fact_lineage=current_fact_lineage(state, records, applicability),
     )
+
+
+def current_fact_lineage(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    applicability: CheckApplicability,
+) -> tuple[FactLineage, ...]:
+    """Where every derived task fact in force at this prefix came from (ADR-045).
+
+    The check-time deliverable facts (``declared_output_emptied``, ``..._removed``,
+    ``..._not_reviewable``) come from the newest check's recorded deliverable states, and only
+    while that check still applies (a later material change makes the check, and so its facts,
+    stale: ``check_not_applicable`` says so instead). The ledger-derived facts (planned
+    verification, edits after the last verification) come from ``task_fact_signals`` over the
+    same prefix. Sorted and bounded, so every surface renders the same list.
+    """
+
+    items: list[FactLineage] = []
+    latest = state.latest_tested_state
+    if applicability == "applicable" and latest is not None:
+        check_record = next(
+            (record for record in records if record.event_id == latest.source_check_event_id),
+            None,
+        )
+        if check_record is not None and type(check_record.payload) is CheckRecordedPayload:
+            items.extend(
+                deliverable_lineage(
+                    check_record.event_id,
+                    check_record.payload.subject_frontier.sequence,
+                    check_record.payload.deliverable_states,
+                )
+            )
+    items.extend(task_fact_signals(state, records).lineage)
+    ordered = sorted(dict.fromkeys(items), key=lambda item: item.sort_key)
+    return tuple(ordered[:MAX_FACT_LINEAGE_ITEMS])
 
 
 @dataclass(frozen=True, slots=True)
@@ -723,6 +811,28 @@ def derive_closure_readiness(
     for condition in AGENT_READINESS_CONDITIONS:
         if condition not in conditions:
             continue
+        if (
+            condition == "receipt_findings_unresolved"
+            and facts is not None
+            and facts.finding_closures is not None
+        ):
+            # ADR-046: only a finding the agent still owes a move on is agent work. A rejection
+            # that awaits a reviewer ruling is its own token (the only useful move is `check`
+            # with `final_review: true`); an acknowledged requirement is final (listed under
+            # acknowledged, the receipt keeps it unresolved).
+            counted: dict[FindingId, FindingClosure] = {}
+            for closure in facts.finding_closures:
+                if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN:
+                    counted.setdefault(closure.counts_as, closure)
+            classes = {closure.closure_class for closure in counted.values()}
+            if counted:
+                if FindingClosureClass.AGENT_WORK in classes:
+                    actionable.append(condition)
+                if FindingClosureClass.AWAITING_RULING in classes:
+                    actionable.append(FINDING_REJECTION_AWAITING_RULING_GAP)
+                continue
+            # The condition names findings these facts do not classify (a count from another
+            # derivation): never infer "nothing to do" from the absence of an explanation.
         if condition == "receipt_findings_unresolved" and facts is not None:
             blocking = set(facts.receipt_blocking_finding_ids)
             # Acknowledged-not-done (#905) and self-verified (#984) items are final answers,
@@ -798,6 +908,13 @@ def derive_closure_readiness(
         if item not in actionable:
             actionable.append(item)
     standing.update(split.standing_limitations)
+    if facts is not None and facts.finding_closures is not None:
+        bases = {closure.basis for closure in facts.finding_closures}
+        # A settled finding nobody owes a move on is still disclosed, never silently dropped.
+        if "limitation_disclosed" in bases:
+            standing.add(FINDING_LIMITATION_DISCLOSED_GAP)
+        if "rejected_review_unavailable" in bases:
+            standing.add(FINDING_REJECTION_UNREVIEWABLE_GAP)
     if (facts is not None and facts.self_verified_finding_ids) or lineage_self_verified:
         # ``lineage_self_verified``: an accepted child holds self-verified findings (ADR-034,
         # ADR-027). The parent receipt is then at best insufficient_coverage; status says so.

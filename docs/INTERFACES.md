@@ -950,7 +950,8 @@ failures once, bounded to ten ids per clause. An observed edit changes the state
 not a covering verification, so a failure followed only by an edit stays `live` until the same
 command is rerun or the claim explicitly acknowledges it. An edit the harness sees only as a
 shell command (a heredoc written through `exec_command` or `Bash`) is a command, not an observed
-edit, and follows the same rule.
+edit, and follows the same rule for failure supersession. For the stale-verification rule such a
+command counts as an edit when it visibly writes the workspace (`write_scope: workspace`, ADR-045).
 
 `reason` MAY be omitted for `acknowledged` and MUST be non-empty for `provenance_disputed`,
 `rejected`, or `waived`.
@@ -6845,15 +6846,20 @@ project views keep their own documented coverage.
 status success; on the unreleased status-result 1.4.0 wire the six checklist fields are optional
 as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null). Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
-`gap_classification_version` (`"5"` since issue #1020 added the standing code
-`finding_disputed_after_rebuttal`; `"4"` added `assumption_disclosed`,
+`gap_classification_version` (`"7"` since the table became a view of `kernel.gap_effect` and added the
+readiness token `finding_rejection_awaiting_ruling` (ADR-046) and the standing task-fact
+disclosures `planned_verification_matched_by_prefix` and `declared_output_not_reviewable`
+(ADR-045); `"5"` added the standing code
+`finding_disputed_after_rebuttal` (issue #1020); `"4"` added `assumption_disclosed`,
 `verification_limit_disclosed` and `finding_premise_disputed` (issues #995, #984); `"3"` added
 `finding_self_verified`; the wire still admits `"1"`–`"4"` from an earlier 0.3 build),
 and three groups. `agent_actionable` lists, in order, the
 agent conditions present (`obligations_open`, `findings_unanswered`, `receipt_findings_unresolved`
-unless every receipt-blocking finding's latest response is `acknowledged_not_done`; a
-`self_verified` finding never counts as receipt-blocking and is disclosed as the standing code
-`finding_self_verified` instead,
+only for findings whose closure class is `agent_work` (an acknowledged requirement is
+`settled_unmet`: final, so the state stays `ready_with_limitations`, and counted in
+`receipt_blocking_finding_count`; a `self_verified` finding is `settled_disclosed` and disclosed as
+the standing code `finding_self_verified`; ADR-046), `finding_rejection_awaiting_ruling` for a
+rejected finding that waits for a reviewer ruling (a check is the next move),
 `no_plan_published`, `no_obligations_declared`, `projection_stale`), then `check_in_progress`
 while a check holds the session frontier (read at the head through the ledger's
 `has_active_frozen_case`; an unanswerable probe counts as in flight), then `check_not_recorded` or
@@ -6922,6 +6928,64 @@ receipt. Request the receipt." Readiness never recounts findings: "this finding 
 `receipt_findings_unresolved` is a persistent conclusion bound, not an instruction to respond
 again. Once every readable finding is answered, the latter condition remains and tells the caller
 that a receipt may be requested but cannot conclude `no_unresolved_deterministic_findings`.
+
+#### The closure verdict (tb4n3 RC-3, issue #1026, ADR-046)
+
+Every surface that says whether an item still bounds closure reads one verdict, computed from the
+ledger prefix and never stored. Names:
+
+- `yoetz.kernel.closure_class`: `FindingClosureClass` (`agent_work|awaiting_ruling|settled_unmet|settled_disclosed|resolved`),
+  `ObligationClosureClass` (`agent_work|settled_unmet|settled_disclosed|resolved`), `ReceiptEffect`
+  (`none|insufficient_coverage|unresolved_findings_remain`), the closed `FINDING_BASES` /
+  `OBLIGATION_BASES` tables (basis -> class and effect), `NEXT_ACTIONS` (`repair|recheck|reject|acknowledge|acknowledge_not_done|self_verify|reopen|none`),
+  `finding_closure(s)`, `obligation_closures`, `ClosureCounts`, `Recheck`. A basis token names the row
+  (`open_unanswered`, `open_answered`, `reopened`, `limitation_requested`, `rejected_awaiting_ruling`,
+  `rejected_review_unavailable`, `acknowledged_not_done_requirement`, `acknowledged_not_done_bookkeeping`,
+  `self_verified`, `disputed_after_rebuttal`, `rejection_accepted`, `limitation_disclosed`,
+  `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`).
+- `yoetz.kernel.gap_effect`: `GAP_EFFECT_TABLE` (one row per recorded gap code and the readiness-only
+  tokens), `GapContext`, `GapEffectKind` (`actionable|standing_bounding|disclosed|historical`),
+  `gap_effect`, `judge_gaps`. `GAP_CLASSIFICATION` is a view of it; `GAP_CLASSIFICATION_VERSION`
+  is `"7"`.
+- `yoetz.kernel.receipt_prediction.predict_receipt_conclusion(ClosureBasis)`: the receipt's
+  conclusion rules R1-R10 and their reason codes. `receipt_builder.build_receipt` calls it, so the
+  receipt label and every prediction are one function over one context.
+- `yoetz.kernel.closure_verdict.closure_verdict`: the composition (classes, judged gaps, readiness
+  split, prediction, counters, rechecks). `yoetz.application.closure_basis.load_closure_basis`
+  rebuilds the receipt's context at a frontier for status and the check (memoized per session and
+  frontier, valid only while the adapter's projection object is unchanged).
+
+Wire (all optional on the unreleased 1.4.0 results; absent from an earlier 0.3 build and whenever
+the basis could not be read):
+
+- `status` `closure_readiness`: `predicted_receipt {conclusion, reasons[{code, rule, count, refs[<=3],
+  since_frontier?}], reason_total, basis_frontier, provisional}`;
+  `finding_counts {to_do, awaiting_ruling, unmet, disclosed, to_disclose, self_verify_eligible}`
+  (`to_do` includes `awaiting_ruling`; `to_disclose` is never inside `to_do`);
+  `obligation_counts {open, acknowledged, disclosed}`;
+  `awaiting_ruling_findings [{finding_id, since_frontier}]` (<= 8, by id; exactly the findings
+  counted in `finding_counts.awaiting_ruling`, up to the bound); `rechecks [{kind
+  (acceptance|acknowledgement|blocker|premise), key (accept:<h8>|ack:<obl>|blocker:<obl>:<kind>|premise:<n>),
+  subjects[<=8], rule, since_frontier}]`. `receipt_blocking_finding_count` keeps its wire name and
+  means `finding_counts.to_do + finding_counts.unmet`.
+- `status view=findings` rows: `closure_class`, `closure_basis`, `next_actions`;
+  `view=obligations` rows: `closure_class`, `closure_basis`.
+- `check` `finding_checklist.counts`: `to_do`, `awaiting_ruling`, `unmet`, `disclosed`,
+  `to_disclose` (the group travels together); items carry `closure_class` and `closure_basis`;
+  `finding_checklist.next` and `overall_next.action` add `request_ruling`; `overall_next` adds
+  `predicted_conclusion`.
+- `receipt-document` 1.3.0 (additive, in place): `limitation_disclosed_finding_ids`,
+  `conclusion_basis {reasons[{code, rule, count, refs, since_frontier?}], reason_total}`, and a gap
+  `effect` (`bounds|disclosed`). A clean conclusion beside a limitation id or a bounding gap is
+  invalid, and `reason_total` is zero exactly when the conclusion is clean.
+
+Text (`yoetz.protocol.readiness_text`): the owner-approved `readiness_directive` sentence is
+unchanged; `predicted_receipt_variants` appends "The receipt will read X: <reasons>." (while work
+remains: "A receipt requested now would read X: ..."); `closure_counts_variants` prints "Findings to
+do: N (awaiting ruling: K); unmet (acknowledged requirements): M; disclosed: L; to disclose: J.";
+`recheck_note` ("At Stop you will be asked once to re-read: ...") and `awaiting_ruling_variants`
+name the announced re-reads and the findings that wait for a ruling. The MCP status text, the CLI,
+the terminal panel and `closure_prepare` print them; no human surface prints "receipt-blocking".
 
 No plan yields `no_plan_published`. A readable effective plan with declared count zero and no reason
 yields `no_obligations_declared`; the same count with a typed reason clears that blocker while the
@@ -8283,7 +8347,7 @@ at its schema boundary. `status-request`
 
 Every recorded finding has one to-do state (`kernel/finding_todo.py`): `open`,
 `verified_resolved` (the shared `finding_is_resolved` rule), `acknowledged_not_done` (latest
-readable response has that disposition; never reads as resolved), or `rejection_accepted` (a later
+readable response has that disposition; reads as resolved only through a later absence proof, below), or `rejection_accepted` (a later
 check recorded a `withdrawn` ruling on an AI-powered finding whose latest readable response was
 `rejected`; the projection records the check as `rejection_accepted_by_check_event_id`). When the
 same check also satisfies the absence proof for that row, the explicit ruling wins:
@@ -8294,8 +8358,9 @@ three are terminal: `respond` on a terminal finding appends nothing and fails wi
 `INVALID_REQUEST`, reason code `finding_terminal`, field `/finding_id` (no continuation: there is
 nothing to do); a latched row is never resolved later; redacting the latching check clears the
 latch. Terminal items are left out of the prior-findings section and rulings on them are not
-admitted. `receipt_blocking_finding_count` counts `acknowledged_not_done` rows and no longer counts
-`rejection_accepted` rows.
+admitted. `receipt_blocking_finding_count` counts `acknowledged_not_done` rows of a requirement kind that demand work (an
+acknowledged `action_without_result` bookkeeping finding is disclosed instead, ADR-046; a reviewer's limitation
+request is never counted) and no longer counts `rejection_accepted` rows.
 
 #### `self_verified`: proof-limited findings (issue #984, ADR-034)
 
@@ -8316,8 +8381,9 @@ message names them with a next step and the `yoetz-verification-limit:<obligatio
 (ADR-041).
 Eligibility is `kernel/self_verification.self_verification_refusal(state, finding_id, records)`
 over the resolution reasons of that check (ADR-034): any `coverage:<code>` classified standing in
-`GAP_CLASSIFICATION` is a Yoetz limit. The to-do state `self_verified` is terminal and never
-resolved (`finding_is_resolved` is false for it, like `acknowledged_not_done`), is not counted by
+`GAP_CLASSIFICATION` is a Yoetz limit. The to-do state `self_verified` is not resolved by its own
+answer (`finding_is_resolved` is false for it unless a qualifying check tested the work after the
+answer; see "Reverse edges" below), is not counted by
 `receipt_blocking_finding_count`, is left out of the next review, and is disclosed: closure
 readiness lists the standing code `finding_self_verified`; `receipt-document` `1.3.0` carries
 `self_verified_finding_ids` (1–100, a `no_unresolved_deterministic_findings` conclusion beside it is
@@ -8364,6 +8430,42 @@ agent work: a recheck-instruction can regenerate, ADR-040 section 7); `closure_r
 the bounding suffix rests on (beside the standing code): `effect`, `event_id`,
 `ledger_sequence`, `family`, `material_class`, `rule`, optional `tool`, `check_event_id`,
 `check_subject_frontier`.
+
+#### Reverse edges, limitation requests and concern identity (issues #1024 and #1030, ADR-034 and ADR-040 amendments)
+
+Names shared by the kernel, `respond`, `check`, status and the receipt:
+
+- `respond` disposition `reopened` (with `acknowledged_not_done` it rides `respond-request` and
+  `respond-result` `1.1.0` and the `response_recorded` `1.1.0` event; `reason` is required): takes an
+  `acknowledged_not_done` answer back, the finding is `open` and its standing position is retracted.
+  Refused with `response_fields_invalid` on `/disposition` on any other state. `verified_resolved`,
+  `rejection_accepted` and `disputed_after_rebuttal` stay absolutely final (`finding_terminal`);
+  `acknowledged_not_done` answers `finding_terminal` to every disposition but `reopened`; the message
+  names the state and the way out.
+- `respond-result` `1.1.0` optional `closure_after {todo_state, limitation?}`: the state the answer
+  produced, simulated at its own frontier (`limitation` is `limitation_requested` or
+  `limitation_disclosed` for a reviewer's limitation request; absent otherwise).
+- Absence proof after the answer: `FindingProjectionRecord.resolution_frontier` (the tested frontier
+  of the check named by `resolved_by_check_event_id`) lets `finding_is_resolved` resolve an
+  `acknowledged_not_done` or `self_verified` answer when the proof tested the work after the answer.
+  The status finding items allow `resolved: true` on those two states.
+- Limitation requests: `domain.findings.is_limitation_request(finding)` and
+  `finding_demands_work(finding)`; `kernel.limitation.limitation_standing(state, finding_id) ->
+  LimitationStanding | None` with states `limitation_requested` (to disclose) and
+  `limitation_disclosed` (basis `respond_acknowledgement` or `verification_limit_decision`),
+  `limitation_requested_ids` and `limitation_disclosed_ids`. A limitation request never demands
+  work, is never receipt-blocking and is never clean. Acknowledging it needs no recorded resolution
+  attempt.
+- Reducer facts (replay-derived, snapshot-emitted only when set): `standing_position`
+  (`StandingPosition(kind, frontier)`; the earliest unretracted reasoned answer), `last_ruling_frontier`,
+  `resolution_frontier`, `absorbed_refs` (bounded refs a settled item's re-raises cited) on a finding
+  row; `introduced_frontier` on an obligation row (its first publication; republication only changes
+  status). Accessors: `kernel.finding_todo.finding_standing(state, id) -> (kind, frontier) | None`,
+  `ruling_since(state, id) -> int | None`, `standing_answer_frontier(state, id) -> int | None`.
+- Concern identity: `kernel.concern.concern_key(projection, refs) -> ConcernKey`, `same_concern`,
+  `equal_concern`, `kinds_comparable`; new material: `application.review_concern.concern_material_after`
+  and `answer_bound`. Packet: `yoetz_already_disclosed` beside an obligation the agent disclosed and
+  `limitation_already_disclosed` / `limitation_disclosed_by` on a settled-finding row.
 
 #### `duplicate_of`: a re-raised finding linked to an earlier one (issue #996, ADR-034 amendment)
 
@@ -8897,7 +8999,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `planned_verification_not_observed`, `planned_verification_failed`,
   `planned_verification_stale`, `edited_after_last_verification`, `requested_output_git_ignored`,
   `declared_output_removed` (ADR-035), `declared_output_emptied` (ADR-035 amendment, ADR-041). Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
-  `planned_verification_unobservable`, `planned_verification_agent_linked`, `install_into_yoetz_runtime`, `install_into_private_env`,
+  `planned_verification_unobservable`, `planned_verification_agent_linked`,
+  `planned_verification_matched_by_prefix` (ADR-045: a prefix or flags match, counts as run),
+  `declared_output_not_reviewable` (ADR-045), `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`, `verification_only_as_root`,
   `obligation_blocked_outside_agent_control`, `requested_output_ignored_by_repository`,
   `declared_output_content_moved` (ADR-035),
@@ -9038,17 +9142,29 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   (`CONTENT_MOVED_MIN_LINES`), `2 * lines_lost >= base_lines` and
   `2 * undeclared_lines_added >= lines_lost`; the check then adds the standing disclosure
   `declared_output_content_moved` (`DECLARED_OUTPUT_CONTENT_MOVED_GAP`), never a Stop-gate token.
-  `emptied_declared_items(projection, states) -> tuple[(obligation, item index), ...]` (ADR-041)
-  names declared `file` items of an obligation that is `resolved` or named by an effective
-  completion claim (not `acknowledged_not_done`) whose
-  `inside` state exists, is not deleted, and has `size_bytes == 0` (`RequestedPathProbe.size_bytes`,
-  a regular file's size from the link-free probe; never for `__init__.py`, `py.typed`, `.gitkeep`,
-  `.keep`, `.nojekyll`), or `base_lines >= 20` with fewer than a tenth kept, not the content-moved
-  shape, and no other declared delivered item changed; the check adds the agent-actionable
-  `declared_output_emptied` (`DECLARED_OUTPUT_EMPTIED_GAP`), a Stop-gate token, under which the
-  obligation's `resolved` no longer counts as delivered.
-  `requested_output_states` fills those fields only for a declared `file` the change modifies
-  (`M`), through the optional adapter method `count_change_lines(workspace, base_commit,
+  `emptied_declared_items(projection, states, *, blocked=None, history=(), verified=False) ->
+  tuple[(obligation, item index), ...]` (ADR-041, rewritten by ADR-045) is the `emptied` list of
+  `assess_deliverables(projection, states, ...) -> DeliverableAssessment(states, emptied, removed)`:
+  one verdict per **path**, from `deliverable_state_change(state, history, name=, other_growth=) ->
+  DeliverableChange | None` (`emptied`, `truncated`, `removed`, `unchanged`; `None` unknown).
+  `history` is `deliverable_history(records) -> tuple[DeliverableSnapshot(state, event_id,
+  frontier)]` over the earlier `check_recorded` events' `deliverable_states`. A file is `emptied`
+  only with proof of earlier content (`base_lines > 0`, or an earlier check read it with content);
+  `truncated` needs 20 earlier lines and fewer than a tenth left (or 2,048 bytes and a tenth, when
+  no line count was read), is not the content-moved shape, and is not a split (the other declared
+  outputs gained at least half the lost lines, or their growth is unknown). `declared_output_emptied`
+  (`DECLARED_OUTPUT_EMPTIED_GAP`, a Stop-gate token) fires when the change is emptied or truncated
+  and an obligation declaring the path is resolved or claimed now, or an earlier check recorded the
+  path with content with `basis` `delivered` or `verified`; the obligation's current status does
+  not clear it. The exit is `path_assumption`: a `yoetz-assumption:<obligation id>` decision of an
+  obligation declaring the path whose statement or rationale names the declared value or the
+  root-relative path as a whole token. `removed_declared_items(..., history=)` adds a file an
+  earlier check recorded with content that is now gone.
+  `RequestedOutputState.lines` is the current line count (tracked, untracked or unchanged).
+  `deliverable_path_identity(relative) -> hmac-sha256:... | None` keys the history.
+  `requested_output_states` fills `base_lines`, `lines_lost` and `undeclared_lines_added` for a
+  declared `file` the change modifies (`M`) and `lines` for every existing declared `file`
+  (ADR-045), through the optional adapter method `count_change_lines(workspace, base_commit,
   base_paths) -> ChangeLineCounts(changed: tuple[ChangeLineCount(path, added, removed,
   untracked), ...], base_lines, truncated)` (`ports/change_capture.py`): numstat for tracked
   changes, newline counts of untracked non-ignored files (bounded, no link followed, no
@@ -9079,6 +9195,51 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `scoped_resolution_reasons(reasons, *, state, finding_id, records) -> tuple[str, ...]` (drops the
   `coverage:<task fact>` reasons that do not bear on the finding; never empties the list).
   `self_verification_refusal` applies it; readiness, the Stop gate and resolution stay task-wide.
+- **Fact lineage and canonical commands (ADR-045, issue #1028).**
+  `kernel/fact_lineage.FactLineage(code, rule, state, obligation_id, item_index, check_event_id,
+  frontier, prior_event_id, prior_frontier, prior_size_bytes, prior_lines, now_size_bytes,
+  now_lines, proof, basis, source_event_ids, accepted_by)` is the typed provenance of a derived
+  fact (closed `rule`: `deliverable_path_history|deliverable_read|planned_command_match|
+  planned_command_unmatched|edit_after_verification_run`; closed `state`; counts and ids only);
+  `lineage_text(item)` is the one `Why:` renderer, `lineage_to_wire` / `lineage_from_wire` the wire
+  mapping. `FactLineageModel` (`protocol/models.py`) is the wire object, carried as the optional
+  `fact_lineage` list (at most 64) on `status` `closure_readiness` and on the check result, derived
+  per request by `closure_readiness.current_fact_lineage(state, records, applicability)` from the
+  applicable check's recorded `deliverable_states` plus `task_fact_signals(...).lineage`.
+  `TaskFactSignals.lineage` covers `planned_verification_not_observed|failed|stale|
+  matched_by_prefix` and `edited_after_last_verification`. `check_recorded` 1.4.0 gains the optional
+  `deliverable_states` (at most 64 `DeliverableState`: `obligation_id`, `item_index`, `path_key`,
+  `size_bytes`, `lines`, `base_lines`, `basis delivered|verified|present`, `change
+  emptied|truncated|removed|unchanged`, `proof task_base|earlier_check`, `prior_size_bytes`,
+  `prior_lines`, `prior_event_id`, `prior_frontier`, `accepted_by`, `unreviewable`); absent when the
+  check read no declared output file. `domain/command_segments`: `canonical_words(argv)` (wrappers,
+  assignments, basename, `python3`/`pythonX.Y` to `python`, `python -m pytest` to `pytest`),
+  `canonical_command_commitments(key, argv) -> (full, prefixes, flags)`,
+  `canonical_commitment(key, kind, payload)` (`full|prefix|flag`, domain-separated from segment
+  commitments), `command_structure(normalized) -> CommandStructure(commands, composition,
+  compound)`, `planned_segments(key, normalized)`, `strip_wrappers(argv)`;
+  `command_segment_commitments` now also carries up to `MAX_CANONICAL_COMMITMENTS` (48) canonical
+  commitments, `MAX_COMMAND_COMMITMENTS` (80) in all (the observed action `command` field, the hook
+  structural list and `observed_failures` share that bound).
+  `task_facts.requested_planned_command(value) -> PlannedCommand | None` and `planned_match(run,
+  planned) -> PlannedMatch(outcome, kind) | None` with `kind` `exact|normalized|prefix|flags`;
+  `prefix` and `flags` raise the standing `planned_verification_matched_by_prefix`.
+  `task_facts.observed_planned_commands(projection, observed, cooperative, values)` is the set of
+  requested command values some observed run matched; `command_attempts.same_requested_path` /
+  `value_in_attempted` match a file in another spelling. `domain/shell_writes.shell_write_paths(
+  command)` (literal, attributable paths only; linear; analyses at most `MAX_SHELL_WRITE_CHARS` =
+  16,384 characters, up to the last newline, and drops the command a cut interrupts) and `shell_write_scope(command, *, workspace,
+  inside, owned_roots=, relative_only=)` (outside wins, then `workspace`, then a single non-counting
+  class; two non-counting classes count as `workspace`; a directory destination is classified by
+  where it is, not by a notes or receipt file name; the hook calls it alone, with no separate
+  outside-workspace check);
+  `write_scope` admits `notes` (non-counting) and `workspace` (a shell command that writes the
+  workspace; counts as an edit with `outside_workspace`; `observed_failures.SHELL_EDIT_TOKENS`).
+  `missing_for_assessment.check_change_text_paths(capture)` lists the files the check-time change
+  shows as text; `_TargetFiles.unsupported` decides by Git's NUL sniff first, then the suffix. The
+  standing `declared_output_not_reviewable` (`DECLARED_OUTPUT_NOT_REVIEWABLE_GAP`) is raised when a
+  review ran and a declared output file is a type the packet never carries.
+  `GAP_CLASSIFICATION_VERSION` is `"7"`.
 - **Runner class.** `domain/observation_selection.command_runner_class` classifies
   `python -m <module>` by module (pytest/unittest/nose2/tox/nox/doctest `test`, mypy/pyright
   `typecheck`, ruff/flake8/pylint/pyflakes/pycodestyle `lint`, build/compileall `build`) and never
@@ -9088,8 +9249,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `work-integrity/0.2.0` generation.
 - **Runtime structural fields.** The observation envelope and control-request 2.9.0
   `structural_payload` admit `install_target` (`yoetz_runtime|workspace_env|private_env|system|
-  unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned`; ADR-042: `scratch` and
-  `yoetz_owned` name an edit whose every path is a temp root outside the workspace or Yoetz's own material) and
+  unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned|notes|workspace`; ADR-042:
+  `scratch` and `yoetz_owned` name an edit whose every path is a temp root outside the workspace or
+  Yoetz's own material; ADR-045: `notes` the agent's own notes, `workspace` a shell command that
+  writes the workspace) and
   `effective_user` (`root|non_root`),
   produced only by `cli/runtime_facts.runtime_structural_facts`, which judges `install_target`
   against the task interpreter (the agent's `python3`/`python` on the hook's `PATH`; ADR-033

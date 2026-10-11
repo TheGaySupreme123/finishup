@@ -60,7 +60,9 @@ from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel, co
 from yoetz.protocol.models import (
     CheckAwaitingHumanModel,
     CheckChecklistCountsModel,
+    CheckChecklistItemModel,
     CheckContinuationModel,
+    CheckOverallNextModel,
     CheckProjectedFindingModel,
     CheckRequest,
     CheckResultModel,
@@ -69,6 +71,7 @@ from yoetz.protocol.models import (
     ChildDependencySnapshotModel,
     ChildFindingSnapshotModel,
     DataCategory,
+    FactLineageModel,
     ProjectTextRefModel,
     PublicErrorModel,
     PublishWorkAcceptedEventModel,
@@ -76,8 +79,10 @@ from yoetz.protocol.models import (
     PublishWorkRequest,
     PublishWorkSuccessModel,
     ReadGuidanceSuccessModel,
+    RespondClosureAfterModel,
     RespondEvidenceSummaryModel,
     RespondResponseModel,
+    RespondSuccessModel,
     ReviewInputManifestModel,
     SemanticRedactedValueModel,
     StartSuccessModel,
@@ -95,6 +100,7 @@ from yoetz.protocol.models import (
     StatusObligationItemModel,
     StatusObservedRunModel,
     StatusOperationPageModel,
+    StatusPredictedReasonModel,
     StatusProjectDetectionModel,
     StatusProjectPageModel,
     StatusRequest,
@@ -198,6 +204,8 @@ def _status_history_v14_payload() -> dict[str, object]:
 # A new result model that joins the set without a row in this table fails the inventory test.
 _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = (
     (CheckContinuationModel, frozenset({"pending_id", "expires_at"})),
+    (RespondSuccessModel, frozenset({"closure_after"})),  # tb4n3 RC-7
+    (RespondClosureAfterModel, frozenset({"limitation"})),
     (
         CheckSuccessModel,
         frozenset(
@@ -218,12 +226,31 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "observations_awaited",
                 # Issue #986 (E2): written only as ``false``.
                 "semantic_route_required",
+                # ADR-045: absent when the check carries no derived fact.
+                "fact_lineage",
             }
         ),
     ),
     (CheckAwaitingHumanModel, frozenset({"specification_preflight"})),
     # Issue #1020: present only when non-zero.
-    (CheckChecklistCountsModel, frozenset({"disputed_after_rebuttal"})),
+    (
+        CheckChecklistCountsModel,
+        frozenset(
+            {
+                "disputed_after_rebuttal",
+                # ADR-046: the five closure counters travel together.
+                "to_do",
+                "awaiting_ruling",
+                "unmet",
+                "disclosed",
+                "to_disclose",
+            }
+        ),
+    ),
+    # ADR-046: who owes the next move on a checklist row, and the predicted receipt conclusion.
+    (CheckChecklistItemModel, frozenset({"closure_class", "closure_basis"})),
+    (CheckOverallNextModel, frozenset({"predicted_conclusion"})),
+    (StatusPredictedReasonModel, frozenset({"since_frontier"})),
     (
         ChildDependencySnapshotModel,
         frozenset(
@@ -287,6 +314,34 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "limitation_refs_required_count",
                 "acknowledged_obligation_count",
                 "check_cause",
+                # ADR-046: the one closure verdict.
+                "predicted_receipt",
+                "finding_counts",
+                "obligation_counts",
+                "rechecks",
+                "awaiting_ruling_findings",
+                # ADR-045: absent when the readiness lists no derived fact.
+                "fact_lineage",
+            }
+        ),
+    ),
+    (
+        FactLineageModel,
+        frozenset(
+            {
+                "obligation_id",
+                "item_index",
+                "check_event_id",
+                "frontier",
+                "prior_event_id",
+                "prior_frontier",
+                "prior_size_bytes",
+                "prior_lines",
+                "now_size_bytes",
+                "now_lines",
+                "proof",
+                "basis",
+                "accepted_by",
             }
         ),
     ),
@@ -300,6 +355,9 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "finding_frontier",
                 "challenge",
                 "duplicate_of_finding_id",
+                "closure_class",
+                "closure_basis",
+                "next_actions",
             }
         ),
     ),
@@ -311,7 +369,15 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (ReviewInputManifestModel, frozenset({"review_phase", "omitted_item_total"})),
     (
         StatusObligationItemModel,
-        frozenset({"acceptance_criteria", "acknowledged_not_done_reason", "in_current_plan"}),
+        frozenset(
+            {
+                "acceptance_criteria",
+                "acknowledged_not_done_reason",
+                "in_current_plan",
+                "closure_class",
+                "closure_basis",
+            }
+        ),
     ),
     (StatusRequestedItemModel, frozenset({"role"})),
     (StatusObservedRunModel, frozenset({"tool_name", "command_commitment", "exit_status"})),
@@ -1184,6 +1250,101 @@ def test_status_closure_readiness_omits_an_unset_checklist() -> None:
     dumped = parsed.model_dump(mode="json", exclude_unset=True)
     assert not StatusClosureReadinessModel.optional_non_null_fields & dumped.keys()
     assert dumped["no_obligations_reason"] is None
+    # ADR-045: a readiness with no derived fact lists no lineage; null is refused, not tolerated
+    # (the service once sent ``null`` here and every status read failed).
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        StatusClosureReadinessModel.model_validate({**dumped, "fact_lineage": None})
+
+
+def test_fact_lineage_omits_every_unset_field() -> None:
+    """A lineage entry is closed tokens and counts; whatever it does not know is absent."""
+
+    minimal = {"code": "declared_output_emptied", "rule": "deliverable_read", "state": "emptied"}
+    dumped = FactLineageModel.model_validate(minimal).model_dump(mode="json", exclude_unset=True)
+    assert dumped == minimal
+    for field in FactLineageModel.optional_non_null_fields:
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            FactLineageModel.model_validate({**minimal, field: None})
+
+
+def test_closure_verdict_models_omit_unset_fields_and_refuse_null() -> None:
+    """ADR-046: every closure-verdict field is absent from a result an earlier build shaped,
+    appears when set, and is never null on the wire."""
+
+    base_counts = {
+        "acknowledged_not_done": "0",
+        "open": "1",
+        "open_at_budget": "0",
+        "rejection_accepted": "0",
+        "self_verified": "0",
+        "verified_resolved": "0",
+    }
+    parsed = CheckChecklistCountsModel.model_validate(base_counts)
+    dumped = parsed.model_dump(mode="json", exclude_unset=True)
+    for field in ("to_do", "awaiting_ruling", "unmet", "disclosed", "to_disclose"):
+        assert field not in dumped
+        with pytest.raises(ValueError):
+            CheckChecklistCountsModel.model_validate({**base_counts, field: None})
+    full = CheckChecklistCountsModel.model_validate(
+        {
+            **base_counts,
+            "to_do": "1",
+            "awaiting_ruling": "1",
+            "unmet": "0",
+            "disclosed": "0",
+            "to_disclose": "0",
+        }
+    )
+    assert full.model_dump(mode="json", exclude_unset=True)["awaiting_ruling"] == "1"
+    # The group travels together.
+    with pytest.raises(ValueError):
+        CheckChecklistCountsModel.model_validate({**base_counts, "to_do": "1"})
+
+    item = CheckChecklistItemModel.model_validate(
+        {"finding_id": protocol_id("fnd_", 2950), "todo_state": "open", "review_rounds": "0"}
+    )
+    assert (
+        not {"closure_class", "closure_basis"}
+        & item.model_dump(mode="json", exclude_unset=True).keys()
+    )
+    with pytest.raises(ValueError):
+        CheckChecklistItemModel.model_validate(
+            {
+                "finding_id": protocol_id("fnd_", 2950),
+                "todo_state": "open",
+                "review_rounds": "0",
+                "closure_class": "agent_work",
+            }
+        )
+
+    reason = StatusPredictedReasonModel.model_validate(
+        {"code": "findings_to_do", "rule": "R2", "count": "1", "refs": []}
+    )
+    assert "since_frontier" not in reason.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValueError):
+        StatusPredictedReasonModel.model_validate(
+            {
+                "code": "findings_to_do",
+                "rule": "R2",
+                "count": "1",
+                "refs": [],
+                "since_frontier": None,
+            }
+        )
+
+    next_step = CheckOverallNextModel.model_validate(
+        {"status": "ready", "action": "request_receipt", "target_refs": []}
+    )
+    assert "predicted_conclusion" not in next_step.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValueError):
+        CheckOverallNextModel.model_validate(
+            {
+                "status": "ready",
+                "action": "request_receipt",
+                "target_refs": [],
+                "predicted_conclusion": None,
+            }
+        )
 
 
 def test_checklist_counts_omit_an_unset_disputed_count() -> None:
@@ -1246,6 +1407,8 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
         assert "semantic_redacted_values" not in projected_check
         assert "observations_awaited" not in projected_check
         assert "review_input_manifest" not in projected_check
+        # ADR-045: a check with no derived fact lists no lineage (absent, not an empty list).
+        assert "fact_lineage" not in projected_check
         # Issue #961: reviewer output is absent on a deterministic check; frozen-work totals and
         # the overall continuation are filled on every new check but stay optional for legacy rows.
         assert not {"semantic_conclusion", "review_summary", "verified"} & projected_check.keys()
@@ -1267,6 +1430,7 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
             "overall_next",
             "semantic_redacted_values",
             "observations_awaited",
+            "fact_lineage",
         ):
             unset = {key: value for key, value in projected_check.items() if key != field}
             model = CheckSuccessModel.model_validate(unset)
@@ -1584,6 +1748,12 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         ("CheckChecklistCountsModel", "disputed_after_rebuttal"): (
             "test_checklist_counts_omit_an_unset_disputed_count"
         ),
+        ("StatusPredictedReasonModel", "since_frontier"): (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        ),
+        ("CheckOverallNextModel", "predicted_conclusion"): (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        ),
         ("RespondEvidenceSummaryModel", "description"): (
             "test_respond_omits_unset_optional_response_fields"
         ),
@@ -1650,10 +1820,37 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "acknowledged_obligation_count",
         # tb4n3 RC-6: absent unless it explains a listed check_not_applicable / earlier-frontier item.
         "check_cause",
+        # ADR-045: absent when the readiness lists no derived fact.
+        "fact_lineage",
     ):
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (
             "test_status_closure_readiness_omits_an_unset_checklist"
+        )
+    for field in (
+        "predicted_receipt",
+        "finding_counts",
+        "obligation_counts",
+        "rechecks",
+        "awaiting_ruling_findings",
+    ):
+        covered["StatusClosureReadinessModel", field] = (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        )
+    for field in ("closure_class", "closure_basis", "next_actions"):
+        covered["StatusFindingItemModel", field] = (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        )
+    for field in ("closure_class", "closure_basis"):
+        covered["StatusObligationItemModel", field] = (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        )
+        covered["CheckChecklistItemModel", field] = (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
+        )
+    for field in ("to_do", "awaiting_ruling", "unmet", "disclosed", "to_disclose"):
+        covered["CheckChecklistCountsModel", field] = (
+            "test_closure_verdict_models_omit_unset_fields_and_refuse_null"
         )
     for model in ("PublishWorkSuccessModel", "PublishWorkDryRunModel"):
         covered[model, "blocker_notices"] = "test_publish_accepted_events_omit_unset_summary"
@@ -1686,11 +1883,14 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
                 "semantic_redacted_values",
                 "observations_awaited",
                 "semantic_route_required",
+                "fact_lineage",
             ),
         ),
     ):
         for field in fields:
             covered[model, field] = "test_root_start_and_check_omit_unset_multi_agent_fields"
+    for field in FactLineageModel.optional_non_null_fields:
+        covered["FactLineageModel", field] = "test_fact_lineage_omits_every_unset_field"
     covered["CheckAwaitingHumanModel", "specification_preflight"] = (
         "test_nested_multi_agent_results_omit_unset_fields"
     )
@@ -1759,6 +1959,12 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     covered["StatusResultItemModel", "observed_run"] = (
         "test_results_view_names_tool_occurrence_commitment_and_exit_status"
     )
+    covered["RespondSuccessModel", "closure_after"] = (
+        "test_respond_closure_after_omits_unset_fields"
+    )
+    covered["RespondClosureAfterModel", "limitation"] = (
+        "test_respond_closure_after_omits_unset_fields"
+    )
     for field in (
         "document_id",
         "revision",
@@ -1784,6 +1990,25 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         f"unset-projection coverage drifted: missing={expected - set(covered)} "
         f"extra={set(covered) - expected}"
     )
+
+
+def test_respond_closure_after_omits_unset_fields() -> None:
+    """tb4n3 RC-7: an absent closure_after / limitation is omitted, never an explicit null."""
+
+    from unit.protocol.test_models_and_schemas import (
+        _respond_result_wire,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    closure = RespondClosureAfterModel.model_validate({"todo_state": "open"})
+    assert "limitation" not in closure.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        RespondClosureAfterModel.model_validate({"todo_state": "open", "limitation": None})
+    wire = _respond_result_wire()
+    assert "closure_after" not in wire
+    model = RespondSuccessModel.model_validate(wire)
+    assert "closure_after" not in model.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        RespondSuccessModel.model_validate({**wire, "closure_after": None})
 
 
 async def test_legacy_guidance_result_omits_unset_paging_metadata() -> None:

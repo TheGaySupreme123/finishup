@@ -651,6 +651,7 @@ def authoring_hint(
         # part that names the most about how to author the next request.
         keyed_parts: list[tuple[str, tuple[str, str]]] = [
             *((text, (text, "")) for text in _obligation_version_hint_parts(locations)),
+            *((text, (text, "")) for text in _result_action_link_hint_parts(locations)),
             *_family_payload_contract_hint_parts(document, locations),
             *_unknown_payload_key_hint_parts(document, locations),
             *_conditional_requirement_hint_parts(document, locations),
@@ -1254,6 +1255,28 @@ def _is_event_draft_index_pointer(location: Mapping[str, str]) -> bool:
     if len(segments) == 2 and segments[1].isdigit():
         return True
     return len(segments) == 3 and segments[1].isdigit() and segments[2] == "payload"
+
+
+# tb4n3 N3-5: pretrain D published a result with the action's event as its causal parent and no
+# ``action_id``; the only report was a bare "invalid_type_or_value at the payload". The sentence is
+# checked-in text about the contract, never caller content.
+_RESULT_ACTION_LINK_HINT: Final = (
+    "a result_recorded payload links to its action only through action_id, the act_ id in the"
+    " action_recorded payload (not the action event's id); a causal parent alone does not link it"
+)
+
+
+def _result_action_link_hint_parts(locations: Sequence[Mapping[str, str]]) -> list[str]:
+    for location in locations:
+        pointer = location.get("field", "")
+        if (
+            type(pointer) is str
+            and location.get("family") == "result_recorded"
+            and location.get("reason") == "invalid_type_or_value"
+            and _EVENT_DRAFT_PAYLOAD_POINTER.fullmatch(pointer) is not None
+        ):
+            return [_RESULT_ACTION_LINK_HINT]
+    return []
 
 
 def _obligation_version_hint_parts(locations: Sequence[Mapping[str, str]]) -> list[str]:

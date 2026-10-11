@@ -132,6 +132,9 @@ class RecapFacts:
     readiness_state: str | None = None
     agent_actionable: tuple[str, ...] = ()
     blocked_obligations: int | None = None
+    # ADR-046: the receipt conclusion the compact status predicts for this frontier; ``None``
+    # means this status did not report one (an earlier build, or an unreadable case).
+    predicted_conclusion: str | None = None
     # Hook rows of this session still in the local outbox when the status was read: the ledger
     # facts above may lag them. ``None`` means the outbox was not read.
     pending_observation_rows: int | None = None
@@ -194,6 +197,9 @@ def _clean_facts(facts: RecapFacts) -> RecapFacts:
         else _tok(facts.deliverables_sequence),
         readiness_state=None if facts.readiness_state is None else _tok(facts.readiness_state),
         agent_actionable=tuple(_tok(token) for token in facts.agent_actionable),
+        predicted_conclusion=None
+        if facts.predicted_conclusion is None
+        else _tok(facts.predicted_conclusion),
     )
 
 
@@ -342,8 +348,13 @@ def _readiness_variants(facts: RecapFacts, sequence: str) -> tuple[str, ...]:
         f"; blocked obligations {facts.blocked_obligations}" if facts.blocked_obligations else ""
     )
     source = f"{blocked} [source status compact closure_readiness @{sequence}]."
+    predicted = (
+        ""
+        if facts.predicted_conclusion is None
+        else f"; receipt would read {facts.predicted_conclusion}"
+    )
     return list_variants(
-        f"readiness: {facts.readiness_state}; agent-actionable: ",
+        f"readiness: {facts.readiness_state}{predicted}; agent-actionable: ",
         list(facts.agent_actionable) or ["none"],
         suffix=source,
         more="; +{n} more",
@@ -388,7 +399,7 @@ def _finding_variants(facts: RecapFacts, compact: str) -> tuple[str, ...]:
     blocking = (
         ""
         if facts.receipt_blocking_findings is None
-        else f"; {facts.receipt_blocking_findings} receipt-blocking"
+        else f"; {facts.receipt_blocking_findings} to do"
     )
     if not items:
         # Unanswered findings the compact preview does not list (withheld or past its bound) are

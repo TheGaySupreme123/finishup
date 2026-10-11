@@ -139,7 +139,13 @@ from yoetz.ports.objects import (
 )
 from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
 from yoetz.ports.runtime import BundleProvisionCommand, BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.ports.semantic import ReviewerChallenge, SamplingParams, SemanticCase, SemanticJudgment
+from yoetz.ports.semantic import (
+    ReviewerChallenge,
+    ReviewerNextStep,
+    SamplingParams,
+    SemanticCase,
+    SemanticJudgment,
+)
 from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from yoetz.protocol.coverage import (
     ArtifactObservation,
@@ -1868,7 +1874,8 @@ async def test_check_respond_recheck_reaches_a_fixed_point() -> None:
     assert "semantic_review_not_requested" in status.coverage.known_gaps
     assert "check_not_applicable" not in status.coverage.known_gaps
     assert "unanswered findings: 0" in summary
-    assert f"receipt-blocking findings: {item.receipt_blocking_finding_count}" in summary
+    # ADR-046: the phrase is gone; the counters sentence carries the same number (to do + unmet).
+    assert "receipt-blocking" not in summary
 
 
 async def test_status_freshness_scalar_survives_immaterial_events() -> None:
@@ -4743,9 +4750,17 @@ async def test_succeeded_review_records_assessable_conclusion_durably(
 
 
 def _semantic_challenge_evaluator(
-    claim_ref: str, *, subjects: tuple[str, ...] = ()
+    claim_ref: str,
+    *,
+    subjects: tuple[str, ...] = (),
+    next_step: ReviewerNextStep = "provide_evidence",
 ) -> Callable[..., Awaitable[object]]:
-    """Raise one AI-powered challenge about *claim_ref*, also citing any further *subjects*."""
+    """Raise one AI-powered challenge about *claim_ref*, also citing any further *subjects*.
+
+    The default asks the agent to record the result that supports the claim (``provide_evidence``),
+    which is what its message says; a ``state_unresolved_limitation`` request is a disclosure the
+    agent acknowledges once (tb4n3 RC-1), so it has its own tests.
+    """
 
     cited = tuple(sorted({claim_ref, *subjects}, key=str.encode))
 
@@ -4763,7 +4778,7 @@ def _semantic_challenge_evaluator(
             "The claim cites only an open obligation.",
             "The work may be done but unrecorded.",
             "Record the result that supports the claim.",
-            "state_unresolved_limitation",
+            next_step,
             "No result content is in the packet.",
         )
         return replace(succeeded, judgment=SemanticJudgment("challenges_returned", (challenge,)))
@@ -4771,8 +4786,53 @@ def _semantic_challenge_evaluator(
     return evaluate
 
 
+async def test_acknowledging_a_limitation_request_needs_no_resolution_attempt() -> None:
+    """tb4n3 RC-1 (owner decision Q4): the reviewer asked the agent to state a limit, so one
+    reasoned acknowledgement settles it; the repair-attempt rule above is for repair demands."""
+
+    seed = 5350
+    app, _runtime, _ = _build_app(
+        seed_offset=54,
+        semantic="optional",
+        semantic_evaluator=_semantic_challenge_evaluator(
+            protocol_id("clm_", seed + 5), next_step="state_unresolved_limitation"
+        ),
+    )
+    started, checked, _obligation = await _bootstrap_finding(
+        app, seed=seed, mode="semantic_if_configured"
+    )
+    finding = next(
+        item for item in checked.findings if item.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+    )
+    # The request is a disclosure to acknowledge, not work (other findings of the bootstrap may
+    # still make the check action_required).
+    assert finding.challenge is not None
+    assert finding.challenge.requested_next_step == "state_unresolved_limitation"
+    recorded = await app.respond(
+        RespondRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 10)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(checked.result_frontier),
+                "finding_id": finding.finding_id,
+                "finding_frontier": _frontier(checked.result_frontier),
+                "disposition": "acknowledged",
+                "reason": "The result content is withheld by the task design; stated as a limit.",
+            }
+        )
+    )
+    assert recorded.response.disposition == "acknowledged"
+    assert recorded.closure_after is not None
+    assert recorded.closure_after.limitation == "limitation_disclosed"
+
+
 async def test_accepting_a_semantic_finding_requires_a_recorded_resolution_attempt() -> None:
-    """Issue #885: "limitation accepted" is not an answer until one concrete attempt is recorded."""
+    """Issue #885: accepting a repair demand is not an answer until one concrete attempt is recorded.
+
+    A reviewer's limitation request is the exception (tb4n3 RC-1, owner decision Q4): it asks for a
+    disclosure, so one reasoned acknowledgement settles it (``test_acknowledging_a_limitation...``).
+    """
 
     seed = 5300
     app, _runtime, _ = _build_app(
@@ -8884,3 +8944,218 @@ async def test_duplicate_of_counts_once_inherits_state_and_breaks_on_re_raise(
     assert await _refused_duplicate(
         app, started, again.result_frontier, middle, earliest, 10215
     ) == ("duplicate_link_broken")
+
+
+# --- tb4n3 RC-5 (issue #1028, ADR-045): one emptied deliverable, every surface ---------------------
+
+
+async def test_an_emptied_deliverable_tells_the_same_story_on_every_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """formal-crypto S, end to end through the real check, status, gate and receipt.
+
+    A delivered ``/app/solve.sage`` (15,975 bytes) is emptied, the solver obligation is
+    republished ``acknowledged_not_done`` (which cleared the old fact), and the next check still
+    reports it. The check result, status readiness, the Stop-gate text and the receipt (json,
+    markdown, text) carry the same ``Why:`` sentence from the same recorded history.
+    """
+
+    from builders.observed_runs import INSTALLATION_KEY
+    from yoetz.application import check_change
+    from yoetz.application.check import check_internal_json
+    from yoetz.cli.closure_gate import closure_gate_from_readiness
+    from yoetz.cli.render import render_closure_readiness_lines
+    from yoetz.kernel.fact_lineage import lineage_from_wire, lineage_text
+    from yoetz.kernel.task_facts import (
+        DECLARED_OUTPUT_EMPTIED_GAP,
+        RequestedOutputState,
+        register_command_identity_key,
+    )
+
+    seed = 7700
+    obligation = protocol_id("obl_", seed + 1)
+    box: dict[str, RequestedOutputState] = {
+        "state": RequestedOutputState(
+            "inside",
+            exists=True,
+            changed=True,
+            size_bytes=15_975,
+            lines=310,
+            relative="solve.sage",
+        )
+    }
+
+    async def states(**_kwargs: object) -> dict[tuple[object, int], RequestedOutputState]:
+        return {(obligation, 0): box["state"]}
+
+    monkeypatch.setattr(check_change, "requested_output_states", states)
+    register_command_identity_key(INSTALLATION_KEY)
+    try:
+        app, _runtime, _ = _build_app(seed_offset=77)
+        started = await app.start(start_request(seed, title="Emptied deliverable", refs=False))
+        item = {"item_kind": "file", "value": "/app/solve.sage", "role": "output"}
+
+        def obligation_draft(number: int, status: str, reason: str | None) -> dict[str, JsonValue]:
+            return {
+                "event_id": protocol_id("evt_", seed + number),
+                "schema": {"name": "obligation_published", "version": "1.1.0"},
+                "occurred_at": "2026-10-11T12:00:00.000Z",
+                "causal_parents": (),
+                "payload": {
+                    "obligation_id": obligation,
+                    "description": "Deliver the standalone solver at /app/solve.sage.",
+                    "acceptance_criteria": "The solver reconstructs the target.",
+                    "evidence_expectation": "Timed runs.",
+                    "requested_items": (item,),
+                    "status": status,
+                    **({"acknowledged_not_done_reason": reason} if reason else {}),
+                },
+                "artifact_refs": (),
+                "evidence_refs": (),
+            }
+
+        async def publish(drafts: tuple[dict[str, JsonValue], ...], frontier: Any, n: int) -> Any:
+            return await app.publish_work(
+                PublishWorkRequest.model_validate(
+                    {
+                        **_request_base(protocol_id("req_", seed + n)),
+                        "session_id": started.session_id,
+                        "writer_id": started.writer_id,
+                        "expected_frontier": _frontier(frontier),
+                        "event_drafts": drafts,
+                    }
+                )
+            )
+
+        async def check(frontier: Any, n: int) -> CheckCommitResult:
+            result = await app.check(
+                CheckRequest.model_validate(
+                    {
+                        **_request_base(protocol_id("req_", seed + n)),
+                        "session_id": started.session_id,
+                        "writer_id": started.writer_id,
+                        "expected_frontier": _frontier(frontier),
+                        "mode": "deterministic_only",
+                        "max_findings": "3",
+                    }
+                )
+            )
+            assert type(result) is CheckCommitResult
+            return result
+
+        published = await publish(
+            (
+                obligation_draft(2, "open", None),
+                {
+                    "event_id": protocol_id("evt_", seed + 3),
+                    "schema": {"name": "plan_published", "version": "1.0.0"},
+                    "occurred_at": "2026-10-11T12:00:01.000Z",
+                    "causal_parents": (),
+                    "payload": {
+                        "plan_version": 1,
+                        "summary": "Deliver the solver.",
+                        "obligation_refs": (obligation,),
+                    },
+                    "artifact_refs": (),
+                    "evidence_refs": (),
+                },
+                {
+                    "event_id": protocol_id("evt_", seed + 4),
+                    "schema": {"name": "claim_recorded", "version": "1.0.0"},
+                    "occurred_at": "2026-10-11T12:00:02.000Z",
+                    "causal_parents": (),
+                    "payload": {
+                        "claim_id": protocol_id("clm_", seed + 5),
+                        "claim_kind": "completion",
+                        "statement": "The solver is delivered.",
+                        "supporting_refs": (obligation,),
+                        "obligation_refs": (obligation,),
+                    },
+                    "artifact_refs": (),
+                    "evidence_refs": (),
+                },
+            ),
+            started.frontier,
+            10,
+        )
+        first = await check(published.result_frontier, 11)
+        assert DECLARED_OUTPUT_EMPTIED_GAP not in first.coverage.known_gaps
+        assert [(s.size_bytes, s.lines, s.basis) for s in first.deliverable_states] == [
+            (15_975, 310, "delivered")
+        ]
+
+        # The agent empties the solver and republishes its obligation as not done.
+        box["state"] = RequestedOutputState(
+            "inside", exists=True, changed=True, size_bytes=0, lines=0, relative="solve.sage"
+        )
+        acknowledged = await publish(
+            (obligation_draft(12, "acknowledged_not_done", "Not solved for every input."),),
+            first.result_frontier,
+            13,
+        )
+        checked = await check(acknowledged.result_frontier, 14)
+
+        # 1. The check result.
+        assert DECLARED_OUTPUT_EMPTIED_GAP in checked.coverage.known_gaps
+        (fact,) = [x for x in checked.fact_lineage if x.code == DECLARED_OUTPUT_EMPTIED_GAP]
+        assert (fact.state, fact.proof, fact.basis) == ("emptied", "earlier_check", "delivered")
+        assert (fact.prior_size_bytes, fact.prior_lines, fact.now_size_bytes) == (15_975, 310, 0)
+        why = lineage_text(fact)
+        assert "15975 bytes / 310 lines" in why and obligation in why
+        wire = check_internal_json(checked)
+        assert wire["fact_lineage"] and DECLARED_OUTPUT_EMPTIED_GAP in cast(
+            list[str], cast(dict[str, Any], wire["coverage"])["known_gaps"]
+        )
+        # A same-request retry answers with the same story (the first answer is frozen).
+        replayed = await check(acknowledged.result_frontier, 14)
+        assert replayed.fact_lineage == checked.fact_lineage
+        assert check_internal_json(replayed)["fact_lineage"] == wire["fact_lineage"]
+
+        # 2. Status readiness: the same code and the same lineage.
+        status = await app.status(
+            StatusRequest.model_validate(
+                {
+                    **_request_base(protocol_id("req_", seed + 15)),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "view": "compact",
+                    "limit": "1",
+                }
+            )
+        )
+        readiness = status.closure_readiness
+        assert DECLARED_OUTPUT_EMPTIED_GAP in cast(tuple[str, ...], readiness.agent_actionable)
+        assert readiness.fact_lineage is not None
+        status_fact = next(
+            lineage_from_wire(x) for x in readiness.fact_lineage if x.code == fact.code
+        )
+        assert lineage_text(status_fact) == why
+        assert why in render_closure_readiness_lines(readiness)
+
+        # 3. The Stop-gate text names the token and says why.
+        gate = closure_gate_from_readiness(
+            readiness,
+            frontier_sequence=str(status.head_frontier.sequence),
+            frontier_digest=status.head_frontier.head_digest,
+            observation_pending=False,
+        )
+        assert gate is not None and DECLARED_OUTPUT_EMPTIED_GAP in gate.items
+        assert why in gate.text
+        assert "Acknowledging or republishing the obligation does not clear this" in gate.text
+
+        # 4. The receipt, in every format.
+        frontier = status.head_frontier
+        rendered: dict[str, Any] = {}
+        for number, form in enumerate(("json", "markdown", "text")):
+            receipt = await _receipt_912(
+                app, started, frontier, seed + 20 + number, cast(Literal["json"], form)
+            )
+            rendered[form] = receipt
+            frontier = receipt.result_frontier
+        document = cast(dict[str, Any], rendered["json"].document)
+        (gap,) = [x for x in document["gaps"] if x["code"] == DECLARED_OUTPUT_EMPTIED_GAP]
+        assert why in gap["detail"]
+        assert why in rendered["markdown"].human_text
+        assert why in rendered["text"].human_text
+    finally:
+        register_command_identity_key(None)

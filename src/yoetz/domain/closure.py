@@ -29,7 +29,10 @@ from yoetz.protocol.models import (
     StatusSuccessModel,
     public_model_to_wire,
 )
-from yoetz.protocol.readiness_text import predicted_receipt_variants
+from yoetz.protocol.readiness_text import (
+    predicted_receipt_variants,
+    recheck_note,
+)
 
 __all__ = ["PREPARATION_REMEDIATIONS", "Selection", "prepare_closure", "recheck_note"]
 
@@ -77,43 +80,6 @@ def _base(
         "actor": {"actor_id": "harness:closure-composer", "actor_type": "harness"},
         "client": {"kind": client_kind, "version": __version__, "integration": integration},
     }
-
-
-_RECHECK_PHRASES = {
-    "acceptance": "the acceptance criteria of your resolved obligations",
-    "acknowledgement": "obligations you recorded as not done",
-    "blocker": "a blocker you recorded",
-    "premise": "findings you acknowledged that the review says the task requires",
-}
-
-
-def recheck_note(readiness: object) -> str | None:
-    """One sentence naming the re-checks the Stop gate will ask once (tb4n3 RC-8).
-
-    ``closure_readiness.rechecks`` is the list status, this preparation and the Stop gate all
-    read, so a preparation that says "nothing further" never precedes a gate for an item it did
-    not name. ``None`` when the readiness announces none (or an older service sent no list).
-    """
-
-    raw = getattr(readiness, "rechecks", None)
-    if not isinstance(raw, (tuple, list)):
-        return None
-    kinds: list[str] = []
-    for entry in tuple(cast(tuple[object, ...], raw)):
-        kind: object = (
-            cast(dict[str, object], entry).get("kind")
-            if isinstance(entry, dict)
-            else getattr(entry, "kind", None)
-        )
-        if type(kind) is str and kind in _RECHECK_PHRASES and kind not in kinds:
-            kinds.append(kind)
-    if not kinds:
-        return None
-    named = "; ".join(_RECHECK_PHRASES[kind] for kind in kinds)
-    return (
-        "At Stop you will be asked once to re-read: "
-        f"{named}. closure_readiness.rechecks lists each with its key."
-    )
 
 
 def scope_inventory_to_selection(

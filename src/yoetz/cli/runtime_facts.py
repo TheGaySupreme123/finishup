@@ -51,7 +51,8 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import Final, cast
 
-from yoetz.domain.write_scope import classify_write_path, edit_write_scope, scratch_path
+from yoetz.domain.shell_writes import bound_command, shell_write_scope
+from yoetz.domain.write_scope import classify_write_path, edit_write_scope
 from yoetz.protocol.canonical import JsonValue
 
 __all__ = [
@@ -80,11 +81,9 @@ _EDIT_TOOLS: Final = frozenset(
     {"Write", "Edit", "MultiEdit", "NotebookEdit", "write_file", "edit_file", "cursor_file_edit"}
 )
 _EDIT_PATH_KEYS: Final = ("file_path", "path", "target_file", "filePath", "notebook_path")
-_HEREDOC: Final = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _PATCH_PATH: Final = re.compile(
     r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", re.MULTILINE
 )
-_REDIRECT_OPERATORS: Final = frozenset({">", ">>", ">|", "&>", "&>>"})
 _SHELL_TOOLS: Final = frozenset({"Bash", "bash", "Shell", "shell", "exec_command", "local_shell"})
 _LOCATION_FLAGS: Final = ("--target", "-t", "--prefix", "--root")
 
@@ -100,7 +99,9 @@ def _raw_command(tool_input: Mapping[str, JsonValue]) -> str | None:
 
 
 def _segments(command: str) -> list[list[str]]:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    # ``shlex`` builds a token by repeated concatenation: bound the text it reads, as the shell
+    # write parser does, so a megabyte of one token cannot stall the hook.
+    lexer = shlex.shlex(bound_command(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)
@@ -302,51 +303,6 @@ def install_target_class(command: str, workspace: str | None) -> str | None:
     return next((target for target in _TARGET_RANK if target in found), None)
 
 
-def _write_targets(command: str) -> list[str]:
-    """Absolute redirect and ``tee`` targets, read from shell tokens so quoted text never counts.
-
-    Each heredoc body is dropped first (its lines are data, not shell), then the remaining text is
-    tokenized with shell punctuation; only a token that follows a redirect operator, or a ``tee``
-    operand, is a target. A command that does not tokenize names no target.
-    """
-
-    lines: list[str] = []
-    delimiter: str | None = None
-    for line in command.split("\n"):
-        if delimiter is not None:
-            if line.strip() == delimiter:
-                delimiter = None
-            continue
-        lines.append(line)
-        match = _HEREDOC.search(line)
-        if match is not None:
-            delimiter = match.group(2)
-    lexer = shlex.shlex("\n".join(lines), posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return []
-    targets: list[str] = []
-    for index, token in enumerate(tokens):
-        following = tokens[index + 1] if index + 1 < len(tokens) else None
-        if token in _REDIRECT_OPERATORS and following is not None:
-            targets.append(following)
-        elif token == "tee":
-            for operand in tokens[index + 1 :]:
-                if operand in _SEPARATORS or operand in _REDIRECT_OPERATORS:
-                    break
-                if not operand.startswith("-"):
-                    targets.append(operand)
-    return [target for target in targets if target.startswith("/")]
-
-
-def _scratch_path(path: str, workspace: str | None = None) -> bool:
-    """Whether an absolute path lands in a temporary or device directory (``domain.write_scope``)."""
-
-    return scratch_path(path, workspace)
-
-
 def _owned_roots() -> tuple[str, ...]:
     """Yoetz's own state directory, when this hook process can name it without failing."""
 
@@ -359,15 +315,6 @@ def _owned_roots() -> tuple[str, ...]:
             roots.append(str(isolated))
         roots.append(str(state_dir()))
     return tuple(roots)
-
-
-def _shell_writes_outside(
-    command: str, inside: Callable[[str], bool], workspace: str | None = None
-) -> bool:
-    return any(
-        not _scratch_path(target, workspace) and not inside(target)
-        for target in _write_targets(command)
-    )
 
 
 def _edit_paths(
@@ -443,8 +390,15 @@ def runtime_structural_facts(
     target = install_target_class(command, workspace_locator)
     if target is not None:
         facts["install_target"] = target
-    if workspace_locator is not None and _shell_writes_outside(command, inside, workspace_locator):
-        facts["write_scope"] = "outside_workspace"
+    if workspace_locator is not None:
+        # ADR-045: one classifier decides every written path, the one an edit tool uses: a real
+        # write outside the workspace, a write into it (an edit), or only notes, Yoetz material
+        # (``cp a.json /opt/yoetz_receipt.json`` is Yoetz-owned, not outside) or scratch.
+        scope = shell_write_scope(
+            command, workspace=workspace_locator, inside=inside, owned_roots=_owned_roots()
+        )
+        if scope is not None:
+            facts["write_scope"] = scope
     geteuid = getattr(os, "geteuid", None)
     if callable(geteuid):
         facts["effective_user"] = "root" if geteuid() == 0 else "non_root"

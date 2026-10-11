@@ -692,12 +692,17 @@ async def _with_declared_line_counts(
     relatives: dict[tuple[ObligationId, int], str],
     request_id: str,
 ) -> dict[tuple[ObligationId, int], RequestedOutputState]:
-    """Add the ADR-035 line counts to each declared delivered file the change modified.
+    """Add the ADR-035 / ADR-045 line counts to each existing declared delivered file.
 
     Runs only when such a file exists, through the adapter's bounded, metadata-only line-count
-    read. ``undeclared_lines_added`` sums the net lines the change added to files outside the
-    declared delivered set (a declared ``directory`` covers the files beneath it). A read that
-    fails leaves the counts ``None``, so the content-moved disclosure is simply not raised.
+    read. ``lines`` is the file's current line count: a tracked file's base count adjusted by the
+    change, an untracked (new) file's own count, or the base count of an unchanged tracked file
+    (ADR-045: a deliverable created in the session has no base, and its history is what the
+    earlier checks recorded). ``base_lines`` and ``lines_lost`` stay what ADR-035 defined, for a
+    tracked file the change modified. ``undeclared_lines_added`` sums the net lines the change
+    added to files outside the declared delivered set (a declared ``directory`` covers the files
+    beneath it). A read that fails leaves the counts ``None``, so the dependent facts are simply
+    not raised.
     """
 
     from yoetz.kernel.delivered_set import declared_delivered_items
@@ -706,14 +711,12 @@ async def _with_declared_line_counts(
     probe = getattr(port, "probe_requested_paths", None)
     if not callable(count) or not callable(probe) or not capture.base_commit:
         return states
-    modified = {entry.path for entry in capture.entries if entry.status == "M"}
     declared = declared_delivered_items(projection)
     candidates = [
         (obligation, index)
         for obligation, index, kind, _value in declared
         if kind == "file"
         and (obligation, index) in relatives
-        and relatives[(obligation, index)] in modified
         and states[(obligation, index)].exists is True
         and not states[(obligation, index)].deleted
     ]
@@ -774,24 +777,39 @@ async def _with_declared_line_counts(
         )
 
     undeclared_added = 0
-    lost_by_path: dict[str, int | None] = {}
+    rows: dict[str, tuple[int | None, int | None, bool]] = {}
     for row in raw_counts.changed:
-        if row.added is None or row.removed is None:
-            if row.path in base_paths:
-                lost_by_path[row.path] = None
-            continue
         if row.path in base_paths:
-            lost_by_path[row.path] = row.removed - row.added
-        elif not is_declared(row.path):
+            rows[row.path] = (row.added, row.removed, row.untracked)
+        elif not is_declared(row.path) and row.added is not None and row.removed is not None:
             undeclared_added += max(0, row.added - row.removed)
     base_by_path = dict(zip(base_paths, raw_counts.base_lines, strict=True))
+    modified = {entry.path for entry in capture.entries if entry.status == "M"}
     annotated = dict(states)
     for item in candidates:
         path = relatives[item]
+        base = base_by_path.get(path)
+        added, removed, untracked = rows.get(path, (None, None, False))
+        lost: int | None = None
+        lines: int | None
+        if path not in rows:
+            # Tracked and unchanged since the task base (or a file the read could not list).
+            lines = base
+        elif untracked:
+            # A new file: its own newline count (``added``); it has no base.
+            lines = added
+        elif added is None or removed is None or base is None:
+            lines = None
+        else:
+            lines = max(0, base - removed + added)
+            lost = removed - added
         annotated[item] = replace(
             states[item],
-            base_lines=base_by_path.get(path),
-            lines_lost=lost_by_path.get(path),
+            lines=lines,
+            counts_truncated=raw_counts.truncated,
+            # ADR-035's fields keep their meaning: a tracked file the change modified.
+            base_lines=base,
+            lines_lost=lost if path in modified else None,
             undeclared_lines_added=undeclared_added,
         )
     return annotated

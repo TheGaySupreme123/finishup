@@ -85,6 +85,7 @@ from yoetz.protocol.coverage import (
 
 __all__ = [
     "OBSERVATION_LIMITATION_KINDS",
+    "MAX_ABSORBED_REFS",
     "MAX_CHECK_CHANGE_RAISING_CHECKS",
     "PROJECTION_GENERATION",
     "PROJECTION_VERSION",
@@ -100,6 +101,8 @@ __all__ = [
     "PlanProjectionRecord",
     "ProjectionRecord",
     "ProjectionState",
+    "STANDING_POSITION_KINDS",
+    "StandingPosition",
     "empty_projection_state",
     "is_observation_limitation",
     "is_observation_limitation_kind",
@@ -286,13 +289,28 @@ class PlanProjectionRecord(ProjectionRecord[PlanPublishedPayload | PlanRevisedPa
 
 @dataclass(frozen=True, slots=True)
 class ObligationProjectionRecord(ProjectionRecord[ObligationPublishedPayload]):
+    """One recorded obligation plus its plan-change facts.
+
+    ``introduced_frontier`` (tb4n3 RC-7, issue #1030) is the ledger sequence of the obligation's
+    *first* publication. A republication may change only its status (the meaning fields must
+    repeat), so it is bookkeeping about an obligation that already existed; an obligation first
+    published after an answer is new material. ``None`` means ``source_frontier`` (a first
+    publication, or a record built without the fact).
+    """
+
     plan_change: ObligationChangeKind | None = None
     plan_change_reason: str | None = None
     superseded_by_obligation_ids: tuple[ObligationId, ...] = ()
+    introduced_frontier: int | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.payload is not None and type(self.payload) is not ObligationPublishedPayload:
+            raise _invalid()
+        if self.introduced_frontier is not None and (
+            type(self.introduced_frontier) is not int
+            or not 1 <= self.introduced_frontier <= self.source_frontier
+        ):
             raise _invalid()
         if self.plan_change is not None and type(self.plan_change) is not ObligationChangeKind:
             raise _invalid()
@@ -335,6 +353,37 @@ class DecisionProjectionRecord(ProjectionRecord[DecisionRecordedPayload]):
                 )
             except ValueError as exc:
                 raise _invalid() from exc
+
+
+# The agent's reasoned dialogue positions on a finding (issue #1030, tb4n3 RC-7, ADR-040
+# amendment). ``reopened`` is not one: it retracts the standing position.
+# At most this many subject refs of re-raises recorded on a settled finding widen its concern.
+MAX_ABSORBED_REFS: Final = 32
+STANDING_POSITION_KINDS: Final = frozenset(
+    {"rejected", "acknowledged", "acknowledged_not_done", "self_verified"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StandingPosition:
+    """The agent's earliest unretracted reasoned position on one finding (tb4n3 RC-7).
+
+    ``frontier`` is the ledger sequence of the first reasoned answer (``rejected``,
+    ``acknowledged`` with a reason, ``acknowledged_not_done`` or ``self_verified``) recorded since
+    the last ``reopened`` answer: later answers of another kind do not move it, so an
+    acknowledgement recorded after a rebuttal never erases the rebuttal. ``kind`` is
+    ``rejected`` once any answer in that run was a reasoned rejection (the strongest dispute
+    stance a reviewer can accept, ``withdrawn``), otherwise the first answer's kind.
+    """
+
+    kind: str
+    frontier: int
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str or self.kind not in STANDING_POSITION_KINDS:
+            raise _invalid()
+        if type(self.frontier) is not int or not 1 <= self.frontier <= _MAX_SQLITE_SIGNED_INTEGER:
+            raise _invalid()
 
 
 # Optional finding-record event references, each emitted in a snapshot only when set.
@@ -397,6 +446,17 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     the agent's terminal answer (``acknowledged_not_done``, or ``self_verified``; issue #980): the
     agent stopped, the reviewer did not. It never reopens the item; it is what
     ``kernel.finding_todo`` reads as a standing premise dispute.
+    The tb4n3 RC-7 dialogue facts (issue #1030) are replay-derived like the counters above:
+    ``standing_position`` is the agent's earliest unretracted reasoned answer
+    (``StandingPosition``; ``reopened`` retracts it), ``last_ruling_frontier`` is the ledger
+    sequence of the newest check that recorded a reviewer ruling on this finding (so "was the
+    rejection ruled on?" is a comparison, not a guess), and ``resolution_frontier`` is the ledger
+    sequence of the check named by ``resolved_by_check_event_id`` (so an absence proof recorded
+    *after* an ``acknowledged_not_done`` or ``self_verified`` answer can be told from one recorded
+    before it). ``absorbed_refs`` are the subject refs (bounded, sorted, never a finding, result,
+    evidence or action id) of the re-raises recorded on a settled item; they widen its concern so
+    a later re-raise naming only what the first re-raise added still folds onto it instead of
+    minting a new item (formal-crypto S: the open obligation first appeared in a re-raise).
     ``duplicate_link_broken_by_check_event_ids`` (issue #996) names, in fold order, every later
     check that raised this finding's issue again (returned it, or the reviewer ruled it
     ``still_present`` or ``answered_not_fixed``) while its latest response was ``duplicate_of``.
@@ -418,10 +478,35 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     last_reviewer_verdict: str | None = None
     settled_reraise_count: int = 0
     duplicate_link_broken_by_check_event_ids: tuple[EventId, ...] = ()
+    standing_position: StandingPosition | None = None
+    last_ruling_frontier: int | None = None
+    resolution_frontier: int | None = None
+    absorbed_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.payload is not None and type(self.payload) is not Finding:
+            raise _invalid()
+        if (
+            type(self.absorbed_refs) is not tuple
+            or len(self.absorbed_refs) > MAX_ABSORBED_REFS
+            or any(type(item) is not str or not 1 <= len(item) <= 64 for item in self.absorbed_refs)
+            or list(self.absorbed_refs) != sorted(set(self.absorbed_refs), key=str.encode)
+        ):
+            raise _invalid()
+        if (
+            self.standing_position is not None
+            and type(self.standing_position) is not StandingPosition
+        ):
+            raise _invalid()
+        for frontier_name in ("last_ruling_frontier", "resolution_frontier"):
+            frontier_value = getattr(self, frontier_name)
+            if frontier_value is not None and (
+                type(frontier_value) is not int
+                or not 1 <= frontier_value <= _MAX_SQLITE_SIGNED_INTEGER
+            ):
+                raise _invalid()
+        if self.resolution_frontier is not None and self.resolved_by_check_event_id is None:
             raise _invalid()
         if (
             type(self.rebuttal_count) is not int
@@ -1114,19 +1199,47 @@ def unanswered_finding_ids(
     response work would leave an agent that repaired before answering with a readiness item it
     can never clear (pilot blocker).
 
+    A reviewer's limitation request the agent disclosed with a ``yoetz-verification-limit``
+    decision is not response work either (tb4n3 RC-1); an undisclosed one still is.
+
     A ``duplicate_of`` answer (issue #996) answers the finding only while its link holds
     (``duplicate_link_holds``). Once a later check broke the link, or the earlier finding became
     unreadable, that answer no longer applies and the finding needs its own answer again.
     """
 
     limitations = observation_limitation_finding_ids(state, records)
-    return frozenset(
+    waiting = frozenset(
         key
         for key, record in state.findings.items()
         if (key not in state.responses or _duplicate_answer_lapsed(state, key))
         and key not in limitations
         and not (record.payload is not None and record.resolved_by_check_event_id is not None)
     )
+    return waiting - _disclosed_limitations(state, waiting)
+
+
+def _disclosed_limitations(
+    state: ProjectionState, candidates: frozenset[FindingId]
+) -> frozenset[FindingId]:
+    """Waiting reviewer limitation requests the agent already disclosed by a decision line.
+
+    A ``yoetz-verification-limit:<obligation id>`` decision settles a limitation request without
+    a response (tb4n3 RC-1, owner decision Q4), so the request is no longer response work. Only a
+    request still without an answer can be settled this way, hence only *candidates* are read.
+    The import is local: ``kernel.limitation`` reads the projection this module defines.
+    """
+
+    from yoetz.domain.findings import is_limitation_request
+    from yoetz.kernel.limitation import limitation_disclosed_ids
+
+    requests = frozenset(
+        key
+        for key in candidates
+        if (record := state.findings.get(key)) is not None
+        and record.payload is not None
+        and is_limitation_request(record.payload)
+    )
+    return frozenset(limitation_disclosed_ids(state, requests)) if requests else frozenset()
 
 
 def duplicate_link_holds(state: ProjectionState, key: FindingId) -> FindingId | None:
@@ -1203,6 +1316,9 @@ def _record_snapshot(record: _ProjectionRecordLike) -> dict[str, JsonValue]:
             if record.plan_change_reason is not None:
                 result["plan_change_reason"] = record.plan_change_reason
             result["superseded_by_obligation_ids"] = list(record.superseded_by_obligation_ids)
+        # tb4n3 RC-7: emitted only for a republication, so earlier snapshots keep their bytes.
+        if record.introduced_frontier is not None:
+            result["introduced_frontier"] = canonical_integer_string(record.introduced_frontier)
     elif type(record) is ClaimProjectionRecord:
         # Emitted only when set, so every snapshot of a task without a claim correction stays
         # byte-identical to the generation-1 shape frozen before versioned claim correction.
@@ -1260,6 +1376,18 @@ def _record_snapshot(record: _ProjectionRecordLike) -> dict[str, JsonValue]:
             result["last_reviewer_verdict"] = record.last_reviewer_verdict
         if record.settled_reraise_count:
             result["settled_reraise_count"] = record.settled_reraise_count
+        # Issue #1030 (tb4n3 RC-7) dialogue facts: emitted only when set.
+        if record.standing_position is not None:
+            result["standing_position"] = {
+                "kind": record.standing_position.kind,
+                "frontier": record.standing_position.frontier,
+            }
+        if record.last_ruling_frontier is not None:
+            result["last_ruling_frontier"] = record.last_ruling_frontier
+        if record.resolution_frontier is not None:
+            result["resolution_frontier"] = record.resolution_frontier
+        if record.absorbed_refs:
+            result["absorbed_refs"] = list(record.absorbed_refs)
         # Issue #996: emitted only when a check broke a ``duplicate_of`` link.
         if record.duplicate_link_broken_by_check_event_ids:
             result["duplicate_link_broken_by_check_event_ids"] = list(
@@ -1540,6 +1668,7 @@ def _record_from_snapshot(
                 "plan_change",
                 "plan_change_reason",
                 "superseded_by_obligation_ids",
+                "introduced_frontier",
             }
         )
     elif collection == "claims":
@@ -1561,6 +1690,10 @@ def _record_from_snapshot(
                 "last_reviewer_verdict",
                 "settled_reraise_count",
                 "duplicate_link_broken_by_check_event_ids",
+                "standing_position",
+                "last_ruling_frontier",
+                "resolution_frontier",
+                "absorbed_refs",
             }
         )
     else:
@@ -1614,6 +1747,11 @@ def _record_from_snapshot(
             superseded_by_obligation_ids=cast(
                 tuple[ObligationId, ...],
                 _snapshot_array(raw_replacements),
+            ),
+            introduced_frontier=(
+                _snapshot_uint(source["introduced_frontier"], safe=True)
+                if "introduced_frontier" in source
+                else None
             ),
         )
     if collection == "claims":
@@ -1673,6 +1811,26 @@ def _record_from_snapshot(
         last_verdict = source.get("last_reviewer_verdict")
         if "last_reviewer_verdict" in source and type(last_verdict) is not str:
             raise _invalid()
+        standing: StandingPosition | None = None
+        if "standing_position" in source:
+            raw_position = _snapshot_object(
+                source["standing_position"], required=frozenset({"kind", "frontier"})
+            )
+            kind_value, frontier_value = raw_position["kind"], raw_position["frontier"]
+            if type(kind_value) is not str or type(frontier_value) is not int:
+                raise _invalid()
+            standing = StandingPosition(kind_value, frontier_value)
+        absorbed: tuple[str, ...] = ()
+        if "absorbed_refs" in source:
+            raw_absorbed = source["absorbed_refs"]
+            if type(raw_absorbed) not in {list, tuple} or not raw_absorbed:
+                raise _invalid()
+            absorbed = tuple(cast(list[str], raw_absorbed))
+        for frontier_name in ("last_ruling_frontier", "resolution_frontier"):
+            if frontier_name in source:
+                frontier_raw = source[frontier_name]
+                if type(frontier_raw) is not int or frontier_raw < 1:
+                    raise _invalid()
 
         def event_ids(name: str) -> tuple[EventId, ...]:
             raw = source.get(name)
@@ -1720,6 +1878,10 @@ def _record_from_snapshot(
             duplicate_link_broken_by_check_event_ids=event_ids(
                 "duplicate_link_broken_by_check_event_ids"
             ),
+            standing_position=standing,
+            last_ruling_frontier=cast(int | None, source.get("last_ruling_frontier")),
+            resolution_frontier=cast(int | None, source.get("resolution_frontier")),
+            absorbed_refs=absorbed,
         )
     return ProjectionRecord(
         payload=payload,

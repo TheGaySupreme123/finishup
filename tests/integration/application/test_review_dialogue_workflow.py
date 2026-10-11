@@ -1247,12 +1247,78 @@ async def test_self_verified_closes_a_repair_only_a_yoetz_limit_keeps_unproven()
     )
 
 
-async def test_a_reviewer_restating_a_self_verified_issue_mints_a_new_finding() -> None:
+async def _failing_run(session: _Session, frontier: JsonValue, seed: int) -> tuple[str, JsonValue]:
+    """Publish a run that did not succeed: the material that can show a problem remains."""
+
+    action_id = protocol_id("act_", seed)
+    result_id = protocol_id("res_", seed + 1)
+    action_event = protocol_id("evt_", seed + 2)
+    published = await session.app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", seed + 3)),
+                "session_id": session.session_id,
+                "writer_id": session.writer_id,
+                "expected_frontier": frontier,
+                "event_drafts": [
+                    {
+                        "event_id": action_event,
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-09-28T12:20:00.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "action_id": action_id,
+                            "action_kind": "other",
+                            "description": "Re-ran the stencil tests after the repair.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                    {
+                        "event_id": protocol_id("evt_", seed + 4),
+                        "schema": {"name": "result_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-09-28T12:20:01.000Z",
+                        "causal_parents": [action_event],
+                        "payload": {
+                            "result_id": result_id,
+                            "action_id": action_id,
+                            "outcome": "failure",
+                            "summary": "Two stencil cases fail on llvmlite 0.46.0.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                ],
+            }
+        )
+    )
+    return result_id, frontier_json(published.result_frontier)
+
+
+def _challenge_obligation_citing_the_newest_failure(frozen: FrozenCase) -> SemanticJudgment:
+    projection = frozen.case.projection
+    obligation = next(iter(projection.obligations))
+    failure = max(
+        (
+            (key, row)
+            for key, row in projection.results.items()
+            if row.payload is not None and row.payload.outcome.value == "failure"
+        ),
+        key=lambda pair: pair[1].source_frontier,
+    )[0]
+    return SemanticJudgment("challenges_returned", (_challenge(str(obligation), str(failure)),))
+
+
+async def test_a_reviewer_restating_a_self_verified_issue_with_newer_material_mints_a_new_finding() -> (
+    None
+):
     """A later positive sighting is never hidden under ``self_verified`` (adversarial review).
 
     ``self_verified`` is final only because Yoetz could not see the repair. A reviewer that raises
-    the same issue again is a new sighting: it is minted as a new open finding the agent must
-    answer, not folded silently onto the terminal row.
+    the same issue again with concern-relevant material newer than the agent's answer (here a run
+    that failed after it) is a new sighting: it is minted as a new open finding the agent must
+    answer. tb4n3 RC-7 changed the other half: a repeat citing nothing newer is recorded on the
+    settled item instead (``test_a_self_verified_answer_folds_a_repeat_without_newer_material``).
     """
 
     seed = 4400
@@ -1260,7 +1326,7 @@ async def test_a_reviewer_restating_a_self_verified_issue_mints_a_new_finding() 
         [
             _challenge_obligation,
             _rule_first_finding_on_a_complete_packet(None),
-            _challenge_obligation,
+            _challenge_obligation_citing_the_newest_failure,
         ],
         content_gaps={1: ("content_unselected",)},
     )
@@ -1285,12 +1351,18 @@ async def test_a_reviewer_restating_a_self_verified_issue_mints_a_new_finding() 
             )
         )
     )
-    third = await _check(session, frontier_json(recorded.result_frontier), seed + 60)
+    _failure, failed = await _failing_run(
+        session, frontier_json(recorded.result_frontier), seed + 55
+    )
+    third = await _check(session, failed, seed + 60)
     successor = _semantic(third)
     assert successor.finding_id != raised.finding_id
     assert "semantic_restatements_suppressed" not in third.coverage.known_gaps
     live = _live_projection(session.app)
-    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.SELF_VERIFIED
+    # The successor cites more than the original (the failing run), so it is a different issue:
+    # the check that raised it no longer returns the original, and a qualifying check that tested
+    # the work after the self_verified answer proves the original absent (the reverse edge).
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.VERIFIED_RESOLVED
     assert finding_todo_state(live, successor.finding_id) is FindingTodoState.OPEN
     assert receipt_blocking_finding_count(live) == 1
     assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(live)

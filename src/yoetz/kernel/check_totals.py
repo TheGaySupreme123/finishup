@@ -11,7 +11,7 @@ from typing import cast
 
 from yoetz.domain.check_totals import CHECK_TOTAL_KEYS, validate_check_totals
 from yoetz.domain.events import ActionKind, ObligationStatus, ResultOutcome
-from yoetz.domain.findings import FINDING_KIND_TRAITS, Finding
+from yoetz.domain.findings import Finding, finding_demands_work
 from yoetz.domain.values import EvidenceId, JsonObject, ObligationId
 from yoetz.kernel.claims import (
     claim_discloses_result,
@@ -145,7 +145,9 @@ def build_check_totals(
     for ref, record in state.evidence.items():
         if ref in case.allowed_ids and record.payload is not None:
             evidence[record.payload.strength.value] += 1
-    actionable = sum(FINDING_KIND_TRAITS[finding.kind][1] for finding in findings)
+    # ADR-046: a reviewer's limitation request asks for a disclosure, not work, so it counts as
+    # coverage-only here exactly as it does everywhere else.
+    actionable = sum(finding_demands_work(finding) for finding in findings)
     returned = {
         "returned": len(findings),
         "actionable_returned": actionable,

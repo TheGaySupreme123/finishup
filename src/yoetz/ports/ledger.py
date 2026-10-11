@@ -19,9 +19,11 @@ from yoetz.domain.coordination import (
 )
 from yoetz.domain.events import (
     CheckChangeShownFiles,
+    DeliverableState,
     EventDraft,
     LedgerRecord,
     MissingForAssessmentItem,
+    validate_deliverable_states,
 )
 from yoetz.domain.findings import (
     CheckVerdict,
@@ -44,12 +46,13 @@ from yoetz.domain.values import (
 )
 from yoetz.kernel.closure_readiness import ClosureReadinessFacts
 from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, DeterministicCase
+from yoetz.kernel.fact_lineage import FactLineage
 from yoetz.kernel.finding_todo import FindingTodoCounts
 from yoetz.kernel.lineage import LineageRollupState
 from yoetz.kernel.projections import ProjectionState
 from yoetz.ports.objects import ObjectKind, ObjectRef
 from yoetz.protocol.coverage import Coverage, PublicationChannel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind, validate_actor_id, validate_id, validate_opaque_item_id
 from yoetz.protocol.models import (
     MAX_EVENTS_PER_BATCH,
@@ -748,13 +751,18 @@ _TODO_STATES: Final = frozenset(
     }
 )
 # The closed "next:" tokens of the finding checklist (issue #905).
-ChecklistNext = Literal["decide_at_budget", "request_receipt", "work_open_findings"]
-_CHECKLIST_NEXT: Final = frozenset({"decide_at_budget", "request_receipt", "work_open_findings"})
+ChecklistNext = Literal[
+    "decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"
+]
+_CHECKLIST_NEXT: Final = frozenset(
+    {"decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"}
+)
 MAX_CHECKLIST_ITEMS: Final = 100
 
 OverallNextAction = Literal[
     "supply_missing_input",
     "work_open_findings",
+    "request_ruling",
     "review_recorded_work",
     "request_receipt",
 ]
@@ -763,9 +771,20 @@ _OVERALL_NEXT_ACTIONS: Final = frozenset(
     {
         "supply_missing_input",
         "work_open_findings",
+        "request_ruling",
         "review_recorded_work",
         "request_receipt",
     }
+)
+_PREDICTED_CONCLUSIONS: Final = frozenset(
+    {
+        "unresolved_findings_remain",
+        "insufficient_coverage",
+        "no_unresolved_deterministic_findings",
+    }
+)
+_CLOSURE_CLASSES: Final = frozenset(
+    {"agent_work", "awaiting_ruling", "settled_unmet", "settled_disclosed", "resolved"}
 )
 _OVERALL_NEXT_STATUSES: Final = frozenset({"action_required", "ready_with_limitations", "ready"})
 
@@ -777,12 +796,47 @@ class CheckChecklistItem:
     finding_id: str
     todo_state: FindingTodoStateWire
     review_rounds: int
+    # ADR-046: who owes the next move and why; ``None`` for a result an earlier build shaped.
+    closure_class: str | None = None
+    closure_basis: str | None = None
 
     def __post_init__(self) -> None:
         _id(IdKind.FINDING, self.finding_id)
         if type(self.todo_state) is not str or self.todo_state not in _TODO_STATES:
             raise _invalid()
         _uint(self.review_rounds)
+        if (self.closure_class is None) != (self.closure_basis is None) or (
+            self.closure_class is not None
+            and (
+                self.closure_class not in _CLOSURE_CLASSES
+                or type(self.closure_basis) is not str
+                or _IDENTITY_PATTERN.fullmatch(self.closure_basis) is None
+            )
+        ):
+            raise _invalid()
+
+
+@dataclass(frozen=True, slots=True)
+class ChecklistClosureCounts:
+    """The finding counters of ADR-046, the same five numbers status prints."""
+
+    to_do: int
+    awaiting_ruling: int
+    unmet: int
+    disclosed: int
+    to_disclose: int
+
+    def __post_init__(self) -> None:
+        for value in (
+            self.to_do,
+            self.awaiting_ruling,
+            self.unmet,
+            self.disclosed,
+            self.to_disclose,
+        ):
+            _uint(value)
+        if self.awaiting_ruling > self.to_do:
+            raise _invalid()
 
 
 @dataclass(frozen=True, slots=True)
@@ -798,8 +852,15 @@ class CheckFindingChecklist:
     next: ChecklistNext
     # Counted over every current actionable item, not only the listed ones.
     counts: FindingTodoCounts
+    # ADR-046: the closure counters every surface prints, over the same current findings
+    # (``None`` for a result an earlier build shaped). ``to_do`` includes ``awaiting_ruling``.
+    closure_counts: ChecklistClosureCounts | None = None
 
     def __post_init__(self) -> None:
+        if self.closure_counts is not None and type(self.closure_counts) is not (
+            ChecklistClosureCounts
+        ):
+            raise _invalid()
         if type(self.attempt_budget) is not int or not 1 <= self.attempt_budget <= 50:
             raise _invalid()
         if type(self.counts) is not FindingTodoCounts:
@@ -848,8 +909,16 @@ class CheckOverallNext:
     action: OverallNextAction
     target_refs: tuple[str, ...] = ()
     acknowledged_incomplete_endpoint: Literal["receipt"] | None = None
+    # ADR-046: the receipt conclusion a request now would carry (the same function the receipt
+    # runs); ``None`` when the closure basis could not be read.
+    predicted_conclusion: str | None = None
 
     def __post_init__(self) -> None:
+        if self.predicted_conclusion is not None and (
+            type(self.predicted_conclusion) is not str
+            or self.predicted_conclusion not in _PREDICTED_CONCLUSIONS
+        ):
+            raise _invalid()
         if type(self.status) is not str or self.status not in _OVERALL_NEXT_STATUSES:
             raise _invalid()
         if type(self.action) is not str or self.action not in _OVERALL_NEXT_ACTIONS:
@@ -870,12 +939,16 @@ class CheckOverallNext:
             in {
                 "supply_missing_input",
                 "work_open_findings",
+                "request_ruling",
                 "review_recorded_work",
             }
             and self.status != "action_required"
         ):
             raise _invalid()
-        if self.action in {"work_open_findings", "review_recorded_work"} and not self.target_refs:
+        if (
+            self.action in {"work_open_findings", "request_ruling", "review_recorded_work"}
+            and not self.target_refs
+        ):
             raise _invalid()
         if self.acknowledged_incomplete_endpoint is not None and (
             self.action != "request_receipt" or self.status != "ready_with_limitations"
@@ -951,6 +1024,11 @@ class CheckCommitResult:
     # Issue #986: ``False`` when the check's route did not require AI-powered review; ``None``
     # when it did or the check predates the field (``CheckRecordedPayload``).
     semantic_route_required: bool | None = None
+    # ADR-045: the deliverable states the check recorded (empty when it read no declared output).
+    deliverable_states: tuple[DeliverableState, ...] = ()
+    # ADR-045: where each derived task fact this check carries came from; derived by the caller
+    # (never recorded), bounded and sorted.
+    fact_lineage: tuple[FactLineage, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.outcome) is not str or self.outcome not in {"committed", "replayed"}:
@@ -1037,6 +1115,14 @@ class CheckCommitResult:
             self.semantic_route_required is not None
             and type(self.semantic_route_required) is not bool
         ):
+            raise _invalid()
+        try:
+            validate_deliverable_states(self.deliverable_states)
+        except ProtocolValueError as exc:
+            raise _invalid() from exc
+        if type(self.fact_lineage) is not tuple or len(self.fact_lineage) > 64:
+            raise _invalid()
+        if any(type(item) is not FactLineage for item in self.fact_lineage):
             raise _invalid()
         if (
             self.review_input_manifest is not None
@@ -1703,6 +1789,7 @@ class FindingsProjectionFilter:
             "duplicate_of",
             "provenance_disputed",
             "rejected",
+            "reopened",
             "self_verified",
             "waived",
         ]
@@ -1730,6 +1817,7 @@ class FindingsProjectionFilter:
                 "duplicate_of",
                 "provenance_disputed",
                 "rejected",
+                "reopened",
                 "self_verified",
                 "waived",
             }
@@ -2277,6 +2365,7 @@ class LedgerPort(Protocol):
         totals: JsonObject | None = None,
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
         semantic_route_required: bool | None = None,
+        deliverable_states: tuple[DeliverableState, ...] = (),
     ) -> CheckCommitResult: ...
 
     async def fail_check_if_current(

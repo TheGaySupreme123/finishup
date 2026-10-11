@@ -36,6 +36,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Final, cast
 
+from yoetz.domain.command_segments import MAX_COMMAND_COMMITMENTS
 from yoetz.domain.events import (
     AcceptedEvent,
     ActionKind,
@@ -52,6 +53,7 @@ from yoetz.protocol.coverage import Coverage, PublicationChannel
 __all__ = [
     "COMMAND_IDENTITY_PREFIX",
     "NON_COUNTING_WRITE_TOKENS",
+    "SHELL_EDIT_TOKENS",
     "observed_edit_counts",
     "ObservedFailureState",
     "ObservedRun",
@@ -83,7 +85,7 @@ _COMMITMENT_PATTERN: Final = re.compile(r"\Ahmac-sha256:[0-9a-f]{64}\Z", re.ASCI
 # the closed composition token and the sorted keyed commitments to its simple commands (#977):
 # ``omitted:<identity> <composition> <segment> <segment> ...``. Commitments only, never text.
 _SEGMENT_COMPOSITIONS: Final = frozenset({"single", "and_chain", "masked"})
-_MAX_SEGMENT_IDENTITIES: Final = 32
+_MAX_SEGMENT_IDENTITIES: Final = MAX_COMMAND_COMMITMENTS
 _FAILED_OUTCOMES: Final = frozenset({ResultOutcome.FAILURE, ResultOutcome.PARTIAL})
 _OBSERVED_RUN_FAMILIES: Final = frozenset({"action_recorded", "result_recorded"})
 # Hook materialization appends the host tool name to an observed action's description in this
@@ -104,7 +106,7 @@ INSTALL_TARGET_CLASSES: Final = frozenset(
 )
 _RUNTIME_SUFFIX_RE: Final = re.compile(
     r" \((install (?:yoetz_runtime|workspace_env|private_env|system|unresolved)"
-    r"|write (?:outside_workspace|scratch|yoetz_owned)|user (?:root|non_root))\)\Z",
+    r"|write (?:outside_workspace|scratch|yoetz_owned|notes|workspace)|user (?:root|non_root))\)\Z",
     re.ASCII,
 )
 RUNTIME_SUFFIX_TOKENS: Final = frozenset(
@@ -113,13 +115,19 @@ RUNTIME_SUFFIX_TOKENS: Final = frozenset(
         "write outside_workspace",
         "write scratch",
         "write yoetz_owned",
+        "write notes",
+        "write workspace",
         "user root",
         "user non_root",
     }
 )
 # Edit runtime tokens that name a write which changes nothing under test (ADR-042, tb4n2 R4):
-# every path the edit named was scratch (temp roots outside the workspace) or Yoetz's own material.
-NON_COUNTING_WRITE_TOKENS: Final = frozenset({"write scratch", "write yoetz_owned"})
+# every path the edit named was scratch (temp roots outside the workspace), Yoetz's own material
+# or the agent's own notes and logs (ADR-045).
+NON_COUNTING_WRITE_TOKENS: Final = frozenset({"write scratch", "write yoetz_owned", "write notes"})
+# A command's runtime tokens that make it an edit: it wrote files in the workspace, or a real
+# one outside it (ADR-045). A command with no such token wrote nothing the hook could attribute.
+SHELL_EDIT_TOKENS: Final = frozenset({"write workspace", "write outside_workspace"})
 
 
 class ObservedFailureState(str, Enum):  # noqa: UP042 - stable closed token
@@ -382,7 +390,7 @@ def observed_action_description(
         result = f"{result} (install {install_target})"
     if write_outside_workspace is True or write_scope == "outside_workspace":
         result = f"{result} (write outside_workspace)"
-    elif write_scope in {"scratch", "yoetz_owned"}:
+    elif write_scope in {"scratch", "yoetz_owned", "notes", "workspace"}:
         result = f"{result} (write {write_scope})"
     if effective_user in {"root", "non_root"}:
         result = f"{result} (user {effective_user})"
