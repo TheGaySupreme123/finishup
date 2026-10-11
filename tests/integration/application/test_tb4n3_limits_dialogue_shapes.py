@@ -347,32 +347,32 @@ async def _second_obligation(
 async def test_formal_crypto_s_a_concern_first_named_in_a_reraise_stays_one_finding() -> None:
     """formal-crypto S: five ids for one give-up. The second review re-raised the settled item
     with an obligation the first never named; the third named only that obligation. The settled
-    item remembers what its re-raise cited, so the third folds instead of minting."""
+    item remembers what its re-raise cited, so the third folds instead of minting. (The second
+    obligation exists before the agent's answer: an obligation published after it is new
+    material about the concern and is minted, see the control below.)"""
 
     seed = 9900
     second_obligation = protocol_id("obl_", seed + 70)
-    session_probe = protocol_id("obl_", seed + 1)  # the session's own obligation id
+    first_obligation = protocol_id("obl_", seed + 1)  # the session's own obligation id
     reviewer = W._Reviewer(
         [
-            _raise_on(FindingKind.TASK_REQUIREMENT_UNMET, "act", session_probe),
-            _raise_on(FindingKind.TASK_REQUIREMENT_UNMET, "act", session_probe, second_obligation),
+            _raise_on(FindingKind.TASK_REQUIREMENT_UNMET, "act", first_obligation),
+            _raise_on(
+                FindingKind.TASK_REQUIREMENT_UNMET, "act", first_obligation, second_obligation
+            ),
             _raise_on(FindingKind.TASK_REQUIREMENT_UNMET, "act", second_obligation),
         ]
     )
     session, frontier = await W._session(reviewer, seed)
+    added, frontier = await _second_obligation(session, frontier, seed + 70)
+    assert added == second_obligation
     first = await W._check(session, frontier, seed + 10)
     unmet = W._semantic(first)
     at = frontier_json(first.result_frontier)
     gave_up = await _respond(
         session, at, at, unmet, seed + 20, "acknowledged_not_done", "No solver is feasible."
     )
-    added, after = await _second_obligation(
-        session,
-        frontier_json(gave_up.result_frontier),
-        seed + 70,
-    )
-    assert added == second_obligation
-    second = await W._check(session, after, seed + 30)
+    second = await W._check(session, frontier_json(gave_up.result_frontier), seed + 30)
     assert _semantic_findings(session) == (unmet.finding_id,)
     live = W._live_projection(session.app)
     assert live.findings[unmet.finding_id].settled_reraise_count == 1
@@ -387,7 +387,7 @@ async def test_formal_crypto_s_a_concern_first_named_in_a_reraise_stays_one_find
 
 
 async def test_formal_crypto_s_control_a_different_obligation_alone_is_a_distinct_finding() -> None:
-    """The fold is earned by the re-raise, not by the obligation being new: with no re-raise
+    """The fold is earned by the re-raise, not by the obligation being old: with no re-raise
     that cited it, a challenge naming only the second obligation is its own issue."""
 
     seed = 10000
@@ -399,6 +399,36 @@ async def test_formal_crypto_s_control_a_different_obligation_alone_is_a_distinc
         ]
     )
     session, frontier = await W._session(reviewer, seed)
+    _added, frontier = await _second_obligation(session, frontier, seed + 70)
+    first = await W._check(session, frontier, seed + 10)
+    unmet = W._semantic(first)
+    at = frontier_json(first.result_frontier)
+    gave_up = await _respond(
+        session, at, at, unmet, seed + 20, "acknowledged_not_done", "No solver is feasible."
+    )
+    await W._check(session, frontier_json(gave_up.result_frontier), seed + 30)
+    assert len(_semantic_findings(session)) == 2
+    assert W._live_projection(session.app).findings[unmet.finding_id].absorbed_refs == ()
+
+
+async def test_an_obligation_published_after_the_give_up_is_new_material_and_is_minted() -> None:
+    """The other side of the rule: a requirement the plan gained after the agent's answer is a
+    new sighting, not a repeat of the settled concern (introduced_frontier beats the answer)."""
+
+    seed = 10100
+    second_obligation = protocol_id("obl_", seed + 70)
+    reviewer = W._Reviewer(
+        [
+            _raise_on(FindingKind.TASK_REQUIREMENT_UNMET, "act", protocol_id("obl_", seed + 1)),
+            _raise_on(
+                FindingKind.TASK_REQUIREMENT_UNMET,
+                "act",
+                protocol_id("obl_", seed + 1),
+                second_obligation,
+            ),
+        ]
+    )
+    session, frontier = await W._session(reviewer, seed)
     first = await W._check(session, frontier, seed + 10)
     unmet = W._semantic(first)
     at = frontier_json(first.result_frontier)
@@ -406,13 +436,10 @@ async def test_formal_crypto_s_control_a_different_obligation_alone_is_a_distinc
         session, at, at, unmet, seed + 20, "acknowledged_not_done", "No solver is feasible."
     )
     _added, after = await _second_obligation(
-        session,
-        frontier_json(gave_up.result_frontier),
-        seed + 70,
+        session, frontier_json(gave_up.result_frontier), seed + 70
     )
     await W._check(session, after, seed + 30)
     assert len(_semantic_findings(session)) == 2
-    assert W._live_projection(session.app).findings[unmet.finding_id].absorbed_refs == ()
 
 
 # --- controls: lake S and pretrain S ---------------------------------------------------------------

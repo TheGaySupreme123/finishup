@@ -744,6 +744,7 @@ def test_an_obligation_the_agent_already_disclosed_says_so_beside_the_obligation
             "Match the hidden benchmark",
             "the hidden accuracy matches",
             ObligationStatus.ACKNOWLEDGED_NOT_DONE,
+            acknowledged_not_done_reason="The hidden benchmark is withheld by the task design.",
         ),
         3,
     )
