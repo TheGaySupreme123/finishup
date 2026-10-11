@@ -853,8 +853,12 @@ async def test_hook_and_stream_copies_of_one_command_are_one_run(replay: _Replay
         if envelope.event_kind == "item_completed"
     ]
     assert len(held) == 1
-    assert held[0].structural_payload["command_commitment"] == actions[0].command.removeprefix(
-        "omitted:"
+    # The action's command field is the whole-command commitment, then (for a composed command or
+    # a simple one with arguments) its composition and segment commitments (#977, ADR-045): the
+    # rollout copy holds the whole-command commitment, which is the field's first word.
+    assert (
+        held[0].structural_payload["command_commitment"]
+        == (actions[0].command.removeprefix("omitted:").split(" ", 1)[0])
     )
     assert held[0].source_identity not in {item.source_identity for item in recorder.delivered}
     accounting = replay.store.selection_accounting(replay.commitment)
