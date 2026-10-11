@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from builders.status_text import BOUNDING, HEAD, SUPERSEDED, VIEWS, status_wire
 from yoetz.mcp import summaries
 from yoetz.mcp.summaries import (
     _check_cause_variants,
@@ -34,91 +35,14 @@ from yoetz.mcp.summaries import (
 )
 from yoetz.protocol.readiness_text import readiness_directive
 
-HEAD = "sha256:" + "0" * 64
-PROJECT = "prj_59000000-0000-4000-8000-000000000001"
-
-SUPERSEDED: dict[str, Any] = {
-    "effect": "superseded",
-    "event_id": "evt_00000000-0000-4000-8000-000000000009",
-    "ledger_sequence": "12",
-    "check_event_id": "evt_00000000-0000-4000-8000-000000000003",
-    "check_subject_frontier": "7",
-    "family": "action_recorded",
-    "material_class": "edit_or_write",
-    "rule": "observed_counting_edit",
-    "tool": "apply_patch",
-}
-BOUNDING: dict[str, Any] = {
-    **SUPERSEDED,
-    "effect": "bounds_conclusion",
-    "material_class": "other",
-    "rule": "unclassified_observed_action",
-    "tool": "exec_command",
-}
-_STANDING = ("check_current_as_of_earlier_frontier",)
 _STOP = "Request the receipt."
 _SHORT_STOP = "Nothing further to do. Request the receipt."
 _COUNTS_SENTENCE = "will be disclosed on the receipt"
 _OPERATION_FALLBACK = "semantic progress: see structured page;"
 
 
-def _page(view: str) -> dict[str, Any] | None:
-    lineage: dict[str, Any] = {"parent_task_id": None, "children": [{}, {}], "annotations": []}
-    pages: dict[str, dict[str, Any]] = {
-        "compact": {"items": [{"freshness": "current", "open_obligations": []}]},
-        "advice": {"items": []},
-        "lineage": lineage,
-        # An ordinary active project page: members, detections, receipts and coverage rows.
-        "project": {
-            "project_id": PROJECT,
-            "membership_generation": "3",
-            "grant_state": "active",
-            "members": [{}] * 3,
-            "detections": [{}],
-            "receipts": [{}] * 2,
-            "coverage": [{}] * 2,
-            "lineage": lineage,
-        },
-        # A completed semantic check; the edit that followed it is the cause.
-        "operation": {
-            "state": "completed",
-            "operation_kind": "semantic_check",
-            "semantic_progress": {
-                "phase": "review",
-                "attempt_ordinal": "2",
-                "condition": "terminal",
-                "elapsed_ms": "91234",
-                "terminal_outcome": "completed",
-                "terminal_reason": "review_complete",
-            },
-        },
-    }
-    return pages.get(view)
-
-
 def _wire(*, state: str, view: str, cause: Any) -> dict[str, Any]:
-    superseded = state == "action_required"
-    readiness: dict[str, Any] = {
-        "state": state,
-        "open_obligation_count": "0",
-        "unanswered_finding_count": "0",
-        "receipt_blocking_finding_count": "0",
-        "acknowledged_not_done_count": "0",
-        "agent_actionable": ["check_not_applicable"] if superseded else [],
-        "standing_limitations": [] if superseded else list(_STANDING),
-    }
-    if cause is not None:
-        readiness["check_cause"] = cause
-    wire: dict[str, Any] = {
-        "view": view,
-        "head_frontier": {"sequence": "9", "head_digest": HEAD},
-        "closure_readiness": readiness,
-        "gaps": [],
-    }
-    page = _page(view)
-    if page is not None:
-        wire["page"] = page
-    return wire
+    return status_wire(state=state, view=view, cause=cause)
 
 
 def _at(monkeypatch: pytest.MonkeyPatch, bound: int, wire: dict[str, Any]) -> str:
@@ -159,10 +83,9 @@ _CASES = [
         id="bounding",
     ),
 ]
-_VIEWS = ("compact", "advice", "lineage", "project", "operation")
 
 
-@pytest.mark.parametrize("view", _VIEWS)
+@pytest.mark.parametrize("view", VIEWS)
 @pytest.mark.parametrize(("state", "cause", "lead"), _CASES)
 def test_every_status_view_carries_the_full_lineage_sentence_at_the_real_bound(
     state: str, cause: dict[str, Any], lead: str, view: str
@@ -238,7 +161,7 @@ def test_the_operation_view_keeps_the_cause_ahead_of_the_progress_text(
     assert full in text and progress not in text and _core("action_required", text)
 
 
-@pytest.mark.parametrize("view", _VIEWS)
+@pytest.mark.parametrize("view", VIEWS)
 @pytest.mark.parametrize(("state", "cause", "lead"), _CASES)
 def test_the_cause_is_the_next_priority_after_the_core_at_every_bound(
     monkeypatch: pytest.MonkeyPatch,

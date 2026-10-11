@@ -80,7 +80,7 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture(autouse=True)
-def _receipt_artifact_1_3_0(monkeypatch: pytest.MonkeyPatch) -> None:
+def receipt_artifact_1_3_0(monkeypatch: pytest.MonkeyPatch) -> None:
     """The shipped receipt artifact (the harness default is the 1.0.0 reader, with no basis)."""
 
     original = h._versions

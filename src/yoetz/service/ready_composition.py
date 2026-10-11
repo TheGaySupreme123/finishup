@@ -117,6 +117,7 @@ from yoetz.application.lineage_recovery import (
 )
 from yoetz.application.missing_for_assessment import (
     check_change_binary_paths,
+    check_change_text_paths,
     unsuppliable_missing_kinds,
 )
 from yoetz.application.observation_advice import (
@@ -5113,6 +5114,10 @@ def _privacy_gated_semantic_evaluator(
             packet_binary_paths = check_change_binary_paths(
                 None if check_change.change is None else check_change.change.capture
             )
+            # ADR-045: the files the same change lists as text, so a suffix never overrules Git.
+            packet_text_paths = check_change_text_paths(
+                None if check_change.change is None else check_change.change.capture
+            )
             trimmed_prior = set(_packet_view_gaps(packet_view))
             # The packet's coverage also carries task-level ledger gaps (plan drift, completion
             # scope, unreadable events). The reviewer still sees them in the packet and the check
@@ -5216,6 +5221,7 @@ def _privacy_gated_semantic_evaluator(
                     case_citable_refs=packet_citable_refs,
                     case_captured_edit_paths=packet_edit_paths,
                     case_binary_paths=packet_binary_paths,
+                    case_text_paths=packet_text_paths,
                     case_workspace_root=workspace_root,
                     check_change_files=check_change_files,
                     review_input_manifest=input_manifest,
@@ -5591,6 +5597,7 @@ def _privacy_gated_semantic_evaluator(
                     case_citable_refs=packet_citable_refs,
                     case_captured_edit_paths=packet_edit_paths,
                     case_binary_paths=packet_binary_paths,
+                    case_text_paths=packet_text_paths,
                     case_workspace_root=workspace_root,
                     check_change_files=check_change_files,
                     continuation=continuation,

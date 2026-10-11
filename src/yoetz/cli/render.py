@@ -20,6 +20,7 @@ from yoetz.domain.review_input_render import (
     render_review_input_manifest_compat_line,
     render_review_input_manifest_lines,
 )
+from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.errors import normalize_safe_details
 from yoetz.protocol.ids import validate_opaque_item_id
@@ -73,6 +74,7 @@ __all__ = [
     "local_recovery_json",
     "recovery_directive_json",
     "credential_heuristic_line",
+    "lineage_lines",
     "render_closure_readiness_lines",
     "render_error_recovery_lines",
     "render_hook_recovery_suffix",
@@ -448,6 +450,7 @@ def render_human_check(result: CheckSuccessModel) -> str:
     if result.coverage.known_gaps:
         lines.append("Coverage gaps: " + ", ".join(result.coverage.known_gaps))
         lines.extend(_check_time_change_sentences(result.coverage.known_gaps))
+        lines.extend(lineage_lines(result.fact_lineage))
         # The strict ceiling blocked this process while the last install applied the policy
         # route (issue #537). A ceiling with no applied-policy record keeps today's terminal
         # wording with no recovery line.
@@ -574,6 +577,7 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         )
     if readiness.standing_limitations:
         lines.append("Standing limitations: " + ", ".join(readiness.standing_limitations))
+    lines.extend(lineage_lines(readiness.fact_lineage))
     if readiness.blocked_obligations:
         # Recorded yoetz-blocker claims (#977): ids and the closed kind; Yoetz did not verify them.
         lines.append(
@@ -844,6 +848,31 @@ def _render_result_items(page: StatusResultsPageModel) -> list[str]:
         lines.append(line)
     if page.next_cursor is not None:
         lines.append(f"Next page: {page.next_cursor}")
+    return lines
+
+
+_MAX_LINEAGE_LINES: Final = 6
+
+
+def lineage_lines(lineage: Iterable[object] | None) -> list[str]:
+    """One ``Why:`` sentence per derived fact's provenance (ADR-045); the same text everywhere.
+
+    ``lineage`` holds ``FactLineageModel`` rows (status, check result); a row that does not parse
+    is skipped, never guessed. At most ``_MAX_LINEAGE_LINES`` are shown, the rest counted.
+    """
+
+    items: list[FactLineage] = []
+    for entry in lineage or ():
+        try:
+            items.append(lineage_from_wire(entry))
+        except TypeError, ValueError:
+            continue
+    texts = lineage_texts(items)
+    lines = list(texts[:_MAX_LINEAGE_LINES])
+    if len(texts) > _MAX_LINEAGE_LINES:
+        lines.append(
+            f"(+{len(texts) - _MAX_LINEAGE_LINES} more facts with provenance in JSON status)"
+        )
     return lines
 
 

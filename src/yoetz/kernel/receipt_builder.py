@@ -121,12 +121,14 @@ from yoetz.kernel.completion_scope import (
     SCOPE_REPAIR,
     completion_scope_differences,
 )
+from yoetz.kernel.delivered_set import deliverable_lineage
 from yoetz.kernel.deterministic_checks import (
     CALLER_DIGEST_PROVENANCE_GAPS,
     CaseAvailabilityFacts,
     CaseGap,
 )
 from yoetz.kernel.deterministic_scope import commands_complete
+from yoetz.kernel.fact_lineage import FactLineage, lineage_texts
 from yoetz.kernel.finding_resolution import (
     finding_resolution_explanation,
     issue_key,
@@ -154,6 +156,7 @@ from yoetz.kernel.reducers import is_material_event_family
 from yoetz.kernel.task_facts import (
     acknowledged_obligation_ids,
     disclosure_declarations,
+    task_fact_signals,
 )
 from yoetz.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, PublicationChannel, weakest
 from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile, SemanticStatus
@@ -758,14 +761,56 @@ def _select_responses(
 _UNVERIFIED_RESOLUTION_LISTED: Final = 16
 
 
+# One receipt asks for the lineage once per gap code per rendering; derive it once per context.
+_LINEAGE_MEMO: list[tuple[ReceiptBuildContext, tuple[FactLineage, ...]] | None] = [None]
+
+
+def _receipt_fact_lineage(context: ReceiptBuildContext) -> tuple[FactLineage, ...]:
+    """Where the derived facts this receipt reports came from (ADR-045).
+
+    The same list status shows (``current_fact_lineage``): the applicable check's recorded
+    deliverable states and the ledger-derived facts of the receipt's prefix. Nothing is claimed
+    for a check that no longer applies.
+    """
+
+    memo = _LINEAGE_MEMO[0]
+    if memo is not None and memo[0] is context:
+        return memo[1]
+    derived = _derive_receipt_fact_lineage(context)
+    _LINEAGE_MEMO[0] = (context, derived)
+    return derived
+
+
+def _derive_receipt_fact_lineage(context: ReceiptBuildContext) -> tuple[FactLineage, ...]:
+    items: list[FactLineage] = []
+    check = context.applicable_check
+    if check is not None:
+        event = next(
+            (record.event_id for record in context.records if record.payload is check), None
+        )
+        items.extend(
+            deliverable_lineage(event, check.subject_frontier.sequence, check.deliverable_states)
+        )
+    if context.records and len(context.records) == context.projection.frontier:
+        items.extend(task_fact_signals(context.projection, context.records).lineage)
+    return tuple(sorted(dict.fromkeys(items), key=lambda item: item.sort_key))
+
+
 def _check_change_gap_text(context: ReceiptBuildContext, code: str) -> str | None:
     """The fixed sentence for a check-time code; for the legacy-resolution disclosure (R945-02),
-    also the affected resolved findings, at most 16 by id and the rest as a count."""
+    also the affected resolved findings, at most 16 by id and the rest as a count. A task fact
+    that carries provenance (ADR-045) also says why it fired, from the same lineage status
+    shows."""
 
     later = _later_material_text(context, code)
     if later is not None:
         return later
     sentence = check_time_change_gap_sentence(code)
+    if sentence is not None and code != CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP:
+        why = lineage_texts(_receipt_fact_lineage(context), code)
+        if why:
+            shown = " ".join(why[:3])
+            return f"{sentence} {shown}" + (f" (+{len(why) - 3} more.)" if len(why) > 3 else "")
     if sentence is None or code != CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP:
         return sentence
     affected = unverified_resolution_finding_ids(

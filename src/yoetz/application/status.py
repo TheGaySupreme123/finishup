@@ -55,6 +55,7 @@ from yoetz.kernel.deterministic_checks import (
     build_deterministic_case,
     finding_basis_to_status_json,
 )
+from yoetz.kernel.fact_lineage import lineage_to_wire
 from yoetz.kernel.gap_effect import UNCLASSIFIED_GAP_PREFIX, GapEffectKind
 from yoetz.kernel.receipt_prediction import predict_receipt_conclusion
 from yoetz.observability.logging import record_unexpected_exception_without_raising
@@ -105,6 +106,7 @@ from yoetz.protocol.coverage import (
 )
 from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.models import (
+    FactLineageModel,
     SemanticProgressPhase,
     StatusAdvicePageModel,
     StatusAssignmentFilterModel,
@@ -1571,10 +1573,19 @@ async def _closure_readiness(
         lineage_self_verified=lineage_self_verified,
     )
     confirmations = dict(facts.blocked_obligation_confirmations)
-    # An optional field is omitted, never null, when there is no cause to name.
+    # Optional fields are omitted, never null, when there is nothing to name: no cause for the
+    # check's applicability (tb4n3 RC-6), no derived fact with provenance (ADR-045), so a status
+    # without them keeps its bytes.
     cause = _check_cause_model(facts, checklist.agent_actionable, checklist.standing_limitations)
-    cause_fields: dict[str, Any] = {} if cause is None else {"check_cause": cause}
-    cause_fields.update(
+    optional_fields: dict[str, Any] = {}
+    if cause is not None:
+        optional_fields["check_cause"] = cause
+    if facts.fact_lineage:
+        optional_fields["fact_lineage"] = tuple(
+            FactLineageModel.model_validate(lineage_to_wire(item))
+            for item in facts.fact_lineage[:64]
+        )
+    optional_fields.update(
         _closure_verdict_fields(
             facts,
             checklist,
@@ -1613,7 +1624,7 @@ async def _closure_readiness(
             )
             for obligation, kind, decision in facts.blocked_obligation_details[:64]
         ),
-        **cause_fields,
+        **optional_fields,
         # F3: what a whole-task completion claim must name in limitation_refs (ids only).
         limitation_refs_required=tuple(facts.limitation_refs_required[:64]),
         limitation_refs_required_count=str(len(facts.limitation_refs_required)),

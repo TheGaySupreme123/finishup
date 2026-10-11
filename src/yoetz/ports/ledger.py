@@ -19,9 +19,11 @@ from yoetz.domain.coordination import (
 )
 from yoetz.domain.events import (
     CheckChangeShownFiles,
+    DeliverableState,
     EventDraft,
     LedgerRecord,
     MissingForAssessmentItem,
+    validate_deliverable_states,
 )
 from yoetz.domain.findings import (
     CheckVerdict,
@@ -44,12 +46,13 @@ from yoetz.domain.values import (
 )
 from yoetz.kernel.closure_readiness import ClosureReadinessFacts
 from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, DeterministicCase
+from yoetz.kernel.fact_lineage import FactLineage
 from yoetz.kernel.finding_todo import FindingTodoCounts
 from yoetz.kernel.lineage import LineageRollupState
 from yoetz.kernel.projections import ProjectionState
 from yoetz.ports.objects import ObjectKind, ObjectRef
 from yoetz.protocol.coverage import Coverage, PublicationChannel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind, validate_actor_id, validate_id, validate_opaque_item_id
 from yoetz.protocol.models import (
     MAX_EVENTS_PER_BATCH,
@@ -1021,6 +1024,11 @@ class CheckCommitResult:
     # Issue #986: ``False`` when the check's route did not require AI-powered review; ``None``
     # when it did or the check predates the field (``CheckRecordedPayload``).
     semantic_route_required: bool | None = None
+    # ADR-045: the deliverable states the check recorded (empty when it read no declared output).
+    deliverable_states: tuple[DeliverableState, ...] = ()
+    # ADR-045: where each derived task fact this check carries came from; derived by the caller
+    # (never recorded), bounded and sorted.
+    fact_lineage: tuple[FactLineage, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.outcome) is not str or self.outcome not in {"committed", "replayed"}:
@@ -1107,6 +1115,14 @@ class CheckCommitResult:
             self.semantic_route_required is not None
             and type(self.semantic_route_required) is not bool
         ):
+            raise _invalid()
+        try:
+            validate_deliverable_states(self.deliverable_states)
+        except ProtocolValueError as exc:
+            raise _invalid() from exc
+        if type(self.fact_lineage) is not tuple or len(self.fact_lineage) > 64:
+            raise _invalid()
+        if any(type(item) is not FactLineage for item in self.fact_lineage):
             raise _invalid()
         if (
             self.review_input_manifest is not None
@@ -2347,6 +2363,7 @@ class LedgerPort(Protocol):
         totals: JsonObject | None = None,
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
         semantic_route_required: bool | None = None,
+        deliverable_states: tuple[DeliverableState, ...] = (),
     ) -> CheckCommitResult: ...
 
     async def fail_check_if_current(

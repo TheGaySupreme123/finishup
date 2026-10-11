@@ -27,6 +27,7 @@ from yoetz.domain.events import (
     ClaimRecordedPayloadV1_1,
     ClaimRevisionMismatch,
     DecisionRecordedPayload,
+    DeliverableState,
     EventDraft,
     EventPayload,
     EventSchema,
@@ -3948,6 +3949,7 @@ class MemoryLedgerAdapter:
         totals: JsonObject | None = None,
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
         semantic_route_required: bool | None = None,
+        deliverable_states: tuple[DeliverableState, ...] = (),
     ) -> CheckCommitResult:
         key = (frozen.lease.writer_id, frozen.lease.operation_id)
         async with self._lock:
@@ -4065,6 +4067,7 @@ class MemoryLedgerAdapter:
             semantic_withheld_item_ids=semantic_withheld_item_ids,
             semantic_redacted_values=semantic_redacted_values,
             semantic_route_required=semantic_route_required,
+            deliverable_states=deliverable_states,
             review_input_manifest=review_input_manifest,
             totals=(
                 build_check_totals(frozen.case, findings.findings, findings.suppressed_count)
@@ -4204,6 +4207,7 @@ class MemoryLedgerAdapter:
             totals=check_payload.totals,
             semantic_redacted_values=check_payload.semantic_redacted_values,
             semantic_route_required=check_payload.semantic_route_required,
+            deliverable_states=check_payload.deliverable_states,
         )
         canonical = canonical_encode(
             {

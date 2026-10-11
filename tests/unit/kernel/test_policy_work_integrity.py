@@ -188,18 +188,20 @@ def test_completion_with_open_obligations_and_waiver_nontrigger() -> None:
     assert FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS not in _kinds(waived)
 
 
-def _unrelated_action(number: int) -> ActionRecordedPayload:
-    """A published task-wide action that attempts another item: acting on every obligation.
+def _unrelated_action(number: int, obligation: int | None = None) -> ActionRecordedPayload:
+    """A published action that attempts a different item, optionally scoped to an obligation.
 
-    tb4n2 E4 (P1-7): "never attempted" needs work on *this* obligation, so the action names no
-    obligation (a global action covers every one) rather than another obligation.
+    tb4n2 E4 (P1-7): "never attempted" needs work on *this* obligation. tb4n3 RC-5 (ADR-045): a
+    global action (no ``obligation_refs``) works only on the obligations whose items it names, so
+    tests that need work on one obligation scope the action to it; a global action that names
+    nothing of an obligation used to mark every obligation "acted on" (lake S).
     """
 
     return ActionRecordedPayload(
         action_id=act(number),
         action_kind=ActionKind.EDIT,
         description="Work on the task",
-        obligation_refs=(),
+        obligation_refs=() if obligation is None else (obl(obligation),),
         attempted_items=("other-item",),
     )
 
@@ -210,7 +212,7 @@ def test_requested_item_never_attempted_and_exact_attempt_nontrigger() -> None:
     trigger = make_case(
         plans={1: plan_record(plan, 1)},
         obligations={obl(1): obligation_record(obligation, 2)},
-        actions={act(9): record(_unrelated_action(9), 3)},
+        actions={act(9): record(_unrelated_action(9, 1), 3)},
     )
     assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in _kinds(trigger)
     attempted = make_case(
@@ -351,7 +353,7 @@ def test_requested_item_on_carried_revision_uses_effective_plan_scope() -> None:
     case = make_case(
         plans={1: plan_record(initial, 1), 2: plan_record(revision, 2)},
         obligations={obl(2): obligation_record(obligation, 3)},
-        actions={act(9): record(_unrelated_action(9), 4)},
+        actions={act(9): record(_unrelated_action(9, 2), 4)},
     )
 
     assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in _kinds(case)
@@ -496,7 +498,7 @@ def test_blocked_obligation_raises_no_requested_item_finding() -> None:
     case = make_case(
         plans={1: plan_record(plan, 1)},
         obligations={obl(1): obligation_record(obligation, 2)},
-        actions={act(9): record(_unrelated_action(9), 3)},
+        actions={act(9): record(_unrelated_action(9, 1), 3)},
     )
     case = replace(
         case,

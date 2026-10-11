@@ -359,7 +359,9 @@ _RUNTIME_FACT_VALUES: Final = {
     "effective_user": frozenset({"root", "non_root"}),
     "command_composition": frozenset({"single", "and_chain", "masked"}),
 }
-_MAX_COMMAND_SEGMENT_COMMITMENTS: Final = 32
+# 32 segment commitments plus 48 domain-separated canonical commitments (ADR-045); a test pins
+# this to ``domain.command_segments.MAX_COMMAND_COMMITMENTS``, which this module cannot import.
+_MAX_COMMAND_SEGMENT_COMMITMENTS: Final = 80
 
 # One image tool result as the hook recorded it: the SHA-256 and byte count of the decoded image,
 # a media type sniffed from its bytes, and the header's pixel size when it could be read. No pixel

@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Final, Literal, Protocol, TypedDict, cast
+from typing import Any, Final, Literal, NamedTuple, Protocol, TypedDict, cast
 
 from yoetz.application.closure_basis import (
     ClosureBasisUnavailable,
@@ -18,6 +18,7 @@ from yoetz.application.ledger_snapshot import projection_for_records, trusted_pr
 from yoetz.application.missing_for_assessment import (
     MissingItemsReview,
     review_missing_for_assessment,
+    unsupported_data_type,
 )
 from yoetz.domain.coordination import CoordinationError, CoordinationErrorCode
 from yoetz.domain.events import (
@@ -26,6 +27,7 @@ from yoetz.domain.events import (
     ActionKind,
     CheckChangeShownFiles,
     ClaimKind,
+    DeliverableState,
     LedgerRecord,
 )
 from yoetz.domain.findings import (
@@ -118,9 +120,12 @@ from yoetz.kernel.delivered_set import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
+    DeliverableSnapshot,
+    assess_deliverables,
     content_moved_declared_items,
-    emptied_declared_items,
-    removed_declared_items,
+    declared_delivered_items,
+    deliverable_history,
+    deliverable_lineage,
 )
 from yoetz.kernel.deterministic_checks import (
     DETERMINISTIC_TEXT_CONTRACT_DIGEST,
@@ -139,6 +144,7 @@ from yoetz.kernel.deterministic_scope import (
     deterministic_scope_is_clean,
     gaps_are_clean,
 )
+from yoetz.kernel.fact_lineage import FactLineage, lineage_to_wire
 from yoetz.kernel.finding_resolution import (
     AGENT_SETTLED_DISPOSITION_VALUES,
     SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
@@ -173,11 +179,16 @@ from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionRecord, Proje
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.receipt_prediction import predict_receipt_conclusion
+from yoetz.kernel.reducers import replay
 from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
+    DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     confirmed_blocked_obligation_ids,
+    cooperative_event_ids_from_coverage,
+    passing_verification_observed,
     requested_output_facts,
+    task_fact_signals,
 )
 from yoetz.kernel.test_edit_visibility import PreExistingTestEdits, preexisting_test_edits
 from yoetz.observability.logging import (
@@ -646,6 +657,12 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
                     cast(JsonValue, item.as_wire()) for item in result.semantic_redacted_values
                 )
             }
+        ),
+        # ADR-045: where each derived fact came from; omitted when there is none.
+        **(
+            {}
+            if not (lineage := getattr(result, "fact_lineage", ()))
+            else {"fact_lineage": tuple(cast(JsonValue, lineage_to_wire(item)) for item in lineage)}
         ),
         # Issue #986: present (``false``) only when the check's route did not require review.
         **(
@@ -1828,6 +1845,8 @@ class FinalSemanticEvaluation:
     # tb4n2 A11: repository-relative paths the check-time change marks binary, so a suffix-less
     # binary a reviewer names is Yoetz's unsupported-data-type limit. In process only.
     case_binary_paths: frozenset[str] = frozenset()
+    # ADR-045: the paths the same change lists as text; Git's NUL sniff overrules a suffix.
+    case_text_paths: frozenset[str] = frozenset()
     # ADR-031: keyed commitments to the check-time change files the review packet carried.
     check_change_files: CheckChangeShownFiles | None = None
     # Set only on the nonterminal awaiting_human branch: what the caller must do to resume this
@@ -2484,13 +2503,212 @@ def _with_structural_capture_gaps(
     return tuple(sorted({*gaps, CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP}, key=str.encode))
 
 
+class _OutputInputs(NamedTuple):
+    """What the check-time read of the declared outputs contributes to one check."""
+
+    evaluator: _PolicyEvaluator
+    gaps: tuple[str, ...]
+    absent: bool
+    # ADR-045: the deliverable states this check records (history for the next check, lineage
+    # for every surface). Empty when the check read no declared output file.
+    states: tuple[DeliverableState, ...] = ()
+    # In process only: the root-relative path of each existing declared output file, so the
+    # commit can tell which ones the review packet could not carry.
+    files: tuple[tuple[ObligationId, int, str], ...] = ()
+
+
+def _mark_unreviewable(
+    states: tuple[DeliverableState, ...],
+    files: tuple[tuple[ObligationId, int, str], ...],
+    binary_paths: frozenset[str],
+    text_paths: frozenset[str],
+) -> tuple[tuple[DeliverableState, ...], bool]:
+    """Mark each recorded deliverable state whose file the review packet could not carry.
+
+    Git's NUL sniff of the check-time change decides first (``binary_paths`` / ``text_paths``);
+    the suffix decides only for a file the change did not list (ADR-045).
+    """
+
+    names = {(obligation, index): relative for obligation, index, relative in files}
+    marked: list[DeliverableState] = []
+    found = False
+    for state in states:
+        relative = names.get((state.obligation_id, state.item_index))
+        unreviewable = relative is not None and (
+            relative in binary_paths
+            or (relative not in text_paths and unsupported_data_type(relative))
+        )
+        found = found or unreviewable
+        marked.append(replace(state, unreviewable=True) if unreviewable else state)
+    return tuple(marked), found
+
+
+def _initial_declared_gaps(
+    semantic_gap: str | None,
+    gap_groups: tuple[Iterable[str], ...],
+    semantic_result: FinalSemanticEvaluation,
+    states: tuple[DeliverableState, ...],
+    files: tuple[tuple[ObligationId, int, str], ...],
+) -> tuple[set[str], tuple[DeliverableState, ...]]:
+    """The check's declared gap set so far, and the deliverable states to record (ADR-045).
+
+    ``gap_groups`` are the deterministic test-edit and declared-output gaps. A review that ran
+    makes a declared deliverable of a type its packet never carries a present but unreviewed one:
+    the recorded state says so and the set gains ``declared_output_not_reviewable``.
+    """
+
+    gaps: set[str] = set() if semantic_gap is None else {semantic_gap}
+    for group in gap_groups:
+        gaps.update(group)
+    if semantic_result.status is not SemanticStatus.SUCCEEDED:
+        return gaps, states
+    marked, not_reviewable = _mark_unreviewable(
+        states,
+        files,
+        semantic_result.case_binary_paths,
+        semantic_result.case_text_paths,
+    )
+    if not_reviewable:
+        gaps.add(DECLARED_OUTPUT_NOT_REVIEWABLE_GAP)
+    return gaps, marked
+
+
+def _with_fact_lineage(
+    result: CheckCommitResult, case: DeterministicCase, records: tuple[LedgerRecord, ...]
+) -> CheckCommitResult:
+    """*result* with where each derived fact it carries came from (ADR-045)."""
+
+    return replace(
+        result,
+        fact_lineage=_check_fact_lineage(
+            case.projection, records, case.frontier.sequence, result.deliverable_states
+        ),
+    )
+
+
+async def _attach_replayed_fact_lineage(
+    runtime: TaskRuntime, result: CheckCommitResult
+) -> CheckCommitResult:
+    """A same-request replay with the lineage its first answer carried.
+
+    The lineage is derived, never stored: the recorded deliverable states plus the task facts
+    of the exact ledger prefix the check froze, so a retry reads the same story (ADR-045).
+    """
+
+    if result.fact_lineage:
+        return result
+    try:
+        records = tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, through=result.subject_frontier.sequence
+                )
+            ]
+        )
+        if not records:
+            return result
+        lineage = _check_fact_lineage(
+            replay(records),
+            records,
+            result.subject_frontier.sequence,
+            result.deliverable_states,
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component="check",
+            operation="replayed_fact_lineage_read",
+            request_id=None,
+        )
+        return result
+    return replace(result, fact_lineage=lineage)
+
+
+async def _read_declared_outputs(
+    runtime: TaskRuntime,
+    request: CheckRequest,
+    frozen: FrozenCase,
+    capture: CheckChangeMetadata | None,
+    source: CheckWorkspaceSource | None,
+    port: object | None,
+) -> tuple[
+    _PolicyEvaluator,
+    tuple[str, ...],
+    bool,
+    tuple[DeliverableState, ...],
+    tuple[tuple[ObligationId, int, str], ...],
+    tuple[LedgerRecord, ...],
+]:
+    """Read the declared outputs against their recorded history (ADR-045).
+
+    Returns the work evaluator, the task-fact gaps, whether an output is absent, the deliverable
+    states to record, the in-process file names the commit classifies by type, and the frozen
+    prefix's records (for the lineage the result carries).
+    """
+
+    records = await _frozen_prefix_records(runtime, request, frozen)
+    outputs = await _requested_output_inputs(
+        frozen.case, capture, source, port, request.request_id, deliverable_history(records)
+    )
+    return outputs.evaluator, outputs.gaps, outputs.absent, outputs.states, outputs.files, records
+
+
+async def _frozen_prefix_records(
+    runtime: TaskRuntime, request: CheckRequest, frozen: FrozenCase
+) -> tuple[LedgerRecord, ...]:
+    """The accepted records of the prefix the check froze (ADR-045), or none on a failed read.
+
+    Fails open to no records: the deliverable history then offers no proof of earlier content, so
+    the path-history rule cannot fire on a guess, and no ledger-derived lineage is attached.
+    """
+
+    try:
+        return tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, through=frozen.case.frontier.sequence
+                )
+            ]
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component="check",
+            operation="deliverable_history_read",
+            request_id=request.request_id,
+        )
+        return ()
+
+
+def _check_fact_lineage(
+    projection: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    subject_frontier: int,
+    states: tuple[DeliverableState, ...],
+) -> tuple[FactLineage, ...]:
+    """Where the derived facts this check carries came from (ADR-045).
+
+    The deliverable facts come from the states the check just recorded; the planned-verification
+    and edit-after-verification facts from the ledger over the frozen prefix. The same lineage
+    ``current_fact_lineage`` derives later for status, so every surface tells the same story.
+    """
+
+    items = list(deliverable_lineage(None, subject_frontier, states))
+    if records and len(records) == projection.frontier:
+        items.extend(task_fact_signals(projection, records).lineage)
+    return tuple(sorted(dict.fromkeys(items), key=lambda item: item.sort_key)[:64])
+
+
 async def _requested_output_inputs(
     case: DeterministicCase,
     capture: CheckChangeMetadata | None,
     source: CheckWorkspaceSource | None,
     port: object | None,
     request_id: str,
-) -> tuple[_PolicyEvaluator, tuple[str, ...], bool]:
+    history: tuple[DeliverableSnapshot, ...] = (),
+) -> _OutputInputs:
 
     from yoetz.application.check_change import (
         count_undeclared_references,
@@ -2507,16 +2725,28 @@ async def _requested_output_inputs(
     confirmed = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
     found, markers = requested_output_facts(case.projection, states, blocked=confirmed)
     codes = {code for code, _obligation in markers}
-    removed = set(removed_declared_items(case.projection, states, blocked=confirmed))
+    observed = observed_event_ids_from_coverage(case.coverage_by_ref)
+    assessment = assess_deliverables(
+        case.projection,
+        states,
+        blocked=confirmed,
+        history=history,
+        verified=passing_verification_observed(
+            case.projection, observed, cooperative_event_ids_from_coverage(case.coverage_by_ref)
+        ),
+    )
+    removed = set(assessment.removed)
     if removed:
         # One fact per item: a removed deliverable is not also reported as an absent output.
         codes.add(DECLARED_OUTPUT_REMOVED_GAP)
         found = [item for item in found if item not in removed]
-    if emptied_declared_items(case.projection, states, blocked=confirmed):
-        # tb4n2 R2: a delivered obligation's deliverable is now empty or truncated, so its
-        # recorded ``resolved`` no longer counts as delivered (agent work, Stop-gate token).
+    if assessment.emptied:
+        # tb4n2 R2 / tb4n3 RC-5 (ADR-045): a declared file that held content is now empty or
+        # truncated, keyed on the path, so its obligation's recorded ``resolved`` no longer
+        # counts as delivered (agent work, Stop-gate token). Never raised for a file created
+        # empty or one a ``yoetz-assumption`` decision names.
         codes.add(DECLARED_OUTPUT_EMPTIED_GAP)
-    if content_moved_declared_items(case.projection, states, blocked=confirmed):
+    if content_moved_declared_items(case.projection, states, blocked=confirmed, history=history):
         # A non-blocking disclosure (ADR-035): never a Stop-gate token, never a finding.
         codes.add(DECLARED_OUTPUT_CONTENT_MOVED_GAP)
     if (
@@ -2537,7 +2767,28 @@ async def _requested_output_inputs(
     # E4 (#989): an absent output is reported only once work on its obligation began.
     absent = reportable_absent_outputs(case, frozenset(found))
     gaps = tuple(sorted(codes, key=str.encode))
-    return partial(work_integrity_findings, absent_outputs=absent), gaps, bool(absent)
+    files = tuple(
+        (obligation, index, state.relative)
+        for (obligation, index), state in sorted(
+            states.items(), key=lambda item: (item[0][0].encode(), item[0][1])
+        )
+        if state.location == "inside"
+        and state.exists is True
+        and state.relative is not None
+        and state.relative != "."
+        and any(
+            (obligation, index) == (row[0], row[1])
+            for row in declared_delivered_items(case.projection, blocked=confirmed)
+            if row[2] == "file"
+        )
+    )
+    return _OutputInputs(
+        partial(work_integrity_findings, absent_outputs=absent),
+        gaps,
+        bool(absent),
+        assessment.states,
+        files,
+    )
 
 
 def run_deterministic_policies(
@@ -4723,6 +4974,7 @@ async def execute_check_commit(
             )
         if isinstance(frozen_or_replay, CheckCommitResult):
             replayed = await _attach_replayed_lineage_preview(runtime, frozen_or_replay)
+            replayed = await _attach_replayed_fact_lineage(runtime, replayed)
             replayed = await _attach_finding_checklist(app, runtime, replayed)
             # The ledger replay is frozen; only the additive project-advice projection is current.
             return await _attach_current_project_advisory_notes(app, runtime.task_id, replayed)
@@ -4855,12 +5107,15 @@ async def execute_check_commit(
                 PREEXISTING_TEST_BASELINE_UNKNOWN_GAP,
                 CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
             )
-        work_evaluator, deterministic_output_gaps, output_absent = await _requested_output_inputs(
-            frozen.case,
-            structural_capture,
-            structural_source,
-            change_capture,
-            request.request_id,
+        (
+            work_evaluator,
+            deterministic_output_gaps,
+            output_absent,
+            output_states,
+            output_files,
+            prefix_records,
+        ) = await _read_declared_outputs(
+            runtime, request, frozen, structural_capture, structural_source, change_capture
         )
         if frozen.lease.phase is CheckPhase.RESERVED:
             assessments, executions = run_deterministic_policies(
@@ -5068,9 +5323,13 @@ async def execute_check_commit(
             SemanticStatus.SUCCEEDED,
         }
         semantic_gap = semantic_coverage_gap_code(semantic_result.status, semantic_result.reason)
-        declared_gaps: set[str] = set() if semantic_gap is None else {semantic_gap}
-        declared_gaps.update(deterministic_test_edit_gaps)
-        declared_gaps.update(deterministic_output_gaps)
+        declared_gaps, recorded_deliverables = _initial_declared_gaps(
+            semantic_gap,
+            (deterministic_test_edit_gaps, deterministic_output_gaps),
+            semantic_result,
+            output_states,
+            output_files,
+        )
         missing = _EMPTY_MISSING_ITEMS
         if (
             semantic_result.status is SemanticStatus.SUCCEEDED
@@ -5089,6 +5348,7 @@ async def execute_check_commit(
                 captured_edit_paths=semantic_result.case_captured_edit_paths,
                 workspace_root=semantic_result.case_workspace_root,
                 binary_paths=semantic_result.case_binary_paths,
+                text_paths=semantic_result.case_text_paths,
                 **_packet_limits(semantic_result, deterministic),
             )
             declared_gaps |= missing.gaps
@@ -5305,6 +5565,9 @@ async def execute_check_commit(
                 host_profile=host_profile,
                 _state=_state,
             ),
+            # ADR-045: how each declared output file stood at this check and what was concluded
+            # from it and from the earlier checks of the same path; empty when none was read.
+            "deliverable_states": recorded_deliverables,
             "review_input_manifest": recorded_manifest,
             "totals": build_check_totals(
                 frozen.case,
@@ -5337,6 +5600,7 @@ async def execute_check_commit(
         )
         preview = _lineage_preview(lineage_evaluation, frozen.case.frontier)
         projected = committed if preview is None else replace(committed, children=preview)
+        projected = _with_fact_lineage(projected, frozen.case, prefix_records)
         projected = await _attach_finding_checklist(
             app,
             runtime,

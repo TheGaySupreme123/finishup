@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from builders.observed_runs import ObservedLedger
+from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
 from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
 from yoetz.application.check_change import requested_output_states
 from yoetz.domain.events import (
@@ -21,10 +22,17 @@ from yoetz.domain.events import (
     RequestedItem,
     RequestedItemKind,
 )
-from yoetz.domain.values import obligation_id
-from yoetz.kernel.delivered_set import content_moved_declared_items, declared_output_removed
+from yoetz.domain.values import event_id, obligation_id
+from yoetz.kernel.delivered_set import (
+    DeliverableAssessment,
+    DeliverableSnapshot,
+    assess_deliverables,
+    content_moved_declared_items,
+    declared_output_removed,
+)
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.reducers import replay
+from yoetz.kernel.task_facts import register_command_identity_key
 from yoetz.ports.change_capture import CheckWorkspaceSource
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
@@ -48,6 +56,13 @@ def declared_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
         return "output"
 
     monkeypatch.setattr(delivered_set, "item_role", output_role)
+
+
+@pytest.fixture(autouse=True)
+def installation_key() -> Iterator[None]:
+    register_command_identity_key(INSTALLATION_KEY)
+    yield
+    register_command_identity_key(None)
 
 
 @pytest.fixture(autouse=True)
@@ -328,10 +343,28 @@ def _resolved(*values: str) -> ProjectionState:
     return replay(ledger.prefix)
 
 
-def test_formal_crypto_new_deliverable_emptied_after_resolution(tmp_path: Path) -> None:
-    """tb4n2 formal-crypto S: solve.sage written (14.9 KB), resolved, then ``write_bytes(b'')``."""
+def _record_check(
+    projection: ProjectionState,
+    states: object,
+    history: tuple[DeliverableSnapshot, ...],
+    frontier: int,
+) -> tuple[DeliverableAssessment, tuple[DeliverableSnapshot, ...]]:
+    """Run the check's assessment and keep its states as the next check's history (ADR-045)."""
 
-    from yoetz.kernel.delivered_set import emptied_declared_items
+    assessment = assess_deliverables(projection, states, history=history)  # type: ignore[arg-type]
+    event = event_id(f"evt_00000000-0000-4000-8000-{frontier:012d}")
+    return assessment, (
+        *history,
+        *(DeliverableSnapshot(state, event, frontier) for state in assessment.states),
+    )
+
+
+def test_formal_crypto_new_deliverable_emptied_after_resolution(tmp_path: Path) -> None:
+    """tb4n2 formal-crypto S: solve.sage written (14.9 KB), resolved, then ``write_bytes(b'')``.
+
+    ADR-045: the second check proves earlier content from the first check's recorded reading
+    (the file is new, so the task base cannot), and the lineage names that reading.
+    """
 
     repository = _repository(tmp_path, {"README.md": "Task\n"})
     base = GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
@@ -340,16 +373,67 @@ def test_formal_crypto_new_deliverable_emptied_after_resolution(tmp_path: Path) 
     projection = _resolved(os.fspath(deliverable))
     states = _states(repository, base, projection)
     assert states[(_OBLIGATION, 0)].size_bytes == 15_000  # type: ignore[attr-defined]
-    assert emptied_declared_items(projection, states) == ()  # type: ignore[arg-type]
+    # A new (untracked) file gets a line count too: that is what makes a stub detectable.
+    assert states[(_OBLIGATION, 0)].lines == 2_500  # type: ignore[attr-defined]
+    first, history = _record_check(projection, states, (), 10)
+    assert first.emptied == ()
+    assert [(item.size_bytes, item.lines, item.basis) for item in first.states] == [
+        (15_000, 2_500, "delivered")
+    ]
 
     deliverable.write_bytes(b"")
     states = _states(repository, base, projection)
     assert states[(_OBLIGATION, 0)].size_bytes == 0  # type: ignore[attr-defined]
-    assert emptied_declared_items(projection, states) == ((_OBLIGATION, 0),)  # type: ignore[arg-type]
+    second, history = _record_check(projection, states, history, 20)
+    assert second.emptied == ((_OBLIGATION, 0),)
+    (record,) = second.states
+    assert (record.change, record.proof) == ("emptied", "earlier_check")
+    assert (record.prior_size_bytes, record.prior_lines, record.prior_frontier) == (
+        15_000,
+        2_500,
+        10,
+    )
 
-    # Restoring the deliverable clears the fact at the next check.
+    # A one-line stand-in is still a withdrawal of a 2,500-line deliverable ...
     deliverable.write_text("x = 1\n", encoding="utf-8")
-    assert emptied_declared_items(projection, _states(repository, base, projection)) == ()  # type: ignore[arg-type]
+    stub, history = _record_check(projection, _states(repository, base, projection), history, 25)
+    assert stub.emptied == ((_OBLIGATION, 0),)
+    # ... and restoring the deliverable clears the fact at the next check.
+    deliverable.write_text("x = 1\n" * 2_500, encoding="utf-8")
+    third, _history = _record_check(projection, _states(repository, base, projection), history, 30)
+    assert third.emptied == ()
+
+
+def test_a_deliverable_created_empty_is_never_emptied(tmp_path: Path) -> None:
+    """tb4n3 cargo D/S: ``apt-packages.txt`` is created empty because the code needs no packages."""
+
+    repository = _repository(tmp_path, {"README.md": "Task\n"})
+    base = GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
+    deliverable = repository / "apt-packages.txt"
+    deliverable.write_bytes(b"")
+    projection = _resolved(os.fspath(deliverable))
+    history: tuple[DeliverableSnapshot, ...] = ()
+    for frontier in (10, 20, 30):
+        assessment, history = _record_check(
+            projection, _states(repository, base, projection), history, frontier
+        )
+        assert assessment.emptied == ()
+        assert [item.change for item in assessment.states] == [None]
+
+
+def test_a_new_deliverable_cut_to_a_stub_is_truncated(tmp_path: Path) -> None:
+    """tb4n3 C5: a 300-line new (untracked) solve.sage cut to one stub line was never caught."""
+
+    repository = _repository(tmp_path, {"README.md": "Task\n"})
+    base = GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
+    deliverable = repository / "solve.sage"
+    deliverable.write_text("x = 1\n" * 300, encoding="utf-8")
+    projection = _resolved(os.fspath(deliverable))
+    _first, history = _record_check(projection, _states(repository, base, projection), (), 10)
+    deliverable.write_text("# placeholder\n", encoding="utf-8")
+    second, _history = _record_check(projection, _states(repository, base, projection), history, 20)
+    assert second.emptied == ((_OBLIGATION, 0),)
+    assert second.states[0].change == "truncated"
 
 
 def test_a_tracked_deliverable_truncated_in_place_is_emptied(tmp_path: Path) -> None:

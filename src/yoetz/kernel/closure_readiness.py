@@ -52,6 +52,8 @@ from yoetz.kernel.closure_class import (
     finding_closures,
     obligation_closures,
 )
+from yoetz.kernel.delivered_set import deliverable_lineage
+from yoetz.kernel.fact_lineage import MAX_FACT_LINEAGE_ITEMS, FactLineage
 from yoetz.kernel.finding_resolution import finding_is_resolved
 from yoetz.kernel.finding_todo import (
     FindingTodoState,
@@ -80,6 +82,7 @@ from yoetz.kernel.task_facts import (
     decision_batches,
     disclosure_declarations,
     open_effective_obligations,
+    task_fact_signals,
 )
 from yoetz.protocol.models import SemanticStatus
 
@@ -113,6 +116,7 @@ __all__ = [
     "GapSplit",
     "classify_gap",
     "closure_readiness_facts",
+    "current_fact_lineage",
     "derive_closure_readiness",
     "finding_acknowledged_not_done",
     "gap_base_code",
@@ -131,7 +135,10 @@ __all__ = [
 # task fact ``declared_output_emptied`` and the standing disclosure
 # ``deliverable_references_undeclared_file`` (tb4n2 R2, issue #1022, ADR-035) were added. "7": the
 # table became a derived view of ``kernel.gap_effect`` (tb4n3 RC-3, issue #1026, ADR-046), and the
-# agent-actionable readiness token ``finding_rejection_awaiting_ruling`` was added.
+# agent-actionable readiness token ``finding_rejection_awaiting_ruling`` was added. The standing
+# disclosures ``planned_verification_matched_by_prefix`` and
+# ``declared_output_not_reviewable`` were added and ``declared_output_emptied`` became a path-keyed
+# fact with provenance (tb4n3 RC-5, issue #1028, ADR-045).
 GAP_CLASSIFICATION_VERSION: Final = "7"
 # Issue #1020 (ADR-040): a current AI-powered finding the reviewer repeated over the agent's
 # reasoned rejection without newer material. A standing disagreement; never agent work.
@@ -342,6 +349,8 @@ class ClosureReadinessFacts:
     # findings settle ``receipt_findings_unresolved``) exactly as before.
     finding_closures: tuple[FindingClosure, ...] | None = None
     obligation_closures: tuple[ObligationClosure, ...] = ()
+    # ADR-045: where each derived task fact came from, so the agent sees why a code fired.
+    fact_lineage: tuple[FactLineage, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -713,7 +722,43 @@ def closure_readiness_facts(
         obligation_closures=tuple(
             obligation_classes[key] for key in sorted(obligation_classes, key=str.encode)
         ),
+        fact_lineage=current_fact_lineage(state, records, applicability),
     )
+
+
+def current_fact_lineage(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    applicability: CheckApplicability,
+) -> tuple[FactLineage, ...]:
+    """Where every derived task fact in force at this prefix came from (ADR-045).
+
+    The check-time deliverable facts (``declared_output_emptied``, ``..._removed``,
+    ``..._not_reviewable``) come from the newest check's recorded deliverable states, and only
+    while that check still applies (a later material change makes the check, and so its facts,
+    stale: ``check_not_applicable`` says so instead). The ledger-derived facts (planned
+    verification, edits after the last verification) come from ``task_fact_signals`` over the
+    same prefix. Sorted and bounded, so every surface renders the same list.
+    """
+
+    items: list[FactLineage] = []
+    latest = state.latest_tested_state
+    if applicability == "applicable" and latest is not None:
+        check_record = next(
+            (record for record in records if record.event_id == latest.source_check_event_id),
+            None,
+        )
+        if check_record is not None and type(check_record.payload) is CheckRecordedPayload:
+            items.extend(
+                deliverable_lineage(
+                    check_record.event_id,
+                    check_record.payload.subject_frontier.sequence,
+                    check_record.payload.deliverable_states,
+                )
+            )
+    items.extend(task_fact_signals(state, records).lineage)
+    ordered = sorted(dict.fromkeys(items), key=lambda item: item.sort_key)
+    return tuple(ordered[:MAX_FACT_LINEAGE_ITEMS])
 
 
 @dataclass(frozen=True, slots=True)

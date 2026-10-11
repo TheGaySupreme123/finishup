@@ -155,3 +155,15 @@ did not stop the agent:
   resolve on replay; the self-verification scope fixes the observed failure without that.
 - **Re-asking new observation tokens on an active Stop (tb4n2 N-C5).** Not taken here; the gate's
   active-Stop rule stays as ADR-033 decided.
+
+## Amendment (tb4n3 RC-5, issue #1028, ADR-045): notes and shell writes
+
+Two write classes are added. `notes` is the agent's own working notes inside the workspace
+(`NOTES.md`, `todo.txt`; a narrow name list, never `.log`, never README or report names): it is
+non-counting like `scratch` and `yoetz_owned`, and a declared output (or any declared directory)
+with such a name overrides the class. `workspace` is carried by a shell command whose attributable
+writes (redirect targets, `tee`, `sed -i`, the destination of `cp`/`mv`/`install`/`rsync`, `touch`,
+`truncate`, `dd of=`) include a path in the workspace; the kernel counts a command carrying
+`workspace` or `outside_workspace` as an edit, so `cat > solve.py <<EOF` after the last test makes
+the verification stale. A write the hook cannot attribute (`$VAR`, `~`, a script that opens files
+itself) is not counted.

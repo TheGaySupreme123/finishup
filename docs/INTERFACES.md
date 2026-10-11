@@ -950,7 +950,8 @@ failures once, bounded to ten ids per clause. An observed edit changes the state
 not a covering verification, so a failure followed only by an edit stays `live` until the same
 command is rerun or the claim explicitly acknowledges it. An edit the harness sees only as a
 shell command (a heredoc written through `exec_command` or `Bash`) is a command, not an observed
-edit, and follows the same rule.
+edit, and follows the same rule for failure supersession. For the stale-verification rule such a
+command counts as an edit when it visibly writes the workspace (`write_scope: workspace`, ADR-045).
 
 `reason` MAY be omitted for `acknowledged` and MUST be non-empty for `provenance_disputed`,
 `rejected`, or `waived`.
@@ -8897,7 +8898,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `planned_verification_not_observed`, `planned_verification_failed`,
   `planned_verification_stale`, `edited_after_last_verification`, `requested_output_git_ignored`,
   `declared_output_removed` (ADR-035), `declared_output_emptied` (ADR-035 amendment, ADR-041). Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
-  `planned_verification_unobservable`, `planned_verification_agent_linked`, `install_into_yoetz_runtime`, `install_into_private_env`,
+  `planned_verification_unobservable`, `planned_verification_agent_linked`,
+  `planned_verification_matched_by_prefix` (ADR-045: a prefix or flags match, counts as run),
+  `declared_output_not_reviewable` (ADR-045), `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`, `verification_only_as_root`,
   `obligation_blocked_outside_agent_control`, `requested_output_ignored_by_repository`,
   `declared_output_content_moved` (ADR-035),
@@ -9038,17 +9041,29 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   (`CONTENT_MOVED_MIN_LINES`), `2 * lines_lost >= base_lines` and
   `2 * undeclared_lines_added >= lines_lost`; the check then adds the standing disclosure
   `declared_output_content_moved` (`DECLARED_OUTPUT_CONTENT_MOVED_GAP`), never a Stop-gate token.
-  `emptied_declared_items(projection, states) -> tuple[(obligation, item index), ...]` (ADR-041)
-  names declared `file` items of an obligation that is `resolved` or named by an effective
-  completion claim (not `acknowledged_not_done`) whose
-  `inside` state exists, is not deleted, and has `size_bytes == 0` (`RequestedPathProbe.size_bytes`,
-  a regular file's size from the link-free probe; never for `__init__.py`, `py.typed`, `.gitkeep`,
-  `.keep`, `.nojekyll`), or `base_lines >= 20` with fewer than a tenth kept, not the content-moved
-  shape, and no other declared delivered item changed; the check adds the agent-actionable
-  `declared_output_emptied` (`DECLARED_OUTPUT_EMPTIED_GAP`), a Stop-gate token, under which the
-  obligation's `resolved` no longer counts as delivered.
-  `requested_output_states` fills those fields only for a declared `file` the change modifies
-  (`M`), through the optional adapter method `count_change_lines(workspace, base_commit,
+  `emptied_declared_items(projection, states, *, blocked=None, history=(), verified=False) ->
+  tuple[(obligation, item index), ...]` (ADR-041, rewritten by ADR-045) is the `emptied` list of
+  `assess_deliverables(projection, states, ...) -> DeliverableAssessment(states, emptied, removed)`:
+  one verdict per **path**, from `deliverable_state_change(state, history, name=, other_growth=) ->
+  DeliverableChange | None` (`emptied`, `truncated`, `removed`, `unchanged`; `None` unknown).
+  `history` is `deliverable_history(records) -> tuple[DeliverableSnapshot(state, event_id,
+  frontier)]` over the earlier `check_recorded` events' `deliverable_states`. A file is `emptied`
+  only with proof of earlier content (`base_lines > 0`, or an earlier check read it with content);
+  `truncated` needs 20 earlier lines and fewer than a tenth left (or 2,048 bytes and a tenth, when
+  no line count was read), is not the content-moved shape, and is not a split (the other declared
+  outputs gained at least half the lost lines, or their growth is unknown). `declared_output_emptied`
+  (`DECLARED_OUTPUT_EMPTIED_GAP`, a Stop-gate token) fires when the change is emptied or truncated
+  and an obligation declaring the path is resolved or claimed now, or an earlier check recorded the
+  path with content with `basis` `delivered` or `verified`; the obligation's current status does
+  not clear it. The exit is `path_assumption`: a `yoetz-assumption:<obligation id>` decision of an
+  obligation declaring the path whose statement or rationale names the declared value or the
+  root-relative path as a whole token. `removed_declared_items(..., history=)` adds a file an
+  earlier check recorded with content that is now gone.
+  `RequestedOutputState.lines` is the current line count (tracked, untracked or unchanged).
+  `deliverable_path_identity(relative) -> hmac-sha256:... | None` keys the history.
+  `requested_output_states` fills `base_lines`, `lines_lost` and `undeclared_lines_added` for a
+  declared `file` the change modifies (`M`) and `lines` for every existing declared `file`
+  (ADR-045), through the optional adapter method `count_change_lines(workspace, base_commit,
   base_paths) -> ChangeLineCounts(changed: tuple[ChangeLineCount(path, added, removed,
   untracked), ...], base_lines, truncated)` (`ports/change_capture.py`): numstat for tracked
   changes, newline counts of untracked non-ignored files (bounded, no link followed, no
@@ -9079,6 +9094,46 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `scoped_resolution_reasons(reasons, *, state, finding_id, records) -> tuple[str, ...]` (drops the
   `coverage:<task fact>` reasons that do not bear on the finding; never empties the list).
   `self_verification_refusal` applies it; readiness, the Stop gate and resolution stay task-wide.
+- **Fact lineage and canonical commands (ADR-045, issue #1028).**
+  `kernel/fact_lineage.FactLineage(code, rule, state, obligation_id, item_index, check_event_id,
+  frontier, prior_event_id, prior_frontier, prior_size_bytes, prior_lines, now_size_bytes,
+  now_lines, proof, basis, source_event_ids, accepted_by)` is the typed provenance of a derived
+  fact (closed `rule`: `deliverable_path_history|deliverable_read|planned_command_match|
+  planned_command_unmatched|edit_after_verification_run`; closed `state`; counts and ids only);
+  `lineage_text(item)` is the one `Why:` renderer, `lineage_to_wire` / `lineage_from_wire` the wire
+  mapping. `FactLineageModel` (`protocol/models.py`) is the wire object, carried as the optional
+  `fact_lineage` list (at most 64) on `status` `closure_readiness` and on the check result, derived
+  per request by `closure_readiness.current_fact_lineage(state, records, applicability)` from the
+  applicable check's recorded `deliverable_states` plus `task_fact_signals(...).lineage`.
+  `TaskFactSignals.lineage` covers `planned_verification_not_observed|failed|stale|
+  matched_by_prefix` and `edited_after_last_verification`. `check_recorded` 1.4.0 gains the optional
+  `deliverable_states` (at most 64 `DeliverableState`: `obligation_id`, `item_index`, `path_key`,
+  `size_bytes`, `lines`, `base_lines`, `basis delivered|verified|present`, `change
+  emptied|truncated|removed|unchanged`, `proof task_base|earlier_check`, `prior_size_bytes`,
+  `prior_lines`, `prior_event_id`, `prior_frontier`, `accepted_by`, `unreviewable`); absent when the
+  check read no declared output file. `domain/command_segments`: `canonical_words(argv)` (wrappers,
+  assignments, basename, `python3`/`pythonX.Y` to `python`, `python -m pytest` to `pytest`),
+  `canonical_command_commitments(key, argv) -> (full, prefixes, flags)`,
+  `canonical_commitment(key, kind, payload)` (`full|prefix|flag`, domain-separated from segment
+  commitments), `command_structure(normalized) -> CommandStructure(commands, composition,
+  compound)`, `planned_segments(key, normalized)`, `strip_wrappers(argv)`;
+  `command_segment_commitments` now also carries up to `MAX_CANONICAL_COMMITMENTS` (48) canonical
+  commitments, `MAX_COMMAND_COMMITMENTS` (80) in all (the observed action `command` field, the hook
+  structural list and `observed_failures` share that bound).
+  `task_facts.requested_planned_command(value) -> PlannedCommand | None` and `planned_match(run,
+  planned) -> PlannedMatch(outcome, kind) | None` with `kind` `exact|normalized|prefix|flags`;
+  `prefix` and `flags` raise the standing `planned_verification_matched_by_prefix`.
+  `task_facts.observed_planned_commands(projection, observed, cooperative, values)` is the set of
+  requested command values some observed run matched; `command_attempts.same_requested_path` /
+  `value_in_attempted` match a file in another spelling. `domain/shell_writes.shell_write_paths(
+  command)` and `shell_write_scope(command, *, workspace, inside, owned_roots=, relative_only=)`;
+  `write_scope` admits `notes` (non-counting) and `workspace` (a shell command that writes the
+  workspace; counts as an edit with `outside_workspace`; `observed_failures.SHELL_EDIT_TOKENS`).
+  `missing_for_assessment.check_change_text_paths(capture)` lists the files the check-time change
+  shows as text; `_TargetFiles.unsupported` decides by Git's NUL sniff first, then the suffix. The
+  standing `declared_output_not_reviewable` (`DECLARED_OUTPUT_NOT_REVIEWABLE_GAP`) is raised when a
+  review ran and a declared output file is a type the packet never carries.
+  `GAP_CLASSIFICATION_VERSION` is `"7"`.
 - **Runner class.** `domain/observation_selection.command_runner_class` classifies
   `python -m <module>` by module (pytest/unittest/nose2/tox/nox/doctest `test`, mypy/pyright
   `typecheck`, ruff/flake8/pylint/pyflakes/pycodestyle `lint`, build/compileall `build`) and never
@@ -9088,8 +9143,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `work-integrity/0.2.0` generation.
 - **Runtime structural fields.** The observation envelope and control-request 2.9.0
   `structural_payload` admit `install_target` (`yoetz_runtime|workspace_env|private_env|system|
-  unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned`; ADR-042: `scratch` and
-  `yoetz_owned` name an edit whose every path is a temp root outside the workspace or Yoetz's own material) and
+  unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned|notes|workspace`; ADR-042:
+  `scratch` and `yoetz_owned` name an edit whose every path is a temp root outside the workspace or
+  Yoetz's own material; ADR-045: `notes` the agent's own notes, `workspace` a shell command that
+  writes the workspace) and
   `effective_user` (`root|non_root`),
   produced only by `cli/runtime_facts.runtime_structural_facts`, which judges `install_target`
   against the task interpreter (the agent's `python3`/`python` on the hook's `PATH`; ADR-033

@@ -120,15 +120,16 @@ def test_the_announced_rechecks_follow_the_stop_sentence_on_every_surface() -> N
 def test_findings_awaiting_a_ruling_are_named_with_the_frontier_of_the_rejection() -> None:
     from yoetz.protocol.readiness_text import awaiting_ruling_variants
 
-    readiness = {
-        "finding_counts": {
-            "to_do": "1",
-            "awaiting_ruling": "1",
-            "unmet": "0",
-            "disclosed": "0",
-            "to_disclose": "0",
-            "self_verify_eligible": "0",
-        },
+    counts: dict[str, str] = {
+        "to_do": "1",
+        "awaiting_ruling": "1",
+        "unmet": "0",
+        "disclosed": "0",
+        "to_disclose": "0",
+        "self_verify_eligible": "0",
+    }
+    readiness: dict[str, object] = {
+        "finding_counts": counts,
         "awaiting_ruling_findings": [{"finding_id": _FINDING, "since_frontier": "412"}],
     }
     variants = awaiting_ruling_variants(readiness)
@@ -137,13 +138,8 @@ def test_findings_awaiting_a_ruling_are_named_with_the_frontier_of_the_rejection
     )
     assert variants[-1].endswith(".") and len(variants[-1]) < len(variants[0])
     # Nothing awaits a ruling, or an older service named no findings: no guess, no sentence.
-    assert (
-        awaiting_ruling_variants(
-            {"finding_counts": {**readiness["finding_counts"], "awaiting_ruling": "0"}}
-        )
-        == ()
-    )
+    assert awaiting_ruling_variants({"finding_counts": {**counts, "awaiting_ruling": "0"}}) == ()
     assert awaiting_ruling_variants({}) == ()
     # A count without ids still says that something waits, and where to see it.
-    bare = awaiting_ruling_variants({"finding_counts": readiness["finding_counts"]})
+    bare = awaiting_ruling_variants({"finding_counts": counts})
     assert bare and "status view=findings lists them" in bare[0]

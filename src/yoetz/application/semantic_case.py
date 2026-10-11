@@ -25,6 +25,7 @@ from yoetz.application.check import (
 )
 from yoetz.application.missing_for_assessment import (
     check_change_binary_paths,
+    check_change_text_paths,
     observed_image_evidence,
     supplied_since,
     unsupported_data_type,
@@ -2324,6 +2325,7 @@ def _binary_file_label(
     *,
     captured: bool,
     binary_paths: frozenset[str] = frozenset(),
+    text_paths: frozenset[str] = frozenset(),
     workspace_root: str | None = None,
 ) -> tuple[str, bool] | None:
     """The label for a row that records an image or binary file, and whether it is a notice.
@@ -2342,8 +2344,13 @@ def _binary_file_label(
         not reference
         or "://" in reference
         or not (
-            unsupported_data_type(reference)
-            or _known_binary(reference, binary_paths, workspace_root)
+            _known_binary(reference, binary_paths, workspace_root)
+            # Git's NUL sniff of the check-time change decides first (ADR-045): a listed text
+            # file (a ``.step`` part) is no binary whatever its suffix.
+            or (
+                unsupported_data_type(reference)
+                and not _known_binary(reference, text_paths, workspace_root)
+            )
         )
     ):
         return None
@@ -2371,6 +2378,7 @@ def _evidence_candidates(
     omissions: list[ReviewOmission],
     gaps: set[str],
     binary_paths: frozenset[str] = frozenset(),
+    text_paths: frozenset[str] = frozenset(),
     workspace_root: str | None = None,
 ) -> list[_ExcerptCandidate]:
     candidates: list[_ExcerptCandidate] = []
@@ -2528,6 +2536,7 @@ def _evidence_candidates(
                 payload,
                 captured=captured_group is not None,
                 binary_paths=binary_paths,
+                text_paths=text_paths,
                 workspace_root=workspace_root,
             )
         )
@@ -2653,6 +2662,7 @@ def _select_targeted_excerpts(
     before_lower_ranks: _LowerRankAdmission | None = None,
     declared_output_refs: tuple[str, ...] = (),
     binary_paths: frozenset[str] = frozenset(),
+    text_paths: frozenset[str] = frozenset(),
     workspace_root: str | None = None,
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
@@ -2716,6 +2726,7 @@ def _select_targeted_excerpts(
         omissions=omissions,
         gaps=gaps,
         binary_paths=binary_paths,
+        text_paths=text_paths,
         workspace_root=workspace_root,
     )
 
@@ -4463,6 +4474,9 @@ def _build_semantic_case_once(
             # A suffix-less binary the change marked (a compiled ``solver``) gets the same
             # "not sent" notice as a named binary type (tb4n2 P1-12).
             binary_paths=check_change_binary_paths(
+                None if check_time_change is None else check_time_change.capture
+            ),
+            text_paths=check_change_text_paths(
                 None if check_time_change is None else check_time_change.capture
             ),
             workspace_root=workspace_root,

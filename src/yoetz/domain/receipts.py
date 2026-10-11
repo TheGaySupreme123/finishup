@@ -512,9 +512,23 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " Check that the deliverable still works where the task delivers it."
         ),
         "declared_output_emptied": (
-            "A declared delivered file you wrote earlier is now empty or holds a small fraction of"
-            " its earlier size. Deliver it and disclose its limits, unless the task asked for it"
-            " to be empty."
+            "A declared delivered file that held content earlier (at a recorded check, or at the"
+            " task base) is now empty or holds a small fraction of its earlier size. Restore it"
+            " and disclose its limits: a working partial is a delivery, and an empty file always"
+            " grades as no solution. This stands unless the task asked for this file to be empty"
+            " regardless of outcome and a yoetz-assumption decision names the file."
+        ),
+        "planned_verification_matched_by_prefix": (
+            "A planned verification was matched to an observed run only by its leading arguments"
+            " or by its program and flags: the run did the planned work and more, or in another"
+            " order. It counts as run and is disclosed, not clean verification; Yoetz did not"
+            " verify that the run is what the plan meant."
+        ),
+        "declared_output_not_reviewable": (
+            "A declared delivered file is a type the AI-powered review never receives (binary, by"
+            " the change's own content check, or a binary format) and a review ran: the file is"
+            " present but was not reviewed. Verify it yourself and disclose how; do not reshape"
+            " it for the reviewer."
         ),
         "deliverable_references_undeclared_file": (
             "A declared delivered source file names a workspace file that is not a declared output"
