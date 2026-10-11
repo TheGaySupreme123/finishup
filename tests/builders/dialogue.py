@@ -32,6 +32,7 @@ from yoetz.domain.events import (
     ObligationStatus,
     PolicyVersion,
     ResponseRecordedPayload,
+    encode_payload,
 )
 from yoetz.domain.findings import (
     FINDING_KIND_TRAITS,
@@ -55,6 +56,7 @@ from yoetz.kernel.projections import (
     ProjectionState,
     empty_projection_state,
 )
+from yoetz.protocol.canonical import canonical_digest
 from yoetz.protocol.coverage import CheckType, LedgerFreshness
 from yoetz.protocol.models import (
     CheckPolicyExecutionModel,
@@ -155,13 +157,14 @@ def answer(
 def limit_decision(
     number: int, obligation: ObligationId, kind: str = "yoetz-verification-limit"
 ) -> DecisionProjectionRecord:
+    payload = DecisionRecordedPayload(
+        statement=f"Cannot be verified here.\n{kind}:{obligation}",
+        rationale="The reference is withheld by the task design.",
+        authority=actor_id("agt_codex"),
+    )
     return DecisionProjectionRecord(
-        payload=DecisionRecordedPayload(
-            statement=f"Cannot be verified here.\n{kind}:{obligation}",
-            rationale="The reference is withheld by the task design.",
-            authority=actor_id("agt_codex"),
-        ),
-        payload_digest=_DIGEST,
+        payload=payload,
+        payload_digest=canonical_digest(encode_payload(payload)),
         redacted=False,
         source_event_id=evt(number),
         source_frontier=number,
