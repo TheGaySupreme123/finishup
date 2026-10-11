@@ -505,23 +505,30 @@ def _plural_ids(named: list[str]) -> str:
 
 
 def _awaiting_clause(readiness: object) -> str:
-    """Why the awaiting-ruling token fired (owner decision 10): the findings and their frontier."""
+    """Why the awaiting-ruling token fired (owner decision 10): the rule, and the findings and the
+    frontier of the rejection when readiness names them (``awaiting_ruling_findings``).
+
+    Status also lists them (``view=findings`` rows with ``closure_class awaiting_ruling``), so a
+    readiness that does not name them still gets the rule and where to read them.
+    """
 
     raw = getattr(readiness, "awaiting_ruling_findings", None)
-    if not isinstance(raw, (tuple, list)):
-        return ""
     named: list[str] = []
-    for entry in tuple(cast(tuple[object, ...], raw))[:_MAX_RECHECKS]:
-        finding = _field(entry, "finding_id")
-        if type(finding) is not str or not _SUBJECT_ID.fullmatch(finding):
-            continue
-        since = _decimal(_field(entry, "since_frontier"))
-        named.append(finding if since is None else f"{finding} (rejected at frontier {since})")
-    if not named:
-        return ""
+    if isinstance(raw, (tuple, list)):
+        for entry in tuple(cast(tuple[object, ...], raw))[:_MAX_RECHECKS]:
+            finding = _field(entry, "finding_id")
+            if type(finding) is not str or not _SUBJECT_ID.fullmatch(finding):
+                continue
+            since = _decimal(_field(entry, "since_frontier"))
+            named.append(finding if since is None else f"{finding} (rejected at frontier {since})")
+    if named:
+        return (
+            f"Why: no check has ruled on {_plural_ids(named)}."
+            f" Rule {FINDING_REJECTION_AWAITING_RULING_GAP}."
+        )
     return (
-        f"Why: no check has ruled on {_plural_ids(named)}."
-        f" Rule {FINDING_REJECTION_AWAITING_RULING_GAP}."
+        "Why: you answered a finding `rejected` and no check has ruled on it since (status"
+        f" view=findings lists them). Rule {FINDING_REJECTION_AWAITING_RULING_GAP}."
     )
 
 

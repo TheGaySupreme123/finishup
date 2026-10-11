@@ -565,4 +565,10 @@ def test_the_awaiting_ruling_text_names_the_finding_and_the_frontier_of_the_reje
         )
     )
     assert odd is not None
-    assert "Why:" not in odd.text
+    assert _FND not in odd.text
+    # Without named findings the rule and where to read them are still said.
+    assert "Why: you answered a finding `rejected` and no check has ruled on it since" in odd.text
+    assert f"Rule {_AWAITING}." in odd.text
+    bare = _gate(_awaiting())
+    assert bare is not None
+    assert "status view=findings lists them" in bare.text
