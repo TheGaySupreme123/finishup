@@ -39,6 +39,7 @@ __all__ = [
     "anchor_refs",
     "concern_key",
     "current_claim",
+    "equal_concern",
     "kinds_comparable",
     "same_concern",
     "subject_obligations",
@@ -165,3 +166,14 @@ def same_concern(first: ConcernKey, second: ConcernKey) -> bool:
     if not first.refs or not second.refs:
         return False
     return first.refs <= second.refs or second.refs <= first.refs
+
+
+def equal_concern(first: ConcernKey, second: ConcernKey) -> bool:
+    """Whether two keys name the very same concern: the same obligations, else the same refs.
+
+    The rule for an open, rulable finding: a narrower or wider challenge is a distinct issue.
+    """
+
+    if first.obligations or second.obligations:
+        return first.obligations == second.obligations
+    return bool(first.refs) and first.refs == second.refs

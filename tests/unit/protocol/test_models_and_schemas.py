@@ -2530,7 +2530,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     rules = cast(tuple[Any, ...], getattr(models, "_RESULT_LEAF_RULES"))
 
     derived_patterns = _derived_result_success_patterns(catalog)
-    assert len(derived_patterns) == 1455  # +9 tb4n3 LO: closure_readiness.check_cause
+    assert len(derived_patterns) == 1457  # +9 tb4n3 LO: check_cause, +2 W2-B: closure_after
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -3246,8 +3246,8 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_721
-    )  # #1027 +3, +6 tb4n3 LO
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_722
+    )  # #1027 +3, +6 tb4n3 LO, +1 W2-B closure_after
 
 
 def test_schema_name_derivation_and_version_maps_are_exact() -> None:

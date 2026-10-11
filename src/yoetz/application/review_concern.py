@@ -202,10 +202,17 @@ def _is_material(index: _CaseIndex, row: _Row, concern: ConcernKey) -> bool:
         if result is None or result.payload is None:
             return False
         action = projection.actions.get(result.payload.action_id)
-        if action is None or action.payload is None:
-            return False
-        unlinked = not action.payload.obligation_refs
-        return unlinked and result.payload.outcome is not ResultOutcome.SUCCESS
+        action_obligations = (
+            frozenset[str]()
+            if action is None or action.payload is None
+            else frozenset(str(item) for item in action.payload.obligation_refs)
+        )
+        if action_obligations:
+            # Linked to other obligations only (a link to the concern's own was handled above).
+            return bool(concern.obligations & action_obligations)
+        # Unlinked (or its action is unknown): only a run that did not succeed can show the
+        # problem remains; the latest passing test run every agent re-runs is not new material.
+        return result.payload.outcome is not ResultOutcome.SUCCESS
     return False
 
 

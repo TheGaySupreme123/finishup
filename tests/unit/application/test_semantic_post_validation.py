@@ -676,9 +676,12 @@ def test_a_ruling_that_loses_a_cited_ref_is_unassessable_never_silently_dropped(
         )
     )
 
+    # tb4n3 RC-7 (D-6): a ``fixed`` that keeps one recorded newer result stays ``fixed`` when
+    # another citation is trimmed; a ``still_present`` that loses its citation is still
+    # ``unassessable``. Both trims are disclosed.
     assert _rulings(review) == [
         (str(fnd(1)), "unassessable", (str(obl(1)),)),
-        (str(fnd(2)), "unassessable", (str(res(2)),)),
+        (str(fnd(2)), "fixed", (str(res(2)),)),
     ]
     assert review.verdicts_unsupported == 2
 
@@ -1389,6 +1392,7 @@ def _cargo_case(
     *,
     resolved: bool = False,
     disposition: ResponseDisposition = ResponseDisposition.REJECTED,
+    result_outcome: ResultOutcome = ResultOutcome.FAILURE,
 ) -> DeterministicCase:
     """cargo-flight-dispatch shape: one concern raised at 5, answered at 6, then new work.
 
@@ -1409,7 +1413,7 @@ def _cargo_case(
     results = {
         res(number): record(
             ResultRecordedPayload(
-                res(number), act(number), ResultOutcome.SUCCESS, summary=f"attempt {number}"
+                res(number), act(number), result_outcome, summary=f"attempt {number}"
             ),
             6 + number,
         )

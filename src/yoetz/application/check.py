@@ -100,7 +100,13 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
-from yoetz.kernel.concern import ConcernKey, concern_key, kinds_comparable, same_concern
+from yoetz.kernel.concern import (
+    ConcernKey,
+    concern_key,
+    equal_concern,
+    kinds_comparable,
+    same_concern,
+)
 from yoetz.kernel.delivered_set import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
@@ -3924,15 +3930,29 @@ def _restated_finding(
             obligation_concern=bool(wanted_key.obligations and target_key.obligations),
         ):
             continue
-        if not exact and not same_concern(wanted_key, target_key):
+        target_state = finding_todo_state(case.projection, key)
+        # An open item folds only a challenge about the very same concern: a narrower or wider
+        # one is a distinct issue whose discrepancy a ruling cannot carry (Greptile P1 on #943).
+        # A settled item (the agent's final word, or a disclosed limitation) folds any overlap,
+        # because the re-raise cannot change what the agent already settled (tb4n3 RC-7).
+        settled_target = target_state is not FindingTodoState.OPEN or _limitation_disclosed(
+            case, key
+        )
+        if not exact and not (
+            same_concern(wanted_key, target_key)
+            if settled_target
+            else equal_concern(wanted_key, target_key)
+        ):
             continue
         bound = answer_bound(case.projection, key)
         if (
             key in replies_to
-            and finding_todo_state(case.projection, key) is FindingTodoState.OPEN
+            and target_state is FindingTodoState.OPEN
             and _answered(case.projection, key)
-            and bound is None
+            and not rejection_stands(record, case.projection.responses.get(key))
         ):
+            # The reviewer's reply to an answer reaches the agent as a finding (issue #976); only
+            # a reply to a standing rejection that brings nothing newer folds (issue #1020).
             continue
         if bound is None:
             bound = max(record.source_frontier, record.last_ruling_frontier or 0)
