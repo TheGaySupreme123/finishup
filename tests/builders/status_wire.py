@@ -243,43 +243,55 @@ def compact_status(
 
 def obligations_status(
     compact: CompactStatus,
-    obligations: Sequence[tuple[str, Sequence[tuple[str, str | None, str | None]]]],
+    obligations: Sequence[
+        tuple[str, Sequence[tuple[str, str | None, str | None]]]
+        | tuple[str, Sequence[tuple[str, str | None, str | None]], bool | None]
+    ],
+    *,
+    sequence: str | None = None,
+    next_cursor: str | None = None,
 ) -> StatusResultModel:
-    """An obligations view: ``(status, [(item_kind, value or None for withheld, role)])`` each."""
+    """An obligations view page.
+
+    Each obligation is ``(status, [(item_kind, value or None for withheld, role)])`` or the same
+    with a third ``in_current_plan`` element (default ``True``; ``None`` leaves it absent, as an
+    older service or an unreadable plan scope does). ``sequence`` is the page's own head frontier
+    (default the compact status's), ``next_cursor`` marks a page with more behind it.
+    """
 
     rows: list[dict[str, Any]] = []
-    for status, requested in obligations:
-        rows.append(
-            {
-                "obligation_id": new_id(IdKind.OBLIGATION),
-                "status": status,
-                "description": "Synthetic obligation",
-                "evidence_expectation": "Observed",
-                "source_refs": [],
-                "assigned_actor_ids": [],
-                "evidence_refs": [],
-                "revision_event_id": None,
-                "requested_items": [
-                    {
-                        "item_kind": kind,
-                        "value": value
-                        if value is not None
-                        else {
-                            "category": "obligation_text",
-                            "omitted": True,
-                            "reason": "local_disclosure_not_authorized",
-                        },
-                        **({"role": role} if role is not None else {}),
-                    }
-                    for kind, value, role in requested
-                ],
-                **(
-                    {"acknowledged_not_done_reason": "Synthetic reason"}
-                    if status == "acknowledged_not_done"
-                    else {}
-                ),
-            }
-        )
+    for entry in obligations:
+        status, requested = entry[0], entry[1]
+        current: bool | None = entry[2] if len(entry) == 3 else True  # type: ignore[misc]
+        row: dict[str, Any] = {
+            "obligation_id": new_id(IdKind.OBLIGATION),
+            "status": status,
+            "description": "Synthetic obligation",
+            "evidence_expectation": "Observed",
+            "source_refs": [],
+            "assigned_actor_ids": [],
+            "evidence_refs": [],
+            "revision_event_id": None,
+            "requested_items": [
+                {
+                    "item_kind": kind,
+                    "value": value
+                    if value is not None
+                    else {
+                        "category": "obligation_text",
+                        "omitted": True,
+                        "reason": "local_disclosure_not_authorized",
+                    },
+                    **({"role": role} if role is not None else {}),
+                }
+                for kind, value, role in requested
+            ],
+        }
+        if status == "acknowledged_not_done":
+            row["acknowledged_not_done_reason"] = "Synthetic reason"
+        if current is not None:
+            row["in_current_plan"] = current
+        rows.append(row)
     readiness = with_checklist(
         {
             "declared_obligation_count": str(len(rows)),
@@ -292,10 +304,10 @@ def obligations_status(
     )
     wire = _envelope(
         "obligations",
-        {"items": rows, "next_cursor": None},
+        {"items": rows, "next_cursor": next_cursor},
         readiness,
         (compact.task_id, compact.session_id, compact.writer_id),
-        compact.sequence,
+        sequence or compact.sequence,
         compact.digest,
     )
     return StatusResultModel.model_validate(wire)

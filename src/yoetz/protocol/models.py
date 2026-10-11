@@ -4664,7 +4664,9 @@ class StatusCommandAttemptModel(_ClosedModel):
 
 
 class StatusObligationItemModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"acceptance_criteria", "acknowledged_not_done_reason"})
+    optional_non_null_fields = frozenset(
+        {"acceptance_criteria", "acknowledged_not_done_reason", "in_current_plan"}
+    )
 
     obligation_id: ObligationIdWire
     # ``acknowledged_not_done`` (obligation_published 1.1.0, #1002) on status-result 1.4.0 only.
@@ -4682,6 +4684,12 @@ class StatusObligationItemModel(_ClosedModel):
     # The agent's own reason for ``acknowledged_not_done`` (#1002/#996), status-result 1.4.0 only,
     # under the same obligation-text category as the description it explains.
     acknowledged_not_done_reason: String1To8192 | OmittedContentModel | None = None
+    # Whether the obligation is part of the current plan's effective scope: published, not waived
+    # and not superseded by a later plan revision (``task_facts.effective_obligations``). The view
+    # lists every obligation ever published; this is how a reader tells the declared ones from the
+    # historical ones (#1027, the post-compaction recap's deliverables). Status-result 1.4.0
+    # only; absent when the plan scope cannot be read, and never a claim that it is open.
+    in_current_plan: bool | None = None
 
     @model_validator(mode="after")
     def _validate_obligation_item(self) -> StatusObligationItemModel:
@@ -6356,6 +6364,7 @@ _STATUS_OBLIGATIONS_STRUCTURAL_POINTERS: Final = (
             "requested_items/*/item_kind",
             "requested_items/*/role",
             "source_refs/*",
+            "in_current_plan",
             "status",
             "unattempted_items/*/item_kind",
             "unattempted_items/*/role",
@@ -6898,7 +6907,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1472:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +4
+    if len(result) != 1473:  # L2 +14, L3 +2, L6 +6, L5 +2, L4 +24, tb4n2 LA +2, #1017 +3, #1027 +5
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

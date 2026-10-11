@@ -22,7 +22,7 @@ It records nothing, claims nothing, and is not evidence; ``status`` is the live 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final
 
 from yoetz.domain.bounded_text import Part, compose_parts, list_variants
@@ -44,6 +44,7 @@ RECAP_LIMIT: Final = 2_400
 RECAP_CONTEXT_LIMIT: Final = 4_000
 
 _EXCERPT_CHARS: Final = 80
+_PATH_CHARS: Final = 120
 _WHITESPACE: Final = re.compile(r"\s+")
 _NEXT_ACTION: Final = {
     "action_required": (
@@ -122,12 +123,78 @@ class RecapFacts:
     # ``None`` means the obligations view was not read (so deliverables are unavailable).
     deliverables: tuple[RecapDeliverable, ...] | None = None
     deliverables_total: int | None = None
+    # The head frontier of the obligations read (its own, not the compact read's), whether more
+    # pages exist than were read, and whether the view could not tell the current plan's
+    # obligations from historical ones (then no deliverable is claimed).
+    deliverables_sequence: str | None = None
+    deliverables_partial: bool = False
+    deliverables_scope_unknown: bool = False
     readiness_state: str | None = None
     agent_actionable: tuple[str, ...] = ()
     blocked_obligations: int | None = None
     # Hook rows of this session still in the local outbox when the status was read: the ledger
     # facts above may lag them. ``None`` means the outbox was not read.
     pending_observation_rows: int | None = None
+
+
+_TOKEN_UNSAFE: Final = re.compile(r"[^A-Za-z0-9._:/@+=-]")
+_TOKEN_CHARS: Final = 128
+
+
+def _tok(value: str | None) -> str:
+    """An identifier, code or digest as one safe token: no whitespace, quote or control character.
+
+    Every value the recap interpolates outside a quoted excerpt passes through here, so a field
+    that carries anything but its documented shape cannot start a line of its own or forge a
+    source label.
+    """
+
+    if value is None:
+        return ""
+    return _TOKEN_UNSAFE.sub("?", value)[:_TOKEN_CHARS]
+
+
+def _clean_facts(facts: RecapFacts) -> RecapFacts:
+    """Return ``facts`` with every identifier-like string reduced to a safe token."""
+
+    return replace(
+        facts,
+        task_id=_tok(facts.task_id),
+        session_id=_tok(facts.session_id),
+        writer_id=_tok(facts.writer_id),
+        head_sequence=_tok(facts.head_sequence),
+        head_digest=_tok(facts.head_digest),
+        plan_event_id=None if facts.plan_event_id is None else _tok(facts.plan_event_id),
+        obligations=tuple(
+            replace(item, obligation_id=_tok(item.obligation_id)) for item in facts.obligations
+        ),
+        findings=tuple(
+            replace(item, finding_id=_tok(item.finding_id), kind=_tok(item.kind))
+            for item in facts.findings
+        ),
+        check=None
+        if facts.check is None
+        else RecapCheck(
+            _tok(facts.check.event_id),
+            _tok(facts.check.frontier_sequence),
+            _tok(facts.check.verdict),
+        ),
+        deliverables=None
+        if facts.deliverables is None
+        else tuple(
+            replace(
+                item,
+                obligation_id=_tok(item.obligation_id),
+                obligation_status=_tok(item.obligation_status),
+            )
+            for item in facts.deliverables
+        ),
+        deliverables_sequence=None
+        if facts.deliverables_sequence is None
+        else _tok(facts.deliverables_sequence),
+        readiness_state=None if facts.readiness_state is None else _tok(facts.readiness_state),
+        agent_actionable=tuple(_tok(token) for token in facts.agent_actionable),
+    )
 
 
 def _excerpt(text: str | None) -> str:
@@ -154,6 +221,7 @@ def _short_digest(digest: str) -> str:
 def compose_compaction_recap(facts: RecapFacts, *, limit: int = RECAP_LIMIT) -> str:
     """Compose the bounded, ASCII, source-labelled recap for one resumed session. Never raises."""
 
+    facts = _clean_facts(facts)
     seq = facts.head_sequence
     compact = _source("compact", seq)
     header = (
@@ -341,29 +409,55 @@ def _check_line(facts: RecapFacts, sequence: str) -> str:
 
 
 def _deliverable_variants(facts: RecapFacts, sequence: str) -> tuple[str, ...]:
-    source = f"[source status obligations @{sequence}]"
+    # The obligations view is its own read, at its own head frontier; label it with that one.
+    own = facts.deliverables_sequence or sequence
+    source = f"[source status obligations @{own}]"
     items = facts.deliverables
     if items is None:
         return (
             "declared deliverables: unavailable, the obligations view was not read "
             f"[source status compact @{sequence}].",
         )
+    if facts.deliverables_scope_unknown:
+        return (
+            "declared deliverables: unavailable, the obligations view did not say which "
+            f"obligations belong to the current plan {source}.",
+        )
+    partial = (
+        "; the obligations view has more pages than were read, ask status obligations"
+        if facts.deliverables_partial
+        else ""
+    )
     if not items:
+        if facts.deliverables_partial:
+            return (
+                f"declared deliverables: none in the obligations read so far{partial} {source}.",
+            )
         return (f"declared deliverables: none declared {source}.",)
     total = facts.deliverables_total if facts.deliverables_total is not None else len(items)
     rendered = [
-        f"{item.value if item.value is not None else '(path withheld)'} "
-        f"({item.obligation_id} {item.obligation_status})"
+        f"{_quoted_path(item.value)} ({item.obligation_id} {item.obligation_status})"
         for item in items
     ]
     shown_more = max(0, total - len(items))
     unshown = f"; +{shown_more} more (ask status)" if shown_more else ""
-    head = f"declared deliverables ({total}): "
+    head = f"declared deliverables ({'at least ' if facts.deliverables_partial else ''}{total}): "
     variants = [
-        v.replace(f" {source}.", f"{unshown} {source}.", 1) if unshown else v
+        v.replace(f" {source}.", f"{unshown}{partial} {source}.", 1) if unshown or partial else v
         for v in list_variants(
             head, rendered, joiner="; ", more="; +{n} more (ask status)", suffix=f" {source}."
         )
     ]
-    variants.append(f"declared deliverables: {total} (ask status obligations) {source}.")
+    variants.append(f"declared deliverables: {total} (ask status obligations){partial} {source}.")
     return tuple(dict.fromkeys(variants))
+
+
+def _quoted_path(value: str | None) -> str:
+    """A requested path as one quoted single-line excerpt; a path is user text, not a token."""
+
+    if value is None:
+        return "(path withheld)"
+    flat = _WHITESPACE.sub(" ", value).strip().replace('"', "'")
+    if len(flat) > _PATH_CHARS:
+        flat = flat[: _PATH_CHARS - 3].rstrip() + "..."
+    return f'"{flat}"' if flat else "(empty path)"

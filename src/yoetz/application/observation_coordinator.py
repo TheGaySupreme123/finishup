@@ -4137,6 +4137,54 @@ class ObservationCoordinator:
             )
         )
 
+    async def _duplicate_agrees_with_ledger(
+        self,
+        runtime: TaskRuntime,
+        envelope: ObservationEnvelope,
+        batch: MaterializedObservationBatch,
+    ) -> bool:
+        """Whether a delivery whose events are all committed also states what the ledger holds.
+
+        Event ids say it is the same call, not that it says the same thing. A Codex stream copy may
+        differ from the committed result: the outcome correction then enriches an UNKNOWN or
+        records the disagreement as a ``dedup_conflict`` correction, so nothing is lost. Any other
+        source has no correction to carry a difference, so a copy stating an explicit outcome
+        counts as a duplicate only when the committed result states exactly that outcome and exit
+        status; anything else, or a projection that cannot confirm it, keeps the ledger's own
+        refusal and its quarantine (fail closed, #560).
+        """
+
+        if envelope.source is ObservationSource.CODEX_SESSION_STREAM:
+            return True
+        stated = [
+            item.draft.payload
+            for item in batch.drafts
+            if type(item.draft.payload) is ResultRecordedPayload
+            and item.draft.payload.outcome is not ResultOutcome.UNKNOWN
+        ]
+        if not stated:
+            return True
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        if (
+            projection is None
+            or type(projection.state) is not ProjectionState
+            or projection.lag != 0
+            or projection.rebuild_required
+        ):
+            return False
+        for payload in stated:
+            committed = projection.state.results.get(payload.result_id)
+            if (
+                committed is None
+                or committed.payload is None
+                or (committed.payload.outcome, committed.payload.exit_status)
+                != (payload.outcome, payload.exit_status)
+            ):
+                return False
+        return True
+
     async def _correct_recorded_outcome(
         self,
         runtime: TaskRuntime,
@@ -4650,8 +4698,10 @@ class ObservationCoordinator:
         # by another call, so that collision stays a conflict and fails closed (#560).
         draft_event_ids = tuple(str(item.draft.event_id) for item in batch.drafts)
         duplicate_by_events = observation_event_ids_call_keyed(envelope)
-        if duplicate_by_events and await observation_already_committed(
-            runtime.ledger, draft_event_ids
+        if (
+            duplicate_by_events
+            and await observation_already_committed(runtime.ledger, draft_event_ids)
+            and await self._duplicate_agrees_with_ledger(runtime, envelope, batch)
         ):
             return _AlreadyCommitted(frozenset(draft_event_ids))
 
@@ -4788,6 +4838,7 @@ class ObservationCoordinator:
                 not duplicate_by_events
                 or exc.code is not PublicErrorCode.EVENT_INVALID
                 or not await observation_already_committed(runtime.ledger, draft_event_ids)
+                or not await self._duplicate_agrees_with_ledger(runtime, envelope, batch)
             ):
                 raise
             await abandon_preappend_objects(

@@ -4648,6 +4648,7 @@ def handle_observe(
     _content_payload: Mapping[str, JsonValue] | None = None,
     _ingress_gap: str | None = None,
     _include_admission_notice: bool = True,
+    _include_recap: bool = True,
     _pass_timing: HookPassTiming | None = None,
     _derived_runner_class: RunnerClass | None = None,
 ) -> int:
@@ -5766,9 +5767,11 @@ def handle_observe(
                     skip_advice_loop=skip_advice_loop,
                     session_lock_owned=_session_lock_owned,
                     _state=_state,
-                    # Codex re-grounds a compaction through its own ``hooks session-start``
-                    # (which carries the recap); the shared pass serves Claude Code and Cursor.
-                    recap=session_source_value == "compact" and harness_id != "codex",
+                    # Codex runs its re-ground hook and this pass concurrently on a compact
+                    # start; whichever holds the session lifecycle lock reads status and carries
+                    # the active context, so it must carry the recap too (the other emits at
+                    # most the admission notice). Claude Code and Cursor have this pass only.
+                    recap=session_source_value == "compact" and _include_recap,
                     recap_time_left=lambda: (
                         entry_started + _RECAP_READ_WINDOW_SECONDS - _monotonic()
                     ),

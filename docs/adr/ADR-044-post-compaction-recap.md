@@ -58,7 +58,7 @@ the same change.
    | `open obligations` | up to 10 ids with a quoted excerpt of the description, the rest counted | status compact |
    | `findings awaiting your response` | up to 10 ids with priority, kind and a quoted excerpt, total and receipt-blocking counts, marked reviewer text and advisory | status compact |
    | `last check` | verdict, the frontier it examined, the check event id; or "none recorded" (readiness reports `check_not_recorded`); or "not reported by this status" | status compact `latest_check` |
-   | `declared deliverables` | requested `file` / `directory` items with role `output`, each with its obligation and that obligation's status; "unavailable" if the obligations read did not answer | status obligations |
+   | `declared deliverables` | requested `file` / `directory` items with role `output` of obligations in the current plan (`in_current_plan`), each with its obligation and that obligation's status, quoted on one line; up to three obligations pages are read, and a line says when pages remain unread; "unavailable" if the read did not answer or the view could not place obligations in the plan | status obligations, at that read's own frontier |
    | `next` | one plain-words sentence for `closure_readiness.state` | status compact closure_readiness |
    | note | the number of this session's undelivered local rows that would add ledger work, when any | local outbox |
 
@@ -79,15 +79,20 @@ the same change.
    compact`), never on `startup`, `resume`, `clear` or any other event, and after the held-ids cue
    and the admission notice so those keep their own bounds.
 
-   - Codex: the `hooks session-start` re-ground hook (registered for `resume|compact`) reads
-     compact then obligations and appends the recap. The shared `hooks observe SessionStart` hook
-     also runs on a compact start; it asks for no recap, so exactly one Codex hook carries it.
+   - Codex: two `SessionStart` hooks run concurrently on a compact start, the `hooks
+     session-start` re-ground hook (registered for `resume|compact`) and the shared `hooks observe
+     SessionStart` hook. Whichever holds the session lifecycle lock reads status and carries the
+     active context; the other cannot read status and emits at most the admission notice (the
+     tb4n3 sglang S rollout shows exactly that pair of developer messages). So both can carry the
+     recap, and only the lock holder composes it: one recap in the concurrent case, never none.
+     The re-ground hook's discarded delegation to the observe pass asks for no recap.
    - Claude Code and Cursor: the shared observe pass. Their wrappers encode the lifecycle source in
      the structural action (`claude_session_compact`, `cursor_session_compact`), which
      `_session_start_source` now resolves.
 
 5. **Currency, and why `PreCompact` does not drain.** The recap is read after the compaction, from
-   the ledger. The ordinary observe pass already reconciles the Codex session stream and drains the
+   the ledger. The Codex re-ground hook counts the undelivered local rows before it reads status
+   (the delegated observe pass drains them afterwards). The ordinary observe pass already reconciles the Codex session stream and drains the
    outbox on `PreCompact` and `PostCompact`, and a compaction itself runs for minutes with no tool
    call (about four minutes in the tb4n3 sglang S rollout), so every pre-compaction row has been offered
    to the ledger before the recap reads it. A second drain in `PreCompact` would add a synchronous
@@ -100,11 +105,22 @@ the same change.
    default. The obligations read is one bounded call (1.5 s); if it fails the recap says deliverables
    are unavailable.
 
-7. **One additive wire field.** The compact status item gains `latest_check`
+7. **Two additive wire fields.** The compact status item gains `latest_check`
    `{check_event_id, checked_frontier, verdict}`, read off the recorded `check_recorded` event the
-   projection's latest tested state points at, absent when no check exists (status-result 1.4.0,
-   unreleased; `optional_non_null`). It is the only way the recap, or an agent, can name the last
-   check's verdict and frontier without opening the check; the CLI status render prints it.
+   projection's latest tested state points at, absent when no check exists. Each obligations-view
+   item gains `in_current_plan`, true exactly for the obligations of the current plan's effective
+   scope (`task_facts.effective_obligations`: not waived, not superseded), absent when the scope
+   cannot be read. Both are status-result 1.4.0, unreleased, `optional_non_null`. The first is the
+   only way the recap, or an agent, can name the last check without opening it; the second is how
+   a reader tells declared deliverables from the historical ones the view also lists, with the same
+   definition the readiness facts use. An older service omits both, and the recap then says "not
+   reported" or "unavailable" rather than claim a deliverable.
+
+8. **Provenance is per read, and text is quoted.** The deliverables line names the obligations
+   read's own head frontier, not the compact read's. Every value interpolated outside a quoted
+   excerpt is reduced to a safe token (no whitespace, quote or control character), and every
+   piece of task, reviewer or path text is flattened to a quoted single-line excerpt, so a field
+   cannot start a line of its own or forge a `[source ...]` label.
 
 ## Per-host decisions
 

@@ -2011,8 +2011,11 @@ text stays withheld, and any failure leaves the held-ids cue unchanged. A `resum
 Facts about the host, from the tb4n3 sglang S rollout (Codex 0.159.3): compaction ran for about four
 minutes with no tool call (`PreCompact` at 08:45:09, `PostCompact` at 08:49:06, `SessionStart` at
 08:49:08); the hook output arrived as two `hooks.additional_context` developer messages (the admission
-notice and the held-ids cue). Both Codex `SessionStart` hooks run on a compact start and both read
-`status`; only the re-ground hook asks for the recap, so the model sees it once. `PreCompact` and
+notice and the held-ids cue). Codex runs the re-ground hook and the plugin's `observe SessionStart`
+hook concurrently; the one that wins the session lifecycle lock reads `status` and carries the
+held-ids cue and the recap, and the other emits at most the admission notice (which is why the rollout
+shows the notice and the cue as separate messages, once each). Either hook can therefore carry the
+recap, and only the lock holder composes it. `PreCompact` and
 `PostCompact` are registered async; their ordinary observe pass reconciles the rollout and drains the
 outbox, so no extra drain is added (ADR-044 decision 5). A recap line states how many undelivered local
 rows were pending when it was read.

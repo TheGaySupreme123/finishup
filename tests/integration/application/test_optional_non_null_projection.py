@@ -306,7 +306,10 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (StatusFindingsPageModel, frozenset({"attempt_budget"})),
     (StatusHistoryItemV14Model, frozenset({"review_input_manifest"})),
     (ReviewInputManifestModel, frozenset({"review_phase", "omitted_item_total"})),
-    (StatusObligationItemModel, frozenset({"acceptance_criteria", "acknowledged_not_done_reason"})),
+    (
+        StatusObligationItemModel,
+        frozenset({"acceptance_criteria", "acknowledged_not_done_reason", "in_current_plan"}),
+    ),
     (StatusRequestedItemModel, frozenset({"role"})),
     (StatusObservedRunModel, frozenset({"tool_name", "command_commitment", "exit_status"})),
     (StatusResultItemModel, frozenset({"observed_run"})),
@@ -684,6 +687,26 @@ async def test_obligation_without_acceptance_criteria_projects(view: str) -> Non
     if view == "obligations":
         # Required nullable keys that were set to null must still project as null.
         assert obligation["revision_event_id"] is None
+
+
+@pytest.mark.parametrize("declared", (True, False), ids=("in-plan", "not-in-plan"))
+async def test_obligations_view_marks_membership_in_the_current_plan(declared: bool) -> None:
+    """#1027: the view lists every obligation ever published; the flag tells a declared one apart.
+
+    The post-compaction recap claims a requested output as a deliverable only for an obligation
+    in the current plan's effective scope, so a waived or superseded one never returns as work.
+    """
+
+    app, session_id, writer_id = await _publish_obligation(
+        2300 + (0 if declared else 20), acceptance_criteria=None, declare_in_plan=declared
+    )
+    projected = await _project_status(
+        app, session_id=session_id, writer_id=writer_id, view="obligations", seed=2350
+    )
+    assert projected["ok"] is True
+    obligation = _obligation_from_projected(projected, "obligations")
+
+    assert obligation["in_current_plan"] is declared
 
 
 @pytest.mark.parametrize("view", ("compact", "obligations"))
@@ -1561,6 +1584,10 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         ),
         ("StatusObligationItemModel", "acknowledged_not_done_reason"): (
             "test_obligation_without_acceptance_criteria_projects"
+        ),
+        # Issue #1027: present whenever the plan scope is readable, False off the current plan.
+        ("StatusObligationItemModel", "in_current_plan"): (
+            "test_obligations_view_marks_membership_in_the_current_plan"
         ),
         ("StatusRequestedItemModel", "role"): ("test_nested_multi_agent_results_omit_unset_fields"),
         # Issue #914: tests/conformance/protocol/test_status_evidence_author_fixture.py

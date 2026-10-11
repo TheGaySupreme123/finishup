@@ -490,3 +490,139 @@ async def test_post_only_hosts_get_the_same_duplicate_classification(
     with pytest.raises(PublicOperationError) as refused:
         await reshaped_copy(None)
     assert refused.value.code is PublicErrorCode.EVENT_INVALID
+
+
+def _stated_post(cell: Replay, call: str, exit_code: int) -> None:
+    """A hook ``PostToolUse`` that states the call's exit status."""
+
+    tool_input = {"command": _TEST_COMMAND}
+    cell.hook(
+        "PostToolUse",
+        tool_name="Bash",
+        tool_use_id=call,
+        tool_input=tool_input,
+        tool_response=json.dumps(
+            {"chunk_id": "s1", "exit_code": exit_code, "output": "public synthetic output"}
+        ),
+    )
+
+
+def _hook_post_copy(cell: Replay, call: str, *, exit_status: int) -> ObservationIngestRequest:
+    """A second delivery of the call's committed hook post, stating ``exit_status``.
+
+    Same host call and generation (so the same event ids), a different source identity (a separate
+    delivery), and no content: what a re-fired or retried post looks like once its manifests are
+    gone.
+    """
+
+    from yoetz.domain.values import JsonObject
+
+    rows = cell.store.list_pending_outbox_rows(cell.commitment)
+    row = next(
+        row
+        for row in rows
+        if row.envelope.event_kind == "PostToolUse"
+        and row.envelope.structural_payload.get("tool_call_id") == call
+    )
+    payload = dict(row.envelope.structural_payload)
+    payload["exit_status"] = exit_status
+    copy = replace(
+        row.envelope,
+        source_identity=f"hook:copy:{call}:{exit_status}",
+        structural_payload=JsonObject(payload),
+    )
+    return ObservationIngestRequest(codex_session_id=row.codex_session_id, envelope=copy)
+
+
+async def _committed_success_then_lost_manifests(cell: Replay, call: str) -> Recorder:
+    """A captured hook post stating exit 0 is committed; the call's content manifests are then gone."""
+
+    session_start(cell)
+    await sweep_all(cell, capture_hook_output=True)
+    cell.hook(
+        "PreToolUse", tool_name="Bash", tool_use_id=call, tool_input={"command": _TEST_COMMAND}
+    )
+    _stated_post(cell, call, 0)
+    recorder = Recorder(build_coordinator(cell), capture_hook_output=True)
+    await _ingest_rows(cell, recorder, call, ("pre", "post"))
+    assert recorder.refused == []
+    cell.task_store._db.execute("DELETE FROM observation_content_manifests")
+    return recorder
+
+
+@pytest.mark.anyio
+async def test_a_contentless_hook_copy_stating_the_same_outcome_is_a_duplicate(
+    replay: Replay,
+) -> None:
+    await _committed_success_then_lost_manifests(replay, "call_same")
+    contentless = Recorder(build_coordinator(replay), capture_hook_output=False)
+    await contentless.ingest_request(_hook_post_copy(replay, "call_same", exit_status=0))
+
+    assert contentless.refused == [], contentless.refused
+    (results,) = _ledger_calls(replay).values()
+    assert results == [(ResultOutcome.SUCCESS, 0)]
+
+
+@pytest.mark.anyio
+async def test_a_contentless_hook_copy_contradicting_the_committed_outcome_is_still_refused(
+    replay: Replay,
+) -> None:
+    """Codex review of #1027: event ids say same call, not same outcome.
+
+    A hook copy has no outcome correction to carry a difference, so the duplicate classification
+    must not swallow it: the ledger's refusal and its quarantine stand, and the committed
+    outcome is untouched.
+    """
+
+    await _committed_success_then_lost_manifests(replay, "call_contradiction")
+    contentless = Recorder(build_coordinator(replay), capture_hook_output=False)
+    await contentless.ingest_request(_hook_post_copy(replay, "call_contradiction", exit_status=1))
+
+    assert [item[2:] for item in contentless.refused] == [("rejected", "ledger_rejected")]
+    (results,) = _ledger_calls(replay).values()
+    assert results == [(ResultOutcome.SUCCESS, 0)]
+
+
+@pytest.mark.anyio
+async def test_a_stream_copy_contradicting_the_committed_outcome_is_recorded_as_a_conflict(
+    replay: Replay,
+) -> None:
+    """The stream copy is a duplicate by event ids, and its differing outcome is not lost: the
+    correction records it beside the hook's, flagged as a dedup conflict."""
+
+    from yoetz.adapters.integrations.codex_session_stream import STREAM_MAPPING_VERSION
+    from yoetz.domain.observation import ObservationCursor
+    from yoetz.domain.values import JsonObject
+
+    await _committed_success_then_lost_manifests(replay, "call_conflict")
+    rows = replay.store.list_pending_outbox_rows(replay.commitment)
+    hook_post = next(
+        row.envelope
+        for row in rows
+        if row.envelope.event_kind == "PostToolUse"
+        and row.envelope.structural_payload.get("tool_call_id") == "call_conflict"
+    )
+    payload = dict(hook_post.structural_payload)
+    payload.update({"exit_status": 1, "action": "CommandExecution"})
+    stream_copy = replace(
+        hook_post,
+        source=ObservationSource.CODEX_SESSION_STREAM,
+        event_kind="item_completed",
+        source_identity="stream:conflicting-copy",
+        structural_payload=JsonObject(payload),
+        cursor=ObservationCursor(
+            hook_post.cursor.source_generation,
+            1_000_000,
+            1_000_000,
+            f"hmac-sha256:{'cd' * 32}",
+            STREAM_MAPPING_VERSION,
+        ),
+    )
+    recorder = Recorder(build_coordinator(replay), capture_hook_output=False)
+    await recorder.ingest_request(
+        ObservationIngestRequest(codex_session_id=rows[0].codex_session_id, envelope=stream_copy)
+    )
+
+    assert recorder.refused == [], recorder.refused
+    (results,) = _ledger_calls(replay).values()
+    assert results == [(ResultOutcome.SUCCESS, 0), (ResultOutcome.FAILURE, 1)]

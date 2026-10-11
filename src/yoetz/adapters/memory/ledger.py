@@ -136,7 +136,7 @@ from yoetz.kernel.reducers import (
     replay_extension_with_index,
     replay_with_index,
 )
-from yoetz.kernel.task_facts import task_fact_signals
+from yoetz.kernel.task_facts import effective_obligations, task_fact_signals
 from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.change_capture import TASK_CHANGE_BASE_MEDIA_TYPE
 from yoetz.ports.clock import ClockPort
@@ -1249,6 +1249,7 @@ def _obligation_item(
     record: object,
     assigned_actor_ids: tuple[str, ...],
     attempted_items: frozenset[str],
+    in_current_plan: bool | None = None,
 ) -> StatusObligationItemModel:
     from yoetz.kernel.projections import ObligationProjectionRecord
 
@@ -1263,7 +1264,7 @@ def _obligation_item(
     unattempted_items = tuple(
         item for item in requested_items if item["value"] not in attempted_items
     )
-    values = dict(
+    values: dict[str, object] = dict(
         obligation_id=obligation,
         # Issue #997/#1002: the row is the not-done marker: ``acknowledged_not_done`` with the
         # agent's reason (status-result 1.4.0). Closure readiness counts it once, as not done.
@@ -1281,6 +1282,8 @@ def _obligation_item(
         values["acceptance_criteria"] = typed.payload.acceptance_criteria
     if typed.payload.acknowledged_not_done_reason is not None:
         values["acknowledged_not_done_reason"] = typed.payload.acknowledged_not_done_reason
+    if in_current_plan is not None:
+        values["in_current_plan"] = in_current_plan
     return StatusObligationItemModel.model_validate(values)
 
 
@@ -1606,12 +1609,20 @@ def _projection_items(
                 continue
             for obligation in assignment.payload.obligation_ids:
                 actors.setdefault(obligation, set()).add(assignment.payload.assignee_actor_id)
+        # Membership in the current plan's effective scope; unknown when the scope is unreadable.
+        plan_scope = current_plan_scope(projection.plans, projection.coverage_gaps)
+        effective_refs = (
+            None
+            if plan_scope.effective_obligation_refs is None
+            else frozenset(effective_obligations(projection))
+        )
         return tuple(
             _obligation_item(
                 obligation,
                 record,
                 tuple(sorted(actors.get(obligation, ()), key=str.encode)),
                 attempted_items_for_obligation(projection, obligation),
+                None if effective_refs is None else obligation in effective_refs,
             ).model_copy(
                 update={"command_attempts": command_attempts(projection, records, obligation)}
             )

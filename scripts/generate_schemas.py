@@ -4492,6 +4492,9 @@ def _add_status_requested_item_role(definitions: dict[str, JsonValue]) -> None:
     obligation_properties["acknowledged_not_done_reason"] = {
         "oneOf": [{"$ref": "#/$defs/content_text"}, {"$ref": "#/$defs/obligation_omission"}]
     }
+    # #1027: whether the obligation is in the current plan's effective scope (not waived or
+    # superseded); optional, absent when the plan scope cannot be read.
+    obligation_properties["in_current_plan"] = {"type": "boolean"}
 
 
 def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:

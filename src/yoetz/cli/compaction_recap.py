@@ -153,36 +153,55 @@ def recap_facts_from_status(
     )
 
 
-def recap_with_deliverables(facts: RecapFacts, obligations_branch: object | None) -> RecapFacts:
-    """Add the declared deliverables read off one ``obligations`` view (or leave them unavailable).
+def recap_with_deliverables(
+    facts: RecapFacts, pages: Sequence[object], *, more_pages: bool = False
+) -> RecapFacts:
+    """Add the declared deliverables read off the ``obligations`` view pages (first page first).
 
-    A declared deliverable is a requested ``file`` or ``directory`` item with role ``output``, the
-    definition the readiness facts use (``task_facts.declared_output_items``). Each is listed with
-    the status of the obligation that requested it.
+    A declared deliverable is a requested ``file`` or ``directory`` item with role ``output`` of
+    an obligation in the current plan's effective scope (``in_current_plan``), the definition the
+    readiness facts use (``task_facts.declared_output_items``). The view lists every obligation
+    ever published, so a row the service did not mark as part of the current plan (a waived or
+    superseded one, or an older service that does not say) is never claimed as a deliverable.
+    ``more_pages`` records that the view has pages that were not read.
     """
 
-    if obligations_branch is None:
-        return facts
-    page = getattr(obligations_branch, "page", None)
-    if page is None:
+    if not pages:
         return facts
     rows: list[RecapDeliverable] = []
-    for obligation in _items(getattr(page, "items", None)):
-        obligation_id = _text(getattr(obligation, "obligation_id", None))
-        status = _text(getattr(obligation, "status", None)) or "unreported"
-        if obligation_id is None:
-            continue
-        for requested in _items(getattr(obligation, "requested_items", None)):
-            if (
-                _text(getattr(requested, "item_kind", None)) in _DELIVERABLE_KINDS
-                and _text(getattr(requested, "role", None)) == "output"
-            ):
-                rows.append(
-                    RecapDeliverable(
-                        obligation_id, status, _text(getattr(requested, "value", None))
+    scope_unknown = False
+    for branch in pages:
+        page = getattr(branch, "page", None)
+        if page is None:
+            return facts
+        for obligation in _items(getattr(page, "items", None)):
+            obligation_id = _text(getattr(obligation, "obligation_id", None))
+            if obligation_id is None:
+                continue
+            current = getattr(obligation, "in_current_plan", None)
+            if current is None:
+                scope_unknown = True
+                continue
+            if current is not True:
+                continue
+            status = _text(getattr(obligation, "status", None)) or "unreported"
+            for requested in _items(getattr(obligation, "requested_items", None)):
+                if (
+                    _text(getattr(requested, "item_kind", None)) in _DELIVERABLE_KINDS
+                    and _text(getattr(requested, "role", None)) == "output"
+                ):
+                    rows.append(
+                        RecapDeliverable(
+                            obligation_id, status, _text(getattr(requested, "value", None))
+                        )
                     )
-                )
-    return _replace_deliverables(facts, tuple(rows))
+    sequence = _text(getattr(getattr(pages[0], "head_frontier", None), "sequence", None))
+    return replace(
+        _replace_deliverables(facts, rows),
+        deliverables_sequence=sequence,
+        deliverables_partial=more_pages,
+        deliverables_scope_unknown=scope_unknown,
+    )
 
 
 def _replace_deliverables(facts: RecapFacts, rows: Sequence[RecapDeliverable]) -> RecapFacts:

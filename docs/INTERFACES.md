@@ -2305,17 +2305,19 @@ discarded.
 
 **Post-compaction recap (ADR-044, issue #1027).** A host's post-compaction start (`SessionStart`
 source `compact`) appends one bounded block to the held-ids cue: a receipt-style recap of what
-`status` returned for the mapped session just now. Codex carries it from the `hooks session-start`
-re-ground hook (compact view, then one bounded `obligations` view for the declared deliverables);
-Claude Code and Cursor carry it from the shared observe pass; `startup`, `resume`, `clear` and every
+`status` returned for the mapped session just now. Codex runs its `hooks session-start` re-ground hook and the shared observe pass concurrently on a
+compact start, and the one holding the session lifecycle lock reads status and carries the recap
+(compact view, then up to three bounded `obligations` pages for the declared deliverables); Claude
+Code and Cursor carry it from the shared observe pass; `startup`, `resume`, `clear` and every
 other event are unchanged. The recap is at most 2,400 ASCII characters inside a 4,000-character
 context (`RECAP_LIMIT`, `RECAP_CONTEXT_LIMIT`; every other hook context keeps its 2,000-character
 bound) and states: the held task, session and writer ids, the head frontier, the plan counts, the
 readiness `state` and `agent_actionable` tokens, up to ten open obligations and ten unanswered
 findings (id plus a quoted 80-character excerpt, the rest counted), the latest check's verdict, the
 frontier it examined and its event id, the declared `file`/`directory` outputs with their obligations'
-status, one plain-words next-action sentence for the readiness `state`, and a count of undelivered
-local rows. Every line ends `[source ...]` naming the status view and frontier, the check event, the
+status (only obligations of the current plan, quoted on one line, labelled with the obligations
+read's own frontier), one plain-words next-action sentence for the readiness `state`, and a count of
+undelivered local rows sampled before the status read. Every line ends `[source ...]` naming the status view and frontier, the check event, the
 hook mapping or the local outbox. Text `status` withheld stays withheld; a field the result did not
 carry reads "not reported"; a section the budget cannot hold is named in an "Omitted for space" line.
 The recap is a trigger-hook output (§ harness integration port, decision 8): it records nothing,
@@ -6792,7 +6794,11 @@ includes a repository path or captured content.
 The compact singleton may also carry `latest_check` (status-result 1.4.0, optional, absent when no
 check is recorded; issue #1027, ADR-044): `check_event_id` (the recorded `check_recorded` event the
 projection's latest tested state points at), `checked_frontier` (the frontier that check examined)
-and `verdict` (`action_required|incomplete_check|insufficient_coverage|no_issue_detected`). It is a
+and `verdict` (`action_required|incomplete_check|insufficient_coverage|no_issue_detected`). Each
+`obligations` item may carry `in_current_plan` (status-result 1.4.0, optional): `true` exactly when
+the obligation is in the current plan's effective scope (published, not waived, not superseded by a
+later plan revision; `task_facts.effective_obligations`), `false` for a historical one the view also
+lists, absent when the plan scope cannot be read. It is a
 pointer, not a readiness claim; a check recorded later than `checked_frontier` is not reflected
 until the projection's latest tested state advances. The CLI status render prints it as
 `Latest check: <verdict>; checked frontier <n>; event <id>`.
