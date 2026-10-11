@@ -84,8 +84,12 @@ the same change.
      SessionStart` hook. Whichever holds the session lifecycle lock reads status and carries the
      active context; the other cannot read status and emits at most the admission notice (the
      tb4n3 sglang S rollout shows exactly that pair of developer messages). So both can carry the
-     recap, and only the lock holder composes it: one recap in the concurrent case, never none.
-     The re-ground hook's discarded delegation to the observe pass asks for no recap.
+     recap, and only a hook that reads status composes it: when the two overlap, the lock holder
+     does and there is one recap, never none. The lock is released before the pass emits its
+     output, so two hooks that run back to back (not overlapping) can each read status and each
+     carry the recap, exactly as each already repeats the held-ids cue; that costs a repeated block,
+     never a missing one. The re-ground hook's discarded delegation to the observe pass asks for
+     no recap.
    - Claude Code and Cursor: the shared observe pass. Their wrappers encode the lifecycle source in
      the structural action (`claude_session_compact`, `cursor_session_compact`), which
      `_session_start_source` now resolves.
@@ -102,8 +106,11 @@ the same change.
 
 6. **It never blocks and never invents.** Any failure to read, compose or render leaves the
    existing held-ids context exactly as before. A missing field reads "not reported", never a
-   default. The obligations read is one bounded call (1.5 s); if it fails the recap says deliverables
-   are unavailable.
+   default. The obligations reads are up to three pages of at most 1.5 s each, started only within the
+   first four seconds of the hook (so they add nothing to the worst case that already exists when
+   the compact read itself is slow, in which case the recap is skipped); if they fail or run out
+   of time the recap says deliverables are unavailable or that pages remain unread. A positive
+   count whose rows the status did not preview (withheld ones) is still stated as a count.
 
 7. **Two additive wire fields.** The compact status item gains `latest_check`
    `{check_event_id, checked_frontier, verdict}`, read off the recorded `check_recorded` event the
@@ -141,6 +148,12 @@ the same change.
   recap is a convenience, not a replacement for `status`.
 
 ## Not decided here
+
+- Replaying a committed hook operation (same reconstructable role set) never compares the copy's
+  outcome with the committed one: operation digests do not cover payloads (ADR-022). A second hook
+  `PostToolUse` for a finished call is paired as unpaired evidence by the hook layer, so a real
+  host does not produce one; the event-id duplicate path added with this ADR does compare (it
+  refuses a differing explicit outcome for a non-stream copy).
 
 - Injecting the recap into the compaction summarization itself (needs a host `PreCompact` context
   channel; see the Codex follow-up).

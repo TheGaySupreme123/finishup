@@ -299,9 +299,10 @@ _HOOK_TOTAL_BUDGET_SECONDS: Final = (
 # is bounded, and the remainder is kept for the output write and interpreter
 # start. Individual acquisitions keep their own two-second cap (#689).
 _HOOK_STORE_LOCK_BUDGET_BY_WINDOW: Final = {3: 2.0, 5: 3.5, 10: 7.0}
-# The post-compaction recap's extra obligations read may start only in the first 6.5 seconds of a
-# SessionStart pass (a 10 s host window), so the drain and the output write keep their room.
-_RECAP_READ_WINDOW_SECONDS: Final = 6.5
+# The post-compaction recap's extra obligations reads may run only in the first four seconds of a
+# SessionStart pass (a 10 s host window), so they add nothing to the worst case that exists when the
+# status read itself is slow and the drain and the output write keep their room.
+_RECAP_READ_WINDOW_SECONDS: Final = 4.0
 
 
 def _hook_host_window_seconds(source: ObservationSource, event: str | None) -> int:
@@ -4548,6 +4549,13 @@ def _session_start_attach(
                         recap_time_left=recap_time_left,
                     )
 
+                # The rows pending when the facts are read are the ones those facts cannot
+                # include, even if the sweeper acknowledges them before the output (ADR-044).
+                pending_before = (
+                    _pending_work_rows(store, workspace_commitment, codex_session_id)
+                    if recap
+                    else None
+                )
                 outcome = cast(StatusOutcome, resolve_runner()(_status))
                 kind, updated = outcome.kind, outcome.mapping
                 if kind == "active" and updated is not None:
@@ -4555,9 +4563,7 @@ def _session_start_attach(
                     mapping = updated
                     additional = _active_context(updated, updated.last_frontier)
                     if outcome.recap is not None:
-                        recap_text = _compaction_recap_text(
-                            outcome.recap, store, workspace_commitment, codex_session_id
-                        )
+                        recap_text = _compaction_recap_text(outcome.recap, pending_before)
                 elif kind == "stale":
                     # The service answered: only the stored mapping is stale
                     # (re-started elsewhere). Repair flows through the agent's
@@ -4608,20 +4614,26 @@ def _session_start_attach(
     )
 
 
-def _compaction_recap_text(
-    facts: RecapFacts,
-    store: LocalObservationStore,
-    workspace_commitment: str,
-    codex_session_id: str,
-) -> str:
+def _pending_work_rows(
+    store: LocalObservationStore, workspace_commitment: str, codex_session_id: str
+) -> int | None:
+    """This session's undelivered local rows that would add ledger work, or ``None``."""
+
+    try:
+        from yoetz.cli.compaction_recap import pending_work_rows
+
+        return pending_work_rows(store, workspace_commitment, codex_session_id)
+    except Exception:
+        return None
+
+
+def _compaction_recap_text(facts: RecapFacts, pending_rows: int | None) -> str:
     """Render the post-compaction recap (ADR-044); an unrenderable recap is no recap."""
 
     try:
-        from yoetz.cli.compaction_recap import compact_recap_text, pending_work_rows
+        from yoetz.cli.compaction_recap import compact_recap_text
 
-        return compact_recap_text(
-            facts, pending_rows=pending_work_rows(store, workspace_commitment, codex_session_id)
-        )
+        return compact_recap_text(facts, pending_rows=pending_rows)
     except Exception:
         return ""
 

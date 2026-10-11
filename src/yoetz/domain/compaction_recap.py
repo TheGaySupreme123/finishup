@@ -338,8 +338,14 @@ def _readiness_variants(facts: RecapFacts, sequence: str) -> tuple[str, ...]:
 def _obligation_variants(facts: RecapFacts, compact: str) -> tuple[str, ...]:
     total = facts.open_obligations_total
     items = facts.obligations
-    if not items and not total:
-        return (f"open obligations: none {compact}.",) if total == 0 else ()
+    if not items:
+        # No preview rows: a zero count says none, a positive count (rows the status did not
+        # preview, for example withheld ones) is still stated, and an unreported one is silent.
+        if total == 0:
+            return (f"open obligations: none {compact}.",)
+        if total:
+            return (f"open obligations: {total} open (ask status for ids) {compact}.",)
+        return ()
     head = f"open obligations ({_count(total if total is not None else len(items))}): "
     rendered = [f"{item.obligation_id} {_excerpt(item.description)}" for item in items]
     ids_only = [item.obligation_id for item in items]
@@ -364,15 +370,22 @@ def _obligation_variants(facts: RecapFacts, compact: str) -> tuple[str, ...]:
 def _finding_variants(facts: RecapFacts, compact: str) -> tuple[str, ...]:
     total = facts.unanswered_findings_total
     items = facts.findings
-    if not items:
-        if total == 0:
-            return (f"findings awaiting your response: none {compact}.",)
-        return ()
     blocking = (
         ""
         if facts.receipt_blocking_findings is None
         else f"; {facts.receipt_blocking_findings} receipt-blocking"
     )
+    if not items:
+        # Unanswered findings the compact preview does not list (withheld or past its bound) are
+        # still counted; an unreported count stays silent, a zero count says none.
+        if total == 0:
+            return (f"findings awaiting your response: none {compact}.",)
+        if total:
+            return (
+                f"findings awaiting your response: {total}{blocking} "
+                f"(ask status for ids) {compact}.",
+            )
+        return ()
     head = f"findings awaiting your response ({_count(total)}{blocking}; reviewer text, advisory): "
     rendered = [
         f"{item.finding_id} p{item.priority} {item.kind} {_excerpt(item.summary)}" for item in items

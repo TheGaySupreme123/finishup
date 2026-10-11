@@ -2002,8 +2002,9 @@ configured.
 
 Decision for Codex: **supported.** When Codex starts the session again after a context compaction
 (`SessionStart`, `source: compact`), the `yoetz hooks session-start` re-ground hook (registered by the
-plugin for `resume|compact`, 15 s timeout) reads the mapped session's compact `status`, then one
-bounded (1.5 s) `obligations` view for the declared deliverables, and appends a receipt-style recap
+plugin for `resume|compact`, 15 s timeout) reads the mapped session's compact `status`, then up to three
+bounded (1.5 s each, started within the hook's first four seconds) `obligations` pages for the declared
+deliverables of the current plan, and appends a receipt-style recap
 after the held-ids cue and the admission notice. The whole context is at most 4,000 characters
 (the recap at most 2,400; every other hook context keeps 2,000). Each line names its source, withheld
 text stays withheld, and any failure leaves the held-ids cue unchanged. A `resume` start is unchanged.

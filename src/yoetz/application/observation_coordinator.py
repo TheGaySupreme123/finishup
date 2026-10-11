@@ -4149,9 +4149,10 @@ class ObservationCoordinator:
         differ from the committed result: the outcome correction then enriches an UNKNOWN or
         records the disagreement as a ``dedup_conflict`` correction, so nothing is lost. Any other
         source has no correction to carry a difference, so a copy stating an explicit outcome
-        counts as a duplicate only when the committed result states exactly that outcome and exit
-        status; anything else, or a projection that cannot confirm it, keeps the ledger's own
-        refusal and its quarantine (fail closed, #560).
+        counts as a duplicate only when the ledger states exactly that outcome and exit status for
+        the call (the original result and any correction linked to its action); anything else, or
+        a projection that cannot confirm it, keeps the ledger's own refusal and its quarantine
+        (fail closed, #560).
         """
 
         if envelope.source is ObservationSource.CODEX_SESSION_STREAM:
@@ -4176,12 +4177,19 @@ class ObservationCoordinator:
             return False
         for payload in stated:
             committed = projection.state.results.get(payload.result_id)
-            if (
-                committed is None
-                or committed.payload is None
-                or (committed.payload.outcome, committed.payload.exit_status)
-                != (payload.outcome, payload.exit_status)
-            ):
+            if committed is None or committed.payload is None:
+                return False
+            # What the ledger states for the call is the original result plus any correction
+            # linked to its action (a stream copy's outcome is appended, never rewritten). The
+            # copy agrees only when that is exactly its own outcome and exit status.
+            recorded = {
+                (record.payload.outcome, record.payload.exit_status)
+                for record in projection.state.results.values()
+                if record.payload is not None
+                and record.payload.action_id == committed.payload.action_id
+                and record.payload.outcome is not ResultOutcome.UNKNOWN
+            }
+            if recorded != {(payload.outcome, payload.exit_status)}:
                 return False
         return True
 

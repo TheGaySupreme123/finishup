@@ -352,6 +352,36 @@ def test_pending_rows_are_counted_before_the_status_is_read(
     assert "2 local observation row(s) were not yet in the ledger" in context
 
 
+def test_the_shared_pass_counts_pending_rows_before_it_reads_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review of #1027: Claude Code and the Codex observe pass sample the backlog before the
+    read too, so rows the sweeper acknowledges mid-read are still disclosed."""
+
+    from yoetz.cli import compaction_recap as recap_module
+
+    service = _service()
+    order: list[str] = []
+    real_status = service.status
+
+    async def traced(request: object, *, deadline_ms: int | None = None) -> object:
+        order.append("status")
+        return await real_status(request, deadline_ms=deadline_ms)
+
+    monkeypatch.setattr(service, "status", traced)
+
+    def counted(store: object, workspace: str | None, codex_session_id: str) -> int | None:
+        del store, workspace, codex_session_id
+        order.append("pending")
+        return 3
+
+    monkeypatch.setattr(recap_module, "pending_work_rows", counted)
+    context, _ = _claude_context(tmp_path, service, source="compact")
+
+    assert order.index("pending") < order.index("status")
+    assert "3 local observation row(s) were not yet in the ledger" in context
+
+
 def test_a_status_without_a_frontier_or_page_leaves_the_startup_context_unchanged(
     tmp_path: Path,
 ) -> None:

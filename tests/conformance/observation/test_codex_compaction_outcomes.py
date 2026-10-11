@@ -507,31 +507,38 @@ def _stated_post(cell: Replay, call: str, exit_code: int) -> None:
     )
 
 
-def _hook_post_copy(cell: Replay, call: str, *, exit_status: int) -> ObservationIngestRequest:
+def _pending_hook_post(cell: Replay, call: str) -> Any:
+    """The undelivered outbox row of the call's hook ``PostToolUse``."""
+
+    return next(
+        row
+        for row in cell.store.list_pending_outbox_rows(cell.commitment)
+        if row.envelope.event_kind == "PostToolUse"
+        and row.envelope.structural_payload.get("tool_call_id") == call
+    )
+
+
+def _hook_post_copy(
+    cell: Replay, call: str, *, exit_status: int, row: Any | None = None
+) -> ObservationIngestRequest:
     """A second delivery of the call's committed hook post, stating ``exit_status``.
 
     Same host call and generation (so the same event ids), a different source identity (a separate
     delivery), and no content: what a re-fired or retried post looks like once its manifests are
-    gone.
+    gone. ``row`` is the post's outbox row when it was captured before a sweep delivered it.
     """
 
     from yoetz.domain.values import JsonObject
 
-    rows = cell.store.list_pending_outbox_rows(cell.commitment)
-    row = next(
-        row
-        for row in rows
-        if row.envelope.event_kind == "PostToolUse"
-        and row.envelope.structural_payload.get("tool_call_id") == call
-    )
-    payload = dict(row.envelope.structural_payload)
+    source_row: Any = row if row is not None else _pending_hook_post(cell, call)
+    payload = dict(source_row.envelope.structural_payload)
     payload["exit_status"] = exit_status
     copy = replace(
-        row.envelope,
+        source_row.envelope,
         source_identity=f"hook:copy:{call}:{exit_status}",
         structural_payload=JsonObject(payload),
     )
-    return ObservationIngestRequest(codex_session_id=row.codex_session_id, envelope=copy)
+    return ObservationIngestRequest(codex_session_id=source_row.codex_session_id, envelope=copy)
 
 
 async def _committed_success_then_lost_manifests(cell: Replay, call: str) -> Recorder:
@@ -581,6 +588,38 @@ async def test_a_contentless_hook_copy_contradicting_the_committed_outcome_is_st
     assert [item[2:] for item in contentless.refused] == [("rejected", "ledger_rejected")]
     (results,) = _ledger_calls(replay).values()
     assert results == [(ResultOutcome.SUCCESS, 0)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "copy_exit", [0, 1], ids=["agrees-with-correction", "contradicts-correction"]
+)
+async def test_a_hook_copy_is_judged_against_the_stream_correction_the_ledger_already_holds(
+    replay: Replay, copy_exit: int
+) -> None:
+    """Codex review of #1027: the ledger's outcome for a call is its original result plus the
+    stream correction linked to its action. A contentless hook copy stating the corrected outcome
+    is a duplicate; one stating another outcome is refused."""
+
+    session_start(replay)
+    await sweep_all(replay, capture_hook_output=True)
+    _run_call(replay, "call_corrected", 0, "2026-09-29T18:05:10.000Z")
+    post_row = _pending_hook_post(replay, "call_corrected")
+    await sweep_all(replay, capture_hook_output=True)  # hook UNKNOWN (captured) + stream success
+    (committed,) = _ledger_calls(replay).values()
+    assert committed == [(ResultOutcome.UNKNOWN, None), (ResultOutcome.SUCCESS, 0)]
+    replay.task_store._db.execute("DELETE FROM observation_content_manifests")
+    contentless = Recorder(build_coordinator(replay), capture_hook_output=False)
+    await contentless.ingest_request(
+        _hook_post_copy(replay, "call_corrected", exit_status=copy_exit, row=post_row)
+    )
+
+    if copy_exit == 0:
+        assert contentless.refused == [], contentless.refused
+    else:
+        assert [item[2:] for item in contentless.refused] == [("rejected", "ledger_rejected")]
+    (after,) = _ledger_calls(replay).values()
+    assert after == committed
 
 
 @pytest.mark.anyio

@@ -390,3 +390,31 @@ def test_deliverables_are_unavailable_when_the_plan_scope_is_unknown() -> None:
 
     assert "unavailable, the obligations view did not say which obligations belong" in line
     assert "out/result.json" not in line
+
+
+def test_counted_findings_and_obligations_the_status_did_not_preview_are_still_stated() -> None:
+    """Codex review of #1027: a positive count with an empty preview must not vanish."""
+
+    facts = replace(
+        _full(),
+        obligations=(),
+        open_obligations_total=3,
+        findings=(),
+        unanswered_findings_total=2,
+        receipt_blocking_findings=1,
+    )
+
+    for limit in (RECAP_LIMIT, 900):
+        lines = _lines(compose_compaction_recap(facts, limit=limit))
+        assert any(
+            line.startswith("findings awaiting your response: 2; 1 receipt-blocking")
+            and "ask status for ids" in line
+            and "[source status compact @604]" in line
+            for line in lines
+        ), lines
+        assert any(
+            line.startswith("open obligations: 3 open (ask status for ids)") for line in lines
+        ), lines
+
+    silent = replace(facts, unanswered_findings_total=None, open_obligations_total=None)
+    assert "findings awaiting" not in compose_compaction_recap(silent)

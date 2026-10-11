@@ -1439,9 +1439,10 @@ def session_workspace_locator(workspace: str | None) -> str | None:
 
 
 _RECAP_OBLIGATIONS_DEADLINE_MS: Final = 1_500
-# The re-ground hook runs under a 15 s host timeout; the recap's extra read must finish within the
-# first eight seconds so the observation pass it delegates to keeps its own window.
-_RECAP_WINDOW_SECONDS: Final = 8.0
+# The recap's reads must end within the first four seconds of the hook, so they add nothing to the
+# worst case that already exists when the compact read itself is slow (the recap is then skipped)
+# and the delegated observe pass follows under the 15 s host timeout.
+_RECAP_WINDOW_SECONDS: Final = 4.0
 # Below this many milliseconds the hook skips the obligations read (deliverables are then named
 # unavailable) rather than risk the host window.
 _RECAP_OBLIGATIONS_MIN_MS: Final = 250
