@@ -1477,8 +1477,9 @@ no_tool_activity | non_counting_write | edit_or_write | other` (ADR-040 section 
 #1029). The first four observation classes (a hook or stream observation of one of Yoetz's own
 MCP tools in any host spelling, a read-only run, host stream bookkeeping that names no tool call,
 a scratch or Yoetz-owned write) are ignored: no gap, no supersession. `edit_or_write`, an observed
-deliverable, workspace or outside-workspace edit, supersedes the check exactly like cooperative
-material work. `other` and `response` keep the disclosure. `kernel/check_standing.check_standing`
+deliverable, workspace or outside-workspace edit (an edit tool, or a command whose runtime tokens
+record a counting shell write, `observed_shell_write_counts`, ADR-045), supersedes the check
+exactly like cooperative material work. `other` and `response` keep the disclosure. `kernel/check_standing.check_standing`
 is the one walk over the records after the latest check; the receipt context, receipt capacity,
 compact status coverage and closure readiness all read it, so none can disagree. The application
 classifies the counted suffix (`kernel/receipt_builder.CheckSuffixClass`: responses only,

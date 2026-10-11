@@ -35,7 +35,9 @@ from yoetz.domain.values import ActionId, EvidenceId, FindingId, ObligationId, R
 from yoetz.kernel.concern import ConcernKey
 from yoetz.kernel.deterministic_checks import DeterministicCase
 from yoetz.kernel.finding_todo import standing_answer_frontier
+from yoetz.kernel.observed_failures import observed_shell_write_counts
 from yoetz.kernel.projections import ProjectionState
+from yoetz.kernel.task_facts import non_counting_edits_exempt
 
 __all__ = [
     "answer_bound",
@@ -195,6 +197,11 @@ def _is_material(index: _CaseIndex, row: _Row, concern: ConcernKey) -> bool:
         if action is None or action.payload is None:
             return False
         if action.payload.action_kind is ActionKind.EDIT:
+            return True
+        if action.payload.action_kind is ActionKind.COMMAND and observed_shell_write_counts(
+            action.payload.description, non_counting_edits_exempt(projection)
+        ):
+            # ADR-045: a shell write (``sed -i``, ``cat > f``) is as material as an edit tool.
             return True
         return bool(concern.obligations & {str(item) for item in action.payload.obligation_refs})
     if row.kind == "result":

@@ -60,6 +60,7 @@ from yoetz.kernel.observed_failures import (
     observed_edit_counts,
     observed_event_ids_from_coverage,
     observed_failure_states,
+    observed_shell_write_counts,
 )
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.policies.response_support import (
@@ -590,10 +591,19 @@ def _observed_verification_facts(
         if (
             payload is not None
             and action.source_event_id in observed
-            and payload.action_kind is ActionKind.EDIT
             # A scratch or Yoetz-owned write (a saved receipt) changes nothing a claim's
-            # verification covered (ADR-042, tb4n2 R4: cad S, lake D).
-            and observed_edit_counts(payload.description, exempt)
+            # verification covered (ADR-042, tb4n2 R4: cad S, lake D). A shell write counts
+            # as an edit under the same rule task_facts uses (ADR-045).
+            and (
+                (
+                    payload.action_kind is ActionKind.EDIT
+                    and observed_edit_counts(payload.description, exempt)
+                )
+                or (
+                    payload.action_kind is ActionKind.COMMAND
+                    and observed_shell_write_counts(payload.description, exempt)
+                )
+            )
         ):
             latest_edit = max(latest_edit or 0, action.source_frontier)
     runs: dict[str, int] = {}

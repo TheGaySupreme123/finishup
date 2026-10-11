@@ -54,6 +54,7 @@ __all__ = [
     "COMMAND_IDENTITY_PREFIX",
     "NON_COUNTING_WRITE_TOKENS",
     "SHELL_EDIT_TOKENS",
+    "observed_shell_write_counts",
     "observed_edit_counts",
     "ObservedFailureState",
     "ObservedRun",
@@ -429,6 +430,25 @@ def observed_edit_counts(
     """
 
     return not (observed_action_runtime_tokens(description) & exempt)
+
+
+def observed_shell_write_counts(
+    description: str, exempt: frozenset[str] = NON_COUNTING_WRITE_TOKENS
+) -> bool:
+    """Whether an observed COMMAND wrote files that can change the work under test (ADR-045).
+
+    The one shared rule behind ``task_facts`` (latest edit), ``later_material`` (supersession) and
+    the concern-fold materiality check: a command whose runtime tokens carry ``write workspace``
+    or ``write outside_workspace`` is an edit whatever its exit status; a command that only wrote
+    a non-counting class (``scratch``, ``yoetz_owned``, ``notes``) is an edit only when ``exempt``
+    does not exempt that class (a declared output makes it part of the delivery). A command with
+    no write token wrote nothing the hook could attribute and is not an edit.
+    """
+
+    tokens = observed_action_runtime_tokens(description)
+    return bool(tokens & SHELL_EDIT_TOKENS) or (
+        bool(tokens & NON_COUNTING_WRITE_TOKENS) and observed_edit_counts(description, exempt)
+    )
 
 
 def observed_action_tool(description: str) -> str | None:

@@ -179,6 +179,7 @@ from yoetz.kernel.observed_failures import (
     observed_action_runtime_tokens,
     observed_edit_counts,
     observed_event_ids_from_records,
+    observed_shell_write_counts,
 )
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import ProjectionState
@@ -1043,9 +1044,7 @@ def _observed_state(
             command_tokens.update(tokens)
             if runner in _ACTING_RUNNERS:
                 acting = True
-            if tokens & SHELL_EDIT_TOKENS or (
-                tokens & NON_COUNTING_WRITE_TOKENS and observed_edit_counts(description, exempt)
-            ):
+            if observed_shell_write_counts(description, exempt):
                 # ADR-045: a shell command that visibly wrote files (``cat > f``, ``sed -i``,
                 # ``cp a f``) changed the work as surely as an edit tool would, and it did so
                 # whatever its exit status (``: > f; false`` emptied ``f``). A write to the
