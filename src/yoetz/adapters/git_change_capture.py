@@ -1428,7 +1428,12 @@ class GitChangeCaptureAdapter:
                 if _expired(assembly):
                     break
                 continue
+            # A repository nested inside this one is never read (issue #1045): its changed
+            # gitlink keeps its commit-id lines and counts as not shown, as at the outer level.
+            inner_gitlinks = {gitlink for gitlink, _ in tracked.gitlinks}
             for section in tracked.sections:
+                if section.path in inner_gitlinks and section.omitted is None:
+                    section.omitted = "nested_repository"
                 section.path = prefix + section.path
             return _NestedRead(
                 path,

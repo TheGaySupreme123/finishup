@@ -1514,6 +1514,33 @@ def test_nested_repository_borrowing_another_store_is_refused_at_task_start(
     )
 
 
+def test_gitlink_inside_a_nested_repository_counts_as_not_shown(tmp_path: Path) -> None:
+    """Review of #1045: a repository nested inside a nested one is never read, so its changed
+    gitlink counts as not shown, as an untracked repository at that depth already does."""
+
+    repository = _repository(tmp_path)
+    api = _nested_repository(repository)
+    lib = _nested_repository(api, "lib")
+    _git(api, "add", "--", "lib")
+    _commit(api, "track lib as a gitlink")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    _nested_commit(lib, "INNER_CANARY = 1\n", "work inside the inner repository")
+
+    capture = adapter.capture(os.fspath(repository), base)
+
+    text = _text(capture)
+    assert "INNER_CANARY" not in text
+    assert "Nested repository api/: its own change is shown under that directory" in text
+    assert "+Subproject commit" in text  # the inner gitlink's commit-id lines still stand
+    assert (
+        "  M api/lib (+1 -1) not shown: a nested Git repository whose own change was not read"
+        in text
+    )
+    assert "Not shown: 1." in text
+    assert capture.omitted_files == 1 and capture.truncated
+
+
 def test_task_input_files_the_statement_names_are_read_only_when_unchanged(
     tmp_path: Path,
 ) -> None:
