@@ -4287,12 +4287,18 @@ material edit (`kernel.task_facts.material_edit_recorded`: an observed edit or s
 counts under ADR-042/045, or an agent-published `edit` action) while the check-time capture
 observed no workspace change, runs the local checks only: `semantic_status` `not_requested`,
 `semantic_reason` `deterministic_mode`, and the standing gap
-`semantic_review_deferred_before_first_edit` (rule G7, bounding on both routes, a semantic-only gap
-for absence proofs). Nothing is composed or sent. `semantic_required` included: the deferral is not
-a failed review, so the verdict reads from the local checks (`insufficient_coverage` while review is
-required and not current), never `incomplete_check`. The deferral never applies to the closing
-review (`final_review`, or any completion claim), and a resumed check already in `semantic_wait`
-keeps its decision. The older stopped-round skip (`semantic_review_skipped_insufficient_packet`,
+`semantic_review_deferred_before_first_edit` (rule G7, a semantic-only gap for absence proofs).
+Nothing is composed or sent. `semantic_required` included: the deferral is not a failed review, so
+the verdict reads from the local checks, never `incomplete_check`. The gap follows the route the
+check recorded, like the `semantic_review_not_requested` it rides with (rule G1): disclosed when the
+check recorded `semantic_route_required: false`, so the check, status and receipt read as a
+`deterministic_only` check on that route would; bounding (`insufficient_coverage`) where review is
+required and not current. The deferral never applies to the closing review (`final_review`, or any
+completion claim), and a resumed check already in `semantic_wait` keeps its decision. Closure
+readiness counts a deferred check as a use of AI-powered review, so it lists
+`closing_review_required` after a deferral on every route; while the latest check deferred, an
+actionable `semantic_review_not_requested` does not hide it (a routine check would defer again).
+The older stopped-round skip (`semantic_review_skipped_insufficient_packet`,
 `kernel/review_round.py`) is a separate rule the deferral does not change: it can still skip a
 closing review that is not `semantic_required`.
 The deferral is decided before the review's own admission, so a pre-work check also asks for no
@@ -6994,8 +7000,10 @@ while a check holds the session frontier (read at the head through the ledger's
 `check_not_applicable` from the receipt applicability rule (an observed deliverable or workspace edit
 after the check counts; Yoetz's own calls, read-only reads and host bookkeeping do not,
 `kernel/later_material`, tb4n3 RC-6), then `closing_review_required` (issue
-#976: AI-powered review is required on the route or completed on the task, and no completed
-final-phase review, or undeliverable review attempt, is current since the last material change),
+#976: AI-powered review is required on the route, or completed or was deferred before the first
+material edit on the task (#1046), and no completed final-phase review, or undeliverable review
+attempt, is current since the last material change; an actionable `semantic_review_not_requested`
+takes its place unless the latest check deferred the review),
 then every actionable gap code and
 `unclassified_gap:<code>` for a base code the running build does not know.
 `standing_limitations` lists the classified standing base codes (plus

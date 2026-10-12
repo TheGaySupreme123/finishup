@@ -237,9 +237,13 @@ reverse-chronological released versions.
 - A check before the first material edit no longer calls the AI-powered reviewer, whatever its
   mode: it runs the local checks, sends nothing and records
   `semantic_review_deferred_before_first_edit`; the next check after an edit reviews as configured
-  and the closing review is never deferred. A reviewer ruling that a finding is fixed, citing material
-  recorded after it, now closes the finding even when the check records environment facts such as
-  verification run only as root; those facts stay disclosed on the receipt (#1046).
+  and the closing review is never deferred. Where review is optional the deferral is disclosed and
+  does not lower the receipt, as a local-only check would not; where it is required it bounds the
+  receipt until a review runs. After a deferral, `status` and the Stop gate ask for the closing
+  review on every route, so work that needs no edit is still reviewed. A reviewer ruling that a
+  finding is fixed, citing material recorded after it, now closes the finding even when the check
+  records environment facts such as verification run only as root; those facts stay disclosed on
+  the receipt (#1046).
 
 - A local-only check you asked for (`deterministic_only`) on a route that does not require
   AI-powered review no longer lists `semantic_review_not_requested` on the receipt, in `status` or

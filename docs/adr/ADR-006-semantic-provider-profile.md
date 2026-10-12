@@ -1593,8 +1593,9 @@ claiming completion was never judged for completeness. Decisions:
   and receipt renderings show `omitted items <total> (<count> listed)` when the two differ. Older
   manifests omit it and render their listed count.
 - **Closure integration.** Closure readiness (ADR-032) lists the agent-actionable
-  `closing_review_required` while AI-powered review is required on the route or has completed on the
-  task, and no check since the last material change is a completed final-phase review. A review
+  `closing_review_required` while AI-powered review is required on the route, has completed on the
+  task or was deferred before the first material edit (ADR-040 amendment of 2026-10-12, #1046), and
+  no check since the last material change is a completed final-phase review. A review
   attempt after the last material change that was blocked by policy or privacy, not configured,
   classification-uncertain, or denied or expired at human approval satisfies it, because its own
   gaps disclose the limit and a recheck cannot remove it; a timeout or a failed or unavailable

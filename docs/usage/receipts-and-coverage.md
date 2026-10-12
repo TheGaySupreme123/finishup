@@ -93,8 +93,13 @@ that the environment refused rather than that the review was never asked for.
 
 A check you run before your first edit (nothing changed yet, and not the closing review) never
 calls the reviewer, whatever its mode: it runs the local plan checks, sends nothing, and records
-`semantic_review_deferred_before_first_edit`. The next check after you start changing the work
-reviews as configured, and the closing review is never deferred.
+`semantic_review_deferred_before_first_edit`. Where AI-powered review is optional for the check,
+that is a disclosure and does not lower the receipt's conclusion, just as a local-only check would
+not; where review is required, the receipt stays at `insufficient_coverage` until a review runs.
+The next check after you start changing the work reviews as configured, and the closing review is
+never deferred: after a deferred check, the closure checklist lists `closing_review_required` until
+you run `check` with `final_review: true`, so work that never needs an edit is still reviewed
+before it closes.
 
 ## Prose the reviewer will not see whole
 
