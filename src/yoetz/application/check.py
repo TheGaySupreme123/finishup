@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Final, Literal, NamedTuple, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol, TypedDict, cast
 
 from yoetz.application.closure_basis import (
     ClosureBasisUnavailable,
@@ -277,6 +277,10 @@ from yoetz.protocol.policy_packs import (
 )
 from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 from yoetz.version import ENGINE_VERSION
+
+if TYPE_CHECKING:  # the inspection module imports status, which imports this module
+    from yoetz.application.check_inspection import Application as CheckInspectionApplication
+    from yoetz.application.check_inspection import CheckInspection
 
 __all__ = [
     "SEMANTIC_CASE_CONTENT_GAPS",
@@ -5653,9 +5657,17 @@ async def execute_check(
     route_profile: Literal["policy", "strict"] = "policy",
     host_profile: McpHostProfile = "generic",
     _state: Path | None = None,
-) -> CheckCommitResult | CheckAwaitingHuman:
+) -> CheckCommitResult | CheckAwaitingHuman | CheckInspection:
     """Return the closed sink-independent result for the facade's sole projection step."""
 
+    if request.mode == "inspect":
+        # ADR-047: a read, routed like status. It never enters the commit pipeline below, so it
+        # freezes no case, records no event and dispatches no reviewer.
+        from yoetz.application.check_inspection import execute_check_inspection
+
+        return await execute_check_inspection(
+            cast("CheckInspectionApplication", app), request, route_profile=route_profile
+        )
     # Omitted mode resolves via policy so recorded check events always carry a concrete mode.
     if request.mode is None:
         request = request.model_copy(update={"mode": app.verification_policy.default_check_mode})

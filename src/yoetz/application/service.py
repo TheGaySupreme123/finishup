@@ -129,6 +129,7 @@ from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind, validate_id
 from yoetz.protocol.models import (
     CheckAwaitingHumanModel,
+    CheckInspectionModel,
     CheckRequest,
     CheckResult,
     CheckResultModel,
@@ -499,6 +500,10 @@ from yoetz.application.check import (  # noqa: E402
     check_awaiting_human_json,
     check_internal_json,
 )
+from yoetz.application.check_inspection import (  # noqa: E402
+    CheckInspection,
+    check_inspection_json,
+)
 from yoetz.application.import_review import (  # noqa: E402
     ImportCodexJsonlRequest,
     ImportReportInternal,
@@ -529,6 +534,7 @@ type UnprojectedControlBody = (
     | PublishWorkInternalResult
     | CheckCommitResult
     | CheckAwaitingHuman
+    | CheckInspection
     | RespondInternalResult
     | StatusInternalResult
     | ReceiptInternalResult
@@ -665,6 +671,8 @@ def _internal_json(result: UnprojectedControlBody) -> dict[str, JsonValue]:
         return dict(check_internal_json(result).items())
     if type(result) is CheckAwaitingHuman:
         return dict(check_awaiting_human_json(result).items())
+    if type(result) is CheckInspection:
+        return check_inspection_json(result)
     if type(result) is RespondInternalResult:
         return result.as_json()
     if type(result) is StatusInternalResult:
@@ -807,6 +815,8 @@ def _public_model(method: ControlMethod, value: Mapping[str, JsonValue]) -> Proj
     check_success: type[BaseModel] = (
         CheckAwaitingHumanModel
         if value.get("state") in {"awaiting_human", "awaiting_input"}
+        else CheckInspectionModel
+        if value.get("state") == "inspected"
         else CheckSuccessModel
     )
     model: tuple[type[BaseModel], type[BaseModel]] | None = {
@@ -2416,13 +2426,19 @@ class Application:
         host_profile: McpHostProfile = "generic",
         repository_privacy_context: RepositoryPrivacyContext | None = None,
         observations_awaited: CheckObservationsAwaited | None = None,
-    ) -> CheckCommitResult | CheckAwaitingHuman:
+    ) -> CheckCommitResult | CheckAwaitingHuman | CheckInspection:
         """Run one check; ``observations_awaited`` is the daemon's pre-gate wait (issue #1012)."""
 
         from yoetz.application.check import execute_check
 
         await self._require_repository_route(request, repository_privacy_context)
         await self._renew_activity_session(request.session_id, request)
+        if request.mode == "inspect":
+            # ADR-047: a read. No default mode, no workspace capture, no reviewer route.
+            inspection = await execute_check(self, request, route_profile=route_profile)  # pyright: ignore[reportArgumentType]
+            if observations_awaited is not None and type(inspection) is CheckInspection:
+                inspection = replace(inspection, observations_awaited=observations_awaited)
+            return inspection
         # Resolve omitted mode via policy so recorded check events carry the resolved value.
         if request.mode is None:
             request = request.model_copy(

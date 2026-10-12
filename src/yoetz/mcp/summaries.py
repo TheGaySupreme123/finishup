@@ -35,6 +35,7 @@ from yoetz.protocol.canonical import JsonValue, ensure_canonical_value
 from yoetz.protocol.errors import PublicErrorCode, normalize_safe_details
 from yoetz.protocol.guidance_uris import ALL_GUIDANCE_URIS
 from yoetz.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
+from yoetz.protocol.inspection_text import inspection_text
 from yoetz.protocol.readiness_text import (
     READINESS_STATES,
     awaiting_ruling_variants,
@@ -61,6 +62,7 @@ __all__ = [
     "render_check_reviewer_output",
     "summary_for_check",
     "summary_for_check_awaiting",
+    "summary_for_check_inspection",
     "summary_for_closure_prepare",
     "summary_for_public_error",
     "summary_for_read_guidance",
@@ -2425,6 +2427,23 @@ def summary_for_check_awaiting(envelope: object) -> str:
     )
 
 
+def summary_for_check_inspection(envelope: object) -> str:
+    """Project a ``mode: inspect`` check (ADR-047) onto the text channel.
+
+    The lead lines (what is left, the gap split, what the hooks saw, the alignment count) are
+    required; each obligation, finding, observed action and alignment row is optional detail the
+    bound may drop, since the structured result carries every row.
+    """
+
+    text = inspection_text(_mapping(envelope))
+    return _compose(
+        [
+            _req(" ".join(text.lead)),
+            *(_opt(line, priority=_P_DETAIL) for line in text.details),
+        ]
+    )
+
+
 def summary_for_read_guidance(envelope: object) -> str:
     """Name where a guidance result's full text is, without repeating it (issue #918).
 
@@ -2575,6 +2594,8 @@ def _select_builder(source: Mapping[str, JsonValue]) -> tuple[str, Callable[[obj
         return "error", summary_for_public_error
     if source.get("preparatory_only") is True:
         return "closure_prepare", summary_for_closure_prepare
+    if source.get("state") == "inspected":
+        return "check_inspection", summary_for_check_inspection
     if "verdict" in source:
         return "check", summary_for_check
     if "view" in source:
@@ -2625,6 +2646,8 @@ def _minimal_summary(envelope: object, builder: str) -> str:
             return f"Receipt conclusion: {_safe_token(source.get('conclusion'))};"
         if builder == "closure_prepare":
             return "Closure preparation only;"
+        if builder == "check_inspection":
+            return "Check inspection (read only, nothing recorded);"
         return (
             f"Operation outcome: {_safe_token(source.get('outcome'), fallback='recorded')}; "
             f"{_identity_clause(source)}"

@@ -24,9 +24,11 @@ from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_te
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.errors import normalize_safe_details
 from yoetz.protocol.ids import validate_opaque_item_id
+from yoetz.protocol.inspection_text import inspection_text
 from yoetz.protocol.models import (
     CheckAwaitingHumanModel,
     CheckFindingChecklistModel,
+    CheckInspectionModel,
     CheckOverallNextModel,
     CheckProjectedFindingModel,
     CheckSuccessModel,
@@ -82,6 +84,7 @@ __all__ = [
     "render_human_check",
     "render_human_error",
     "render_human_findings",
+    "render_human_inspection",
     "render_human_receipt",
     "render_human_status",
     "render_local_recovery_lines",
@@ -1263,3 +1266,18 @@ def render_human_awaiting_human(result: CheckAwaitingHumanModel) -> str:
         lines.append(f"Expires at: {continuation.expires_at}")
     lines.append(f"Then replay the same check with request_id {continuation.replay_request_id}.")
     return "\n".join(lines)
+
+
+def render_human_inspection(result: CheckInspectionModel) -> str:
+    """Render a ``mode: inspect`` check (ADR-047): what is left, what hooks saw, where evidence came from.
+
+    The same lines as the MCP text channel (``yoetz.protocol.inspection_text``). No verdict or
+    coverage appears: an inspection is a read, not a check result.
+    """
+
+    if type(result) is not CheckInspectionModel:
+        raise TypeError("check_result_invalid")
+    text = inspection_text(
+        cast(Mapping[str, JsonValue], result.model_dump(mode="json", exclude_unset=True))
+    )
+    return "\n".join((*text.lead, *text.details))

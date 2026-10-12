@@ -20,6 +20,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final, cast
 
 from pydantic import TypeAdapter
@@ -2255,6 +2256,16 @@ def _check_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # Issue #1012, unreleased in-place addition: wait, bounded, for the caller's pending hook
     # observations before the case freezes. Absent requests keep their exact shape.
     properties["await_observations"] = {"type": "boolean"}
+    # Issue #1048 (ADR-047), unreleased in-place addition: ``inspect`` reads what is left to
+    # close instead of checking. It records nothing and mints no findings, so the request model
+    # refuses the finding, pack, closing-review and scope options beside it. That rule stays out
+    # of this document on purpose: a root conditional lowers the whole advertised check input to
+    # ``unknown`` on the observed hosts (the presentation budget admits none on ``check``).
+    mode = cast(dict[str, JsonValue], properties["mode"])
+    modes: set[str] = {str(value) for value in cast(list[JsonValue], mode["enum"])}
+    mode["enum"] = cast(
+        JsonValue, sorted(modes | {"inspect"}, key=lambda value: value.encode("ascii"))
+    )
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz check request {entry.schema_version}"
     return document
@@ -3715,10 +3726,260 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_check_closure_verdict(definitions)
     definitions["fact_lineage"] = _fact_lineage_definition()
     properties["fact_lineage"] = _fact_lineage_array()
+    _add_check_inspection(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz check result {entry.schema_version}"
     return document
+
+
+# Issue #1048 (ADR-047): the closed vocabularies of a ``mode: inspect`` result.
+_INSPECTION_MISSING_KINDS: Final = (
+    "blocker_unconfirmed",
+    "command_attempt_mismatch",
+    "command_run_not_observed",
+    "requested_item_not_attempted",
+    "resolution_evidence_not_cited",
+)
+_INSPECTION_LISTED_MATERIAL_CLASSES: Final = (
+    "edit_or_write",
+    "exploration",
+    "non_counting_write",
+    "other",
+)
+_INSPECTION_WRITE_SCOPES: Final = (
+    "notes",
+    "outside_workspace",
+    "scratch",
+    "workspace",
+    "yoetz_owned",
+)
+_INSPECTION_ALIGNMENTS: Final = (
+    "evidence_names_declared_item",
+    "evidence_off_declared_items",
+    "evidence_unattributed",
+    "no_declared_items",
+)
+_INSPECTION_ACTION_KINDS: Final = ("command", "edit", "other", "research", "review")
+_INSPECTION_OUTCOMES: Final = ("failure", "partial", "success", "unknown")
+_INSPECTION_ITEM_INDEX: Final = "^(?:[0-9]|[1-5][0-9]|6[0-3])$"
+_INSPECTION_COMMITMENT: Final[Mapping[str, JsonValue]] = MappingProxyType(
+    {
+        "maxLength": 76,
+        "minLength": 76,
+        "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+        "type": "string",
+    }
+)
+
+
+def _add_check_inspection(document: dict[str, JsonValue]) -> None:
+    """The read-only ``inspection`` branch of check-result 1.4.0 (issue #1048, ADR-047).
+
+    Additive on the unreleased 1.4.0 contract: a ``mode: inspect`` check records nothing, mints
+    no findings and calls no reviewer, so it answers with its own branch (``state: inspected``)
+    instead of a completion-grade shape. Every leaf is structural: ids, closed tokens, counts,
+    item indexes and keyed command commitments, never command text, paths or prose.
+    """
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+
+    def ref(name: str) -> dict[str, JsonValue]:
+        return {"$ref": f"#/$defs/{name}"}
+
+    def id_pattern(prefixes: str) -> dict[str, JsonValue]:
+        return {"pattern": f"^(?:{prefixes})_{_UUID_ID}$", "type": "string"}
+
+    def enum(values: Sequence[str]) -> dict[str, JsonValue]:
+        return {"enum": list(values), "type": "string"}
+
+    def array(items: dict[str, JsonValue], limit: int) -> dict[str, JsonValue]:
+        return {"items": items, "maxItems": limit, "type": "array"}
+
+    item_indexes: dict[str, JsonValue] = {
+        "items": {"pattern": _INSPECTION_ITEM_INDEX, "type": "string"},
+        "maxItems": 64,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    gap_codes: dict[str, JsonValue] = {
+        "items": {
+            "maxLength": 145,
+            "pattern": r"^(?:unclassified_gap:)?[a-z][a-z0-9_]{0,127}$",
+            "type": "string",
+        },
+        "maxItems": 128,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    definitions["inspection_missing"] = {
+        "additionalProperties": False,
+        "properties": {
+            "item_indexes": item_indexes,
+            "kind": enum(_INSPECTION_MISSING_KINDS),
+            "owner": enum(("agent", "yoetz")),
+        },
+        "required": ["kind", "owner"],
+        "type": "object",
+    }
+    definitions["inspection_obligation"] = {
+        "additionalProperties": False,
+        "properties": {
+            "closure_basis": enum(_OBLIGATION_CLOSURE_BASES),
+            "closure_class": enum(("agent_work", "settled_disclosed", "settled_unmet")),
+            "missing": array(ref("inspection_missing"), 8),
+            "obligation_id": id_pattern("obl"),
+        },
+        "required": ["closure_basis", "closure_class", "missing", "obligation_id"],
+        "type": "object",
+    }
+    definitions["inspection_finding"] = {
+        "additionalProperties": False,
+        "properties": {
+            "closure_basis": enum(_FINDING_CLOSURE_BASES),
+            "closure_class": enum(
+                ("agent_work", "awaiting_ruling", "settled_disclosed", "settled_unmet")
+            ),
+            "finding_id": ref("finding_id"),
+        },
+        "required": ["closure_basis", "closure_class", "finding_id"],
+        "type": "object",
+    }
+    definitions["inspection_remaining"] = {
+        "additionalProperties": False,
+        "properties": {
+            "agent_actionable": gap_codes,
+            "finding_count": ref("canonical_uint"),
+            "findings": array(ref("inspection_finding"), 64),
+            "obligation_count": ref("canonical_uint"),
+            "obligations": array(ref("inspection_obligation"), 64),
+            "predicted_conclusion": enum(_RECEIPT_CONCLUSIONS),
+            "readiness": enum(("action_required", "ready", "ready_with_limitations", "unknown")),
+            "standing_limitations": gap_codes,
+        },
+        "required": [
+            "agent_actionable",
+            "finding_count",
+            "findings",
+            "obligation_count",
+            "obligations",
+            "readiness",
+            "standing_limitations",
+        ],
+        "type": "object",
+    }
+    definitions["inspection_observed_action"] = {
+        "additionalProperties": False,
+        "properties": {
+            "action_kind": enum(_INSPECTION_ACTION_KINDS),
+            "command_commitment": dict(_INSPECTION_COMMITMENT),
+            "event_id": id_pattern("evt"),
+            "exit_status": {"maximum": 2147483647, "minimum": -2147483648, "type": "integer"},
+            "ledger_sequence": ref("canonical_uint"),
+            "material_class": enum(_INSPECTION_LISTED_MATERIAL_CLASSES),
+            "outcome": enum(_INSPECTION_OUTCOMES),
+            "tool_name": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$",
+                "type": "string",
+            },
+            "write_scope": enum(_INSPECTION_WRITE_SCOPES),
+        },
+        "required": ["action_kind", "event_id", "ledger_sequence", "material_class"],
+        "type": "object",
+    }
+    definitions["inspection_observed"] = {
+        "additionalProperties": False,
+        "properties": {
+            "action_count": ref("canonical_uint"),
+            "actions": array(ref("inspection_observed_action"), 64),
+            "last_check_frontier": ref("canonical_uint"),
+        },
+        "required": ["action_count", "actions"],
+        "type": "object",
+    }
+    definitions["inspection_declared_item"] = {
+        "additionalProperties": False,
+        "properties": {
+            "index": {"pattern": _INSPECTION_ITEM_INDEX, "type": "string"},
+            "item_kind": enum(("command", "directory", "file")),
+        },
+        "required": ["index", "item_kind"],
+        "type": "object",
+    }
+    definitions["inspection_evidence_source"] = {
+        "additionalProperties": False,
+        "properties": {
+            "command_commitment": dict(_INSPECTION_COMMITMENT),
+            "named_item_indexes": item_indexes,
+            "origin": enum(("asserted", "observed", "unattributed")),
+            "outcome": enum(_INSPECTION_OUTCOMES),
+            "ref": id_pattern("evd|res"),
+        },
+        "required": ["named_item_indexes", "origin", "ref"],
+        "type": "object",
+    }
+    definitions["inspection_alignment_obligation"] = {
+        "additionalProperties": False,
+        "properties": {
+            "alignment": enum(_INSPECTION_ALIGNMENTS),
+            "declared_items": array(ref("inspection_declared_item"), 64),
+            "obligation_id": id_pattern("obl"),
+            "sources": array(ref("inspection_evidence_source"), 64),
+        },
+        "required": ["alignment", "declared_items", "obligation_id", "sources"],
+        "type": "object",
+    }
+    definitions["inspection_alignment"] = {
+        "additionalProperties": False,
+        "properties": {
+            "basis": {"const": "recorded_links"},
+            "obligations": array(ref("inspection_alignment_obligation"), 64),
+        },
+        "required": ["basis", "obligations"],
+        "type": "object",
+    }
+    definitions["inspection"] = {
+        "additionalProperties": False,
+        "properties": {
+            "evidence_alignment": ref("inspection_alignment"),
+            "observations_awaited": ref("observations_awaited"),
+            "observed_since_check": ref("inspection_observed"),
+            "ok": {"const": True},
+            "privacy_projection": {
+                "$ref": SCHEMA_NAMESPACE
+                + "common/operation-result-1.0.0.schema.json#/$defs/privacy_projection"
+            },
+            "protocol_version": {"const": "0.1"},
+            "remaining": ref("inspection_remaining"),
+            "request_id": ref("request_id"),
+            "schema_version": {"const": "1.0.0"},
+            "session_id": ref("session_id"),
+            "state": {"const": "inspected"},
+            "subject_frontier": {"$ref": SCHEMA_NAMESPACE + "common/frontier-1.0.0.schema.json"},
+            "task_id": ref("task_id"),
+            "writer_id": ref("writer_id"),
+        },
+        "required": [
+            "evidence_alignment",
+            "observed_since_check",
+            "ok",
+            "privacy_projection",
+            "protocol_version",
+            "remaining",
+            "request_id",
+            "schema_version",
+            "session_id",
+            "state",
+            "subject_frontier",
+            "task_id",
+            "writer_id",
+        ],
+        "type": "object",
+    }
+    branches = cast(list[JsonValue], document["oneOf"])
+    branches.insert(2, ref("inspection"))
 
 
 def _add_check_closure_verdict(definitions: dict[str, JsonValue]) -> None:

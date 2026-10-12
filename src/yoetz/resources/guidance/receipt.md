@@ -3,8 +3,8 @@
 Read this topic before closure or final prose. A receipt reports the recorded scope and its limits;
 it is not a pass and never closes work.
 
-Before the final check, publish the completion claim and current evidence, read `status`, answer
-each unanswered finding, and check the repaired/current record. Answer each finding once; its
+Before the final check, publish the completion claim and current evidence, read what is left
+(`check` with `mode: inspect` records nothing; or `status`), answer each unanswered finding, and check the repaired/current record. Answer each finding once; its
 `finding_frontier` may be the current status frontier, so no historical frontier search is needed.
 Non-actionable observation-authored findings need no answer. After the check, answer only the
 findings it returned that remain unanswered, then read `status view=findings` with

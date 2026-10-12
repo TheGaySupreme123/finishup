@@ -10,8 +10,9 @@ The first workflow operation is `start`. This includes `read_guidance` and comma
 start fails, follow same-request recovery first; ask the user for intro and guidance; do not work
 without a task.
 
-After start, use `yoetz://guidance/workflow.md#start-and-resume` for resume/recovery/delegation;
-coverage before `check`; `yoetz://guidance/request-templates.md` for setup. See [startup.md](references/startup.md).
+After start, that core is the operating card; other pages only when a result names them:
+`yoetz://guidance/workflow.md#start-and-resume` for resume/recovery/delegation and
+`yoetz://guidance/request-templates.md` for setup. See [startup.md](references/startup.md).
 
 Capacity and cost changes need a disclosed choice: never choose a larger or uncapped local
 observation capacity for an ordinary task. On request run `yoetz observe selection-preview`, relay

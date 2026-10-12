@@ -31,10 +31,11 @@ Field-level shapes live in [`docs/INTERFACES.md`](../INTERFACES.md); the JSON Sc
 [`schemas/`](../../schemas/) and the golden vectors under [`fixtures/`](../../fixtures/) are the
 exact wire authority.
 
-Before starting ordinary work, read the startup core once. Codex, Claude Code and Cursor then load
-small guidance topics when needed: publication before recording work, review before checking,
-receipt before closure, and recovery on an error. After compaction, reacquire the core and the
-topic for the current operation. Anchored guidance links return only their named section.
+Before starting ordinary work, read the startup core once. It is a compact operating card, under
+8 KB, and it is enough for ordinary work: Codex, Claude Code and Cursor read the larger pages and
+the small topics only when a result, an error or a continuation names one, or when unsure. After
+compaction, reacquire the core and the topic for the current operation. Anchored guidance links
+return only their named section.
 
 If an MCP host drops schema examples or renders required fields as unknown, read the topic for
 that operation, such as `yoetz://guidance/request-templates.md#publish-work-plan-plus-obligation`.
@@ -62,10 +63,13 @@ obligations apply, record `no_obligations_reason` as exactly `no_material_change
 `single_atomic_change`, or `exploratory_scope_unknown`; the reason is invalid beside effective
 obligation refs. A revision restates the declaration, so omission clears an earlier reason.
 
-Read `status view=obligations` first and account for every exact `unattempted_items` value. Then set
-`dry_run: true` to validate a batch and preview what would be accepted without appending. The
-preview is not evidential and is not citable as a check, publication, or coverage source. Reuse the
-same `request_id` for the real publish after the preview succeeds.
+Reading `status` or previewing before a publish is optional: a publish that fails validation
+appends nothing and names every error, and one that succeeds returns the new frontier and the
+accepted ids. Before resolving an obligation, account for every requested item that has no attempt
+yet. When unsure about a batch, set `dry_run: true` to validate it and preview what would be
+accepted without appending. The preview is not evidential and is not citable as a check,
+publication, or coverage source. Reuse the same `request_id` for the real publish after the
+preview succeeds.
 
 To correct a recorded claim, publish a fresh `claim_recorded/1.1.0` event. Put the prior effective
 claim ids in `supersedes_claim_refs`, keep supporting evidence and successful results in
@@ -99,6 +103,7 @@ coverage vector. `mode` selects how much:
 | `semantic_if_configured` | Review is known to be optional. Runs AI-powered review if it is available; degrades honestly if not. |
 | `semantic_required` | The user, effective verification policy, or a named acceptance criterion requires independent AI-powered review. Preserve this choice for subsequent final checks. |
 | `deterministic_only` | Explicitly local or structural checks, or a user-authorized deliberate no-egress choice. Disclose `semantic_review_not_requested` and any unmet required review. |
+| `inspect` | You need the picture, not a verdict. Reads only: records nothing, returns no findings, runs no review. See below. |
 
 The configured `verification.semantic` default applies only when `mode` is omitted. An explicit
 mode is honored by the runtime; the default is not a persistent task-level enforcement rule.
@@ -127,6 +132,33 @@ observations that are still being delivered before it checks, and the result's
 `observations_awaited` says whether they all arrived (`complete`), some were still on their way
 (`bounded_timeout`, with how many), or the wait could not see them (`unavailable`). The wait never
 fails the check; without the option nothing changes.
+
+#### Inspecting what is left
+
+`"mode": "inspect"` asks Yoetz to look at its own record instead of checking it. It is a read like
+`status`: nothing is recorded, no finding is returned or created, no AI-powered review runs and
+nothing leaves your machine, so a lost answer is fixed by asking again. One call answers three
+questions:
+
+- **What is left to close, and whose move it is.** The same readiness, predicted receipt
+  conclusion and gap split `status` shows (your gaps beside the limits Yoetz itself carries), then
+  every unresolved obligation and finding with its class and reason. An open obligation names what
+  it lacks: requested items with no recorded attempt (by position), no resolution evidence, an
+  asserted command whose observed run differs, an unconfirmed blocker (yours), or an asserted
+  command run your host's hooks never linked (Yoetz's own observation gap).
+- **What the hooks observed since the last check.** Each observed command or edit after the last
+  check, with its tool, outcome, exit status and write class. Yoetz's own calls and host
+  bookkeeping are left out. Edits are recorded by write class, never by path.
+- **Whether the evidence matches what was declared.** For each obligation that cites resolution
+  evidence: which recorded action each piece of evidence came from (observed by a hook, asserted by
+  the agent, or untraceable), and whether that action names a declared deliverable or the
+  requested command. `evidence_off_declared_items` means the evidence came from somewhere the
+  obligation never declared, for example a benchmark run that bypassed the service's declared
+  supervisor. Yoetz compares only what it recorded; it reads no working directory, environment or
+  service configuration.
+
+Omit `scope`, `max_findings`, `policy_packs` and `final_review` (they are refused beside
+`inspect`); `await_observations` works as for any check.
 
 A local-only check can report “no issue detected within deterministic coverage” while preserving
 the limitation that AI-powered review did not run. Open obligations, missing requested attempts,

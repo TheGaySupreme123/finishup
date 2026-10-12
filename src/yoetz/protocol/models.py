@@ -1014,6 +1014,8 @@ ReadinessItemWire = Annotated[
     str,
     Field(pattern=r"^(?:unclassified_gap:)?[a-z][a-z0-9_]{0,127}$", max_length=145),
 ]
+# The 0-based index of a requested item inside its obligation (at most 64 items).
+RequestedItemIndexWire = Annotated[str, Field(pattern=r"^(?:[0-9]|[1-5][0-9]|6[0-3])$")]
 # An obligation or a finding the agent recorded as acknowledged, not done.
 AcknowledgedItemIdWire = Annotated[
     str,
@@ -1684,7 +1686,13 @@ class CheckRequestModel(PublicRequestModel):
     writer_id: WriterIdWire
     expected_frontier: FrontierModel
     # Omitted mode resolves via VerificationPolicy.default_check_mode in the application facade.
-    mode: Literal["deterministic_only", "semantic_if_configured", "semantic_required"] | None = None
+    # ``inspect`` (issue #1048, ADR-047) reads what is left to close instead of checking: it
+    # records nothing, mints no findings and calls no reviewer; the schema refuses the finding,
+    # pack, closing-review and scope options beside it.
+    mode: (
+        Literal["deterministic_only", "inspect", "semantic_if_configured", "semantic_required"]
+        | None
+    ) = None
     scope: CheckScopeModel | None = None
     max_findings: Literal["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"] | None = None
     policy_packs: tuple[CurrentPolicyPackWire, ...] | None = None
@@ -1698,6 +1706,30 @@ class CheckRequestModel(PublicRequestModel):
     @model_validator(mode="after")
     def _validate_check_request(self) -> CheckRequestModel:
         _validate_model_against_schema(self, "check-request")
+        if self.mode == "inspect":
+            # ADR-047: an inspection mints nothing, so the options of a minting check are refused
+            # beside it, each at its own field. Kept here rather than as a schema conditional,
+            # which observed hosts lower to an unauthorable ``unknown`` check input.
+            present = tuple(
+                name
+                for name in ("final_review", "max_findings", "policy_packs", "scope")
+                if getattr(self, name) is not None
+            )
+            if present:
+                from pydantic import ValidationError as PydanticValidationError
+
+                raise PydanticValidationError.from_exception_data(
+                    type(self).__name__,
+                    [
+                        {
+                            "type": "value_error",
+                            "loc": (name,),
+                            "input": None,
+                            "ctx": {"error": ValueError("extra_forbidden")},
+                        }
+                        for name in present
+                    ],
+                )
         return self
 
 
@@ -3810,6 +3842,194 @@ class CheckObservationsAwaitedModel(_ClosedModel):
     pending_count: CanonicalUInt64Wire
 
 
+class CheckInspectionMissingModel(_ClosedModel):
+    """One thing an open obligation still lacks, and whose move it is (issue #1048)."""
+
+    optional_non_null_fields = frozenset({"item_indexes"})
+
+    kind: Literal[
+        "blocker_unconfirmed",
+        "command_attempt_mismatch",
+        "command_run_not_observed",
+        "requested_item_not_attempted",
+        "resolution_evidence_not_cited",
+    ]
+    owner: Literal["agent", "yoetz"]
+    item_indexes: tuple[RequestedItemIndexWire, ...] | None = None
+
+    @model_validator(mode="after")
+    def _validate_inspection_missing(self) -> CheckInspectionMissingModel:
+        if self.item_indexes is not None:
+            _require_unique(self.item_indexes, limit=64)
+        return self
+
+
+class CheckInspectionObligationModel(_ClosedModel):
+    obligation_id: ObligationIdWire
+    closure_class: Literal["agent_work", "settled_disclosed", "settled_unmet"]
+    closure_basis: Literal[
+        "acknowledged_not_done",
+        "blocker_claimed",
+        "blocker_confirmed",
+        "externally_evaluated",
+        "open",
+        "resolved",
+        "resolved_deliverable_emptied",
+    ]
+    missing: Annotated[tuple[CheckInspectionMissingModel, ...], Field(max_length=8)]
+
+
+class CheckInspectionFindingModel(_ClosedModel):
+    finding_id: FindingIdWire
+    closure_class: Literal["agent_work", "awaiting_ruling", "settled_disclosed", "settled_unmet"]
+    closure_basis: Literal[
+        "absence_proved",
+        "absence_proved_after_acknowledged_not_done",
+        "absence_proved_after_self_verified",
+        "acknowledged_not_done_bookkeeping",
+        "acknowledged_not_done_requirement",
+        "disputed_after_rebuttal",
+        "limitation_acknowledged_not_done",
+        "limitation_disclosed",
+        "limitation_requested",
+        "open_answered",
+        "open_unanswered",
+        "rejected_awaiting_ruling",
+        "rejected_review_unavailable",
+        "rejection_accepted",
+        "reopened",
+        "self_verified",
+    ]
+
+
+class CheckInspectionRemainingModel(_ClosedModel):
+    """What is left to close and why: the closure verdict status prints (ADR-046)."""
+
+    optional_non_null_fields = frozenset({"predicted_conclusion"})
+
+    readiness: Literal["action_required", "ready", "ready_with_limitations", "unknown"]
+    predicted_conclusion: (
+        Literal[
+            "insufficient_coverage",
+            "no_unresolved_deterministic_findings",
+            "unresolved_findings_remain",
+        ]
+        | None
+    ) = None
+    agent_actionable: Annotated[tuple[ReadinessItemWire, ...], Field(max_length=128)]
+    standing_limitations: Annotated[tuple[ReadinessItemWire, ...], Field(max_length=128)]
+    obligations: Annotated[tuple[CheckInspectionObligationModel, ...], Field(max_length=64)]
+    obligation_count: CanonicalUInt64Wire
+    findings: Annotated[tuple[CheckInspectionFindingModel, ...], Field(max_length=64)]
+    finding_count: CanonicalUInt64Wire
+
+    @model_validator(mode="after")
+    def _validate_inspection_remaining(self) -> CheckInspectionRemainingModel:
+        _require_unique(self.agent_actionable, limit=128)
+        _require_unique(self.standing_limitations, limit=128)
+        return self
+
+
+class CheckInspectionObservedActionModel(_ClosedModel):
+    """One hook-observed action after the last check; structural facts only, never text."""
+
+    optional_non_null_fields = frozenset(
+        {"tool_name", "write_scope", "outcome", "exit_status", "command_commitment"}
+    )
+
+    event_id: EventIdWire
+    ledger_sequence: CanonicalUInt64Wire
+    action_kind: Literal["command", "edit", "other", "research", "review"]
+    material_class: Literal["edit_or_write", "exploration", "non_counting_write", "other"]
+    tool_name: ObservedToolWire | None = None
+    write_scope: (
+        Literal["notes", "outside_workspace", "scratch", "workspace", "yoetz_owned"] | None
+    ) = None
+    outcome: Literal["failure", "partial", "success", "unknown"] | None = None
+    exit_status: Annotated[int, Field(ge=-(2**31), le=2**31 - 1)] | None = None
+    command_commitment: HmacSha256Commitment | None = None
+
+
+class CheckInspectionObservedModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"last_check_frontier"})
+
+    last_check_frontier: CanonicalUInt64Wire | None = None
+    actions: Annotated[tuple[CheckInspectionObservedActionModel, ...], Field(max_length=64)]
+    action_count: CanonicalUInt64Wire
+
+
+class CheckInspectionDeclaredItemModel(_ClosedModel):
+    index: RequestedItemIndexWire
+    item_kind: Literal["command", "directory", "file"]
+
+
+class CheckInspectionEvidenceSourceModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"command_commitment", "outcome"})
+
+    ref: EvidenceOrResultIdWire
+    origin: Literal["asserted", "observed", "unattributed"]
+    command_commitment: HmacSha256Commitment | None = None
+    outcome: Literal["failure", "partial", "success", "unknown"] | None = None
+    named_item_indexes: tuple[RequestedItemIndexWire, ...]
+
+    @model_validator(mode="after")
+    def _validate_inspection_source(self) -> CheckInspectionEvidenceSourceModel:
+        _require_unique(self.named_item_indexes, limit=64)
+        return self
+
+
+class CheckInspectionAlignmentObligationModel(_ClosedModel):
+    obligation_id: ObligationIdWire
+    alignment: Literal[
+        "evidence_names_declared_item",
+        "evidence_off_declared_items",
+        "evidence_unattributed",
+        "no_declared_items",
+    ]
+    declared_items: Annotated[tuple[CheckInspectionDeclaredItemModel, ...], Field(max_length=64)]
+    sources: Annotated[tuple[CheckInspectionEvidenceSourceModel, ...], Field(max_length=64)]
+
+
+class CheckInspectionAlignmentModel(_ClosedModel):
+    """Where each obligation's resolution evidence came from, beside what it declared."""
+
+    basis: Literal["recorded_links"]
+    obligations: Annotated[
+        tuple[CheckInspectionAlignmentObligationModel, ...], Field(max_length=64)
+    ]
+
+
+class CheckInspectionModel(_ClosedModel):
+    """The read-only ``mode: inspect`` branch (issue #1048, ADR-047).
+
+    Carries no verdict, findings, coverage vector or review provenance: an inspection records
+    nothing and mints nothing, so a completion-grade shape here would let a caller conclude from
+    a check that never ran. ``subject_frontier`` is the ledger state it read.
+    """
+
+    optional_non_null_fields = frozenset({"observations_awaited"})
+
+    protocol_version: Literal["0.1"]
+    schema_version: Literal["1.0.0"]
+    request_id: RequestIdWire
+    ok: Literal[True]
+    state: Literal["inspected"]
+    task_id: TaskIdWire
+    session_id: SessionIdWire
+    writer_id: WriterIdWire
+    subject_frontier: FrontierModel
+    remaining: CheckInspectionRemainingModel
+    observed_since_check: CheckInspectionObservedModel
+    evidence_alignment: CheckInspectionAlignmentModel
+    observations_awaited: CheckObservationsAwaitedModel | None = None
+    privacy_projection: PrivacyProjectionModel
+
+    @model_validator(mode="after")
+    def _validate_check_inspection(self) -> CheckInspectionModel:
+        _validate_model_against_schema(self, "check-result")
+        return self
+
+
 class CheckSuccessModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
@@ -3935,7 +4155,8 @@ class CheckSuccessModel(_ClosedModel):
 
 
 type CheckSuccessBranch = Annotated[
-    CheckSuccessModel | CheckAwaitingHumanModel, Field(discriminator="state")
+    CheckSuccessModel | CheckAwaitingHumanModel | CheckInspectionModel,
+    Field(discriminator="state"),
 ]
 type CheckResultBranch = Annotated[
     CheckSuccessBranch | OperationFailureModel, Field(discriminator="ok")
@@ -6580,6 +6801,63 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
     )
     # Issue #1012: closed state and count of the optional pre-check hook-row wait.
     + _prefix_leaf_patterns("/observations_awaited", ("pending_count", "state"))
+    # Issue #1048 (ADR-047): the read-only inspection branch. Every leaf is an id, a closed
+    # token, a count, a requested-item index or a keyed command commitment; never text or paths.
+    + _prefix_leaf_patterns(
+        "/remaining",
+        (
+            "agent_actionable/*",
+            "finding_count",
+            "obligation_count",
+            "predicted_conclusion",
+            "readiness",
+            "standing_limitations/*",
+        ),
+    )
+    + _prefix_leaf_patterns(
+        "/remaining/obligations/*",
+        (
+            "closure_basis",
+            "closure_class",
+            "missing/*/item_indexes/*",
+            "missing/*/kind",
+            "missing/*/owner",
+            "obligation_id",
+        ),
+    )
+    + _prefix_leaf_patterns(
+        "/remaining/findings/*", ("closure_basis", "closure_class", "finding_id")
+    )
+    + _prefix_leaf_patterns("/observed_since_check", ("action_count", "last_check_frontier"))
+    + _prefix_leaf_patterns(
+        "/observed_since_check/actions/*",
+        (
+            "action_kind",
+            "command_commitment",
+            "event_id",
+            "exit_status",
+            "ledger_sequence",
+            "material_class",
+            "outcome",
+            "tool_name",
+            "write_scope",
+        ),
+    )
+    + ("/evidence_alignment/basis",)
+    + _prefix_leaf_patterns(
+        "/evidence_alignment/obligations/*",
+        (
+            "alignment",
+            "declared_items/*/index",
+            "declared_items/*/item_kind",
+            "obligation_id",
+            "sources/*/command_commitment",
+            "sources/*/named_item_indexes/*",
+            "sources/*/origin",
+            "sources/*/outcome",
+            "sources/*/ref",
+        ),
+    )
 )
 
 _RESPOND_STRUCTURAL_POINTERS: Final = (
@@ -7499,8 +7777,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1564
-    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2
+        len(result) != 1600
+    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2, #1048 +36
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 
