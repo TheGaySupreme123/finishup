@@ -23,4 +23,5 @@ For closure, publish evidence before `check`, answer findings, and request `rece
 not just recheck. At `ready_with_limitations`, nothing further is to do: request the receipt without another check;
 `standing_limitations` are disclosed, never tasks. A `respond` does not clear a finding.
 Keep `unresolved_findings_remain`. Yoetz limit: respond `self_verified`, never `yoetz-blocker`.
-Never empty or withdraw a working deliverable over a finding or an "empty if unsolved" clause: passing your tests makes it partial, not unsolved.
+On a limitation request, if the requirement may be met but cannot be verified here, respond `acknowledged` with the reason; `acknowledged_not_done` only when you know it is not met.
+Never empty or withdraw a working deliverable over a finding or an "empty if unsolved" clause.

@@ -46,6 +46,11 @@ from yoetz.kernel.closure_class import (
     obligation_closures,
     review_can_rule,
 )
+from yoetz.kernel.limitation import (
+    limitation_disclosed_ids,
+    limitation_requested_ids,
+    limitation_standing,
+)
 from yoetz.kernel.projections import (
     FindingProjectionRecord,
     ProjectionRecord,
@@ -341,12 +346,11 @@ def test_a_limitation_request_is_agent_work_to_disclose_not_blocking_work() -> N
     assert counts.receipt_blocking_findings == 0
 
 
-@pytest.mark.parametrize(
-    "response", [ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.ACKNOWLEDGED_NOT_DONE]
-)
-def test_one_acknowledgement_discloses_a_limitation(response: ResponseDisposition) -> None:
+def test_a_reasoned_acknowledgement_discloses_a_limitation() -> None:
+    """The agent says the requirement may be met but cannot be verified here (decision 2026-10-12)."""
+
     # The disclosure is a reasoned answer (``respond`` requires the reason on a reviewer finding).
-    _, closure = _one(_limitation(), response, reasoned=True)
+    _, closure = _one(_limitation(), ResponseDisposition.ACKNOWLEDGED, reasoned=True)
     assert (closure.closure_class, closure.basis, closure.receipt_effect) == (
         FindingClosureClass.SETTLED_DISCLOSED,
         "limitation_disclosed",
@@ -357,6 +361,78 @@ def test_one_acknowledgement_discloses_a_limitation(response: ResponseDispositio
         1,
         0,
         0,
+    )
+
+
+def test_acknowledged_not_done_on_a_limitation_request_is_an_unmet_requirement() -> None:
+    """The agent's answer decides: "not done" says the requirement is NOT met (lake S, #1024).
+
+    It is not a verification limit: the class is ``settled_unmet`` under its own basis, the
+    receipt keeps ``unresolved_findings_remain``, and it counts as unmet, never as disclosed.
+    """
+
+    state, closure = _one(_limitation(), ResponseDisposition.ACKNOWLEDGED_NOT_DONE, reasoned=True)
+    assert (closure.closure_class, closure.basis, closure.receipt_effect) == (
+        FindingClosureClass.SETTLED_UNMET,
+        "limitation_acknowledged_not_done",
+        ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN,
+    )
+    assert closure.next_actions == ("reopen", "repair")
+    counts = closure_counts((closure,), ())
+    assert (counts.findings_unmet, counts.findings_disclosed, counts.findings_to_disclose) == (
+        1,
+        0,
+        0,
+    )
+    assert counts.receipt_blocking_findings == 1
+    standing = limitation_standing(state, fnd(1))
+    assert standing is not None and standing.unmet and not standing.disclosed
+    assert standing.state == "limitation_acknowledged_not_done"
+    assert limitation_requested_ids(state) == () and limitation_disclosed_ids(state) == ()
+
+
+def test_a_decision_line_never_turns_an_acknowledged_not_done_answer_into_a_disclosure() -> None:
+    """The answer is read first: the agent reopens it, then discloses (decision 2026-10-12)."""
+
+    ledger, obligation = _limit_ledger()
+    ledger.append(
+        EventSchema("decision_recorded", "1.0.0"),
+        DecisionRecordedPayload(
+            statement=f"yoetz-verification-limit:{obligation}",
+            rationale="The evaluator is hidden; I cannot run it.",
+            authority=actor_id("agt_codex"),
+        ),
+        observed=False,
+    )
+    base = replay(ledger.prefix)
+    finding = _limitation(refs=(obligation,))
+    findings = {fnd(1): finding_record(finding, base.frontier)}
+    unmet = replace(
+        base,
+        frontier=max(base.frontier, 20),
+        findings=findings,
+        responses={fnd(1): _response(1, ResponseDisposition.ACKNOWLEDGED_NOT_DONE, reasoned=True)},
+    )
+    standing = limitation_standing(unmet, fnd(1))
+    assert standing is not None and standing.state == "limitation_acknowledged_not_done"
+    closure = finding_closure(unmet, fnd(1))
+    assert closure is not None and closure.basis == "limitation_acknowledged_not_done"
+    # Taking the answer back with ``reopened`` leaves the decision line to disclose the request.
+    reopened = replace(unmet, responses={fnd(1): _response(1, ResponseDisposition.REOPENED)})
+    back = finding_closure(reopened, fnd(1))
+    assert back is not None and back.basis == "limitation_disclosed"
+
+
+def test_reopening_an_unmet_limitation_request_returns_it_to_something_to_disclose() -> None:
+    finding = _limitation()
+    state = _state(
+        {fnd(1): finding_record(finding, 4)}, {fnd(1): _response(1, ResponseDisposition.REOPENED)}
+    )
+    closure = finding_closure(state, fnd(1))
+    assert closure is not None
+    assert (closure.closure_class, closure.basis) == (
+        FindingClosureClass.AGENT_WORK,
+        "limitation_requested",
     )
 
 
@@ -381,7 +457,9 @@ def test_an_act_challenge_never_qualifies_as_a_limitation_request() -> None:
     )
 
 
-def test_a_verification_limit_decision_discloses_the_request_without_a_response() -> None:
+def _limit_ledger() -> tuple[ObservedLedger, str]:
+    """A ledger with one open obligation in the plan, and nothing else."""
+
     ledger = ObservedLedger()
     obligation = obl(1)
     ledger.append(
@@ -399,6 +477,11 @@ def test_a_verification_limit_decision_discloses_the_request_without_a_response(
         PlanPublishedPayload(1, "Plan", (obligation_id(obligation),)),
         observed=False,
     )
+    return ledger, obligation
+
+
+def test_a_verification_limit_decision_discloses_the_request_without_a_response() -> None:
+    ledger, obligation = _limit_ledger()
     before = replay(ledger.prefix)
     finding = _limitation(refs=(obligation,))
     state = replace(before, findings={fnd(1): finding_record(finding, before.frontier)})

@@ -3,7 +3,10 @@
 Each case drives the real operations through the closure-shape harness and asserts with
 ``assert_surfaces_agree`` that status (every view), the MCP text, the CLI, the terminal lines,
 ``closure_prepare``, the check's next step and the receipt (JSON, markdown, text) carry the same
-conclusion and counters. The owner's guards: G1 an ``act`` challenge never qualifies as a
+conclusion and counters. The agent's answer decides what a limitation request means (owner
+decision 2026-10-12): ``acknowledged`` says the requirement may be met but cannot be verified here
+(a disclosed verification limit, ``insufficient_coverage``), ``acknowledged_not_done`` says it is NOT
+met (an unmet requirement, ``unresolved_findings_remain``, lake S). The owner's guards: G1 an ``act`` challenge never qualifies as a
 limitation, G2 the agent's own words never make one (the pretrain S rescue keeps its acknowledgement
 re-check), G3 a limitation never touches ``declared_output_emptied`` (unit-tested on the kernel in
 ``test_tb4n3_dialogue_state``) and G4 a limitation is never clean.
@@ -120,9 +123,10 @@ async def test_a_limitation_request_is_to_disclose_never_blocking_work_on_every_
 
 
 async def test_the_check_text_asks_to_disclose_a_limitation_request_never_to_repair_it() -> None:
-    """The check wire counts a pending limitation request under ``work_open_findings`` (no enum
-    value for "to disclose"), so the CLI words that step from the items' closure basis: every
-    agent-facing sentence must be true, and a limitation request is never repair work (Q4)."""
+    """The check wire has its own continuation for "the only work left is to disclose"
+    (``disclose_limitations``, owner decision 2026-10-12), so the JSON and the text agree: every
+    agent-facing sentence must be true, and a limitation request is never repair work (Q4). The
+    text also says how the answer decides what it means."""
 
     from yoetz.application.check import check_internal_json
     from yoetz.cli.render import render_human_check
@@ -138,8 +142,11 @@ async def test_the_check_text_asks_to_disclose_a_limitation_request_never_to_rep
     wire = check_internal_json(checked)
     overall = wire["overall_next"]
     assert isinstance(overall, Mapping)
+    assert overall["action"] == "disclose_limitations"
+    assert overall["status"] == "action_required"
+    assert tuple(overall["target_refs"]) == (finding.finding_id,)  # type: ignore[arg-type]
     checklist = CheckFindingChecklistModel.model_validate(wire["finding_checklist"])
-    assert checklist.next == "work_open_findings"
+    assert checklist.next == "disclose_limitations"
     assert [item.closure_basis for item in checklist.items if item.todo_state == "open"] == [
         "limitation_requested"
     ]
@@ -157,15 +164,54 @@ async def test_the_check_text_asks_to_disclose_a_limitation_request_never_to_rep
         coverage=CoverageModel.model_construct(known_gaps=()),
     )
     text = render_human_check(model)
-    assert "Disclose the named limitation requests" in text
+    assert text.count("Disclose the named limitation requests") == 2  # checklist and overall
     assert finding.finding_id in text
     assert "Repair" not in text and "repair the" not in text.lower()
     assert "no repair is needed" in text
+    assert "acknowledged_not_done only when you know it is not met" in text
+    assert "Overall next [action_required]: Disclose" in text
+
+    # The MCP text carries the same token as the wire.
+    from yoetz.mcp.summaries import summary_for_check
+
+    summary = summary_for_check(
+        {
+            "ok": True,
+            "verdict": "issue_detected",
+            "overall_next": wire["overall_next"],
+            "finding_checklist": wire["finding_checklist"],
+        }
+    )
+    assert "overall next: disclose_limitations; status: action_required" in summary
 
 
-@pytest.mark.parametrize("disposition", ["acknowledged", "acknowledged_not_done"])
-async def test_one_answer_discloses_a_limitation_and_it_is_not_a_requirement_left_undone(
+@pytest.mark.parametrize(
+    ("disposition", "conclusion", "counts", "klass", "basis"),
+    [
+        # May be met but cannot be verified here: a disclosed verification limit.
+        (
+            "acknowledged",
+            _INSUFFICIENT,
+            (0, 0, 0, 1, 0),
+            "settled_disclosed",
+            "limitation_disclosed",
+        ),
+        # Known not to be met (lake S ``fnd_8bdad2d0``): an unmet requirement, receipt unresolved.
+        (
+            "acknowledged_not_done",
+            _UNRESOLVED,
+            (0, 0, 1, 0, 0),
+            "settled_unmet",
+            "limitation_acknowledged_not_done",
+        ),
+    ],
+)
+async def test_the_agents_answer_decides_what_a_limitation_request_means_on_every_surface(
     disposition: str,
+    conclusion: str,
+    counts: tuple[int, int, int, int, int],
+    klass: str,
+    basis: str,
 ) -> None:
     run, checked = await _run_with(_LIMIT, 82)
     finding = _reviewer_finding(checked)
@@ -174,25 +220,45 @@ async def test_one_answer_discloses_a_limitation_and_it_is_not_a_requirement_lef
     await run.respond(
         finding.finding_id, checked.result_frontier, disposition, _REASON, evidence_refs=[attempt]
     )
-    await run.check_in("semantic_if_configured")
+    after = await run.check_in("semantic_if_configured")
     gathered = await _surfaces(run)
     readiness = gathered.status["compact"].closure_readiness
+    # Either way the agent owes nothing more on the finding: it is settled (status says so).
     assert readiness.agent_actionable == ()
     assert readiness.state == "ready_with_limitations"
-    assert_surfaces_agree(gathered, conclusion=_INSUFFICIENT, counts=(0, 0, 0, 1, 0))
+    assert_surfaces_agree(gathered, conclusion=conclusion, counts=counts, check=after)
+    row = _row(gathered, finding.finding_id)
+    assert (row.closure_class, row.closure_basis) == (klass, basis)
+    # The check's continuation agrees with status: nothing to disclose or repair any more, and the
+    # predicted conclusion is the one the receipt carries.
+    assert after.finding_checklist is not None and after.overall_next is not None
+    assert after.finding_checklist.next == "request_receipt"
+    assert (after.overall_next.status, after.overall_next.action) == (
+        "ready_with_limitations",
+        "request_receipt",
+    )
     document = gathered.receipts["json"].document
-    assert document["limitation_disclosed_finding_ids"] == [finding.finding_id]
-    # Disclosed, not "acknowledged, not done": it is not listed as an undone requirement and the
-    # Stop gate does not challenge the agent again over it: the only re-check left is the
-    # announced acceptance re-read of the resolved obligation (RC-8), never the finding.
-    assert not document.get("acknowledged_not_done_finding_ids")
-    assert finding.finding_id not in tuple(readiness.acknowledged_not_done or ())
+    disclosed: list[str] = document.get("limitation_disclosed_finding_ids") or []
+    undone: list[str] = document.get("acknowledged_not_done_finding_ids") or []
     gate = closure_gate_from_readiness(
         readiness, frontier_sequence="9", frontier_digest="d", observation_pending=False
     )
+    # G2: a limitation request is never a premise challenge, so the Stop gate never re-asks one;
+    # the only re-check left is the announced acceptance re-read of the resolved obligation.
     assert gate is not None and gate.items == (ACCEPTANCE_RECHECK_ITEM,)
-    for fmt in ("markdown", "text"):
-        assert "Verification limits" in gathered.receipts[fmt].human_text
+    if basis == "limitation_disclosed":
+        # Disclosed, not "acknowledged, not done": it is not listed as an undone requirement.
+        assert disclosed == [finding.finding_id] and not undone
+        assert finding.finding_id not in tuple(readiness.acknowledged_not_done or ())
+        for fmt in ("markdown", "text"):
+            assert "Verification limits" in gathered.receipts[fmt].human_text
+    else:
+        # Unmet: listed with the requirements acknowledged as not done, never as a verification
+        # limit, and the receipt keeps unresolved_findings_remain.
+        assert not disclosed and undone == [finding.finding_id]
+        assert finding.finding_id in tuple(readiness.acknowledged_not_done or ())
+        for fmt in ("markdown", "text"):
+            assert "Verification limits" not in gathered.receipts[fmt].human_text
 
 
 async def test_a_verification_limit_decision_alone_discloses_the_request() -> None:
@@ -207,6 +273,35 @@ async def test_a_verification_limit_decision_alone_discloses_the_request() -> No
     assert gathered.receipts["json"].document["limitation_disclosed_finding_ids"] == [
         finding.finding_id
     ]
+
+
+async def test_a_decision_line_does_not_turn_an_acknowledged_not_done_answer_into_a_disclosure() -> (
+    None
+):
+    """The agent said the requirement is NOT met; a verification-limit decision elsewhere does not
+    change what that answer means. ``reopened`` then lets the agent state the limit instead."""
+
+    run, checked = await _run_with(_LIMIT, 92)
+    finding = _reviewer_finding(checked)
+    await run.respond(finding.finding_id, checked.result_frontier, "acknowledged_not_done", _REASON)
+    await run.publish(_limit_decision(run))
+    await run.check_in("semantic_if_configured")
+    gathered = await _surfaces(run)
+    row = _row(gathered, finding.finding_id)
+    assert (row.closure_class, row.closure_basis) == (
+        "settled_unmet",
+        "limitation_acknowledged_not_done",
+    )
+    assert_surfaces_agree(gathered, conclusion=_UNRESOLVED, counts=(0, 0, 1, 0, 0))
+
+    await run.respond(
+        finding.finding_id, run.frontier, "reopened", "It may be met; I cannot measure it here."
+    )
+    await run.check_in("semantic_if_configured")
+    reopened = await _surfaces(run)
+    row = _row(reopened, finding.finding_id)
+    assert (row.closure_class, row.closure_basis) == ("settled_disclosed", "limitation_disclosed")
+    assert_surfaces_agree(reopened, conclusion=_INSUFFICIENT, counts=(0, 0, 0, 1, 0))
 
 
 async def test_g1_an_act_challenge_is_never_a_limitation_even_beside_the_decision_line() -> None:

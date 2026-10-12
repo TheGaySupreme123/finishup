@@ -2,7 +2,7 @@
 
 Use Yoetz for material multi-step, delegated, resumable, or verification-heavy work. New session: read guidance/discover schemas, then `start` before substantive work. If startup fails, follow recovery first; if still blocked, ask for intro and guidance. Skip trivial questions or edits; never invent a ledger task. Cadence: `start` once, `publish_work` per material transition; `receipt` last. Never claim Yoetz is active until `start` returns. `yoetz://guidance/workflow.md`.
 
-Read current guidance, not memory. Schemas are wire authority. Yoetz is a local ledger/checker. Yoetz is not an enforcement system; a check is not correctness.
+Read current guidance, not memory. Yoetz is not an enforcement system; a check is not correctness.
 
 # Task first
 
@@ -12,7 +12,7 @@ Deliver every requested output at its path, even if an input looks inconsistent:
 
 Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance. The five index URIs are the complete legacy catalog; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI; verify the text and byte counts. `page_size` is 4 to 16,384 UTF-8 bytes; default 4,096. Only if that result is also empty, use installed `references/<name>.md` or the focused topic's parent index.
 
-Focused topics: `startup.md`, `recovery.md`, `publication.md`, `review.md`, `receipt.md`, `delegation.md`, `consent.md`, `page-delivery.md`. Heading topics like `yoetz://guidance/workflow.md#start-and-resume` are a closed catalog: use only anchors guidance names; a rejected anchor's error lists valid ones.
+Focused topics: `startup.md`, `recovery.md`, `publication.md`, `review.md`, `receipt.md`, `delegation.md`, `consent.md`, `page-delivery.md`. Heading topics like `yoetz://guidance/workflow.md#start-and-resume` are a closed catalog: use only anchors guidance names.
 
 # Start contract
 

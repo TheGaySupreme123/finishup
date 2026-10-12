@@ -436,8 +436,12 @@ checklist is now built from it.
 A reviewer's challenge whose requested next step is `state_unresolved_limitation` on a
 requirement-shaped finding asks the agent to say plainly what cannot be verified. That is not work
 that repair can clear, so it is not counted as receipt-blocking (owner decision Q4): it stays
-`agent_work` with the single next action `acknowledge` until any `respond` acknowledgement, or a
+`agent_work` with the single next action `acknowledge` until the agent answers it, and the answer
+decides what it means (owner decision 2026-10-12, ADR-046 amendment): a reasoned `acknowledged`, or a
 `yoetz-verification-limit:<obligation>` decision covering the obligation it concerns, settles it as
-`limitation_disclosed`. The receipt then discloses it in "Verification limits" at
-`insufficient_coverage`. An `act` challenge never qualifies, and neither do the agent's own words.
+`limitation_disclosed` (the requirement may be met but cannot be verified here), and the receipt
+then discloses it in "Verification limits" at `insufficient_coverage`; `acknowledged_not_done` says
+the requirement is not met, so it is `limitation_acknowledged_not_done`, an unmet requirement at
+`unresolved_findings_remain`. When it is the only agent work left the check's next step is
+`disclose_limitations`. An `act` challenge never qualifies, and neither do the agent's own words.
 Details: ADR-046 section 1.

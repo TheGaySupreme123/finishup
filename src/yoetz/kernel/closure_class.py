@@ -25,13 +25,17 @@ Findings (``FindingClosureClass``):
 
 Obligations (``ObligationClosureClass``) use the same words without ``awaiting_ruling``.
 
-Owner decision Q4 (DESIGN_RC3 section 8): a reviewer's ``state_unresolved_limitation`` request does
-not settle by itself. Until the agent discloses it (any ``respond`` acknowledgement with a reason,
-or a recorded ``yoetz-verification-limit:<obl>`` decision covering the obligation) it is
+Owner decision Q4 (DESIGN_RC3 section 8), with the owner's reading of ``acknowledged_not_done``
+replaced on 2026-10-12 (#1024): a reviewer's ``state_unresolved_limitation`` request does not
+settle by itself, and the AGENT'S ANSWER decides what it means. Until the agent answers it is
 ``agent_work`` / ``limitation_requested`` with the single next action ``acknowledge``; it is
-counted as "to disclose", never as receipt-blocking work. After the disclosure it is
+counted as "to disclose", never as receipt-blocking work. A reasoned ``acknowledged`` (or a
+reasoned ``self_verified``, or a recorded ``yoetz-verification-limit:<obl>`` decision covering the
+obligation) says the requirement may be met but cannot be verified here: the item is
 ``settled_disclosed`` / ``limitation_disclosed``, effect ``insufficient_coverage``, listed under
-"Verification limits". It is never clean.
+"Verification limits", and never clean. ``acknowledged_not_done`` says the requirement is NOT met:
+the item is ``settled_unmet`` / ``limitation_acknowledged_not_done``, effect
+``unresolved_findings_remain``, exactly like a requirement acknowledged as not done.
 """
 
 from __future__ import annotations
@@ -144,6 +148,7 @@ FINDING_BASES: Final[Mapping[str, tuple[FindingClosureClass, ReceiptEffect]]] = 
         "rejected_awaiting_ruling": (_F.AWAITING_RULING, _UNRESOLVED),
         "rejected_review_unavailable": (_F.SETTLED_DISCLOSED, _INSUFFICIENT),
         "acknowledged_not_done_requirement": (_F.SETTLED_UNMET, _UNRESOLVED),
+        "limitation_acknowledged_not_done": (_F.SETTLED_UNMET, _UNRESOLVED),
         "acknowledged_not_done_bookkeeping": (_F.SETTLED_DISCLOSED, _INSUFFICIENT),
         "self_verified": (_F.SETTLED_DISCLOSED, _INSUFFICIENT),
         "disputed_after_rebuttal": (_F.SETTLED_DISCLOSED, _INSUFFICIENT),
@@ -247,9 +252,10 @@ class ClosureCounts:
 
     ``findings_to_do`` is agent work the receipt waits for (``agent_work`` other than a
     limitation request, plus ``awaiting_ruling``); ``findings_awaiting_ruling`` is the subset the
-    reviewer must rule on; ``findings_unmet`` the acknowledged requirements;
-    ``findings_disclosed`` the settled and disclosed ones (including disclosed limitations);
-    ``findings_to_disclose`` the reviewer's limitation requests the agent has not yet disclosed.
+    reviewer must rule on; ``findings_unmet`` the acknowledged requirements (a limitation request
+    answered ``acknowledged_not_done`` included); ``findings_disclosed`` the settled and disclosed
+    ones (including disclosed limitations); ``findings_to_disclose`` the reviewer's limitation
+    requests the agent has not yet answered.
     Wire form: ``finding_counts {to_do, awaiting_ruling, unmet, disclosed, to_disclose,
     self_verify_eligible}`` and ``obligation_counts {open, acknowledged, disclosed}``.
     """
@@ -470,20 +476,17 @@ def finding_closure(
             sources=response_event,
         )
     if todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE:
+        # The agent's answer decides (owner decision 2026-10-12): ``acknowledged_not_done`` on a
+        # reviewer's limitation request says the requirement is NOT met, so it is an unmet
+        # requirement, not a verification limit.
         if limitation:
-            return _make(
-                state,
-                finding,
-                "limitation_disclosed",
-                ("none",),
-                since=response_frontier,
-                sources=response_event,
+            basis = "limitation_acknowledged_not_done"
+        else:
+            basis = (
+                "acknowledged_not_done_bookkeeping"
+                if finding.kind in BOOKKEEPING_KINDS
+                else "acknowledged_not_done_requirement"
             )
-        basis = (
-            "acknowledged_not_done_bookkeeping"
-            if finding.kind in BOOKKEEPING_KINDS
-            else "acknowledged_not_done_requirement"
-        )
         return _make(
             state,
             finding,

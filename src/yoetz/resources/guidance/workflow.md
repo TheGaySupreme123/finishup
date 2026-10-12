@@ -264,7 +264,12 @@ planned arguments, or carried its program and flags in another order, also count
 disclosed (`planned_verification_matched_by_prefix`). Repair first. If
 you repaired a finding and Yoetz still cannot prove it (a Yoetz limit), verify it yourself, record
 that evidence, and respond `self_verified`; respond `acknowledged_not_done` only if you truly
-cannot or will not do it. A Yoetz limit is never a `yoetz-blocker`: record a blocker only for an
+cannot or will not do it. A reviewer's limitation request (`requested_next_step`
+`state_unresolved_limitation`; when it is all that is left, the check's next step is
+`disclose_limitations`) asks you to state a limit, not to repair: your answer decides what it means.
+If the requirement may be met but cannot be verified here, respond `acknowledged` with the reason;
+respond `acknowledged_not_done` only when you know it is not met, and the receipt then keeps
+`unresolved_findings_remain`. A Yoetz limit is never a `yoetz-blocker`: record a blocker only for an
 open obligation outside your control, as above. A Stop after you record a blocker asks you once
 to reconsider it, even right after an earlier continuation: if the task says the data or
 dependency is recoverable, continue the work; if it is genuinely outside your control, follow the

@@ -1340,18 +1340,26 @@ def build_finding_checklist(
         projection, (todo.finding_id for todo in todos), attempt_budget=attempt_budget
     )
     counted = closure_counts(closures.values(), ())
-    # ADR-046: work is what the closure class says the agent owes (``agent_work``, including a
-    # limitation request the agent still has to disclose). A settled basis (a disclosed limitation,
-    # a rejection nobody can rule on) keeps an ``open`` to-do state but is never work.
+    # ADR-046: work is what the closure class says the agent owes (``agent_work``). A settled basis
+    # (a disclosed limitation, a rejection nobody can rule on) keeps an ``open`` to-do state but is
+    # never work. A limitation request the agent has not answered is agent work of its own kind:
+    # when it is the ONLY remaining work the continuation is ``disclose_limitations`` (owner
+    # decision 2026-10-12, #1024); mixed with real work it stays ``work_open_findings``.
     awaiting = counted.findings_awaiting_ruling
-    work = counted.findings_to_do - awaiting + counted.findings_to_disclose
+    real_work = counted.findings_to_do - awaiting
     next_step: Literal[
-        "decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"
+        "decide_at_budget",
+        "disclose_limitations",
+        "request_receipt",
+        "request_ruling",
+        "work_open_findings",
     ]
     if counts.budget_reached:
         next_step = "decide_at_budget"
-    elif work > 0:
+    elif real_work > 0:
         next_step = "work_open_findings"
+    elif counted.findings_to_disclose > 0:
+        next_step = "disclose_limitations"
     elif awaiting > 0:
         next_step = "request_ruling"
     else:
@@ -1421,16 +1429,25 @@ def build_overall_next(
             ),
             predicted_conclusion=predicted_conclusion,
         )
-    open_refs = _bounded_overall_refs(
-        item.finding_id
+    # A limitation request nobody answered yet is agent work that asks for a disclosure, not a
+    # repair: alone it is ``disclose_limitations``; beside real work it rides in the same
+    # ``work_open_findings`` target list (the text names both).
+    agent_items = tuple(
+        item
         for item in checklist.items
         if item.closure_class == "agent_work"
         or (item.closure_class is None and item.todo_state == "open")
     )
+    open_refs = _bounded_overall_refs(item.finding_id for item in agent_items)
     if open_refs:
+        counted = checklist.closure_counts
+        only_requests = all(
+            item.closure_class == "agent_work" and item.closure_basis == "limitation_requested"
+            for item in agent_items
+        ) and (counted is None or counted.to_do - counted.awaiting_ruling == 0)
         return CheckOverallNext(
             status="action_required",
-            action="work_open_findings",
+            action="disclose_limitations" if only_requests else "work_open_findings",
             target_refs=open_refs,
             predicted_conclusion=predicted_conclusion,
         )

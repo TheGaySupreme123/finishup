@@ -3467,6 +3467,7 @@ FindingClosureBasisLiteral = Literal[
     "disputed_after_rebuttal",
     "rejection_accepted",
     "limitation_disclosed",
+    "limitation_acknowledged_not_done",
     "absence_proved",
     "absence_proved_after_acknowledged_not_done",
     "absence_proved_after_self_verified",
@@ -3589,7 +3590,13 @@ class CheckFindingChecklistModel(_ClosedModel):
     attempt_budget: CanonicalPositiveUInt64Wire
     counts: CheckChecklistCountsModel
     items: tuple[CheckChecklistItemModel, ...]
-    next: Literal["decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"]
+    next: Literal[
+        "decide_at_budget",
+        "disclose_limitations",
+        "request_receipt",
+        "request_ruling",
+        "work_open_findings",
+    ]
 
     @model_validator(mode="after")
     def _validate_checklist(self) -> CheckFindingChecklistModel:
@@ -3606,6 +3613,7 @@ class CheckOverallNextModel(_ClosedModel):
     action: Literal[
         "supply_missing_input",
         "work_open_findings",
+        "disclose_limitations",
         "request_ruling",
         "review_recorded_work",
         "request_receipt",
@@ -3623,13 +3631,20 @@ class CheckOverallNextModel(_ClosedModel):
         if self.action in {
             "supply_missing_input",
             "work_open_findings",
+            "disclose_limitations",
             "request_ruling",
             "review_recorded_work",
         }:
             if self.status != "action_required":
                 raise ValueError("check_overall_next_action_invalid")
             if (
-                self.action in {"work_open_findings", "request_ruling", "review_recorded_work"}
+                self.action
+                in {
+                    "work_open_findings",
+                    "disclose_limitations",
+                    "request_ruling",
+                    "review_recorded_work",
+                }
                 and not self.target_refs
             ):
                 raise ValueError("check_overall_next_targets_invalid")
@@ -4032,7 +4047,9 @@ class RespondClosureAfterModel(_ClosedModel):
 
     ``todo_state`` is the finding's shared to-do state after the answer; ``limitation`` is set
     only for a reviewer's limitation request (owner decision Q4): ``limitation_requested`` until
-    the agent discloses it, ``limitation_disclosed`` once one acknowledgement did.
+    the agent answers it, ``limitation_disclosed`` once a reasoned acknowledgement did (the
+    requirement may be met but cannot be verified here), ``limitation_acknowledged_not_done`` once
+    it answered ``acknowledged_not_done`` (the requirement is NOT met; owner decision 2026-10-12).
     """
 
     optional_non_null_fields = frozenset({"limitation"})
@@ -4045,7 +4062,10 @@ class RespondClosureAfterModel(_ClosedModel):
         "self_verified",
         "verified_resolved",
     ]
-    limitation: Literal["limitation_requested", "limitation_disclosed"] | None = None
+    limitation: (
+        Literal["limitation_requested", "limitation_disclosed", "limitation_acknowledged_not_done"]
+        | None
+    ) = None
 
 
 class RespondSuccessModel(_ClosedModel):

@@ -9,8 +9,8 @@ stop sentence, which stays byte for byte; Yoetz's own review-packet budgets are 
 when the review succeeded and reported no insufficiency; `evidence_content_digest_only` keeps
 bounding; and a reviewer's request to state a limitation needs one agent acknowledgement before it
 settles. It adds optional fields to the unreleased `status-result` 1.4.0, `check-result` 1.4.0,
-`respond-result` and `receipt-document` 1.3.0, adds one value to two closed enums
-(`request_ruling`), and changes no released wire shape. It grants no runtime, credential,
+`respond-result` and `receipt-document` 1.3.0, adds values to two closed enums
+(`request_ruling`; `disclose_limitations`, 2026-10-12), and changes no released wire shape. It grants no runtime, credential,
 disclosure or destructive-action authority.
 **Implemented by:** `src/yoetz/kernel/closure_class.py` (the classifier),
 `src/yoetz/kernel/gap_effect.py` (the gap table), `src/yoetz/kernel/receipt_prediction.py`,
@@ -73,7 +73,7 @@ row, so a surface can say why.
 | `limitation_requested` | agent_work | insufficient_coverage |
 | `rejected_awaiting_ruling` | awaiting_ruling | unresolved_findings_remain |
 | `rejected_review_unavailable` | settled_disclosed | insufficient_coverage |
-| `acknowledged_not_done_requirement` | settled_unmet | unresolved_findings_remain |
+| `acknowledged_not_done_requirement`, `limitation_acknowledged_not_done` | settled_unmet | unresolved_findings_remain |
 | `acknowledged_not_done_bookkeeping`, `self_verified`, `disputed_after_rebuttal`, `limitation_disclosed` | settled_disclosed | insufficient_coverage |
 | `rejection_accepted` | settled_disclosed | none |
 | `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified` | resolved | none |
@@ -93,20 +93,27 @@ Rules the tables encode:
   review, or the review is undeliverable), the rejection is `rejected_review_unavailable`, settled
   and disclosed, instead of waiting for a ruling that cannot come. `review_can_rule` is derived from
   the latest check's recorded route and semantic status.
-* **A reviewer's request to state a limit needs one acknowledgement (owner decision Q4).** A
-  `state_unresolved_limitation` challenge on a requirement-shaped kind is agent work with the single
-  next action `acknowledge`, counted as "to disclose" and never as receipt-blocking work. After any
-  `respond` acknowledgement (`acknowledged` or `acknowledged_not_done`) it is
-  `limitation_disclosed`: settled, and the receipt discloses it under "Verification limits" at
-  `insufficient_coverage`. It is then named once, as disclosed: never under "Acknowledged, not done", never in
-  `closure_readiness.acknowledged_not_done`, and its explanation says "to disclose", never "repair it, then check".
-  While requested, the check wire still counts it under `work_open_findings` (no enum value of its
-  own); the CLI words that step from the items' `closure_basis`, so a check whose open items are all
-  limitation requests says "disclose", and a mixed list says how a limitation request is answered.
-  Guards: an `act` challenge never qualifies, and the agent's own words
-  never make a finding a limitation. A `yoetz-verification-limit:<obligation>` decision covering the
-  obligation the finding concerns settles it the same way, and marks the obligation
-  `externally_evaluated`.
+* **A reviewer's request to state a limit is answered by the agent, and the answer decides what it
+  means (owner decisions Q4 and 2026-10-12).** A `state_unresolved_limitation` challenge on a
+  requirement-shaped kind is agent work with the single next action `acknowledge`, counted as
+  "to disclose" and never as receipt-blocking work. A reasoned `acknowledged` (or a reasoned
+  `self_verified`, or a `yoetz-verification-limit:<obligation>` decision covering the obligation the
+  finding concerns) says the requirement may be met but cannot be verified here: the item is
+  `limitation_disclosed`, settled, and the receipt discloses it under "Verification limits" at
+  `insufficient_coverage`. It is named once, as disclosed: never under "Acknowledged, not done",
+  never in `closure_readiness.acknowledged_not_done`, and its explanation says what was disclosed,
+  never "repair it, then check". `acknowledged_not_done` says the requirement is NOT met: the item is
+  `limitation_acknowledged_not_done`, `settled_unmet`, receipt `unresolved_findings_remain`, listed
+  like any requirement acknowledged as not done and never under "Verification limits". (The Q4
+  reading "any respond acknowledgement settles it" is replaced: it moved the lake S finding
+  `fnd_8bdad2d0`, whose accuracy really was unmet, from unresolved to `insufficient_coverage`.)
+  A decision line never turns an `acknowledged_not_done` answer into a disclosure; the agent takes
+  the answer back with `reopened` and then discloses. The decision line still marks the obligation
+  `externally_evaluated`, whatever the finding's answer was. Before any answer nothing changed:
+  `limitation_requested`, "to disclose", next action `acknowledge`, never repair work. Guards: an
+  `act` challenge never qualifies, and the agent's own words never make a finding a limitation.
+  The check continuation for a request nobody answered is its own value, `disclose_limitations`
+  (next bullet).
 * **A bookkeeping finding the agent acknowledged is disclosed, not unmet.** `action_without_result`
   is the one work-integrity kind that records bookkeeping; acknowledging it as not done is
   `acknowledged_not_done_bookkeeping`. Every other kind keeps `acknowledged_not_done_requirement`.
@@ -119,9 +126,15 @@ Rules the tables encode:
   lowest finding id. A group therefore never reads cleaner than its worst member, and
   `to do + unmet` always equals `receipt_blocking_finding_count`.
 * **The check continuation reads the class.** The checklist `next` and the overall `next` treat
-  only `agent_work` as work (a pending limitation request included, worded as a disclosure);
-  `awaiting_ruling` is `request_ruling`; a settled basis such as `limitation_disclosed` or
-  `rejected_review_unavailable` keeps its `open` to-do state but is never work. When the closure
+  only `agent_work` as work; `awaiting_ruling` is `request_ruling`; a settled basis such as
+  `limitation_disclosed` or `rejected_review_unavailable` keeps its `open` to-do state but is never
+  work. A limitation request nobody answered is agent work that asks for a disclosure, not a repair
+  (owner decision 2026-10-12): when it is the only remaining agent work the value is
+  `disclose_limitations` on both `finding_checklist.next` and `overall_next.action` (with the
+  request ids as `target_refs`), so the JSON and the text agree; mixed with real work the value
+  stays `work_open_findings`, all agent-work ids are targets and the text names how a limitation
+  request is answered. `disclose_limitations` ranks after `work_open_findings` and before
+  `request_ruling`: the agent can disclose now, the ruling needs a check after it. When the closure
   basis cannot be read the check returns without the checklist rather than guess a class.
 * **Acknowledged lists follow the class.** An acknowledged obligation that is also
   `externally_evaluated` is listed once, as disclosed, never under "acknowledged not done".
@@ -235,8 +248,9 @@ guesses one.
   (`protocol.readiness_text.recheck_note`).
 * Status finding rows gain `closure_class`, `closure_basis` and `next_actions`; obligation rows gain
   `closure_class` and `closure_basis`. The check's finding checklist gains the five closure
-  counters, items carry the class and basis, and the check's next step gains the action
-  `request_ruling` and `predicted_conclusion`.
+  counters, items carry the class and basis, and the check's next step gains the actions
+  `request_ruling` and `disclose_limitations` and `predicted_conclusion`. The checklist `next`
+  gains the same two values. Both were added in place on the unreleased `check-result` 1.4.0.
 * **Owner decision Q1.** The predicted conclusion is a *separate* sentence appended after the
   owner-approved `ready_with_limitations` sentence, which stays byte for byte: "The receipt will
   read X: <reasons>." (or, while work remains, "A receipt requested now would read X: ..."). A
@@ -283,10 +297,16 @@ readiness it is given (ADR-033 amendment).
 * A status that says "Nothing further to do" now also says what the receipt will read and why; the
   re-reads a Stop will ask are announced, so there is no surprise gate.
 * Some receipts get less severe labels *for a stated reason*: a reviewer's limitation request the
-  agent acknowledged, and an acknowledged `action_without_result` bookkeeping finding, now read
-  `insufficient_coverage` (never clean) instead of `unresolved_findings_remain`. Replaying the
-  fifty-five n2 and n3 exports moved six receipts, each of them from `unresolved_findings_remain`
-  to `insufficient_coverage` for one of those two rules, and none to clean.
+  agent disclosed with `acknowledged` (or a decision line), and an acknowledged
+  `action_without_result` bookkeeping finding, now read `insufficient_coverage` (never clean)
+  instead of `unresolved_findings_remain`. A limitation request answered `acknowledged_not_done`
+  keeps `unresolved_findings_remain`. Replay of the fifty-five n2 and n3 exports under the
+  2026-10-12 decision: two receipts move (cargo-flight-dispatch D and pretrain-shard-corruption D
+  in n3, each an acknowledged `action_without_result` bookkeeping finding) and none reaches clean;
+  every limitation request answered `acknowledged_not_done` (lake S n2/n3, ks S, vpp S, payments S,
+  cargo S) keeps `unresolved_findings_remain`, and pretrain S's self-verified request reads
+  disclosed. Under the earlier Q4 reading (any acknowledgement discloses) the same replay had moved
+  six.
 * The host-observation guard (G) on the receipt now also requires the check's command counters to be
   complete; before, the check carrying the code was the only guard. It moved no label in the
   replayed corpus (the same checks were already below clean).
@@ -327,6 +347,29 @@ the per-host runbooks need no new entry. The Stop gate is the one host-specific 
 `closure_readiness` (the token `finding_rejection_awaiting_ruling`, the counters, `rechecks` and
 `awaiting_ruling_findings`) in each host's own gate and is decided in ADR-033's amendment and the
 three host runbooks.
+
+## Amendment 2026-10-12 (owner decisions, issues #1024, #1031)
+
+Recorded from the maintainer's decisions of 2026-10-12 (TheGaySupreme123):
+
+1. **The agent's answer decides what a limitation request means.** `acknowledged` (with a reason), a
+   reasoned `self_verified` or a `yoetz-verification-limit:<obligation>` decision say the
+   requirement may be met but cannot be verified here: `settled_disclosed` / `limitation_disclosed`,
+   receipt at best `insufficient_coverage`, listed under "Verification limits".
+   `acknowledged_not_done` says the requirement is not met: `settled_unmet` /
+   `limitation_acknowledged_not_done` (a new basis on the `closure_basis` enum and a third value of
+   `respond` `closure_after.limitation`, both added in place on unreleased wire), receipt
+   `unresolved_findings_remain`. The decision keeps lake S (`fnd_8bdad2d0`, reward 0, accuracy
+   unmet) honest. Implemented once, in `kernel/limitation.py` (`limitation_standing`, state
+   `limitation_acknowledged_not_done`) and `kernel/closure_class.py`; every consumer reads the class.
+2. **The check says "disclose" in its own word.** `disclose_limitations` on `finding_checklist.next`
+   and `overall_next.action` when the only remaining agent work is undisclosed limitation requests;
+   mixed with real work the value stays `work_open_findings` and the text names both.
+3. **Lineage rollups stay strict (owner decision, record only).** A child's limitation, disclosed or
+   unmet, is read by the parent through the frozen `ChildFindingSnapshot`, which carries no closure
+   class; the owner keeps the strict reading described under "Not switched: lineage rollups stay
+   strict" above. No behavior changed. The Stop-gate decisions of the same date are recorded in the
+   ADR-033 amendment.
 
 ## Verification
 

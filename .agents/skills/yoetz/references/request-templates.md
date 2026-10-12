@@ -826,12 +826,16 @@ search is needed. Only a frontier before that record is rejected, including the 
 never erases the finding. Observation-authored non-actionable findings need no response.
 
 A reviewer finding whose `requested_next_step` is `state_unresolved_limitation` asks you to state a
-limit, not to do work: answer it once with `acknowledged` and a `reason` that says what cannot be
-verified and why (or record the `yoetz-verification-limit:<obligation id>` decision line), and it is
-settled as a disclosed verification limit; no recorded resolution attempt is needed. If you
-answered `acknowledged_not_done` and then do the work, send `disposition: "reopened"` with a
-`reason`; a later check that tested the work after your answer and proves the issue absent
-resolves the finding by itself.
+limit, not to do work, and your answer decides what it means. If the requirement may be met but
+cannot be verified here, respond `acknowledged` with a `reason` that says what cannot be verified and
+why (or record the `yoetz-verification-limit:<obligation id>` decision line): it is settled as a
+disclosed verification limit and no recorded resolution attempt is needed. Respond
+`acknowledged_not_done` only when you know the requirement is not met: it is then an unmet
+requirement like any other you acknowledged as not done (the receipt keeps
+`unresolved_findings_remain` and does not list it under verification limits). If you answered
+`acknowledged_not_done` and then do the work, or find the requirement may be met after all, send
+`disposition: "reopened"` with a `reason`; a later check that tested the work after your answer and
+proves the issue absent resolves the finding by itself.
 
 ```json
 {

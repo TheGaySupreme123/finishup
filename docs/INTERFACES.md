@@ -6943,6 +6943,8 @@ ledger prefix and never stored. Names:
   (`open_unanswered`, `open_answered`, `reopened`, `limitation_requested`, `rejected_awaiting_ruling`,
   `rejected_review_unavailable`, `acknowledged_not_done_requirement`, `acknowledged_not_done_bookkeeping`,
   `self_verified`, `disputed_after_rebuttal`, `rejection_accepted`, `limitation_disclosed`,
+  `limitation_acknowledged_not_done` (`settled_unmet`: a limitation request the agent answered
+  `acknowledged_not_done`, owner decision 2026-10-12),
   `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`).
 - `yoetz.kernel.gap_effect`: `GAP_EFFECT_TABLE` (one row per recorded gap code and the readiness-only
   tokens), `GapContext`, `GapEffectKind` (`actionable|standing_bounding|disclosed|historical`),
@@ -6973,7 +6975,9 @@ the basis could not be read):
   `view=obligations` rows: `closure_class`, `closure_basis`.
 - `check` `finding_checklist.counts`: `to_do`, `awaiting_ruling`, `unmet`, `disclosed`,
   `to_disclose` (the group travels together); items carry `closure_class` and `closure_basis`;
-  `finding_checklist.next` and `overall_next.action` add `request_ruling`; `overall_next` adds
+  `finding_checklist.next` and `overall_next.action` add `request_ruling` and `disclose_limitations`
+  (owner decision 2026-10-12: the only remaining agent work is a reviewer's limitation request nobody
+  answered; mixed with real work the value stays `work_open_findings`); `overall_next` adds
   `predicted_conclusion`.
 - `receipt-document` 1.3.0 (additive, in place): `limitation_disclosed_finding_ids`,
   `conclusion_basis {reasons[{code, rule, count, refs, since_frontier?}], reason_total}`, and a gap
@@ -8444,19 +8448,25 @@ Names shared by the kernel, `respond`, `check`, status and the receipt:
   `acknowledged_not_done` answers `finding_terminal` to every disposition but `reopened`; the message
   names the state and the way out.
 - `respond-result` `1.1.0` optional `closure_after {todo_state, limitation?}`: the state the answer
-  produced, simulated at its own frontier (`limitation` is `limitation_requested` or
-  `limitation_disclosed` for a reviewer's limitation request; absent otherwise).
+  produced, simulated at its own frontier (`limitation` is `limitation_requested`,
+  `limitation_disclosed` or `limitation_acknowledged_not_done` for a reviewer's limitation request;
+  absent otherwise).
 - Absence proof after the answer: `FindingProjectionRecord.resolution_frontier` (the tested frontier
   of the check named by `resolved_by_check_event_id`) lets `finding_is_resolved` resolve an
   `acknowledged_not_done` or `self_verified` answer when the proof tested the work after the answer.
   The status finding items allow `resolved: true` on those two states.
 - Limitation requests: `domain.findings.is_limitation_request(finding)` and
   `finding_demands_work(finding)`; `kernel.limitation.limitation_standing(state, finding_id) ->
-  LimitationStanding | None` with states `limitation_requested` (to disclose) and
-  `limitation_disclosed` (basis `respond_acknowledgement` or `verification_limit_decision`),
-  `limitation_requested_ids` and `limitation_disclosed_ids`. A limitation request never demands
-  work, is never receipt-blocking and is never clean. Acknowledging it needs no recorded resolution
-  attempt.
+  LimitationStanding | None` with states `limitation_requested` (to disclose),
+  `limitation_disclosed` (the requirement may be met but cannot be verified here; basis
+  `respond_acknowledgement` or `verification_limit_decision`) and
+  `limitation_acknowledged_not_done` (the requirement is NOT met; basis
+  `respond_acknowledged_not_done`; `LimitationStanding.unmet`), `limitation_requested_ids` and
+  `limitation_disclosed_ids`. The agent's answer decides which (owner decision 2026-10-12; the
+  answer is read before a decision line, so a decision never turns `acknowledged_not_done` into a
+  disclosure). Until answered a limitation request never demands work, is never receipt-blocking and
+  is never clean; answered `acknowledged_not_done` it is `settled_unmet` and holds the receipt at
+  `unresolved_findings_remain`. Acknowledging it needs no recorded resolution attempt.
 - Reducer facts (replay-derived, snapshot-emitted only when set): `standing_position`
   (`StandingPosition(kind, frontier)`; the earliest unretracted reasoned answer), `last_ruling_frontier`,
   `resolution_frontier`, `absorbed_refs` (bounded refs a settled item's re-raises cited) on a finding
@@ -8569,7 +8579,9 @@ Wire (the earlier checklist fields remain available in their original versions):
   review_rounds}` (at most 100: the current actionable items, newest row per issue, open items
   first and otherwise in rank order, final rows included; coverage limitations are not to-dos);
   `next` is `decide_at_budget` (an open item reached the budget: repair with new evidence or
-  respond `acknowledged_not_done`), `work_open_findings`, or `request_receipt`. It is current
+  respond `acknowledged_not_done`), `work_open_findings`, `disclose_limitations` (the only agent
+  work left is a reviewer's limitation request nobody answered; `check-result` 1.4.0, owner
+  decision 2026-10-12), or `request_receipt`. It is current
   projection context attached after the commit, like advisory notes, and is omitted when that read
   is unavailable; it is never part of the check event.
 - `status-result` `1.4.0` findings view: each row carries `todo_state` and `review_rounds`
@@ -8617,6 +8629,8 @@ Wire (the earlier checklist fields remain available in their original versions):
   The additive `overall_next` projection carries the task-level `status`, `action`, and bounded
   `target_refs`; its `action` is `supply_missing_input` for those targets (the refs may be empty
   when the reviewer named a global input), `work_open_findings` for open findings,
+  `disclose_limitations` when the only open findings are reviewer limitation requests nobody
+  answered (`check-result` 1.4.0; the targets are those requests),
   `review_recorded_work` for open obligations or undisclosed live failures, or `request_receipt`
   when no agent action remains. The finding checklist's `next` remains finding-only and is labeled
   that way beside this continuation. When only standing or structurally unavailable limits remain,

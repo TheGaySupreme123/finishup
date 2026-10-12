@@ -52,7 +52,9 @@ from yoetz.kernel.finding_todo import (
 from yoetz.kernel.limitation import (
     DISCLOSED_BY_DECISION,
     DISCLOSED_BY_RESPONSE,
+    LIMITATION_ACKNOWLEDGED_NOT_DONE,
     LIMITATION_REQUESTED,
+    UNMET_BY_RESPONSE,
     externally_evaluated_obligations,
     limitation_disclosed_ids,
     limitation_requested_ids,
@@ -115,22 +117,45 @@ def test_a_limitation_request_is_a_to_disclose_item_until_one_acknowledgement() 
     assert limitation_disclosed_ids(requested) == ()
 
 
-@pytest.mark.parametrize("disposition", [D.ACKNOWLEDGED, D.ACKNOWLEDGED_NOT_DONE, D.SELF_VERIFIED])
+@pytest.mark.parametrize("disposition", [D.ACKNOWLEDGED, D.SELF_VERIFIED])
 def test_one_reasoned_acknowledgement_settles_it_as_a_disclosed_limitation(
     disposition: ResponseDisposition,
 ) -> None:
-    """vpp S and payments S ended every such request ``acknowledged_not_done``: that is the
-    disclosure now, not the end of a blocking item. A ``self_verified`` answer is the agent's
-    reasoned final word on a request Yoetz cannot prove (pretrain S ``fnd_1ff0de49``): it settles
-    it too, because the request has no other exit once that answer is given."""
+    """The agent says the requirement may be met but cannot be verified here: that is the
+    disclosure. A ``self_verified`` answer is the agent's reasoned final word on a request Yoetz
+    cannot prove (pretrain S ``fnd_1ff0de49``): it settles it too, because the request has no
+    other exit once that answer is given."""
 
     state = _ks_state((1, disposition, 12))
     standing = limitation_standing(state, fnd(1))
-    assert standing is not None and standing.disclosed
+    assert standing is not None and standing.disclosed and not standing.unmet
     assert standing.basis == DISCLOSED_BY_RESPONSE
     assert standing.since_frontier == 12
     assert finding_blocks_receipt(state, fnd(1)) is False
     assert limitation_disclosed_ids(state) == (fnd(1),)
+
+
+def test_acknowledged_not_done_says_the_requirement_is_not_met_so_it_is_not_a_disclosure() -> None:
+    """Owner decision 2026-10-12 (lake S ``fnd_8bdad2d0``): the agent's answer decides. "Not done"
+    is an unmet requirement, never a verification limit, and it blocks the receipt like any
+    requirement acknowledged as not done."""
+
+    state = _ks_state((1, D.ACKNOWLEDGED_NOT_DONE, 12))
+    standing = limitation_standing(state, fnd(1))
+    assert standing is not None and standing.unmet and not standing.disclosed
+    assert (standing.state, standing.basis) == (LIMITATION_ACKNOWLEDGED_NOT_DONE, UNMET_BY_RESPONSE)
+    assert standing.since_frontier == 12
+    assert finding_blocks_receipt(state, fnd(1)) is True
+    assert limitation_disclosed_ids(state) == ()
+    assert limitation_requested_ids(state) == ()
+    # A verification-limit decision on the obligation never turns that answer into a disclosure.
+    decided = replace(state, decisions={evt(30): limit_decision(30, obl(1))})
+    assert _limit_state(decided) == LIMITATION_ACKNOWLEDGED_NOT_DONE
+    # ``reopened`` takes the answer back; the decision line then discloses the request.
+    reopened = replace(decided, responses={fnd(1): answer(1, D.REOPENED, 14)})
+    standing = limitation_standing(reopened, fnd(1))
+    assert standing is not None and standing.disclosed
+    assert standing.basis == DISCLOSED_BY_DECISION
 
 
 def test_a_rejection_a_bare_acknowledgement_and_a_reopen_do_not_disclose() -> None:
@@ -138,7 +163,7 @@ def test_a_rejection_a_bare_acknowledgement_and_a_reopen_do_not_disclose() -> No
     bare = _ks_state()
     bare = replace(bare, responses={fnd(1): answer(1, D.ACKNOWLEDGED, 12, reason=None)})
     assert _limit_state(bare) == LIMITATION_REQUESTED
-    # An acknowledged_not_done answer taken back with ``reopened`` is no longer a disclosure.
+    # An answer taken back with ``reopened`` is no longer an answer at all.
     reopened = _ks_state((1, D.REOPENED, 14))
     assert _limit_state(reopened) == LIMITATION_REQUESTED
 
@@ -197,6 +222,15 @@ def test_the_externally_evaluated_marker_needs_both_the_decision_line_and_the_re
     decision = {evt(20): limit_decision(20, obl(1))}
     both = projection(request, {}, obligations=obligations, decisions=decision)
     assert externally_evaluated_obligations(both) == frozenset({obl(1)})
+    # How the agent answered the request does not change the marker (the finding itself stays
+    # unmet when it said ``acknowledged_not_done``; the receipt still reads unresolved).
+    answered_unmet = projection(
+        request,
+        {fnd(1): answer(1, D.ACKNOWLEDGED_NOT_DONE, 12)},
+        obligations=obligations,
+        decisions=decision,
+    )
+    assert externally_evaluated_obligations(answered_unmet) == frozenset({obl(1)})
     # The request alone (the agent only acknowledged it) does not mark the obligation.
     acknowledged = projection(
         request, {fnd(1): answer(1, D.ACKNOWLEDGED, 12)}, obligations=obligations

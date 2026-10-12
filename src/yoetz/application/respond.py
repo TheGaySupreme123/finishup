@@ -543,10 +543,12 @@ def self_verification_refusal_message(blocking: tuple[str, ...]) -> str:
         " run (a hidden verifier, a private reference), that is not a Yoetz limit either: finish"
         " the work and disclose it with a decision line yoetz-verification-limit:<obligation id>."
         " When the reviewer's finding asks you to state that limit (a limitation request), that"
-        " decision or one acknowledged response with a reason settles it: do not withdraw or empty"
+        " decision or one acknowledged response with a reason settles it as a verification limit"
+        " (the requirement may be met but cannot be verified here): do not withdraw or empty"
         " working work over it. Respond rejected if the finding is wrong; acknowledged_not_done"
-        " only if you truly will not or cannot do the work. Do not retry self_verified until a"
-        " later check changes these reasons."
+        " only if you truly will not or cannot do the work, and on a limitation request only when"
+        " you know the requirement is not met (the receipt then keeps unresolved_findings_remain)."
+        " Do not retry self_verified until a later check changes these reasons."
     )
 
 

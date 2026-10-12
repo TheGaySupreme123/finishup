@@ -7,17 +7,26 @@ Until tb4n3 the code minted that request as priority-1 blocking work, so a compl
 non-compliant one produced the same outcome and nine of nine such findings ended
 ``acknowledged_not_done`` (owner decision RC-1: "why not fixed?").
 
-Owner decision Q4 (DESIGN_RC3 section 8) fixes the lifecycle:
+Owner decision Q4 (DESIGN_RC3 section 8) fixed the lifecycle; the owner's decision of 2026-10-12
+(#1024) replaced its reading of ``acknowledged_not_done``: the agent's answer decides what the
+request means.
 
 * **requested** (``limitation_requested``): the request is recorded and nothing else. It is a
   to-disclose item whose only next action is to acknowledge it; it is never repair work, never
   receipt-blocking work, and never raises a Stop-gate token beyond the ordinary unanswered-finding
   path.
-* **disclosed** (``limitation_disclosed``): exactly one agent disclosure settles it. Either a
-  ``respond`` answer with a reason (``acknowledged``, ``acknowledged_not_done``, or the agent's
-  ``self_verified`` final word) or a recorded ``yoetz-verification-limit:<obligation id>`` decision covering an obligation the finding
-  concerns. It is then settled, never clean (the receipt reads at best ``insufficient_coverage``
-  and lists it under "Verification limits"), and a re-raise of the same concern folds onto it.
+* **disclosed** (``limitation_disclosed``): the agent says the requirement may be met but cannot be
+  verified here. Either a ``respond`` answer with a reason (``acknowledged``, or the agent's
+  ``self_verified`` final word) or a recorded ``yoetz-verification-limit:<obligation id>`` decision
+  covering an obligation the finding concerns. It is then settled, never clean (the receipt reads
+  at best ``insufficient_coverage`` and lists it under "Verification limits"), and a re-raise of
+  the same concern folds onto it.
+* **acknowledged not done** (``limitation_acknowledged_not_done``): the agent answered
+  ``acknowledged_not_done``, which says the requirement is NOT met. It is not a verification limit:
+  it is an unmet requirement exactly like one acknowledged as not done (closure class
+  ``settled_unmet``, receipt ``unresolved_findings_remain``), and it is not listed under
+  "Verification limits". A recorded decision line never turns that answer into a disclosure; the
+  agent takes the answer back with ``reopened`` and then discloses.
 
 Guards, each tested:
 
@@ -39,7 +48,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final, Literal
 
-from yoetz.domain.findings import Finding, is_limitation_request
+from yoetz.domain.findings import Finding, ResponseDisposition, is_limitation_request
 from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel.concern import subject_obligations
 from yoetz.kernel.finding_resolution import disclosing_response, finding_is_resolved
@@ -49,8 +58,10 @@ from yoetz.kernel.task_facts import DisclosureDeclaration, disclosure_declaratio
 __all__ = [
     "DISCLOSED_BY_DECISION",
     "DISCLOSED_BY_RESPONSE",
+    "LIMITATION_ACKNOWLEDGED_NOT_DONE",
     "LIMITATION_DISCLOSED",
     "LIMITATION_REQUESTED",
+    "UNMET_BY_RESPONSE",
     "LimitationStanding",
     "externally_evaluated_obligations",
     "limitation_disclosed_ids",
@@ -60,8 +71,11 @@ __all__ = [
 
 LIMITATION_REQUESTED: Final = "limitation_requested"
 LIMITATION_DISCLOSED: Final = "limitation_disclosed"
+LIMITATION_ACKNOWLEDGED_NOT_DONE: Final = "limitation_acknowledged_not_done"
 DISCLOSED_BY_RESPONSE: Final = "respond_acknowledgement"
 DISCLOSED_BY_DECISION: Final = "verification_limit_decision"
+# How an unmet standing was reached: the agent's own ``acknowledged_not_done`` answer.
+UNMET_BY_RESPONSE: Final = "respond_acknowledged_not_done"
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,18 +83,29 @@ class LimitationStanding:
     """Where one limitation request stands, with the lineage of how it got there."""
 
     finding_id: FindingId
-    state: Literal["limitation_requested", "limitation_disclosed"]
-    # How the agent disclosed it (``DISCLOSED_BY_*``), ``None`` while only requested.
+    state: Literal[
+        "limitation_requested", "limitation_disclosed", "limitation_acknowledged_not_done"
+    ]
+    # How the agent answered it (``DISCLOSED_BY_*`` or ``UNMET_BY_RESPONSE``), ``None`` while only
+    # requested.
     basis: str | None
-    # The response event or the decision event that disclosed it (at most one id).
+    # The response event or the decision event that answered it (at most one id).
     source_event_ids: tuple[EventId, ...]
-    # The ledger sequence of the response that disclosed it; ``None`` for a decision or while
+    # The ledger sequence of the response that answered it; ``None`` for a decision or while
     # only requested.
     since_frontier: int | None
 
     @property
     def disclosed(self) -> bool:
+        """The agent said the requirement may be met but cannot be verified here."""
+
         return self.state == LIMITATION_DISCLOSED
+
+    @property
+    def unmet(self) -> bool:
+        """The agent said the requirement is NOT met (``acknowledged_not_done``)."""
+
+        return self.state == LIMITATION_ACKNOWLEDGED_NOT_DONE
 
 
 def _verification_limit_decisions(
@@ -103,7 +128,10 @@ def limitation_standing(
 
     ``None`` for: an unreadable finding, anything but a reviewer's limitation request (guards G1
     and G2 live in ``is_limitation_request``), and a finding a later qualifying check proved
-    absent (resolved findings are history, not limits).
+    absent (resolved findings are history, not limits). The agent's own answer is read first and
+    decides what the request means: ``acknowledged_not_done`` is the unmet state (the requirement
+    is not met), a reasoned ``acknowledged`` or ``self_verified`` is the disclosed state, and a
+    ``yoetz-verification-limit`` decision discloses only a request nobody answered yet.
     """
 
     record = projection.findings.get(finding_id)
@@ -115,6 +143,21 @@ def limitation_standing(
     if finding_is_resolved(projection, finding_id):
         return None
     response = projection.responses.get(finding_id)
+    if (
+        response is not None
+        and response.payload is not None
+        and not response.redacted
+        and response.payload.disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE
+    ):
+        # The agent's answer decides (owner decision 2026-10-12): "not done" says the requirement
+        # is not met, so it is never a verification limit, whatever decision line is recorded.
+        return LimitationStanding(
+            finding_id,
+            LIMITATION_ACKNOWLEDGED_NOT_DONE,
+            UNMET_BY_RESPONSE,
+            (response.source_event_id,),
+            response.source_frontier,
+        )
     if disclosing_response(response):
         assert response is not None
         return LimitationStanding(
@@ -155,10 +198,12 @@ def _standings(
 def limitation_requested_ids(
     projection: ProjectionState, finding_ids: Iterable[FindingId] | None = None
 ) -> tuple[FindingId, ...]:
-    """Limitation requests the agent has not yet disclosed (the "to disclose" bucket), sorted."""
+    """Limitation requests the agent has not yet answered (the "to disclose" bucket), sorted."""
 
     return tuple(
-        item.finding_id for item in _standings(projection, finding_ids) if not item.disclosed
+        item.finding_id
+        for item in _standings(projection, finding_ids)
+        if item.state == LIMITATION_REQUESTED
     )
 
 
@@ -178,7 +223,10 @@ def externally_evaluated_obligations(projection: ProjectionState) -> frozenset[O
     limitation request concerns it (the request names it, or a claim or event it cites does).
     Neither alone qualifies: the decision line alone is the agent's assertion, and a reviewer
     request alone leaves the obligation ordinary work. The agent's own acknowledgement of the
-    obligation, or its words in a response, never mark it (guard G2). Derived from the decision
+    obligation, or its words in a response, never mark it (guard G2). How the agent answered the
+    request does not change the marker: an ``acknowledged_not_done`` answer keeps the *finding*
+    unmet (``limitation_acknowledged_not_done``), so the receipt still reads
+    ``unresolved_findings_remain`` while the obligation stays disclosed. Derived from the decision
     line and the request, so no event schema changed; a structured field on
     ``obligation_published`` is a separate wire revision.
     """

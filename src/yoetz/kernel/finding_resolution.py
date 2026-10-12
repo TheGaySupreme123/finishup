@@ -1489,16 +1489,26 @@ def _finding_resolution_explanation(
     if standing is not None:
         if standing.disclosed:
             return (
-                "Verification limit disclosed: the agent stated that the reviewer cannot verify "
-                "this here. The item is final, is not reviewed again and is not agent work; the "
-                "receipt lists it under verification limits and cannot read clean."
+                "Verification limit disclosed: the agent stated that the requirement may be met "
+                "but cannot be verified here. The item is final, is not reviewed again and is not "
+                "agent work; the receipt lists it under verification limits and cannot read clean."
+            )
+        if standing.unmet:
+            return (
+                "Acknowledged, not done: the reviewer asked the agent to state a limit that "
+                "cannot be verified here, and the agent answered `acknowledged_not_done`, which "
+                "says the requirement is NOT met. The item is final, is not reviewed again, and "
+                "the receipt reads unresolved_findings_remain. If it may be met but cannot be "
+                "verified here, respond `reopened` with a reason and then `acknowledged`."
             )
         return (
             "To disclose: the reviewer asked the agent to state a limit that cannot be verified "
             "here. This is not repair work and does not block the receipt, which cannot read "
-            "clean while it is listed. Respond `acknowledged` with a reason, or record the "
-            "decision line `yoetz-verification-limit:<obligation id>`; respond `rejected` only "
-            "if the finding is wrong."
+            "clean while it is listed. If the requirement may be met but cannot be verified "
+            "here, respond `acknowledged` with the reason (or record the decision line "
+            "`yoetz-verification-limit:<obligation id>`); respond `acknowledged_not_done` only "
+            "when you know it is not met (the receipt then keeps unresolved_findings_remain); "
+            "respond `rejected` only if the finding is wrong."
         )
     # Terminal to-do states are named first (issue #905): they are final, never re-reviewed, and
     # the blockers of a later check (``reviewer_assessment_incomplete`` included) do not apply.
@@ -2048,24 +2058,22 @@ def disclosing_response(
 ) -> bool:
     """Whether a finding's current answer is a reasoned disclosure (the Q4 disclosure form).
 
-    ``acknowledged`` and ``acknowledged_not_done`` with a non-blank reason disclose a reviewer's
-    limitation request, and so does ``self_verified`` (admitted only on a finding Yoetz's own
-    check cannot prove, always with a reason and the agent's evidence): it is the agent's final,
-    reasoned word and the request has no other exit once it is given (pretrain S
-    ``fnd_1ff0de49``). A rejection disputes the request instead (the reviewer then rules on it),
-    ``reopened`` takes a disclosure back, and every other disposition says nothing about it.
+    ``acknowledged`` with a non-blank reason discloses a reviewer's limitation request (the
+    requirement may be met but cannot be verified here), and so does ``self_verified`` (admitted
+    only on a finding Yoetz's own check cannot prove, always with a reason and the agent's
+    evidence): it is the agent's final, reasoned word and the request has no other exit once it is
+    given (pretrain S ``fnd_1ff0de49``). ``acknowledged_not_done`` is NOT a disclosure (owner
+    decision 2026-10-12): it says the requirement is not met, so the request becomes an unmet
+    requirement (``kernel.limitation``, ``limitation_acknowledged_not_done``). A rejection disputes
+    the request instead (the reviewer then rules on it), ``reopened`` takes an answer back, and
+    every other disposition says nothing about it.
     """
 
     if response is None or response.payload is None or response.redacted:
         return False
     payload = response.payload
     return (
-        payload.disposition
-        in {
-            ResponseDisposition.ACKNOWLEDGED,
-            ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
-            ResponseDisposition.SELF_VERIFIED,
-        }
+        payload.disposition in {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.SELF_VERIFIED}
         and payload.reason is not None
         and bool(payload.reason.strip())
     )
