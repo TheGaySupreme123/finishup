@@ -309,15 +309,20 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    Git lists at that moment (the same ignore files as decision 1): each as its root-relative name
    and a SHA-256 digest of its link-free `stat` fields (file type and permission bits, inode, size,
    modification and change time), at most 4096 names and 256 KiB of names; and the HEAD of each
-   nested repository among them (an untracked directory Git lists as its own repository), opened
-   with every fence of decision 4 (the borrowed-store and effective-config refusals included) before
-   its HEAD is resolved, at most 8; one a fence refuses records no HEAD, so no other repository's
-   commit can become its starting state. No file is opened. Past a bound, or with a name the object
-   cannot hold, the snapshot is incomplete; a snapshot that cannot be taken at all leaves the base
-   exactly as before. The snapshot rides the same encrypted base object (`yoetz.task-change-base/1`,
-   optional `untracked`, `untracked_complete` and `nested` keys; a base without them keeps its
-   bytes). A `first_check` pin never carries one: only the task's own start can say what predates
-   it.
+   nested repository: an untracked directory Git lists as its own repository, then each gitlink the
+   index records (`git ls-files --stage`) whose directory holds its own `.git` directory, since an
+   embedded repository's HEAD is often ahead of the commit the outer repository records for it.
+   Each is opened with every fence of decision 4 (the borrowed-store and effective-config refusals
+   included) before its HEAD is resolved, at most 8 in all, untracked ones first; one a fence
+   refuses records no HEAD, so no other repository's commit can become its starting state. A nested
+   repository's own untracked files are not listed. No file is opened. Past a bound, or with a name
+   the object cannot hold, the snapshot is incomplete; a snapshot that cannot be taken at all leaves
+   the base exactly as before. The snapshot rides the same encrypted base object
+   (`yoetz.task-change-base/1`, optional `untracked`, `untracked_complete` and `nested` keys; a base
+   without them keeps its bytes). A `nested` row means the same for both kinds, the repository's
+   HEAD when the task started, so a base recorded before gitlinked rows existed reads unchanged: its
+   gitlinks simply have no row. A `first_check` pin never carries one: only the task's own start can
+   say what predates it.
 2. **Untracked files that predate the task are baseline.** An untracked file the snapshot names
    with an unchanged digest is the task's starting state: the content and metadata reads leave it
    out (its identity still joins the stability check), and the header counts it ("Untracked files
@@ -332,30 +337,42 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    declared deliverable first. Each is opened with every fence of decision 4, and its directory must
    also be the one reached beneath the outer root descriptor without a link; a submodule checkout
    whose `.git` is a file is `unsupported_repository`. Each is its own stable state (the same retake
-   rule), within the same deadline. Its change starts from the commit the outer base tree records
-   for the gitlink, else the HEAD the snapshot recorded, else its HEAD now, which the header says
+   rule), within the same deadline. Its change starts from the HEAD the snapshot recorded for it;
+   else, for a gitlink, from the commit the outer base tree records for it, and the header says
+   that any commits made in it before the task that the outer repository does not record are then
+   included; else from its HEAD now (also when the recorded HEAD is gone), which the header says
    may miss commits made in it during the task. Its paths carry its directory (`a/api/server.py`), so
    the deliverable order, the 256 KiB bound, the packet split and the shown-file record treat its
    files as files of the change; the outer one-line entry for an untracked repository gives way to
-   them. A repository that cannot be read keeps its outer entry (that one-line entry, or a changed
-   gitlink's commit-id lines) marked "not shown: a nested Git repository whose own change was not
-   read", counts as not shown (`check_time_change_truncated`), and the header names why in one fixed
-   sentence (`nested_limit`, the deadline, or the closed reason of decision 8); no Git output is
-   recorded. A repository nested inside a nested one is not read and counts as not shown the same
-   way: its untracked entry or changed gitlink is marked so. The structural metadata read
-   (requested-output states, test-edit accounting) does not descend into nested repositories.
+   them. Its untracked files are named and never read: the snapshot does not list them, so none can
+   be told apart from a file that predates the task. Each is marked "not shown: untracked inside a
+   nested repository, which the task-start record does not cover, so it may predate the task",
+   counts as not shown (`check_time_change_truncated`), and the repository's header line says its
+   untracked files are named but not shown. A repository that cannot be read keeps its outer entry
+   (that one-line entry, or a changed gitlink's commit-id lines) marked "not shown: a nested Git
+   repository whose own change was not read", counts as not shown (`check_time_change_truncated`),
+   and the header names why in one fixed sentence (`nested_limit`, the deadline, or the closed
+   reason of decision 8); no Git output is recorded. A repository nested inside a nested one is
+   not read and counts as not shown the same way: its untracked entry or changed gitlink is marked
+   so. The structural metadata read (requested-output states, test-edit accounting) does not
+   descend into nested repositories.
 4. **Read-only task input files.** When the recipe carries the change, the task statement and the
    `repository` excerpt kind, the service names candidate inputs: the path-shaped words of the task
    statement in its order (a path with a slash, or a file name with a short extension holding a
    letter), then the `role: input` requested files of effective obligations, at most 16. The
    statement is read in process only to find these words. The adapter reads at most 4 of them, each
-   only when it lies inside the repository, is unchanged since the task started (tracked and
-   untouched by the change, by `git ls-files --error-unmatch` on a literal pathspec, or an untracked
-   file the snapshot names unchanged), lies outside every nested repository, is not credential-named,
-   is a regular, singly linked file of the service user reached without a link, is at most 1 MiB and
-   holds no NUL byte in its first 8000 bytes. An ignored file is never read: it is neither tracked
-   nor listed. Each keeps at most 16 KiB, whole or head and tail with the cut marked. The read is
-   point-in-time, after the change proved stable. Inputs are stored in the same encrypted
+   only when it lies inside the repository, is unchanged since the task started (an untracked file
+   the snapshot names unchanged; or, only when the change's base is the task's own start and never
+   a first-check pin or HEAD, against which a file absent from the change may be the agent's
+   committed work, a tracked file the change does not touch, whose index entry is an ordinary one by
+   `git ls-files -v` on a literal pathspec (tag `H`: a skip-worktree or assume-unchanged entry,
+   which Git never compares with its working copy, is not read) and whose bytes, read without any
+   filter or line-ending conversion, hash to its blob in the base commit), lies outside every
+   nested repository, is not credential-named, is a regular, singly linked file of the service user
+   reached without a link, is at most 1 MiB and holds no NUL byte in its first 8000 bytes. An
+   ignored file is never read: it is neither tracked nor listed. Each keeps at most 16 KiB, whole
+   or head and tail with the cut marked. The read is point-in-time, after the change proved
+   stable. Inputs are stored in the same encrypted
    check-change object (optional `inputs`, so every object without them keeps its bytes), redacted
    one by one with the same detector (one that cannot be fully redacted is dropped; any redaction
    or dropped input reports `check_time_change_redacted`, even when the change text needed none),

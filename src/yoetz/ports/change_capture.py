@@ -176,8 +176,9 @@ class TaskChangeBase:
     A ``task_start`` base also records the working tree's untracked files at that moment
     (``untracked``, names and ``stat`` identity only; ``untracked_complete`` is false when the
     listing exceeded its bound or could not be read) and the HEAD of each nested Git repository
-    among them (``nested``: root-relative directory and commit), so files that predate the task
-    are baseline and a nested repository's change starts where the task did (issue #1045).
+    among them or tracked as a gitlink (``nested``: root-relative directory and commit), so files
+    that predate the task are baseline and a nested repository's change starts where the task did
+    (issue #1045). A nested repository's own untracked files are not recorded.
     """
 
     object_format: Literal["sha1", "sha256"]
@@ -235,8 +236,9 @@ class TaskInputFile:
     """One read-only task input file the check carries for review (issue #1045).
 
     A file the task statement (or a ``role: input`` requested item) names, inside the checked
-    repository, that the check-time change does not touch and Git does not ignore. ``text`` is the
-    file whole, or its head and tail with the cut marked, at most ``MAX_TASK_INPUT_TEXT_BYTES``;
+    repository and unchanged since the task started (a tracked one only against a ``task_start``
+    base, and only when its bytes match the base commit), that Git does not ignore. ``text`` is
+    the file whole, or its head and tail with the cut marked, at most ``MAX_TASK_INPUT_TEXT_BYTES``;
     ``size`` is the file's byte size; ``redacted`` is set by the service after it replaced
     credential-like spans.
     """

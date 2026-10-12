@@ -139,7 +139,8 @@ When the review recipe selects diff excerpts, Yoetz itself also reads the task's
 check time and gives the reviewer that **check-time change** first: committed and uncommitted
 changes from the commit the task started on, plus untracked files Git does not ignore, including
 edits made by scripts or commits that no hook captured. Untracked files already there when the task
-started and unchanged since are left out, a nested repository's own change is included, and up to
+started and unchanged since are left out, a nested repository's own change is included (files
+untracked inside it are named only, so give the reviewer evidence for one it must read), and up to
 four files the task statement names that the task only reads (a specification, the source being
 ported) travel beside it, so they need no evidence of their own. Yoetz redacts secret-shaped content in that
 check-time change, so no deliverable ever needs hiding: never git-ignore, exclude (including
