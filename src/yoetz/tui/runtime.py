@@ -1296,7 +1296,7 @@ class YoetzRuntime:
                 open_browser=True,
                 switch_account=switch_account,
             )
-            await restart_service_for_semantic_composition()
+            await restart_service_for_semantic_composition(report_startup_failure=False)
             return result
         except (OSError, TimeoutError, ValueError) as error:
             raise _subscription_error(error, "Codex subscription setup did not complete") from None
@@ -1321,7 +1321,7 @@ class YoetzRuntime:
 
         try:
             result = await codex_subscription_disconnect()
-            await restart_service_for_semantic_composition()
+            await restart_service_for_semantic_composition(report_startup_failure=False)
             return result
         except (OSError, TimeoutError, ValueError) as error:
             raise _subscription_error(
@@ -1336,7 +1336,7 @@ class YoetzRuntime:
 
         try:
             result = codex_subscription_rollback()
-            await restart_service_for_semantic_composition()
+            await restart_service_for_semantic_composition(report_startup_failure=False)
             return result
         except (OSError, ValueError) as error:
             raise _subscription_error(
@@ -1363,7 +1363,7 @@ class YoetzRuntime:
 
         try:
             result = await codex_subscription_repair()
-            await restart_service_for_semantic_composition()
+            await restart_service_for_semantic_composition(report_startup_failure=False)
             return result
         except (OSError, TimeoutError, ValueError) as error:
             raise _subscription_error(error, "Codex evaluator repair did not complete") from None

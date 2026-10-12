@@ -1372,6 +1372,47 @@ async def test_manual_drain_names_service_unavailable_terminal_with_the_pending_
 
 
 @pytest.mark.anyio
+async def test_manual_drain_names_a_service_it_started_that_exited_while_starting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1040 review: the drain's on-demand start names the stage and record, exit 20 unchanged."""
+
+    import yoetz.observability.diagnostics as diagnostics
+    from yoetz.ports.control import ControlError
+    from yoetz.service.startup_failure import record_startup_failure
+
+    ring = tmp_path / "ring"
+    ring.mkdir(mode=0o700)
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: ring)
+    startup_id = "err_11111111-2222-4333-8444-555555555555"
+    record_startup_failure(NotImplementedError("x"), stage="activation", correlation_id=startup_id)
+    store = LocalObservationStore(_state=tmp_path)
+    store.grant_consent(store.workspace_commitment(str(tmp_path.resolve())))
+    _enqueue_shell_rows(tmp_path, "offline", (1,))
+
+    async def connect(_kind: object):
+        raise ControlError(
+            "service_unavailable", retryable=False, correlation_id=startup_id, phase="activation"
+        )
+
+    capsys.readouterr()  # the structural line recording the failure, when a sink is installed
+    code, summary = await observe_cli._drain_observation_async(  # pyright: ignore[reportPrivateUsage]
+        workspace=str(tmp_path),
+        _state=tmp_path,
+        connect=connect,  # type: ignore[arg-type]
+    )
+
+    assert code == 20
+    assert summary["terminal"] == "service_unavailable"
+    assert summary["reasons"] == {ObservationGapCode.SERVICE_UNAVAILABLE.value: 1}
+    assert capsys.readouterr().err.splitlines() == [
+        "service_unavailable: the local service exited while starting (stage: activation; "
+        f"exception_not_implemented_error); correlation_id {startup_id}; read it with "
+        f"'yoetz service diagnostics --correlation-id {startup_id}'"
+    ]
+
+
+@pytest.mark.anyio
 async def test_manual_drain_is_bounded_against_a_producer_that_never_stops(
     tmp_path: Path,
 ) -> None:

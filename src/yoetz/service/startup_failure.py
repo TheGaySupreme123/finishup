@@ -127,26 +127,30 @@ def record_startup_failure(
     stage: str,
     correlation_id: str | None = None,
     reason_code: str | None = None,
+    unexpected: bool = False,
 ) -> StartupFailure:
     """Record ``exc`` as a startup failure at ``stage`` and return what was recorded.
 
     ``reason_code`` is the exception's own closed refusal token (a lifecycle, path-safety,
     instance-identity or configuration reason); without one the failure is unexpected and is
-    recorded as such. ``correlation_id`` is the id a spawning process will look the record up
-    under; a missing or invalid one is replaced by a fresh id. Never raises.
+    recorded as such. ``unexpected`` records a failure as unexpected although it carries a token
+    (an endpoint, storage, lineage or migration refusal the CLI does not name itself), keeping
+    that token. ``correlation_id`` is the id a spawning process will look the record up under; a
+    missing or invalid one is replaced by a fresh id. Never raises.
     """
 
     if stage not in SERVICE_STARTUP_STAGES:
         stage = "activation"
     code = reason_code if type(reason_code) is str and _TOKEN.fullmatch(reason_code) else None
     _ensure_structural_sink()
-    if code is None:
+    if code is None or unexpected:
         recorded = record_unexpected_exception_without_raising(
             exc,
             component=STARTUP_FAILURE_COMPONENT,
             operation=STARTUP_FAILURE_OPERATION,
             phase=stage,
             correlation_id=correlation_id,
+            reason_code=code,
         )
     else:
         recorded = record_classified_exception_without_raising(

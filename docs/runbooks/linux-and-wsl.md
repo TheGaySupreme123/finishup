@@ -72,6 +72,7 @@ paths). Each surface shows the same facts:
 | `yoetz service diagnostics --correlation-id err_… --json` | the durable record (`phase`, `reason`, `origin`, and `reason_code` for a typed refusal) |
 | MCP `start`, or any tool call that started the service on demand | `SERVICE_UNAVAILABLE`, `retryable: false`, `safe_details.reason_code: service_start_failed`, `safe_details.phase: <stage>`, the spawned service's correlation id; text `Reason: service_start_failed (stage: <stage>).` |
 | A CLI command that started the service on demand (`yoetz service restart`) | `service_unavailable: the local service exited while starting (stage: …; …); correlation_id err_…`, exit 20 |
+| Setup and drain commands that start it on demand (`yoetz setup vault`, `yoetz setup llm --set`, the interactive `yoetz setup`, the restart after a provider or Codex-subscription change, `yoetz observe drain`) | the same `service_unavailable: … exited while starting …` line on stderr, then the command's own unchanged result and exit code (for example `provider_setup_failed: service_unavailable`, exit 20); the restart stops at the first such failure instead of spawning again. The full-screen window does not print it; `yoetz setup status --next` leads to `yoetz service restart`, which does |
 
 Stages: `import` (a service module or native extension could not load, for example a wheel built
 for a newer C library), `configuration` (configuration or the log sink), `composition` (instance
@@ -79,7 +80,10 @@ identity, singleton, vault), `activation` (endpoint publication, after ready act
 vault unlocks), `serving` (after the service had started). The origin names the source line; the
 exception token names the class. Typed refusals keep their own lines (`instance_expired`,
 `path_contains_symlink`, `service_already_running`, `invalid_request: <config reason>`, …), and
-their record carries that token as `reason_code`. A spawned service that loses the singleton to a
+their record carries that token as `reason_code`. An unsafe runtime directory or endpoint, unsafe
+storage or a required migration stays an unexpected failure (exit 70), but its line and record
+name its own token after the class, for example `(stage: activation;
+exception_local_control_transport_error; runtime_directory_unsafe; at …)`. A spawned service that loses the singleton to a
 live one is not a failure: on-demand start connects to the holder. The bridge stops waiting as
 soon as its spawned service exits with a record, instead of spending its 30-second start budget.
 

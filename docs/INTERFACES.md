@@ -3025,11 +3025,14 @@ while it serves writes one durable diagnostic record (component `service.daemon`
 or `serving` — `reason` the reviewed exception-class token (`exception_not_implemented_error`, or
 `exception_unavailable` for an unlisted class), `origin` the innermost `yoetz` frame, and
 `reason_code` the exception's own closed refusal token when it has one (a lifecycle, path-safety,
-instance-identity or configuration reason). An unexpected failure prints `internal_error: the
-service could not start (stage: <stage>; <exception token>[; at <origin>]); correlation_id <err_…>`
-(`stopped unexpectedly` for `serving`) and exits 70; typed refusals keep their existing lines and
-exits, and a configuration refusal prints `invalid_request: <reason_code>` and exits 2 as every
-other command does. Losing the singleton to a live service (`service_already_running`) is not
+instance-identity or configuration reason; or an endpoint, storage, host-lineage or public-error
+refusal — `runtime_directory_unsafe`, `endpoint_in_use`, `storage_path_unsafe`,
+`host_lineage_migration_required`, `migration_required`, … — which stays an unexpected failure).
+An unexpected failure prints `internal_error: the service could not start (stage: <stage>;
+<exception token>[; <reason_code>][; at <origin>]); correlation_id <err_…>` (`stopped
+unexpectedly` for `serving`) and exits 70; typed refusals keep their existing lines and exits,
+and a configuration refusal prints `invalid_request: <reason_code>` and exits 2 as every other
+command does. Losing the singleton to a live service (`service_already_running`) is not
 recorded. On-demand start (`yoetz.service.client`) passes the hidden `service run
 --startup-correlation-id <err_…>` so the child records under an id its spawner chose; when that
 child exits having recorded a failure, the spawner stops waiting and raises `service_unavailable`
@@ -3038,8 +3041,12 @@ MCP bridge maps it to `SERVICE_UNAVAILABLE` with `safe_details.reason_code`
 `service_start_failed` and `safe_details.phase` the stage (the text channel reads
 `Reason: service_start_failed (stage: <stage>).` plus the fixed remedy), reusing the child's id
 without recording a second one; the message also names the exception token and origin. The CLI
-renders `service_unavailable: the local service exited while starting (<stage; class; origin>);
-correlation_id <err_…>`. It is an availability failure, so the latch above applies.
+renders `service_unavailable: the local service exited while starting (<stage; class[;
+reason_code]; origin>); correlation_id <err_…>`. It is an availability failure, so the latch
+above applies. Setup's on-demand starts (`setup vault`, `setup llm --set`, the interactive
+wizard), its restart after a provider binding change and `observe drain` print that same CLI line
+on stderr before their own unchanged result and exit code; that restart stops at the first such
+failure instead of spawning again.
 
 **Availability latch (issue #469).** The bridge treats the control reasons `service_unavailable`,
 `service_incompatible`, `protocol_mismatch`, `endpoint_unsafe`, and `peer_untrusted` as facts

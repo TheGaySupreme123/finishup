@@ -42,6 +42,7 @@ from yoetz.adapters.keys.secret_memory import LocalSecretMemory
 from yoetz.adapters.keys.vault_passphrase import VaultRootEnvelope
 from yoetz.adapters.repository_identity import resolve_repository_privacy_context
 from yoetz.adapters.session_events import SessionEventMonitor
+from yoetz.adapters.sqlite.connection import StorageUnsafeError
 from yoetz.application.observation_await import (
     TaskPendingProbe,
     await_observations_bound,
@@ -116,6 +117,7 @@ from yoetz.ports.control import (
     WorkspaceLocator,
 )
 from yoetz.ports.diagnostics import StartupCheckResult
+from yoetz.ports.host_lineage import HostLineageRegistryError
 from yoetz.ports.keys import KeyStorePort, MacKeyPurpose
 from yoetz.ports.ledger import (
     CheckAdmissionStage,
@@ -4804,8 +4806,10 @@ def _startup_failure(exc: Exception, *, stage: str, correlation_id: str | None) 
     its own closed reason token and re-raised unchanged, because the CLI already names each one.
     Anything else is recorded as unexpected and replaced by ``ServiceStartupError``, which the CLI
     renders with its stage, exception class and origin instead of a bare ``internal_error``
-    (#1040). Losing the singleton to a live service is not a failure of this start and is not
-    recorded: whoever spawned this process connects to the holder instead.
+    (#1040); an endpoint, storage, lineage or migration refusal keeps its own closed token there
+    too, so the line, the record and a spawner's error name the repair. Losing the singleton to a
+    live service is not a failure of this start and is not recorded: whoever spawned this process
+    connects to the holder instead.
     """
 
     reason_code: str | None = None
@@ -4820,10 +4824,37 @@ def _startup_failure(exc: Exception, *, stage: str, correlation_id: str | None) 
         reason_code = exc.reason
     elif isinstance(exc, ConfigError):
         reason_code = exc.reason_code
+    else:
+        failure = record_startup_failure(
+            exc,
+            stage=stage,
+            correlation_id=correlation_id,
+            reason_code=_unnamed_refusal_token(exc),
+            unexpected=True,
+        )
+        return ServiceStartupError(failure)
     failure = record_startup_failure(
         exc, stage=stage, correlation_id=correlation_id, reason_code=reason_code
     )
     return exc if reason_code is not None else ServiceStartupError(failure)
+
+
+def _unnamed_refusal_token(exc: Exception) -> str | None:
+    """The closed token of a typed refusal ``yoetz service run`` does not name itself, or None.
+
+    Each is validated against its own closed vocabulary when it is raised; no message text is read.
+    """
+
+    if isinstance(exc, LocalControlTransportError):
+        # runtime_directory_unsafe, endpoint_unsafe, endpoint_exists, endpoint_in_use, ...
+        return exc.reason
+    if isinstance(exc, StorageUnsafeError):
+        return exc.reason_code
+    if isinstance(exc, HostLineageRegistryError):
+        return exc.reason.value
+    if isinstance(exc, PublicOperationError):
+        return exc.code.value.lower()
+    return None
 
 
 async def run_service(startup_correlation_id: str | None = None) -> Never:

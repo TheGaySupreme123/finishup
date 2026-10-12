@@ -14,19 +14,22 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
 
 import yoetz.observability.diagnostics as diagnostics
 import yoetz.service.daemon as daemon_module
+from yoetz.adapters.control.unix_socket import LocalControlTransportError
+from yoetz.adapters.sqlite.connection import StorageUnsafeError
 from yoetz.config.installation import InstanceIdentityError
 from yoetz.config.models import ConfigError, LoggingConfig, YoetzConfig
 from yoetz.config.paths import PathSafetyError
 from yoetz.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
 from yoetz.observability.logging import LogMode
-from yoetz.protocol.errors import SERVICE_STARTUP_PHASES
+from yoetz.ports.host_lineage import HostLineageRegistryError, HostLineageRegistryReason
+from yoetz.protocol.errors import SERVICE_STARTUP_PHASES, PublicErrorCode, PublicOperationError
 from yoetz.service.lifecycle import LifecycleError
 from yoetz.service.startup_failure import (
     SERVICE_STARTUP_STAGES,
@@ -311,6 +314,113 @@ async def test_invalid_transition_is_an_unexpected_failure(
 
     assert raised.value.failure.reason == "exception_lifecycle_error"
     assert raised.value.failure.reason_code is None
+
+
+def _endpoint_refusal() -> LocalControlTransportError:
+    return LocalControlTransportError("runtime_directory_unsafe")
+
+
+def _storage_refusal() -> StorageUnsafeError:
+    return StorageUnsafeError("storage_path_unsafe")
+
+
+def _lineage_refusal() -> HostLineageRegistryError:
+    return HostLineageRegistryError(HostLineageRegistryReason.MIGRATION_REQUIRED)
+
+
+def _migration_refusal() -> PublicOperationError:
+    return PublicOperationError(
+        PublicErrorCode.MIGRATION_REQUIRED, "The catalog needs a migration.", retryable=False
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("make_refusal", "reason", "token"),
+    [
+        (_endpoint_refusal, "exception_local_control_transport_error", "runtime_directory_unsafe"),
+        (_storage_refusal, "exception_storage_unsafe_error", "storage_path_unsafe"),
+        (
+            _lineage_refusal,
+            "exception_host_lineage_registry_error",
+            "host_lineage_migration_required",
+        ),
+        (_migration_refusal, "exception_public_operation_error", "migration_required"),
+    ],
+)
+async def test_refusals_the_cli_does_not_name_keep_their_token(
+    make_refusal: Callable[[], Exception],
+    reason: str,
+    token: str,
+    ring: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An endpoint, storage, lineage or migration refusal at activation names its repair.
+
+    It stays an unexpected startup failure (the same line and exit 70), but its own closed token
+    reaches the record, the foreground line and the spawner's read-back instead of being dropped
+    behind ``exception_unavailable`` (#1040 review).
+    """
+
+    class _RefusingDaemon(_FailingDaemon):
+        async def serve(self) -> None:
+            raise make_refusal()
+
+    _patch_run_service(monkeypatch, daemon=_RefusingDaemon)
+
+    with pytest.raises(ServiceStartupError) as raised:
+        await daemon_module.run_service(_SPAWN_ID)
+
+    failure = raised.value.failure
+    assert failure.stage == "activation"
+    assert failure.reason == reason
+    assert failure.reason_code == token
+    assert f"(stage: activation; {reason}; {token}; at yoetz." in failure.line()
+    assert failure.line().startswith("internal_error: the service could not start")
+    (record,) = lookup_diagnostic_records(_SPAWN_ID, root=ring)
+    assert record["reason"] == reason
+    assert record["reason_code"] == token
+    assert read_startup_failure(_SPAWN_ID) == failure
+    assert "migration." not in (ring / diagnostics.DIAGNOSTIC_FILENAME).read_text()
+
+
+def test_an_unexpected_record_with_a_token_logs_internal_error(
+    ring: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The structural stderr line agrees with the ``internal_error`` line the CLI prints."""
+
+    import yoetz.observability.logging as logging_module
+
+    emitted: list[tuple[str, str, dict[str, object]]] = []
+
+    class _Logger:
+        def error(self, event: str, **fields: object) -> None:
+            emitted.append(("error", event, fields))
+
+        def warning(self, event: str, **fields: object) -> None:
+            emitted.append(("warning", event, fields))
+
+    def get_logger(component: str) -> _Logger:
+        del component
+        return _Logger()
+
+    monkeypatch.setattr(logging_module, "get_logger", get_logger)
+    failure = record_startup_failure(
+        LocalControlTransportError("endpoint_in_use"),
+        stage="activation",
+        correlation_id=_SPAWN_ID,
+        reason_code="endpoint_in_use",
+        unexpected=True,
+    )
+
+    assert failure.reason_code == "endpoint_in_use"
+    ((level, event, fields),) = emitted
+    assert (level, event) == ("error", "service_startup_failed")
+    assert fields["outcome"] == "internal_error"
+    assert fields["reason_code"] == "endpoint_in_use"
+    assert fields["reason"] == "exception_local_control_transport_error"
+    (record,) = lookup_diagnostic_records(_SPAWN_ID, root=ring)
+    assert record["reason_code"] == "endpoint_in_use"
 
 
 @pytest.mark.anyio
