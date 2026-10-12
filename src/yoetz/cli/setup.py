@@ -1899,6 +1899,7 @@ def _credential_store_unavailable_line() -> str:
 
 async def _service_reachability(*, start_if_absent: bool = False) -> dict[str, JsonValue]:
     from yoetz.cli.app import build_service_client
+    from yoetz.cli.bootstrap import spawned_startup_failure_line
     from yoetz.ports.control import ControlClientKind, ControlError
     from yoetz.service.client import connect_service_on_demand
 
@@ -1912,7 +1913,12 @@ async def _service_reachability(*, start_if_absent: bool = False) -> dict[str, J
             status = await client.service_status()
         finally:
             await client.close()
-    except ControlError:
+    except ControlError as error:
+        # The service this command started exited while starting: name its stage and record
+        # (#1040) before the caller reports the service as unreachable.
+        startup_line = spawned_startup_failure_line(error)
+        if startup_line is not None:
+            typer.echo(startup_line, err=True)
         return {"reachable": False, "state": None, "vault_mode": None}
     vault_mode = getattr(status, "vault_mode", None)
     state = getattr(getattr(status, "state", None), "value", getattr(status, "state", None))
@@ -1928,10 +1934,18 @@ async def _service_reachability(*, start_if_absent: bool = False) -> dict[str, J
 _RESTART_BACKOFF_SECONDS: Final = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
 
 
-async def _restart_service_for_semantic_composition() -> dict[str, JsonValue]:
-    """Restart after provider config changes, then verify the new singleton answered."""
+async def _restart_service_for_semantic_composition(
+    *, report_startup_failure: bool = True
+) -> dict[str, JsonValue]:
+    """Restart after provider config changes, then verify the new singleton answered.
+
+    A successor that exits while starting fails the same way on every spawn, so the first one
+    ends the retries; ``report_startup_failure`` names its stage and record on stderr (#1040).
+    The full-screen window passes False: it owns the terminal.
+    """
 
     from yoetz.cli.app import build_service_client
+    from yoetz.cli.bootstrap import spawned_startup_failure_line
     from yoetz.ports.control import ControlClientKind, ControlError
     from yoetz.service.client import connect_service_on_demand
 
@@ -1951,8 +1965,13 @@ async def _restart_service_for_semantic_composition() -> dict[str, JsonValue]:
                 status = await client.service_status()
             finally:
                 await client.close()
-        except ControlError:
-            continue
+        except ControlError as error:
+            startup_line = spawned_startup_failure_line(error)
+            if startup_line is None:
+                continue
+            if report_startup_failure:
+                typer.echo(startup_line, err=True)
+            break
         state = getattr(getattr(status, "state", None), "value", getattr(status, "state", None))
         vault_mode = getattr(status, "vault_mode", None)
         return {
@@ -1963,10 +1982,14 @@ async def _restart_service_for_semantic_composition() -> dict[str, JsonValue]:
     return {"reachable": False, "state": None, "vault_mode": None}
 
 
-async def restart_service_for_semantic_composition() -> dict[str, JsonValue]:
+async def restart_service_for_semantic_composition(
+    *, report_startup_failure: bool = True
+) -> dict[str, JsonValue]:
     """Recompose the singleton after an AI-powered evaluator binding changes."""
 
-    return await _restart_service_for_semantic_composition()
+    return await _restart_service_for_semantic_composition(
+        report_startup_failure=report_startup_failure
+    )
 
 
 def _privacy_block_reason(reason: object) -> str:

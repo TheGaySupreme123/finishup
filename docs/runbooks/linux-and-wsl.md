@@ -72,6 +72,7 @@ paths). Each surface shows the same facts:
 | `yoetz service diagnostics --correlation-id err_… --json` | the durable record (`phase`, `reason`, `origin`, and `reason_code` for a typed refusal) |
 | MCP `start`, or any tool call that started the service on demand | `SERVICE_UNAVAILABLE`, `retryable: false`, `safe_details.reason_code: service_start_failed`, `safe_details.phase: <stage>`, the spawned service's correlation id; text `Reason: service_start_failed (stage: <stage>).` |
 | A CLI command that started the service on demand (`yoetz service restart`) | `service_unavailable: the local service exited while starting (stage: …; …); correlation_id err_…`, exit 20 |
+| Setup and drain commands that start it on demand (`yoetz setup vault`, `yoetz setup llm --set`, the interactive `yoetz setup`, the restart after a provider or Codex-subscription change, `yoetz observe drain`) | the same `service_unavailable: … exited while starting …` line on stderr, then the command's own unchanged result and exit code (for example `provider_setup_failed: service_unavailable`, exit 20); the restart stops at the first such failure instead of spawning again. The full-screen window does not print it; `yoetz setup status --next` leads to `yoetz service restart`, which does |
 
 Stages: `import` (a service module or native extension could not load, for example a wheel built
 for a newer C library), `configuration` (configuration or the log sink), `composition` (instance

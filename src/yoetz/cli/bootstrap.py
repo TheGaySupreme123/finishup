@@ -35,6 +35,7 @@ from yoetz.service.control_protocol import public_error_code_for_control_reason
 
 if TYPE_CHECKING:
     from yoetz.service.client import ServiceClient
+    from yoetz.service.startup_failure import StartupFailure
 
 __all__ = [
     "WORKSPACE_LOCATOR_DEFAULT",
@@ -43,6 +44,7 @@ __all__ = [
     "human_or_json",
     "plain_json",
     "resolve_cli_workspace_locator",
+    "spawned_startup_failure_line",
     "stderr",
     "stdout_json",
 ]
@@ -333,6 +335,44 @@ def _privacy_audit_unreadable_failure(
     return exit_code_for(code)
 
 
+def _spawned_startup_failure(error: BaseException) -> StartupFailure | None:
+    """The recorded failure of a service this command started on demand, or None.
+
+    On-demand start raises ``service_unavailable`` with ``phase`` set to the spawned service's
+    startup stage and ``correlation_id`` to its record (#1040); no other error carries one.
+    """
+
+    if (
+        not isinstance(error, ControlError)
+        or error.reason != "service_unavailable"
+        or error.phase not in SERVICE_STARTUP_PHASES
+    ):
+        return None
+    from yoetz.service.startup_failure import spawned_startup_failure
+
+    return spawned_startup_failure(error.phase, error.correlation_id)
+
+
+def _spawned_startup_failure_line(startup: StartupFailure) -> str:
+    return (
+        f"service_unavailable: the local service exited while starting "
+        f"({startup.describe()}); correlation_id {startup.correlation_id}; read it with "
+        f"'yoetz service diagnostics --correlation-id {startup.correlation_id}'"
+    )
+
+
+def spawned_startup_failure_line(error: BaseException) -> str | None:
+    """The ``control_failure`` line for a service this command started that exited while starting.
+
+    For a command that keeps its own result shape and exit code when the service is unreachable
+    (setup, observation drain) instead of rendering ``control_failure``, so it names the same
+    stage, exception class and correlation id. None for any other error.
+    """
+
+    startup = _spawned_startup_failure(error)
+    return None if startup is None else _spawned_startup_failure_line(startup)
+
+
 def control_failure(
     error: ControlError,
     *,
@@ -429,19 +469,11 @@ def control_failure(
         return exit_code_for(code)
     from yoetz.service.client import accepted_but_unresponsive
 
-    startup = None
-    if error.reason == "service_unavailable" and error.phase in SERVICE_STARTUP_PHASES:
-        from yoetz.service.startup_failure import spawned_startup_failure
-
-        startup = spawned_startup_failure(error.phase, error.correlation_id)
+    startup = _spawned_startup_failure(error)
     if startup is not None:
         # The service this command started exited during startup (#1040): name the stage and
         # exception class instead of telling the operator to start a service that cannot start.
-        stderr_writer(
-            f"service_unavailable: the local service exited while starting "
-            f"({startup.describe()}); correlation_id {startup.correlation_id}; read it with "
-            f"'yoetz service diagnostics --correlation-id {startup.correlation_id}'"
-        )
+        stderr_writer(_spawned_startup_failure_line(startup))
         if json_output:
             payload = {
                 "ok": False,
