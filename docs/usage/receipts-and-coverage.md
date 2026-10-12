@@ -352,10 +352,11 @@ Three more things the receipt discloses in their own sections, by id only:
 - **Deliverables that load undeclared files.** When a delivered source file loads a file you
   created but did not declare (a model, a word list, a data table), a grader that receives only the
   declared files gets a program that cannot run. `deliverable_references_undeclared_file` asks you
-  at Stop to fix it and names the files, and the receipt names them and stays below clean until you
-  do. Embed the content in the deliverable, rebuild it at run time, or declare the file as a
-  delivered output (a requested `file` item with role `output`; a file the task itself provides is
-  role `input`), then run `check`. Disclosing the dependency does not resolve it.
+  at Stop to fix it and names the files, and the receipt names them (a `default_local_export` or
+  `redacted_share` receipt counts them instead) and stays below clean until you do. Embed the
+  content in the deliverable, rebuild it at run time, or declare the file as a delivered output (a
+  requested `file` item with role `output`; a file the task itself provides is role `input`), then
+  run `check`. Disclosing the dependency does not resolve it.
 - **Planned commands that matched only in part.** A planned command counts as run when an
   observed run matches it exactly, or after dropping wrappers such as `timeout`, `env` and
   `nice` and the interpreter alias `python3`. A run that only began with the planned arguments,

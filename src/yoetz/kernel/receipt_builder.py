@@ -801,11 +801,14 @@ def _derive_receipt_fact_lineage(context: ReceiptBuildContext) -> tuple[FactLine
     return tuple(sorted(dict.fromkeys(items), key=lambda item: item.sort_key))
 
 
-def _check_change_gap_text(context: ReceiptBuildContext, code: str) -> str | None:
+def _check_change_gap_text(
+    context: ReceiptBuildContext, code: str, *, name_paths: bool = True
+) -> str | None:
     """The fixed sentence for a check-time code; for the legacy-resolution disclosure (R945-02),
     also the affected resolved findings, at most 16 by id and the rest as a count. A task fact
     that carries provenance (ADR-045) also says why it fired, from the same lineage status
-    shows."""
+    shows. ``name_paths=False`` counts the undeclared files instead of naming them: their paths
+    are repository-excerpt content only ``full_local`` carries."""
 
     later = _later_material_text(context, code)
     if later is not None:
@@ -815,11 +818,10 @@ def _check_change_gap_text(context: ReceiptBuildContext, code: str) -> str | Non
         # tb4n4 (#1044): name the undeclared files from the applicable check's recorded
         # deliverable states, with the same sentence the Stop gate prints.
         check = context.applicable_check
-        named = (
-            undeclared_reference_variants(undeclared_reference_rows(check.deliverable_states))
-            if check is not None
-            else ()
-        )
+        rows = undeclared_reference_rows(check.deliverable_states) if check is not None else ()
+        if not name_paths:
+            rows = tuple((obligation, index, (), total) for obligation, index, _, total in rows)
+        named = undeclared_reference_variants(rows)
         return f"{sentence} {named[0]}" if named else sentence
     if sentence is not None and code != CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP:
         why = lineage_texts(_receipt_fact_lineage(context), code)
@@ -2651,12 +2653,14 @@ def build_receipt(
         )
     )
     proof_state_cache: dict[tuple[int, int, str], ProjectionState | None] = {}
+    # The export profiles clear gap details; the sections they keep never copy a path (#1044).
+    name_paths = redaction_profile is ReceiptRedactionProfile.FULL_LOCAL
     sections = _sections(
         check_change_gap_texts={
             code: text
             for code in context.coverage.known_gaps
             if code not in historical
-            and (text := _check_change_gap_text(context, code)) is not None
+            and (text := _check_change_gap_text(context, code, name_paths=name_paths)) is not None
         },
         include=include,
         conclusion=conclusion,

@@ -204,12 +204,14 @@ tb4n4 remediation PR), which is the acknowledgement for the storage change below
   structural table, log or error. Status `closure_readiness.undeclared_references` (status-result
   1.4.0, unreleased, optional) carries the rows of the applicable check; each path is a
   `repository_excerpt` content leaf of the privacy projection, so a policy can withhold it. The
-  receipt gap detail (JSON, markdown and text; cleared, like every gap detail, by the export and
-  share redaction profiles) and the Stop-gate text print one sentence,
-  `task_fact_tokens.undeclared_reference_variants`: "Undeclared files: <obligation> item <n> names
-  "<path>" and "<path>"." Each path goes through `bounded_text.quoted_path` (ASCII, one line, no
-  double quote, at most 120 characters), the rendering the post-compaction recap already used. The
-  MCP text summary, the hook diagnostics and the gate memory never carry a path.
+  receipt (its gap detail and its limitations sentence, in JSON, markdown and text) and the
+  Stop-gate text print one sentence, `task_fact_tokens.undeclared_reference_variants`: "Undeclared
+  files: <obligation> item <n> names "<path>" and "<path>"." Each path goes through
+  `bounded_text.quoted_path` (ASCII, one line, no double quote, at most 120 characters), the
+  rendering the post-compaction recap already used. Only the `full_local` receipt names a path: the
+  `default_local_export` and `redacted_share` profiles clear the gap detail, like every gap detail,
+  and their limitations sentence counts the files instead ("<obligation> item <n> names 2
+  file(s)"). The MCP text summary, the hook diagnostics and the gate memory never carry a path.
 - **Residuals.** The read is still a literal-matching heuristic over a bounded prefix (a path built
   from pieces at run time is not seen). An untracked file the task started with is not a candidate
   when the base is a task-start base carrying the #1045 snapshot: unchanged since, it is not part

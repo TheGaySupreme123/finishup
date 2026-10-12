@@ -9424,8 +9424,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `task_fact_tokens.undeclared_reference_variants(rows)` are the one reading and the one sentence
   ("Undeclared files: <obligation> item <n> names \"<path>\" and ..."), each path through
   `bounded_text.quoted_path` (ASCII, one line, no double quote, at most 120 characters; the
-  post-compaction recap uses the same helper). A disclosure decision never clears it; embedding
-  the content, rebuilding it at run time, or declaring the file as a requested item does.
+  post-compaction recap uses the same helper). Only a `full_local` receipt names a path: under
+  `default_local_export` and `redacted_share` the gap detail is cleared and the limitations section
+  passes the rows without paths, so the sentence counts them ("... names 2 file(s)."). A disclosure
+  decision never clears it; embedding the content, rebuilding it at run time, or declaring the file
+  as a requested item does.
 - **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the
   absent-output fact, and skips blocked obligations. Since ADR-042 an item is reported only once a
   completion claim names its obligation or a published producing action names that obligation (or

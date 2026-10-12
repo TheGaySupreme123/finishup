@@ -46,6 +46,7 @@ from yoetz.domain.task_fact_tokens import DELIVERABLE_REFERENCES_UNDECLARED_FILE
 from yoetz.kernel.delivered_set import undeclared_reference_inputs
 from yoetz.kernel.task_facts import RequestedOutputState, register_command_identity_key
 from yoetz.mcp.summaries import summary_for_status
+from yoetz.protocol.models import ReceiptRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -329,5 +330,50 @@ async def test_declaring_every_model_as_a_delivered_output_clears_it(
         status = await run.status("compact")
         assert _CODE not in (status.closure_readiness.agent_actionable or ())
         assert status.closure_readiness.undeclared_references is None
+    finally:
+        register_command_identity_key(None)
+
+
+async def test_export_profiles_name_no_undeclared_path_in_any_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The paths are repository-excerpt content: only ``full_local`` carries them (PR #1054 review).
+
+    ``default_local_export`` and ``redacted_share`` clear the gap detail; the limitations section
+    used to copy the same path-bearing sentence. Under an export profile it now names the
+    referencing item and how many files it names, never a path, in JSON, markdown and text.
+    """
+
+    try:
+        run, _workspace = await _vigenere_run(monkeypatch, 85)
+        await run.check_in("semantic_if_configured")
+        frontier = run.frontier
+        offset = 0
+        for profile in ("full_local", "default_local_export", "redacted_share"):
+            for fmt in ("json", "markdown", "text"):
+                offset += 1
+                receipt = await run.app.receipt(
+                    ReceiptRequest.model_validate(
+                        {
+                            **h._receipt_wire(
+                                run.serial + 950 + offset,
+                                task_id=run.started.task_id,
+                                session=run.started.session_id,
+                                writer=run.started.writer_id,
+                                frontier=frontier,
+                            ),
+                            "format": fmt,
+                            "include": "full",
+                            "redaction_profile": profile,
+                        }
+                    )
+                )
+                text = str(receipt.as_json())
+                assert _CODE in text, (profile, fmt)
+                for model in _MODELS:
+                    named = model.rsplit("/", 1)[1].removesuffix(".npz")
+                    assert (named in text) is (profile == "full_local"), (profile, fmt, model)
+                if profile != "full_local":
+                    assert f"{_OBLIGATION} item 0 names 2 file(s)." in text, (profile, fmt)
     finally:
         register_command_identity_key(None)
