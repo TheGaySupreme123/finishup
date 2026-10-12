@@ -9235,7 +9235,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   compound)`, `planned_segments(key, normalized)`, `strip_wrappers(argv)`;
   `command_segment_commitments` now also carries up to `MAX_CANONICAL_COMMITMENTS` (48) canonical
   commitments, `MAX_COMMAND_COMMITMENTS` (80) in all (the observed action `command` field, the hook
-  structural list and `observed_failures` share that bound).
+  structural list, the control-request 2.9.0 `maxItems` and `observed_failures` share that bound;
+  the wire bound and the `write_scope` enum are generated from the hook's constants, #1039).
   `task_facts.requested_planned_command(value) -> PlannedCommand | None` and `planned_match(run,
   planned) -> PlannedMatch(outcome, kind) | None` with `kind` `exact|normalized|prefix|flags`;
   `prefix` and `flags` raise the standing `planned_verification_matched_by_prefix`.

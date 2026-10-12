@@ -1384,7 +1384,8 @@ def _assert_v29_request_adds_only_command_commitment(
             "pattern": "^hmac-sha256:[0-9a-f]{64}$",
             "type": "string",
         },
-        "maxItems": 32,
+        # 32 segment plus 48 canonical commitments (ADR-045): the hook's own bound (#1039).
+        "maxItems": 80,
         "minItems": 1,
         "type": "array",
         "uniqueItems": True,
@@ -1408,9 +1409,10 @@ def _assert_v29_request_adds_only_command_commitment(
         "enum": ["private_env", "system", "unresolved", "workspace_env", "yoetz_runtime"],
         "type": "string",
     }
-    # ADR-042 (tb4n2 R4): an edit whose every path is scratch or Yoetz-owned is named so.
+    # ADR-042 (tb4n2 R4): an edit whose every path is scratch or Yoetz-owned is named so; ADR-045
+    # adds the agent's notes and a shell command that writes the workspace (#1039).
     assert v29_fields["write_scope"] == {
-        "enum": ["outside_workspace", "scratch", "yoetz_owned"],
+        "enum": ["notes", "outside_workspace", "scratch", "workspace", "yoetz_owned"],
         "type": "string",
     }
     assert v29_fields["effective_user"] == {"enum": ["non_root", "root"], "type": "string"}
