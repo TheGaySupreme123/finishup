@@ -38,6 +38,25 @@ refused; nothing is claimed. musl, macOS x86-64, and native Windows remain outsi
 Certifying Linux aarch64 needs a real `ubuntu-24.04-arm` release runner and release evidence in
 `support/runtime-support.json`; until then the diagnostic is the whole claim (issue #724).
 
+## Service startup on glibc before 2.32
+
+Issue #1040: on `condaforge/miniforge3:24.9.2-0` every `yoetz service run` exited 70 with only
+`internal_error: the command could not be completed`. That image is Ubuntu 20.04 with glibc 2.31.
+glibc before 2.32 has no no-follow `fchmodat`, so CPython raises `NotImplementedError` for
+`os.chmod(..., follow_symlinks=False)`, which is how the service set the mode of each endpoint it
+had just bound. The binder now falls back to a by-name `chmod` only after `lstat` shows the entry
+is still the socket it bound, inside the runtime directory it has just verified as owner-only;
+the post-`chmod` check of type, mode, link count and inode is unchanged. Conda itself was not the
+cause: the image sets no `LD_LIBRARY_PATH` or `PYTHON*` variables, and the uv-managed Python does
+not load conda's OpenSSL or SQLite.
+
+Reproduced and fixed in that exact image. The no-follow `fchmodat` arrived in glibc 2.32, so the
+same failure applies by construction, not by test, to every glibc 2.28–2.31 system inside the
+certified cell (Ubuntu 20.04, Debian 11, RHEL/Rocky/Alma 8, and images built on them). Release
+verification runs on
+`ubuntu-24.04` (glibc 2.39), which is why the floor was never exercised. PR CI now installs the
+candidate wheel in that exact image (by digest) and starts, queries and stops the service.
+
 ## Approved-check sandbox
 
 Network-denied approved checks run only under an enforcing sandbox: Seatbelt (`sandbox-exec`,
