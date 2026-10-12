@@ -629,9 +629,10 @@ progress is the live view, not the failure record.
 ## Routine and final review budgets (#571 item A1)
 
 Each check selects one budget profile from its frozen case. A check whose frontier carries an
-effective completion claim is `final`; every other check is `routine`. The profile is frozen
-with the job, so retries, a disclosure-wait resume, and recovery all dispatch with the same
-effort and output limit.
+effective completion claim, or a check requested with `final_review: true` (the closing review,
+issue #976), is `final`; every other check is `routine`. The profile is frozen with the job, so
+retries, a disclosure-wait resume, recovery and in-check follow-up rounds all dispatch with the
+same effort and output limit.
 
 | Profile | Effort key | Output limit key | New-binding default |
 | --- | --- | --- | --- |
@@ -656,8 +657,21 @@ effort and output limit.
   commits to it together with the profile name. Receipts, `yoetz provider status`,
   `yoetz provider codex-subscription status`, and `/provider` in the terminal interface show
   both profiles.
+- **Comparing final-review effort (issue #1051).** To run final reviews at a higher effort while
+  routine checkpoints stay as they are, re-run
+  `yoetz provider codex-subscription setup --reasoning-effort xhigh` (the routine choice and
+  everything else are preserved; setup refuses an effort the model does not list). Each recorded
+  check then carries what served it: `semantic_provenance.model`,
+  `semantic_provenance.runtime_evidence.reasoning_effort`, and the phase in
+  `review_input_manifest.review_phase` (`routine` or `final`), so the two arms can be compared from
+  `check_recorded` rows alone. A different *model* for final reviews only is not configurable: the
+  approved review channel authorizes exact destinations (provider, model and endpoint; one primary
+  and at most one fallback), so a second model needs its own owner-approved destination, a privacy
+  consent change that has not been made. A comparison that also moves routine reviews to the other
+  model can run as two separately configured installations; a final-only model switch cannot.
 
-No disclosure, retention, deadline, retry, or fallback rule changes with the profile. There is
-no per-request override yet; a check reaches the final profile only through a completion claim.
+No disclosure, retention, deadline, retry, or fallback rule changes with the profile. The only
+per-request choice is `final_review: true`; otherwise a check reaches the final profile through a
+completion claim.
 Per-profile latency, output size, judgment validity, and cleanup on an installed Luna cell have
 not been benchmarked here; that needs an authorized live run.
