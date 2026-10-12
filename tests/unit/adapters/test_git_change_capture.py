@@ -1462,6 +1462,30 @@ def test_changed_gitlink_whose_repository_is_not_read_counts_as_not_shown(
     assert capture.omitted_files == 1 and capture.truncated
 
 
+def test_gitlink_added_over_an_untracked_repository_starts_at_its_task_start_head(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: untracked at task start, staged as a new gitlink later. The new gitlink's
+    source commit is Git's null id, which must not hide the snapshot's starting commit."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert [path for path, _ in base.nested] == ["api"]
+    _nested_commit(nested, "def handler():\n    return 'COMMITTED_IN_TASK'\n", "cut over")
+    _git(repository, "add", "--", "api")
+
+    text = _text(adapter.capture(os.fspath(repository), base))
+
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started." in text
+    )
+    assert "diff --git a/api/server.py b/api/server.py" in text
+    assert "-    return 'v1'" in text and "+    return 'COMMITTED_IN_TASK'" in text
+
+
 def test_task_input_files_the_statement_names_are_read_only_when_unchanged(
     tmp_path: Path,
 ) -> None:

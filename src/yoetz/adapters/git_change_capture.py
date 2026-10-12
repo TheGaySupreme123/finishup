@@ -1342,7 +1342,9 @@ class GitChangeCaptureAdapter:
 
         candidates: dict[bytes, str | None] = {}
         for path, commit in tracked.gitlinks:
-            candidates.setdefault(path, commit)
+            # A gitlink the base tree does not hold (added during the task) has Git's null id as
+            # its source: no recorded commit, so the task-start snapshot's HEAD applies.
+            candidates.setdefault(path, commit if commit.strip("0") else None)
         for section in untracked.sections:
             if section.path.endswith(b"/") and section.text is None:
                 candidates.setdefault(section.path[:-1], None)
