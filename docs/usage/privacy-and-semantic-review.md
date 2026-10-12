@@ -534,8 +534,9 @@ tokens.
   work so far without judging whether it is complete; a final review judges completeness against
   the task: each stated requirement and requested output, with or without a completion claim.
 - **The closing review.** The receipt is the last step, so the last review before it is a final
-  review. When a task uses AI-powered review, its closure checklist lists `closing_review_required`
-  until a final review is current after the last change; the check result names the review phase.
+  review. When a task uses AI-powered review (or a check deferred it before your first edit), its
+  closure checklist lists `closing_review_required` until a final review is current after the last
+  change; the check result names the review phase.
 
 ### Cancelled background review
 

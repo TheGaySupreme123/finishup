@@ -34,6 +34,7 @@ limits remain in [`coverage-and-receipts.md`](coverage-and-receipts.md#check-mod
 
 A check before your first material edit runs the local plan checks only and sends nothing
 (`semantic_review_deferred_before_first_edit`); the next check after an edit reviews as configured.
+If the work needs no edit, readiness asks for the closing review instead.
 While work is in progress the reviewer judges incomplete work only; its correctness concerns come
 back as advisory notes in the review summary, not findings. `agent_criterion_unmet` is a criterion
 you set yourself beyond the task's stated scope: fix it, or narrow it with `respond` `acknowledged`

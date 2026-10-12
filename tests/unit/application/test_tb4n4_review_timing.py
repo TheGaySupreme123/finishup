@@ -245,9 +245,12 @@ async def test_the_skip_names_one_reason_and_the_stopped_round_wins() -> None:
     assert gaps == frozenset({SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP})
 
 
-def test_the_deferral_gap_bounds_like_any_missing_review_and_never_vetoes_local_proof() -> None:
+def test_the_deferral_gap_follows_the_recorded_route_and_never_vetoes_local_proof() -> None:
+    """Like the missing review it rides with (#1046 review): disclosed where review is optional."""
+
     code = SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP
-    for route_requires_review in (False, True):
+    expected = {False: GapEffectKind.DISCLOSED, True: GapEffectKind.STANDING_BOUNDING}
+    for route_requires_review, kind in expected.items():
         effect = gap_effect(code, GapContext(route_requires_review=route_requires_review))
-        assert effect.kind is GapEffectKind.STANDING_BOUNDING
+        assert effect.kind is kind
     assert code in SEMANTIC_ONLY_GAPS

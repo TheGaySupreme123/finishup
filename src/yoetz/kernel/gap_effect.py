@@ -464,7 +464,6 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "semantic_provider_input_manifest_parse_failed",
             "semantic_provider_input_manifest_recovery_failed",
             "semantic_review_context_withheld",
-            "semantic_review_deferred_before_first_edit",
             "semantic_review_item_withheld",
             "semantic_review_skipped_insufficient_packet",
             "task_statement_not_authorized",
@@ -484,6 +483,20 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "semantic_relevance_review_not_run",
             "semantic_review_not_configured",
         ),
+    ),
+    # tb4n4 (issue #1046, review): Yoetz's own deferral of a routine review before the first
+    # material edit. Where the deferred check recorded that its route did not require review it is
+    # a disclosure, like the ``semantic_review_not_requested`` it rides with (rule G1): a check the
+    # agent asked to review must not read worse than a ``deterministic_only`` one on the same
+    # route. Where the route requires review it bounds until a review is current.
+    _Family(
+        rule="G7",
+        family="review_completeness",
+        readiness="S",
+        d_route="D",
+        review_route="B",
+        changed=True,
+        codes=("semantic_review_deferred_before_first_edit",),
     ),
     _Family(
         rule="G8",

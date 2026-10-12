@@ -562,3 +562,79 @@ def test_a_review_round_stopped_for_an_insufficient_packet_is_not_asked_for_agai
         semantic_reason=SemanticReason.DETERMINISTIC_MODE,
     )
     assert closure_readiness_facts(replay(plain), plain).closing_review_current is False
+
+
+def _deferred(prefix: tuple[LedgerRecord, ...]) -> tuple[LedgerRecord, ...]:
+    """The check deferred its review before the first material edit (issue #1046)."""
+
+    payload = cast(CheckRecordedPayload, cast(AcceptedEvent, prefix[-1]).payload)
+    return _with_check_payload(
+        prefix,
+        mode=CheckMode.SEMANTIC_IF_CONFIGURED,
+        semantic_status=SemanticStatus.NOT_REQUESTED,
+        semantic_reason=SemanticReason.DETERMINISTIC_MODE,
+        coverage=replace(
+            payload.coverage,
+            known_gaps=tuple(
+                sorted(
+                    {
+                        *payload.coverage.known_gaps,
+                        "semantic_review_deferred_before_first_edit",
+                        "semantic_review_not_requested",
+                    }
+                )
+            ),
+        ),
+    )
+
+
+_DEFERRAL_GAPS = ("semantic_review_deferred_before_first_edit", "semantic_review_not_requested")
+
+
+def test_a_deferred_review_asks_for_the_closing_review_on_every_route() -> None:
+    """Issue #1046 (review): a task whose work is not an edit still reaches the closing review.
+
+    Every routine check before the first edit defers, so no review ever completes. The deferral
+    stands in for the review the task would have run: readiness asks for the closing review where
+    review is optional, and where it is required the actionable missing review no longer hides
+    ``closing_review_required``, the Stop gate's review token (a routine check would defer again).
+    """
+
+    deferred = _deferred(_prefix_through_check())
+    facts = closure_readiness_facts(replay(deferred), deferred)
+    assert facts.semantic_review_used is True
+    assert facts.semantic_review_deferred is True
+    assert facts.closing_review_current is False
+
+    optional = derive_closure_readiness((), _DEFERRAL_GAPS, facts, semantic_review_required=False)
+    assert optional.agent_actionable == ("closing_review_required",)
+    assert set(_DEFERRAL_GAPS) <= set(optional.standing_limitations)
+
+    required = derive_closure_readiness((), _DEFERRAL_GAPS, facts, semantic_review_required=True)
+    assert required.agent_actionable == ("semantic_review_not_requested", "closing_review_required")
+
+
+def test_only_a_deferral_lifts_the_missing_review_s_hold_on_the_closing_review() -> None:
+    """Controls: a local-only check still lets the missing review stand alone (issue #976)."""
+
+    prefix = _prefix_through_check()
+    plain = _with_check_payload(
+        prefix,
+        mode=CheckMode.DETERMINISTIC_ONLY,
+        semantic_status=SemanticStatus.NOT_REQUESTED,
+        semantic_reason=SemanticReason.DETERMINISTIC_MODE,
+    )
+    facts = closure_readiness_facts(replay(plain), plain)
+    assert (facts.semantic_review_used, facts.semantic_review_deferred) == (False, False)
+    split = derive_closure_readiness(
+        (), ("semantic_review_not_requested",), facts, semantic_review_required=True
+    )
+    assert split.agent_actionable == ("semantic_review_not_requested",)
+    assert (
+        "closing_review_required"
+        not in derive_closure_readiness(
+            (), (), facts, semantic_review_required=False
+        ).agent_actionable
+    )
+    # A hand-built fact set that does not say keeps the pre-#1046 answer.
+    assert _facts().semantic_review_deferred is False

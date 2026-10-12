@@ -19,7 +19,8 @@
   (`validate_semantic_judgment(review_phase=...)`, `_review_deferred_before_first_edit`,
   `_review_skip_gaps`), `kernel/task_facts.py` (`material_edit_recorded`),
   `kernel/finding_resolution.py` (`_TASK_FACT_GAPS_TOLERATED_WHEN_FIXED`), `domain/findings.py`
-  (`AGENT_CRITERION_UNMET`, `is_limitation_request`), `kernel/closure_class.py`.
+  (`AGENT_CRITERION_UNMET`, `is_limitation_request`), `kernel/closure_class.py`,
+  `kernel/gap_effect.py` and `kernel/closure_readiness.py` (`_closing_review_facts`).
 
 ## Context
 
@@ -479,23 +480,34 @@ its schema and a parent JSON receipt that failed validation (review of #1043).
 ### 4. No review before the first material edit (#1046)
 
 A check runs the local checks only and records `not_requested`/`deterministic_mode` with the new
-standing gap `semantic_review_deferred_before_first_edit` (G7, bounding on both routes, semantic-only
-for absence proofs) when all hold: the phase is routine; the mode, the `policy` route and the
-configured reviewer would dispatch a review (`semantic_required` included); the frozen prefix
-records no material edit (`material_edit_recorded`: a counting observed edit or shell write under
-ADR-042/045, or an agent-published `edit` action); and the check-time capture did not observe a
-workspace change. Nothing is composed or sent. The deferral comes before the review's own admission,
-so a pre-work check asks for no repository grant, disclosure decision or review input either, and a
-missing provider or a policy block (`not_configured`, `blocked_by_policy`) is reported by the first
-check after the edit. A resumed check already in `semantic_wait` keeps its decision; the deferral
-never applies to the closing review, so a task whose work is not an edit still reaches one. The
-older stopped-round skip (`semantic_review_skipped_insufficient_packet`, ADR-006 tb4n1 D3, #983) is a
-separate rule this section does not change: it can still skip a closing review that is not
-`semantic_required`.
-The deferral is not a failed review: the verdict reads from the local checks (`insufficient_coverage`
-while review is required), never `incomplete_check`. Readiness is unchanged (the review is still
-required and not current), so the next check after the first edit reviews as configured. The CLI,
-the MCP check lead and the receipt's limitations sentence say "AI-powered review deferred".
+standing gap `semantic_review_deferred_before_first_edit` (G7, semantic-only for absence proofs; its
+effect follows the route the check recorded, below) when all hold: the phase is routine; the mode,
+the `policy` route and the configured reviewer would dispatch a review (`semantic_required`
+included); the frozen prefix records no material edit (`material_edit_recorded`: a counting
+observed edit or shell write under ADR-042/045, or an agent-published `edit` action); and the
+check-time capture did not observe a workspace change. Nothing is composed or sent. The deferral
+comes before the review's own admission, so a pre-work check asks for no repository grant,
+disclosure decision or review input either, and a missing provider or a policy block
+(`not_configured`, `blocked_by_policy`) is reported by the first check after the edit. A resumed
+check already in `semantic_wait` keeps its decision; the deferral never applies to the closing
+review, and readiness asks for that review (below), so a task whose work is not an edit still
+reaches one. The older stopped-round skip (`semantic_review_skipped_insufficient_packet`, ADR-006
+tb4n1 D3, #983) is a separate rule this section does not change: it can still skip a closing review
+that is not `semantic_required`.
+The deferral is not a failed review: the verdict reads from the local checks, never
+`incomplete_check`. Its effect follows the route the deferred check recorded, exactly like the
+`semantic_review_not_requested` it rides with (ADR-046 rule G1): where the check recorded
+`semantic_route_required: false` (a route that does not require review) both are disclosed, so the
+check, status and receipt read as a `deterministic_only` check on that route would, and a deferral
+Yoetz chose never reads worse than a local-only check the agent chose; where review is required
+both bound (`insufficient_coverage`) until a review is current. The review stays owed: the next
+check after the first edit reviews as configured, and closure readiness asks for the closing review
+after a deferral on every route. A deferred check counts as a use of AI-powered review for
+`closing_review_required` (it stands in for the review the task would have run), and while the
+latest check deferred, the actionable `semantic_review_not_requested` on a required route no longer
+hides `closing_review_required`: a routine check would only defer again, so the closing review
+(the Stop gate's review token) is the way to supply it. The CLI, the MCP check lead and the
+receipt's limitations sentence say "AI-powered review deferred".
 
 ### 5. A cited `fixed` ruling closes its finding despite environment facts (#1046)
 
