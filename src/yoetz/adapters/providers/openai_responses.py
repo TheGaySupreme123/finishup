@@ -275,8 +275,17 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = (
         "reviewable. A work obligation still open while completion is claimed remains a real "
         "discrepancy: raise it as completion_with_open_obligations. "
         # Phase (issue #906): the budget selector's routine/final profile, named in the packet.
+        # Issue #1042 (tb4n4: 34% of findings were correctness opinions, 35% in frame): a routine
+        # review judges incomplete work only; the check records a routine code_defect as an
+        # advisory note, never a finding.
         "The packet's question_set names the review phase. Review phase: routine means work is in "
-        "progress; report material defects in the work so far and do not judge completeness. Review "
+        "progress: judge incomplete work only. Challenge an obligation marked resolved or left "
+        "behind unfinished, planned verification that was not run, a requested or declared output "
+        "that is missing or emptied, a claim that something was done or ran that the packet does "
+        "not show, and work stopped early. Work not yet started is not a defect while work is in "
+        "progress. A correctness concern (the code or a result is wrong) is not incomplete work: "
+        "return it as finding_kind code_defect, which Yoetz records as an advisory, non-blocking "
+        "note, not a finding. Review "
         "phase: final is the closing review, with or without a completion claim: judge completeness "
         "against the task statement, return one verified row per stated requirement and requested "
         "output (path), and challenge each one the change and its recorded verification do not "
@@ -296,7 +305,13 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = (
         "requested_next_step state_unresolved_limitation, or a not_assessable row. Never rule "
         "such a deliverable not_supported for that quantifier, and never ask the agent to prove "
         "the general case, to supply a generator or an input-domain specification, or to deliver "
-        "less. A packet that names no phase is routine. "
+        "less. "
+        # Issue #1043 (tb4n4 interleaved-vigenere S): the agent's own probe is its own criterion.
+        "A failure only on probes the agent itself authored beyond the task's stated scope (its "
+        "own stress sizes, inputs or configurations outside the task's sample or verifier) is the "
+        "agent's own criterion, not a task requirement: raise it as agent_criterion_unmet, never "
+        "task_requirement_unmet. The agent may fix it or narrow the criterion with a recorded "
+        "reason. A packet that names no phase is routine. "
         # Task statement (issue #906; the task-statement input itself belongs to #908).
         "When the packet carries the user's task statement, it wins over the agent's goal, plan, "
         "and obligations: a plan that omits or contradicts a stated requirement is a discrepancy, "
@@ -783,6 +798,10 @@ FINDING_KIND_GLOSSARY: Final[dict[str, str]] = {
     ),
     "task_requirement_unmet": (
         "a requirement stated in the packet is not satisfied by the work shown"
+    ),
+    "agent_criterion_unmet": (
+        "a probe the agent itself chose beyond the task's stated scope fails: the agent's own "
+        "criterion, which it may fix or narrow with a reason, never a task requirement"
     ),
 }
 

@@ -5399,6 +5399,7 @@ def _validate_event_schema_payload(
         has_new_kind = payload.kind in {
             FindingKind.CODE_DEFECT,
             FindingKind.TASK_REQUIREMENT_UNMET,
+            FindingKind.AGENT_CRITERION_UNMET,
         }
         if has_snippet or has_new_kind:
             if schema.version != FINDING_SNIPPET_EVENT_SCHEMA_VERSION:

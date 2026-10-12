@@ -54,6 +54,7 @@ _RESEARCH_EVIDENCE_KINDS = frozenset(
         # The verifying-reviewer kinds (#906) are owned by the research-evidence pack identity.
         FindingKind.CODE_DEFECT,
         FindingKind.TASK_REQUIREMENT_UNMET,
+        FindingKind.AGENT_CRITERION_UNMET,
     }
 )
 

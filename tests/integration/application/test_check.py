@@ -123,6 +123,22 @@ _WRITER = "wri_30000000-0000-4000-8000-000000000001"
 _REQUEST = "req_30000000-0000-4000-8000-000000000001"
 
 
+@pytest.fixture(autouse=True)
+def work_has_begun(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These cases exercise the review path, so the work has begun in every frozen case.
+
+    Issue #1046 defers the AI-powered review until the first material edit; that decision is
+    locked by ``tests/unit/application/test_tb4n4_review_timing.py`` and
+    ``tests/integration/application/test_tb4n4_review_before_first_edit.py``. The synthetic cases
+    here carry no edit action, so without this every review below would be deferred.
+    """
+
+    def edited(*_args: object) -> bool:
+        return True
+
+    monkeypatch.setattr(check_module, "material_edit_recorded", edited)
+
+
 class _Ids:
     def __init__(self) -> None:
         self.count = 0

@@ -223,7 +223,22 @@ async def _session(
                         },
                         "artifact_refs": [],
                         "evidence_refs": [],
-                    }
+                    },
+                    # Issue #1046: no AI-powered review runs before the first material edit, so
+                    # the dialogue starts once the work has begun.
+                    {
+                        "event_id": protocol_id("evt_", seed + 6),
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-09-28T12:00:00.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "action_id": protocol_id("act_", seed + 7),
+                            "action_kind": "edit",
+                            "description": "Changed the stencil kernel.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
                 ],
             }
         )

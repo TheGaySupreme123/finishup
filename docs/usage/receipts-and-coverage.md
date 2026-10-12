@@ -92,6 +92,11 @@ When you fall back to `deterministic_only` because an AI-powered review attempt 
 unavailable, that earlier gap is carried forward next to `semantic_review_not_requested`, so the
 receipt records that the environment refused rather than that the review was never asked for.
 
+A check you run before your first edit (nothing changed yet, and not the closing review) never
+calls the reviewer, whatever its mode: it runs the local plan checks, sends nothing, and records
+`semantic_review_deferred_before_first_edit`. The next check after you start changing the work
+reviews as configured, and the closing review always runs.
+
 ## Prose the reviewer will not see whole
 
 Publish accepts up to 8192 bytes of prose per field. One AI-powered review case item carries at most
@@ -299,6 +304,19 @@ Two more things decide what the receipt will say, and status tells you before yo
   then lists it with the requirements you acknowledged as not done and reads
   `unresolved_findings_remain`, exactly like any other requirement left undone. While the request is
   unanswered, the check's next step is `disclose_limitations` when it is all that is left.
+- **A criterion you set yourself.** When the only work a finding cites is your own probe beyond the
+  task's stated scope (your own stress sizes or configurations, while the task's own sample or
+  verifier passes), the finding is `agent_criterion_unmet`, not a task requirement. You may fix it,
+  or narrow the criterion by answering `acknowledged` with the reason: the receipt then lists it as
+  a disclosed limitation and reads at best `insufficient_coverage`; it never blocks.
+
+While the work is in progress, the reviewer judges incomplete work only (something marked done that
+is not, verification you planned and did not run, a missing or emptied output, a claim the record
+does not show, an early stop). A correctness concern it raises then is an advisory note in the
+review summary, not a finding. The closing review judges the work against the task in full. A
+reviewer ruling that a finding is fixed, citing material you recorded after it, resolves it even when
+the check records facts about the environment (verification run only as root, installs into a
+private environment); those stay disclosed on the receipt.
 
 Before you ask for a receipt, `closure_readiness.predicted_receipt` names the conclusion it would
 carry and why. The receipt carries the same reasons (`conclusion_basis`) and opens its Summary with

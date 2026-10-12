@@ -373,6 +373,18 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "semantic_restatements_suppressed",
         ),
     ),
+    # Issue #1042: reviewer challenges calling work "never attempted" during a routine review, or
+    # about Yoetz's own capture or process state. A new code, disclosed from the start: it records what
+    # the check declined to mint, never a limit on what the review saw.
+    _Family(
+        rule="G5d",
+        family="review_dialogue_disclosure",
+        readiness="S",
+        d_route="D",
+        review_route="D",
+        changed=True,
+        codes=("semantic_process_state_filtered",),
+    ),
     _Family(
         rule="G6",
         family="privacy_redaction",
@@ -440,6 +452,7 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "semantic_provider_input_manifest_parse_failed",
             "semantic_provider_input_manifest_recovery_failed",
             "semantic_review_context_withheld",
+            "semantic_review_deferred_before_first_edit",
             "semantic_review_item_withheld",
             "semantic_review_skipped_insufficient_packet",
             "task_statement_not_authorized",
@@ -768,6 +781,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "semantic_packet_insufficient",
         "semantic_prior_findings_over_limit",
         "semantic_prior_verdicts_unsupported",
+        "semantic_process_state_filtered",
         "semantic_provider_input_manifest_invalid",
         "semantic_provider_input_manifest_mismatch",
         "semantic_provider_input_manifest_missing",
@@ -778,6 +792,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "semantic_restatements_suppressed",
         "semantic_review_context_withheld",
         "semantic_review_credential_heuristic_disabled",
+        "semantic_review_deferred_before_first_edit",
         "semantic_review_item_withheld",
         "semantic_review_not_configured",
         "semantic_review_not_requested",

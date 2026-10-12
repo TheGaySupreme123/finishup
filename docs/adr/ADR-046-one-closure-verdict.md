@@ -382,3 +382,14 @@ receipt in three formats, for each tb4n3 shape and its controls);
 `tests/property/test_closure_verdict_properties.py`;
 `tests/integration/application/test_closure_basis_cost.py`;
 `tests/conformance/honesty/test_gap_classification_completeness.py`.
+
+## Amendment 2026-10-12 (tb4n4, issues #1042, #1043, #1046)
+
+Two recorded gap codes join the table in place on the unreleased classification `"7"` (215 recorded
+codes plus 3 readiness-only rows): `semantic_process_state_filtered` (G5d, disclosed on both routes,
+tolerated by both absence proofs; listed as a changed row because it never bounded) and
+`semantic_review_deferred_before_first_edit` (G7, standing and bounding on both routes, like any
+missing review). The finding kind `agent_criterion_unmet` reads through the existing limitation
+bases (`limitation_requested`, `limitation_disclosed`, `limitation_acknowledged_not_done`); its
+`limitation_requested` row offers `acknowledge` and `repair`. No basis, effect or table row changed
+meaning. Decisions and predicates: ADR-040 amendment of 2026-10-12.

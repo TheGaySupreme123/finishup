@@ -95,6 +95,7 @@ _REVIEW_KINDS: Final = frozenset(
         "weak_or_stale_response",
         "code_defect",
         "task_requirement_unmet",
+        "agent_criterion_unmet",
     }
 )
 # A validation location pointer as ``yoetz.mcp.errors`` builds it: at most eight frozen
@@ -1389,6 +1390,18 @@ def _check_lead_variants(
         and status == "not_requested"
         and reason == "deterministic_mode"
     )
+    if status == "not_requested" and (
+        "semantic_review_deferred_before_first_edit" in _safe_gap_codes(source)
+    ):
+        # Issue #1046: a pre-work check ran the local plan checks only; nothing was sent.
+        return (
+            "AI-powered review deferred until the first material edit (no edit is recorded "
+            "yet; the next check after one reviews, and the closing review always runs); "
+            f"local plan check verdict: {verdict}; {counts}",
+            "AI-powered review deferred until the first edit; local plan check verdict: "
+            f"{verdict}; {counts}",
+            f"AI-powered review deferred; local check verdict: {verdict};",
+        )
     if status == "not_requested" and (
         "semantic_review_skipped_insufficient_packet" in _safe_gap_codes(source)
     ):

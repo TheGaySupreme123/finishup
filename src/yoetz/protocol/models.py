@@ -1092,6 +1092,7 @@ type FindingKindWire = Literal[
     "weak_or_stale_response",
     "code_defect",
     "task_requirement_unmet",
+    "agent_criterion_unmet",
 ]
 
 type ProviderFindingKindWire = Literal[
@@ -1111,6 +1112,7 @@ type ProviderFindingKindWire = Literal[
     "weak_or_stale_response",
     "code_defect",
     "task_requirement_unmet",
+    "agent_criterion_unmet",
 ]
 
 type SafeDetailPrimitive = (
@@ -1344,6 +1346,7 @@ _CHILD_FINDING_TRAITS: Final[Mapping[str, tuple[int, bool]]] = MappingProxyType(
         "coordination_overlap": (2, True),
         "code_defect": (1, True),
         "task_requirement_unmet": (1, True),
+        "agent_criterion_unmet": (2, True),
     }
 )
 
@@ -1370,6 +1373,7 @@ class ChildFindingSnapshotModel(_ClosedModel):
         "weak_or_stale_response",
         "code_defect",
         "task_requirement_unmet",
+        "agent_criterion_unmet",
     ]
     origin: Literal["deterministic", "semantic_model_derived"]
     priority: Annotated[int, Field(ge=1, le=3)]
@@ -3061,6 +3065,7 @@ class CheckProjectedFindingModel(_ClosedModel):
         "weak_or_stale_response",
         "code_defect",
         "task_requirement_unmet",
+        "agent_criterion_unmet",
     ]
     origin: Literal["deterministic", "semantic_model_derived"]
     priority: Annotated[int, Field(ge=1, le=3)]

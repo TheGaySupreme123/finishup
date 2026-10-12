@@ -539,7 +539,11 @@ def finding_closure(
             state,
             finding,
             "limitation_requested",
-            ("acknowledge",),
+            # Issue #1043: the agent's own criterion may also be fixed (a later check proves it
+            # absent); narrowing it with a reason is the disclosure.
+            ("acknowledge", "repair")
+            if finding.kind is FindingKind.AGENT_CRITERION_UNMET
+            else ("acknowledge",),
             since=None,
             sources=(),
         )

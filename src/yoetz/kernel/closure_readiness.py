@@ -139,7 +139,10 @@ __all__ = [
 # agent-actionable readiness token ``finding_rejection_awaiting_ruling`` was added. The standing
 # disclosures ``planned_verification_matched_by_prefix`` and
 # ``declared_output_not_reviewable`` were added and ``declared_output_emptied`` became a path-keyed
-# fact with provenance (tb4n3 RC-5, issue #1028, ADR-045).
+# fact with provenance (tb4n3 RC-5, issue #1028, ADR-045). Still unreleased "7" (tb4n4, ADR-040
+# amendment of 2026-10-12): the standing disclosure ``semantic_process_state_filtered`` (issue
+# #1042) and the standing limit ``semantic_review_deferred_before_first_edit`` (issue #1046) were
+# added.
 GAP_CLASSIFICATION_VERSION: Final = "7"
 # Issue #1020 (ADR-040): a current AI-powered finding the reviewer repeated over the agent's
 # reasoned rejection without newer material. A standing disagreement; never agent work.

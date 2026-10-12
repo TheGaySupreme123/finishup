@@ -1,7 +1,10 @@
 """One table of what each gap code does to a receipt (tb4n3 RC-3, issue #1026, ADR-046).
 
-The 178 unchanged rows must keep today's behaviour under both routes; the 35 changed rows are
+The 179 unchanged rows must keep today's behaviour under both routes; the 36 changed rows are
 named here, each with its rule, so a reviewer reads exactly which codes the round re-labels.
+tb4n4 added two codes: ``semantic_review_deferred_before_first_edit`` (issue #1046) bounds like
+every unknown code did at base, so it is an unchanged row; ``semantic_process_state_filtered``
+(issue #1042) is disclosed from the start, so it is listed as changed.
 """
 
 from __future__ import annotations
@@ -103,6 +106,7 @@ _CHANGED = frozenset(
         "semantic_prior_findings_over_limit",
         "semantic_prior_verdicts_unsupported",
         "semantic_restatements_suppressed",
+        "semantic_process_state_filtered",
         "semantic_review_credential_heuristic_disabled",
         "semantic_review_value_redacted",
         "semantic_review_snippet_invalid",
@@ -117,7 +121,7 @@ _CARRIED = frozenset(_GUARDED_AT_BASE)
 
 def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group() -> None:
     assert set(GAP_EFFECT_TABLE) == set(GAP_CLASSIFICATION)
-    assert len(GAP_EFFECT_TABLE) == 216  # the 213 recorded codes + 3 readiness-only finding tokens
+    assert len(GAP_EFFECT_TABLE) == 218  # the 215 recorded codes + 3 readiness-only finding tokens
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
@@ -126,7 +130,7 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
 def test_exactly_the_documented_rows_are_marked_changed() -> None:
     changed = {code for code, row in GAP_EFFECT_TABLE.items() if row.changed}
     assert changed == _CHANGED
-    assert len(changed) == 35
+    assert len(changed) == 36
 
 
 @pytest.mark.parametrize("route_requires_review", [False, True])

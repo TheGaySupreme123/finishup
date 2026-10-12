@@ -4103,7 +4103,12 @@ class MemoryLedgerAdapter:
                 FINDING_SNIPPET_EVENT_SCHEMA_VERSION
                 if type(payload) is FindingRecordedPayload
                 and (
-                    payload.kind in {FindingKind.CODE_DEFECT, FindingKind.TASK_REQUIREMENT_UNMET}
+                    payload.kind
+                    in {
+                        FindingKind.CODE_DEFECT,
+                        FindingKind.TASK_REQUIREMENT_UNMET,
+                        FindingKind.AGENT_CRITERION_UNMET,
+                    }
                     or (payload.challenge is not None and payload.challenge.snippet is not None)
                 )
                 else FINDING_EVENT_SCHEMA_VERSION

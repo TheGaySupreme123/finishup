@@ -294,3 +294,17 @@ amendment): it is the agent's final reasoned word, and the request has no other 
 not met, so the request is an unmet requirement (ADR-040 amendment of 2026-10-12).
 Host decision: the change is in the shared kernel, respond and MCP paths, so Codex, Claude Code and
 Cursor behave identically; no host gap.
+
+## Amendment (2026-10-12, issue #1046, tb4n4): a cited `fixed` ruling outranks environment facts
+
+tb4n4 recorded 39 `self_verified` answers in 24 of 61 tasks and 16 `resolution_attempt_required`
+rounds after the reviewer had already ruled the finding `fixed`: environment facts on the check
+(`verification_only_as_root` in container tasks) kept the AI-powered absence proof from qualifying,
+so the agent self-verified work the reviewer had accepted. An admitted `fixed` ruling (which must cite
+evidence or a result recorded after the finding) now tolerates every environment task fact, not only
+`write_outside_workspace` and `obligation_blocked_outside_agent_control` (#1000):
+`verification_only_as_root`, `install_into_private_env`, `install_into_yoetz_runtime` and the
+planned-verification observer heuristics. The finding is `verified_resolved`; the facts stay on the
+receipt and the resolution explanation names them. Facts about the deliverable, agent-actionable
+facts and a silent review keep blocking, and the self-verification eligibility rule is unchanged.
+See the ADR-040 amendment of 2026-10-12.

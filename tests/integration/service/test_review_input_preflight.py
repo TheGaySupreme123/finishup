@@ -112,6 +112,22 @@ from yoetz.service.vault import provider_credential_profile_binding
 
 pytestmark = pytest.mark.anyio
 
+
+@pytest.fixture(autouse=True)
+def work_has_begun(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These cases exercise the review input preflight, which only a dispatching review reaches.
+
+    Issue #1046 defers the AI-powered review (and with it this preflight) until the first material
+    edit; that decision is locked by ``tests/unit/application/test_tb4n4_review_timing.py``. The
+    sessions here record no edit, so without this every check below would be deferred.
+    """
+
+    def edited(*_args: object) -> bool:
+        return True
+
+    monkeypatch.setattr(check_module, "material_edit_recorded", edited)
+
+
 _STATEMENT_EVENT = event_id("evt_53000000-0000-4000-8000-000000000953")
 _STATEMENT = "Review the requested change against the user's complete specification."
 _Privacy = non_dispatch._Privacy  # pyright: ignore[reportPrivateUsage]

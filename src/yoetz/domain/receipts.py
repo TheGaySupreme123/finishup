@@ -142,6 +142,7 @@ __all__ = [
     "SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP",
     "SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP",
     "SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP",
+    "SEMANTIC_PROCESS_STATE_FILTERED_GAP",
     "SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP",
     "SEMANTIC_CHALLENGES_REJECTED_GAP",
     "SEMANTIC_REVIEW_SNIPPET_INVALID_GAP",
@@ -150,6 +151,7 @@ __all__ = [
     "SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP",
     "SEMANTIC_MISSING_ITEMS_REJECTED_GAP",
     "SEMANTIC_MISSING_NON_CONVERGENT_GAP",
+    "SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP",
     "SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP",
     "SEMANTIC_MISSING_UNAVAILABLE_GAP",
     "SEMANTIC_MISSING_YOETZ_LIMIT_GAP",
@@ -283,6 +285,12 @@ SEMANTIC_MISSING_NON_CONVERGENT_GAP: Final = "semantic_missing_non_convergent"
 SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
     "semantic_review_skipped_insufficient_packet"
 )
+# Issue #1046 (tb4n4: 18 of 61 semantic-arm tasks reviewed the plan before any work): a routine
+# check with no material edit recorded and no workspace change observed runs the local plan checks
+# only; the AI-powered review waits for the first edit, and the closing review always runs. Nothing
+# was composed or sent. Like the skipped round, never agent work in itself; the next check after an
+# edit reviews as configured.
+SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP: Final = "semantic_review_deferred_before_first_edit"
 # A successful provider call can still lose the exact post-admission input manifest.  Keep the
 # failure reason closed and coverage-bounded so a composed manifest is never presented as what the
 # provider received.  These are internal provenance facts surfaced as ordinary receipt gaps.
@@ -328,6 +336,12 @@ SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP: Final = "semantic_prior_verdicts_unsupp
 # Issue #905: a challenge that restated a recorded AI-powered finding (same kind, subjects within
 # that finding's, nothing recorded since) was "seen again, suppressed" instead of minted twice.
 SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP: Final = "semantic_restatements_suppressed"
+# Issue #1042: reviewer challenges the check did not record as findings because they called work
+# "never attempted" during a routine review (``routine_completeness``, ADR-040 section 5) or were
+# about Yoetz's own capture or process state (``yoetz_process_state``). A disclosure of the review
+# dialogue, never a limit on what the review saw: it does not bound the receipt and does not veto
+# an absence proof.
+SEMANTIC_PROCESS_STATE_FILTERED_GAP: Final = "semantic_process_state_filtered"
 # The check-time change (ADR-031) is the service's own read of the task's repository when a check
 # runs. Each code names one limit on what that single object could show the reviewer. None of
 # them describes an input of a local policy pack, so they bound the review and the receipt only.
