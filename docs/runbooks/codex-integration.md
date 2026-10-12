@@ -1863,7 +1863,8 @@ to its declared deliverables or requested commands (`evidence_off_declared_items
 not). Use it instead of a series of `status` reads where Codex admits `check`; no status read or
 `dry_run` is required before `publish_work`. The startup read is the operating card
 (`agent-instructions.md`); the larger pages are read on demand. ADR-047. The MCP `check` tool
-(including code mode, with the ordinary `check` cell deadline) and `yoetz check` carry the mode.
+(including code mode, where an inspection takes the 30,000 ms `status` deadline) and `yoetz check`
+carry the mode.
 `apply_patch` edits are listed by write class, never by path.
 
 Host approval is per tool, not per mode. An inspection is a call of the MCP `check` tool, whose
@@ -2410,7 +2411,8 @@ The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, 
 common 60-second host MCP tool limit; `start`, `publish_work` and `status` keep 30 seconds and
 `check` keeps 300 seconds (a `check` with `mode: inspect` is a read and takes the `status`
 deadline). Set `YOETZ_MCP_DEADLINE_MS_<TOOL>` (one tool) or
-`YOETZ_MCP_DEADLINE_MS` (every tool except `check`) in the MCP server environment to change them;
+`YOETZ_MCP_DEADLINE_MS` (every tool except `check`; an inspection follows the `status` variables) in
+the MCP server environment to change them;
 values are milliseconds, clamped to 1,000-900,000. Keep them below the host's own tool timeout.
 A timeout may follow a committed write. For `publish_work`, `respond` and `receipt` the bridge
 checks `status view=operation` once and, when the write already completed, returns its stored

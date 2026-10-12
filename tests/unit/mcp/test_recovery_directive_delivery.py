@@ -275,8 +275,11 @@ class TestAnInspectionFailsAsARead:
         finally:
             await bridge.close_bridge_runtime(runtime)
 
-        details = cast(dict[str, object], _error_of(result)["safe_details"])
+        error = _error_of(result)
+        details = cast(dict[str, object], error["safe_details"])
         assert details == {"continuation": token, "reason_code": "bridge_invoke_failed"}
+        # The remedy never names an inspection among the writes to replay (PR #1054 review).
+        assert "check other than an inspection" in str(error["message"])
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(

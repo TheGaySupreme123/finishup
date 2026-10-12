@@ -1013,7 +1013,7 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
         ),
         "bridge_invoke_failed": (
             "The bridge failed while calling the local service. A write (start, publish_work, "
-            "check, respond, receipt) may or may not be recorded: replay the same request_id "
+            "check other than an inspection, respond, receipt) may or may not be recorded: replay the same request_id "
             "(never a new one); replay is idempotent and returns the stored result when the "
             "write committed. A read changed nothing: repeat it. Report the correlation_id."
         ),
@@ -1025,13 +1025,13 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
         ),
         "bridge_result_wire_failed": (
             "The bridge could not serialize this call's result. A write (start, publish_work, "
-            "check, respond, receipt) is recorded: replaying its request_id fails the same way, "
+            "check other than an inspection, respond, receipt) is recorded: replaying its request_id fails the same way, "
             "so read status view=operation and view=compact, and never resend it under a new "
             "request_id. A read or dry run changed nothing: repeat it. Report the correlation_id."
         ),
         "bridge_result_validate_failed": (
             "This call's result did not match its response schema. A write (start, publish_work, "
-            "check, respond, receipt) is recorded: replaying its request_id fails the same way, "
+            "check other than an inspection, respond, receipt) is recorded: replaying its request_id fails the same way, "
             "so read status view=operation and view=compact, and never resend it under a new "
             "request_id. A read or dry run changed nothing: repeat it. Report the correlation_id."
         ),

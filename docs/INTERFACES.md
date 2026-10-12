@@ -2956,7 +2956,8 @@ ADR-047); these use the existing private `deadline_ms` envelope field and do not
 change the public workflow-tool schemas. The bridge environment may override them in integer
 milliseconds, clamped to 1,000-900,000: `YOETZ_MCP_DEADLINE_MS_<TOOL>` (for example
 `YOETZ_MCP_DEADLINE_MS_RECEIPT`) sets one tool, and `YOETZ_MCP_DEADLINE_MS` sets every tool except
-`check`; an unparsable value keeps the default. Raising a deadline above the host's own MCP tool
+`check` (an inspection follows `YOETZ_MCP_DEADLINE_MS_STATUS` and the global variable, never
+`YOETZ_MCP_DEADLINE_MS_CHECK`); an unparsable value keeps the default. Raising a deadline above the host's own MCP tool
 timeout only lets the host give up first. A timed-out write has an unknown outcome: the bridge
 must preserve its retryable failure shape, say that it may already have committed, and direct the
 caller to retry with the same `request_id` (and operation status where applicable). A timed-out
