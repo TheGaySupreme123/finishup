@@ -358,8 +358,9 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    point-in-time, after the change proved stable. Inputs are stored in the same encrypted
    check-change object (optional `inputs`, so every object without them keeps its bytes), redacted
    one by one with the same detector (one that cannot be fully redacted is dropped; any redaction
-   reports `check_time_change_redacted`), frozen with the job, and never part of the change text or
-   the shown-file record. Nothing about a skipped candidate is returned or recorded.
+   or dropped input reports `check_time_change_redacted`, even when the change text needed none),
+   frozen with the job, and never part of the change text or the shown-file record. Nothing about
+   a skipped candidate is returned or recorded.
 5. **In the packet.** Each input is one `repository_excerpt` item (`task-input-NN`, source kind
    `repository`, source ref `task-input`), linked to the statement event (else to the change's
    links), labelled as a task input the service read, unchanged since the task started and not the

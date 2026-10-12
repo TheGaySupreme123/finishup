@@ -206,8 +206,57 @@ def test_task_input_files_are_redacted_one_by_one_and_dropped_when_they_cannot_b
     spec, rules = redacted.inputs
     assert spec.redacted and b"a8F3kL9qZx7Pw2Rt" not in spec.text and b"[REDACTED]" in spec.text
     assert rules == capture.inputs[1]
-    # The change itself was clean, so it is not marked redacted.
-    assert redacted.text == capture.text and not redacted.redacted
+    # The change itself was clean and stays as it was, but review content was still altered, so
+    # the capture discloses it (``check_time_change_redacted``; review of #1045).
+    assert redacted.text == capture.text and redacted.redacted
+    assert not redacted.truncated
+
+
+def test_a_task_input_withheld_whole_is_disclosed_as_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of #1045: an input that cannot be fully redacted is dropped, and that is said."""
+
+    from yoetz.ports.change_capture import TaskInputFile
+
+    original = check_change_module.redact_sensitive_content
+
+    def never_clean_for_the_input(data: bytes) -> tuple[bytes, bool]:
+        if b"WITHHELD_INPUT_MARKER" in data:
+            return data + b".", True
+        return original(data)
+
+    monkeypatch.setattr(check_change_module, "redact_sensitive_content", never_clean_for_the_input)
+    capture = CheckChangeCapture(
+        base="task_start",
+        text=b"diff --git a/a.py b/a.py\n+print('kept')\n",
+        tracked_files=1,
+        untracked_files=0,
+        omitted_files=0,
+        truncated=False,
+        inputs=(TaskInputFile("spec.md", b"WITHHELD_INPUT_MARKER\n", 22),),
+    )
+
+    redacted = _redacted(capture)
+
+    assert redacted.inputs == ()
+    assert redacted.text == capture.text and redacted.redacted
+
+
+def test_clean_task_inputs_leave_the_capture_unmarked() -> None:
+    from yoetz.ports.change_capture import TaskInputFile
+
+    capture = CheckChangeCapture(
+        base="task_start",
+        text=b"diff --git a/a.py b/a.py\n+print('kept')\n",
+        tracked_files=1,
+        untracked_files=0,
+        omitted_files=0,
+        truncated=False,
+        inputs=(TaskInputFile("rules.md", b"# Rules\nno secrets here\n", 24),),
+    )
+
+    assert _redacted(capture) == capture
 
 
 def test_task_inputs_reach_the_port_only_when_asked_for() -> None:

@@ -1424,7 +1424,8 @@ when that recipe selected the change:
   committed before it is missing;
 - `check_time_change_truncated` — a changed file (named in the change's header), a part of the
   change, or untracked names beyond the listing bound did not reach the reviewer;
-- `check_time_change_redacted` — credential-like spans were replaced before storage and review.
+- `check_time_change_redacted` — credential-like spans were replaced before storage and review,
+  in the change or in a task input file it carried, or such an input was withheld whole;
 - `check_time_change_path_unrepresentable` — the check's local, metadata-only read of changed
   paths skipped at least one path whose name holds a carriage return or line feed (issue #1019).
   The read stays usable: each skipped path counts as omitted, the listing is marked truncated, and

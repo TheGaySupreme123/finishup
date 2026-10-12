@@ -270,11 +270,12 @@ class CheckChangeCapture:
 
     ``truncated`` is set whenever a changed file or any of its bytes is missing from ``text``; the
     header names each file that is not shown. ``redacted`` is set by the service after it replaced
-    credential-like spans, never by the adapter. ``base_commit`` is the object id the change was
-    taken against (the task-start commit, HEAD, or the empty tree); it keys the per-file
-    commitments a completed review records, and is empty only for an object written before it
-    existed. ``inputs`` are the read-only task input files the same read carried (issue #1045);
-    they are not part of the change and never enter ``text``.
+    credential-like spans in ``text`` or in a task input file, or withheld an input it could not
+    redact, never by the adapter. ``base_commit`` is the object id the change was taken against (the
+    task-start commit, HEAD, or the empty tree); it keys the per-file commitments a completed review
+    records, and is empty only for an object written before it existed. ``inputs`` are the read-only
+    task input files the same read carried (issue #1045); they are not part of the change and never
+    enter ``text``.
     """
 
     base: ChangeBaseKind
