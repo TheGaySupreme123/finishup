@@ -97,9 +97,10 @@ calls the reviewer, whatever its mode: it runs the local plan checks, sends noth
 that is a disclosure and does not lower the receipt's conclusion, just as a local-only check would
 not; where review is required, the receipt stays at `insufficient_coverage` until a review runs.
 The next check after you start changing the work reviews as configured, and the closing review is
-never deferred: after a deferred check, the closure checklist lists `closing_review_required` until
-you run `check` with `final_review: true`, so work that never needs an edit is still reviewed
-before it closes.
+never deferred. Where review is required, the closure checklist lists `closing_review_required`
+after a deferred check until you run `check` with `final_review: true`, so work that never needs an
+edit is still reviewed before it closes; where review is optional, a deferred check asks for
+nothing more than a local-only check would.
 
 ## Prose the reviewer will not see whole
 

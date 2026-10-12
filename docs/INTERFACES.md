@@ -4302,10 +4302,12 @@ check recorded `semantic_route_required: false`, so the check, status and receip
 required and not current. The deferral never applies to the closing review (`final_review`, or any
 completion claim). A resumed check keeps its decision: one already in `semantic_wait` keeps its
 review, and one resumed in `ready_to_finalize` reads no fresh capture (a review job its operation
-owns means it reviewed; otherwise the frozen prefix decides). Closure
-readiness counts a deferred check as a use of AI-powered review, so it lists
-`closing_review_required` after a deferral on every route; while the latest check deferred, an
-actionable `semantic_review_not_requested` does not hide it (a routine check would defer again).
+owns means it reviewed; otherwise the frozen prefix decides). Where the deferred check's route
+requires review, closure readiness counts it as a use of AI-powered review, so it lists
+`closing_review_required`, and while the latest check so deferred an actionable
+`semantic_review_not_requested` does not hide it (a routine check would defer again). Where the
+check recorded `semantic_route_required: false`, a deferral asks for nothing, like a
+`deterministic_only` check on that route.
 The older stopped-round skip (`semantic_review_skipped_insufficient_packet`,
 `kernel/review_round.py`) is a separate rule the deferral does not change: it can still skip a
 closing review that is not `semantic_required`.
@@ -7011,10 +7013,10 @@ while a check holds the session frontier (read at the head through the ledger's
 `check_not_applicable` from the receipt applicability rule (an observed deliverable or workspace edit
 after the check counts; Yoetz's own calls, read-only reads and host bookkeeping do not,
 `kernel/later_material`, tb4n3 RC-6), then `closing_review_required` (issue
-#976: AI-powered review is required on the route, or completed or was deferred before the first
-material edit on the task (#1046), and no completed final-phase review, or undeliverable review
-attempt, is current since the last material change; an actionable `semantic_review_not_requested`
-takes its place unless the latest check deferred the review),
+#976: AI-powered review is required on the route, or completed on the task, or was deferred before
+the first material edit by a check whose route requires it (#1046), and no completed final-phase
+review, or undeliverable review attempt, is current since the last material change; an actionable
+`semantic_review_not_requested` takes its place unless the latest check so deferred the review),
 then every actionable gap code and
 `unclassified_gap:<code>` for a base code the running build does not know.
 `standing_limitations` lists the classified standing base codes (plus

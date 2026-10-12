@@ -9,15 +9,17 @@ and two things went wrong there:
   (``insufficient_coverage``) while status read "nothing further to do", although the same ledger
   checked with ``deterministic_only`` reads clean and the ``semantic_review_not_requested`` it
   rides with is only disclosed there (ADR-046 rule G1);
-* no surface asked for the closing review: on that route it is asked for only once a review was
-  used, and on a route that requires review the deferred check's actionable
+* on a route that requires review the deferred check's actionable
   ``semantic_review_not_requested`` suppressed ``closing_review_required``, the one review token
   the Stop gate continues on. A routine check just defers again, so the agent stopped unreviewed.
 
 Now the deferral follows the recorded route like ``semantic_review_not_requested`` (gap table G7:
-disclosed where the route did not require review, bounding where it did), and readiness asks for
-the closing review after a deferral on both routes. Check, status in every view, ``closure_prepare``,
-the Stop gate and the receipt in three formats agree (``assert_surfaces_agree``).
+disclosed where the route did not require review, bounding where it did). Where the deferred
+check's route requires review, readiness asks for the closing review; where it does not, the
+deferral asks for nothing, exactly like the ``deterministic_only`` control, so an unreachable
+optional reviewer can never keep the closing review demanded. Check, status in every view,
+``closure_prepare``, the Stop gate and the receipt in three formats agree
+(``assert_surfaces_agree``).
 """
 
 # pyright: reportPrivateUsage=false
@@ -52,7 +54,7 @@ from yoetz.domain.receipts import (
 )
 from yoetz.domain.task_fact_tokens import STOP_GATE_TOKENS
 from yoetz.domain.values import JsonObject
-from yoetz.protocol.models import CheckRequest
+from yoetz.protocol.models import CheckRequest, SemanticReason, SemanticStatus
 
 pytestmark = pytest.mark.anyio
 
@@ -108,12 +110,34 @@ async def _check(run: _Run, mode: str, *, final_review: bool = False) -> CheckCo
     return result
 
 
+@dataclass
+class _Unreachable:
+    """A configured reviewer that never answers: its credential is missing."""
+
+    calls: list[bool] = field(default_factory=lambda: [])
+
+    async def __call__(
+        self,
+        frozen: object,
+        findings: object,
+        runtime: object | None = None,
+        lineage_evaluation: object | None = None,
+        require_complete_specification: bool = False,
+        final_review: bool = False,
+    ) -> object:
+        del frozen, findings, runtime, lineage_evaluation, require_complete_specification
+        self.calls.append(final_review)
+        return FinalSemanticEvaluation(
+            SemanticStatus.UNAVAILABLE, SemanticReason.CREDENTIAL_UNAVAILABLE
+        )
+
+
 async def _investigation(
-    seed: int, policy: Literal["optional", "required"]
-) -> tuple[_Run, _Reviewer]:
+    seed: int, policy: Literal["optional", "required"], reviewer: Any = None
+) -> tuple[_Run, Any]:
     """A task whose work is not an edit: one requirement, answered on recorded evidence."""
 
-    reviewer = _Reviewer()
+    reviewer = _Reviewer() if reviewer is None else reviewer
     app, runtime, _ = h._build_app(seed_offset=seed, semantic=policy, semantic_evaluator=reviewer)
     started = await app.start(start_request(seed, title=f"investigation {seed}"))
     run = _Run(app, runtime, started)
@@ -157,6 +181,16 @@ async def test_a_deferral_where_review_is_optional_reads_like_a_local_only_check
 
     gathered = await _surfaces(run)
     assert_surfaces_agree(gathered, conclusion=_CLEAN, counts=_NO_FINDINGS, check=deferred)
+    # Disclosed and nothing asked for, like the local-only control: no closing review either.
+    readiness = gathered.status["compact"].closure_readiness
+    assert (readiness.state, tuple(readiness.agent_actionable or ())) == (
+        "ready_with_limitations",
+        (),
+    )
+    assert _DEFERRED in tuple(readiness.standing_limitations or ())
+    assert _CLOSING not in _gate_items(gathered.status["compact"])
+    assert deferred.overall_next is not None
+    assert deferred.overall_next.status == readiness.state
     document = gathered.receipts["json"].document
     effects = {gap["code"]: gap["effect"] for gap in document["gaps"]}
     assert effects[_DEFERRED] == effects[SEMANTIC_REVIEW_NOT_REQUESTED_GAP] != "bounds"
@@ -168,18 +202,43 @@ async def test_a_deferral_where_review_is_optional_reads_like_a_local_only_check
     # The control: the same ledger checked local-only on the same route.
     control, _ = await _investigation(10_470, "optional")
     local = await _check(control, "deterministic_only")
-    assert_surfaces_agree(
-        await _surfaces(control), conclusion=_CLEAN, counts=_NO_FINDINGS, check=local
-    )
+    controlled = await _surfaces(control)
+    assert_surfaces_agree(controlled, conclusion=_CLEAN, counts=_NO_FINDINGS, check=local)
+    assert not controlled.status["compact"].closure_readiness.agent_actionable
 
 
-@pytest.mark.parametrize("policy", ["optional", "required"])
-async def test_a_task_whose_work_is_not_an_edit_is_asked_for_the_closing_review(
-    policy: Literal["optional", "required"],
-) -> None:
-    """After a deferral readiness and the Stop gate ask for the closing review, on both routes."""
+async def test_an_unreachable_optional_reviewer_never_traps_the_stop_gate_after_a_deferral() -> (
+    None
+):
+    """Review of #1046: a deferral where review is optional must not demand the closing review.
 
-    run, reviewer = await _investigation(10_480 + len(policy), policy)
+    Were it counted as a use of review there, an optional reviewer that cannot answer (missing
+    credential, provider timeout) would leave ``closing_review_required`` standing after every
+    ``final_review: true`` attempt (an unavailable review is neither current nor undeliverable),
+    and the Stop gate would re-ask at every frontier. It reads as the local-only control does.
+    """
+
+    run, reviewer = await _investigation(10_475, "optional", _Unreachable())
+    deferred = await _check(run, "semantic_if_configured")
+    assert _DEFERRED in deferred.coverage.known_gaps
+    control, _ = await _investigation(10_476, "optional", _Unreachable())
+    await _check(control, "deterministic_only")
+    for cell in (run, control):
+        for _attempt in range(2):
+            status = (await _surfaces(cell, receipts=False)).status["compact"]
+            readiness = status.closure_readiness
+            assert _CLOSING not in tuple(readiness.agent_actionable or ())
+            assert _CLOSING not in _gate_items(status)
+            assert readiness.state != "action_required"
+            closing = await _check(cell, "semantic_if_configured", final_review=True)
+            assert closing.semantic_status is SemanticStatus.UNAVAILABLE
+    assert reviewer.calls == [True, True]
+
+
+async def test_a_task_whose_work_is_not_an_edit_is_asked_for_the_closing_review() -> None:
+    """Where review is required, readiness and the Stop gate ask for the closing review."""
+
+    run, reviewer = await _investigation(10_481, "required")
     deferred = await _check(run, "semantic_if_configured")
     assert _DEFERRED in deferred.coverage.known_gaps
     # A second routine check before any edit defers again: only the closing review can help.
@@ -193,8 +252,8 @@ async def test_a_task_whose_work_is_not_an_edit_is_asked_for_the_closing_review(
     assert readiness.state == "action_required"
     actionable = tuple(readiness.agent_actionable or ())
     assert _CLOSING in actionable and _CLOSING in STOP_GATE_TOKENS
-    # Where review is required the missing review stays agent work beside it.
-    assert (SEMANTIC_REVIEW_NOT_REQUESTED_GAP in actionable) is (policy == "required")
+    # The missing review stays agent work beside it.
+    assert SEMANTIC_REVIEW_NOT_REQUESTED_GAP in actionable
     assert _CLOSING in _gate_items(status)
 
     closing = await _check(run, "semantic_if_configured", final_review=True)
@@ -206,6 +265,8 @@ async def test_a_task_whose_work_is_not_an_edit_is_asked_for_the_closing_review(
     assert readiness.state == "ready", readiness.agent_actionable
     assert _CLOSING not in _gate_items(after.status["compact"])
     assert_surfaces_agree(after, conclusion=_CLEAN, counts=_NO_FINDINGS, check=closing)
+    assert closing.overall_next is not None
+    assert closing.overall_next.status == readiness.state
 
 
 async def test_a_deferral_where_review_is_required_bounds_until_the_closing_review() -> None:
