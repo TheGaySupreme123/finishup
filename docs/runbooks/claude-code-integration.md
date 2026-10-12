@@ -1375,11 +1375,9 @@ admission refuses with `route_not_policy`) the permission mode decides; auto mod
 the tool name and the request JSON, never the descriptor. Decision: supported behind the `check`
 rule. A held inspection leaves nothing pending in Yoetz and no review to protect, so the agent reads
 `status` instead and continues; the review-hold rules do not apply to it (guidance `review.md`).
-Capability gap, owner issue #1048: the `PermissionDenied` hook matches the `check` names and skips
-its advisory only for `mode: deterministic_only`, so a denied inspection records
-`host_auto_review_denied` or `host_permission_rule_denied`, shows the user the AI-powered review
-notice, and, with a confirmed grant and a classifier verdict, spends the session's one retry offer
-on a call that asked for no review.
+The `PermissionDenied` hook skips its advisory for `mode: inspect` as it does for
+`mode: deterministic_only`: a denied inspection shows no AI-powered review notice and spends no
+retry offer.
 
 ### Bounded workflow recovery examples (#613)
 

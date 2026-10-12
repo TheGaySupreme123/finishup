@@ -510,8 +510,9 @@ GUIDANCE_RESOURCES: Final = (
         name="workflow.md",
         title="Yoetz cooperative workflow",
         description=(
-            "Read before the first start call. Task identity, material-work cadence, resume and "
-            "handoff behavior, and pointers to conditional review, setup, and recovery guidance."
+            "Read when resuming, before delegating, or when a result names it. Task identity, "
+            "material-work cadence, resume and handoff behavior, and pointers to conditional "
+            "review, setup, and recovery guidance."
         ),
         annotations=GuidanceResourceAnnotations(audience=("assistant",), priority=0.9),
     ),
@@ -521,8 +522,9 @@ GUIDANCE_RESOURCES: Final = (
         name="publication-policy.md",
         title="Yoetz publication policy",
         description=(
-            "Read before the first publish_work call. What is material enough to publish, how "
-            "large a batch should be, the sixteen event families, and what is never published."
+            "Read when a result or error names it, or an event shape is unclear. What is material "
+            "enough to publish, how large a batch should be, the sixteen event families, and "
+            "what is never published."
         ),
         annotations=GuidanceResourceAnnotations(audience=("assistant",), priority=0.8),
     ),
@@ -532,8 +534,9 @@ GUIDANCE_RESOURCES: Final = (
         name="coverage-and-receipts.md",
         title="Yoetz coverage and receipts",
         description=(
-            "Read before the first check call. The coverage vector, why a recorded finding stays "
-            "recorded, when to stop requesting AI-powered review, and how to word a conclusion."
+            "Read when a check needs more than the operating card. The coverage vector, why a "
+            "recorded finding stays recorded, when to stop requesting AI-powered review, and how "
+            "to word a conclusion."
         ),
         annotations=GuidanceResourceAnnotations(audience=("assistant",), priority=0.8),
     ),

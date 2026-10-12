@@ -1410,13 +1410,22 @@ def test_claude_ordinary_profile_keeps_denial_observation_and_returns_supported_
     assert len(raw.splitlines()) == 1
 
 
-def test_claude_local_only_check_does_not_get_a_semantic_retry_notice(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mode", ["deterministic_only", "inspect"])
+def test_claude_local_only_check_does_not_get_a_semantic_retry_notice(
+    tmp_path: Path, mode: str
+) -> None:
+    """A check that asks for no AI-powered review gets no review notice or retry offer.
+
+    ``inspect`` (#1048) is a read that runs no review either, so a denied inspection spends no
+    retry offer and shows no AI-powered review notice (PR #1054 review).
+    """
+
     output = io.BytesIO()
     payload: dict[str, JsonValue] = {
         "session_id": "local-check",
         "hook_event_name": "PermissionDenied",
         "tool_name": "mcp__yoetz__check",
-        "tool_input": {"mode": "deterministic_only"},
+        "tool_input": {"mode": mode},
         "reason": "[Rule]",
     }
     assert (

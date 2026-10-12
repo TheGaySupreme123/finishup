@@ -165,6 +165,7 @@ from yoetz.protocol.canonical import (
 )
 from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode
 from yoetz.protocol.ids import IdKind, is_valid_id
+from yoetz.protocol.recovery import READ_ONLY_CHECK_MODES
 
 if TYPE_CHECKING:
     from yoetz.adapters.integrations.codex_session_stream import CodexSessionStreamLocator
@@ -6830,9 +6831,11 @@ def _record_claude_permission_denied(
         _state=_state,
     )
     tool_input = payload.get("tool_input")
-    if isinstance(tool_input, Mapping) and tool_input.get("mode") == "deterministic_only":
-        # This call explicitly opts out of external review; a semantic grant says nothing
-        # about why the host held it. Leave the ordinary host approval path intact.
+    mode = tool_input.get("mode") if isinstance(tool_input, Mapping) else None
+    if mode == "deterministic_only" or (type(mode) is str and mode in READ_ONLY_CHECK_MODES):
+        # This call asks for no external review (a local-only check, or an inspection, #1048);
+        # a semantic grant says nothing about why the host held it. Leave the ordinary host
+        # approval path intact.
         return {}
     from yoetz.cli.hooks import resolve_session_workspace
     from yoetz.cli.host_hold_advisory import (

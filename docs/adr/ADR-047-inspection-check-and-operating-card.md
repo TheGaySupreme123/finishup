@@ -176,8 +176,9 @@ nothing pending in Yoetz, so guidance tells the agent to read `status` instead r
 for a held review. Where `check` cannot be admitted (on Codex, a policy route without a grant that
 permits external review) an inspection costs an approval that the `status` reads it replaces do
 not; a read-only advertisement would need a separate tool, which this ADR rejects, so the gap is
-recorded in the host runbooks with issue #1048 as its owner, beside Claude Code's `PermissionDenied`
-advisory, which does not yet tell an inspection from a reviewing check.
+recorded in the host runbooks with issue #1048 as its owner. Claude Code's `PermissionDenied`
+advisory skips a denied inspection as it does a `deterministic_only` check (no AI-powered review
+notice, no retry offer).
 
 ## Verification
 
