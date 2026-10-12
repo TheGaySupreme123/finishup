@@ -9198,8 +9198,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   and `nested_untracked` (`[[directory, complete, [[path, state], ...]], ...]`, each a
   `NestedUntrackedBaseline` for a `nested` directory, rows and paths in ascending order, written
   only when non-empty; an incomplete row names no file). Every listed file counts against one
-  4096-name, 256 KiB bound; a base without these keys keeps its bytes and reads as no snapshot,
-  `decode_task_change_base` rejects any other shape, and a `first_check` pin carries none. The
+  4096-name, 256 KiB bound; a base without these keys keeps its bytes and reads as no snapshot.
+  `decode_task_change_base` accepts only what the encoder writes (the three snapshot keys together
+  and not all empty, `nested_untracked` only beside them, never empty or null) and rejects any other
+  shape; a `first_check` pin carries none. The
   optional ledger seam `record_task_change_base(ref) -> bool` keeps
   the first one only (pointer in `bundle_meta` key `task_change_base`, object inventoried as a
   root); `load_task_change_base()` authenticates it. Attach and resume record nothing. A task with

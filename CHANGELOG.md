@@ -38,8 +38,10 @@ reverse-chronological released versions.
   repository or a submodule-style checkout), counted from the commit it had when the task started;
   one that cannot be read safely is named in the change header with the reason. Its untracked
   files are treated like yours (those already there when the task started and unchanged are left
-  out); when Yoetz could not list them whole at the task's start, they are named but their content
-  is never sent, because any of them may predate the task. Up to four files the task statement
+  out); when Yoetz could not list them whole at the task's start (for example, a repository created
+  during the task, one with no commit yet, one past the eighth, one a safety check refused, or one
+  whose untracked files did not fit), they are named but their content is never sent, because any
+  of them may predate the task. Up to four files the task statement
   names (a specification, a
   rulebook, the source being ported) travel with the review as bounded task-input excerpts when
   they are in the repository, unchanged since the task started (a tracked file only when its
@@ -307,6 +309,13 @@ reverse-chronological released versions.
   budget without dropping any rule.
 
 ### Fixed
+
+- In a repository holding another Git repository inside it (an `api` directory with its own
+  `.git`), Yoetz's local, names-only read of what changed no longer fails: it reads the nested
+  repository the same way the change shown to the reviewer does. So the check again tells whether
+  the workspace changed at all, which outputs the change touches, and whether a delivered file
+  refers to one you created there but did not declare; a nested repository that is unchanged since
+  the task started does not count as a change by itself (#1045).
 
 - A parent's receipt no longer fails when a delegated child holds an AI-powered review finding
   (`code_defect`, `task_requirement_unmet` or `agent_criterion_unmet`): the parent's

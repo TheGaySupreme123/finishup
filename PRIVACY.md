@@ -83,9 +83,11 @@ out or shown exactly like the outer ones. When no commit was recorded for a nest
 outer one tracks (for example, a task started before Yoetz recorded one), its change starts from
 the commit the outer repository records for it, and the header says that commits made in it before
 the task may then be included. When a nested repository's untracked files were not recorded whole
-(a task started before Yoetz recorded them, or more untracked names than the record holds), they
-are named but their content is never read, because any of them may predate the task; they count as
-not shown.
+(for example: the task started before Yoetz recorded them; the repository was created during the
+task, had no commit when it started, came after the eighth nested repository or was refused by a
+safety check; or its untracked names did not fit the record, could not be stored in it, could not
+be examined or could not be listed in time), they are named but their content is never read,
+because any of them may predate the task; they count as not shown.
 The same read also carries up to four read-only task input files the task statement names (or that
 the task declares as inputs), each at most 16 KiB, only when the file is inside the repository, is
 unchanged since the task started, is not ignored by Git and is not credential-named. A tracked file
