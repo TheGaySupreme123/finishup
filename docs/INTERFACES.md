@@ -8768,15 +8768,17 @@ coverage, versions or `result_frontier`), every leaf structural:
   host bookkeeping are not listed): `{event_id, ledger_sequence, action_kind, material_class,
   tool_name?, write_scope?, outcome?, exit_status?, command_commitment?}`. Observed edits record a
   write class, never a path.
-- `evidence_alignment` — `basis: recorded_links` and, for each effective obligation citing
-  `resolution_evidence_refs` (at most 64), its declared items (requested `command` items and
-  `file`/`directory` items whose role is not `input`, by index and kind), and per cited ref the
-  `origin` (`observed`, `asserted` or `unattributed`) of the action behind it (a result's action;
-  for evidence, the actions of results that cite it and an action named in its `causal_parents`),
-  that action's keyed `command_commitment`, the result `outcome`, and `named_item_indexes` — the
-  declared items its `attempted_items` name (ADR-045 path matching) or, for a requested command,
-  that its observed keyed run matches (the shared planned-command matcher; an asserted command
-  matches only byte for byte). `alignment` is `no_declared_items`, `evidence_names_declared_item`,
+- `evidence_alignment` — `basis: recorded_links`, `obligation_count` and `off_declared_count`
+  (every row and every `evidence_off_declared_items` row, counted before the bound) and, for each
+  effective obligation citing `resolution_evidence_refs` (at most 64, flagged rows first, then by
+  id), its declared items (requested `command` items and `file`/`directory` items whose role is
+  not `input`, by index and kind), and per cited ref the `origin` (`observed`, `asserted` or
+  `unattributed`) of the action behind it (a result's action; for evidence, the actions of results
+  that cite it and an action named in its `causal_parents`), that action's keyed
+  `command_commitment`, the result `outcome`, and `named_item_indexes` — the declared items its
+  `attempted_items` name (ADR-045 path matching) or, for a requested command, that its observed
+  keyed run matches (the shared planned-command matcher; an asserted command matches only byte for
+  byte). `alignment` is `no_declared_items`, `evidence_names_declared_item`,
   `evidence_off_declared_items` (some cited evidence traces to an action and none names a declared
   item) or `evidence_unattributed`. Yoetz records no command text, working directory, environment
   or service configuration; this compares only those recorded links.

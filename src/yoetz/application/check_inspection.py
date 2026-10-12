@@ -444,11 +444,14 @@ def inspection_alignment(
     one deliverable or command, some cited evidence traces to an action, and no such action names
     a declared item through a recorded link. Yoetz reads no working directory, environment or
     service configuration, so this compares only what the record links.
+
+    A revised plan can carry more obligations than the list bound, so flagged rows come first and
+    both counts are taken before the bound: a dropped row is counted and never hides a flag.
     """
 
     observed_events = observed_event_ids_from_records(records)
     records_by_event = {record.event_id: record for record in records}
-    rows: list[JsonValue] = []
+    rows: list[dict[str, JsonValue]] = []
     obligations = sorted(effective_obligations(projection), key=lambda value: str(value).encode())
     for obligation in obligations:
         payload = projection.obligations[obligation].payload
@@ -507,7 +510,14 @@ def inspection_alignment(
                 "sources": sources,
             }
         )
-    return {"basis": "recorded_links", "obligations": rows[:MAX_INSPECTION_ROWS]}
+    flagged = [row for row in rows if row["alignment"] == "evidence_off_declared_items"]
+    ranked = flagged + [row for row in rows if row["alignment"] != "evidence_off_declared_items"]
+    return {
+        "basis": "recorded_links",
+        "obligations": cast(list[JsonValue], ranked[:MAX_INSPECTION_ROWS]),
+        "obligation_count": str(len(rows)),
+        "off_declared_count": str(len(flagged)),
+    }
 
 
 async def execute_check_inspection(

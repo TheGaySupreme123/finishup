@@ -192,11 +192,11 @@ def _observed_lines(observed: Mapping[str, JsonValue]) -> tuple[list[str], list[
 
 def _alignment_lines(alignment: Mapping[str, JsonValue]) -> tuple[list[str], list[str]]:
     rows = _rows(alignment.get("obligations"))
-    flagged = [row for row in rows if row.get("alignment") == "evidence_off_declared_items"]
     lead = [
-        f"Evidence against declared items: {len(rows)} obligation(s) cite resolution evidence; "
-        f"{len(flagged)} cite evidence with no recorded link to any declared deliverable or "
-        "requested command."
+        f"Evidence against declared items: {_num(alignment.get('obligation_count'))} "
+        f"obligation(s) cite resolution evidence, {len(rows)} listed; "
+        f"{_num(alignment.get('off_declared_count'))} cite evidence with no recorded link to any "
+        "declared deliverable or requested command."
     ]
     details: list[str] = []
     for row in rows[:_MAX_ROWS]:
