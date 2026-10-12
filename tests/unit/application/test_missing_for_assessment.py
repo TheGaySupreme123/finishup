@@ -1148,6 +1148,60 @@ def test_content_the_packet_named_but_could_not_carry_is_packet_room_not_agent_w
     assert [item.availability for item in shown.items] == ["agent_suppliable"]
 
 
+def test_only_a_clipped_or_redacted_change_text_makes_a_diff_request_packet_room() -> None:
+    """Review of #1045: ``check_time_change_redacted`` also reports a redacted task input file,
+    which leaves every diff whole; that alone must not turn a diff request into Yoetz's limit."""
+
+    import yoetz.application.check as check_module
+    from yoetz.domain.events import CheckChangePartialFile, CheckChangeShownFiles
+    from yoetz.domain.receipts import (
+        CHECK_TIME_CHANGE_REDACTED_GAP,
+        CHECK_TIME_CHANGE_TRUNCATED_GAP,
+    )
+
+    packet_limits = getattr(check_module, "_packet_limits")
+    whole = CheckChangeShownFiles(("hmac-sha256:" + "1" * 64,), (), complete=True)
+    marked = CheckChangeShownFiles(
+        (),
+        (CheckChangePartialFile("hmac-sha256:" + "2" * 64, 80, 1, True, 40),),
+        complete=True,
+    )
+
+    def clipped(gaps: tuple[str, ...], files: CheckChangeShownFiles | None) -> bool:
+        result = SimpleNamespace(
+            case_withheld_refs=None,
+            case_privacy_withheld_refs=frozenset(),
+            case_content_gaps=gaps,
+            check_change_files=files,
+        )
+        return packet_limits(result, ())["change_clipped"]
+
+    redacted = (CHECK_TIME_CHANGE_REDACTED_GAP,)
+    # A redacted task input beside a change the packet carried whole and unmarked.
+    assert not clipped(redacted, whole)
+    # The change text itself carried a redaction marker.
+    assert clipped(redacted, marked)
+    # No record, an incomplete one, or one naming no file cannot tell: conservative, as before.
+    assert clipped(redacted, None)
+    assert clipped(redacted, CheckChangeShownFiles(whole.fully_shown, (), complete=False))
+    assert clipped(redacted, CheckChangeShownFiles((), (), complete=True))
+    assert clipped((CHECK_TIME_CHANGE_TRUNCATED_GAP,), whole)
+    assert not clipped((), whole)
+
+    case = make_case(
+        evidence={evd(5): evidence_record(_diff(5, "cracker.py"), 5)},
+        extra_refs=(evd(5),),
+    )
+    review = review_missing_for_assessment(
+        case,
+        (),
+        _first_request("current_diff_for_path", str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+        change_clipped=clipped(redacted, whole),
+    )
+    assert [item.availability for item in review.items] == ["agent_suppliable"]
+
+
 def test_a_hook_observed_image_is_an_unsupported_data_type() -> None:
     """tb4n1 D6 + L3 P3-2: an observed image tool result is kept as a digest only, never sent."""
 

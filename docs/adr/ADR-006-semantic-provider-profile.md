@@ -1426,8 +1426,9 @@ Yoetz's own limit, marked as such for the agent, never a blocker; the agent veri
   and
   `yoetz_limit_packet_room` (a target an omission row of the exact sent packet withheld for room,
   selection or policy, never `not_recorded` and never this check's own local finding, or a diff
-  request while the check-time change was clipped or redacted). `evt_` targets resolve to the row
-  their event recorded. The enum is extended in place on the unreleased `check_recorded`
+  request while the check-time change's own text was clipped or redacted, read from the shown-file
+  record, so a redacted or withheld task input file alone does not count). `evt_` targets resolve
+  to the row their event recorded. The enum is extended in place on the unreleased `check_recorded`
   1.3.0/1.4.0 and `check-result` 1.3.0/1.4.0. An unanswered repeat stays `agent_suppliable` with
   `semantic_missing_non_convergent`: a run never recorded is still owed.
 - One retry (`kernel/review_round.py`): when the newest completed review concluded

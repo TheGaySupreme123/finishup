@@ -20,6 +20,7 @@ from typing import cast
 import pytest
 
 import integration.service.test_semantic_non_dispatch as non_dispatch
+import yoetz.application.check as check_module
 import yoetz.observability.diagnostics as diagnostics_module
 import yoetz.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import (
@@ -105,6 +106,7 @@ _durable_semantic_case = getattr(non_dispatch, "_durable_semantic_case")
 _PolicyApplication = getattr(non_dispatch, "_PolicyApplication")
 _test_effective_policy = getattr(non_dispatch, "_test_effective_policy")
 _SECRET = "ghp_" + "Q" * 36
+_packet_limits = getattr(check_module, "_packet_limits")
 
 
 def _git(repository: Path, *arguments: str) -> None:
@@ -310,6 +312,9 @@ async def test_shell_rewrites_and_commits_reach_the_packet_and_survive_replay(
     assert all(scan_exact_bytes(item.plaintext) == () for item in candidate.items)
     assert CHECK_TIME_CHANGE_REDACTED_GAP in waiting.case_content_gaps
     assert CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP not in waiting.case_content_gaps
+    # The change text itself was redacted: a reviewer's diff request is Yoetz's packet limit.
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in waiting.case_content_gaps
+    assert _packet_limits(waiting, ())["change_clipped"]
     # Keyed commitments to the files the packet carried: the rewritten file whole, the test file
     # with its redacted fixture token only in part (ADR-031 resolution rule).
     shown = waiting.check_change_files
@@ -838,3 +843,7 @@ async def test_a_redacted_task_input_is_disclosed_even_when_the_change_is_clean(
     assert _SECRET.encode() not in task_input.plaintext and b"[REDACTED]" in task_input.plaintext
     assert CHECK_TIME_CHANGE_REDACTED_GAP in _packet_gaps(candidate)
     assert CHECK_TIME_CHANGE_REDACTED_GAP in waiting.case_content_gaps
+    # Only the input was redacted; the change the packet carried is whole, so a reviewer's diff
+    # request stays the agent's to answer.
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in waiting.case_content_gaps
+    assert not _packet_limits(waiting, ())["change_clipped"]
