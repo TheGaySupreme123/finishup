@@ -240,3 +240,34 @@ def test_incompatible_service_status_names_a_pending_update_only_for_an_older_ho
     assert absent not in stderr
     assert "yoetz service restart" in stderr
     assert f"service version {holder_version}" in stderr
+
+
+def test_a_service_that_failed_to_start_is_named_not_prescribed_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A command whose on-demand start failed names the stage and class (#1040)."""
+
+    import yoetz.observability.diagnostics as diagnostics
+    from yoetz.service.startup_failure import record_startup_failure
+
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    startup_id = "err_11111111-2222-4333-8444-555555555555"
+    record_startup_failure(
+        NotImplementedError("chmod: follow_symlinks unavailable on this platform"),
+        stage="activation",
+        correlation_id=startup_id,
+    )
+    code, stderr = _status_stderr(
+        monkeypatch,
+        ControlError(
+            "service_unavailable", retryable=False, correlation_id=startup_id, phase="activation"
+        ),
+    )
+
+    assert code == 20
+    assert stderr.startswith(
+        "service_unavailable: the local service exited while starting "
+        "(stage: activation; exception_not_implemented_error); "
+        f"correlation_id {startup_id}"
+    )
+    assert "under your selected user supervisor" not in stderr

@@ -2976,6 +2976,29 @@ are told apart by `safe_details.reason_code`. That MCP `SERVICE_UNAVAILABLE` map
 `protocol_mismatch` is deliberate: the CLI helper still uses `public_error_code_for_control_reason`,
 which keeps `protocol_mismatch` as `INVALID_REQUEST`.
 
+**Typed service startup failures (issue #1040).** Every failure of `yoetz service run` before or
+while it serves writes one durable diagnostic record (component `service.daemon`, operation
+`service_startup_failed`) with `phase` the startup stage — `import`, `configuration`,
+`composition`, `activation` (endpoint publication, after ready activation when the vault unlocks)
+or `serving` — `reason` the reviewed exception-class token (`exception_not_implemented_error`, or
+`exception_unavailable` for an unlisted class), `origin` the innermost `yoetz` frame, and
+`reason_code` the exception's own closed refusal token when it has one (a lifecycle, path-safety,
+instance-identity or configuration reason). An unexpected failure prints `internal_error: the
+service could not start (stage: <stage>; <exception token>[; at <origin>]); correlation_id <err_…>`
+(`stopped unexpectedly` for `serving`) and exits 70; typed refusals keep their existing lines and
+exits, and a configuration refusal prints `invalid_request: <reason_code>` and exits 2 as every
+other command does. Losing the singleton to a live service (`service_already_running`) is not
+recorded. On-demand start (`yoetz.service.client`) passes the hidden `service run
+--startup-correlation-id <err_…>` so the child records under an id its spawner chose; when that
+child exits having recorded a failure, the spawner stops waiting and raises `service_unavailable`
+with `phase` set to the stage, `correlation_id` set to the record's id and `retryable: false`. The
+MCP bridge maps it to `SERVICE_UNAVAILABLE` with `safe_details.reason_code`
+`service_start_failed` and `safe_details.phase` the stage (the text channel reads
+`Reason: service_start_failed (stage: <stage>).` plus the fixed remedy), reusing the child's id
+without recording a second one; the message also names the exception token and origin. The CLI
+renders `service_unavailable: the local service exited while starting (<stage; class; origin>);
+correlation_id <err_…>`. It is an availability failure, so the latch above applies.
+
 **Availability latch (issue #469).** The bridge treats the control reasons `service_unavailable`,
 `service_incompatible`, `protocol_mismatch`, `endpoint_unsafe`, and `peer_untrusted` as facts
 about its host binding (this bridge process, its route profile, and the fixed endpoint), not about

@@ -55,7 +55,33 @@ same failure applies by construction, not by test, to every glibc 2.28–2.31 sy
 certified cell (Ubuntu 20.04, Debian 11, RHEL/Rocky/Alma 8, and images built on them). Release
 verification runs on
 `ubuntu-24.04` (glibc 2.39), which is why the floor was never exercised. PR CI now installs the
-candidate wheel in that exact image (by digest) and starts, queries and stops the service.
+candidate wheel in that exact image (by digest) and starts, queries and stops the service, and
+`tests/subprocess/test_service_startup_failure.py` repeats the start under the image's environment
+with the glibc 2.31 `chmod` behaviour on every platform.
+
+## Reading a service startup failure
+
+Every startup failure is recorded once, with the stage that failed, the reviewed exception-class
+token, the innermost `yoetz` source location and one correlation id (never exception text or
+paths). Each surface shows the same facts:
+
+| Surface | What it shows |
+|---|---|
+| `yoetz service run` stderr (a harness's `service.log`) | for example `internal_error: the service could not start (stage: activation; exception_not_implemented_error; at yoetz.adapters.control.unix_socket:434); correlation_id err_…`, exit 70; `stopped unexpectedly` when it failed after serving |
+| The structural stderr line before it | `{"component":"service.daemon","operation":"service_startup_failed","phase":…,"reason":…,"origin":…}` |
+| `yoetz service diagnostics --correlation-id err_… --json` | the durable record (`phase`, `reason`, `origin`, and `reason_code` for a typed refusal) |
+| MCP `start`, or any tool call that started the service on demand | `SERVICE_UNAVAILABLE`, `retryable: false`, `safe_details.reason_code: service_start_failed`, `safe_details.phase: <stage>`, the spawned service's correlation id; text `Reason: service_start_failed (stage: <stage>).` |
+| A CLI command that started the service on demand (`yoetz service restart`) | `service_unavailable: the local service exited while starting (stage: …; …); correlation_id err_…`, exit 20 |
+
+Stages: `import` (a service module or native extension could not load, for example a wheel built
+for a newer C library), `configuration` (configuration or the log sink), `composition` (instance
+identity, singleton, vault), `activation` (endpoint publication, after ready activation when the
+vault unlocks), `serving` (after the service had started). The origin names the source line; the
+exception token names the class. Typed refusals keep their own lines (`instance_expired`,
+`path_contains_symlink`, `service_already_running`, `invalid_request: <config reason>`, …), and
+their record carries that token as `reason_code`. A spawned service that loses the singleton to a
+live one is not a failure: on-demand start connects to the holder. The bridge stops waiting as
+soon as its spawned service exits with a record, instead of spending its 30-second start budget.
 
 ## Approved-check sandbox
 

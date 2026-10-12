@@ -143,6 +143,17 @@ def _new_correlation() -> str:
         return _FALLBACK_CORRELATION
 
 
+def _caller_correlation(correlation_id: str | None) -> str:
+    """Keep a valid caller-minted correlation id; mint a fresh one otherwise."""
+
+    if correlation_id is None:
+        return _new_correlation()
+    try:
+        return validate_id(IdKind.CORRELATION, correlation_id)
+    except BaseException:
+        return _new_correlation()
+
+
 def _level_name(level_number: int) -> str:
     if level_number >= logging.ERROR:
         return "error"
@@ -381,6 +392,7 @@ def record_unexpected_exception_without_raising(
     operation: str = "unexpected_exception",
     request_id: str | None = None,
     phase: str | None = None,
+    correlation_id: str | None = None,
 ) -> str:
     """Emit bounded structural identity for an unexpected internal exception.
 
@@ -388,11 +400,15 @@ def record_unexpected_exception_without_raising(
     service-side and bridge-side records for one failed call be joined exactly, instead of
     guessing from method and timestamp when two calls overlap.
 
+    ``correlation_id`` is an id another process minted and will look up (a service spawned on
+    demand records its startup failure under the id its spawner passed, #1040); an invalid one is
+    replaced by a fresh id, which is returned either way.
+
     In addition to stderr, a durable owner-only diagnostic line is written under ``log_dir()`` so
     a public ``correlation_id`` remains resolvable when harnesses swallow process stderr.
     """
 
-    correlation_id = _new_correlation()
+    correlation_id = _caller_correlation(correlation_id)
     reason = _exception_reason(exc)
     origin = exception_origin(exc)
     try:
@@ -464,13 +480,17 @@ def record_classified_exception_without_raising(
     operation: str,
     request_id: str | None = None,
     phase: str | None = None,
+    reason_code: str | None = None,
+    correlation_id: str | None = None,
 ) -> str:
     """Record a public classified failure with bounded exception identity.
 
     Unlike ``record_unexpected_exception_without_raising``, this is not an internal last-resort:
     ``outcome`` is ``public_error`` so a wire ``correlation_id`` stays joinable to a class-name
     token and optional ``yoetz`` origin without collapsing the failure into ``internal_error``.
-    The sinks still never record ``str(exc)``, paths, or object ids.
+    The sinks still never record ``str(exc)``, paths, or object ids. ``reason_code`` is the
+    exception's own closed refusal token, when it carries one; ``correlation_id`` is a
+    caller-minted id, as for ``record_unexpected_exception_without_raising``.
     """
 
     return _record_bounded_without_raising(
@@ -480,7 +500,9 @@ def record_classified_exception_without_raising(
         outcome="public_error",
         request_id=request_id,
         origin=exception_origin(exc),
+        reason_code=reason_code,
         phase=phase,
+        correlation_id=correlation_id,
     )
 
 
@@ -528,10 +550,11 @@ def _record_bounded_without_raising(
     reason_code: str | None = None,
     phase: str | None = None,
     context: Mapping[str, object] | None = None,
+    correlation_id: str | None = None,
 ) -> str:
     """Mint one correlation id and write it to both sinks. Never raises to callers."""
 
-    correlation_id = _new_correlation()
+    correlation_id = _caller_correlation(correlation_id)
     extra: dict[str, object] = {}
     if context is not None:
         try:

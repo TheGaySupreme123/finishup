@@ -474,7 +474,7 @@ def test_cli_service_run_names_an_instance_refusal(
 
     monkeypatch.setattr(paths, "state_dir", _ambient_state_dir(cell))
 
-    def refuse() -> None:
+    def refuse(**_kwargs: object) -> None:
         raise InstanceIdentityError("instance_expired")
 
     monkeypatch.setattr(daemon_module, "main", refuse)
@@ -493,7 +493,7 @@ def test_cli_service_run_names_a_pin_conflict(cell: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr(paths, "state_dir", _ambient_state_dir(cell))
 
-    def refuse() -> None:
+    def refuse(**_kwargs: object) -> None:
         raise PathSafetyError("isolation_root_conflict")
 
     monkeypatch.setattr(daemon_module, "main", refuse)

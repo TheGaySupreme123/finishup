@@ -30,7 +30,7 @@ from yoetz.ports.control import (
     WorkspaceLocator,
 )
 from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode
+from yoetz.protocol.errors import SERVICE_STARTUP_PHASES, PublicErrorCode
 from yoetz.service.control_protocol import public_error_code_for_control_reason
 
 if TYPE_CHECKING:
@@ -429,6 +429,30 @@ def control_failure(
         return exit_code_for(code)
     from yoetz.service.client import accepted_but_unresponsive
 
+    startup = None
+    if error.reason == "service_unavailable" and error.phase in SERVICE_STARTUP_PHASES:
+        from yoetz.service.startup_failure import spawned_startup_failure
+
+        startup = spawned_startup_failure(error.phase, error.correlation_id)
+    if startup is not None:
+        # The service this command started exited during startup (#1040): name the stage and
+        # exception class instead of telling the operator to start a service that cannot start.
+        stderr_writer(
+            f"service_unavailable: the local service exited while starting "
+            f"({startup.describe()}); correlation_id {startup.correlation_id}; read it with "
+            f"'yoetz service diagnostics --correlation-id {startup.correlation_id}'"
+        )
+        if json_output:
+            payload = {
+                "ok": False,
+                "public_code": code.value,
+                "reason": "service_start_failed",
+                "phase": startup.stage,
+                "retryable": False,
+                "correlation_id": startup.correlation_id,
+            }
+            stdout_writer(payload)
+        return exit_code_for(code)
     if code is PublicErrorCode.SERVICE_UNAVAILABLE and accepted_but_unresponsive(error):
         stderr_writer(
             _with_holder_pid(

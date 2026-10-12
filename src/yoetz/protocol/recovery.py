@@ -965,6 +965,9 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         "import_publication_failed",
         "maintenance_state_unverified",
         "start_state_inconsistent",
+        # #1040: a spawned service exited during startup; `phase` names its stage and the
+        # correlation_id resolves its exception class and origin.
+        "service_start_failed",
         # Closure-preparation selection reasons: the reason names the selection to correct and
         # the fixed remedy sentence in ``yoetz.domain.closure.PREPARATION_REMEDIATIONS`` reaches
         # the text channel beside it (tb4n3 formal-crypto S).
@@ -1066,6 +1069,12 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "The start state recorded for this request is inconsistent. Do not start a "
             "replacement task to escape it: read status for the task you meant to attach to, "
             "and report the correlation_id."
+        ),
+        "service_start_failed": (
+            "The local Yoetz service exited while starting, so it is not running and nothing "
+            "was recorded; retrying fails the same way until the cause is repaired. Give the "
+            "user the correlation_id: 'yoetz service diagnostics --correlation-id' with it names "
+            "the failing stage and exception class. Do not run service lifecycle commands."
         ),
     }
 )
