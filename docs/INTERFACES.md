@@ -3024,11 +3024,14 @@ while it serves writes one durable diagnostic record (component `service.daemon`
 or `serving` — `reason` the reviewed exception-class token (`exception_not_implemented_error`, or
 `exception_unavailable` for an unlisted class), `origin` the innermost `yoetz` frame, and
 `reason_code` the exception's own closed refusal token when it has one (a lifecycle, path-safety,
-instance-identity or configuration reason). An unexpected failure prints `internal_error: the
-service could not start (stage: <stage>; <exception token>[; at <origin>]); correlation_id <err_…>`
-(`stopped unexpectedly` for `serving`) and exits 70; typed refusals keep their existing lines and
-exits, and a configuration refusal prints `invalid_request: <reason_code>` and exits 2 as every
-other command does. Losing the singleton to a live service (`service_already_running`) is not
+instance-identity or configuration reason; or an endpoint, storage, host-lineage or public-error
+refusal — `runtime_directory_unsafe`, `endpoint_in_use`, `storage_path_unsafe`,
+`host_lineage_migration_required`, `migration_required`, … — which stays an unexpected failure).
+An unexpected failure prints `internal_error: the service could not start (stage: <stage>;
+<exception token>[; <reason_code>][; at <origin>]); correlation_id <err_…>` (`stopped
+unexpectedly` for `serving`) and exits 70; typed refusals keep their existing lines and exits,
+and a configuration refusal prints `invalid_request: <reason_code>` and exits 2 as every other
+command does. Losing the singleton to a live service (`service_already_running`) is not
 recorded. On-demand start (`yoetz.service.client`) passes the hidden `service run
 --startup-correlation-id <err_…>` so the child records under an id its spawner chose; when that
 child exits having recorded a failure, the spawner stops waiting and raises `service_unavailable`

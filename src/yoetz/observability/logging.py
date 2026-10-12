@@ -400,6 +400,7 @@ def record_unexpected_exception_without_raising(
     request_id: str | None = None,
     phase: str | None = None,
     correlation_id: str | None = None,
+    reason_code: str | None = None,
 ) -> str:
     """Emit bounded structural identity for an unexpected internal exception.
 
@@ -409,7 +410,9 @@ def record_unexpected_exception_without_raising(
 
     ``correlation_id`` is an id another process minted and will look up (a service spawned on
     demand records its startup failure under the id its spawner passed, #1040); an invalid one is
-    replaced by a fresh id, which is returned either way.
+    replaced by a fresh id, which is returned either way. ``reason_code`` is the exception's own
+    closed refusal token when it carries one but is still reported as unexpected (an endpoint or
+    storage refusal that stops service startup); the sinks gate it like any other token.
 
     In addition to stderr, a durable owner-only diagnostic line is written under ``log_dir()`` so
     a public ``correlation_id`` remains resolvable when harnesses swallow process stderr.
@@ -426,6 +429,7 @@ def record_unexpected_exception_without_raising(
             outcome="internal_error",
             reason=reason,
             origin=origin,
+            reason_code=reason_code,
             phase=phase,
         )
     except BaseException:
@@ -440,6 +444,7 @@ def record_unexpected_exception_without_raising(
             reason=reason,
             request_id=request_id,
             origin=origin,
+            reason_code=reason_code,
             phase=phase,
         )
     except BaseException:

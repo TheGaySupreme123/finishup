@@ -79,7 +79,10 @@ identity, singleton, vault), `activation` (endpoint publication, after ready act
 vault unlocks), `serving` (after the service had started). The origin names the source line; the
 exception token names the class. Typed refusals keep their own lines (`instance_expired`,
 `path_contains_symlink`, `service_already_running`, `invalid_request: <config reason>`, …), and
-their record carries that token as `reason_code`. A spawned service that loses the singleton to a
+their record carries that token as `reason_code`. An unsafe runtime directory or endpoint, unsafe
+storage or a required migration stays an unexpected failure (exit 70), but its line and record
+name its own token after the class, for example `(stage: activation;
+exception_local_control_transport_error; runtime_directory_unsafe; at …)`. A spawned service that loses the singleton to a
 live one is not a failure: on-demand start connects to the holder. The bridge stops waiting as
 soon as its spawned service exits with a record, instead of spending its 30-second start budget.
 

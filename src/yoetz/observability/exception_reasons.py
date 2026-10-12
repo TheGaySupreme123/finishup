@@ -57,6 +57,9 @@ EXCEPTION_REASONS: Final[Mapping[str, str]] = MappingProxyType(
         "IsADirectoryError": "exception_is_a_directory_error",
         "KeyError": "exception_key_error",
         "LifecycleError": "exception_lifecycle_error",
+        # An unsafe runtime directory or endpoint stops the service publishing its endpoints at
+        # startup (#1040).
+        "LocalControlTransportError": "exception_local_control_transport_error",
         "LookupError": "exception_lookup_error",
         "MemoryError": "exception_memory_error",
         "MisuseError": "exception_misuse_error",
