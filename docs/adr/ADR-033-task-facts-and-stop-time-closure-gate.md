@@ -750,3 +750,26 @@ re-opened as defects.
 
 Hosts: the gate is one code path for Codex, Claude Code and Cursor (decision 10 above); nothing here is
 host- or OS-specific.
+
+## Amendment (2026-10-12): a local-only check by request discloses no missing review (#1041)
+
+Owner decision (issue #1041, the N3-2 residual): after the 2026-10-08 amendment,
+`semantic_review_not_requested` no longer bounded a deterministic-route receipt but was still listed
+on every one of them (tb4n4's deterministic arm: every receipt). A check that asked for
+`deterministic_only` on a route that did not require AI-powered review ran exactly what was
+requested, so the code is no longer recorded for it at all:
+
+1. **Check.** Such a check (it records `semantic_route_required: false`; its status stays
+   `not_requested`, reason `deterministic_mode`) adds no `semantic_review_not_requested` to its
+   coverage. A route that required review, a review the round stopped
+   (`semantic_review_skipped_insufficient_packet`) and every other non-succeeding outcome keep
+   their code exactly as before.
+2. **Readers.** The receipt context and receipt-capacity admission no longer re-derive the code
+   from the `not_requested` status of a check that recorded `semantic_route_required: false`; that
+   check's own `known_gaps` are what it disclosed. Decision 2 of the 2026-10-08 amendment now
+   tests the recorded route and status only. Checks an older build wrote keep the code they
+   recorded, so their receipts are unchanged.
+3. **Surfaces.** The receipt (JSON, markdown, text), status coverage and closure readiness all read
+   the recorded coverage, so none lists the code for such a check. The check's own result still
+   states `semantic_status: not_requested` and the receipt conclusion names deterministic coverage
+   only (`no_unresolved_deterministic_findings`). Same on every host.

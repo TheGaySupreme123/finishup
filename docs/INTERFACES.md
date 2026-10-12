@@ -15,7 +15,7 @@ change; the product words are their human names.
 |---|---|
 | local check / local finding / local-check case | `FindingOrigin.deterministic`, `CheckType` `deterministic`, `CheckMode` `deterministic_only`, `SemanticReason` `deterministic_mode`, gap `no_unresolved_deterministic_findings`, `DeterministicCase`, `DETERMINISTIC_RESULT`, `kernel/deterministic_checks.py` |
 | AI-powered review / AI-powered finding / AI-powered review case | `FindingOrigin.semantic_model_derived`, `CheckMode` `semantic_if_configured` / `semantic_required`, `semantic_status` / `semantic_reason`, `semantic_provenance`, `semantic_attempts`, `semantic_job`, `yoetz.semantic-case/2`, `ports/semantic.py`, `--semantic off` |
-| local-only check (no AI-powered review) | `deterministic_only`, gap `semantic_review_not_requested` |
+| local-only check (no AI-powered review) | `deterministic_only`, gap `semantic_review_not_requested` (recorded only where the route required review, #1041) |
 
 "Deterministic" elsewhere in this registry keeps its ordinary meaning — reproducible ordering,
 replay, digests, and equality — and is not a check kind.
@@ -1296,7 +1296,11 @@ Shared structural gap codes for optional AI-powered relevance review (distinct f
 - `semantic_review_not_requested` — local-only check; AI-powered review was never requested.
   It bounds the receipt conclusion unless the applicable check recorded
   `semantic_route_required: false` (issue #986, ADR-033 amendment of 2026-10-08): then the check's
-  route did not require AI-powered review and the code is a disclosure only.
+  route did not require AI-powered review and the code is a disclosure only. A check that asked
+  for `deterministic_only` on such a route records no such code at all (issue #1041): it ran the
+  checks requested, and readers do not re-derive the code from its `not_requested` status. A
+  review the round stopped (`semantic_review_skipped_insufficient_packet`) and every check an
+  older build wrote keep the code they recorded.
 
 `semantic_route_required` (optional boolean on the unreleased `check-recorded` and `check-result`
 1.4.0) records whether the check's route required AI-powered review: the check asked for

@@ -177,6 +177,7 @@ __all__ = [
     "resolved_finding_ids_for_render",
     "unresolved_findings_for_render",
     "semantic_coverage_gap_code",
+    "recorded_semantic_outcome_gap_code",
     "check_time_change_gap_sentence",
     "TASK_FACT_GAP_SENTENCES",
     "check_time_change_unavailable_reason_gap",
@@ -599,6 +600,27 @@ def semantic_coverage_gap_code(status: SemanticStatus, reason: SemanticReason) -
     if status is SemanticStatus.NOT_CONFIGURED:
         return SEMANTIC_REVIEW_NOT_CONFIGURED_GAP
     return SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP
+
+
+def recorded_semantic_outcome_gap_code(
+    status: SemanticStatus, reason: SemanticReason, *, route_required: bool | None
+) -> str | None:
+    """The review-outcome gap a reader folds beside a recorded check's own ``known_gaps``.
+
+    ``semantic_coverage_gap_code`` re-derives the code for a legacy payload whose ``known_gaps``
+    may lack it. A check that recorded ``semantic_route_required: false`` with ``not_requested``
+    (``deterministic_mode``) is new enough that its ``known_gaps`` say exactly what it disclosed:
+    since #1041 a check that asked for no review on a route that required none records no
+    ``semantic_review_not_requested``, and a reader must not add it back.
+    """
+
+    if (
+        route_required is False
+        and status is SemanticStatus.NOT_REQUESTED
+        and reason is SemanticReason.DETERMINISTIC_MODE
+    ):
+        return None
+    return semantic_coverage_gap_code(status, reason)
 
 
 class ReceiptConclusion(str, Enum):  # noqa: UP042 - exact wire enum base

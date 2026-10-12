@@ -23,7 +23,7 @@ from yoetz.domain.events import CheckRecordedPayload, LedgerRecord, is_observati
 from yoetz.domain.receipts import (
     CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
     CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP,
-    semantic_coverage_gap_code,
+    recorded_semantic_outcome_gap_code,
 )
 from yoetz.domain.values import Frontier
 from yoetz.kernel.check_standing import check_standing
@@ -302,8 +302,10 @@ def receipt_context(
     ):
         gaps.append(CaseGap("check_not_recorded", "check_not_recorded", ()))
     if applicable is not None:
-        semantic_gap = semantic_coverage_gap_code(
-            applicable.semantic_status, applicable.semantic_reason
+        semantic_gap = recorded_semantic_outcome_gap_code(
+            applicable.semantic_status,
+            applicable.semantic_reason,
+            route_required=applicable.semantic_route_required,
         )
         if semantic_gap is not None and not any(gap.code == semantic_gap for gap in gaps):
             gaps.append(CaseGap(f"semantic_outcome:{semantic_gap}", semantic_gap, ()))

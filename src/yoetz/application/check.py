@@ -4465,6 +4465,37 @@ def _recorded_route_required(
     return None if required else False
 
 
+def _check_semantic_gap(
+    mode: str | None,
+    policy_semantic: Literal["disabled", "optional", "required"],
+    semantic_result: FinalSemanticEvaluation,
+    *,
+    route_profile: Literal["policy", "strict"],
+    host_profile: McpHostProfile,
+    _state: Path | None,
+) -> str | None:
+    """The review-outcome gap this check records (issue #1041).
+
+    A check that asked for no review (``deterministic_only``) on a route that required none ran
+    exactly what was requested, so it records no ``semantic_review_not_requested``. Where the
+    route required review, or the round stopped the review, the outcome's gap stays.
+    """
+
+    requested_deterministic = mode == "deterministic_only" and (
+        _recorded_route_required(
+            mode,
+            policy_semantic,
+            route_profile=route_profile,
+            host_profile=host_profile,
+            _state=_state,
+        )
+        is False
+    )
+    if requested_deterministic:
+        return None
+    return semantic_coverage_gap_code(semantic_result.status, semantic_result.reason)
+
+
 def _route_and_insufficiency(
     mode: str | None,
     policy_semantic: Literal["disabled", "optional", "required"],
@@ -5311,7 +5342,14 @@ async def execute_check_commit(
             SemanticStatus.NOT_REQUESTED,
             SemanticStatus.SUCCEEDED,
         }
-        semantic_gap = semantic_coverage_gap_code(semantic_result.status, semantic_result.reason)
+        semantic_gap = _check_semantic_gap(
+            request.mode,
+            app.verification_policy.semantic,
+            semantic_result,
+            route_profile=route_profile,
+            host_profile=host_profile,
+            _state=_state,
+        )
         declared_gaps, recorded_deliverables = _initial_declared_gaps(
             semantic_gap,
             (deterministic_test_edit_gaps, deterministic_output_gaps),

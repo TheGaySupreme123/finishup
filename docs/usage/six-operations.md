@@ -98,7 +98,7 @@ coverage vector. `mode` selects how much:
 | Omitted | You intend to use the configured verification default. |
 | `semantic_if_configured` | Review is known to be optional. Runs AI-powered review if it is available; degrades honestly if not. |
 | `semantic_required` | The user, effective verification policy, or a named acceptance criterion requires independent AI-powered review. Preserve this choice for subsequent final checks. |
-| `deterministic_only` | Explicitly local or structural checks, or a user-authorized deliberate no-egress choice. Disclose `semantic_review_not_requested` and any unmet required review. |
+| `deterministic_only` | Explicitly local or structural checks, or a user-authorized deliberate no-egress choice. Where review is required, the check records `semantic_review_not_requested`: disclose it and the unmet required review. |
 
 The configured `verification.semantic` default applies only when `mode` is omitted. An explicit
 mode is honored by the runtime; the default is not a persistent task-level enforcement rule.
@@ -252,8 +252,8 @@ still repair, a rejected finding awaiting a ruling (`finding_rejection_awaiting_
 `check` so the reviewer rules), a missing or out-of-date check, or a gap you can repair such as
 `completion_plan_not_claimed`. `ready_with_limitations` means nothing further to do: every
 remaining condition is either a `standing_limitations` code that this assistant, capture profile
-or privacy policy always has (for example `host_outcome_unavailable` or, when AI-powered review
-is off, `semantic_review_not_requested`) or an item in `acknowledged_not_done` (obligations and
+or privacy policy always has (for example `host_outcome_unavailable`) or an item in
+`acknowledged_not_done` (obligations and
 findings you recorded as not done). Request the receipt; another check of unchanged state changes
 nothing. The receipt still lists every limitation, and its conclusion follows the prediction: a
 local-only check with limitations is still `insufficient_coverage`, and an acknowledged

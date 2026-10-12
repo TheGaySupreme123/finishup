@@ -515,7 +515,7 @@ def _build_app(
     *,
     waiver_authorizer: Callable[[RespondRequest], bool] | None = None,
     seed_offset: int = 0,
-    semantic: Literal["disabled", "optional"] = "disabled",
+    semantic: Literal["disabled", "optional", "required"] = "disabled",
     ledger_backend: Literal["memory", "sqlite"] = "memory",
     semantic_evaluator: Callable[..., Awaitable[object]] | None = None,
 ) -> tuple[Application, _WorkflowRuntime, _ProjectionSpy]:
@@ -1301,7 +1301,10 @@ async def test_receipt_folds_retained_observation_finding_coverage_after_recover
     receipt, and no ``retained_finding_coverage`` gap is minted for it (issue #912).
     """
 
-    app, runtime, _ = _build_app(seed_offset=16)
+    # The current row keeps the exact 64-code receipt boundary: its retained 63 codes plus the
+    # missing review of a local-only check on a route that requires one. A local-only check on a
+    # route that does not records no review gap (#1041).
+    app, runtime, _ = _build_app(seed_offset=16, semantic="disabled" if resolved else "required")
     started = await app.start(start_request(2500, title="Recovered observation coverage"))
     start_frontier = Frontier(int(started.frontier.sequence), started.frontier.head_digest)
     ledger, objects = next(iter(runtime.resources.values()))
@@ -1440,13 +1443,15 @@ async def test_receipt_folds_retained_observation_finding_coverage_after_recover
     )
 
     assert FINDING_KIND_TRAITS[kind][1] is False
-    # Issue #986 (E2): with the retained row resolved, the only remaining gap is the local-only
-    # disclosure of a check whose route did not require AI-powered review, which no longer bounds
-    # the conclusion; the disputed row's retained coverage still does.
+    # Issue #986 (E2), #1041: with the retained row resolved, a local-only check on a route that
+    # did not require AI-powered review leaves no gap at all; the disputed row's retained coverage
+    # still bounds the conclusion.
     assert receipt.conclusion == (
         "no_unresolved_deterministic_findings" if resolved else "insufficient_coverage"
     )
-    assert receipt.coverage.ledger_freshness is LedgerFreshness.PARTIAL
+    assert receipt.coverage.ledger_freshness is (
+        LedgerFreshness.CURRENT if resolved else LedgerFreshness.PARTIAL
+    )
     document = cast(Mapping[str, JsonValue], receipt.document)
     findings = cast(tuple[Mapping[str, JsonValue], ...], document["findings"])
     assert any(item["finding_id"] == retained.finding_id for item in findings)
@@ -1460,7 +1465,7 @@ async def test_receipt_folds_retained_observation_finding_coverage_after_recover
     if resolved:
         # History, not a limitation: listed as resolved and absent from the coverage fold.
         assert sections["summary"]["items"] == [retained.finding_id]
-        assert receipt.coverage.known_gaps == ("semantic_review_not_requested",)
+        assert receipt.coverage.known_gaps == ()
         assert not any(item["code"] == "cursor_stale" for item in gaps)
         assert "cursor_stale" not in capacity
         return
@@ -1858,20 +1863,19 @@ async def test_check_respond_recheck_reaches_a_fixed_point() -> None:
     # material change, so nothing demands another cycle.
     assert item.unanswered_finding_count == "0"
     assert int(item.receipt_blocking_finding_count) > 0
+    # A local-only check asked for on a route that requires no review declares no gap (#1041).
     assert status.closure_readiness.blocking_conditions == (
         "receipt_findings_unresolved",
         "no_plan_published",
-        "coverage_gaps_declared",
     )
     assert item.freshness != "stale_after_material_change"
 
     # The MCP text fallback stands in for this exact result when a host drops structured content,
-    # so it must report the singleton's own counters and freshness. Aggregate and item coverage
-    # both retain the deterministic-only limitation instead of claiming complete coverage.
+    # so it must report the singleton's own counters and freshness.
     summary = summary_for_status(status.as_json())
     assert f"freshness: {item.freshness}" in summary
     assert status.coverage.ledger_freshness.value == item.freshness
-    assert "semantic_review_not_requested" in status.coverage.known_gaps
+    assert "semantic_review_not_requested" not in status.coverage.known_gaps
     assert "check_not_applicable" not in status.coverage.known_gaps
     assert "unanswered findings: 0" in summary
     # ADR-046: the phrase is gone; the counters sentence carries the same number (to do + unmet).
@@ -1889,7 +1893,9 @@ async def test_status_freshness_scalar_survives_immaterial_events() -> None:
     check still governs and its recorded freshness must still be what the item reports.
     """
 
-    app, _runtime, _ = _build_app(seed_offset=27)
+    # A policy that requires review makes the local-only check's missing review a declared gap
+    # (#1041: on a route that requires none it declares nothing).
+    app, _runtime, _ = _build_app(seed_offset=27, semantic="required")
     started, checked, _obligation = await _bootstrap_finding(app, seed=1900)
 
     # `deterministic_only` declines the AI-powered review, which is a declared coverage gap, so the
@@ -4723,8 +4729,12 @@ async def test_empty_claim_repair_converges_across_views_and_receipts(
         )
         frontier = receipt.result_frontier
         assert "completion_plan_not_claimed" not in receipt.coverage.known_gaps
-        assert "semantic_review_not_requested" in receipt.coverage.known_gaps
         rendered = str(receipt.document if fmt == "json" else receipt.human_text)
+        # A local-only check asked for on a route that requires no review is not a disclosed
+        # missing review on any rendering (#1041).
+        assert "semantic_review_not_requested" not in receipt.coverage.known_gaps
+        assert "semantic_review_not_requested" not in rendered
+        assert "AI-powered review was not requested" not in rendered
         if fmt == "json":
             assert c2 in rendered
         assert "Original missing scope" not in rendered
