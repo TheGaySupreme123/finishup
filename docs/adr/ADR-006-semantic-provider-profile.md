@@ -1697,8 +1697,15 @@ packet only lacked room for.
   an approved check run in a sandbox) is deferred.
 - **When a round runs.** Only while the reviewer still concludes `insufficient_packet`, names such
   an item, and the rebuilt packet carries a requested excerpt no earlier packet of the check
-  carried. Otherwise nothing is dispatched and the check records the last review exactly as before:
-  the request goes back to the agent with its availability classes.
+  carried. What an earlier packet carried is read from its exact sent packet (its provider-bound
+  manifest), never from the composed case: an excerpt composed but left out of the sent packet
+  was not shown and can still be added, and one a round composed but did not send was not added.
+  A captured multi-part group is one excerpt keyed by its lead evidence and carries every part, so
+  a request naming any part is answered by it. When what was sent is unknown, nothing counts as
+  shown and no round runs; a row the sent packet withheld under a privacy rule never justifies a
+  round, because the same rule withholds it again. Otherwise nothing is dispatched and the check
+  records the last review exactly as before: the request goes back to the agent with its
+  availability classes.
 - **Durability, replay and egress.** Each round is one more dispatch through the privacy
   coordinator, so it has its own egress authorization and audit record. It runs as its own durable
   job keyed by its case digest (`semantic_jobs` already admits one job per distinct case of an

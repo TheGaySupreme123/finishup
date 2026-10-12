@@ -8277,7 +8277,10 @@ review input manifest gains the optional `follow_up_round` (1–3; in place on t
 check-recorded and check-result 1.3.0/1.4.0, status-result 1.4.0 and outbound-case 1.2.0); in a
 follow-up packet its `missing_inputs` list the in-check request, `supplied` with the added excerpt
 sources (provider-bound: only excerpts that crossed the boundary) or `pending`. The evaluation's
-in-process `case_excerpt_refs` lets the check tell what a round added. The evaluator seam takes the
+in-process `case_excerpt_refs` (`application.semantic_case.sent_excerpt_content_refs`: what the
+exact sent packet's excerpts held, read from its provider-bound manifest, a captured group's
+`evd_` parts included; `None` when unknown) lets the check tell what was shown and what a round
+added; refs a sent packet withheld under a privacy rule join `ReviewFollowUp.added_refs`. The evaluator seam takes the
 optional keyword `follow_up` (returning `None` when nothing was dispatched); the facade forwards it
 only to an evaluator that names it.
 

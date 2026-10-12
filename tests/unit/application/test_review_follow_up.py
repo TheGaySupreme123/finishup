@@ -8,6 +8,8 @@ what was added. Without a follow-up nothing about the packet changes.
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Sequence
 from dataclasses import replace
 
 import pytest
@@ -28,12 +30,17 @@ from yoetz.application.missing_for_assessment import (
     plan_review_follow_up,
 )
 from yoetz.application.semantic_case import (
+    CapturedContentScope,
+    CapturedSemanticContent,
     assemble_filtered_review_packet,
     bounded_case_envelope,
     build_semantic_case,
+    excerpt_content_refs,
     follow_up_byte_budget,
     review_input_manifest_to_json,
     review_packet_disclosure_result,
+    semantic_case_packet_view,
+    sent_excerpt_content_refs,
 )
 from yoetz.domain.events import (
     ActionKind,
@@ -51,8 +58,9 @@ from yoetz.domain.review_input_render import (
     render_review_input_manifest_compact,
     render_review_input_manifest_lines,
 )
-from yoetz.domain.values import EvidenceId, freeze_json, timestamp_from_string
+from yoetz.domain.values import EvidenceId, freeze_json, object_id, timestamp_from_string
 from yoetz.kernel.deterministic_checks import DeterministicCase
+from yoetz.kernel.projections import EvidenceProjectionRecord
 from yoetz.ports.semantic import SemanticCase
 from yoetz.protocol.canonical import JsonValue, strict_json_parse
 from yoetz.protocol.coverage import EvidenceImmutability
@@ -161,6 +169,8 @@ def _build(
     *,
     follow_up: ReviewFollowUp | None = None,
     selection: ReviewSelectionPolicy | None = None,
+    captured_content: Sequence[CapturedSemanticContent] = (),
+    captured_content_scope: CapturedContentScope | None = None,
 ) -> SemanticCase:
     return build_semantic_case(
         case_id="cas_10000000-0000-4000-8000-000000000001",
@@ -172,6 +182,8 @@ def _build(
         policy_id="pvy_10000000-0000-4000-8000-000000000001",
         policy_version="1",
         follow_up=follow_up,
+        captured_content=captured_content,
+        captured_content_scope=captured_content_scope,
     )
 
 
@@ -466,6 +478,186 @@ def _provider_manifest(prepared: bytes) -> dict[str, JsonValue]:
     manifest = packet["provider_input_manifest"]
     assert isinstance(manifest, dict)
     return manifest
+
+
+def _send(semantic: SemanticCase) -> bytes:
+    """The exact packet a provider receives when privacy approves every item."""
+
+    envelope = strict_json_parse(bounded_case_envelope(semantic))
+    assert isinstance(envelope, dict)
+    content_by_id = {item.item_id: item.content for item in semantic.items}
+    return assemble_filtered_review_packet(
+        envelope, content_by_id=content_by_id, included_item_ids=frozenset(content_by_id)
+    )
+
+
+def _captured_group_case(
+    newer: int,
+) -> tuple[DeterministicCase, tuple[CapturedSemanticContent, ...], CapturedContentScope]:
+    """A two-part captured output (lead ``evd(20)``, part ``evd(21)``) and ``newer`` later runs.
+
+    The parts are one excerpt keyed by the lead; the newer outputs outrank it, so a packet with
+    room for ``newer`` excerpts omits the group. One claim cites every row, so each part stays in
+    the packet's citable frontier.
+    """
+
+    from unit.application.test_semantic_case import (
+        _captured_case_values,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    base, captured, scope = _captured_case_values()
+    template = base.projection.evidence[evd(1)].payload
+    assert template is not None and template.digest_binding is not None
+    evidence: dict[EvidenceId, EvidenceProjectionRecord] = {}
+    parts: list[CapturedSemanticContent] = []
+    for index, (ref, content) in enumerate(((evd(20), b"part-a\n"), (evd(21), b"part-b\n"))):
+        digest = "sha256:" + hashlib.sha256(content).hexdigest()
+        captured_object = object_id(f"obj_00000000-0000-4000-8000-00000000030{index + 2}")
+        envelope_digest = "sha256:" + str(5 + index) * 64
+        evidence[ref] = evidence_record(
+            replace(
+                template,
+                evidence_id=ref,
+                captured_object_id=captured_object,
+                content_digest=digest,
+                description=f"Observation-captured tool output bytes part={index + 1}/2",
+                digest_binding=replace(template.digest_binding, byte_count=len(content)),
+            ),
+            20 + index,
+        )
+        parts.append(
+            replace(
+                captured,
+                object_ref=replace(
+                    captured.object_ref, object_id=captured_object, envelope_digest=envelope_digest
+                ),
+                manifest=replace(
+                    captured.manifest,
+                    object_id=captured_object,
+                    envelope_digest=envelope_digest,
+                    part_index=index,
+                    part_count=2,
+                    content_digest=digest,
+                    content_bytes=len(content),
+                ),
+                content=content,
+            )
+        )
+    for number in range(newer):
+        ref = evd(30 + number)
+        evidence[ref] = evidence_record(
+            EvidenceRecordedPayload(
+                ref,
+                EvidenceKind.TEST_RESULT,
+                EvidenceImmutability.METADATA_ONLY,
+                _WHEN,
+                description=f"other suite {number}: 12 passed",
+            ),
+            30 + number,
+        )
+    claims = {
+        clm(1): record(
+            ClaimRecordedPayload(clm(1), ClaimKind.COMPLETION, "Output captured", tuple(evidence)),
+            99,
+        )
+    }
+    case = make_case(evidence=evidence, claims=claims, extra_refs=(*evidence, clm(1)))
+    phase = scope.phase_bindings[0][1]
+    scope = replace(scope, phase_bindings=((str(evd(20)), phase), (str(evd(21)), phase)))
+    return case, tuple(parts), scope
+
+
+def test_a_request_for_a_later_part_of_an_omitted_captured_group_is_answered() -> None:
+    """A reviewer may name any part of a captured group; the group's excerpt carries it (#1047).
+
+    The group travels as one excerpt keyed by its lead evidence, so counting only excerpt sources
+    found nothing added for a request naming the second part: the round was never sent.
+    """
+
+    case, captured, scope = _captured_group_case(newer=4)
+    selection = _selection(max_excerpts=4)
+    first = _build(
+        case, selection=selection, captured_content=captured, captured_content_scope=scope
+    )
+    assert f"excerpt-{evd(20)}" not in {item.item_id for item in first.items}
+    assert str(evd(21)) in semantic_case_packet_view(first).citable_refs
+    shown = sent_excerpt_content_refs(first, _provider_manifest(_send(first)))
+    assert shown is not None and str(evd(21)) not in shown
+    follow_up = plan_review_follow_up(
+        case.projection,
+        frozenset(str(ref) for ref in case.allowed_ids),
+        (_requested("verification_output", str(evd(21))),),
+        previous=None,
+        shown_refs=shown,
+    )
+    assert follow_up is not None
+    assert follow_up.items[0].source_refs == {str(evd(21))}
+
+    again = _build(
+        case,
+        follow_up=follow_up,
+        selection=selection,
+        captured_content=captured,
+        captured_content_scope=scope,
+    )
+
+    (group,) = (item for item in again.items if item.item_id == f"excerpt-{evd(20)}")
+    assert group.source_ref == str(evd(20))
+    assert str(evd(21)) in group.linked_subject_refs
+    # What the composition compares before dispatch, and what the sent packet then showed.
+    assert follow_up.added_by(excerpt_content_refs(again.items)) == {str(evd(21))}
+    sent = _provider_manifest(_send(again))
+    assert follow_up.added_by(sent_excerpt_content_refs(again, sent) or ()) == {str(evd(21))}
+    manifest = again.packet.input_manifest
+    assert manifest is not None
+    (row,) = manifest.missing_inputs
+    assert (row.status, row.supplied_refs) == ("supplied", (str(evd(21)),))
+    assert sent["missing_inputs"] == [
+        {
+            "kind": "verification_output",
+            "status": "supplied",
+            "supplied_refs": [str(evd(21))],
+            "target_refs": [str(evd(21))],
+        }
+    ]
+    # A linked claim or event is not part of the group: only its ``evd_`` parts count.
+    assert excerpt_content_refs((group,)) == {str(evd(20)), str(evd(21))}
+
+
+def test_a_ref_a_sent_packet_withheld_under_a_privacy_rule_never_justifies_a_round() -> None:
+    """Privacy withholds the same row from every packet of the check, so it is not sent again."""
+
+    case, _refs = _verification_case(20)
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    request = (_requested("verification_output", str(res(1))),)
+    shown = frozenset({str(res(1)), str(act(1))})
+    held = frozenset({str(evd(1))})
+    assert (
+        plan_review_follow_up(
+            case.projection,
+            allowed,
+            request,
+            previous=None,
+            shown_refs=shown,
+            privacy_withheld_refs=held,
+        )
+        is None
+    )
+    # Withheld for room (no privacy rule), the output is still Yoetz's to send.
+    room = plan_review_follow_up(case.projection, allowed, request, previous=None, shown_refs=shown)
+    assert room is not None and room.added_refs == frozenset()
+    # A later round's packet withheld it under a privacy rule: no further round is sent for it.
+    assert (
+        plan_review_follow_up(
+            case.projection,
+            allowed,
+            request,
+            previous=room,
+            shown_refs=None,
+            privacy_withheld_refs=held | {str(evd(9))},
+        )
+        is None
+    )
 
 
 def test_a_follow_up_value_is_bounded() -> None:

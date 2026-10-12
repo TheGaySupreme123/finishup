@@ -173,8 +173,10 @@ from yoetz.application.semantic_case import (
     captured_edit_paths,
     carries_task_inputs,
     check_time_change_bytes_carried,
+    excerpt_content_refs,
     semantic_case_packet_view,
     semantic_case_to_candidate_context,
+    sent_excerpt_content_refs,
     sent_ledger_refs,
 )
 from yoetz.application.semantic_content import (
@@ -5174,11 +5176,10 @@ def _privacy_gated_semantic_evaluator(
             packet_prior_refs = packet_view.prior_finding_refs
             packet_settled_refs = packet_view.settled_finding_refs
             packet_citable_refs = packet_view.citable_refs
-            # Issue #1047: the sources of the excerpts this case carries, so an in-check follow-up
-            # can tell what a later packet adds. In process only.
-            case_excerpt_refs = frozenset(
-                item.source_ref for item in semantic_case.items if item.section == "excerpt"
-            )
+            # Issue #1047: what this case's excerpts hold (a captured group's parts included), so
+            # a follow-up round is sent only when it composes something new. What the round then
+            # showed is read from the sent packet (``sent_excerpt_content_refs``). In process only.
+            composed_excerpt_refs = excerpt_content_refs(semantic_case.items)
             # Issue #907: which paths each captured edit records, compared in process only so a
             # repeated request for a captured edit can converge on a fresh diff of that path.
             packet_edit_paths = captured_edit_paths(
@@ -5237,7 +5238,7 @@ def _privacy_gated_semantic_evaluator(
             if follow_up is not None:
                 # Issue #1047: a round is sent only when its packet carries a requested excerpt
                 # no earlier packet of this check carried.
-                if not follow_up.added_by(case_excerpt_refs) - follow_up.added_refs:
+                if not follow_up.added_by(composed_excerpt_refs) - follow_up.added_refs:
                     return None
                 if runtime is not None and job is not None:
                     assert recovered_case_digest is not None
@@ -5332,7 +5333,9 @@ def _privacy_gated_semantic_evaluator(
                     case_workspace_root=workspace_root,
                     check_change_files=check_change_files,
                     review_input_manifest=input_manifest,
-                    case_excerpt_refs=case_excerpt_refs,
+                    case_excerpt_refs=sent_excerpt_content_refs(
+                        semantic_case, mapped.provider_input_manifest
+                    ),
                 )
 
             # Build the packet before anything durable exists. A packet that cannot be built is a
@@ -5711,7 +5714,8 @@ def _privacy_gated_semantic_evaluator(
                     check_change_files=check_change_files,
                     continuation=continuation,
                     review_input_manifest=input_manifest,
-                    case_excerpt_refs=case_excerpt_refs,
+                    # Recovery reads the same provider-bound manifest from the durable response.
+                    case_excerpt_refs=sent_excerpt_content_refs(semantic_case, provider_manifest),
                     provider_input_manifest=provider_manifest,
                     provider_input_manifest_failure=provider_manifest_failure,
                     provider_input_text_by_ref=provider_input_text_by_ref,

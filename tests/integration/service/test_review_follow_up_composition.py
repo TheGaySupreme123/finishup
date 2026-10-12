@@ -2,9 +2,10 @@
 
 Drives ``_privacy_gated_semantic_evaluator`` over memory and SQLite ledgers with a fake privacy
 coordinator that answers like a reviewer: ``insufficient_packet`` naming the first failing run's
-output while the packet lacks it, a clean conclusion once it is there. Each follow-up round is
-one more dispatch through the same privacy path, in a durable job of its own; replay recovers
-every round without another provider call, and a round that would add nothing is never sent.
+output while the sent packet lacks it, a clean conclusion once it is there. It reports what the
+exact sent packet carried, as production egress does. Each follow-up round is one more dispatch
+through the same privacy path, in a durable job of its own; replay recovers every round without
+another provider call, and a round that would add nothing is never sent.
 """
 
 from __future__ import annotations
@@ -27,9 +28,18 @@ from yoetz.adapters.sqlite.repository import SqliteLedger
 from yoetz.application.check import FinalSemanticEvaluation
 from yoetz.application.egress import SemanticEgressProviderOutcome, SemanticEgressSuccess
 from yoetz.application.missing_for_assessment import ReviewFollowUp, plan_review_follow_up
+from yoetz.application.semantic_case import (
+    assemble_filtered_review_packet,
+    review_packet_disclosure_result,
+)
 from yoetz.domain.events import MissingForAssessmentItem
 from yoetz.domain.findings import SemanticDispatchKind, SemanticFailureClass
-from yoetz.domain.privacy import CandidateContext, ProviderBinding, ReviewContextProfile
+from yoetz.domain.privacy import (
+    REVIEW_PACKET_ITEM_ID,
+    CandidateContext,
+    ProviderBinding,
+    ReviewContextProfile,
+)
 from yoetz.kernel.deterministic_checks import DeterministicCase
 from yoetz.ports.ledger import FrozenCase
 from yoetz.ports.runtime import TaskRuntime
@@ -39,6 +49,7 @@ from yoetz.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultUnavailable,
 )
+from yoetz.protocol.canonical import strict_json_parse
 from yoetz.protocol.models import SemanticReason, SemanticStatus
 
 _PROVIDER = non_dispatch._PROVIDER  # pyright: ignore[reportPrivateUsage]
@@ -52,15 +63,42 @@ type _FollowUpEvaluator = Callable[..., Awaitable[FinalSemanticEvaluation | None
 _REQUESTED = f"excerpt-{evd(1)}"
 
 
+def _sent_packet(candidate: CandidateContext, room_cut: frozenset[str]) -> bytes:
+    """The exact packet a provider receives for every offered item.
+
+    ``room_cut`` items have no catalog row in it, as when envelope bounding leaves a composed row
+    out for packet room; their content cannot travel.
+    """
+
+    content = {item.item_id: item.plaintext for item in candidate.items}
+    envelope = strict_json_parse(content.pop(REVIEW_PACKET_ITEM_ID))
+    assert isinstance(envelope, dict)
+    catalog = envelope["item_catalog"]
+    assert isinstance(catalog, list)
+    envelope["item_catalog"] = [
+        row for row in catalog if not (isinstance(row, dict) and row.get("item_id") in room_cut)
+    ]
+    return assemble_filtered_review_packet(
+        envelope, content_by_id=content, included_item_ids=frozenset(content)
+    )
+
+
 class _ReviewerPrivacy(_Privacy):
     """Answers like a reviewer that needs the first failing run's output (issue #1047)."""
 
     def __init__(
-        self, *, task_id: str, fail_with_output: bool = False, fail_always: bool = False
+        self,
+        *,
+        task_id: str,
+        fail_with_output: bool = False,
+        fail_always: bool = False,
+        room_cuts: int = 0,
     ) -> None:
         super().__init__(task_id=task_id, profile=ReviewContextProfile.EXPANDED)
         self.fail_with_output = fail_with_output
         self.fail_always = fail_always
+        # The first ``room_cuts`` sent packets have no room for the requested output's row.
+        self.room_cuts = room_cuts
         self.sent: list[tuple[str, frozenset[str]]] = []
 
     async def evaluate_semantic(self, candidate: object, deadline: object) -> object:
@@ -94,9 +132,12 @@ class _ReviewerPrivacy(_Privacy):
                 privacy_receipt_id=receipt,
                 request_commitment=commitment,
             )
+        room_cut = frozenset({_REQUESTED} if ordinal <= self.room_cuts else ())
+        disclosure = review_packet_disclosure_result(_sent_packet(candidate, room_cut)).disclosure
+        assert disclosure is not None and disclosure.provider_input_manifest is not None
         judgment = (
             SemanticJudgment("no_material_discrepancy", (), review_summary="The run is shown.")
-            if _REQUESTED in items
+            if _REQUESTED in items - room_cut
             else SemanticJudgment(
                 "insufficient_packet",
                 (),
@@ -120,6 +161,7 @@ class _ReviewerPrivacy(_Privacy):
             case_digest=digest,
             privacy_receipt_id=receipt,
             request_commitment=commitment,
+            disclosure=disclosure,
         )
 
 
@@ -144,10 +186,12 @@ async def _setup(
     *,
     fail_with_output: bool = False,
     fail_always: bool = False,
+    filler: int = 70,
+    room_cuts: int = 0,
 ) -> tuple[DeterministicCase, FrozenCase, TaskRuntime, _ReviewerPrivacy, _FollowUpEvaluator]:
     durable, runtime = await _durable_semantic_case(adapter)
     # 70 newer output rows push the superseded first run past the Expanded 64-excerpt count.
-    built, _refs = _verification_case(70)
+    built, _refs = _verification_case(filler)
     # The durable lease froze its own one-event frontier; read the same rows at it (their order
     # then falls back to their ids, which number them in the same order).
     frontier = durable.lease.frontier
@@ -178,7 +222,10 @@ async def _setup(
         ),
     )
     privacy = _ReviewerPrivacy(
-        task_id=runtime.task_id, fail_with_output=fail_with_output, fail_always=fail_always
+        task_id=runtime.task_id,
+        fail_with_output=fail_with_output,
+        fail_always=fail_always,
+        room_cuts=room_cuts,
     )
     # The paired harness needs only the coordinator's evaluate/resume surface.
     evaluator = cast(
@@ -258,6 +305,84 @@ async def test_a_follow_up_round_is_its_own_durable_job_and_replays_without_disp
     )
     assert nothing is None
     assert privacy.calls == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "adapter_factory",
+    (memory_adapter, sqlite_adapter),
+    ids=("memory", "sqlite"),
+)
+async def test_shown_and_added_are_what_the_sent_packets_carried_not_the_composed_case(
+    adapter_factory: Callable[[object], MemoryLedgerAdapter | SqliteLedger],
+) -> None:
+    """An excerpt composed but left out of the sent packet for room was never shown (#1047).
+
+    The first packet composes the first failing run's output, but the packet sent has no room for
+    its row, so the reviewer asks for it: a round runs. That round's sent packet loses it too, so
+    it is not counted as added and a later round still supplies it. Replay reads the same sets
+    back from the durable responses.
+    """
+
+    adapter = adapter_factory(append_command())
+    # 20 newer output rows leave the first run inside the 64-excerpt count: it is composed.
+    case, frozen, runtime, privacy, evaluator = await _setup(adapter, filler=20, room_cuts=2)
+
+    first = await evaluator(frozen, (), runtime)
+    assert first is not None and first.judgment is not None
+    assert first.judgment.conclusion == "insufficient_packet"
+    ((_digest, first_items),) = privacy.sent
+    assert _REQUESTED in first_items
+    assert first.case_excerpt_refs is not None
+    assert {str(res(1)), str(evd(2))} <= first.case_excerpt_refs
+    assert str(evd(1)) not in first.case_excerpt_refs
+    follow_up = _plan(case, first)
+    assert first.operation_lease is not None
+
+    second = await evaluator(
+        FrozenCase(case, first.operation_lease), (), runtime, follow_up=follow_up
+    )
+
+    assert second is not None and second.judgment is not None
+    assert privacy.calls == 2 and _REQUESTED in privacy.sent[1][1]
+    assert second.judgment.conclusion == "insufficient_packet"
+    added = follow_up.added_by(second.case_excerpt_refs or ())
+    assert str(evd(1)) not in added
+    manifest = second.provider_input_manifest
+    assert manifest is not None
+    assert [row["status"] for row in cast(Any, manifest["missing_inputs"])] == ["pending"]
+    later = plan_review_follow_up(
+        case.projection,
+        frozenset(str(ref) for ref in case.allowed_ids),
+        (
+            MissingForAssessmentItem(
+                "verification_output", (str(res(1)),), "yoetz_limit_packet_room"
+            ),
+        ),
+        previous=replace(follow_up, added_refs=follow_up.added_refs | added),
+        shown_refs=second.case_excerpt_refs,
+    )
+    assert later is not None and later.round == 2
+    assert second.operation_lease is not None
+
+    third = await evaluator(FrozenCase(case, second.operation_lease), (), runtime, follow_up=later)
+
+    assert third is not None and third.judgment is not None
+    assert third.judgment.conclusion == "no_material_discrepancy"
+    assert privacy.calls == 3
+    assert str(evd(1)) in later.added_by(third.case_excerpt_refs or ())
+
+    # Replay recovers each review and the same carried sets without another provider call.
+    assert third.operation_lease is not None
+    again = await evaluator(FrozenCase(case, third.operation_lease), (), runtime)
+    assert again is not None and again.case_excerpt_refs == first.case_excerpt_refs
+    assert again.operation_lease is not None
+    again_second = await evaluator(
+        FrozenCase(case, again.operation_lease), (), runtime, follow_up=follow_up
+    )
+    assert again_second is not None
+    assert again_second.case_excerpt_refs == second.case_excerpt_refs
+    assert privacy.calls == 3
 
 
 @pytest.mark.anyio
