@@ -458,11 +458,15 @@ task's own sample or verifier as the plan declares it); (b) the case carries non
 `planned_verification_failed|not_observed|stale|unobservable|outcome_unknown`, so every declared
 verification ran after the last edit and passed; (c) the challenge cites at least one recorded run,
 and every work subject it cites is a hook-observed command run (the action, its result, or output
-evidence that result lists) matching none of those requested commands; obligations, claims and the
-plan or statement events it also cites are the requirement being judged; (d) the command-identity
-key is registered (hook rows store commands only as keyed commitments). An edit, an agent-published
-action, an unmatched or unreadable row, or a missing key records `task_requirement_unmet`, whichever
-of the two kinds the reviewer chose. The review summary says, in fixed words and a count, that the
+evidence that result lists) matching none of those requested commands and not linked by the agent to
+a requested command value (PL6-3, `task_facts.agent_linked_run_events`: the link the task facts
+accept as that obligation's planned verification, `planned_verification_agent_linked`, so a linked
+run is the declared verification, never a run beyond it; review of #1043 x #1049); obligations,
+claims and the plan or statement events it also cites are the requirement being judged; (d) the
+command-identity key is registered (hook rows store commands only as keyed commitments). An edit,
+an agent-published action, a linked run, an unmatched or unreadable row, a frozen prefix the check
+could not read (links unknown), or a missing key records `task_requirement_unmet`, whichever of the
+two kinds the reviewer chose. The review summary says, in fixed words and a count, that the
 challenge was recorded as the agent's own criterion. Residual, disclosed here: hook rows carry neither command text nor paths (privacy), so the
 predicate cannot tell a run of the agent's own stress script from a run of a task-supplied example
 the agent did not declare as verification; such a failure is also routed. It stays a visible,

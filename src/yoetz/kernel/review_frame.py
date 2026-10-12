@@ -18,8 +18,9 @@ so the challenge is kept as the reviewer gave it.
   for ``action_without_result``, a hook-observed action: pairing a hook observation with its result
   is Yoetz's capture, never the agent's account.
 * ``agent_probe_only``: a ``task_requirement_unmet`` challenge whose only cited work is hook-observed
-  command runs that are not the task's own declared verification, while that declared verification
-  is on record and holds (see the function for the exact predicate).
+  command runs that are not the task's own declared verification (neither matching a requested
+  command nor linked to one by the agent), while that declared verification is on record and
+  holds (see the function for the exact predicate).
 
 A "nothing implemented yet" challenge under a requirement kind cannot be told from a real unmet
 requirement without reading the reviewer's words, so nothing here filters it: the plan-time ones go
@@ -160,6 +161,7 @@ def agent_probe_only(
     observed: frozenset[EventId],
     case_gap_codes: frozenset[str],
     blocked: frozenset[ObligationId] = frozenset(),
+    linked: frozenset[EventId] | None = frozenset(),
 ) -> bool:
     """Whether a requirement challenge rests only on the agent's own probes (issue #1043).
 
@@ -173,9 +175,13 @@ def agent_probe_only(
        after the last edit and passed;
     3. the challenge cites at least one recorded run, and every recorded work subject is a
        hook-observed command run (the action, its result, or output evidence that result cites)
-       that matches none of those requested commands: a run the agent chose beyond the task's
-       declared verification. Obligations, claims and the plan or statement events it also cites
-       are the requirement being judged, not evidence;
+       that matches none of those requested commands and that the agent did not link to a
+       requested command value: a run the agent chose beyond the task's declared verification.
+       A linked run (PL6-3; ``linked`` holds its observed action events, from
+       ``task_facts.agent_linked_run_events``) is the declared verification the task facts
+       accept, never a run beyond it; ``None`` (links unreadable) answers ``False``. Obligations,
+       claims and the plan or statement events it also cites are the requirement being judged,
+       not evidence;
     4. the command-identity key is registered (observed commands are stored only as keyed
        commitments); without it nothing can be matched and the answer is ``False``.
 
@@ -189,7 +195,7 @@ def agent_probe_only(
         PLANNED_VERIFICATION_DOUBT_GAPS
     ):
         return False
-    if not command_identity_key_registered():
+    if linked is None or not command_identity_key_registered():
         return False
     acknowledged = acknowledged_obligation_ids(projection)
     planned: list[PlannedCommand] = []
@@ -211,6 +217,11 @@ def agent_probe_only(
     if not planned:
         return False
     actions, results, evidence = _rows_by_event(projection)
+    declared = {
+        row.payload.action_id
+        for row in projection.actions.values()
+        if row.payload is not None and row.source_event_id in linked
+    }
     runs = 0
     for ref in subject_refs:
         if ref.startswith(("obl_", "clm_")):
@@ -225,7 +236,11 @@ def agent_probe_only(
                 return False
             # The plan, the task statement or another non-work record the challenge names.
             continue
-        if event not in observed or action.action_kind is not ActionKind.COMMAND:
+        if (
+            event not in observed
+            or action.action_kind is not ActionKind.COMMAND
+            or action.action_id in declared
+        ):
             return False
         run = observed_run_from_command(action.command)
         if run is None or any(planned_match(run, command) is not None for command in planned):

@@ -4280,8 +4280,11 @@ fix it, or narrow it with `acknowledged` and a reason. The check records a revie
 `agent_criterion_unmet` only when `kernel.review_frame.agent_probe_only` holds, and otherwise as
 `task_requirement_unmet`. The predicate holds when every cited work subject is a hook-observed
 command run that matches none of the requested commands of the effective, unacknowledged, unblocked
-obligations, at least one such requested command exists, the case carries none of
-`planned_verification_failed|not_observed|stale|unobservable|outcome_unknown`, and the
+obligations and that the agent did not link to a requested command value (PL6-3:
+`kernel.task_facts.agent_linked_run_events` over the frozen prefix, passed to
+`validate_semantic_judgment` as `agent_linked_runs`; a linked run is the declared verification, and
+an unreadable prefix narrows nothing), at least one such requested command exists, the case carries
+none of `planned_verification_failed|not_observed|stale|unobservable|outcome_unknown`, and the
 command-identity key is registered. The review summary then says, in fixed words and a count, that
 the challenge was recorded as the agent's own criterion (`SemanticJudgmentReview.agent_criteria`,
 logged as `semantic_agent_criteria`).

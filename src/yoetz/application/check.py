@@ -202,6 +202,7 @@ from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
+    agent_linked_run_events,
     confirmed_blocked_obligation_ids,
     cooperative_event_ids_from_coverage,
     material_edit_recorded,
@@ -4083,6 +4084,7 @@ def validate_semantic_judgment(
     provider_input_text_by_ref: Mapping[str, tuple[str, ...]] | None = None,
     settled_finding_refs: frozenset[str] | None = None,
     review_phase: Literal["routine", "final"] | None = None,
+    agent_linked_runs: frozenset[EventId] | None = frozenset(),
 ) -> SemanticJudgmentReview:
     """Fence AI-powered challenges to the exact frozen refs, coverage, and final provenance.
 
@@ -4092,6 +4094,11 @@ def validate_semantic_judgment(
     and a "never attempted" challenge is work in progress (ADR-040 section 5). ``None`` (a caller
     that did not say) keeps the earlier rules: the "never attempted" drop reads the completion
     claim alone and nothing is recorded as an advisory note.
+
+    ``agent_linked_runs`` are the observed command actions the agent linked to a requested command
+    (PL6-3, ``task_facts.agent_linked_run_events`` over the frozen prefix): the declared
+    verification, never the agent's own probe (``agent_probe_only``). ``None`` means the prefix
+    could not be read, and then no requirement challenge is recorded as the agent's own criterion.
 
     ``prior_finding_refs`` and ``citable_refs`` describe the packet the reviewer was actually
     shown (its prior-findings rows and its ``citable_refs``); per-finding rulings are fenced to
@@ -4246,6 +4253,7 @@ def validate_semantic_judgment(
             observed=observed,
             case_gap_codes=case_gap_codes,
             blocked=blocked,
+            linked=agent_linked_runs,
         ):
             # Issue #1043: the only cited work is the agent's own runs beyond the task's declared
             # verification, which holds. The concern is the agent's own criterion, never the
@@ -5830,6 +5838,14 @@ async def execute_check_commit(
                     provider_input_text_by_ref=semantic_result.provider_input_text_by_ref,
                     settled_finding_refs=semantic_result.case_settled_finding_refs,
                     review_phase=_review_phase(request, frozen, semantic_result),
+                    # Review of #1043 x #1049: a run the agent linked to a requested command is
+                    # the declared verification. A prefix that could not be read leaves the links
+                    # unknown, and then no challenge is narrowed to the agent's own criterion.
+                    agent_linked_runs=(
+                        agent_linked_run_events(frozen.case.projection, prefix_records)
+                        if prefix_records
+                        else None
+                    ),
                 )
             except SemanticJudgmentRejected as exc:
                 # The reviewer's answer is unusable, so the check has no AI-powered review result — but the

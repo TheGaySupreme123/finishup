@@ -47,7 +47,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_CHALLENGES_REJECTED_GAP,
     SEMANTIC_PROCESS_STATE_FILTERED_GAP,
 )
-from yoetz.domain.values import action_id, obligation_id
+from yoetz.domain.values import EventId, action_id, obligation_id
 from yoetz.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     DeterministicCase,
@@ -60,7 +60,7 @@ from yoetz.kernel.finding_resolution import (
 from yoetz.kernel.gap_effect import GapEffectKind, gap_effect
 from yoetz.kernel.observed_failures import observed_action_description
 from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import register_command_identity_key
+from yoetz.kernel.task_facts import agent_linked_run_events, register_command_identity_key
 from yoetz.ports.semantic import ReviewerChallenge, SemanticJudgment
 from yoetz.protocol.models import SemanticReason, SemanticStatus
 
@@ -143,7 +143,10 @@ def _case(ledger: ObservedLedger) -> DeterministicCase:
 
 
 def _review(
-    case: DeterministicCase, *challenges: ReviewerChallenge, phase: str | None
+    case: DeterministicCase,
+    *challenges: ReviewerChallenge,
+    phase: str | None,
+    linked: frozenset[EventId] | None = frozenset(),
 ) -> SemanticJudgmentReview:
     return validate_semantic_judgment(
         case,
@@ -152,6 +155,7 @@ def _review(
         _provenance(),
         expected_frontier=case.frontier,
         review_phase=phase,  # type: ignore[arg-type]
+        agent_linked_runs=linked,
     )
 
 
@@ -459,3 +463,68 @@ def test_a_reviewer_labelled_agent_criterion_passes_the_same_fence() -> None:
         FindingKind.TASK_REQUIREMENT_UNMET
     ]
     assert review.agent_criteria == 0
+
+
+def test_a_run_the_agent_linked_to_the_declared_verification_is_never_its_own_probe() -> None:
+    """Review of #1043 x #1049: a run the agent linked to a requested command (PL6-3) is the
+    declared verification the task facts accept (``planned_verification_agent_linked``), not a
+    run beyond it. A requirement challenge about that run stays the task's requirement; it never
+    becomes the agent's own criterion."""
+
+    planned = "make test"
+    ledger = ObservedLedger()
+    _obligation(ledger, command=planned)
+    ledger.edit()
+    linked_result = ledger.passes("./run_tests.sh --all")
+    stress_result = ledger.fail(_STRESS)
+    projection = replay(ledger.prefix)
+    linked_payload = projection.results[linked_result].payload
+    assert linked_payload is not None
+    linked_action = projection.actions[linked_payload.action_id]
+    ledger.append(
+        EventSchema("action_recorded", "1.0.0"),
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-00000000a001"),
+            ActionKind.COMMAND,
+            "Ran the test suite (the make test equivalent)",
+            command=planned,
+            attempted_items=(planned,),
+        ),
+        observed=False,
+        causal_parents=(linked_action.source_event_id,),
+    )
+    case = _case(ledger)
+    assert "planned_verification_agent_linked" in {gap.code for gap in case.gaps}
+    links = agent_linked_run_events(case.projection, ledger.prefix)
+    assert links == frozenset({linked_action.source_event_id})
+    results = case.projection.results
+    linked_event = str(results[linked_result].source_event_id)
+    stress_event = str(results[stress_result].source_event_id)
+    action_event = str(linked_action.source_event_id)
+
+    for refs in (
+        (linked_event,),
+        (str(_OBLIGATION), action_event),
+        (action_event, linked_event),
+        (linked_event, stress_event),
+    ):
+        challenge = _challenge(
+            FindingKind.TASK_REQUIREMENT_UNMET, *refs, summary="The required case was skipped"
+        )
+        review = _review(case, challenge, phase="final", linked=links)
+        assert [candidate.kind for candidate in review.candidates] == [
+            FindingKind.TASK_REQUIREMENT_UNMET
+        ], refs
+        assert review.agent_criteria == 0
+
+    # The agent's own run beyond that verification is still its own criterion ...
+    probe = _challenge(
+        FindingKind.TASK_REQUIREMENT_UNMET, stress_event, summary="The stress run fails"
+    )
+    assert [c.kind for c in _review(case, probe, phase="final", linked=links).candidates] == [
+        FindingKind.AGENT_CRITERION_UNMET
+    ]
+    # ... unless the links could not be read: then nothing is narrowed.
+    assert [c.kind for c in _review(case, probe, phase="final", linked=None).candidates] == [
+        FindingKind.TASK_REQUIREMENT_UNMET
+    ]

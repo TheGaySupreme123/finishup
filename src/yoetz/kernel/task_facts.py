@@ -224,6 +224,7 @@ __all__ = [
     "BlockerDeclaration",
     "acting_started",
     "acknowledged_obligation_ids",
+    "agent_linked_run_events",
     "observed_planned_commands",
     "observed_run_from_command",
     "BLOCKER_NOTICE_CLAIMED",
@@ -960,6 +961,40 @@ def _agent_linked_runs(
     return {
         key: tuple(sorted(value, key=lambda run: run.position)) for key, value in linked.items()
     }
+
+
+def agent_linked_run_events(
+    projection: ProjectionState, records: Iterable[LedgerRecord]
+) -> frozenset[EventId]:
+    """The observed command actions the agent linked to a requested command value (PL6-3).
+
+    The links ``task_fact_signals`` accepts as an obligation's planned verification (see
+    ``_agent_linked_runs``), for the requested command values of every effective obligation,
+    keyed by the linked run's hook-observed ``action_recorded`` event. A run in this set is the
+    task's declared verification by the agent's own declaration, never a run beyond it (review of
+    #1043 x #1049). ``records`` must be the accepted prefix that produced ``projection``.
+    """
+
+    prefix = tuple(records)
+    observed = observed_event_ids_from_records(prefix)
+    state = _observed_state(projection, observed, cooperative_event_ids_from_records(prefix))
+    linked = _agent_linked_runs(projection, prefix, state, observed)
+    if not linked:
+        return frozenset()
+    events: set[EventId] = set()
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for item in payload.requested_items:
+            if item.item_kind is not RequestedItemKind.COMMAND:
+                continue
+            events.update(
+                run.action_event
+                for run in linked.get((obligation, item.value), ())
+                if run.action_event is not None
+            )
+    return frozenset(events)
 
 
 def non_counting_edits_exempt(projection: ProjectionState) -> frozenset[str]:

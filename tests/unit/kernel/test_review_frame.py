@@ -33,8 +33,12 @@ from yoetz.kernel.observed_failures import (
 )
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.reducers import replay
-from yoetz.kernel.review_frame import agent_probe_only, yoetz_process_state_only
-from yoetz.kernel.task_facts import register_command_identity_key
+from yoetz.kernel.review_frame import (
+    PLANNED_VERIFICATION_DOUBT_GAPS,
+    agent_probe_only,
+    yoetz_process_state_only,
+)
+from yoetz.kernel.task_facts import agent_linked_run_events, register_command_identity_key
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
 _OTHER = obligation_id("obl_00000000-0000-4000-8000-000000000002")
@@ -306,4 +310,57 @@ def test_an_edit_among_the_cited_work_keeps_the_task_requirement() -> None:
     # A challenge that cites no run at all rests on nothing the agent ran.
     assert not agent_probe_only(
         state, kind, (str(_OBLIGATION),), observed=observed, case_gap_codes=gaps
+    )
+
+
+def test_a_run_the_agent_linked_to_a_requested_command_is_the_declared_verification() -> None:
+    """Review of #1043 x #1049: the task facts accept a PL6-3 link (a cooperative command action
+    naming the requested value in ``attempted_items`` with the observed run as its causal parent)
+    as that obligation's planned verification, so the predicate never calls that run a probe
+    beyond it. Links it cannot read answer ``False``."""
+
+    ledger = ObservedLedger()
+    _obligation(ledger, command=_SAMPLE)
+    _plan(ledger, _OBLIGATION)
+    ledger.edit()
+    alternative = ledger.passes("./run_tests.sh --all")
+    ledger.passes(_SAMPLE)
+    state, observed = _state(ledger)
+    alternative_result = state.results[alternative].payload
+    assert alternative_result is not None
+    alternative_action = state.actions[alternative_result.action_id].source_event_id
+    alternative_event = _result_event(state, alternative)
+    kind = FindingKind.TASK_REQUIREMENT_UNMET
+    # Unlinked, the run is the agent's own probe beyond the declared verification.
+    assert agent_probe_only(
+        state, kind, (alternative_event,), observed=observed, case_gap_codes=_case_gaps(ledger)
+    )
+
+    ledger.append(
+        EventSchema("action_recorded", "1.0.0"),
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-00000000a002"),
+            ActionKind.COMMAND,
+            "The full suite run is the sample check",
+            command=_SAMPLE,
+            attempted_items=(_SAMPLE,),
+        ),
+        observed=False,
+        causal_parents=(alternative_action,),
+    )
+    state, observed = _state(ledger)
+    gaps = _case_gaps(ledger)
+    assert not gaps & PLANNED_VERIFICATION_DOUBT_GAPS
+    links = agent_linked_run_events(state, ledger.prefix)
+    assert links == frozenset({alternative_action})
+    for refs in (
+        (alternative_event,),
+        (str(alternative_action),),
+        (str(_OBLIGATION), alternative_event),
+    ):
+        assert not agent_probe_only(
+            state, kind, refs, observed=observed, case_gap_codes=gaps, linked=links
+        )
+    assert not agent_probe_only(
+        state, kind, (alternative_event,), observed=observed, case_gap_codes=gaps, linked=None
     )
