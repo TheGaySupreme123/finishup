@@ -108,6 +108,7 @@ from yoetz.protocol.ids import validate_opaque_item_id
 from yoetz.protocol.models import (
     MAX_MISSING_FOR_ASSESSMENT,
     MAX_MISSING_TARGET_REFS,
+    MAX_REVIEW_FOLLOW_UP_ROUNDS,
     MAX_TASK_STATEMENT_BYTES,
     MISSING_FOR_ASSESSMENT_KINDS,
     MISSING_ITEM_AVAILABILITIES,
@@ -3563,12 +3564,20 @@ def _review_input_manifest_from_json(value: JsonValue | None) -> JsonObject | No
                 "omitted_item_count",
             }
         ),
-        optional=frozenset({"review_phase", "omitted_item_total"}),
+        optional=frozenset({"review_phase", "omitted_item_total", "follow_up_round"}),
     )
     if _field(source, "schema") != "yoetz.review-input-manifest/1":
         raise ProtocolValueError("invalid_event_value_type")
     if "review_phase" in source and source["review_phase"] not in {"routine", "final"}:
         raise ProtocolValueError("invalid_event_value_type")
+    if "follow_up_round" in source:
+        # Issue #1047: the in-check follow-up round the recorded packet was.
+        follow_up_round = source["follow_up_round"]
+        if (
+            type(follow_up_round) is not int
+            or not 1 <= follow_up_round <= MAX_REVIEW_FOLLOW_UP_ROUNDS
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
     if _field(source, "phase") not in {"composed", "provider_bound"}:
         raise ProtocolValueError("invalid_event_value_type")
     for key in _REVIEW_INPUT_SECTION_NAMES:

@@ -508,6 +508,7 @@ from yoetz.application.import_review import (  # noqa: E402
     execute_review,
     import_request_from_control,
 )
+from yoetz.application.missing_for_assessment import ReviewFollowUp  # noqa: E402
 from yoetz.application.publish_work import (  # noqa: E402
     PublishWorkInternalResult,
     execute_publish_work,
@@ -567,6 +568,20 @@ def _accepts_keyword(function: object, name: str) -> bool:
     return any(
         parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters
+    )
+
+
+def _declares_keyword(function: object, name: str) -> bool:
+    """Whether ``function`` names keyword ``name`` itself; ``**kwargs`` does not count."""
+
+    try:
+        parameters = inspect.signature(cast(Callable[..., object], function)).parameters
+    except TypeError, ValueError:
+        return False
+    parameter = parameters.get(name)
+    return parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
     )
 
 
@@ -2794,6 +2809,7 @@ class Application:
         require_complete_specification: bool = False,
         final_review: bool = False,
         task_fact_gaps: tuple[str, ...] = (),
+        follow_up: ReviewFollowUp | None = None,
     ) -> object:
         evaluator = self.semantic_evaluator
         # The closing-review choice (issue #976) and the check-time task-fact codes (#977) reach
@@ -2804,6 +2820,25 @@ class Application:
             extra["final_review"] = True
         if task_fact_gaps and _accepts_keyword(evaluator, "task_fact_gaps"):
             extra["task_fact_gaps"] = task_fact_gaps
+        if follow_up is not None:
+            # An in-check follow-up round (issue #1047) reaches only an evaluator that names the
+            # keyword itself; any other dispatches nothing (``None``), and the first review
+            # stands. It never falls back to a first-review call shape.
+            if not _declares_keyword(evaluator, "follow_up"):
+                return None
+            # Declared by name (checked above); the port protocol keeps it optional so older
+            # evaluator doubles stay assignable.
+            follow_up_evaluator = cast(Callable[..., Awaitable[object]], evaluator)
+            if _accepts_keyword(evaluator, "require_complete_specification"):
+                extra["require_complete_specification"] = require_complete_specification
+            return await follow_up_evaluator(
+                frozen,
+                deterministic_findings,
+                cast(TaskRuntime | None, runtime),
+                lineage_evaluation,
+                follow_up=follow_up,
+                **extra,
+            )
         # Production evaluators accept the task runtime for durable job/attempt coordination.
         # Test doubles may still be binary callables.
         try:

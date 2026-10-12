@@ -586,6 +586,15 @@ explicitly to select 1–3600 seconds; existing explicit values are preserved. T
 review execution budget, not the browser/device login timeout or a host tool's wait timeout.
 Retries and recovery do not restart it. No extra retries are enabled.
 
+One check may run up to three more reviews (issue #1047): when the reviewer concludes
+`insufficient_packet` naming recorded run output, an exact command or a captured edit the packet had
+no room for, the service sends the case again with that content first. Each such round is its own
+job with its own attempt budget and its own `timeout_seconds` deadline, under the endpoint and
+budget profile frozen with the check's first review job; it is never sent when it would add nothing
+new. Count them when planning subscription usage. `status view=operation` reports the live round's
+progress, and each round leaves one `semantic_review_follow_up` diagnostic record (round, items,
+refs added) under the check's request ID.
+
 A host tool wait may finish before the review. Keep the same check request and request ID: while
 the service-owned check runs, replay reports pending; after completion it recovers the recorded
 result. A host disconnect does not cancel an admitted review. Explicit control cancellation while

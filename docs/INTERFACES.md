@@ -8128,6 +8128,29 @@ optional `missing_for_assessment` (check-result 1.3.0, unreleased, additive) and
 check text list each item and its availability; status, TUI and receipts carry the gap codes. The
 reviewer's reason stays in the encrypted durable semantic response object.
 
+In-check follow-up (issue #1047, ADR-006). While a review concludes `insufficient_packet` and names
+a `current_diff_for_path`, `verification_output` or `command_identity` item that the fence kept as
+`agent_suppliable` or `yoetz_limit_packet_room` and whose targets Yoetz holds rows for
+(`application.missing_for_assessment.plan_review_follow_up`; `FOLLOW_UP_KINDS`;
+`ReviewFollowUp`), the same `check` rebuilds the case with those rows' excerpts ranked first within
+`follow_up_byte_budget` (half the approved `max_total_excerpt_bytes`, shared by every round) and
+asks again, at most `MAX_REVIEW_FOLLOW_UP_ROUNDS` (3) times and only when the rebuilt packet carries
+a requested excerpt no earlier packet of the check carried. A target resolves to itself, the rows
+an `evt_` target recorded, and for a run its results, its action and the evidence they cite;
+redacted rows never count. Each round goes through the same privacy path, is its own egress, and is
+its own durable semantic job keyed by its case digest (`LedgerPort.load_semantic_job(writer,
+operation, case_digest=None)`); its `semantic-case/2` object names the base job
+(`follow_up.base_case_digest`, `round`) and keeps the base job's endpoint, retries and budget
+profile with its own deadline. The check records the last round: a failed round is recorded as a
+failed first review is, and a round that sends nothing leaves the previous review standing. The
+review input manifest gains the optional `follow_up_round` (1–3; in place on the unreleased
+check-recorded and check-result 1.3.0/1.4.0, status-result 1.4.0 and outbound-case 1.2.0); in a
+follow-up packet its `missing_inputs` list the in-check request, `supplied` with the added excerpt
+sources (provider-bound: only excerpts that crossed the boundary) or `pending`. The evaluation's
+in-process `case_excerpt_refs` lets the check tell what a round added. The evaluator seam takes the
+optional keyword `follow_up` (returning `None` when nothing was dispatched); the facade forwards it
+only to an evaluator that names it.
+
 `resolution_attempt_required` is the `respond` rejection for an `acknowledged` response to a
 `semantic_model_derived` finding whose `evidence_refs` cite no evidence or result recorded after
 the finding's own record (not after whichever later in-chain `finding_frontier` the caller named,

@@ -393,6 +393,16 @@ command that differs from the one observed. Every provider — the Codex subscri
 OpenAI-compatible endpoints — gets the same instructions. Track a required review by choosing
 `semantic_required` for each check, not as a plan item.
 
+When the reviewer cannot assess the packet and names recorded content Yoetz already holds — the
+output of a recorded run, its exact command, or a captured edit the packet had no room for — Yoetz
+answers inside the same check: it sends the packet again with that content first and asks again, up
+to three times. Each follow-up packet follows the same policy, limits and never-send rules as the
+first and is its own disclosure with its own privacy receipt, and the content added this way takes
+at most half of the packet's excerpt room. The check records the last answer; the check result and
+the receipt say which follow-up round it answered and what Yoetz added. A follow-up that fails ends
+the check the way a failed review does. Anything else the reviewer names (the task statement, plan
+or claim text, or material only the agent can record) still comes back to the agent as before.
+
 AI-powered output is advisory, provenance-labeled, and deterministically fenced. It never silently
 becomes local-check truth, and it never upgrades a coverage claim.
 

@@ -659,6 +659,13 @@ remain, the reviewer named none (`semantic_missing_items_rejected`), or
 report the named limitation instead. Hook-captured tool output never counts as supplied. A named
 item is a check limitation, never a finding.
 
+Yoetz may already have answered part of the request inside the same check: when the reviewer names
+recorded run output, an exact command or a captured edit the packet had no room for, Yoetz sends the
+packet again with that content first, up to three times. A manifest with `follow_up_round` shows the
+recorded review answered such a follow-up; its `missing_inputs` name what Yoetz added
+(`supplied_refs`). Do not publish that material again; what `missing_for_assessment` still lists is
+what remained after the follow-up.
+
 When `missing_for_assessment` contains an `agent_suppliable` item, supplying or repairing that
 item is the overall next action before requesting an ordinary receipt. The structured
 `overall_next` projection names that action and its bounded target refs (which may be empty for a

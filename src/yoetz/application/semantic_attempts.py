@@ -681,7 +681,7 @@ class _SemanticAttemptLedger(Protocol):
     ) -> object: ...
 
     async def load_semantic_job(
-        self, writer_id: str, operation_id: str
+        self, writer_id: str, operation_id: str, case_digest: str | None = None
     ) -> SemanticJobRecord | None: ...
 
     async def list_semantic_attempts(self, job_id: str) -> tuple[SemanticAttemptRecord, ...]: ...
@@ -785,9 +785,13 @@ async def _accounting_for(
     *,
     max_retries: int,
     fallback: SemanticFallbackPlan | None = None,
+    case_digest: str | None = None,
 ) -> SemanticAttemptAccounting:
     rows = await ledger.list_semantic_attempts(job_id)
-    job_final = await ledger.load_semantic_job(lease.writer_id, lease.operation_id)
+    # One operation may own several jobs, one per case it sent (issue #1047): read this one.
+    job_final = await ledger.load_semantic_job(
+        lease.writer_id, lease.operation_id, case_digest=case_digest
+    )
     return attempt_accounting_from_rows(job_final, rows, max_retries=max_retries, fallback=fallback)
 
 
@@ -840,7 +844,12 @@ async def _recover_terminal_job(
 
     await _resolve_disclosure_wait_after_terminal(ledger, lease, job.job_id)
     accounting = await _accounting_for(
-        ledger, lease, job.job_id, max_retries=max_retries, fallback=fallback
+        ledger,
+        lease,
+        job.job_id,
+        max_retries=max_retries,
+        fallback=fallback,
+        case_digest=job.case_digest,
     )
     if job.state == "succeeded":
         evaluation: _AttemptEvaluation | None = None
@@ -885,6 +894,7 @@ async def _terminalize_after_failure(
     token_usage: RuntimeTokenUsage | None = None,
     max_retries: int,
     fallback: SemanticFallbackPlan | None = None,
+    case_digest: str | None = None,
 ) -> SemanticAttemptAccounting:
     """Drive a failed attempt and its job to a terminal state, whatever went wrong.
 
@@ -943,7 +953,12 @@ async def _terminalize_after_failure(
     )
     try:
         return await _accounting_for(
-            ledger, lease_holder(), job_id, max_retries=max_retries, fallback=fallback
+            ledger,
+            lease_holder(),
+            job_id,
+            max_retries=max_retries,
+            fallback=fallback,
+            case_digest=case_digest,
         )
     except Exception as exc:
         record_unexpected_exception_without_raising(
@@ -965,6 +980,7 @@ async def _terminalize_cancellation_safe(
     token_usage: RuntimeTokenUsage | None = None,
     max_retries: int,
     fallback: SemanticFallbackPlan | None = None,
+    case_digest: str | None = None,
 ) -> tuple[SemanticAttemptAccounting, bool]:
     """Finish terminal writes even if cancellation is delivered again during cleanup.
 
@@ -984,6 +1000,7 @@ async def _terminalize_cancellation_safe(
             token_usage=token_usage,
             max_retries=max_retries,
             fallback=fallback,
+            case_digest=case_digest,
         )
     )
     cancellation_received = False
@@ -1068,7 +1085,12 @@ async def run_durable_semantic_attempts(
 
     async def _accounting() -> SemanticAttemptAccounting:
         return await _accounting_for(
-            ledger, current_lease, job.job_id, max_retries=max_retries, fallback=fallback
+            ledger,
+            current_lease,
+            job.job_id,
+            max_retries=max_retries,
+            fallback=fallback,
+            case_digest=job.case_digest,
         )
 
     async def _publish_terminal_response(
@@ -1132,7 +1154,7 @@ async def run_durable_semantic_attempts(
         ):
             raise
         current_job = await ledger.load_semantic_job(
-            current_lease.writer_id, current_lease.operation_id
+            current_lease.writer_id, current_lease.operation_id, case_digest=job.case_digest
         )
         if (
             current_job is None
@@ -1256,7 +1278,9 @@ async def run_durable_semantic_attempts(
                     current_lease, handle, durable_response.result_object_ref
                 )
                 recovered_job = await ledger.load_semantic_job(
-                    current_lease.writer_id, current_lease.operation_id
+                    current_lease.writer_id,
+                    current_lease.operation_id,
+                    case_digest=job.case_digest,
                 )
                 if recovered_job is None:
                     raise PublicOperationError(
@@ -1363,6 +1387,7 @@ async def run_durable_semantic_attempts(
                 renew=_renew,
                 lease_holder=lambda: current_lease,
                 job_id=job.job_id,
+                case_digest=job.case_digest,
                 handle=handle,
                 max_retries=max_retries,
                 fallback=fallback,
@@ -1403,6 +1428,7 @@ async def run_durable_semantic_attempts(
                         renew=_renew,
                         lease_holder=lambda: current_lease,
                         job_id=job.job_id,
+                        case_digest=job.case_digest,
                         handle=handle,
                         token_usage=_attempt_token_usage(evaluation),
                         max_retries=max_retries,
@@ -1448,6 +1474,7 @@ async def run_durable_semantic_attempts(
                         renew=_renew,
                         lease_holder=lambda: current_lease,
                         job_id=job.job_id,
+                        case_digest=job.case_digest,
                         handle=handle,
                         max_retries=max_retries,
                         fallback=fallback,
@@ -1594,6 +1621,7 @@ async def run_durable_semantic_attempts(
                     renew=_renew,
                     lease_holder=lambda: current_lease,
                     job_id=job.job_id,
+                    case_digest=job.case_digest,
                     handle=handle,
                     token_usage=_attempt_token_usage(evaluation),
                     max_retries=max_retries,

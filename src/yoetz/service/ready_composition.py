@@ -116,6 +116,7 @@ from yoetz.application.lineage_recovery import (
     observed_host_session_binding,
 )
 from yoetz.application.missing_for_assessment import (
+    ReviewFollowUp,
     check_change_binary_paths,
     check_change_text_paths,
     unsuppliable_missing_kinds,
@@ -3566,7 +3567,13 @@ def _execution_from_json(value: object) -> _SemanticExecution:
 async def _read_semantic_execution(
     runtime: TaskRuntime,
     ref: ObjectRef,
-) -> tuple[_SemanticExecution | None, str, str, object | None]:
+) -> tuple[_SemanticExecution | None, str, str, object | None, str | None]:
+    """The frozen execution, case identity and check-time change pointer of one job's case.
+
+    The last value is the case digest of the check's own first review when this job is an
+    in-check follow-up round (issue #1047), else ``None``.
+    """
+
     from yoetz.protocol.canonical import strict_json_parse
 
     resolved = await runtime.objects.resolve_verified(ref.object_id, ref.envelope_digest)
@@ -3586,9 +3593,20 @@ async def _read_semantic_execution(
         if body["schema"] == "yoetz.semantic-case/1"
         else _execution_from_json(body["execution"])
     )
+    follow_up = body.get("follow_up")
+    base_digest: str | None = None
+    if follow_up is not None:
+        base = (
+            cast(dict[str, object], follow_up).get("base_case_digest")
+            if type(follow_up) is dict
+            else None
+        )
+        if type(base) is not str or execution is None:
+            raise ValueError("semantic_execution_invalid")
+        base_digest = base
     # Absent on jobs created before ADR-031 or without a trusted workspace source: such a job
     # rebuilds its case without a check-time change, exactly as it was first built.
-    return execution, case_id, case_digest, body.get("check_change")
+    return execution, case_id, case_digest, body.get("check_change"), base_digest
 
 
 def _without_provider_provenance(
@@ -3668,11 +3686,13 @@ async def _publish_semantic_case_object(
     clock: ClockPort,
     execution: _SemanticExecution,
     check_change: CanonicalJsonValue | None = None,
+    follow_up: tuple[str, int] | None = None,
 ) -> ObjectRef:
     """Persist a structural SEMANTIC_CASE object bound into the durable job row.
 
     ``check_change`` is the pointer to the one check-time change object (ADR-031), or the record
-    that it was unavailable; the change's content stays in its own object.
+    that it was unavailable; the change's content stays in its own object. ``follow_up`` is the
+    check's first case digest and the round, for an in-check follow-up job (issue #1047).
     """
 
     body: dict[str, CanonicalJsonValue] = {
@@ -3684,6 +3704,8 @@ async def _publish_semantic_case_object(
     }
     if check_change is not None:
         body["check_change"] = check_change
+    if follow_up is not None:
+        body["follow_up"] = {"base_case_digest": follow_up[0], "round": follow_up[1]}
     payload = canonical_encode(cast(CanonicalJsonValue, body))
     staged = await runtime.objects.stage(
         ObjectSource(data=payload, declared_size=len(payload)),
@@ -4593,7 +4615,17 @@ def _privacy_gated_semantic_evaluator(
         require_complete_specification: bool = False,
         final_review: bool = False,
         task_fact_gaps: tuple[str, ...] = (),
-    ) -> FinalSemanticEvaluation:
+        follow_up: ReviewFollowUp | None = None,
+    ) -> FinalSemanticEvaluation | None:
+        """One review of the frozen case, or one in-check follow-up round of it (issue #1047).
+
+        A follow-up builds the same case with the excerpts the reviewer asked for ranked first,
+        under the endpoint, budget profile and check-time change frozen with the check's own
+        review job, in a job of its own keyed by its case digest, so recovery finds it again.
+        ``None`` means nothing was dispatched: the check has no completed review of its own, or
+        the follow-up packet would add nothing earlier packets did not carry.
+        """
+
         from yoetz.ports.ledger import OperationLease as _OpLease
 
         # Tracked from the top so *every* exit — including the catch-all below — can return the
@@ -4797,7 +4829,27 @@ def _privacy_gated_semantic_evaluator(
                         recovered_case_id,
                         recovered_case_digest,
                         recovered_check_change,
+                        base_case_digest,
                     ) = await _read_semantic_execution(runtime, job.case_object_ref)
+                    if base_case_digest is not None:
+                        # An in-check follow-up job (issue #1047): the check's own review job is
+                        # its base, and every round is rebuilt from what that job froze.
+                        job = await runtime.ledger.load_semantic_job(
+                            frozen.lease.writer_id,
+                            frozen.lease.operation_id,
+                            case_digest=base_case_digest,
+                        )
+                        if job is None:
+                            raise ValueError("semantic_follow_up_base_missing")
+                        (
+                            execution,
+                            recovered_case_id,
+                            recovered_case_digest,
+                            recovered_check_change,
+                            _,
+                        ) = await _read_semantic_execution(runtime, job.case_object_ref)
+                    if follow_up is not None and (execution is None or job.state != "succeeded"):
+                        return None
                     if execution is None:
                         return await _finish_legacy_semantic_job(
                             runtime,
@@ -4805,6 +4857,9 @@ def _privacy_gated_semantic_evaluator(
                             max_retries=max_retries,
                             on_lease_renewed=_on_lease_renewed,
                         )
+                elif follow_up is not None:
+                    # A follow-up answers the check's own completed review; there is none.
+                    return None
             if execution is not None:
                 provider = execution.provider
                 fallback_binding = execution.fallback_binding
@@ -4998,6 +5053,7 @@ def _privacy_gated_semantic_evaluator(
                     check_time_change_unavailable=check_change.unavailable,
                     check_time_change_unavailable_reason=check_change.reason,
                     final_review=final_review,
+                    follow_up=follow_up,
                 )
 
             try:
@@ -5104,6 +5160,11 @@ def _privacy_gated_semantic_evaluator(
             packet_prior_refs = packet_view.prior_finding_refs
             packet_settled_refs = packet_view.settled_finding_refs
             packet_citable_refs = packet_view.citable_refs
+            # Issue #1047: the sources of the excerpts this case carries, so an in-check follow-up
+            # can tell what a later packet adds. In process only.
+            case_excerpt_refs = frozenset(
+                item.source_ref for item in semantic_case.items if item.section == "excerpt"
+            )
             # Issue #907: which paths each captured edit records, compared in process only so a
             # repeated request for a captured edit can converge on a fresh diff of that path.
             packet_edit_paths = captured_edit_paths(
@@ -5158,6 +5219,38 @@ def _privacy_gated_semantic_evaluator(
                         request_id=frozen.lease.operation_id,
                     )
                     check_change_files = CheckChangeShownFiles((), (), complete=False)
+            follow_up_base: tuple[str, int] | None = None
+            if follow_up is not None:
+                # Issue #1047: a round is sent only when its packet carries a requested excerpt
+                # no earlier packet of this check carried.
+                if not follow_up.added_by(case_excerpt_refs) - follow_up.added_refs:
+                    return None
+                if runtime is not None and job is not None:
+                    assert recovered_case_digest is not None
+                    follow_up_base = (recovered_case_digest, follow_up.round)
+                    # The round owns its job, keyed by its own case digest; it keeps the base
+                    # job's endpoint, retries and budget profile and gets its own deadline.
+                    job = await runtime.ledger.load_semantic_job(
+                        frozen.lease.writer_id,
+                        frozen.lease.operation_id,
+                        case_digest=semantic_case.case_digest,
+                    )
+                    execution = None
+                    if job is not None:
+                        (
+                            execution,
+                            _,
+                            round_case_digest,
+                            _,
+                            round_base_digest,
+                        ) = await _read_semantic_execution(runtime, job.case_object_ref)
+                        if (
+                            execution is None
+                            or round_case_digest != semantic_case.case_digest
+                            or round_base_digest != recovered_case_digest
+                        ):
+                            raise ValueError("semantic_follow_up_job_invalid")
+                recovered_case_digest = None
             if (
                 recovered_case_digest is not None
                 and semantic_case.case_digest != recovered_case_digest
@@ -5225,6 +5318,7 @@ def _privacy_gated_semantic_evaluator(
                     case_workspace_root=workspace_root,
                     check_change_files=check_change_files,
                     review_input_manifest=input_manifest,
+                    case_excerpt_refs=case_excerpt_refs,
                 )
 
             # Build the packet before anything durable exists. A packet that cannot be built is a
@@ -5267,6 +5361,7 @@ def _privacy_gated_semantic_evaluator(
                     clock=clock,
                     execution=execution,
                     check_change=check_change.binding_json() if check_change.offered else None,
+                    follow_up=follow_up_base,
                 )
                 job = await runtime.ledger.enqueue_semantic_job(
                     frozen.lease,
@@ -5602,6 +5697,7 @@ def _privacy_gated_semantic_evaluator(
                     check_change_files=check_change_files,
                     continuation=continuation,
                     review_input_manifest=input_manifest,
+                    case_excerpt_refs=case_excerpt_refs,
                     provider_input_manifest=provider_manifest,
                     provider_input_manifest_failure=provider_manifest_failure,
                     provider_input_text_by_ref=provider_input_text_by_ref,

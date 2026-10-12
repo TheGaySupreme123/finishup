@@ -3687,9 +3687,14 @@ class MemoryLedgerAdapter:
             return self._state.task_change_base
 
     async def load_semantic_job(
-        self, writer_id: str, operation_id: str
+        self, writer_id: str, operation_id: str, case_digest: str | None = None
     ) -> SemanticJobRecord | None:
         async with self._lock:
+            if case_digest is not None:
+                # Issue #1047: one job per distinct case the check sent (its own review and each
+                # in-check follow-up round), keyed exactly as ``enqueue_semantic_job`` keys it.
+                job_id = self._state.job_by_case.get((writer_id, operation_id, case_digest))
+                return None if job_id is None else self._state.jobs.get(job_id)
             matches = tuple(
                 job
                 for job in self._state.jobs.values()
@@ -3861,7 +3866,16 @@ class MemoryLedgerAdapter:
             )
             if not matches:
                 return None
-            job = max(matches, key=lambda item: (item.attempt_count, item.job_id))
+            # The live job first: an in-check follow-up round (issue #1047) runs after the
+            # check's own review job is terminal.
+            job = max(
+                matches,
+                key=lambda item: (
+                    item.state in {"queued", "leased"},
+                    item.attempt_count,
+                    item.job_id,
+                ),
+            )
             current = self._state.semantic_progress.get(job.job_id)
             if current is None:
                 return None

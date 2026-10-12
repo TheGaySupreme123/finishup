@@ -6064,6 +6064,7 @@ def _add_review_input_manifest_to_outbound_case(document: dict[str, JsonValue]) 
     """Add the metadata-only composed/provider-bound input manifest (issues #951/#907)."""
 
     from yoetz.ports.semantic import MAX_REVIEW_INPUT_SECTION_ITEMS, MAX_SEMANTIC_CASE_ITEMS
+    from yoetz.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
 
     definitions = cast(dict[str, JsonValue], document["$defs"])
     # A section lists every selected item id. The prior-findings section alone can hold sixteen
@@ -6189,6 +6190,12 @@ def _add_review_input_manifest_to_outbound_case(document: dict[str, JsonValue]) 
             )
         }
         | {
+            # Issue #1047, optional in place: the in-check follow-up round this packet is.
+            "follow_up_round": {
+                "maximum": MAX_REVIEW_FOLLOW_UP_ROUNDS,
+                "minimum": 1,
+                "type": "integer",
+            },
             "missing_inputs": {
                 "items": {"$ref": "#/$defs/review_input_missing"},
                 "maxItems": 8,
