@@ -4283,10 +4283,9 @@ the agent fixes it (a later check proves it absent) or narrows it with a reasone
 limits"). Only that answer narrows it: a `yoetz-verification-limit` decision neither discloses it
 nor marks its obligation `externally_evaluated` (`kernel.limitation`, guard G1). While it is open
 the check continues with `work_open_findings`, never `disclose_limitations`, and the CLI text says
-fix it, or narrow it with `acknowledged` and a reason. The check records a reviewer
-`task_requirement_unmet`, or a reviewer's own `agent_criterion_unmet` label, as
-`agent_criterion_unmet` only when `kernel.review_frame.agent_probe_only` holds, and otherwise as
-`task_requirement_unmet`. The predicate holds when every cited work subject is a hook-observed
+fix it, or narrow it with `acknowledged` and a reason. The check also routes a reviewer
+`task_requirement_unmet` there when `kernel.review_frame.agent_probe_only` holds. The predicate
+holds when every cited work subject is a hook-observed
 command run that matches none of the requested commands of the effective, unacknowledged, unblocked
 obligations and that the agent did not link to a requested command value (PL6-3:
 `kernel.task_facts.agent_linked_run_events` over the frozen prefix, passed to

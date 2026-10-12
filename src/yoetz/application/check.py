@@ -4241,11 +4241,6 @@ def validate_semantic_judgment(
                 rejections.get(SEMANTIC_REJECTED_ROUTINE_COMPLETENESS, 0) + 1
             )
             continue
-        if challenge.finding_kind is FindingKind.AGENT_CRITERION_UNMET:
-            # Review of #1043: the reviewer's own label is a requirement challenge to the fence
-            # below, never a way past it (the routing is deterministic and conservative, ADR-040):
-            # without the recorded facts it stays the task's requirement.
-            challenge = replace(challenge, finding_kind=FindingKind.TASK_REQUIREMENT_UNMET)
         if agent_probe_only(
             case.projection,
             challenge.finding_kind,

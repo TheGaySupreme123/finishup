@@ -430,8 +430,7 @@ beside the existing per-reason counts, so a run's findings can be attributed to 
 New finding kind `agent_criterion_unmet` (priority 2, research-evidence pack): a failure only on
 probes the agent itself authored beyond the task's stated scope. The owner's nuance holds: criteria
 the agent declared are its commitments, so the finding is real; the defect was the label. The
-reviewer is told to use it, never `task_requirement_unmet`, for such a failure; the label is a
-requirement challenge to the kernel routing below, never a way past it.
+reviewer is told to use it, never `task_requirement_unmet`, for such a failure.
 `is_limitation_request` is true for this kind whatever next step the reviewer asked for (guard G1
 applies to requirement kinds; narrowing one's own criterion is always honest), so the #1024
 lifecycle applies: `limitation_requested` ("to disclose", never receipt-blocking work),
@@ -451,8 +450,7 @@ says `decide_at_budget` at the round budget), and the text says fix it, or narro
 basis or wire shape changed.
 
 Kernel routing (`agent_probe_only`), deterministic and conservative: a reviewer
-`task_requirement_unmet`, or a reviewer's own `agent_criterion_unmet` label, is recorded as
-`agent_criterion_unmet` only when (a) at least one effective
+`task_requirement_unmet` is recorded as `agent_criterion_unmet` only when (a) at least one effective
 obligation that is neither acknowledged as not done nor confirmed blocked requests a command (the
 task's own sample or verifier as the plan declares it); (b) the case carries none of
 `planned_verification_failed|not_observed|stale|unobservable|outcome_unknown`, so every declared
@@ -465,9 +463,9 @@ run is the declared verification, never a run beyond it; review of #1043 x #1049
 claims and the plan or statement events it also cites are the requirement being judged; (d) the
 command-identity key is registered (hook rows store commands only as keyed commitments). An edit,
 an agent-published action, a linked run, an unmatched or unreadable row, a frozen prefix the check
-could not read (links unknown), or a missing key records `task_requirement_unmet`, whichever of the
-two kinds the reviewer chose. The review summary says, in fixed words and a count, that the
-challenge was recorded as the agent's own criterion. Residual, disclosed here: hook rows carry neither command text nor paths (privacy), so the
+could not read (links unknown), or a missing key keeps `task_requirement_unmet`. The review
+summary says, in fixed words and a count, that the challenge was recorded as the agent's own
+criterion. Residual, disclosed here: hook rows carry neither command text nor paths (privacy), so the
 predicate cannot tell a run of the agent's own stress script from a run of a task-supplied example
 the agent did not declare as verification; such a failure is also routed. It stays a visible,
 never-clean finding the agent must fix or narrow with a reason, and the receipt lists the narrowing.
