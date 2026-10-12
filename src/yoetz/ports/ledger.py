@@ -2352,7 +2352,15 @@ class LedgerPort(Protocol):
 
     async def load_semantic_progress(
         self, writer_id: str, operation_id: str
-    ) -> SemanticProgressRecord | None: ...
+    ) -> SemanticProgressRecord | None:
+        """The operation's structural review progress, from one of its jobs.
+
+        A check owns one job per in-check follow-up round (issue #1047). The live job is read
+        when there is one; otherwise the latest round's, the review the check records, by the
+        round its frozen case object names. Attempt count and job id only order jobs of one round.
+        """
+
+        ...
 
     async def renew_leases(self, lease: OperationLease) -> OperationLease:
         """Return a replacement lease under the operation's authenticated lifetime policy.

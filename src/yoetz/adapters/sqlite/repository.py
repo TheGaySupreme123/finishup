@@ -22,6 +22,7 @@ from yoetz.adapters.memory.ledger import (
     load_frozen_case_from_resume,
     note_check_admission_refusal,
     quarantine_resume_object_invalid,
+    semantic_case_follow_up_round,
 )
 from yoetz.adapters.sqlite.observation import SqliteObservationStore
 from yoetz.domain.events import (
@@ -2616,22 +2617,51 @@ class SqliteLedger:
         self, writer_id: str, operation_id: str
     ) -> SemanticProgressRecord | None:
         await self._ensure_recovered()
+        case_refs: tuple[ObjectRef, ...] = ()
         async with self._lock:
-            row = self._db.execute(
+            rows = self._db.execute(
                 "SELECT progress.job_id,progress.attempt_ordinal,progress.phase,"
                 "progress.phase_entered_at,progress.queued_at,progress.deadline_at,"
-                "jobs.state,jobs.terminal_code,jobs.terminal_at "
+                "jobs.state,jobs.terminal_code,jobs.terminal_at,jobs.attempt_count,"
+                "jobs.case_digest,jobs.case_object_id "
                 "FROM semantic_jobs AS jobs JOIN semantic_progress AS progress "
                 "ON progress.job_id=jobs.job_id "
                 "WHERE jobs.writer_id=? AND jobs.operation_id=? "
-                # The live job first: an in-check follow-up round (issue #1047) runs after the
-                # check's own review job is terminal.
+                # Each in-check follow-up round (issue #1047) is a job of its own. The live job
+                # first: at most one is live, and it is the latest.
                 "ORDER BY jobs.state IN ('queued','leased') DESC, "
-                "jobs.attempt_count DESC, jobs.job_id DESC LIMIT 1",
+                "jobs.attempt_count DESC, jobs.job_id DESC",
                 (writer_id, operation_id),
-            ).fetchone()
-        if row is None:
+            ).fetchall()
+            if len(rows) > 1 and rows[0][6] not in {"queued", "leased"}:
+                case_refs = tuple(
+                    self._object_ref_from_inventory(
+                        cast(str, row[11]), self._task_id, "application/json"
+                    )
+                    for row in rows
+                )
+        if not rows:
             return None
+        row = rows[0]
+        if case_refs:
+            # Every job is terminal: the latest round is the review the check records; attempt
+            # count and job id only order jobs of one round, exactly as the memory ledger does.
+            objects = self._objects
+            try:
+                if objects is None:
+                    raise ValueError("semantic_case_objects_unavailable")
+                rounds = [
+                    await semantic_case_follow_up_round(
+                        objects, ref, case_digest=cast(str, item[10]), task=self._task_id
+                    )
+                    for item, ref in zip(rows, case_refs, strict=True)
+                ]
+            except (KeyError, OSError, TypeError, ValueError) as exc:
+                raise _public_error(PublicErrorCode.STORAGE_CORRUPT) from exc
+            row = max(
+                zip(rows, rounds, strict=True),
+                key=lambda pair: (pair[1], cast(int, pair[0][9]), cast(str, pair[0][0])),
+            )[0]
         (
             job_value,
             ordinal,
@@ -2642,7 +2672,7 @@ class SqliteLedger:
             job_state,
             terminal_code,
             terminal_at,
-        ) = row
+        ) = row[:9]
         try:
             entered_at = parse_rfc3339_millis(cast(str, entered))
             if job_state in {"queued", "leased"}:
