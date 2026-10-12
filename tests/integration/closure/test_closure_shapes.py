@@ -13,9 +13,13 @@ closure_prepare, the check's next step and the receipt in JSON, markdown and tex
 
 Shapes: (a) a deterministic run clean except for Yoetz's own calls (music D, html D, payments D);
 (b) ks S, a rejection that awaits a reviewer ruling; (c) cargo D, acknowledged obligations and
-bookkeeping findings; (d) vpp S, a reviewer's limitation request (owner decision Q4). Controls
-that must not change: lake S (a genuine unmet requirement), cad D (digest-only evidence bounds a
-deterministic run) and interleaved D (a host observation that arrives after the check).
+bookkeeping findings; (d) vpp S and ks S, a reviewer's limitation request (owner decisions Q4 and 2026-10-12): the agent's
+answer decides what it means, so the shape is driven with both answers (``acknowledged`` is a
+disclosed verification limit at ``insufficient_coverage``, ``acknowledged_not_done`` is an unmet
+requirement at ``unresolved_findings_remain``). Controls that must not change: lake S (a genuine
+unmet requirement, whether the reviewer said ``act`` or asked for a stated limit and the agent
+answered "not done"), cad D (digest-only evidence bounds a deterministic run) and interleaved D (a
+host observation that arrives after the check).
 """
 
 # pyright: reportPrivateUsage=false
@@ -608,28 +612,73 @@ async def test_a_rejected_finding_awaits_a_ruling_and_is_never_offered_acknowled
 # -- Shape (d): vpp S, a reviewer's limitation request (owner decision Q4) -----------------------
 
 
-async def test_a_limitation_request_needs_one_disclosure_then_reads_as_a_verification_limit() -> (
-    None
-):
-    """vpp S: a request to state a limit is agent work to disclose once, never blocking work."""
+@pytest.mark.parametrize(
+    ("kind", "disposition", "conclusion", "counts", "basis"),
+    [
+        # vpp S answered "may be met, cannot be verified here": a disclosed verification limit.
+        (
+            FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE,
+            "acknowledged",
+            _INSUFFICIENT,
+            (0, 0, 0, 1, 0),
+            "limitation_disclosed",
+        ),
+        # ks S / lake S answered "not done": the requirement is not met, so it stays unresolved.
+        (
+            FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE,
+            "acknowledged_not_done",
+            _UNRESOLVED,
+            (0, 0, 1, 0, 0),
+            "limitation_acknowledged_not_done",
+        ),
+        (
+            FindingKind.TASK_REQUIREMENT_UNMET,
+            "acknowledged",
+            _INSUFFICIENT,
+            (0, 0, 0, 1, 0),
+            "limitation_disclosed",
+        ),
+        (
+            FindingKind.TASK_REQUIREMENT_UNMET,
+            "acknowledged_not_done",
+            _UNRESOLVED,
+            (0, 0, 1, 0, 0),
+            "limitation_acknowledged_not_done",
+        ),
+    ],
+)
+async def test_a_limitation_request_needs_one_answer_and_the_answer_decides_what_it_means(
+    kind: FindingKind,
+    disposition: str,
+    conclusion: str,
+    counts: Counts,
+    basis: str,
+) -> None:
+    """vpp S / ks S / lake S: a request to state a limit is agent work to answer once.
+
+    Before the answer it is never blocking work. The answer decides: ``acknowledged`` discloses a
+    verification limit (``insufficient_coverage``, listed under "Verification limits");
+    ``acknowledged_not_done`` says the requirement is not met (``unresolved_findings_remain``,
+    like any requirement acknowledged as not done, and never under "Verification limits").
+    """
 
     claim = protocol_id("clm_", 7201)
     obligation = protocol_id("obl_", 7001)
     script = ["challenge", "challenge", "challenge"]
     run = await _begin(
-        seed=73,
+        seed=73 + [*FindingKind].index(kind),
         semantic="optional",
         evaluator=_challenge(
             claim,
             obligation,
-            kind=FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE,
+            kind=kind,
             next_step="state_unresolved_limitation",
             script=script,
         ),
     )
     checked = await _ai_finding(
         run,
-        kind=FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE,
+        kind=kind,
         next_step="state_unresolved_limitation",
         script=script,
     )
@@ -668,22 +717,34 @@ async def test_a_limitation_request_needs_one_disclosure_then_reads_as_a_verific
     await run.respond(
         _reviewer_finding(checked).finding_id,
         checked.result_frontier,
-        "acknowledged",
+        disposition,
         "The evaluator is hidden; I cannot measure it here.",
         evidence_refs=[attempt],
     )
     # The answer is a response to a finding the last check did not return, so it supersedes that
-    # check; the reviewer reads the acknowledgement and repeats the same request.
-    await run.check_in("semantic_if_configured")
+    # check; the reviewer reads the answer and repeats the same request.
+    answered = await run.check_in("semantic_if_configured")
     after = await _surfaces(run)
     readiness = after.status["compact"].closure_readiness
     assert readiness.agent_actionable == ()
     assert readiness.state == "ready_with_limitations"
-    assert_surfaces_agree(after, conclusion=_INSUFFICIENT, counts=(0, 0, 0, 1, 0))
+    assert_surfaces_agree(after, conclusion=conclusion, counts=counts, check=answered)
+    answered_row = next(iter(cast(Any, after.status["findings"].page).items))
+    assert answered_row.closure_basis == basis
+    # Nothing is left to disclose or repair on any answer: the check says to request the receipt.
+    assert answered.finding_checklist is not None
+    assert answered.finding_checklist.next == "request_receipt"
     document = after.receipts["json"].document
-    assert document["limitation_disclosed_finding_ids"] == [_reviewer_finding(checked).finding_id]
-    for fmt in ("markdown", "text"):
-        assert "Verification limits" in after.receipts[fmt].human_text
+    if basis == "limitation_disclosed":
+        assert document["limitation_disclosed_finding_ids"] == [
+            _reviewer_finding(checked).finding_id
+        ]
+        for fmt in ("markdown", "text"):
+            assert "Verification limits" in after.receipts[fmt].human_text
+    else:
+        assert "limitation_disclosed_finding_ids" not in document
+        for fmt in ("markdown", "text"):
+            assert "Verification limits" not in after.receipts[fmt].human_text
 
 
 # -- Shape (e): formal-crypto S, a resolved obligation whose deliverable was emptied ------------

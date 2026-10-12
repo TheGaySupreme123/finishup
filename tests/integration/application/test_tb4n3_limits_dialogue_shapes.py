@@ -8,6 +8,8 @@ review; the code side is what failed). The shapes are the recorded runs:
 * vpp S: the same concern comes back under another finding kind after the agent gave up;
 * lake S and pretrain S (controls): an ``act`` demand is still agent work, and the rescue (the
   acknowledgement re-check sending the agent back, a later repair resolving the finding) holds;
+  lake S's real finding was a limitation request the agent answered ``acknowledged_not_done``,
+  which says the requirement is NOT met (owner decision 2026-10-12), so it stays unmet;
 * cargo S and formal-crypto S: a rebuttal is never erased by a later acknowledgement, and the
   agent's own republish is not new material.
 """
@@ -182,6 +184,59 @@ async def test_ks_s_a_limitation_request_is_not_work_and_one_acknowledgement_set
     _rebuilt_equals_live(session)
 
 
+async def test_ks_s_a_limitation_request_answered_not_done_is_an_unmet_requirement() -> None:
+    """Owner decision 2026-10-12: the agent's answer decides what the request means.
+
+    ``acknowledged_not_done`` says the requirement is NOT met, so it is not a verification limit:
+    the finding blocks the receipt like any requirement acknowledged as not done, and the respond
+    result says so (``closure_after.limitation``).
+    """
+
+    seed = 9150
+    reviewer = W._Reviewer([_raise(FindingKind.TASK_REQUIREMENT_UNMET, _LIMIT)])
+    session, frontier = await W._session(reviewer, seed)
+    first = await W._check(session, frontier, seed + 10)
+    request = W._semantic(first)
+    at = frontier_json(first.result_frontier)
+    recorded = await _respond(session, at, at, request, seed + 20, "acknowledged_not_done", _REASON)
+    assert recorded.closure_after is not None
+    assert recorded.closure_after.limitation == "limitation_acknowledged_not_done"
+    assert recorded.closure_after.todo_state == "acknowledged_not_done"
+    live = W._live_projection(session.app)
+    assert finding_blocks_receipt(live, request.finding_id) is True
+    assert receipt_blocking_finding_count(live) == 1
+    assert limitation_disclosed_ids(live) == () and limitation_requested_ids(live) == ()
+    _rebuilt_equals_live(session)
+
+    # Taking it back with ``reopened`` returns it to something to disclose; the agent may then
+    # state the limit instead.
+    back = await _respond(
+        session,
+        frontier_json(recorded.result_frontier),
+        at,
+        request,
+        seed + 30,
+        "reopened",
+        "It may be met but I cannot measure it here.",
+    )
+    assert back.closure_after is not None
+    assert back.closure_after.limitation == "limitation_requested"
+    disclosed = await _respond(
+        session,
+        frontier_json(back.result_frontier),
+        at,
+        request,
+        seed + 40,
+        "acknowledged",
+        _REASON,
+    )
+    assert disclosed.closure_after is not None
+    assert disclosed.closure_after.limitation == "limitation_disclosed"
+    live = W._live_projection(session.app)
+    assert receipt_blocking_finding_count(live) == 0
+    assert limitation_disclosed_ids(live) == (request.finding_id,)
+
+
 async def test_an_act_finding_still_needs_a_recorded_resolution_attempt_to_acknowledge() -> None:
     """The relaxation is for the reviewer's limitation request only (guard G1)."""
 
@@ -204,8 +259,22 @@ async def test_an_act_finding_still_needs_a_recorded_resolution_attempt_to_ackno
 # --- (d) vpp S: the same concern under another kind is recorded on the settled item ---------------
 
 
-async def test_vpp_s_one_concern_stays_one_finding_across_kinds_and_checks() -> None:
-    """Three ids for one private-reference concern became one, disclosed once."""
+@pytest.mark.parametrize(
+    ("disposition", "limitation", "blocking"),
+    [
+        ("acknowledged", "limitation_disclosed", 0),
+        ("acknowledged_not_done", "limitation_acknowledged_not_done", 1),
+    ],
+)
+async def test_vpp_s_one_concern_stays_one_finding_across_kinds_and_checks(
+    disposition: str, limitation: str, blocking: int
+) -> None:
+    """Three ids for one private-reference concern became one, answered once.
+
+    The fold is the same for both answers; what the answer means is not: ``acknowledged`` says the
+    requirement may be met but cannot be verified here (disclosed, non-blocking) and
+    ``acknowledged_not_done`` says it is not met (unmet, receipt-blocking).
+    """
 
     seed = 9300
     reviewer = W._Reviewer(
@@ -221,11 +290,11 @@ async def test_vpp_s_one_concern_stays_one_finding_across_kinds_and_checks() -> 
     at = frontier_json(first.result_frontier)
     gave_up = await session.app.respond(
         RespondRequest.model_validate(
-            W._respond_wire(session, at, at, request, seed + 20, "acknowledged_not_done", _REASON)
+            W._respond_wire(session, at, at, request, seed + 20, disposition, _REASON)
         )
     )
     assert gave_up.closure_after is not None
-    assert gave_up.closure_after.limitation == "limitation_disclosed"
+    assert gave_up.closure_after.limitation == limitation
 
     second = await W._check(session, frontier_json(gave_up.result_frontier), seed + 30)
     assert second.findings == () or all(
@@ -241,8 +310,8 @@ async def test_vpp_s_one_concern_stays_one_finding_across_kinds_and_checks() -> 
     assert _semantic_findings(session) == (request.finding_id,)
     live = W._live_projection(session.app)
     assert live.findings[request.finding_id].settled_reraise_count == 2
-    assert limitation_disclosed_ids(live) == (request.finding_id,)
-    assert receipt_blocking_finding_count(live) == 0
+    assert limitation_disclosed_ids(live) == ((request.finding_id,) if not blocking else ())
+    assert receipt_blocking_finding_count(live) == blocking
     _rebuilt_equals_live(session)
 
 
@@ -456,6 +525,26 @@ async def test_lake_s_control_an_act_demand_answered_not_done_stays_unmet() -> N
     live = W._live_projection(session.app)
     assert finding_todo_state(live, unmet.finding_id) is FindingTodoState.ACKNOWLEDGED_NOT_DONE
     assert finding_blocks_receipt(live, unmet.finding_id) is True
+    assert receipt_blocking_finding_count(live) == 1
+    assert limitation_disclosed_ids(live) == () and limitation_requested_ids(live) == ()
+
+
+async def test_lake_s_a_limitation_request_answered_not_done_keeps_the_receipt_unresolved() -> None:
+    """lake S ``fnd_8bdad2d0``: the real finding was a limitation request the agent answered
+    ``acknowledged_not_done`` (accuracy really unmet). It stays an unmet requirement."""
+
+    seed = 9550
+    reviewer = W._Reviewer([_raise(FindingKind.TASK_REQUIREMENT_UNMET, _LIMIT)])
+    session, frontier = await W._session(reviewer, seed)
+    first = await W._check(session, frontier, seed + 10)
+    request = W._semantic(first)
+    at = frontier_json(first.result_frontier)
+    await _respond(
+        session, at, at, request, seed + 20, "acknowledged_not_done", "RMSE 2.0 stays unmet."
+    )
+    live = W._live_projection(session.app)
+    assert finding_todo_state(live, request.finding_id) is FindingTodoState.ACKNOWLEDGED_NOT_DONE
+    assert finding_blocks_receipt(live, request.finding_id) is True
     assert receipt_blocking_finding_count(live) == 1
     assert limitation_disclosed_ids(live) == () and limitation_requested_ids(live) == ()
 

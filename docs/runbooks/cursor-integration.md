@@ -1988,10 +1988,13 @@ other hosts. The stop hook and the MCP `respond` tool take the shared path; a Cu
 
 - A reviewer finding that asks the agent to `state_unresolved_limitation` is a to-disclose item, not
   repair work. `kernel/limitation.limitation_standing` reads it; `finding_blocks_receipt` is false
-  for it. One reasoned `respond` (`acknowledged`, `acknowledged_not_done`, or `self_verified`) or a
-  `yoetz-verification-limit:<obligation id>` decision settles it, with no recorded resolution attempt
-  required. It is never clean. How the Stop hook and readiness word an undisclosed request is owned
-  by the closure-classification change (ADR-046).
+  for it. The agent's answer decides what it means (owner decision 2026-10-12, ADR-040 and ADR-046
+  amendments): one reasoned `respond` `acknowledged` (or `self_verified`) or a
+  `yoetz-verification-limit:<obligation id>` decision says the requirement may be met but cannot be
+  verified here, and settles it as a disclosed verification limit with no recorded resolution
+  attempt required (never clean, at best `insufficient_coverage`); `acknowledged_not_done` says the
+  requirement is NOT met and keeps `unresolved_findings_remain` like any unmet requirement.
+  The Stop hook and readiness read the same closure class on every host.
 - `acknowledged_not_done` is no longer a one-way door: `respond` with `reopened` and a reason takes
   it back, and a qualifying `check` that tested the work after the answer resolves it (also for
   `self_verified`).

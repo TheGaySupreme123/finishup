@@ -6943,6 +6943,8 @@ ledger prefix and never stored. Names:
   (`open_unanswered`, `open_answered`, `reopened`, `limitation_requested`, `rejected_awaiting_ruling`,
   `rejected_review_unavailable`, `acknowledged_not_done_requirement`, `acknowledged_not_done_bookkeeping`,
   `self_verified`, `disputed_after_rebuttal`, `rejection_accepted`, `limitation_disclosed`,
+  `limitation_acknowledged_not_done` (`settled_unmet`: a limitation request the agent answered
+  `acknowledged_not_done`, owner decision 2026-10-12),
   `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`).
 - `yoetz.kernel.gap_effect`: `GAP_EFFECT_TABLE` (one row per recorded gap code and the readiness-only
   tokens), `GapContext`, `GapEffectKind` (`actionable|standing_bounding|disclosed|historical`),
@@ -8444,19 +8446,25 @@ Names shared by the kernel, `respond`, `check`, status and the receipt:
   `acknowledged_not_done` answers `finding_terminal` to every disposition but `reopened`; the message
   names the state and the way out.
 - `respond-result` `1.1.0` optional `closure_after {todo_state, limitation?}`: the state the answer
-  produced, simulated at its own frontier (`limitation` is `limitation_requested` or
-  `limitation_disclosed` for a reviewer's limitation request; absent otherwise).
+  produced, simulated at its own frontier (`limitation` is `limitation_requested`,
+  `limitation_disclosed` or `limitation_acknowledged_not_done` for a reviewer's limitation request;
+  absent otherwise).
 - Absence proof after the answer: `FindingProjectionRecord.resolution_frontier` (the tested frontier
   of the check named by `resolved_by_check_event_id`) lets `finding_is_resolved` resolve an
   `acknowledged_not_done` or `self_verified` answer when the proof tested the work after the answer.
   The status finding items allow `resolved: true` on those two states.
 - Limitation requests: `domain.findings.is_limitation_request(finding)` and
   `finding_demands_work(finding)`; `kernel.limitation.limitation_standing(state, finding_id) ->
-  LimitationStanding | None` with states `limitation_requested` (to disclose) and
-  `limitation_disclosed` (basis `respond_acknowledgement` or `verification_limit_decision`),
-  `limitation_requested_ids` and `limitation_disclosed_ids`. A limitation request never demands
-  work, is never receipt-blocking and is never clean. Acknowledging it needs no recorded resolution
-  attempt.
+  LimitationStanding | None` with states `limitation_requested` (to disclose),
+  `limitation_disclosed` (the requirement may be met but cannot be verified here; basis
+  `respond_acknowledgement` or `verification_limit_decision`) and
+  `limitation_acknowledged_not_done` (the requirement is NOT met; basis
+  `respond_acknowledged_not_done`; `LimitationStanding.unmet`), `limitation_requested_ids` and
+  `limitation_disclosed_ids`. The agent's answer decides which (owner decision 2026-10-12; the
+  answer is read before a decision line, so a decision never turns `acknowledged_not_done` into a
+  disclosure). Until answered a limitation request never demands work, is never receipt-blocking and
+  is never clean; answered `acknowledged_not_done` it is `settled_unmet` and holds the receipt at
+  `unresolved_findings_remain`. Acknowledging it needs no recorded resolution attempt.
 - Reducer facts (replay-derived, snapshot-emitted only when set): `standing_position`
   (`StandingPosition(kind, frontier)`; the earliest unretracted reasoned answer), `last_ruling_frontier`,
   `resolution_frontier`, `absorbed_refs` (bounded refs a settled item's re-raises cited) on a finding

@@ -1829,7 +1829,7 @@ def is_limitation_request(finding: Finding) -> bool:
 
     A pure function of the recorded finding (so ranking can use it at mint time). It does not
     settle the finding by itself: the closure class stays ``agent_work`` / ``limitation_requested``
-    until the agent discloses it (``kernel.closure_class``, owner decision Q4).
+    until the agent answers it (``kernel.closure_class``, owner decisions Q4 and 2026-10-12).
     """
 
     return (

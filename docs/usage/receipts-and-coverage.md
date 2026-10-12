@@ -289,12 +289,15 @@ Two more things decide what the receipt will say, and status tells you before yo
   rejected. If no review can rule (the route did not request one), the rejection is disclosed
   instead.
 - **A limit a reviewer asks you to state.** When a challenge asks you to say plainly that something
-  cannot be verified (a hidden evaluator, a private trace), that is not work. Answer once with
+  cannot be verified (a hidden evaluator, a private trace), that is not repair work, and your answer
+  decides what it means. If the requirement may be met but cannot be verified here, answer once with
   `acknowledged` and say what cannot be verified. It is then final, the receipt lists it under
   "Verification limits", and the conclusion is at best `insufficient_coverage`; it never reads clean
   and it never reads `unresolved_findings_remain` for that item. A decision line
   `yoetz-verification-limit:<obligation id>` covering the obligation the challenge concerns does the
-  same.
+  same. If you know the requirement is not met, answer `acknowledged_not_done` instead: the receipt
+  then lists it with the requirements you acknowledged as not done and reads
+  `unresolved_findings_remain`, exactly like any other requirement left undone.
 
 Before you ask for a receipt, `closure_readiness.predicted_receipt` names the conclusion it would
 carry and why. The receipt carries the same reasons (`conclusion_basis`) and opens its Summary with

@@ -224,14 +224,17 @@ tb4n3 RC-3 change (ADR-046), not here.
 `kernel/limitation.limitation_standing` is the lifecycle, replay-derived:
 
 - **limitation_requested** (to disclose): the request is recorded, never repair work, never
-  receipt-blocking, never a Stop-gate token. Its only next action is one disclosure.
-- **limitation_disclosed**: the agent's one disclosure settles it, by a reasoned `respond`
-  (`acknowledged`, `acknowledged_not_done`, or `self_verified`, which already requires a reason and
+  receipt-blocking, never a Stop-gate token. Its only next action is one answer.
+- **limitation_disclosed**: the agent says the requirement may be met but cannot be verified here,
+  by a reasoned `respond` (`acknowledged`, or `self_verified`, which already requires a reason and
   the agent's evidence) or by a recorded `yoetz-verification-limit:<obligation id>` decision on an
   obligation the finding concerns. Acknowledging a limitation request needs no recorded resolution
   attempt (this relaxes the #885 rule for that class only; repair demands keep it). It is settled and
   never clean: closure readiness and the receipt list it, and a re-raise of the same concern folds
-  onto it. A `rejected` answer disputes the request instead; `reopened` takes a disclosure back.
+  onto it. A `rejected` answer disputes the request instead; `reopened` takes an answer back.
+- **limitation_acknowledged_not_done** (owner decision 2026-10-12, amendment below): the agent
+  answered `acknowledged_not_done`, which says the requirement is NOT met. It is an unmet
+  requirement like any other, not a verification limit.
 
 Guards, each tested: **G1** a challenge asking the agent to `act` is never a limitation request, even
 beside a `yoetz-verification-limit` decision (the reviewer sees an obtainable path). **G2** nothing
@@ -316,3 +319,42 @@ Risks: the normalized fold can still merge two distinct concerns of a comparable
 on one obligation, but only into a settled item or the same open kind over an equal concern, and each
 fold is disclosed through `semantic_restatements_suppressed` and the review summary. A concern
 absorbed into a settled item stays absorbed (bounded at 32).
+
+## Amendment 2026-10-12 (issue #1024, owner decision): the agent's answer decides what a limitation request means
+
+Decision (maintainer TheGaySupreme123, 2026-10-12), replacing the Q4 reading of `acknowledged_not_done`
+("any `respond` acknowledgement with a reason settles it as a disclosure"): a reviewer's
+`state_unresolved_limitation` request is answered by the agent, and the agent's answer decides what it
+means.
+
+| Agent answer | Meaning | State and class | Receipt |
+|---|---|---|---|
+| none yet | to disclose | `limitation_requested`, `agent_work`, next action `acknowledge` | counted "to disclose", never repair work (unchanged) |
+| `acknowledged` with a reason; a reasoned `self_verified`; a `yoetz-verification-limit:<obligation>` decision | the requirement may be met but cannot be verified here | `limitation_disclosed`, `settled_disclosed` | at best `insufficient_coverage`, listed under "Verification limits" (as before) |
+| `acknowledged_not_done` | the requirement is NOT met | `limitation_acknowledged_not_done`, `settled_unmet` | `unresolved_findings_remain`, listed with the requirements acknowledged as not done, never under "Verification limits" |
+
+Why: the Q4 reading moved lake S (`fnd_8bdad2d0`, reward 0, accuracy really unmet) from
+`unresolved_findings_remain` to `insufficient_coverage`. An agent that says "not done" has said the
+requirement is unmet; the receipt must not turn that into a verification limit. The agent who finds
+the requirement may be met after all takes the answer back with `reopened` and discloses.
+
+Implementation: one place. `kernel/limitation.limitation_standing` reads the agent's answer first
+(a third state `limitation_acknowledged_not_done`, `LimitationStanding.unmet`, basis
+`respond_acknowledged_not_done`) and `disclosing_response` no longer counts `acknowledged_not_done`;
+`kernel/closure_class` maps a limitation request in the `ACKNOWLEDGED_NOT_DONE` to-do state to the
+basis `limitation_acknowledged_not_done` (`FINDING_BASES`: `settled_unmet`,
+`unresolved_findings_remain`, next actions `reopen`, `repair`). Every consumer reads the class:
+status, the check checklist and continuation, `closure_prepare`, the receipt document and its
+renderings (the finding is in `acknowledged_not_done_finding_ids`, not `limitation_disclosed_finding_ids`),
+the readiness `acknowledged_not_done` list, and the post-compaction recap. A recorded decision line
+never turns an `acknowledged_not_done` answer into a disclosure (the answer is read first); the
+decision line still marks the obligation `externally_evaluated`. The reviewer packet row of an
+answered request carries `disposition: acknowledged_not_done` and no `limitation_already_disclosed`
+mark. Guards G1-G4 are unchanged and still tested. Wire (unreleased, in place):
+`closure_basis` gains `limitation_acknowledged_not_done` (status-result 1.4.0, check-result 1.4.0) and
+`respond-result` 1.1.0 `closure_after.limitation` gains the same value.
+
+Agent guidance (the four host skills, `workflow.md`, `request-templates.md`,
+`coverage-and-receipts.md`, the finding explanation, the CLI continuation text and the `respond`
+descriptor): "If the requirement may be met but cannot be verified here, respond `acknowledged` with
+the reason; respond `acknowledged_not_done` only when you know it is not met."

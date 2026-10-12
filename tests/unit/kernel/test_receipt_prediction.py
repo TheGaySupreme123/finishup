@@ -86,6 +86,8 @@ def test_disclosed_gaps_and_settled_history_do_not_bound_a_clean_conclusion() ->
         "open_answered",
         "rejected_awaiting_ruling",
         "acknowledged_not_done_requirement",
+        # A limitation request the agent answered ``acknowledged_not_done`` (decision 2026-10-12).
+        "limitation_acknowledged_not_done",
     ],
 )
 def test_an_open_awaiting_or_unmet_finding_reads_unresolved(basis: str) -> None:

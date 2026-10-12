@@ -35,6 +35,19 @@ def test_a_pending_limitation_request_is_still_something_to_do() -> None:
     assert checklist.next == "work_open_findings"
 
 
+def test_a_limitation_request_answered_not_done_is_settled_unmet_not_work_to_disclose() -> None:
+    """The answer decides: "not done" says the requirement is not met, so there is nothing left
+    for the agent to disclose and the receipt keeps ``unresolved_findings_remain``."""
+
+    finding = _finding(1, semantic=True, next_step="state_unresolved_limitation")
+    state, closure = _one(finding, ResponseDisposition.ACKNOWLEDGED_NOT_DONE, reasoned=True)
+    assert closure.basis == "limitation_acknowledged_not_done"
+    checklist = build_finding_checklist(state, attempt_budget=5)
+    assert checklist.next == "request_receipt"
+    assert checklist.closure_counts is not None
+    assert (checklist.closure_counts.unmet, checklist.closure_counts.disclosed) == (1, 0)
+
+
 def test_a_rejection_no_reviewer_can_rule_on_is_not_open_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

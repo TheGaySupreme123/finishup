@@ -162,16 +162,14 @@ def finding_states(
     for item in current_receipt_findings(projection):
         todo = finding_todo_state(projection, item.finding_id)
         closure = closures.get(item.finding_id)
-        # A limitation request answered ``acknowledged_not_done`` is a disclosed verification
-        # limit (ADR-046), not a requirement left undone: it is named once, as disclosed.
-        undone = todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE and (
-            closure is None or closure.basis != "limitation_disclosed"
-        )
+        # A limitation request answered ``acknowledged_not_done`` says the requirement is NOT met
+        # (owner decision 2026-10-12): it is named once, as acknowledged not done, like any other
+        # requirement left undone. Only a disclosure (``acknowledged``) is a verification limit.
         states.append(
             ReceiptFindingState(
                 item.finding_id,
                 todo is FindingTodoState.VERIFIED_RESOLVED,
-                acknowledged_not_done=undone,
+                acknowledged_not_done=todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE,
                 rejection_accepted=todo is FindingTodoState.REJECTION_ACCEPTED,
                 self_verified=todo is FindingTodoState.SELF_VERIFIED,
                 disputed_after_rebuttal=todo is FindingTodoState.DISPUTED_AFTER_REBUTTAL,

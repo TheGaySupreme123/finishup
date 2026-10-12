@@ -4935,6 +4935,7 @@ _FINDING_CLOSURE_BASES: Final = (
     "acknowledged_not_done_bookkeeping",
     "acknowledged_not_done_requirement",
     "disputed_after_rebuttal",
+    "limitation_acknowledged_not_done",
     "limitation_disclosed",
     "limitation_requested",
     "open_answered",
@@ -8560,7 +8561,11 @@ def _respond_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "additionalProperties": False,
         "properties": {
             "limitation": {
-                "enum": ["limitation_disclosed", "limitation_requested"],
+                "enum": [
+                    "limitation_acknowledged_not_done",
+                    "limitation_disclosed",
+                    "limitation_requested",
+                ],
                 "type": "string",
             },
             "todo_state": {

@@ -3467,6 +3467,7 @@ FindingClosureBasisLiteral = Literal[
     "disputed_after_rebuttal",
     "rejection_accepted",
     "limitation_disclosed",
+    "limitation_acknowledged_not_done",
     "absence_proved",
     "absence_proved_after_acknowledged_not_done",
     "absence_proved_after_self_verified",
@@ -4032,7 +4033,9 @@ class RespondClosureAfterModel(_ClosedModel):
 
     ``todo_state`` is the finding's shared to-do state after the answer; ``limitation`` is set
     only for a reviewer's limitation request (owner decision Q4): ``limitation_requested`` until
-    the agent discloses it, ``limitation_disclosed`` once one acknowledgement did.
+    the agent answers it, ``limitation_disclosed`` once a reasoned acknowledgement did (the
+    requirement may be met but cannot be verified here), ``limitation_acknowledged_not_done`` once
+    it answered ``acknowledged_not_done`` (the requirement is NOT met; owner decision 2026-10-12).
     """
 
     optional_non_null_fields = frozenset({"limitation"})
@@ -4045,7 +4048,10 @@ class RespondClosureAfterModel(_ClosedModel):
         "self_verified",
         "verified_resolved",
     ]
-    limitation: Literal["limitation_requested", "limitation_disclosed"] | None = None
+    limitation: (
+        Literal["limitation_requested", "limitation_disclosed", "limitation_acknowledged_not_done"]
+        | None
+    ) = None
 
 
 class RespondSuccessModel(_ClosedModel):
