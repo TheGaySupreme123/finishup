@@ -457,8 +457,12 @@ never-clean finding the agent must fix or narrow with a reason, and the receipt 
 
 Wire, all unreleased on 0.3 and changed in place: `finding_kind` gains `agent_criterion_unmet` on
 `finding` 1.4.0, `finding_recorded` 1.4.0 (the only version that carries it), provider judgment
-1.2.0, check-result 1.4.0 and status-result 1.4.0. The frozen lineage child-finding enum is not
-widened (it does not carry `code_defect` or `task_requirement_unmet` either).
+1.2.0, check-result 1.4.0 and status-result 1.4.0. A delegated child's finding keeps its kind
+on the parent: the lineage child-finding row of `child-dependencies-recorded` 1.0.0 and
+`receipt-document` 1.3.0 (both unreleased, widened in place) admits `agent_criterion_unmet`
+(priority 2, actionable) and the two review kinds it had omitted, `code_defect` and
+`task_requirement_unmet`. Before that, a child holding any of the three produced a manifest outside
+its schema and a parent JSON receipt that failed validation (review of #1043).
 
 ### 4. No review before the first material edit (#1046)
 
