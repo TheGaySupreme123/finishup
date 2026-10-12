@@ -250,7 +250,9 @@ async def test_a_cell_that_also_ran_a_command_keeps_its_own_record(replay: _Repl
 
 
 @pytest.mark.parametrize(
-    ("server", "own"), [(None, True), ("github", False)], ids=["server-less", "another-server"]
+    ("server", "own"),
+    [(None, True), ("github", False), ("ci__bot", False)],
+    ids=["server-less", "another-server", "unscopable-server"],
 )
 async def test_a_server_less_yoetz_item_keeps_its_cell_yoetz_own(
     replay: _Replay, server: str | None, own: bool
@@ -259,8 +261,9 @@ async def test_a_server_less_yoetz_item_keeps_its_cell_yoetz_own(
 
     The later-material rule reads that bare Yoetz name as Yoetz's own call, so the cell reads it
     alike: its output adds no ``exec`` action. Another server's ``status`` is named
-    ``mcp__github__status`` and is not Yoetz's, so its cell keeps its own record. The nested
-    hooks land only after the whole cell was written, so the hook timing decides nothing.
+    ``mcp__github__status`` and is not Yoetz's, so its cell keeps its own record; so does one
+    under a server the reader cannot fold into that spelling (``ci__bot``), which names no tool.
+    The nested hooks land only after the whole cell was written, so hook timing decides nothing.
     """
 
     boundary = await _checked(replay)

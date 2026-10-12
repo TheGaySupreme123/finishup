@@ -3209,6 +3209,39 @@ def test_0_159_3_calls_pair_with_outputs_on_call_id_not_their_row_ids(tmp_path: 
     assert mcp.structural_payload["tool_name"] == "mcp__yoetz__status"
 
 
+@pytest.mark.parametrize(
+    ("server", "tool", "expected"),
+    [
+        (None, "status", "status"),
+        ("yoetz", "status", "mcp__yoetz__status"),
+        ("github", "status", "mcp__github__status"),
+        # A named server the reader cannot fold into ``mcp__<server>__<tool>``: a Yoetz tool name
+        # under it is not attributable, any other name keeps its name rules.
+        ("ci__bot", "status", None),
+        ("_priv", "check", None),
+        ("x" * 130, "receipt", None),
+        ("ci__bot", "edit_file", "edit_file"),
+    ],
+    ids=["no-server", "yoetz", "github", "double-underscore", "leading-underscore", "long", "edit"],
+)
+def test_mcp_item_is_named_by_its_server(
+    server: str | None, tool: str, expected: str | None
+) -> None:
+    """#1038: only an ``McpToolCall`` naming no server keeps a Yoetz tool's bare name."""
+
+    item: dict[str, Any] = {"id": "exec-1038-mcp", "status": "completed", "tool": tool}
+    if server is not None:
+        item["server"] = server
+    item["type"] = "McpToolCall"
+    record = CodexParsedRecord(
+        1, 0, 200, "event_msg", "McpToolCall", JsonObject(item_completed(item))
+    )
+
+    structural, _gaps = stream_module.structural_from_stream_record(record)
+
+    assert structural.get("tool_name") == expected
+
+
 def test_hook_prompt_row_is_bookkeeping_not_an_unsupported_event(tmp_path: Path) -> None:
     """#1041: the Stop hook's prompt row (``HookPrompt``) is admitted as bookkeeping."""
 
