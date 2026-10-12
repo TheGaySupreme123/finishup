@@ -37,7 +37,8 @@ A check before your first material edit runs the local plan checks only and send
 While work is in progress the reviewer judges incomplete work only; its correctness concerns come
 back as advisory notes in the review summary, not findings. `agent_criterion_unmet` is a criterion
 you set yourself beyond the task's stated scope: fix it, or narrow it with `respond` `acknowledged`
-and the reason (a disclosed limitation that does not block).
+and the reason (a disclosed limitation that does not block); a `yoetz-verification-limit` decision
+does not narrow it.
 
 Before the receipt, run the closing review: `check` with `final_review: true`. It judges each stated
 requirement and requested output against the task, with or without a completion claim; closure

@@ -401,3 +401,61 @@ def test_an_agent_criterion_finding_is_a_limitation_request_whatever_the_next_st
     assert closure is not None
     assert closure.basis == "limitation_requested"
     assert closure.next_actions == ("acknowledge", "repair")
+
+
+def test_a_reviewer_labelled_agent_criterion_passes_the_same_fence() -> None:
+    """Review of #1043: the routing is deterministic and conservative (ADR-040), so the kind the
+    reviewer chose never skips it. A challenge the reviewer labelled ``agent_criterion_unmet`` is
+    recorded as the agent's own criterion only when ``agent_probe_only`` holds for it as a
+    requirement; otherwise it is a task requirement (priority 1, blocking work)."""
+
+    case, _sample, stress = _vigenere()
+    labelled = _challenge(
+        FindingKind.AGENT_CRITERION_UNMET,
+        str(_OBLIGATION),
+        stress,
+        summary="The solver fails the twelve-stream configuration",
+    )
+    kept = _review(case, labelled, phase="final")
+    assert [candidate.kind for candidate in kept.candidates] == [FindingKind.AGENT_CRITERION_UNMET]
+    # Counted and noted like a rerouted one: the note's "which holds" is now true of every one.
+    assert kept.agent_criteria == 1
+    assert "requirement challenge(s) as your own criterion" in kept.review_summary
+
+    # No declared verification (condition a) and an edit cited: the task's requirement.
+    ledger = ObservedLedger()
+    _obligation(ledger)
+    edited = ledger.edit()
+    ledger.fail(_STRESS)
+    case = _case(ledger)
+    edit_event = str(case.projection.results[edited].source_event_id)
+    review = _review(
+        case,
+        replace(labelled, cited_refs=tuple(sorted((str(_OBLIGATION), edit_event)))),
+        phase="final",
+    )
+    assert [candidate.kind for candidate in review.candidates] == [
+        FindingKind.TASK_REQUIREMENT_UNMET
+    ]
+    assert review.candidates[0].priority == 1
+    assert review.agent_criteria == 0
+    assert "as your own criterion" not in review.review_summary
+
+    # The task's own declared verification failed (condition b): the task's requirement too.
+    ledger = ObservedLedger()
+    _obligation(ledger, command=_SAMPLE)
+    ledger.edit()
+    ledger.fail(_SAMPLE)
+    failed_stress = ledger.fail(_STRESS)
+    case = _case(ledger)
+    assert "planned_verification_failed" in {gap.code for gap in case.gaps}
+    stress_event = str(case.projection.results[failed_stress].source_event_id)
+    review = _review(
+        case,
+        replace(labelled, cited_refs=tuple(sorted((str(_OBLIGATION), stress_event)))),
+        phase="final",
+    )
+    assert [candidate.kind for candidate in review.candidates] == [
+        FindingKind.TASK_REQUIREMENT_UNMET
+    ]
+    assert review.agent_criteria == 0

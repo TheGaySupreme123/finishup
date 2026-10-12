@@ -1843,7 +1843,8 @@ def is_limitation_request(finding: Finding) -> bool:
     reviewer asked for: the criterion is the agent's own, so narrowing it with a recorded reason is
     always an honest answer (the owner's nuance: "criteria the agent declared are its commitments";
     it may keep or narrow them). Fixing it stays open: a later check that proves it absent resolves
-    it like any finding.
+    it like any finding. Only the agent's own answer to it narrows it: a
+    ``yoetz-verification-limit`` decision never does (guard G1, ``kernel.limitation``).
     """
 
     if finding.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED or finding.challenge is None:

@@ -4272,9 +4272,14 @@ unreleased versions). `is_limitation_request` is true for it whatever next step 
 for, so it reads `limitation_requested` ("to disclose") with next actions `acknowledge` and `repair`:
 the agent fixes it (a later check proves it absent) or narrows it with a reasoned `acknowledged`
 (`limitation_disclosed`, receipt at best `insufficient_coverage`, listed under "Verification
-limits"). The check also routes a reviewer `task_requirement_unmet` there when
-`kernel.review_frame.agent_probe_only` holds: every cited work subject is a hook-observed command
-run that matches none of the requested commands of the effective, unacknowledged, unblocked
+limits"). Only that answer narrows it: a `yoetz-verification-limit` decision neither discloses it
+nor marks its obligation `externally_evaluated` (`kernel.limitation`, guard G1). While it is open
+the check continues with `work_open_findings`, never `disclose_limitations`, and the CLI text says
+fix it, or narrow it with `acknowledged` and a reason. The check records a reviewer
+`task_requirement_unmet`, or a reviewer's own `agent_criterion_unmet` label, as
+`agent_criterion_unmet` only when `kernel.review_frame.agent_probe_only` holds, and otherwise as
+`task_requirement_unmet`. The predicate holds when every cited work subject is a hook-observed
+command run that matches none of the requested commands of the effective, unacknowledged, unblocked
 obligations, at least one such requested command exists, the case carries none of
 `planned_verification_failed|not_observed|stale|unobservable|outcome_unknown`, and the
 command-identity key is registered. The review summary then says, in fixed words and a count, that
@@ -8810,7 +8815,8 @@ Wire (the earlier checklist fields remain available in their original versions):
   `next` is `decide_at_budget` (an open item reached the budget: repair with new evidence or
   respond `acknowledged_not_done`), `work_open_findings`, `disclose_limitations` (the only agent
   work left is a reviewer's limitation request nobody answered; `check-result` 1.4.0, owner
-  decision 2026-10-12), or `request_receipt`. It is current
+  decision 2026-10-12; an open `agent_criterion_unmet` is work, `work_open_findings`), or
+  `request_receipt`. It is current
   projection context attached after the commit, like advisory notes, and is omitted when that read
   is unavailable; it is never part of the check event.
 - `status-result` `1.4.0` findings view: each row carries `todo_state` and `review_rounds`
@@ -8859,7 +8865,8 @@ Wire (the earlier checklist fields remain available in their original versions):
   `target_refs`; its `action` is `supply_missing_input` for those targets (the refs may be empty
   when the reviewer named a global input), `work_open_findings` for open findings,
   `disclose_limitations` when the only open findings are reviewer limitation requests nobody
-  answered (`check-result` 1.4.0; the targets are those requests),
+  answered (`check-result` 1.4.0; the targets are those requests; the agent's own open
+  `agent_criterion_unmet` is `work_open_findings`),
   `review_recorded_work` for open obligations, undisclosed live failures or a delivered file that
   loads an undeclared file (`deliverable_references_undeclared_file`, #1044; the target is the
   referencing obligation, which stays `resolved`), or `request_receipt`

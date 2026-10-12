@@ -429,17 +429,29 @@ beside the existing per-reason counts, so a run's findings can be attributed to 
 New finding kind `agent_criterion_unmet` (priority 2, research-evidence pack): a failure only on
 probes the agent itself authored beyond the task's stated scope. The owner's nuance holds: criteria
 the agent declared are its commitments, so the finding is real; the defect was the label. The
-reviewer is told to use it, never `task_requirement_unmet`, for such a failure.
+reviewer is told to use it, never `task_requirement_unmet`, for such a failure; the label is a
+requirement challenge to the kernel routing below, never a way past it.
 `is_limitation_request` is true for this kind whatever next step the reviewer asked for (guard G1
 applies to requirement kinds; narrowing one's own criterion is always honest), so the #1024
-lifecycle applies unchanged: `limitation_requested` ("to disclose", never receipt-blocking work),
+lifecycle applies: `limitation_requested` ("to disclose", never receipt-blocking work),
 next actions `acknowledge` and `repair`; a reasoned `acknowledged` narrows it into
 `limitation_disclosed` (receipt at best `insufficient_coverage`, listed under "Verification limits");
 `acknowledged_not_done` is `limitation_acknowledged_not_done`; a later check that proves it absent
 resolves it. The finding explanation says "Your own criterion ... fix it, or narrow the criterion".
+Two parts of that lifecycle belong to the reviewer's request to state a hidden evaluator's limit and
+never apply to the agent's own criterion (review of #1043). A `yoetz-verification-limit` decision
+neither discloses it nor marks its obligation `externally_evaluated` (`kernel.limitation`, G1): the
+probe fails here, and only the agent's own answer to that finding narrows it, so an unrelated
+decision line recorded for a hidden grader can no longer settle it unanswered. And the check never
+continues with `disclose_limitations` ("no repair is needed") for it: an open one is work, so
+`overall_next.action` and `finding_checklist.next` read `work_open_findings` (the checklist still
+says `decide_at_budget` at the round budget), and the text says fix it, or narrow it with
+`acknowledged` and a reason. The finding counters still count it under `to_disclose`; no token,
+basis or wire shape changed.
 
 Kernel routing (`agent_probe_only`), deterministic and conservative: a reviewer
-`task_requirement_unmet` is recorded as `agent_criterion_unmet` only when (a) at least one effective
+`task_requirement_unmet`, or a reviewer's own `agent_criterion_unmet` label, is recorded as
+`agent_criterion_unmet` only when (a) at least one effective
 obligation that is neither acknowledged as not done nor confirmed blocked requests a command (the
 task's own sample or verifier as the plan declares it); (b) the case carries none of
 `planned_verification_failed|not_observed|stale|unobservable|outcome_unknown`, so every declared
@@ -448,9 +460,9 @@ and every work subject it cites is a hook-observed command run (the action, its 
 evidence that result lists) matching none of those requested commands; obligations, claims and the
 plan or statement events it also cites are the requirement being judged; (d) the command-identity
 key is registered (hook rows store commands only as keyed commitments). An edit, an agent-published
-action, an unmatched or unreadable row, or a missing key keeps `task_requirement_unmet`. The review
-summary says, in fixed words and a count, that the challenge was recorded as the agent's own
-criterion. Residual, disclosed here: hook rows carry neither command text nor paths (privacy), so the
+action, an unmatched or unreadable row, or a missing key records `task_requirement_unmet`, whichever
+of the two kinds the reviewer chose. The review summary says, in fixed words and a count, that the
+challenge was recorded as the agent's own criterion. Residual, disclosed here: hook rows carry neither command text nor paths (privacy), so the
 predicate cannot tell a run of the agent's own stress script from a run of a task-supplied example
 the agent did not declare as verification; such a failure is also routed. It stays a visible,
 never-clean finding the agent must fix or narrow with a reason, and the receipt lists the narrowing.
