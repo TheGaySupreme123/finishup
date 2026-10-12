@@ -308,6 +308,13 @@ reverse-chronological released versions.
 
 ### Fixed
 
+- In a repository holding another Git repository inside it (an `api` directory with its own
+  `.git`), Yoetz's local, names-only read of what changed no longer fails: it reads the nested
+  repository the same way the change shown to the reviewer does. So the check again tells whether
+  the workspace changed at all, which outputs the change touches, and whether a delivered file
+  refers to one you created there but did not declare; a nested repository that is unchanged since
+  the task started does not count as a change by itself (#1045).
+
 - A parent's receipt no longer fails when a delegated child holds an AI-powered review finding
   (`code_defect`, `task_requirement_unmet` or `agent_criterion_unmet`): the parent's
   child-dependency manifest and JSON receipt carry the child's finding under its own kind (#1043).

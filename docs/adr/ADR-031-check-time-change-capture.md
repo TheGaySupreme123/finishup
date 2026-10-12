@@ -365,8 +365,15 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    and the header names why in one fixed sentence (`nested_limit`, the deadline, or the closed
    reason of decision 8); no Git output is recorded. A repository nested inside a nested one is
    not read and counts as not shown the same way: its untracked entry or changed gitlink is marked
-   so. The structural metadata read (requested-output states, test-edit accounting) does not
-   descend into nested repositories.
+   so. The structural metadata read (requested-output states, test-edit accounting, the
+   undeclared-reference candidates of `deliverable_references_undeclared_file`, and whether the
+   workspace changed at all) selects and reads the same nested repositories the same way, names
+   and status only: an untracked repository's directory is never a file entry; each repository
+   read adds its changed paths under its directory from the same starting commit and task-start
+   listing, so one unchanged since the task started adds nothing; and the directory of a
+   repository it cannot read, a changed gitlink whose repository it cannot read, a repository
+   nested inside a nested one and untracked files without a complete listing count as omitted
+   (truncated), never as entries.
 4. **Read-only task input files.** When the recipe carries the change, the task statement and the
    `repository` excerpt kind, the service names candidate inputs: the path-shaped words of the task
    statement in its order (a path with a slash, or a file name with a short extension holding a

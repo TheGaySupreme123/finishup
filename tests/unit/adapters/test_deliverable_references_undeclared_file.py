@@ -284,6 +284,41 @@ def test_an_untracked_file_the_task_started_with_is_not_an_undeclared_dependency
     )
 
 
+def test_a_created_file_inside_a_nested_repository_is_an_undeclared_dependency(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: the metadata read failed in any workspace holding an untracked nested
+    repository, so the fact was silently never raised there. A file the agent creates inside the
+    repository is a candidate; one it held unchanged since the task started is not."""
+
+    repository, _ = _repository(tmp_path, {"README.md": "Cracker\n"})
+    api = repository / "api"
+    api.mkdir(mode=0o700)
+    _git(api, "init", "--quiet")
+    (api / "README.md").write_text("API\n", encoding="utf-8")
+    _git(api, "add", "--", "README.md")
+    _git(
+        api,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "nested baseline",
+    )
+    # Provided with the task, never committed: untracked inside the nested repository.
+    (api / "english_words.npz").write_bytes(b"\x93NUMPY\x00\x01words")
+    base = GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
+    (api / "cracker.py").write_text(_VIGENERE_CRACKER, encoding="utf-8")
+    (api / "english_ngrams.npz").write_bytes(b"\x93NUMPY\x00\x01ngrams")
+
+    assert _pairs(repository, base, _projection(_item("api/cracker.py"))) == (
+        ("api/cracker.py", "api/english_ngrams.npz"),
+    )
+
+
 @pytest.mark.parametrize(
     "literal",
     [
