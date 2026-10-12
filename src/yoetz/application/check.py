@@ -1955,7 +1955,8 @@ class FinalSemanticEvaluation:
     # reason other than ``not_recorded`` (room, selection or policy). A reviewer request for one of
     # them is Yoetz's limit, never agent work. ``None`` when the packet was not read.
     case_withheld_refs: frozenset[str] | None = None
-    # The subset an owner privacy rule withheld; a request for it is a privacy limit.
+    # The refs an owner privacy rule withheld (with a withheld captured group's parts, which the
+    # omission row names only by its lead); a request for one is a privacy limit.
     case_privacy_withheld_refs: frozenset[str] = frozenset()
     # Opaque case item identities omitted by the low-confidence never-send heuristic. The
     # public check result names these identities and the closed remediation reason, never bytes

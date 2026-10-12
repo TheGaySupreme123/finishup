@@ -178,6 +178,7 @@ from yoetz.application.semantic_case import (
     semantic_case_to_candidate_context,
     sent_excerpt_content_refs,
     sent_ledger_refs,
+    withheld_excerpt_content_refs,
 )
 from yoetz.application.semantic_content import (
     edit_capture_evidence_count,
@@ -5336,6 +5337,9 @@ def _privacy_gated_semantic_evaluator(
                     case_excerpt_refs=sent_excerpt_content_refs(
                         semantic_case, mapped.provider_input_manifest
                     ),
+                    case_privacy_withheld_refs=withheld_excerpt_content_refs(
+                        semantic_case, mapped.case_privacy_withheld_refs
+                    ),
                 )
 
             # Build the packet before anything durable exists. A packet that cannot be built is a
@@ -5699,7 +5703,11 @@ def _privacy_gated_semantic_evaluator(
                     case_reference_scope_reduced=reference_scope_reduced,
                     case_included_refs=disclosed,
                     case_withheld_refs=withheld_refs,
-                    case_privacy_withheld_refs=privacy_refs,
+                    # A withheld captured group's parts with its lead; recovery expands the same
+                    # recorded refs over the same case.
+                    case_privacy_withheld_refs=withheld_excerpt_content_refs(
+                        semantic_case, privacy_refs
+                    ),
                     semantic_withheld_item_ids=semantic_withheld_item_ids,
                     semantic_redacted_values=semantic_redacted_values,
                     case_content_gaps=combined_content_gaps,

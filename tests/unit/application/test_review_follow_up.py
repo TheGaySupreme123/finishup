@@ -28,6 +28,7 @@ from yoetz.application.missing_for_assessment import (
     ReviewFollowUp,
     ReviewFollowUpItem,
     plan_review_follow_up,
+    review_missing_for_assessment,
 )
 from yoetz.application.semantic_case import (
     CapturedContentScope,
@@ -41,6 +42,7 @@ from yoetz.application.semantic_case import (
     review_packet_disclosure_result,
     semantic_case_packet_view,
     sent_excerpt_content_refs,
+    withheld_excerpt_content_refs,
 )
 from yoetz.domain.events import (
     ActionKind,
@@ -61,7 +63,7 @@ from yoetz.domain.review_input_render import (
 from yoetz.domain.values import EvidenceId, freeze_json, object_id, timestamp_from_string
 from yoetz.kernel.deterministic_checks import DeterministicCase
 from yoetz.kernel.projections import EvidenceProjectionRecord
-from yoetz.ports.semantic import SemanticCase
+from yoetz.ports.semantic import MissingForAssessment, SemanticCase, SemanticJudgment
 from yoetz.protocol.canonical import JsonValue, strict_json_parse
 from yoetz.protocol.coverage import EvidenceImmutability
 from yoetz.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
@@ -658,6 +660,61 @@ def test_a_ref_a_sent_packet_withheld_under_a_privacy_rule_never_justifies_a_rou
         )
         is None
     )
+
+    # A captured group withheld whole: its omission row names only the lead evidence, yet the
+    # rule withheld every part with it, so naming the second part reads like naming the lead.
+    group_case, captured, scope = _captured_group_case(newer=0)
+    first = _build(group_case, captured_content=captured, captured_content_scope=scope)
+    group = f"excerpt-{evd(20)}"
+    envelope = strict_json_parse(bounded_case_envelope(first))
+    assert isinstance(envelope, dict)
+    offered = {item.item_id: item.content for item in first.items if item.item_id != group}
+    disclosure = review_packet_disclosure_result(
+        assemble_filtered_review_packet(
+            envelope,
+            content_by_id=offered,
+            included_item_ids=frozenset(offered),
+            withheld_item_ids=frozenset({group}),
+        )
+    ).disclosure
+    assert disclosure is not None and disclosure.privacy_withheld == {str(evd(20))}
+    shown = sent_excerpt_content_refs(first, disclosure.provider_input_manifest)
+    assert shown is not None and not {str(evd(20)), str(evd(21))} & shown
+    withheld = withheld_excerpt_content_refs(first, disclosure.privacy_withheld)
+    assert withheld == {str(evd(20)), str(evd(21))}
+    # The check classifies either request as the same privacy limit.
+    citable = semantic_case_packet_view(first).citable_refs
+    for target in (str(evd(20)), str(evd(21))):
+        assert target in citable
+        classified = review_missing_for_assessment(
+            group_case,
+            (),
+            SemanticJudgment(
+                "insufficient_packet",
+                (),
+                missing_for_assessment=(
+                    MissingForAssessment("verification_output", (target,), "The output."),
+                ),
+            ),
+            unsuppliable_kinds=frozenset(),
+            citable_refs=citable,
+            privacy_withheld_refs=withheld,
+        )
+        assert [item.availability for item in classified.items] == [
+            "structurally_unavailable_on_this_host"
+        ]
+    for target in (str(evd(20)), str(evd(21))):
+        assert (
+            plan_review_follow_up(
+                group_case.projection,
+                frozenset(str(ref) for ref in group_case.allowed_ids),
+                (_requested("verification_output", target, availability="agent_suppliable"),),
+                previous=None,
+                shown_refs=shown,
+                privacy_withheld_refs=withheld,
+            )
+            is None
+        )
 
 
 def test_a_follow_up_value_is_bounded() -> None:
