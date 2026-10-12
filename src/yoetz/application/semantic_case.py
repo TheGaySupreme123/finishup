@@ -245,6 +245,7 @@ __all__ = [
     "review_packet_disclosure_result",
     "sent_excerpt_content_refs",
     "sent_ledger_refs",
+    "withheld_excerpt_content_refs",
     "semantic_case_to_candidate_context",
     "semantic_case_to_prepared_payload",
 ]
@@ -6637,6 +6638,21 @@ def sent_excerpt_content_refs(
         for item_id in section.selected_item_ids
     }
     return excerpt_content_refs(item for item in case.items if item.item_id in sent)
+
+
+def withheld_excerpt_content_refs(case: SemanticCase, withheld: frozenset[str]) -> frozenset[str]:
+    """``withheld`` and what this case's excerpts keyed by a withheld ref hold (issue #1047).
+
+    An omission row names a withheld captured group by its lead evidence alone; the group's other
+    parts were withheld with it, so a request naming any part is the same limit as one naming
+    the lead.
+    """
+
+    if type(case) is not SemanticCase:
+        raise TypeError("semantic_case_invalid")
+    return withheld | excerpt_content_refs(
+        item for item in case.items if item.source_ref in withheld
+    )
 
 
 def _provider_bound_input_manifest(

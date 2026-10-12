@@ -1703,8 +1703,9 @@ packet only lacked room for.
   A captured multi-part group is one excerpt keyed by its lead evidence and carries every part, so
   a request naming any part is answered by it. When what was sent is unknown, nothing counts as
   shown and no round runs; a row the sent packet withheld under a privacy rule never justifies a
-  round, because the same rule withholds it again. Otherwise nothing is dispatched and the check
-  records the last review exactly as before: the request goes back to the agent with its
+  round, because the same rule withholds it again, and a withheld captured group counts with all
+  its parts, though its omission row names only the lead. Otherwise nothing is dispatched and the
+  check records the last review exactly as before: the request goes back to the agent with its
   availability classes.
 - **Durability, replay and egress.** Each round is one more dispatch through the privacy
   coordinator, so it has its own egress authorization and audit record. It runs as its own durable
