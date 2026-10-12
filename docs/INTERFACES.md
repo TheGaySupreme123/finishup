@@ -1480,9 +1480,11 @@ Two further check-path operations describe a review that did reach a provider:
 `semantic_rulings_disputed_after_rebuttal`, `semantic_findings_selected`,
 `semantic_findings_suppressed`. A third operation, `semantic_review_follow_up`, is appended once
 per in-check follow-up round (#1047) with `semantic_follow_up_round`, `semantic_follow_up_items` and
-`semantic_follow_up_refs_added`. Every one of these counters is a closed integer field of both the
-stderr sink and the durable diagnostic ring (`observability/privacy._INTEGER_FIELDS`,
-`observability/diagnostics._FIELD_ORDER`); a name either sink does not know is dropped there.
+`semantic_follow_up_refs_added`. Every one of these is a closed field of both the stderr sink and
+the durable diagnostic ring: the counters are integers and `semantic_conclusion` is a closed token
+(`observability/logging._FIELD_ORDER`, `observability/privacy._INTEGER_FIELDS` /
+`_TOKEN_FIELDS`, `observability/diagnostics._FIELD_ORDER`); a name either sink does not know is
+dropped there.
 The counts reconcile (`returned == accepted + rejected + suppressed restatements + advisory notes`,
 `accepted == selected + suppressed findings`), so
 "the reviewer answered and none of it reached you" is never invisible. Challenge text, refs, and
