@@ -15,9 +15,10 @@ the task-base root in `src/yoetz/adapters/sqlite/repository.py` and
 `src/yoetz/kernel/projections.py`), and the suites `tests/unit/adapters/test_git_change_capture.py`,
 `tests/unit/application/test_semantic_case_check_change.py`,
 `tests/unit/application/test_check_time_change_facade.py`,
+`tests/unit/application/test_semantic_case_packet_completeness.py`,
 `tests/integration/service/test_check_time_change.py` and the ledger conformance suite.
 **Relates to:** ADR-006 (AI-powered review packet), ADR-008 (service trust boundary), ADR-009
-(egress), ADR-011 (structural subject-state capture), and issues #883, #904, #907, #920.
+(egress), ADR-011 (structural subject-state capture), and issues #883, #904, #907, #920, #1045.
 
 ## Context
 
@@ -282,7 +283,8 @@ partial clones, Git older than 2.26, an object store reached through a link or b
 working tree or object store that kept changing through every attempt. Tracked files that are
 links or multiply linked are named but not shown. Hard-linked object files (a local `git clone`)
 are read, because every blob shown is verified against its name.
-Submodule changes appear as commit ids and binary files as a one-line description.
+Submodule changes appear as commit ids and binary files as a one-line description; a nested
+repository's own change is read as the #1045 amendment below describes.
 
 AI-powered finding resolution compares where each review's redactions and hunks lay, not only how
 much it saw (decision 9, maintainer decision 2026-09-30). A finding whose raising review saw a file
@@ -293,3 +295,74 @@ disclosed as `check_time_change_resolution_unverified`.
 This decision does not add an MCP tool, a repository browser or an `ArtifactInspectionPort`, and
 does not change ADR-011's content-withholding structural capture. No content-returning read exists
 outside a check's AI-powered review composition.
+
+## Amendment (issue #1045, tb4n4): the task-start snapshot, nested repositories, task input files
+
+tb4n4 showed the packet missing what the reviewer needed while carrying what it did not: the
+implementation of live-database-cutover lived in a nested `/app/api` repository the change never
+read; vba-userform-port's VBA source (a task input) was never in the packet; pretrain's
+pre-existing untracked `index.json` was shown as added. The fix is selection, not more bytes: every
+bound above (256 KiB stored text, the reserved share, the recipe's excerpt count and bytes) is
+unchanged. The owner authorized the privacy/egress content-selection change on 2026-10-12.
+
+1. **The task-start snapshot.** A `task_start` base also records, metadata only, the untracked files
+   Git lists at that moment (the same ignore files as decision 1): each as its root-relative name
+   and a SHA-256 digest of its link-free `stat` fields (file type and permission bits, inode, size,
+   modification and change time), at most 4096 names and 256 KiB of names; and the HEAD of each
+   nested repository among them (an untracked directory Git lists as its own repository), opened
+   with every fence of decision 4, at most 8. No file is opened. Past a bound, or with a name the
+   object cannot hold, the snapshot is incomplete; a snapshot that cannot be taken at all leaves the
+   base exactly as before. The snapshot rides the same encrypted base object (`yoetz.task-change-base/1`,
+   optional `untracked`, `untracked_complete` and `nested` keys; a base without them keeps its
+   bytes). A `first_check` pin never carries one: only the task's own start can say what predates
+   it.
+2. **Untracked files that predate the task are baseline.** An untracked file the snapshot names
+   with an unchanged digest is the task's starting state: the content and metadata reads leave it
+   out (its identity still joins the stability check), and the header counts it ("Untracked files
+   that already existed when the task started and are unchanged since: N"). One whose digest
+   changed is shown whole with status `M` and the note that it existed when the task started and its
+   earlier content was not recorded; the metadata read lists it as a modification, never as a
+   created file, so it is no candidate for `deliverable_references_undeclared_file`. The change
+   time cannot be set back, so restoring a modification time does not hide a rewrite. An incomplete
+   snapshot is stated in the header; a base without one keeps decision 1's wording.
+3. **Nested repositories.** An untracked embedded repository, or a changed gitlink whose working
+   directory is a repository, has its own change read: at most 8 per check, those holding a
+   declared deliverable first. Each is opened with every fence of decision 4, and its directory must
+   also be the one reached beneath the outer root descriptor without a link; a submodule checkout
+   whose `.git` is a file is `unsupported_repository`. Each is its own stable state (the same retake
+   rule), within the same deadline. Its change starts from the commit the outer base tree records
+   for the gitlink, else the HEAD the snapshot recorded, else its HEAD now, which the header says
+   may miss commits made in it during the task. Its paths carry its directory (`a/api/server.py`), so
+   the deliverable order, the 256 KiB bound, the packet split and the shown-file record treat its
+   files as files of the change; the outer one-line entry for an untracked repository gives way to
+   them. A repository that cannot be read keeps that entry ("not shown: a nested Git repository
+   whose own change was not read"), counts as not shown (`check_time_change_truncated`), and the
+   header names why in one fixed sentence (`nested_limit`, the deadline, or the closed reason of
+   decision 8); no Git output is recorded. A repository nested inside a nested one is not read. The
+   structural metadata read (requested-output states, test-edit accounting) does not descend into
+   nested repositories.
+4. **Read-only task input files.** When the recipe carries the change, the task statement and the
+   `repository` excerpt kind, the service names candidate inputs: the path-shaped words of the task
+   statement in its order (a path with a slash, or a file name with a short extension holding a
+   letter), then the `role: input` requested files of effective obligations, at most 16. The
+   statement is read in process only to find these words. The adapter reads at most 4 of them, each
+   only when it lies inside the repository, is unchanged since the task started (tracked and
+   untouched by the change, by `git ls-files --error-unmatch` on a literal pathspec, or an untracked
+   file the snapshot names unchanged), lies outside every nested repository, is not credential-named,
+   is a regular, singly linked file of the service user reached without a link, is at most 1 MiB and
+   holds no NUL byte in its first 8000 bytes. An ignored file is never read: it is neither tracked
+   nor listed. Each keeps at most 16 KiB, whole or head and tail with the cut marked. The read is
+   point-in-time, after the change proved stable. Inputs are stored in the same encrypted
+   check-change object (optional `inputs`, so every object without them keeps its bytes), redacted
+   one by one with the same detector (one that cannot be fully redacted is dropped; any redaction
+   reports `check_time_change_redacted`), frozen with the job, and never part of the change text or
+   the shown-file record. Nothing about a skipped candidate is returned or recorded.
+5. **In the packet.** Each input is one `repository_excerpt` item (`task-input-NN`, source kind
+   `repository`, source ref `task-input`), linked to the statement event (else to the change's
+   links), labelled as a task input the service read, unchanged since the task started and not the
+   agent's work. It is offered first at the point where the change's remaining parts take the room
+   the reserved classes leave (decision 6), within at most a quarter of the recipe's excerpt bytes,
+   so it ranks ahead of older edit hunks and general output; inputs that did not fit that share
+   backfill after the change's own backfill. The input manifest lists each under `caller_evidence`
+   (partial when cut), and the privacy gateway and never-send scan apply to it as to any
+   repository excerpt.

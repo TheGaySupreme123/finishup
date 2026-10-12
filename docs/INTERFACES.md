@@ -8024,8 +8024,19 @@ text), then prior-finding repair evidence (#898), then older hunks of a changed 
 edit is a hunk, so an older one may still be current code; it is marked `superseded_by`);
 everything else follows by recency, then link class, and superseded runs come last. A run is one
 recorded result, so a run's output and its failure summary are never marked as superseding each
-other. A command identity is the digest of the command a
-recorded result answers; captured tool output is unidentified until #910. The task statement
+other. A command identity is the digest of the run key of
+the command a recorded result answers (its text with whitespace collapsed, or a hook run's keyed
+command identity; a hook run without one, `omitted:structural`, identifies nothing). When the
+command ran again later and that newest run left no excerpt the packet can carry, every older output
+of it is marked `superseded_by` the newer result and ranked with superseded runs; two `artifact`
+evidence rows naming the same plain path are one output, and the older is marked `superseded_by` the
+newer (#1045). Read-only task input files (`task-input-NN`, `repository_excerpt`, ADR-031 #1045
+amendment) rank after the reserved classes and ahead of older hunks, within a quarter of the excerpt
+bytes. The obligations section begins with one `declared-deliverables` item
+(`yoetz.declared-deliverables/1`, obligation text): each declared `role: output` item with its
+obligation, index, kind, value and `in_check_time_change` (`added`, `modified`, `deleted`,
+`renamed`, `changed`, `not_changed`, `outside_repository`, `unknown`), and `facts`, the check's
+closed delivered-set codes such as `deliverable_references_undeclared_file`. The task statement
 (#908) is its own section and never competes for an excerpt slot. Each excerpt holds one recorded
 source or one part of one capture. Excerpts honour the approved `max_excerpt_bytes` instead of the
 4 KiB structural item clip; long output keeps its head and tail with a marked elision; an

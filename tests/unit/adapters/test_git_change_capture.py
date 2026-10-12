@@ -345,7 +345,8 @@ def test_unborn_repository_starts_from_the_empty_tree(tmp_path: Path) -> None:
     adapter = GitChangeCaptureAdapter()
 
     base = adapter.read_task_base(os.fspath(repository))
-    assert base == TaskChangeBase("sha1", _EMPTY_SHA1_TREE)
+    # The task-start snapshot (#1045) holds no untracked file and is complete.
+    assert base == TaskChangeBase("sha1", _EMPTY_SHA1_TREE, untracked_complete=True)
     (repository / "first.py").write_text("print(1)\n", encoding="utf-8")
     _git(repository, "add", "--", "first.py")
     _commit(repository, "first commit")
@@ -1230,3 +1231,244 @@ def test_metadata_counter_invariants() -> None:
     assert not metadata_path_representable("a\rb")
     assert not metadata_path_representable("a\x00b")
     assert metadata_path_representable("a\tb")
+
+
+# --- Issue #1045: packet completeness within the existing budget ---------------------------------
+
+
+def _nested_repository(parent: Path, name: str = "api") -> Path:
+    """An embedded Git repository inside ``parent``, with one committed file."""
+
+    nested = parent / name
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet")
+    (nested / "server.py").write_text("def handler():\n    return 'v1'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _git(
+        nested,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "nested baseline",
+    )
+    return nested
+
+
+def test_untracked_files_present_at_task_start_are_baseline_not_additions(
+    tmp_path: Path,
+) -> None:
+    """pretrain shape: a pre-existing untracked ``index.json`` was shown to the reviewer as added."""
+
+    repository = _repository(tmp_path)
+    (repository / "index.json").write_text('{"shards": 4}\n', encoding="utf-8")
+    (repository / "notes.txt").write_text("before the task\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert base.untracked_complete is True
+    assert {item.path for item in base.untracked} == {"index.json", "notes.txt"}
+    assert decode_task_change_base(encode_task_change_base(base)) == base
+
+    (repository / "notes.txt").write_text("before the task\nand during it\n", encoding="utf-8")
+    (repository / "train.py").write_text("print('train')\n", encoding="utf-8")
+
+    capture = adapter.capture(os.fspath(repository), base)
+    text = _text(capture)
+    assert "index.json" not in text
+    assert (
+        "Untracked files that already existed when the task started and are unchanged since: 1."
+        in text
+    )
+    assert "  A train.py (+1 -0) untracked\n" in text
+    assert (
+        "  M notes.txt (+2 -0) untracked; existed when the task started; its earlier content "
+        "was not recorded, so it is shown whole\n"
+    ) in text
+    assert capture.untracked_files == 2
+
+    metadata = adapter.capture_metadata(os.fspath(repository), base)
+    entries = {entry.path: entry for entry in metadata.entries}
+    assert "index.json" not in entries
+    assert entries["notes.txt"].status == "M" and not entries["notes.txt"].untracked
+    assert entries["train.py"].status == "A" and entries["train.py"].untracked
+    assert metadata.untracked_files == 2 and not metadata.truncated
+
+
+def test_a_base_without_a_snapshot_keeps_every_untracked_file_as_before(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    (repository / "index.json").write_text('{"shards": 4}\n', encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    recorded = adapter.read_task_base(os.fspath(repository))
+    legacy = TaskChangeBase(recorded.object_format, recorded.commit)
+    # A base written before the snapshot existed keeps its exact bytes and reads back as one.
+    assert set(strict_json_keys(encode_task_change_base(legacy))) == {
+        "commit",
+        "object_format",
+        "origin",
+        "schema",
+    }
+
+    text = _text(adapter.capture(os.fspath(repository), legacy))
+    assert "  A index.json (+1 -0) untracked\n" in text
+    assert "existed when the task started" not in text
+
+
+def test_first_check_base_cannot_carry_a_task_start_snapshot() -> None:
+    from yoetz.ports.change_capture import UntrackedBaselineFile
+
+    with pytest.raises(ValueError):
+        TaskChangeBase(
+            "sha1",
+            "a" * 40,
+            "first_check",
+            (UntrackedBaselineFile("x.txt", "sha256:" + "0" * 64),),
+            True,
+        )
+
+
+def test_nested_repository_change_is_captured_under_its_directory(tmp_path: Path) -> None:
+    """live-database-cutover shape: the implementation lived in a nested ``/app/api`` repository."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert [path for path, _ in base.nested] == ["api"]
+
+    (nested / "server.py").write_text("def handler():\n    return 'v2'\n", encoding="utf-8")
+    _git(
+        nested,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-am",
+        "cut over",
+    )
+    (nested / "server.py").write_text("def handler():\n    return 'v3'\n", encoding="utf-8")
+    (nested / "migrate.py").write_text("print('migrate')\n", encoding="utf-8")
+
+    capture = adapter.capture(os.fspath(repository), base)
+    text = _text(capture)
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started." in text
+    )
+    # The committed and the uncommitted work inside the nested repository, against its start.
+    assert "diff --git a/api/server.py b/api/server.py" in text
+    assert "-    return 'v1'" in text and "+    return 'v3'" in text
+    assert "  A api/migrate.py (+1 -0) untracked\n" in text
+    assert "  M api/server.py (+1 -1)\n" in text
+    # The directory's one-line placeholder gave way to its files.
+    assert "  A api/ untracked" not in text
+    assert capture.tracked_files == 1 and capture.untracked_files == 1
+    assert capture.omitted_files == 0 and not capture.truncated
+
+
+def test_gitlink_repository_diff_starts_at_the_commit_the_base_tree_records(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    _git(repository, "add", "--", "api")
+    _commit(repository, "track api as a gitlink")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert base.nested == ()  # tracked: the base tree records its commit
+
+    (nested / "server.py").write_text("def handler():\n    return 'v2'\n", encoding="utf-8")
+
+    text = _text(adapter.capture(os.fspath(repository), base))
+    assert "-Subproject commit" in text  # the outer gitlink line still stands
+    assert "Nested repository api/: its own change is shown under that directory" in text
+    assert "diff --git a/api/server.py b/api/server.py" in text
+    assert "+    return 'v2'" in text
+
+
+def test_nested_repository_that_fails_a_fence_is_named_and_not_read(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    (nested / "server.py").write_text("NESTED_CANARY = 1\n", encoding="utf-8")
+    nested.chmod(0o777)  # group- and world-writable: the ADR-011 root fence refuses it
+    try:
+        capture = adapter.capture(os.fspath(repository), base)
+    finally:
+        nested.chmod(0o700)
+
+    text = _text(capture)
+    assert "NESTED_CANARY" not in text
+    assert "Nested repository api/: its own change is not shown (it failed a safety check)." in text
+    assert (
+        "  A api/ untracked; not shown: a nested Git repository whose own change was not read"
+        in text
+    )
+    assert capture.truncated
+
+
+def test_task_input_files_the_statement_names_are_read_only_when_unchanged(
+    tmp_path: Path,
+) -> None:
+    """vba-userform-port shape: the VBA source to port never reached the reviewer."""
+
+    repository = _repository(tmp_path)
+    (repository / "vba").mkdir()
+    (repository / "vba" / "UserForm1.frm").write_text(
+        'Private Sub CommandButton1_Click()\n    MsgBox "hi"\nEnd Sub\n', encoding="utf-8"
+    )
+    (repository / "DESIGN.md").write_text("# Design\n" + "rule line\n" * 4000, encoding="utf-8")
+    (repository / "secrets.pem").write_text("not a real key\n", encoding="utf-8")
+    _git(repository, "add", "--", "vba/UserForm1.frm", "DESIGN.md", "secrets.pem")
+    _commit(repository, "inputs")
+    (repository / "local.env").write_text("IGNORED_CANARY=1\n", encoding="utf-8")
+    (repository / "brief.txt").write_text("UNTRACKED_BRIEF_MARKER\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    (repository / "form.py").write_text("def click():\n    print('hi')\n", encoding="utf-8")
+    (repository / "notes.md").write_text("AGENT_NOTES_MARKER\n", encoding="utf-8")
+
+    capture = adapter.capture(
+        os.fspath(repository),
+        base,
+        input_paths=(
+            os.fspath(repository / "vba" / "UserForm1.frm"),
+            "DESIGN.md",
+            "form.py",  # the agent's own work: part of the change, never an input
+            "secrets.pem",  # credential-named
+            "local.env",  # ignored
+            "/etc/hostname",  # outside the repository
+            "missing.md",
+            "notes.md",  # created by the agent: untracked and not in the task-start snapshot
+            "brief.txt",  # untracked before the task started and unchanged since
+        ),
+    )
+
+    assert [item.path for item in capture.inputs] == [
+        "vba/UserForm1.frm",
+        "DESIGN.md",
+        "brief.txt",
+    ]
+    form, design, brief = capture.inputs
+    assert brief.text == b"UNTRACKED_BRIEF_MARKER\n"
+    assert b"MsgBox" in form.text and form.size == len(form.text)
+    # A large input keeps its head and tail with the cut marked, within the per-input bound.
+    assert design.size > len(design.text) and len(design.text) <= 16_384
+    assert design.text.startswith(b"# Design\n")
+    assert b"bytes elided here; head and tail kept]" in design.text
+    joined = b"".join(item.text for item in capture.inputs)
+    assert b"IGNORED_CANARY" not in joined and b"AGENT_NOTES_MARKER" not in joined
+    # Inputs never enter the change text, and they round-trip with the stored object.
+    assert b"MsgBox" not in capture.text
+    assert decode_check_change(encode_check_change(capture)) == capture
+
+
+def strict_json_keys(data: bytes) -> list[str]:
+    import json
+
+    return list(json.loads(data))

@@ -639,3 +639,114 @@ async def test_a_file_whose_change_kind_changed_never_matches_itself(
 
     assert raised.fully_shown  # the file was shown whole to the raising review
     assert repair.covers(raised) is covered
+
+
+@pytest.mark.anyio
+async def test_nested_repository_task_input_and_deliverables_reach_the_recorded_packet(
+    tmp_path: Path,
+) -> None:
+    """Issue #1045: live-database-cutover's nested ``api`` repository, vba-userform-port's input
+    file and the declared deliverables all reach the packet the privacy gateway is offered."""
+
+    from builders.policy_cases import evt, plan_record
+    from yoetz.domain.events import (
+        PlanPublishedPayload,
+        RequestedItem,
+        RequestedItemKind,
+        RequestedItemRole,
+    )
+    from yoetz.domain.task_statement import RecordedTaskStatement
+
+    repository = _repository(tmp_path)
+    (repository / "spec").mkdir()
+    (repository / "spec" / "RULES.md").write_text(
+        "# Cutover rules\nRULES_INPUT_MARKER: never drop the legacy table first.\n",
+        encoding="utf-8",
+    )
+    _git(repository, "add", "--", "spec/RULES.md")
+    _git(repository, "commit", "--quiet", "-m", "rules")
+    (repository / "index.json").write_text('{"PREEXISTING_MARKER": 1}\n', encoding="utf-8")
+    nested = repository / "api"
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet")
+    (nested / "server.py").write_text("DATABASE = 'legacy'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _git(nested, "commit", "--quiet", "-m", "api baseline")
+
+    adapter = memory_adapter(append_command())
+    frozen, runtime = await _kea_case(adapter, repository)
+    (nested / "server.py").write_text("DATABASE = 'NESTED_CUTOVER_MARKER'\n", encoding="utf-8")
+
+    obligation = obligation_record(
+        ObligationPublishedPayload(
+            obl(1),
+            "Cut the API over",
+            "api/server.py uses the new database",
+            ObligationStatus.OPEN,
+            requested_items=(
+                RequestedItem(RequestedItemKind.FILE, "api/server.py", RequestedItemRole.OUTPUT),
+            ),
+        ),
+        1,
+    )
+    claim = record(
+        ClaimRecordedPayload(
+            clm(1), ClaimKind.COMPLETION, "Cut over", (), obligation_refs=(obl(1),)
+        ),
+        1,
+    )
+    case = make_case(
+        plans={1: plan_record(PlanPublishedPayload(1, "Cut over", (obl(1),)), 1)},
+        obligations={obl(1): obligation},
+        claims={clm(1): claim},
+        extra_refs=(clm(1), obl(1), evt(1)),
+    )
+    lease_frontier = frozen.lease.frontier
+    case = replace(
+        case,
+        projection=replace(
+            case.projection,
+            frontier=lease_frontier.sequence,
+            head_digest=lease_frontier.head_digest,
+        ),
+        frontier=lease_frontier,
+        task_statement=RecordedTaskStatement(
+            text="Cut the API over to the new database; follow spec/RULES.md exactly.",
+            source_event_id=evt(1),
+            source_family="session_opened",
+            ingestion_sequence=1,
+        ),
+    )
+    frozen = FrozenCase(case, frozen.lease)
+
+    privacy = _Privacy(task_id=runtime.task_id, profile=ReviewContextProfile.EXPANDED)
+    with check_workspace_source_scope(CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)):
+        waiting = await _evaluator(privacy, runtime)(frozen, (), runtime)
+
+    assert waiting.status is SemanticStatus.AWAITING_HUMAN
+    candidate = privacy.candidates[0]
+    change = _change_text(candidate)
+    # The nested repository's own diff, under its directory, from its task-start commit.
+    assert "Nested repository api/: its own change is shown under that directory" in change
+    assert "+DATABASE = 'NESTED_CUTOVER_MARKER'" in change
+    # The untracked file that predates the task is baseline, not an addition.
+    assert "PREEXISTING_MARKER" not in change and "index.json" not in change
+    items = {item.item_id: item for item in candidate.items}
+    task_input = items["task-input-01"]
+    assert task_input.category is DataCategory.REPOSITORY_EXCERPT
+    assert b"RULES_INPUT_MARKER" in task_input.plaintext
+    deliverables = items["declared-deliverables"]
+    assert deliverables.category is DataCategory.OBLIGATION_TEXT
+    body = strict_json_parse(deliverables.plaintext)
+    assert isinstance(body, dict)
+    rows = cast(list[dict[str, object]], body["deliverables"])
+    assert [row["in_check_time_change"] for row in rows] == ["modified"]
+    # Recorded and egress-counted like every other item: the composed manifest lists the input.
+    envelope = strict_json_parse(items[REVIEW_PACKET_ITEM_ID].plaintext)
+    assert isinstance(envelope, dict)
+    packet = cast(dict[str, object], envelope["review_packet"])
+    manifest = cast(dict[str, object], packet["review_input_manifest"])
+    caller = cast(dict[str, object], manifest["caller_evidence"])
+    assert "task-input-01" in cast(list[str], caller["item_ids"])
+    assert "declared-deliverables" in cast(list[str], packet["obligation_item_ids"])
+    assert all(scan_exact_bytes(item.plaintext) == () for item in candidate.items)

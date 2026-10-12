@@ -73,7 +73,15 @@ review recipe selects diff excerpts, the service reads the task's own repository
 with Git's hooks, helpers, filters and network transports disabled, and renders the change from the
 commit the task started on (for a task started before this version, the commit at its first check)
 to the working tree, including untracked files Git does not ignore. Because that base is a commit,
-uncommitted or untracked work that already existed when the task started is included too. Files
+uncommitted work that already existed when the task started is included too; untracked files that
+already existed then and are unchanged since are left out, because the task-start base also records,
+encrypted, the names of the untracked files and a digest of their file metadata (never their
+content) and the commit of each nested repository. A nested Git repository inside the task's
+repository has its own change read the same way, under every fence below, at most eight per check.
+The same read also carries up to four read-only task input files the task statement names (or that
+the task declares as inputs), each at most 16 KiB, only when the file is inside the repository, is
+unchanged since the task started, is not ignored by Git and is not credential-named; the statement
+is read only to find those names, and nothing about a skipped file is kept. Files
 named like credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and similar) are listed by name
 only; that list is a name heuristic, not a detector. Links and files with a second name, tracked or
 untracked, are listed without their content or line counts: Git may open a link target while it
