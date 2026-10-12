@@ -73,6 +73,10 @@ _FIELD_ORDER: Final = (
     "semantic_rulings_disputed_after_rebuttal",
     "semantic_findings_selected",
     "semantic_findings_suppressed",
+    # One in-check reviewer follow-up round (#1047).
+    "semantic_follow_up_round",
+    "semantic_follow_up_items",
+    "semantic_follow_up_refs_added",
     "semantic_capture_parts_resolved",
     "semantic_diff_parts_resolved",
     "semantic_excerpts_selected",

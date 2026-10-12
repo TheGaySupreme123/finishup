@@ -1475,8 +1475,13 @@ Two further check-path operations describe a review that did reach a provider:
 `routine_completeness`, `yoetz_process_state`),
 `semantic_review_refs_reduced`, `semantic_review_snippets_rejected`,
 `semantic_restatements_suppressed`, `semantic_challenges_advisory` (routine correctness notes,
-#1042), `semantic_agent_criteria` (#1043), `semantic_findings_selected`,
-`semantic_findings_suppressed`.
+#1042), `semantic_agent_criteria` (#1043), `semantic_prior_rulings_set_aside`,
+`semantic_rulings_disputed_after_rebuttal`, `semantic_findings_selected`,
+`semantic_findings_suppressed`. A third operation, `semantic_review_follow_up`, is appended once
+per in-check follow-up round (#1047) with `semantic_follow_up_round`, `semantic_follow_up_items` and
+`semantic_follow_up_refs_added`. Every one of these counters is a closed integer field of both the
+stderr sink and the durable diagnostic ring (`observability/privacy._INTEGER_FIELDS`,
+`observability/diagnostics._FIELD_ORDER`); a name either sink does not know is dropped there.
 The counts reconcile (`returned == accepted + rejected + suppressed restatements + advisory notes`,
 `accepted == selected + suppressed findings`), so
 "the reviewer answered and none of it reached you" is never invisible. Challenge text, refs, and
