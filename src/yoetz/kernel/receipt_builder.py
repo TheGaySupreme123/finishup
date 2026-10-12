@@ -75,6 +75,10 @@ from yoetz.domain.review_input_render import (
     render_review_input_manifest_compat_line,
     render_review_input_manifest_coverage_note,
 )
+from yoetz.domain.task_fact_tokens import (
+    DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
+    undeclared_reference_variants,
+)
 from yoetz.domain.task_statement import (
     TASK_STATEMENT_NOT_AUTHORIZED_GAP,
     TASK_STATEMENT_NOT_SUPPLIED_GAP,
@@ -121,7 +125,7 @@ from yoetz.kernel.completion_scope import (
     SCOPE_REPAIR,
     completion_scope_differences,
 )
-from yoetz.kernel.delivered_set import deliverable_lineage
+from yoetz.kernel.delivered_set import deliverable_lineage, undeclared_reference_rows
 from yoetz.kernel.deterministic_checks import (
     CALLER_DIGEST_PROVENANCE_GAPS,
     CaseAvailabilityFacts,
@@ -806,6 +810,16 @@ def _check_change_gap_text(context: ReceiptBuildContext, code: str) -> str | Non
     if later is not None:
         return later
     sentence = check_time_change_gap_sentence(code)
+    if sentence is not None and code == DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP:
+        # tb4n4 (#1044): name the undeclared files from the applicable check's recorded
+        # deliverable states, with the same sentence the Stop gate prints.
+        check = context.applicable_check
+        named = (
+            undeclared_reference_variants(undeclared_reference_rows(check.deliverable_states))
+            if check is not None
+            else ()
+        )
+        return f"{sentence} {named[0]}" if named else sentence
     if sentence is not None and code != CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP:
         why = lineage_texts(_receipt_fact_lineage(context), code)
         if why:

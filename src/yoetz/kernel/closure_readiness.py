@@ -53,7 +53,7 @@ from yoetz.kernel.closure_class import (
     finding_closures,
     obligation_closures,
 )
-from yoetz.kernel.delivered_set import deliverable_lineage
+from yoetz.kernel.delivered_set import deliverable_lineage, undeclared_reference_rows
 from yoetz.kernel.fact_lineage import MAX_FACT_LINEAGE_ITEMS, FactLineage
 from yoetz.kernel.finding_resolution import finding_is_resolved
 from yoetz.kernel.finding_todo import (
@@ -139,8 +139,10 @@ __all__ = [
 # agent-actionable readiness token ``finding_rejection_awaiting_ruling`` was added. The standing
 # disclosures ``planned_verification_matched_by_prefix`` and
 # ``declared_output_not_reviewable`` were added and ``declared_output_emptied`` became a path-keyed
-# fact with provenance (tb4n3 RC-5, issue #1028, ADR-045).
-GAP_CLASSIFICATION_VERSION: Final = "7"
+# fact with provenance (tb4n3 RC-5, issue #1028, ADR-045). "8": the standing disclosure
+# ``deliverable_references_undeclared_file`` became an agent-actionable task fact and Stop-gate
+# token (tb4n4, issue #1044, ADR-035 amendment).
+GAP_CLASSIFICATION_VERSION: Final = "8"
 # Issue #1020 (ADR-040): a current AI-powered finding the reviewer repeated over the agent's
 # reasoned rejection without newer material. A standing disagreement; never agent work.
 FINDING_DISPUTED_AFTER_REBUTTAL_GAP: Final = "finding_disputed_after_rebuttal"
@@ -352,6 +354,9 @@ class ClosureReadinessFacts:
     obligation_closures: tuple[ObligationClosure, ...] | None = None
     # ADR-045: where each derived task fact came from, so the agent sees why a code fired.
     fact_lineage: tuple[FactLineage, ...] = ()
+    # tb4n4 (#1044): the undeclared files the applicable check found delivered files naming,
+    # ``(obligation id, item index, paths, total)`` (``delivered_set.undeclared_reference_rows``).
+    undeclared_references: tuple[tuple[str, int | None, tuple[str, ...], int], ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -744,6 +749,7 @@ def closure_readiness_facts(
             obligation_classes[key] for key in sorted(obligation_classes, key=str.encode)
         ),
         fact_lineage=current_fact_lineage(state, records, applicability),
+        undeclared_references=current_undeclared_references(state, records, applicability),
     )
 
 
@@ -763,23 +769,55 @@ def current_fact_lineage(
     """
 
     items: list[FactLineage] = []
-    latest = state.latest_tested_state
-    if applicability == "applicable" and latest is not None:
-        check_record = next(
-            (record for record in records if record.event_id == latest.source_check_event_id),
-            None,
-        )
-        if check_record is not None and type(check_record.payload) is CheckRecordedPayload:
-            items.extend(
-                deliverable_lineage(
-                    check_record.event_id,
-                    check_record.payload.subject_frontier.sequence,
-                    check_record.payload.deliverable_states,
-                )
+    found = _applicable_check_payload(state, records, applicability)
+    if found is not None:
+        check_record, payload = found
+        items.extend(
+            deliverable_lineage(
+                check_record.event_id,
+                payload.subject_frontier.sequence,
+                payload.deliverable_states,
             )
+        )
     items.extend(task_fact_signals(state, records).lineage)
     ordered = sorted(dict.fromkeys(items), key=lambda item: item.sort_key)
     return tuple(ordered[:MAX_FACT_LINEAGE_ITEMS])
+
+
+def _applicable_check_payload(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    applicability: CheckApplicability,
+) -> tuple[LedgerRecord, CheckRecordedPayload] | None:
+    """The newest check's record and payload while that check still applies, else ``None``."""
+
+    latest = state.latest_tested_state
+    if applicability != "applicable" or latest is None:
+        return None
+    check_record = next(
+        (record for record in records if record.event_id == latest.source_check_event_id),
+        None,
+    )
+    if check_record is None or type(check_record.payload) is not CheckRecordedPayload:
+        return None
+    return check_record, check_record.payload
+
+
+def current_undeclared_references(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    applicability: CheckApplicability,
+) -> tuple[tuple[str, int | None, tuple[str, ...], int], ...]:
+    """The undeclared files the applicable check found delivered files naming (tb4n4, #1044).
+
+    Read from the newest check's recorded deliverable states, and only while that check still
+    applies, exactly like the deliverable lineage: a stale check names nothing.
+    """
+
+    found = _applicable_check_payload(state, records, applicability)
+    if found is None:
+        return ()
+    return undeclared_reference_rows(found[1].deliverable_states)
 
 
 @dataclass(frozen=True, slots=True)

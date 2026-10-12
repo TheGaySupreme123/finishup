@@ -251,9 +251,11 @@ decision with the line `yoetz-assumption:<obligation id>` that names the file pa
 Separately, if an obligation is genuinely not done, republish it `acknowledged_not_done` with the
 reason and leave it out of your completion claim: an acknowledged obligation is outside completion
 coverage, so omitting it is not a scope gap. A deliverable that
-names a file you created but did not declare is disclosed (`deliverable_references_undeclared_file`;
-it never stops you): a grader may receive only the declared files, so embed it, build it at run
-time, or declare it. A delivered file that lost most of its lines
+loads a file you created but did not declare (`deliverable_references_undeclared_file`) stops you
+too, and the Stop text and the receipt name the file: a grader may receive only the declared files,
+so embed its content in the deliverable, rebuild it at run time, or declare it as a delivered output
+(a requested `file` item with role `output`; a file the task itself provides is role `input`), then
+run `check`. Disclosing the dependency does not resolve it. A delivered file that lost most of its lines
 while files outside the delivered set changed or hold about as many lines is disclosed on the receipt
 (`declared_output_content_moved`; it never stops you): check the deliverable still works where
 the task delivers it. A declared output of a type the review never receives (a binary) is named
@@ -277,12 +279,16 @@ confirmation step that re-check gives you, then stop. A Stop also asks you once 
 marked `acknowledged_not_done` that the review says the task itself requires
 (`finding_premise_disputed`): do that work unless it is genuinely impossible. If you cannot
 finish it, keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
-A Stop asks once to read each resolved obligation's `acceptance_criteria` against your final output:
-if the output does not meet them, republish that obligation `acknowledged_not_done` with the reason;
-if the criteria can only be checked outside this environment (a hidden verifier, a withheld
-artifact) and you did the work, keep it resolved and record a decision with the line
-`yoetz-verification-limit:<obligation id>`. An acknowledgement you publish in answer to that
-question is not challenged again.
+A Stop asks once to read each resolved obligation's `acceptance_criteria` against your final output.
+Where your host passes your final answer to the Stop hook, it asks only about the resolved
+obligations that answer neither names by id nor addresses (states most of the criterion's terms), and
+names them: say in your final answer how each resolved obligation's criterion is met. If the output
+does not meet them, republish that obligation `acknowledged_not_done` with the reason; if the
+criteria can only be checked outside this environment (a hidden verifier, a withheld artifact) and
+you did the work, keep it resolved and record a decision with the line
+`yoetz-verification-limit:<obligation id>`. If every criterion is met, say so in your final answer
+and stop: that confirmation needs no new record, check or receipt. An acknowledgement you publish in
+answer to that question is not challenged again.
 If a script ran the planned command for you (for example `python run_tests.py` calling the
 planned `pytest` command internally), link that run: publish an `action_recorded` with
 `action_kind` `command`, the planned item's exact `value` in `attempted_items`, and the observed

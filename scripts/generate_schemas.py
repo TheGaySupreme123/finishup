@@ -3420,8 +3420,11 @@ def _add_deliverable_states(
 ) -> None:
     """ADR-045 (tb4n3 RC-5): how each declared output file stood at a check. Optional/additive.
 
-    Sizes, counts, closed tokens, ids and a keyed path commitment; never a path. Absent on a
-    check that read no declared output file, so those checks keep their bytes.
+    Sizes, counts, closed tokens, ids and a keyed path commitment for the declared file itself,
+    never its path. ``undeclared_references`` (tb4n4, #1044, added in place on the unreleased
+    1.4.0) is the one path text: the root-relative files the change created that this source
+    deliverable names and no item declares, so the receipt and the Stop gate can name them.
+    Absent on a check that read no declared output file, so those checks keep their bytes.
     """
 
     count: dict[str, JsonValue] = {"maximum": 9007199254740991, "minimum": 0, "type": "integer"}
@@ -3454,6 +3457,23 @@ def _add_deliverable_states(
             "prior_size_bytes": dict(count),
             "proof": {"enum": ["earlier_check", "task_base"], "type": "string"},
             "size_bytes": dict(count),
+            "undeclared_reference_count": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer",
+            },
+            "undeclared_references": {
+                "items": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001f\\u007f/][^\\u0000-\\u001f\\u007f]*$",
+                    "type": "string",
+                },
+                "maxItems": 8,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": True,
+            },
             "unreviewable": {"const": True},
         },
         "required": ["basis", "item_index", "obligation_id"],
@@ -4722,6 +4742,43 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
     # ADR-045: where each derived fact the checklist lists came from. Optional and independent.
     definitions["fact_lineage"] = _fact_lineage_definition()
     properties["fact_lineage"] = _fact_lineage_array()
+    # tb4n4 (#1044): the delivered files that name files the change created and no item declares,
+    # with those root-relative files (repository-excerpt content, each one withheld as the
+    # repository omission marker under a privacy policy). Optional, added in place on 1.4.0.
+    properties["undeclared_references"] = {
+        "items": {
+            "additionalProperties": False,
+            "properties": {
+                "item_index": {
+                    "pattern": "^(?:[0-9]|[1-5][0-9]|6[0-3])$",
+                    "type": "string",
+                },
+                "obligation_id": {"$ref": "#/$defs/obligation_id"},
+                "paths": {
+                    "items": {
+                        "oneOf": [
+                            {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": (
+                                    "^[^\\u0000-\\u001f\\u007f/][^\\u0000-\\u001f\\u007f]*$"
+                                ),
+                                "type": "string",
+                            },
+                            {"$ref": "#/$defs/resource_omission"},
+                        ]
+                    },
+                    "maxItems": 8,
+                    "type": "array",
+                },
+                "total": {"$ref": "#/$defs/positive_uint"},
+            },
+            "required": ["item_index", "obligation_id", "paths", "total"],
+            "type": "object",
+        },
+        "maxItems": 16,
+        "type": "array",
+    }
     properties.update(
         {
             "acknowledged_not_done": {
@@ -4755,9 +4812,10 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
             # "7" is the table derived from ``kernel.gap_effect`` (#1026), with the
             # ``finding_rejection_awaiting_ruling`` readiness token, and adds
             # ``planned_verification_matched_by_prefix`` and ``declared_output_not_reviewable``
-            # (tb4n3 RC-5, ADR-045).
+            # (tb4n3 RC-5, ADR-045); "8" makes ``deliverable_references_undeclared_file``
+            # agent-actionable (#1044).
             "gap_classification_version": {
-                "enum": ["1", "2", "3", "4", "5", "6", "7"],
+                "enum": ["1", "2", "3", "4", "5", "6", "7", "8"],
                 "type": "string",
             },
             "standing_limitations": {

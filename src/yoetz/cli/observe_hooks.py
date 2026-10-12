@@ -579,6 +579,13 @@ def _token_or_none(value: object) -> str | None:
     return value
 
 
+def _payload_text(payload: Mapping[str, JsonValue], name: str) -> str | None:
+    """A free-text host field read transiently (never stored): the string, or ``None``."""
+
+    value = payload.get(name)
+    return value if type(value) is str and value else None
+
+
 def _consistent_alias_token(
     payload: Mapping[str, JsonValue], names: tuple[str, ...]
 ) -> tuple[str | None, bool]:
@@ -4083,8 +4090,14 @@ def _decide_closure_gate(
     remaining_seconds: float,
     _state: Path | None,
     active_stop: bool = False,
+    final_message: str | None = None,
 ) -> ClosureGate | None:
     """Decide the Stop-time closure gate for one mapped session (#977). Never raises.
+
+    ``final_message`` is the agent's last message when the host's Stop payload carries one
+    (Codex and Claude Code ``last_assistant_message``; Cursor's ``stop`` has none). It only
+    decides which resolved obligations the acceptance re-read names (#1050) and never leaves
+    this process: it is not stored, sent or recorded in a diagnostic.
 
     Reads the service's compact status for the mapped session; the gate fires at most once per
     session and ledger frontier. Every outcome lands in the bounded hook diagnostics so an
@@ -4148,6 +4161,10 @@ def _decide_closure_gate(
                 observation_pending=pending,
                 reasked_blockers=reasked,
                 active_stop=active_stop,
+                final_message=final_message,
+                on_acceptance_covered=lambda: record_hook_diagnostic(
+                    "closure_gate_acceptance_covered", "Stop", _state=_state
+                ),
             )
 
         decided = cast(ClosureGate | None, run(_read))
@@ -4666,6 +4683,7 @@ def handle_observe(
     _include_recap: bool = True,
     _pass_timing: HookPassTiming | None = None,
     _derived_runner_class: RunnerClass | None = None,
+    _stop_final_message: str | None = None,
 ) -> int:
     """Bounded observation ingress for Codex lifecycle hooks. Always exits 0.
 
@@ -6005,6 +6023,13 @@ def handle_observe(
                 ),
                 _state=_state,
                 active_stop=stop_already_active,
+                # #1050: Codex hands this reader its raw Stop body; Claude Code's adapter passes
+                # the message beside its structural envelope; Cursor's stop carries none.
+                final_message=(
+                    _payload_text(payload, "last_assistant_message")
+                    if source is ObservationSource.CODEX_HOOK
+                    else _stop_final_message
+                ),
             )
             if closure_gate is not None:
                 # The gate is the whole Stop message: it names what remains, and ordinary
@@ -7286,6 +7311,11 @@ def _handle_claude_observe(
             _derived_runner_class=derived_runner_class,
             _ingress_gap=claude_ingress_gap,
             _pass_timing=_pass_timing,
+            # #1050: Claude Code's Stop payload names the final message; it decides only which
+            # acceptance re-reads the gate asks and never enters the structural envelope.
+            _stop_final_message=(
+                _payload_text(payload, "last_assistant_message") if raw_event == "Stop" else None
+            ),
         )
         if denied_output is not None:
             hook_io.stdout_json(denied_output, stdout)

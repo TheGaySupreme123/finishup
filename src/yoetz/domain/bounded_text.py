@@ -35,6 +35,7 @@ granted, in priority order, only when room remains.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
@@ -49,6 +50,7 @@ __all__ = [
     "compose_bounded_detail",
     "compose_parts",
     "list_variants",
+    "quoted_path",
 ]
 
 DEFAULT_CUT_MARKER: Final = "..."
@@ -92,6 +94,27 @@ def ascii_safe(text: str) -> str:
     if ascii_text.isprintable():
         return ascii_text
     return "".join(char if char in "\n\t" or char.isprintable() else "?" for char in ascii_text)
+
+
+_WHITESPACE_RUN: Final = re.compile(r"\s+")
+# A quoted path never runs past this many characters (``...`` marks a cut).
+QUOTED_PATH_CHARS: Final = 120
+
+
+def quoted_path(value: str | None) -> str:
+    """A path as one quoted, bounded, single-line ASCII excerpt: a path is user text, not a token.
+
+    Typographic quotes fold to ``"`` first and every double quote then becomes ``'``, so nothing in
+    the path can close the excerpt it sits in. ``None`` (withheld by privacy policy) reads
+    ``(path withheld)``. Shared by the post-compaction recap, the Stop gate and the receipt.
+    """
+
+    if value is None:
+        return "(path withheld)"
+    flat = _WHITESPACE_RUN.sub(" ", ascii_safe(value)).strip().replace('"', "'")
+    if len(flat) > QUOTED_PATH_CHARS:
+        flat = flat[: QUOTED_PATH_CHARS - 3].rstrip() + "..."
+    return f'"{flat}"' if flat else "(empty path)"
 
 
 @dataclass(frozen=True, slots=True)

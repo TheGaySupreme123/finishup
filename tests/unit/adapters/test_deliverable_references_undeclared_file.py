@@ -1,4 +1,8 @@
-"""tb4n2 R2: a declared deliverable that loads a created, undeclared file (ADR-035 amendment)."""
+"""tb4n2 R2 / tb4n4: a declared deliverable that loads a created, undeclared file (ADR-035 amendment).
+
+Since tb4n4 (#1044) the read returns which delivered file names which undeclared file, so the
+receipt and the Stop gate can name it; ``_references`` counts the pairs it found.
+"""
 
 from __future__ import annotations
 
@@ -12,8 +16,8 @@ import pytest
 from builders.observed_runs import ObservedLedger
 from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
 from yoetz.application.check_change import (
-    count_undeclared_references,
     requested_output_states,
+    undeclared_references,
 )
 from yoetz.domain.events import (
     EventSchema,
@@ -122,11 +126,17 @@ def _references(repository: Path, base: object, *items: RequestedItem) -> int:
 
 
 def _count(repository: Path, base: object, projection: ProjectionState) -> int:
+    return len(_pairs(repository, base, projection))
+
+
+def _pairs(
+    repository: Path, base: object, projection: ProjectionState
+) -> tuple[tuple[str, str], ...]:
     adapter = GitChangeCaptureAdapter()
     capture = adapter.capture_metadata(os.fspath(repository), base)  # type: ignore[arg-type]
     source = CheckWorkspaceSource(os.fspath(repository), "hmac-sha256:" + "0" * 64)
 
-    async def run() -> int:
+    async def run() -> tuple[tuple[str, str], ...]:
         states = await requested_output_states(
             projection=projection,
             capture=capture,
@@ -134,7 +144,7 @@ def _count(repository: Path, base: object, projection: ProjectionState) -> int:
             port=adapter,
             request_id=_REQUEST,
         )
-        return await count_undeclared_references(
+        return await undeclared_references(
             projection=projection,
             capture=capture,
             source=source,
@@ -172,6 +182,68 @@ def test_interleaved_vigenere_deliverable_loading_an_undeclared_model_is_disclos
         )
         == 0
     )
+
+
+# tb4n4 interleaved-vigenere S (#1044): ``artifacts/cracker.py`` loaded its two models from beside
+# itself (cracker.py:68 and :75 in the recorded attempt); only the cracker and its requirements
+# were declared, so the grader received neither model and the program printed nothing.
+_VIGENERE_CRACKER = """import os
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def load_ngrams():
+    return np.load(os.path.join(HERE, "english_ngrams.npz"))
+
+
+def load_words():
+    return np.load(os.path.join(HERE, "english_words.npz"))
+"""
+
+
+def _vigenere(tmp_path: Path) -> tuple[Path, object]:
+    repository, base = _repository(tmp_path, {"README.md": "Cracker\n"})
+    artifacts = repository / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "cracker.py").write_text(_VIGENERE_CRACKER, encoding="utf-8")
+    (artifacts / "requirements.txt").write_text("numpy\n", encoding="utf-8")
+    (artifacts / "english_ngrams.npz").write_bytes(b"\x93NUMPY\x00\x01ngrams")
+    (artifacts / "english_words.npz").write_bytes(b"\x93NUMPY\x00\x01words")
+    return repository, base
+
+
+def test_tb4n4_vigenere_names_each_undeclared_model_beside_the_cracker(tmp_path: Path) -> None:
+    repository, base = _vigenere(tmp_path)
+    delivered = (_item("artifacts/cracker.py"), _item("artifacts/requirements.txt"))
+
+    assert _pairs(repository, base, _projection(*delivered)) == (
+        ("artifacts/cracker.py", "artifacts/english_ngrams.npz"),
+        ("artifacts/cracker.py", "artifacts/english_words.npz"),
+    )
+    # Declaring one model as a delivered output leaves only the other.
+    assert _pairs(
+        repository, base, _projection(*delivered, _item("artifacts/english_ngrams.npz"))
+    ) == (("artifacts/cracker.py", "artifacts/english_words.npz"),)
+    # Declaring both clears it.
+    assert (
+        _pairs(
+            repository,
+            base,
+            _projection(
+                *delivered,
+                _item("artifacts/english_ngrams.npz"),
+                _item("artifacts/english_words.npz"),
+            ),
+        )
+        == ()
+    )
+    # So does a self-contained cracker that rebuilds its tables at run time.
+    (repository / "artifacts" / "cracker.py").write_text(
+        "NGRAMS = build_ngrams()\nWORDS = build_words()\n", encoding="utf-8"
+    )
+    assert _pairs(repository, base, _projection(*delivered)) == ()
 
 
 @pytest.mark.parametrize(
@@ -278,22 +350,23 @@ def test_acknowledged_not_done_obligation_is_skipped(tmp_path: Path) -> None:
     assert _count(repository, base, projection) == 0
 
 
-def test_adapter_returns_a_count_only_and_refuses_unsafe_paths(tmp_path: Path) -> None:
+def test_adapter_returns_index_pairs_only_and_refuses_unsafe_paths(tmp_path: Path) -> None:
     from yoetz.ports.change_capture import ChangeCaptureUnavailable
 
     repository, _base = _cracker(tmp_path)
     adapter = GitChangeCaptureAdapter()
     workspace = os.fspath(repository)
-    found = adapter.count_undeclared_references(
-        workspace, ("cracker.py", "README.md"), ("english_model.npz",)
+    found = adapter.find_undeclared_references(
+        workspace, ("README.md", "cracker.py"), ("notes.npz", "english_model.npz")
     )
-    assert found == 1 and type(found) is int
-    assert adapter.count_undeclared_references(workspace, ("cracker.py",), ()) == 0
+    # Positions in the caller's own tuples: no path or content leaves the adapter.
+    assert found == ((1, 1),)
+    assert adapter.find_undeclared_references(workspace, ("cracker.py",), ()) == ()
     for unsafe in ("../cracker.py", "/etc/passwd", "a/./b"):
         with pytest.raises(ChangeCaptureUnavailable):
-            adapter.count_undeclared_references(workspace, (unsafe,), ("english_model.npz",))
+            adapter.find_undeclared_references(workspace, (unsafe,), ("english_model.npz",))
     with pytest.raises(ChangeCaptureUnavailable):
-        adapter.count_undeclared_references(workspace, ("x.py",) * 17, ("english_model.npz",))
+        adapter.find_undeclared_references(workspace, ("x.py",) * 17, ("english_model.npz",))
 
 
 def test_only_the_first_bounded_prefix_is_read(
@@ -304,9 +377,9 @@ def test_only_the_first_bounded_prefix_is_read(
     repository, _base = _cracker(tmp_path, "#" * 64 + "\nload('english_model.npz')\n")
     adapter = GitChangeCaptureAdapter()
     workspace = os.fspath(repository)
-    assert adapter.count_undeclared_references(workspace, ("cracker.py",), ("english_model.npz",))
+    assert adapter.find_undeclared_references(workspace, ("cracker.py",), ("english_model.npz",))
     monkeypatch.setattr(capture_module, "_MAX_REFERENCE_FILE_BYTES", 32)
-    assert not adapter.count_undeclared_references(
+    assert not adapter.find_undeclared_references(
         workspace, ("cracker.py",), ("english_model.npz",)
     )
 
@@ -322,10 +395,10 @@ def test_a_failing_read_is_not_raised(tmp_path: Path) -> None:
         def probe_requested_paths(self, workspace: str, values: tuple[str, ...]) -> object:
             return adapter.probe_requested_paths(workspace, values)
 
-        def count_undeclared_references(self, *_arguments: object) -> int:
+        def find_undeclared_references(self, *_arguments: object) -> object:
             raise RuntimeError("boom")
 
-    async def run() -> int:
+    async def run() -> tuple[tuple[str, str], ...]:
         states = await requested_output_states(
             projection=projection,
             capture=capture,
@@ -333,7 +406,7 @@ def test_a_failing_read_is_not_raised(tmp_path: Path) -> None:
             port=adapter,
             request_id=_REQUEST,
         )
-        return await count_undeclared_references(
+        return await undeclared_references(
             projection=projection,
             capture=capture,
             source=source,
@@ -343,4 +416,4 @@ def test_a_failing_read_is_not_raised(tmp_path: Path) -> None:
             request_id=_REQUEST,
         )
 
-    assert asyncio.run(run()) == 0
+    assert asyncio.run(run()) == ()
