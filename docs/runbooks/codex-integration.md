@@ -1795,8 +1795,11 @@ reads them as `yoetz_own_call` and `no_tool_activity`, so `check_current_as_of_e
 no longer appears for a check followed only by Yoetz calls and a receipt. The rollout's
 `McpToolCall` item keeps its `server` and is named as its hook names it (`mcp__yoetz__status`,
 #1038); an item without a server keeps its bare tool name (`status`), which is still read as
-Yoetz's own tool. A nested `apply_patch`, an `exec_command` that is not in the hook's `exploration`
-runner class and an unpaired stream output with no tool identity stay `other` and keep the
+Yoetz's own tool. An item whose server cannot be spelled that way (it contains `__`, starts with
+`_` or `-`, or is too long) names no tool when its tool has a Yoetz name, so it is never read as
+Yoetz's; any other tool name under it is kept. A nested `apply_patch`, an `exec_command` that is
+not in the hook's `exploration` runner class and an unpaired stream output with no tool identity
+stay `other` and keep the
 disclosure; a `wait` poll (it only returns the output of a cell started earlier) is
 `no_tool_activity`; a nested deliverable or workspace `apply_patch` supersedes the check. A patch
 whose every path is `yoetz_receipt.*`, a Yoetz tree or scratch is `non_counting_write`. Tests:

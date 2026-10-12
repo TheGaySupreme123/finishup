@@ -1184,11 +1184,20 @@ def structural_from_stream_record(
             # item family, spelled as ``codex exec --json`` spells it, so the call keeps its
             # command/edit family instead of an anonymous one (#910).
             tool = _STREAM_TOOL_ITEM_NAMES.get(item_type)
-        server = _token(body.get("server")) if item_type == "McpToolCall" else None
-        if tool is not None and server is not None and "__" not in server:
+        named_server = body.get("server") if item_type == "McpToolCall" else None
+        if tool is not None and named_server is not None and not tool.startswith("mcp__"):
             # Keep the MCP server: ``mcp__<server>__<tool>`` is how the call's own hook names it,
             # so Yoetz's own call is told from another server's tool of the same name (#1038).
-            tool = tool if tool.startswith("mcp__") else (_token(f"mcp__{server}__{tool}") or tool)
+            server = _token(named_server)
+            scoped = _token(f"mcp__{server}__{tool}") if server and "__" not in server else None
+            if scoped is not None:
+                tool = scoped
+            elif yoetz_tool_spelling(tool) is not None:
+                # A server that cannot be folded into that spelling (it contains ``__`` or is no
+                # plain token) is still a named server: only an item naming no server keeps a
+                # Yoetz tool's bare name, which reads as Yoetz's own call. Such an item names no
+                # tool, as for any unreadable tool name; any other name keeps its name rules.
+                tool = None
         if tool is not None:
             fields["tool_name"] = tool
         status = _token(body.get("status")) or _token(body.get("result_status"))
@@ -2370,8 +2379,9 @@ def _note_code_mode_nested_item(
     A completed tool item is the rollout's record of a call a cell made: a Yoetz MCP item keeps
     an open cell Yoetz-only, any other tool item or an uninterpretable row does not. "Yoetz MCP
     item" is the later-material rule's reading (``yoetz_tool_spelling``): ``mcp__<Yoetz
-    server>__<tool>``, or the bare Yoetz tool name an item without a ``server`` keeps; another
-    server's tool of the same name is ``mcp__<server>__<tool>`` and is not Yoetz's. Returns
+    server>__<tool>``, or the bare Yoetz tool name only an item without a ``server`` keeps;
+    another server's tool of the same name is ``mcp__<server>__<tool>``, or names no tool when
+    that server cannot be spelled so, and is not Yoetz's. Returns
     ``False`` only when the mark could not persist, so the cursor never passes a row whose mark
     a later output decision would miss.
     """
