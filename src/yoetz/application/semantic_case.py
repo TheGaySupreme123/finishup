@@ -303,9 +303,13 @@ _CANONICAL_PACKS: Final = (
 # exact artifact any unassessable item lacks.
 REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProxyType(
     {
+        # Issue #1042: incomplete work only; a correctness concern is an advisory code_defect.
         "routine": (
             "Review phase: routine. Work is in progress and no completion claim is in effect: "
-            "report material defects in the work so far without judging completeness."
+            "judge incomplete work only (an obligation marked resolved or left unfinished, "
+            "planned verification not run, a missing or emptied output, a done or ran claim the "
+            "packet does not show, an early stop); work not yet started is not a defect. Return a "
+            "correctness concern as code_defect: Yoetz records it as an advisory note."
         ),
         "final": (
             "Review phase: final. This is the closing review, with or without a completion "

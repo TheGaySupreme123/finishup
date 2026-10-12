@@ -139,9 +139,11 @@ __all__ = [
 # agent-actionable readiness token ``finding_rejection_awaiting_ruling`` was added. The standing
 # disclosures ``planned_verification_matched_by_prefix`` and
 # ``declared_output_not_reviewable`` were added and ``declared_output_emptied`` became a path-keyed
-# fact with provenance (tb4n3 RC-5, issue #1028, ADR-045). "8": the standing disclosure
-# ``deliverable_references_undeclared_file`` became an agent-actionable task fact and Stop-gate
-# token (tb4n4, issue #1044, ADR-035 amendment).
+# fact with provenance (tb4n3 RC-5, issue #1028, ADR-045). "8" (tb4n4, unreleased): the standing
+# disclosure ``deliverable_references_undeclared_file`` became an agent-actionable task fact and
+# Stop-gate token (issue #1044, ADR-035 amendment); the standing disclosure
+# ``semantic_process_state_filtered`` (issue #1042) and the standing limit
+# ``semantic_review_deferred_before_first_edit`` (issue #1046) were added (ADR-040 amendment).
 GAP_CLASSIFICATION_VERSION: Final = "8"
 # Issue #1020 (ADR-040): a current AI-powered finding the reviewer repeated over the agent's
 # reasoned rejection without newer material. A standing disagreement; never agent work.

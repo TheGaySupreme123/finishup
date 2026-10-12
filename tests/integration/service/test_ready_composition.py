@@ -2416,12 +2416,30 @@ async def test_daemon_unlock_installs_real_application_and_dispatches_start(
         await daemon.close()
 
 
+def _work_has_begun(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The review paths below need a dispatching review; the sessions record no edit.
+
+    Issue #1046 defers the AI-powered review (with its grant and admission checks) until the first
+    material edit; that decision is locked by
+    ``tests/integration/application/test_tb4n4_review_before_first_edit.py``.
+    """
+
+    import yoetz.application.check as check_module
+
+    def edited(*_args: object) -> bool:
+        return True
+
+    monkeypatch.setattr(check_module, "material_edit_recorded", edited)
+
+
 @pytest.mark.anyio
 async def test_ready_factory_deterministic_check_records_semantic_not_requested_gap(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Local-only checks under ready composition advertise the not-requested gap."""
 
+    _work_has_begun(monkeypatch)
     tmp_path.chmod(0o700)
     clock = _Clock()
     memory = LocalSecretMemory()
@@ -3553,9 +3571,11 @@ async def test_background_advice_is_on_by_default_and_an_owner_false_turns_it_of
 @pytest.mark.anyio
 async def test_ready_check_never_activates_provider_from_machine_policy_without_repository_grant(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A configured provider and machine policy never outrun exact repository authority."""
 
+    _work_has_begun(monkeypatch)
     tmp_path.chmod(0o700)
     clock = _Clock()
     memory = LocalSecretMemory()

@@ -242,8 +242,50 @@ def test_the_review_phase_matches_the_packet_question_set() -> None:
         label = f"Review phase: {phase}"
         assert question.startswith(f"{label}. ")
         assert label in _TEXT
-    assert "do not judge completeness" in _TEXT
     assert "A packet that names no phase is routine." in _TEXT
+
+
+def test_a_routine_review_judges_incomplete_work_and_returns_correctness_as_advisory() -> None:
+    """Issue #1042 (tb4n4: 34% of findings were correctness opinions, 35% in frame): during work
+    in progress the reviewer judges incomplete work only, and a correctness concern goes back as a
+    ``code_defect`` the check records as an advisory note. The final phase is unchanged."""
+
+    assert "report material defects in the work so far" not in _TEXT
+    for rule in (
+        "Review phase: routine means work is in progress: judge incomplete work only.",
+        "Challenge an obligation marked resolved or left behind unfinished, planned verification "
+        "that was not run, a requested or declared output that is missing or emptied, a claim "
+        "that something was done or ran that the packet does not show, and work stopped early.",
+        "Work not yet started is not a defect while work is in progress.",
+        "A correctness concern (the code or a result is wrong) is not incomplete work: return it "
+        "as finding_kind code_defect, which Yoetz records as an advisory, non-blocking note, not "
+        "a finding.",
+        "Review phase: final is the closing review, with or without a completion claim: judge "
+        "completeness against the task statement",
+    ):
+        assert rule in _TEXT, rule
+    routine = _collapsed(REVIEW_PHASE_QUESTIONS["routine"])
+    assert "judge incomplete work only" in routine
+    assert "Return a correctness concern as code_defect" in routine
+    assert "advisory note" in routine
+
+
+def test_a_failure_of_the_agents_own_probe_is_its_own_criterion() -> None:
+    """Issue #1043 (tb4n4 interleaved-vigenere S): failures on the agent's own oversized stress
+    runs were raised as task_requirement_unmet and cost a task. They are the agent's own
+    criterion, which it may fix or narrow."""
+
+    rule = (
+        "A failure only on probes the agent itself authored beyond the task's stated scope (its "
+        "own stress sizes, inputs or configurations outside the task's sample or verifier) is the "
+        "agent's own criterion, not a task requirement: raise it as agent_criterion_unmet, never "
+        "task_requirement_unmet. The agent may fix it or narrow the criterion with a recorded "
+        "reason."
+    )
+    assert rule in _TEXT
+    gloss = FINDING_KIND_GLOSSARY["agent_criterion_unmet"]
+    assert "the agent's own criterion" in gloss
+    assert "never a task requirement" in gloss
 
 
 def test_honesty_rules_are_unchanged() -> None:

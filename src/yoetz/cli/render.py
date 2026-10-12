@@ -496,6 +496,13 @@ def render_human_check(result: CheckSuccessModel) -> str:
         for item in result.semantic_withheld_items:
             lines.append(f"- {item.item_id}: {_token(item.reason)}")
     lines.extend(_semantic_redacted_value_lines(result.semantic_redacted_values))
+    if "semantic_review_deferred_before_first_edit" in tuple(result.coverage.known_gaps):
+        # Issue #1046: a pre-work check runs the local plan checks only.
+        lines.append(
+            "AI-powered review deferred: no material edit is recorded yet, so this check ran the "
+            "local plan checks only and sent nothing. The next check after your first edit "
+            "reviews as configured; the closing review always runs."
+        )
     if "semantic_review_skipped_insufficient_packet" in tuple(result.coverage.known_gaps):
         lines.append(
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "

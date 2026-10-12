@@ -71,12 +71,14 @@ from yoetz.domain.receipts import (
     SEMANTIC_PACKET_INSUFFICIENT_GAP,
     SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP,
     SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP,
+    SEMANTIC_PROCESS_STATE_FILTERED_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP,
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
     SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP,
     SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP,
     SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP,
+    SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
     SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_REFS_REDUCED_GAP,
@@ -193,12 +195,14 @@ from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_finding
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.receipt_prediction import predict_receipt_conclusion
 from yoetz.kernel.reducers import replay
+from yoetz.kernel.review_frame import agent_probe_only, yoetz_process_state_only
 from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     confirmed_blocked_obligation_ids,
     cooperative_event_ids_from_coverage,
+    material_edit_recorded,
     passing_verification_observed,
     requested_output_facts,
     task_fact_signals,
@@ -248,6 +252,7 @@ from yoetz.ports.semantic import (
     SemanticJudgment,
     VerifiedReviewItem,
 )
+from yoetz.ports.semantic_budget import select_semantic_budget_profile
 from yoetz.ports.start_catalog import TaskRoute
 from yoetz.protocol.canonical import (
     JsonValue,
@@ -290,6 +295,7 @@ __all__ = [
     "SEMANTIC_CASE_CONTENT_GAPS",
     "SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM",
     "SEMANTIC_REJECTED_ROUTINE_COMPLETENESS",
+    "SEMANTIC_REJECTED_YOETZ_PROCESS_STATE",
     "SEMANTIC_REJECTED_REF_NOT_CARRIED",
     "SEMANTIC_REJECTED_REF_OUTSIDE_CASE",
     "SEMANTIC_REJECTED_SNIPPET",
@@ -340,6 +346,16 @@ SEMANTIC_REJECTED_SUBJECTS_OVER_LIMIT: Final = "subject_refs_over_limit"
 # AI-powered "requested item never attempted" says nothing about incomplete work yet. Dropped and
 # counted, never minted; the deterministic requested-item facts still apply.
 SEMANTIC_REJECTED_ROUTINE_COMPLETENESS: Final = "routine_completeness"
+# Issue #1042 (tb4n4: five ``action_without_result`` findings about Yoetz's own capture): a
+# challenge whose every subject is Yoetz's own capture or process record
+# (``kernel.review_frame.yoetz_process_state_only``). Counted, never minted.
+SEMANTIC_REJECTED_YOETZ_PROCESS_STATE: Final = "yoetz_process_state"
+# The two reasons above are about work in progress or Yoetz's own state, not about material the
+# check failed to carry: they are disclosed as ``semantic_process_state_filtered`` (never
+# bounding, never vetoing an absence proof) instead of ``semantic_challenges_rejected``.
+_PROCESS_STATE_REJECTIONS: Final = frozenset(
+    {SEMANTIC_REJECTED_ROUTINE_COMPLETENESS, SEMANTIC_REJECTED_YOETZ_PROCESS_STATE}
+)
 # The closed packet content gaps a semantic evaluation may carry into check coverage. Each is
 # classified for finding resolution in ``kernel/finding_resolution.py`` (issue #904); adding one
 # here without deciding its resolution class is caught by that module's tests.
@@ -426,6 +442,12 @@ class SemanticJudgmentReview:
     snippets_rejected: int = 0
     # Kept challenges and verified rows whose citations of unsent refs were removed (issue #976).
     refs_reduced: int = 0
+    # Issue #1042: routine-phase correctness concerns (``code_defect``) recorded as advisory,
+    # non-blocking notes in the review summary instead of findings.
+    advisory_notes: int = 0
+    # Issue #1043: requirement challenges recorded as the agent's own criterion
+    # (``agent_criterion_unmet``); they are still candidates, so this is a diagnostic count only.
+    agent_criteria: int = 0
 
     def __post_init__(self) -> None:
         if (
@@ -451,17 +473,25 @@ class SemanticJudgmentReview:
             raise _invalid("semantic_judgment_review_invalid")
         if type(self.refs_reduced) is not int or self.refs_reduced < 0:
             raise _invalid("semantic_judgment_review_invalid")
+        if type(self.advisory_notes) is not int or self.advisory_notes < 0:
+            raise _invalid("semantic_judgment_review_invalid")
+        if type(self.agent_criteria) is not int or not 0 <= self.agent_criteria <= len(
+            self.candidates
+        ):
+            raise _invalid("semantic_judgment_review_invalid")
         if any(
             reason not in _SEMANTIC_REJECTION_REASONS or type(count) is not int or count < 1
             for reason, count in self.rejected_by_reason
         ):
             raise _invalid("semantic_judgment_review_invalid")
         # The diagnostic this value feeds claims that returned == accepted + rejected + suppressed
-        # restatements. Owning the invariant here turns any future accounting drift into an
-        # immediate failure rather than a durable count that quietly does not add up.
-        if (
-            self.challenges_returned
-            != len(self.candidates) + self.challenges_rejected + self.restatements_suppressed
+        # restatements + advisory notes. Owning the invariant here turns any future accounting
+        # drift into an immediate failure rather than a durable count that quietly does not add up.
+        if self.challenges_returned != (
+            len(self.candidates)
+            + self.challenges_rejected
+            + self.restatements_suppressed
+            + self.advisory_notes
         ):
             raise _invalid("semantic_judgment_review_invalid")
 
@@ -478,6 +508,7 @@ _SEMANTIC_REJECTION_REASONS: Final = frozenset(
         SEMANTIC_REJECTED_ROUTINE_COMPLETENESS,
         SEMANTIC_REJECTED_SNIPPET,
         SEMANTIC_REJECTED_SUBJECTS_OVER_LIMIT,
+        SEMANTIC_REJECTED_YOETZ_PROCESS_STATE,
     }
 )
 _EMPTY_SEMANTIC_REVIEW: Final = SemanticJudgmentReview((), 0, ())
@@ -1573,6 +1604,19 @@ async def _review_round_stopped_at(
     return review_round_stopped(records)
 
 
+def _review_phase(
+    request: CheckRequest, frozen: FrozenCase, result: FinalSemanticEvaluation
+) -> Literal["routine", "final"]:
+    """The phase the review packet named, or the same pure selector's answer (issue #1042)."""
+
+    manifest = result.review_input_manifest
+    if manifest is not None and manifest.review_phase is not None:
+        return manifest.review_phase
+    return select_semantic_budget_profile(
+        frozen.case.projection, final_review=bool(request.final_review)
+    )
+
+
 def _semantic_wait(request: CheckRequest, runtime: TaskRuntime, *, round_stopped: bool) -> bool:
     return (
         request.mode != "deterministic_only"
@@ -1581,10 +1625,71 @@ def _semantic_wait(request: CheckRequest, runtime: TaskRuntime, *, round_stopped
     )
 
 
-def _round_stopped_gaps(*, round_stopped: bool) -> set[str]:
-    """Disclose a review this check skipped after the one insufficient-packet retry (tb4n1 D3)."""
+def _review_deferred_before_first_edit(
+    request: CheckRequest,
+    runtime: TaskRuntime,
+    frozen: FrozenCase,
+    *,
+    route_profile: Literal["policy", "strict"],
+    workspace_changed: bool | None,
+) -> bool:
+    """Whether this check defers the AI-powered review until the first material edit (#1046).
 
-    return {SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP} if round_stopped else set()
+    True only for a routine check (no completion claim and not the closing review) that would
+    otherwise dispatch a review (not ``deterministic_only``, the policy route, a configured
+    reviewer), when the frozen ledger records no material edit (``material_edit_recorded``) and
+    the check-time workspace capture did not observe a change. tb4n4: 18 of 61 semantic-arm tasks
+    reviewed the plan before any work, and most routine ``insufficient_packet`` answers were
+    those. The closing review always runs, so a task whose work is not an edit is still reviewed.
+    A check already waiting on a review keeps it (a resumed attempt never changes its decision).
+    """
+
+    if (
+        request.mode == "deterministic_only"
+        or route_profile != "policy"
+        or RuntimeCapability.SEMANTIC not in runtime.capabilities
+        or frozen.lease.phase is CheckPhase.SEMANTIC_WAIT
+        or workspace_changed is True
+        or select_semantic_budget_profile(
+            frozen.case.projection, final_review=bool(request.final_review)
+        )
+        != "routine"
+    ):
+        return False
+    coverage = frozen.case.coverage_by_ref
+    return not material_edit_recorded(
+        frozen.case.projection,
+        observed_event_ids_from_coverage(coverage),
+        cooperative_event_ids_from_coverage(coverage),
+    )
+
+
+async def _review_skip_gaps(
+    runtime: TaskRuntime,
+    request: CheckRequest,
+    frozen: FrozenCase,
+    *,
+    route_profile: Literal["policy", "strict"],
+    workspace_changed: bool | None,
+) -> frozenset[str]:
+    """The gap that discloses why this check skips the AI-powered review, if it does.
+
+    tb4n1 D3: the round stopped after the one insufficient-packet retry. Issue #1046: the check
+    runs before the first material edit (``_review_deferred_before_first_edit``). Empty when the
+    check reviews as configured.
+    """
+
+    if await _review_round_stopped_at(runtime, request, frozen):
+        return frozenset({SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP})
+    if _review_deferred_before_first_edit(
+        request,
+        runtime,
+        frozen,
+        route_profile=route_profile,
+        workspace_changed=workspace_changed,
+    ):
+        return frozenset({SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP})
+    return frozenset()
 
 
 def _bounded_overall_refs(values: Iterable[object]) -> tuple[str, ...]:
@@ -3412,6 +3517,19 @@ _UNANCHORED_CONCERNS_HEADER: Final = (
     "Reviewer concerns not recorded as findings (no record they cite was in the sent packet; "
     "advisory and unverified, answer them in your next published work):"
 )
+# Issue #1042: a routine review judges incomplete work; its correctness concerns are notes.
+_ADVISORY_NOTES_HEADER: Final = (
+    "Reviewer correctness notes (advisory and non-blocking: a review during work in progress "
+    "judges incomplete work only, so these are not findings and need no answer; weigh them in "
+    "your own verification):"
+)
+# Issue #1043: fixed words and a count only; the findings carry the reviewer's own text.
+_AGENT_CRITERIA_NOTE: Final = (
+    "Yoetz recorded {count} requirement challenge(s) as your own criterion "
+    "(agent_criterion_unmet), not the task's: the only work they cite is your own runs beyond "
+    "the task's declared verification, which holds. Fix it, or narrow the criterion by "
+    "responding acknowledged with the reason (a disclosed limitation that does not block)."
+)
 
 
 _RE_RAISED_HEADER: Final = (
@@ -3559,9 +3677,26 @@ def _summary_with_unanchored_concerns(summary: str, concerns: tuple[ReviewerChal
     and marked, so a clipped concern is never presented as whole.
     """
 
+    return _summary_with_concerns(summary, _UNANCHORED_CONCERNS_HEADER, concerns)
+
+
+def _summary_with_agent_criteria(summary: str, count: int) -> str:
+    """Say, in fixed words and a count, which requirement challenges became the agent's own
+    criterion (issue #1043), so the reviewer's "requirement" wording is never read as the task's."""
+
+    if count == 0:
+        return summary
+    return _bounded_review_text("\n".join((summary, "", _AGENT_CRITERIA_NOTE.format(count=count))))
+
+
+def _summary_with_concerns(
+    summary: str, header: str, concerns: tuple[ReviewerChallenge, ...]
+) -> str:
+    """Append reviewer concerns under a fixed Yoetz header, within the summary's byte bound."""
+
     if not concerns:
         return summary
-    lines = [summary, "", _UNANCHORED_CONCERNS_HEADER]
+    lines = [summary, "", header]
     for position, concern in enumerate(concerns, start=1):
         lines.append(f"{position}. {concern.summary} {concern.message_to_main_agent}")
     text = "\n".join(lines)
@@ -3878,8 +4013,16 @@ def validate_semantic_judgment(
     citable_refs: frozenset[str] | None = None,
     provider_input_text_by_ref: Mapping[str, tuple[str, ...]] | None = None,
     settled_finding_refs: frozenset[str] | None = None,
+    review_phase: Literal["routine", "final"] | None = None,
 ) -> SemanticJudgmentReview:
     """Fence AI-powered challenges to the exact frozen refs, coverage, and final provenance.
+
+    ``review_phase`` is the phase the packet's question set named (``select_semantic_budget_profile``).
+    A routine review judges incomplete work only (issue #1042): a ``code_defect`` it returns is a
+    correctness concern, recorded as an advisory note in the review summary rather than a finding,
+    and a "never attempted" challenge is work in progress (ADR-040 section 5). ``None`` (a caller
+    that did not say) keeps the earlier rules: the "never attempted" drop reads the completion
+    claim alone and nothing is recorded as an advisory note.
 
     ``prior_finding_refs`` and ``citable_refs`` describe the packet the reviewer was actually
     shown (its prior-findings rows and its ``citable_refs``); per-finding rulings are fenced to
@@ -3979,7 +4122,15 @@ def validate_semantic_judgment(
     candidates: list[CandidateFinding] = []
     restatements = 0
     re_raised: list[tuple[FindingId, ReviewerChallenge]] = []
+    advisory: list[ReviewerChallenge] = []
+    agent_criteria = 0
     work_claimed = completion_claim_present(case.projection)
+    # Issue #1042: the phase the packet named decides; without it, the completion claim alone does
+    # (ADR-040 section 5 as first written).
+    routine = (not work_claimed) if review_phase is None else review_phase == "routine"
+    observed = observed_event_ids_from_coverage(case.coverage_by_ref)
+    case_gap_codes = frozenset(gap.code for gap in case.gaps)
+    blocked = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
     for challenge in judgment.challenges:
         resolution = _resolve_challenge_refs(case, deterministic, challenge)
         if resolution is None:
@@ -3998,16 +4149,37 @@ def validate_semantic_judgment(
                 rejections.get(SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM, 0) + 1
             )
             continue
-        if (
-            challenge.finding_kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
-            and not work_claimed
-        ):
-            # Issue #1020 (tb4n2 P1-7): before any completion claim nothing is "never attempted"
-            # yet; the work is in progress. Counted, never minted.
+        if yoetz_process_state_only(case.projection, challenge.finding_kind, refs, observed):
+            # Issue #1042: the challenge is about Yoetz's own capture or process state (the hook
+            # pairing an observed call with its result, a Yoetz tool call), never the agent's
+            # work. Counted and disclosed, never minted.
+            rejections[SEMANTIC_REJECTED_YOETZ_PROCESS_STATE] = (
+                rejections.get(SEMANTIC_REJECTED_YOETZ_PROCESS_STATE, 0) + 1
+            )
+            continue
+        if routine and challenge.finding_kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED:
+            # Issue #1020 (tb4n2 P1-7): during work in progress nothing is "never attempted" yet.
+            # Issue #1042: "in progress" is the routine phase the packet named, so the closing
+            # review keeps it even without a completion claim. Counted and disclosed, never minted.
             rejections[SEMANTIC_REJECTED_ROUTINE_COMPLETENESS] = (
                 rejections.get(SEMANTIC_REJECTED_ROUTINE_COMPLETENESS, 0) + 1
             )
             continue
+        if agent_probe_only(
+            case.projection,
+            challenge.finding_kind,
+            refs,
+            observed=observed,
+            case_gap_codes=case_gap_codes,
+            blocked=blocked,
+        ):
+            # Issue #1043: the only cited work is the agent's own runs beyond the task's declared
+            # verification, which holds. The concern is the agent's own criterion, never the
+            # task's: it may fix it or narrow it with a reason (a disclosed, non-blocking limit).
+            challenge = replace(challenge, finding_kind=FindingKind.AGENT_CRITERION_UNMET)
+            rerouted = True
+        else:
+            rerouted = False
         target = _restates_target(case, challenge, prior_finding_refs, settled_finding_refs)
         named: FindingId | None = None
         linked: FindingId | None = None
@@ -4106,6 +4278,17 @@ def validate_semantic_judgment(
                 # did not name it (``restates`` is optional), so a fold never hides the repeat.
                 re_raised.append((named if named is not None else restated, challenge))
                 continue
+        if (
+            review_phase == "routine"
+            and challenge.finding_kind is FindingKind.CODE_DEFECT
+            and named is None
+        ):
+            # Issue #1042: a routine review judges incomplete work only. Its correctness concern is
+            # recorded as an advisory, non-blocking note in the review summary, not a finding. A
+            # re-raise of a recorded finding was folded onto that finding above, unchanged.
+            advisory.append(challenge)
+            continue
+        agent_criteria += rerouted
         policy_id, policy_version = _policy_identity(challenge.finding_kind)
         priority, _actionable = FINDING_KIND_TRAITS[challenge.finding_kind]
         candidates.append(
@@ -4168,7 +4351,10 @@ def validate_semantic_judgment(
         restatements,
         verdicts_set_aside,
         _summary_with_re_raised(
-            review_summary,
+            _summary_with_agent_criteria(
+                _summary_with_concerns(review_summary, _ADVISORY_NOTES_HEADER, tuple(advisory)),
+                agent_criteria,
+            ),
             tuple(re_raised),
             frozenset(
                 restated
@@ -4191,6 +4377,8 @@ def validate_semantic_judgment(
         judgment.verified,
         snippets_rejected,
         fence.refs_reduced,
+        advisory_notes=len(advisory),
+        agent_criteria=agent_criteria,
     )
 
 
@@ -4200,8 +4388,12 @@ def _review_fence_gaps(review: SemanticJudgmentReview) -> frozenset[str]:
     gaps: set[str] = set()
     # A challenge the fence dropped is material the reviewer raised and the check does not
     # carry. Saying so is what keeps a dropped challenge from reading as one never made.
-    if review.challenges_rejected:
+    if any(reason not in _PROCESS_STATE_REJECTIONS for reason, _count in review.rejected_by_reason):
         gaps.add(SEMANTIC_CHALLENGES_REJECTED_GAP)
+    # Issue #1042: a "never attempted" challenge during work in progress, or one about Yoetz's own
+    # state, is not material the check failed to carry: disclosed, never bounding, never a veto.
+    if any(reason in _PROCESS_STATE_REJECTIONS for reason, _count in review.rejected_by_reason):
+        gaps.add(SEMANTIC_PROCESS_STATE_FILTERED_GAP)
     # A per-finding ruling the fence dropped or reduced: disclosed, never read as agreement.
     if review.verdicts_unsupported:
         gaps.add(SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP)
@@ -4956,7 +5148,8 @@ def _record_semantic_review_accounting(
     Without this, "the model returned three challenges and none of them reached you" is invisible:
     the check reports ``semantic_status: succeeded`` and zero AI-powered findings, which reads
     identically to a reviewer that found nothing. The record is counts and closed tokens only, and
-    it reconciles — ``returned == accepted + rejected`` and ``accepted == selected + suppressed``.
+    it reconciles — ``returned == accepted + rejected + restated + advisory`` and
+    ``accepted == selected + suppressed``.
     """
 
     # Provenance present means a provider attempt reached a terminal outcome. Nothing was reviewed
@@ -4981,6 +5174,10 @@ def _record_semantic_review_accounting(
             "semantic_review_refs_reduced": review.refs_reduced,
             "semantic_review_snippets_rejected": review.snippets_rejected,
             "semantic_restatements_suppressed": review.restatements_suppressed,
+            # Issue #1042 item 3: what the maintainer's harness needs to attribute a run's
+            # findings to the frame (advisory correctness notes, the agent's own criteria).
+            "semantic_challenges_advisory": review.advisory_notes,
+            "semantic_agent_criteria": review.agent_criteria,
             "semantic_prior_rulings_set_aside": review.verdicts_set_aside,
             "semantic_rulings_disputed_after_rebuttal": sum(
                 1 for item in review.verdicts if item.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT
@@ -5400,7 +5597,16 @@ async def execute_check_commit(
                 executions = checkpoint.executions
         # tb4n1 D3: the reviewer twice in a row could not assess the packet and no edit followed,
         # so this check skips the AI-powered review rather than loop on the same packet.
-        round_stopped = await _review_round_stopped_at(runtime, request, frozen)
+        # Issue #1046: nor before the first material edit. Either skip runs the local checks only
+        # and discloses why; nothing is composed or sent.
+        skip_gaps = await _review_skip_gaps(
+            runtime,
+            request,
+            frozen,
+            route_profile=route_profile,
+            workspace_changed=workspace_changed,
+        )
+        round_stopped = bool(skip_gaps)
         semantic_wait = _semantic_wait(request, runtime, round_stopped=round_stopped)
         if semantic_wait and frozen.lease.phase is CheckPhase.LOCAL_READY:
             lease = await runtime.ledger.advance_check_phase(
@@ -5515,6 +5721,7 @@ async def execute_check_commit(
                     citable_refs=semantic_result.case_citable_refs,
                     provider_input_text_by_ref=semantic_result.provider_input_text_by_ref,
                     settled_finding_refs=semantic_result.case_settled_finding_refs,
+                    review_phase=_review_phase(request, frozen, semantic_result),
                 )
             except SemanticJudgmentRejected as exc:
                 # The reviewer's answer is unusable, so the check has no AI-powered review result — but the
@@ -5585,9 +5792,9 @@ async def execute_check_commit(
             # serving strict — and the receipt names the recovery; a genuinely applied
             # strict route keeps today's terminal wording exactly.
             declared_gaps.add(OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP)
-        declared_gaps |= carried_semantic_attempt_gaps(
-            frozen.case, semantic_result.status
-        ) | _round_stopped_gaps(round_stopped=round_stopped)
+        declared_gaps |= (
+            carried_semantic_attempt_gaps(frozen.case, semantic_result.status) | skip_gaps
+        )
         # A review that ran without material its own profile selected is not full coverage, even
         # though it reports succeeded. Saying so here is what stops a hollow review from reading
         # as a clean one in the check result and the receipt derived from it.

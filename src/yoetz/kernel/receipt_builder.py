@@ -43,6 +43,7 @@ from yoetz.domain.receipts import (
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     PREEXISTING_TEST_INFORMATIONAL_GAPS,
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
+    SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
     SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
@@ -2213,6 +2214,13 @@ def _sections(
             gap_body = (
                 "AI-powered review was skipped: the reviewer twice in a row, or four times since "
                 "the last assessed review, could not assess the review packet (a Yoetz limit). "
+                f"Coverage is limited by: {limited_by}."
+            )
+        elif not_requested and SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in gap_codes:
+            # Issue #1046: the applicable check ran before any material edit.
+            gap_body = (
+                "AI-powered review was deferred: the applicable check recorded no material edit "
+                "yet, so it ran the local plan checks only; the review runs after the first edit. "
                 f"Coverage is limited by: {limited_by}."
             )
         elif not_requested:

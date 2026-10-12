@@ -32,6 +32,13 @@ the live route before a new check; it never authorizes egress. Read the check re
 review status as reported, not as proof that the underlying code is correct. Details and recovery
 limits remain in [`coverage-and-receipts.md`](coverage-and-receipts.md#check-mode-and-ai-powered-review-coverage).
 
+A check before your first material edit runs the local plan checks only and sends nothing
+(`semantic_review_deferred_before_first_edit`); the next check after an edit reviews as configured.
+While work is in progress the reviewer judges incomplete work only; its correctness concerns come
+back as advisory notes in the review summary, not findings. `agent_criterion_unmet` is a criterion
+you set yourself beyond the task's stated scope: fix it, or narrow it with `respond` `acknowledged`
+and the reason (a disclosed limitation that does not block).
+
 Before the receipt, run the closing review: `check` with `final_review: true`. It judges each stated
 requirement and requested output against the task, with or without a completion claim; closure
 readiness lists `closing_review_required` until one is current after the last material change.

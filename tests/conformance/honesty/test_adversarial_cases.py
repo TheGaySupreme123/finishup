@@ -736,10 +736,14 @@ def test_adv_claim_fixtures_fail_closed(fixture_loader: FixtureLoader) -> None:
     #   unjustified pre-existing test edit, #961) is locked by
     #   tests/unit/kernel/test_test_edit_visibility.py and
     #   tests/integration/application/test_check.py; it has no ADV case yet.
+    # - AGENT_CRITERION_UNMET is named only by the reviewer or routed to it by the check's fence
+    #   (#1043); no local pack emits it. tests/unit/kernel/test_review_frame.py and
+    #   tests/unit/application/test_tb4n4_review_frame.py lock it.
     expected_generic_kinds = frozenset(FindingKind) - {
         FindingKind.COORDINATION_OVERLAP,
         FindingKind.CODE_DEFECT,
         FindingKind.TASK_REQUIREMENT_UNMET,
+        FindingKind.AGENT_CRITERION_UNMET,
     }
     assert union == expected_generic_kinds, expected_generic_kinds - union
 

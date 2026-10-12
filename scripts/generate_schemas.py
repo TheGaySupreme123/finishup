@@ -1961,15 +1961,21 @@ def _add_semantic_finding_kinds(document: dict[str, JsonValue]) -> None:
     definitions = cast(dict[str, JsonValue], document["$defs"])
     finding_kind = cast(dict[str, JsonValue], definitions["finding_kind"])
     enum_values = cast(list[JsonValue], finding_kind["enum"])
-    for value in ("code_defect", "task_requirement_unmet"):
+    # Issue #1043 adds ``agent_criterion_unmet`` (priority 2) on the same unreleased versions.
+    semantic_kinds = (
+        ("code_defect", 1),
+        ("task_requirement_unmet", 1),
+        ("agent_criterion_unmet", 2),
+    )
+    for value, _priority in semantic_kinds:
         if value not in enum_values:
             enum_values.append(value)
     enum_values.sort(key=lambda item: str(item).encode("ascii"))
     all_of = cast(list[JsonValue], document["allOf"])
     branches = cast(list[JsonValue], all_of[1]["oneOf"])
-    for value in ("code_defect", "task_requirement_unmet"):
+    for value, priority in semantic_kinds:
         branch: JsonValue = {
-            "properties": {"kind": {"const": value}, "priority": {"const": 1}},
+            "properties": {"kind": {"const": value}, "priority": {"const": priority}},
             "required": ["kind", "priority"],
         }
         if branch not in branches:
@@ -3737,7 +3743,7 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     projected_properties["challenge"] = {"$ref": "#/$defs/finding_challenge"}
     kind = cast(dict[str, JsonValue], projected_properties["kind"])
     values = cast(list[JsonValue], kind["enum"])
-    for value in ("code_defect", "task_requirement_unmet"):
+    for value in ("agent_criterion_unmet", "code_defect", "task_requirement_unmet"):
         if value not in values:
             values.append(value)
     values.sort(key=lambda item: str(item).encode("ascii"))
@@ -4404,7 +4410,12 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     history_codes.sort(key=lambda item: str(item).encode("ascii"))
     finding_kind = cast(dict[str, JsonValue], definitions["finding_kind"])
     finding_kind_values = cast(list[JsonValue], finding_kind["enum"])
-    for value in ("code_defect", "coordination_overlap", "task_requirement_unmet"):
+    for value in (
+        "agent_criterion_unmet",
+        "code_defect",
+        "coordination_overlap",
+        "task_requirement_unmet",
+    ):
         if value not in finding_kind_values:
             finding_kind_values.append(value)
     finding_kind_values.sort(key=lambda item: str(item).encode("ascii"))

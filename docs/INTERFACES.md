@@ -1471,10 +1471,13 @@ Two further check-path operations describe a review that did reach a provider:
 `semantic_review_accounting` is appended once per dispatched review carrying counts only —
 `semantic_conclusion`, `semantic_challenges_returned`, `semantic_candidates_accepted`,
 `semantic_challenges_rejected`, the per-reason split `semantic_rejected_<reason>`
-(`ref_not_carried`, `ref_outside_case`, `hidden_source_claim`, `subject_refs_over_limit`),
+(`ref_not_carried`, `ref_outside_case`, `hidden_source_claim`, `subject_refs_over_limit`,
+`routine_completeness`, `yoetz_process_state`),
 `semantic_review_refs_reduced`, `semantic_review_snippets_rejected`,
-`semantic_restatements_suppressed`, `semantic_findings_selected`, `semantic_findings_suppressed`.
-The counts reconcile (`returned == accepted + rejected + suppressed restatements`,
+`semantic_restatements_suppressed`, `semantic_challenges_advisory` (routine correctness notes,
+#1042), `semantic_agent_criteria` (#1043), `semantic_findings_selected`,
+`semantic_findings_suppressed`.
+The counts reconcile (`returned == accepted + rejected + suppressed restatements + advisory notes`,
 `accepted == selected + suppressed findings`), so
 "the reviewer answered and none of it reached you" is never invisible. Challenge text, refs, and
 provider identity remain forbidden from this sink like every other.
@@ -2135,7 +2138,8 @@ semantic_missing_agent_suppliable|semantic_missing_structurally_unavailable|
 semantic_missing_already_supplied|semantic_missing_items_rejected|
 semantic_case_content_over_item_limit|semantic_case_finding_refs_over_limit|
 semantic_prior_findings_over_limit|semantic_prior_verdicts_unsupported|
-semantic_restatements_suppressed|check_time_change_unavailable|
+semantic_restatements_suppressed|semantic_process_state_filtered|
+semantic_review_deferred_before_first_edit|check_time_change_unavailable|
 check_time_change_base_unavailable|check_time_change_truncated|
 check_time_change_redacted|check_time_change_path_unrepresentable`) plus the evidence-strength
 codes
@@ -2151,9 +2155,10 @@ finding. The exception also requires the finding's original coverage to contain 
 pre-existing AI-powered review, evidence, host-observation, and selection tolerances and to have
 freshness outside `stale_after_material_change|redacted_gap|unknown`. For `semantic_model_derived`
 rows only the evidence-strength codes, `semantic_prior_findings_over_limit`,
-`semantic_prior_verdicts_unsupported` and `semantic_restatements_suppressed` are tolerated outright
-(plus, for a row the check records a `fixed` ruling for, the insufficient-packet codes and
-`content_unselected`), and the check must also record `succeeded/semantic_completed`; the
+`semantic_prior_verdicts_unsupported`, `semantic_restatements_suppressed` and
+`semantic_process_state_filtered` are tolerated outright
+(plus, for a row the check records a `fixed` ruling for, the insufficient-packet codes,
+`content_unselected` and the environment task facts, #1000 and #1046), and the check must also record `succeeded/semantic_completed`; the
 capture-baseline comparison below (#884, #904) may also tolerate codes already in the row's own
 recorded baseline. Two closed families are decided by meaning rather than by baseline. The
 advisory plan-drift codes (`plan_unrefined_before_first_edit|
@@ -4237,6 +4242,52 @@ deterministic codes about the agent's own record (`command_attempt_mismatch`,
 `command_attempt_uncorroborated`, `completion_claim_outside_plan`, `completion_plan_not_claimed`,
 `completion_scope_declared_none`, `completion_scope_undeclared`) as possible real discrepancies: the
 reviewer does not restate the code alone but may challenge what readable material shows.
+
+**Routine frame and the agent's own criteria (issues #1042, #1043; ADR-040 amendment of
+2026-10-12).** A routine review judges incomplete work only: an obligation marked resolved or left
+unfinished, planned verification not run, a missing or emptied output, a done or ran claim the packet
+does not show, an early stop; work not yet started is not a defect. It returns a correctness
+concern as `code_defect`, and `validate_semantic_judgment(..., review_phase="routine")` records a
+`code_defect` challenge that would mint a new finding as an advisory note instead: its summary and
+message are appended to the fenced `review_summary` under the fixed header "Reviewer correctness
+notes (advisory and non-blocking: ...)", counted in `SemanticJudgmentReview.advisory_notes`
+(returned = accepted + rejected + suppressed + advisory) and logged as
+`semantic_challenges_advisory`. No gap is added: the review saw everything and the note is
+recorded in full. A re-raise of a recorded finding still folds onto that finding. The final phase is
+unchanged. The check passes the phase from the review input manifest (`review_phase`), else from
+`select_semantic_budget_profile`. A failure only on probes the agent itself authored beyond the
+task's stated scope is the finding kind `agent_criterion_unmet` (priority 2, research-evidence pack,
+`finding_recorded` 1.4.0, provider judgment 1.2.0 and every 1.4.0 result wire, added in place on
+unreleased versions). `is_limitation_request` is true for it whatever next step the reviewer asked
+for, so it reads `limitation_requested` ("to disclose") with next actions `acknowledge` and `repair`:
+the agent fixes it (a later check proves it absent) or narrows it with a reasoned `acknowledged`
+(`limitation_disclosed`, receipt at best `insufficient_coverage`, listed under "Verification
+limits"). The check also routes a reviewer `task_requirement_unmet` there when
+`kernel.review_frame.agent_probe_only` holds: every cited work subject is a hook-observed command
+run that matches none of the requested commands of the effective, unacknowledged, unblocked
+obligations, at least one such requested command exists, the case carries none of
+`planned_verification_failed|not_observed|stale|unobservable|outcome_unknown`, and the
+command-identity key is registered. The review summary then says, in fixed words and a count, that
+the challenge was recorded as the agent's own criterion (`SemanticJudgmentReview.agent_criteria`,
+logged as `semantic_agent_criteria`).
+
+**No review before the first material edit (issue #1046).** A check whose phase is routine, whose
+mode, route (`policy`) and capability would dispatch a review, and whose frozen prefix records no
+material edit (`kernel.task_facts.material_edit_recorded`: an observed edit or shell write that
+counts under ADR-042/045, or an agent-published `edit` action) while the check-time capture
+observed no workspace change, runs the local checks only: `semantic_status` `not_requested`,
+`semantic_reason` `deterministic_mode`, and the standing gap
+`semantic_review_deferred_before_first_edit` (rule G7, bounding on both routes, a semantic-only gap
+for absence proofs). Nothing is composed or sent. `semantic_required` included: the deferral is not
+a failed review, so the verdict reads from the local checks (`insufficient_coverage` while review is
+required and not current), never `incomplete_check`. The closing review (`final_review`, or any
+completion claim) always runs, and a resumed check already in `semantic_wait` keeps its decision.
+The deferral is decided before the review's own admission, so a pre-work check also asks for no
+repository grant, disclosure decision or review input, and a missing provider or a policy block is
+reported (`not_configured`, `blocked_by_policy`) by the first check after the edit instead.
+The CLI, the MCP check text and the receipt's limitations sentence say "AI-powered review
+deferred". Readiness is unchanged: the review is still required, so the next check after the
+first edit reviews as configured.
 
 `semantic_required` means AI-powered review success is required for a complete verdict, not required
 for returning already-computed local truth. Missing approved external/local capability, privacy
@@ -8522,9 +8573,18 @@ not.
 Restatement matching (`_restated_finding`) tries the exact subject set first, then the same kind
 over `_concern_key`: claims mapped to their current superseding claim, and only the obligation set
 when both sides name obligations; every ref but a claim must still be no newer than the earlier
-finding, or than the agent's reasoned rejection when nothing after that rejection is cited. Before any effective completion claim an AI-powered
-`requested_item_never_attempted` challenge is dropped and counted under the rejection reason
-`routine_completeness`.
+finding, or than the agent's reasoned rejection when nothing after that rejection is cited. During a
+routine review (the phase the packet named; with no phase passed, before any effective completion
+claim) an AI-powered `requested_item_never_attempted` challenge is dropped and counted under the
+rejection reason `routine_completeness`; the closing review keeps it even without a completion claim
+(issue #1042). In every phase a challenge whose every subject is Yoetz's own capture or process record
+(`kernel.review_frame.yoetz_process_state_only`: the hook observation of a call to one of Yoetz's own
+tools or its result, or, for `action_without_result`, any hook-observed action) is dropped and
+counted under `yoetz_process_state`. Those two reasons add the standing disclosure
+`semantic_process_state_filtered` (gap table rule G5d: disclosed on both routes, tolerated by both
+absence proofs) instead of `semantic_challenges_rejected`, which keeps bounding for every other
+dropped challenge. The bounded accounting record names each reason
+(`semantic_rejected_<reason>`) and the advisory and agent-criterion counts below.
 
 A receipt whose applicable check is followed only by responses to that check's own findings
 (`CheckSuffixClass.RESPONSES_ONLY`) treats `check_current_as_of_earlier_frontier` as a disclosure
@@ -9174,9 +9234,17 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   once in `GAP_CLASSIFICATION`; standing ones are advisory for the check verdict, the receipt
   conclusion and `DETERMINISTIC_SCOPED_STANDING_GAPS` (all through
   `kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`, #986), and every task-fact code is tolerated
-  by a local absence proof; `write_outside_workspace` and `obligation_blocked_outside_agent_control`
-  are also tolerated by an AI-powered absence proof under an explicit, admitted `fixed` ruling on
-  that finding, never when the review is silent on it (issue #1000). `build_deterministic_case` and the compact status gaps add them beside the
+  by a local absence proof; the environment facts `write_outside_workspace`,
+  `obligation_blocked_outside_agent_control` (issue #1000), `verification_only_as_root`,
+  `install_into_private_env`, `install_into_yoetz_runtime` and the planned-verification observer
+  heuristics `planned_verification_agent_linked`, `planned_verification_matched_by_prefix`,
+  `planned_verification_outcome_unknown`, `planned_verification_unobservable` (issue #1046) are also
+  tolerated by an AI-powered absence proof under an explicit, admitted `fixed` ruling on that
+  finding (admission already requires the ruling to cite evidence or a result recorded after the
+  finding), never when the review is silent on it. They stay on the receipt; the resolved finding's
+  explanation names the ones its resolving check carried. Facts about the deliverable
+  (`requested_output_*`, `declared_output_*`, `deliverable_references_undeclared_file`) and every
+  agent-actionable fact keep blocking it. `build_deterministic_case` and the compact status gaps add them beside the
   plan-drift signals.
 - **Planned-verification identity.** `register_command_identity_key(key)` (the service calls it at
   composition with the local observation store key) lets `requested_command_identity(value)`
