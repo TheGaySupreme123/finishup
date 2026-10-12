@@ -338,10 +338,15 @@ def control_failure(
     *,
     json_output: bool = False,
     operation: str | None = None,
+    check_mode: object = None,
     stderr_writer: Callable[[str], None] = stderr,
     stdout_writer: Callable[[JsonValue], None] = stdout_json,
 ) -> int:
-    """Render the shared public control-error taxonomy without loading ``cli.app``."""
+    """Render the shared public control-error taxonomy without loading ``cli.app``.
+
+    ``check_mode`` is a ``check`` request's ``mode``: one that records nothing (ADR-047,
+    ``inspect``) times out as a read, never as a write that may have committed.
+    """
 
     error = _bind_handshake_correlation(error)
     code = public_error_code_for_control_reason(error.reason)
@@ -353,7 +358,7 @@ def control_failure(
             timeout_operation_kind,
         )
 
-        kind = timeout_operation_kind(operation)
+        kind = timeout_operation_kind(operation, check_mode=check_mode)
         directive = directive_for(continuation_for_reason("request_timeout", operation_kind=kind))
         lines = [
             f"{code.value.lower()}: request_timeout: the local {operation} request did not answer "

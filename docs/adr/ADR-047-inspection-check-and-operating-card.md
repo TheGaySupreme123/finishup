@@ -12,11 +12,14 @@ rather than a new tool. It adds one value to the unreleased `check-request` 1.1.
 one result branch to the unreleased `check-result` 1.4.0, both in place; it changes no released
 wire shape. It grants no runtime, credential, disclosure, egress or destructive-action authority.
 **Implemented by:** `src/yoetz/application/check_inspection.py`,
+`src/yoetz/kernel/command_attempts.py` (`unattempted_item_indexes`, shared with the check),
 `src/yoetz/application/check.py` (`execute_check` routes `mode: inspect` there),
 `src/yoetz/application/status.py` (`current_closure_readiness`),
 `src/yoetz/application/service.py`, `src/yoetz/service/daemon.py` (read-only classification, never
-detached), `src/yoetz/protocol/models.py` (`CheckInspectionModel`, the request refusal, the leaf
-rules), `src/yoetz/protocol/inspection_text.py`, `src/yoetz/cli/render.py`,
+detached), `src/yoetz/protocol/recovery.py` (`READ_ONLY_CHECK_MODES`, `timeout_operation_kind`),
+`src/yoetz/mcp/server.py` and `src/yoetz/cli/bootstrap.py` (a timed-out inspection is a read; the
+bridge's `status` deadline), `src/yoetz/protocol/models.py` (`CheckInspectionModel`, the request
+refusal, the leaf rules), `src/yoetz/protocol/inspection_text.py`, `src/yoetz/cli/render.py`,
 `src/yoetz/mcp/summaries.py`, `src/yoetz/mcp/descriptors.py`, `scripts/generate_schemas.py`,
 `scripts/generate_check_inspection_fixture.py`,
 `guidance/agent-instructions.md` (the operating card), `guidance/publication-policy.md`,
@@ -52,8 +55,13 @@ other resolution evidence.
 
 `inspect` is a value of the existing `check` `mode`, not a new tool or operation. It is a read,
 routed exactly like `status` (payload read; no write capability, no frozen case, no event, no
-operation record, no finding, no reviewer, no egress). The daemon classifies it read-only, so a
-failure is a retryable read failure answered by a fresh request, and never runs it detached.
+operation record, no finding, no reviewer, no egress). The daemon, the MCP bridge and the CLI
+classify it read-only by one set of modes (`READ_ONLY_CHECK_MODES`), so a failure, a timeout
+included, is a retryable read failure answered by a fresh request (continuation
+`read_timeout_new_identity`, no `replay_request_id`), and the daemon never runs it detached. The
+bridge gives it the `status` call deadline (30 seconds by default), not the 300 seconds kept for a
+check that may run an AI-powered review: an inspection waiting on a running review's dispatch gate
+then gets a typed read timeout inside the common 60-second host tool limit.
 **It is not recorded.** `status` reads are not recorded either; an inspection changes nothing that
 closure, a receipt or a later check reads, so an event would only add a record the next
 inspection must classify as Yoetz's own activity.
@@ -79,7 +87,11 @@ command commitments); no command text, path or prose leaves the service. Three s
   obligation names what it lacks and whose move it is: requested items with no attempt (by
   index), no resolution evidence, an asserted command whose linked observed run differs, an
   unconfirmed blocker (the agent's), or an asserted command run no hook observation is linked to
-  (`command_run_not_observed`, Yoetz's: whether it ran is outside what Yoetz recorded).
+  (`command_run_not_observed`, Yoetz's: whether it ran is outside what Yoetz recorded). "No
+  attempt" is the deterministic check's own accounting (`requested_item_never_attempted`, one
+  shared function), so the inspection never sends the agent after an item the check would not
+  ask for: an item marked `input` is never unattempted, and a requested command a hook-observed
+  run matched (ADR-045) is attempted however the agent published it.
 - **`observed_since_check`**: every hook-observed action after the last recorded check, classed by
   the one `later_material` predicate, with tool, write class, outcome, exit status and keyed
   command commitment. Yoetz's own calls and host bookkeeping are not listed (they never change the
@@ -159,7 +171,10 @@ the daemon's privacy projection over the payments shape (evidence from a harness
 declared supervisor command and configuration, an unattempted obligation, observed actions after
 the check) and the aligned case; it asserts the ledger head does not move, every leaf classifies
 structural, and the CLI and MCP texts agree; a keyed observed run of the requested supervisor
-command is named and the bypassing harness run is flagged. Golden vectors CAN-017
+command is named and the bypassing harness run is flagged; an input and an observed requested
+command are never listed as unattempted. `tests/unit/mcp/test_recovery_directive_delivery.py`
+holds the bridge's and the CLI's read classification of a failed inspection and its `status`
+deadline beside an unchanged minting check. Golden vectors CAN-017
 (`fixtures/canonical/check-inspection-1.4.0.case.json`) freeze the request rule and the branch.
 `tests/conformance/surfaces/test_operating_card.py`
 measures the card and holds the guidance changes. The real-data replay of the tb4n4 exports

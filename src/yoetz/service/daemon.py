@@ -151,6 +151,7 @@ from yoetz.protocol.models import (
     StatusRequest,
     StatusResult,
 )
+from yoetz.protocol.recovery import READ_ONLY_CHECK_MODES
 from yoetz.service.check_waits import EXPLICIT_CONTROL_CANCEL, CheckReadWindow, CheckWaits
 from yoetz.service.confidential_protocol import (
     HUMAN_PROTOCOL_MAGIC,
@@ -353,10 +354,11 @@ def _request_is_read_only(request: ControlCallRequest) -> bool:
     if (
         request.method is ControlMethod.CHECK
         and type(request.body) is CheckRequest
-        and request.body.mode == "inspect"
+        and request.body.mode in READ_ONLY_CHECK_MODES
     ):
         # ADR-047: an inspection records nothing, so a failure is a read failure to repeat,
-        # never a same-request_id replay of an operation that does not exist.
+        # never a same-request_id replay of an operation that does not exist. The MCP bridge
+        # and the CLI classify a timed-out inspection by the same modes.
         return True
     if request.method is ControlMethod.PROJECT and isinstance(request.body, Mapping):
         return request.body.get("operation") == "status"

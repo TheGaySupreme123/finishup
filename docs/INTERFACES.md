@@ -2951,7 +2951,8 @@ an open process (ADR-007). The MCP bridge supplies a
 default **30-second** call deadline for `start`, `publish_work`, and `status`, a default
 **50-second** deadline for `respond` and `receipt` (below the common 60-second host MCP tool
 limit, so the bridge's typed timeout reaches the agent first), and a default **300-second**
-deadline for `check`; these use the existing private `deadline_ms` envelope field and do not
+deadline for `check` (a `check` with `mode: inspect` is a read and takes the `status` deadline,
+ADR-047); these use the existing private `deadline_ms` envelope field and do not
 change the public workflow-tool schemas. The bridge environment may override them in integer
 milliseconds, clamped to 1,000-900,000: `YOETZ_MCP_DEADLINE_MS_<TOOL>` (for example
 `YOETZ_MCP_DEADLINE_MS_RECEIPT`) sets one tool, and `YOETZ_MCP_DEADLINE_MS` sets every tool except
@@ -8768,11 +8769,14 @@ request digest and the detached-check identity; the member is never recorded in 
 **Inspection check (`mode: inspect`, #1048).** `check-request` 1.1.0's `mode` admits `inspect`
 (unreleased, in place). It is a read routed like `status` (payload read, no write capability): it
 freezes no case, appends no event, writes no operation record, mints no finding, dispatches no
-reviewer and egresses nothing, so the daemon classifies it as read-only (a failure is a retryable
-read failure answered by a fresh request, never a same-`request_id` replay) and never runs it
-detached. The request model refuses `final_review`, `max_findings`, `policy_packs` and `scope`
-beside it, each at its own field with reason `extra_forbidden` (kept out of the JSON Schema: a root
-conditional lowers the advertised check input to `unknown` on observed hosts);
+reviewer and egresses nothing, so the daemon, the MCP bridge and the CLI classify it as read-only
+by one set of modes (`protocol/recovery.READ_ONLY_CHECK_MODES`): a failure, a timeout included, is
+a retryable read failure answered by a fresh request (`read_timeout_new_identity`, no
+`replay_request_id`), never a same-`request_id` replay, and the daemon never runs it detached. The
+bridge gives it the `status` call deadline. The request model refuses `final_review`,
+`max_findings`, `policy_packs` and `scope` beside it, each at its own field with reason
+`extra_forbidden` (kept out of the JSON Schema: a root conditional lowers the advertised check
+input to `unknown` on observed hosts);
 `await_observations` is accepted and reported as on any check. `expected_frontier` is not
 compared. The answer is the `inspection` branch of `check-result` 1.4.0 (`state: inspected`,
 discriminated beside `complete` and `awaiting_human`/`awaiting_input`; no verdict, findings,
@@ -8787,8 +8791,11 @@ coverage, versions or `result_frontier`), every leaf structural:
   names `{kind, owner, item_indexes?}` with `kind` `requested_item_not_attempted`,
   `resolution_evidence_not_cited`, `command_attempt_mismatch`, `blocker_unconfirmed` (owner
   `agent`) or `command_run_not_observed` (owner `yoetz`: an asserted command attempt with no
-  linked hook observation); `findings` (at most 64; `finding_count`) — every finding whose class is
-  not `resolved`, as `{finding_id, closure_class, closure_basis}`.
+  linked hook observation); `requested_item_not_attempted` names the items the deterministic
+  `requested_item_never_attempted` accounting counts as unattempted
+  (`kernel/command_attempts.unattempted_item_indexes`: never a `role: input` item, and never a
+  requested command a hook-observed run matched); `findings` (at most 64; `finding_count`) — every
+  finding whose class is not `resolved`, as `{finding_id, closure_class, closure_basis}`.
 - `observed_since_check` — `last_check_frontier` (absent before any check), `action_count`, and
   the newest 64 hook-observed `action_recorded` rows after that frontier whose `later_material`
   class is `edit_or_write`, `exploration`, `non_counting_write` or `other` (Yoetz's own calls and

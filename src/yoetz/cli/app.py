@@ -703,12 +703,17 @@ def _lifecycle_failure(error: LifecycleError) -> int:
 
 
 def _control_failure(
-    error: ControlError, *, json_output: bool = False, operation: str | None = None
+    error: ControlError,
+    *,
+    json_output: bool = False,
+    operation: str | None = None,
+    check_mode: object = None,
 ) -> int:
     return _shared_control_failure(
         error,
         json_output=json_output,
         operation=operation,
+        check_mode=check_mode,
         stderr_writer=_stderr,
         stdout_writer=_stdout_json,
     )
@@ -786,6 +791,8 @@ async def _call_workflow(
     task_statement_file: str | None = None,
     await_observations: bool = False,
 ) -> int:
+    # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read.
+    check_mode: object = None
     try:
         if method == "start":
             request = cast(
@@ -803,6 +810,8 @@ async def _call_workflow(
             )
         else:
             request = cast(WorkflowRequest, _request_model(request_type, input_path, inline))
+        if type(request) is CheckRequest:
+            check_mode = request.mode
         client = await build_service_client()
         try:
             call = getattr(client, method)
@@ -839,7 +848,7 @@ async def _call_workflow(
     except OSError, ProtocolValueError, ValidationError, ValueError:
         return _usage_failure()
     except ControlError as error:
-        return _control_failure(error, operation=method)
+        return _control_failure(error, operation=method, check_mode=check_mode)
 
 
 def _finish(code: int) -> None:
