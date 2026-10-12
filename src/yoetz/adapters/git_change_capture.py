@@ -779,15 +779,17 @@ class GitChangeCaptureAdapter:
     def _nested_head(self, pinned: _Workspace, relative: bytes, deadline: float) -> str | None:
         """HEAD of the nested repository at ``relative`` under the root, or ``None``.
 
-        The repository passes every fence its check-time read applies (``_nested_read``) before
-        Git resolves anything in it, so a store borrowed through ``commondir`` or alternates
-        never supplies the starting commit. ``None`` records nothing: the capture then starts
-        from its HEAD and says it may miss commits, or refuses it as it was refused here.
+        After the open fence, the repository passes the object-store and effective-config fences
+        its check-time read applies (``_nested_read``) before its HEAD is resolved, so a store
+        borrowed through ``commondir`` or alternates never supplies the starting commit. ``None``
+        records nothing: the capture then starts from its HEAD and says it may miss commits, or
+        refuses it as it was refused here.
         """
 
         try:
             nested = self._open_nested(pinned, relative, deadline)
-            # Metadata only, so a borrowed store is refused before Git reads its config.
+            # Metadata only: a borrowed store is refused before the effective-config listing
+            # follows its includes and before HEAD is resolved.
             self._refuse_unsafe_object_store(nested)
             self._refuse_unsafe_config(nested, deadline)
             return self._rev(nested, "HEAD^{commit}", deadline)
