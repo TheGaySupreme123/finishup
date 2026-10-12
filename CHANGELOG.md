@@ -35,9 +35,11 @@ reverse-chronological released versions.
 
 - AI-powered review now sees the change inside a Git repository nested in yours (an embedded
   repository or a submodule-style checkout), counted from the commit it had when the task started;
-  one that cannot be read safely is named in the change header with the reason. Files untracked
-  inside a nested repository are named but their content is never sent, because Yoetz cannot tell
-  which of them predate the task. Up to four files the task statement names (a specification, a
+  one that cannot be read safely is named in the change header with the reason. Its untracked
+  files are treated like yours (those already there when the task started and unchanged are left
+  out); when Yoetz could not list them whole at the task's start, they are named but their content
+  is never sent, because any of them may predate the task. Up to four files the task statement
+  names (a specification, a
   rulebook, the source being ported) travel with the review as bounded task-input excerpts when
   they are in the repository, unchanged since the task started (a tracked file only when its
   content still matches the task's starting commit and Git compares it normally), not ignored and

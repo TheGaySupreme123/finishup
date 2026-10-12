@@ -1816,10 +1816,10 @@ base is a commit, uncommitted work that was already there when the task started 
 untracked files that were already there and are unchanged since are left out and only counted in the
 header, because `start` records their names and a metadata digest with the base (#1045). A nested Git
 repository has its own change read under its directory, from the HEAD `start` recorded for it when
-there is one (its untracked files are named but never read: that record does not list them), and up
-to four read-only task input files the task statement names travel as separate repository excerpts
-(ADR-031, #1045 amendment). This is the same on every host: it reads the repository, not a host
-capture. A header lists every changed
+there is one; its untracked files are left out or shown like the outer ones when `start` listed them
+whole, and are otherwise named but never read. Up to four read-only task input files the task
+statement names travel as separate repository excerpts (ADR-031, #1045 amendment). This is the same
+on every host: it reads the repository, not a host capture. A header lists every changed
 file with its line counts and says which files were not
 shown. Script edits (`sed -i`, Python rewrites, `git apply <file>`), commits and hooks that never
 fired are therefore reviewed even though no capture exists for them.

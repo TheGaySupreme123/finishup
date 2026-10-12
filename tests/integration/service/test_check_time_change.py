@@ -807,8 +807,8 @@ async def test_a_nested_repository_never_sends_what_predates_the_task_as_its_cha
 ) -> None:
     """Review of #1045: a gitlinked repository's commit made before the task (never recorded by
     the outer gitlink) and a developer's untracked note inside it reached the packet as the
-    agent's change. The recorded task-start base now carries the repository's own HEAD, and its
-    untracked files are named but never read, which the coverage reports as cut."""
+    agent's change. The recorded task-start base now carries the repository's own HEAD and its
+    untracked listing: the note is its starting state, while the agent's new file is shown."""
 
     repository = _repository(tmp_path)
     nested = repository / "api"
@@ -825,6 +825,7 @@ async def test_a_nested_repository_never_sends_what_predates_the_task_as_its_cha
     (nested / "notes.md").write_text("NESTED_NOTE_MARKER\n", encoding="utf-8")
     frozen, runtime = await _kea_case(memory_adapter(append_command()), repository)
     (nested / "server.py").write_text("DATABASE = 'NESTED_CUTOVER_MARKER'\n", encoding="utf-8")
+    (nested / "migrate.py").write_text("NESTED_MIGRATION_MARKER = 1\n", encoding="utf-8")
     privacy = _Privacy(task_id=runtime.task_id, profile=ReviewContextProfile.EXPANDED)
 
     with check_workspace_source_scope(CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)):
@@ -833,14 +834,14 @@ async def test_a_nested_repository_never_sends_what_predates_the_task_as_its_cha
     candidate = privacy.candidates[0]
     text = _change_text(candidate)
     assert "+DATABASE = 'NESTED_CUTOVER_MARKER'" in text
+    assert "+NESTED_MIGRATION_MARKER = 1" in text  # the agent's new file inside the repository
     assert "PRE_TASK_COMMIT_MARKER" not in text and "api/private.py" not in text
-    assert "NESTED_NOTE_MARKER" not in text
-    assert "  A api/notes.md untracked; not shown: untracked inside a nested repository" in text
-    assert "from the commit it held when the task started." in text
+    assert "NESTED_NOTE_MARKER" not in text and "api/notes.md" not in text
+    assert "from the commit it held when the task started.\n" in text
     assert all(b"NESTED_NOTE_MARKER" not in item.plaintext for item in candidate.items)
     assert all(b"PRE_TASK_COMMIT_MARKER" not in item.plaintext for item in candidate.items)
-    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in _packet_gaps(candidate)
-    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in waiting.case_content_gaps
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in _packet_gaps(candidate)
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in waiting.case_content_gaps
 
 
 @pytest.mark.anyio

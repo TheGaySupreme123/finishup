@@ -314,15 +314,22 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    embedded repository's HEAD is often ahead of the commit the outer repository records for it.
    Each is opened with every fence of decision 4 (the borrowed-store and effective-config refusals
    included) before its HEAD is resolved, at most 8 in all, untracked ones first; one a fence
-   refuses records no HEAD, so no other repository's commit can become its starting state. A nested
-   repository's own untracked files are not listed. No file is opened. Past a bound, or with a name
-   the object cannot hold, the snapshot is incomplete; a snapshot that cannot be taken at all leaves
-   the base exactly as before. The snapshot rides the same encrypted base object
-   (`yoetz.task-change-base/1`, optional `untracked`, `untracked_complete` and `nested` keys; a base
-   without them keeps its bytes). A `nested` row means the same for both kinds, the repository's
-   HEAD when the task started, so a base recorded before gitlinked rows existed reads unchanged: its
-   gitlinks simply have no row. A `first_check` pin never carries one: only the task's own start can
-   say what predates it.
+   refuses records no HEAD, so no other repository's commit can become its starting state. For
+   each repository with a recorded HEAD, the same open repository's own untracked files are listed
+   the same way (its own ignore files, names and `stat` digests relative to its directory). The
+   nested listings share the outer listing's bounds: after the outer listing, each takes what is
+   left of the 4096 names and 256 KiB, in place order, whole or not at all; one that does not fit,
+   is cut short, holds a name the object cannot carry or runs out of time is recorded incomplete
+   and names no file. No file is opened. Past a bound, or with a name the object cannot hold, the
+   outer snapshot is incomplete; a snapshot that cannot be taken at all leaves the base exactly as
+   before. The snapshot rides the same encrypted base object (`yoetz.task-change-base/1`, optional
+   `untracked`, `untracked_complete`, `nested` and `nested_untracked` keys; `nested_untracked` holds
+   `[directory, complete, [[path, digest], ...]]` rows in path order, written only when there is
+   one, and is decoded strictly; a base without these keys keeps its bytes). A `nested` row means
+   the same for both kinds, the repository's HEAD when the task started, so a base recorded before
+   gitlinked rows existed reads unchanged: its gitlinks simply have no row, and a base recorded
+   before nested listings has no `nested_untracked`. A `first_check` pin never carries any of them:
+   only the task's own start can say what predates it.
 2. **Untracked files that predate the task are baseline.** An untracked file the snapshot names
    with an unchanged digest is the task's starting state: the content and metadata reads leave it
    out (its identity still joins the stability check), and the header counts it ("Untracked files
@@ -344,11 +351,15 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    may miss commits made in it during the task. Its paths carry its directory (`a/api/server.py`), so
    the deliverable order, the 256 KiB bound, the packet split and the shown-file record treat its
    files as files of the change; the outer one-line entry for an untracked repository gives way to
-   them. Its untracked files are named and never read: the snapshot does not list them, so none can
-   be told apart from a file that predates the task. Each is marked "not shown: untracked inside a
-   nested repository, which the task-start record does not cover, so it may predate the task",
-   counts as not shown (`check_time_change_truncated`), and the repository's header line says its
-   untracked files are named but not shown. A repository that cannot be read keeps its outer entry
+   them. With a complete task-start listing of its untracked files, they are treated exactly as at
+   the outer level (item 2): one the listing names with an unchanged digest is left out and counted
+   in the same header line, any other is shown. Without one (a base recorded before nested
+   listings, a repository whose HEAD was not recorded, or an incomplete listing) none of them can
+   be told apart from a file that predates the task, so each is named and never read, marked "not
+   shown: untracked inside a nested repository whose untracked files the task-start record does
+   not fully list, so it may predate the task", counts as not shown
+   (`check_time_change_truncated`), and the repository's header line says its untracked files are
+   named but not shown and why. A repository that cannot be read keeps its outer entry
    (that one-line entry, or a changed gitlink's commit-id lines) marked "not shown: a nested Git
    repository whose own change was not read", counts as not shown (`check_time_change_truncated`),
    and the header names why in one fixed sentence (`nested_limit`, the deadline, or the closed

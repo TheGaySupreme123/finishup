@@ -1368,45 +1368,218 @@ def test_nested_repository_change_is_captured_under_its_directory(tmp_path: Path
     assert capture.omitted_files == 0 and not capture.truncated
 
 
-def test_untracked_files_inside_a_nested_repository_are_named_but_never_read(
-    tmp_path: Path,
+def _spy_reads(monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
+    """Record every file the adapter opens for content, by its path under the opened root."""
+
+    read: list[bytes] = []
+    original = getattr(capture_module, "_read_beneath")
+
+    def spy(root_descriptor: int, path: bytes, limit: int, expected: Any) -> Any:
+        read.append(path)
+        return original(root_descriptor, path, limit, expected)
+
+    monkeypatch.setattr(capture_module, "_read_beneath", spy)
+    return read
+
+
+_NESTED_NAMED_ONLY = (
+    " untracked; not shown: untracked inside a nested repository whose untracked files the "
+    "task-start record does not fully list, so it may predate the task\n"
+)
+
+
+def test_nested_repository_untracked_files_present_at_task_start_are_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Review of #1045: the task-start snapshot lists only the outer level's untracked files, so
+    """Review of #1045: the task-start snapshot listed only the outer level's untracked files, so
     a developer's untracked note inside a nested repository was read whole on every check and
-    shown as the agent's addition. No nested untracked file can be vouched new: each is named,
-    never read, and counts as not shown."""
+    shown as the agent's addition. The snapshot now lists each nested repository's own untracked
+    files, which are then treated exactly as at the outer level."""
 
     repository = _repository(tmp_path)
     nested = _nested_repository(repository)
     (nested / "private_notes.md").write_text("NESTED_PREEXISTING_NOTE\n", encoding="utf-8")
+    (nested / "todo.md").write_text("before the task\n", encoding="utf-8")
     (repository / "outer_notes.txt").write_text("OUTER_PREEXISTING_NOTE\n", encoding="utf-8")
+    read = _spy_reads(monkeypatch)
     adapter = GitChangeCaptureAdapter()
     base = adapter.read_task_base(os.fspath(repository))
+    assert read == []  # metadata only: no file is opened at task start
     assert [path for path, _ in base.nested] == ["api"]
     assert [item.path for item in base.untracked] == ["outer_notes.txt"]
+    (listing,) = base.nested_untracked
+    assert (listing.path, listing.complete) == ("api", True)
+    assert [item.path for item in listing.files] == ["private_notes.md", "todo.md"]
+    assert decode_task_change_base(encode_task_change_base(base)) == base
     (nested / "server.py").write_text("def handler():\n    return 'v2'\n", encoding="utf-8")
     (nested / "migrate.py").write_text("AGENT_NESTED_ADDITION\n", encoding="utf-8")
+    (nested / "todo.md").write_text("before the task\nand during it\n", encoding="utf-8")
 
     capture = adapter.capture(os.fspath(repository), base)
 
     text = _text(capture)
-    assert "NESTED_PREEXISTING_NOTE" not in text
-    assert "AGENT_NESTED_ADDITION" not in text  # cannot be told apart from a pre-task file
+    assert b"private_notes.md" not in read
+    assert "NESTED_PREEXISTING_NOTE" not in text and "private_notes.md" not in text
     assert "OUTER_PREEXISTING_NOTE" not in text and "outer_notes.txt" not in text
+    assert (
+        "Untracked files that already existed when the task started and are unchanged since: 2."
+        in text
+    )
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started.\n" in text
+    )
+    # The agent's new file is the task's addition, shown whole; a pre-task file it changed is
+    # shown whole and marked, exactly as at the outer level.
+    assert "  A api/migrate.py (+1 -0) untracked\n" in text
+    assert "+AGENT_NESTED_ADDITION" in text
+    assert (
+        "  M api/todo.md (+2 -0) untracked; existed when the task started; its earlier content "
+        "was not recorded, so it is shown whole\n"
+    ) in text
+    assert "+    return 'v2'" in text
+    assert "Changed files: 1 tracked, 2 untracked. Not shown: 0." in text
+    assert capture.omitted_files == 0 and not capture.truncated
+
+
+def test_a_base_recorded_without_nested_listings_names_nested_untracked_files_only(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a base recorded before nested listings existed cannot tell a nested
+    repository's untracked files apart from ones that predate the task: each is named, never
+    read, and counts as not shown."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    (nested / "private_notes.md").write_text("NESTED_PREEXISTING_NOTE\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    recorded = adapter.read_task_base(os.fspath(repository))
+    assert recorded.nested_untracked
+    older = TaskChangeBase(
+        recorded.object_format,
+        recorded.commit,
+        "task_start",
+        recorded.untracked,
+        recorded.untracked_complete,
+        recorded.nested,
+    )
+    assert b"nested_untracked" not in encode_task_change_base(older)
+    (nested / "migrate.py").write_text("AGENT_NESTED_ADDITION\n", encoding="utf-8")
+
+    capture = adapter.capture(os.fspath(repository), older)
+
+    text = _text(capture)
+    assert "NESTED_PREEXISTING_NOTE" not in text and "AGENT_NESTED_ADDITION" not in text
     assert (
         "Nested repository api/: its own change is shown under that directory, from the commit "
         "it held when the task started. Untracked files in it are named but not shown: the "
         "task-start record does not list them, so any of them may predate the task.\n"
     ) in text
-    note = (
-        " untracked; not shown: untracked inside a nested repository, which the task-start "
-        "record does not cover, so it may predate the task\n"
-    )
-    assert "  A api/private_notes.md" + note in text
-    assert "  A api/migrate.py" + note in text
-    assert "+    return 'v2'" in text  # the tracked change inside it is still shown
-    assert "Changed files: 1 tracked, 2 untracked. Not shown: 2." in text
+    assert "  A api/private_notes.md" + _NESTED_NAMED_ONLY in text
+    assert "  A api/migrate.py" + _NESTED_NAMED_ONLY in text
+    assert "Changed files: 0 tracked, 2 untracked. Not shown: 2." in text
     assert capture.omitted_files == 2 and capture.truncated
+
+
+def test_a_nested_listing_past_the_snapshot_bound_names_its_untracked_files_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of #1045: nested listings share the outer listing's bound and are kept whole or not
+    at all, so one that does not fit is recorded incomplete and its files are named only, while a
+    later one that fits is still complete."""
+
+    monkeypatch.setattr(capture_module, "MAX_BASELINE_UNTRACKED_FILES", 2)
+    repository = _repository(tmp_path)
+    (repository / "outer_notes.txt").write_text("OUTER_PREEXISTING_NOTE\n", encoding="utf-8")
+    api = _nested_repository(repository)
+    (api / "one.md").write_text("API_PREEXISTING_ONE\n", encoding="utf-8")
+    (api / "two.md").write_text("API_PREEXISTING_TWO\n", encoding="utf-8")
+    lib = _nested_repository(repository, "lib")
+    (lib / "notes.md").write_text("LIB_PREEXISTING_NOTE\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert base.untracked_complete and [item.path for item in base.untracked] == ["outer_notes.txt"]
+    assert [(row.path, row.complete, len(row.files)) for row in base.nested_untracked] == [
+        ("api", False, 0),
+        ("lib", True, 1),
+    ]
+    assert decode_task_change_base(encode_task_change_base(base)) == base
+
+    capture = adapter.capture(os.fspath(repository), base)
+
+    text = _text(capture)
+    assert "API_PREEXISTING" not in text and "LIB_PREEXISTING_NOTE" not in text
+    assert "lib/notes.md" not in text  # complete listing: baseline, left out
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started. Untracked files in it are named but not shown: the "
+        "task-start list of them was incomplete, so any of them may predate the task.\n"
+    ) in text
+    assert "  A api/one.md" + _NESTED_NAMED_ONLY in text
+    assert "  A api/two.md" + _NESTED_NAMED_ONLY in text
+    assert capture.omitted_files == 2 and capture.truncated
+
+
+def test_nested_untracked_listings_decode_strictly(tmp_path: Path) -> None:
+    from yoetz.ports.change_capture import NestedUntrackedBaseline, UntrackedBaselineFile
+
+    state = "sha256:" + "0" * 64
+    note = UntrackedBaselineFile("notes.md", state)
+    good = TaskChangeBase(
+        "sha1",
+        "a" * 40,
+        "task_start",
+        (),
+        True,
+        (("api", "b" * 40), ("lib", "c" * 40)),
+        (NestedUntrackedBaseline("api", True, (note,)), NestedUntrackedBaseline("lib", False)),
+    )
+    encoded = encode_task_change_base(good)
+    assert decode_task_change_base(encoded) == good
+    assert b'"nested_untracked":[["api",true,[["notes.md",' in encoded
+    assert b'["lib",false,[]]' in encoded
+
+    head, rest = encoded.split(b'"nested_untracked":', 1)
+    tail = rest[rest.index(b',"object_format"') :]
+
+    def rejected(listings: str) -> bytes:
+        return head + b'"nested_untracked":' + listings.encode("utf-8") + tail
+
+    assert decode_task_change_base(rejected('[["api",true,[]]]')).nested_untracked == (
+        NestedUntrackedBaseline("api", True),
+    )
+    for listings in (
+        "[]",  # never written empty
+        '[["lib",false,[]],["api",true,[]]]',  # rows out of order
+        '[["web",true,[]]]',  # no recorded HEAD for it
+        '[["api",1,[]]]',  # flag is not a boolean
+        f'[["api",false,[["notes.md","{state}"]]]]',  # an incomplete row names files
+        f'[["api",true,[["z.md","{state}"],["a.md","{state}"]]]]',  # files out of order
+        '[["api",true,[["notes.md"]]]]',  # malformed file row
+        '[["api",true]]',  # malformed row
+    ):
+        with pytest.raises(ValueError):
+            decode_task_change_base(rejected(listings))
+    # The nested listings share the outer listing's bounds.
+    many = tuple(UntrackedBaselineFile(f"f{index:05}.md", state) for index in range(4_097))
+    with pytest.raises(ValueError):
+        TaskChangeBase(
+            "sha1",
+            "a" * 40,
+            "task_start",
+            (),
+            True,
+            (("api", "b" * 40),),
+            (NestedUntrackedBaseline("api", True, many),),
+        )
+    # A first-check pin never carries one.
+    with pytest.raises(ValueError):
+        TaskChangeBase(
+            "sha1",
+            "a" * 40,
+            "first_check",
+            nested_untracked=(NestedUntrackedBaseline("api", False),),
+        )
 
 
 def test_gitlink_repository_diff_starts_at_the_commit_it_held_when_the_task_started(

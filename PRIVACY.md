@@ -76,13 +76,16 @@ to the working tree, including untracked files Git does not ignore. Because that
 uncommitted work that already existed when the task started is included too; untracked files that
 already existed then and are unchanged since are left out, because the task-start base also records,
 encrypted, the names of the untracked files and a digest of their file metadata (never their
-content) and the commit each nested repository held. A nested Git repository inside the task's
-repository has its own change read from that commit, under every fence below, at most eight per
-check. When no commit was recorded for a nested repository the outer one tracks (for example, a
-task started before Yoetz recorded one), its change starts from the commit the outer repository
-records for it, and the header says that commits made in it before the task may then be included.
-Untracked files inside a nested repository are named but their content is never read, because the
-task-start record does not list them, so any of them may predate the task; they count as not shown.
+content), and the commit each nested repository held with the same names and digests for its own
+untracked files. A nested Git repository inside the task's repository has its own change read from
+that commit, under every fence below, at most eight per check, and its untracked files are left
+out or shown exactly like the outer ones. When no commit was recorded for a nested repository the
+outer one tracks (for example, a task started before Yoetz recorded one), its change starts from
+the commit the outer repository records for it, and the header says that commits made in it before
+the task may then be included. When a nested repository's untracked files were not recorded whole
+(a task started before Yoetz recorded them, or more untracked names than the record holds), they
+are named but their content is never read, because any of them may predate the task; they count as
+not shown.
 The same read also carries up to four read-only task input files the task statement names (or that
 the task declares as inputs), each at most 16 KiB, only when the file is inside the repository, is
 unchanged since the task started, is not ignored by Git and is not credential-named. A tracked file

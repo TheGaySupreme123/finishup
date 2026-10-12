@@ -289,13 +289,16 @@ the names of the untracked files present when the task started and a digest of t
 never their content. A Git repository nested inside yours (for example an `api` directory that is
 its own repository) has its own change read from the commit it held when the task started, which
 Yoetz keeps with those names, and shown under its directory, at most eight per check; one that
-cannot be read safely is named in the header with the reason. When that commit was not kept for a
-nested repository yours tracks (for example, a task started before this version), its change starts
-from the commit your repository records for it, and the header says that commits made in it before
-the task may then be included. Untracked files inside a nested repository are listed by name only
-and their content is never sent, because Yoetz does not keep a list of them from the task's start,
-so any of them may have been there before the task; the header says so and counts them as not
-shown. When the task statement names files the work depends on, such as a specification, a
+cannot be read safely is named in the header with the reason. Yoetz keeps the same names and
+digests for the untracked files inside each such repository, so they are left out or shown exactly
+like the ones in yours. When that commit was not kept for a nested repository yours tracks (for
+example, a task started before this version), its change starts from the commit your repository
+records for it, and the header says that commits made in it before the task may then be included.
+When the untracked files inside a nested repository were not all kept (a task started before this
+version, or more untracked files than Yoetz keeps), they are listed by name only and their content
+is never sent, because any of them may have been there before the task; the header says so and
+counts them as not shown. When the task statement names files the work depends on, such as a
+specification, a
 rulebook or the source being ported (or the task declares them as inputs), up to four of them
 travel too, each up to 16 KiB, but only when the file is in your repository, has not changed since
 the task started, is not ignored by Git and is not named like a credential. A file Git tracks
