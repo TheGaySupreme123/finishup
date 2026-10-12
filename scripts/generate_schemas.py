@@ -2337,6 +2337,7 @@ def _lineage_child_finding_schema() -> dict[str, JsonValue]:
         "coordination_overlap": (2, True),
         "code_defect": (1, True),
         "task_requirement_unmet": (1, True),
+        "agent_criterion_unmet": (2, True),
     }
     return {
         "additionalProperties": False,
@@ -2399,6 +2400,12 @@ def _lineage_child_finding_schema() -> dict[str, JsonValue]:
                     "result_without_action",
                     "stale_evidence_for_changed_state",
                     "weak_or_stale_response",
+                    # The AI-powered review kinds (finding 1.4.0), carried under their own names
+                    # so a delegated child's finding validates in the parent's manifest and
+                    # receipt (issue #1043 review; unreleased on 0.3, widened in place).
+                    "code_defect",
+                    "task_requirement_unmet",
+                    "agent_criterion_unmet",
                 ]
             ),
             "origin": _lineage_enum_schema(["deterministic", "semantic_model_derived"]),

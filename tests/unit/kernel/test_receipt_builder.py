@@ -2197,6 +2197,147 @@ def test_child_self_verified_finding_reads_self_verified_on_the_parent_receipt()
         receipt_document_from_json(wire)
 
 
+@pytest.mark.parametrize("resolved", (False, True), ids=("unresolved", "verified_resolved"))
+@pytest.mark.parametrize(
+    "kind",
+    (
+        FindingKind.AGENT_CRITERION_UNMET,
+        FindingKind.CODE_DEFECT,
+        FindingKind.TASK_REQUIREMENT_UNMET,
+    ),
+)
+def test_a_child_review_finding_reaches_the_parent_receipt_under_its_own_kind(
+    kind: FindingKind, resolved: bool
+) -> None:
+    """Issue #1043 (review): a delegated child's AI-powered finding keeps its kind in the
+    parent's manifest and JSON receipt, and both stay inside their declared schemas.
+
+    Path: the child's finding -> the coordinator's frozen row -> the recorded
+    ``child-dependencies-recorded`` 1.0.0 payload -> the parent's lineage evaluation -> the
+    parent's ``receipt-document`` 1.3.0 child section.
+    """
+
+    import json
+
+    from builders.dialogue import reviewer_finding
+    from builders.policy_cases import evt, finding_record, fnd, obl
+    from yoetz.application.lineage_coordinator import (
+        _child_finding_snapshots,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.domain.coordination import (
+        LineageAcceptance,
+        LineageOrigin,
+        SessionHealth,
+        WorkState,
+    )
+    from yoetz.domain.events import (
+        ChildDependenciesRecordedPayload,
+        ChildDependencySnapshot,
+        EventSchema,
+        decode_payload,
+    )
+    from yoetz.domain.values import Actor, actor_id
+    from yoetz.domain.values import JsonValue as DomainJsonValue
+    from yoetz.kernel.lineage import evaluate_lineage, lineage_manifest_from_records
+    from yoetz.protocol.canonical import JsonValue, canonical_encode
+    from yoetz.protocol.schemas import validate_schema_instance
+
+    # The child: one reviewer finding of ``kind``, open or proved absent by a later check.
+    finding = reviewer_finding(1, obl(1), kind=kind)
+    child_projection = replace(
+        empty_projection_state(),
+        frontier=20,
+        head_digest=_HEAD,
+        findings={
+            fnd(1): finding_record(
+                finding, 4, resolved_by_check_event_id=evt(9) if resolved else None
+            )
+        },
+    )
+    rows = _child_finding_snapshots(child_projection)
+    # Never relabelled: the frozen row is the child's own kind.
+    assert [(row.kind, row.resolved, row.actionable) for row in rows] == [(kind, resolved, True)]
+
+    # The parent's manifest, as the coordinator records it.
+    child_task = task_id("tsk_00000000-0000-4000-8000-000000001043")
+    payload = ChildDependenciesRecordedPayload(
+        (
+            ChildDependencySnapshot(
+                child_task_id=child_task,
+                origin=LineageOrigin.PARENT_MINTED,
+                acceptance=LineageAcceptance.ACCEPTED,
+                work_state=WorkState.CLOSED,
+                session_health=SessionHealth.ENDED,
+                child_frontier=_FRONTIER,
+                child_check_id=_CHECK_EVENT_ID,
+                child_check_subject_frontier=_FRONTIER,
+                child_receipt_id=receipt_id("rcp_00000000-0000-4000-8000-000000001043"),
+                coverage=_coverage(),
+                findings=rows,
+                lineage_authority_revision=1,
+            ),
+        )
+    )
+    manifest_wire = json.loads(canonical_encode(cast(JsonValue, encode_payload(payload))))
+    assert manifest_wire["children"][0]["findings"][0]["kind"] == kind.value
+    validate_schema_instance("child-dependencies-recorded", "1.0.0", manifest_wire)
+    schema = EventSchema("child_dependencies_recorded", "1.0.0")
+    recorded = decode_payload(schema, cast(DomainJsonValue, manifest_wire))
+    assert recorded == payload
+
+    # The parent folds the recorded manifest and builds its JSON receipt.
+    manifest = lineage_manifest_from_records(
+        (
+            SimpleNamespace(
+                schema=SimpleNamespace(name="child_dependencies_recorded"),
+                event_id=_SOURCE_EVENT_ID,
+                ledger=SimpleNamespace(ingestion_sequence=3),
+                payload=recorded,
+                author=Actor(
+                    actor_id("yoetz:observation-coordinator"),
+                    ActorType.HARNESS,
+                    AuthorshipAssurance.HARNESS_OBSERVED,
+                ),
+                publication_channel=PublicationChannel.ENGINE_DERIVED,
+            ),
+        )
+    )
+    lineage = evaluate_lineage(manifest, base_coverage=_coverage())
+    # An open child finding is parent work (the strict lineage reading); a proved-absent one is not.
+    assert bool(lineage.actionable_finding_ids) is not resolved
+    gaps = tuple(CaseGap(f"lineage:{code}", code, ()) for code in lineage.coverage.known_gaps)
+    context = replace(
+        _context(
+            check=_check(CheckVerdict.NO_ISSUE_DETECTED, lineage.coverage),
+            coverage=lineage.coverage,
+            gaps=gaps,
+        ),
+        lineage=lineage,
+    )
+    versions = replace(
+        _versions(),
+        schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+    )
+    receipt = build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        versions,
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+    (child,) = receipt.children.children
+    (row,) = child.findings
+    assert (row.kind, row.resolved, row.actionable) == (kind, resolved, True)
+    wire = receipt_document_to_json(receipt)
+    wire_row = cast(dict[str, Any], wire["children"])["children"][0]["findings"][0]
+    assert wire_row["kind"] == kind.value
+    validate_schema_instance("receipt-document", "1.3.0", cast(JsonValue, wire))
+    assert receipt_document_from_json(wire) == receipt
+
+
 def test_a_linked_duplicate_is_disclosed_by_ids_and_never_reads_cleaner() -> None:
     """Issue #996: the duplicate's flags are its earlier finding's; the link is ids only."""
 

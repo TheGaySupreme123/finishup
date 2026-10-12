@@ -2505,7 +2505,9 @@ accepted child, records the standing gap `finding_self_verified` with its findin
 parent reads at best `insufficient_coverage`, never `unresolved_findings_remain`. The
 `receipt-document` `1.3.0` child finding row carries the same optional `self_verified`, and
 markdown/text render "self-verified by the child agent; Yoetz could not prove it" under it.
-Pending-acceptance children and informational findings annotate only; accepted live children are
+Both child finding rows carry every finding kind under its own name, the AI-powered review kinds
+`code_defect`, `task_requirement_unmet` and `agent_criterion_unmet` included (ADR-040 amendment
+of 2026-10-12). Pending-acceptance children and informational findings annotate only; accepted live children are
 open gaps and accepted abandoned children are incomplete gaps. An unresolved informational
 finding stays on the child row and does not replace an accepted lifecycle gap or a coverage or
 verification blocker. The only informational kind, `ledger_stale_or_incomplete`, is emitted from
