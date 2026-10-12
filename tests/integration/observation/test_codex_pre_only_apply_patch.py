@@ -79,3 +79,77 @@ def test_a_file_change_never_closes_an_ordinary_pending_call(replay: _Replay) ->
     _shell_pre(replay, "call_build", "make build")
     replay.append(_file_change("call_build"))
     assert _EXPIRED in _gaps_after_the_session_ends(replay)
+
+
+_NATIVE_PATCH = {
+    "command": "*** Begin Patch\n*** Update File: src/public.py\n@@\n-b\n+c\n*** End Patch"
+}
+
+
+def _native_apply_patch_pre(cell: _Replay, call: str) -> None:
+    cell.hook("PreToolUse", tool_name="apply_patch", tool_use_id=call, tool_input=_NATIVE_PATCH)
+
+
+def _native_apply_patch_post(cell: _Replay, call: str) -> None:
+    cell.hook(
+        "PostToolUse",
+        tool_name="apply_patch",
+        tool_use_id=call,
+        tool_input=_NATIVE_PATCH,
+        tool_response=(
+            "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess. Updated the following files:\n"
+            "M src/public.py\n"
+        ),
+    )
+
+
+def test_a_hooked_call_s_own_file_change_never_closes_a_shell_patch_attempt(
+    replay: _Replay,
+) -> None:
+    """Direct mode: the item id is the call's own id, so it names that call, not the shell patch.
+
+    The shell patch Codex rejected wrote no change; the native ``apply_patch`` retry's change
+    belongs to the retry. Its post already arrived, so only the stored hook rows name the call.
+    """
+
+    session_start(replay)
+    _shell_pre(replay, "call_shell_patch", _PATCH)
+    _native_apply_patch_pre(replay, "call_native_patch")
+    _native_apply_patch_post(replay, "call_native_patch")
+    replay.append(_file_change("call_native_patch"))
+    assert _EXPIRED in _gaps_after_the_session_ends(replay)
+
+
+def test_a_change_read_before_its_hooked_call_s_post_never_closes_a_shell_patch_attempt(
+    replay: _Replay,
+) -> None:
+    """The rollout can record the change while the native call's own pre is still open."""
+
+    session_start(replay)
+    _shell_pre(replay, "call_shell_patch", _PATCH)
+    replay.append(_file_change("call_native_patch"))
+    _native_apply_patch_pre(replay, "call_native_patch")
+    _native_apply_patch_post(replay, "call_native_patch")
+    assert _EXPIRED in _gaps_after_the_session_ends(replay)
+
+
+def test_an_unattributable_change_still_closes_a_shell_patch_beside_hooked_calls(
+    replay: _Replay,
+) -> None:
+    """An id no hook reported (code mode's ``exec-<uuid>``) still closes the oldest attempt."""
+
+    session_start(replay)
+    _native_apply_patch_pre(replay, "call_native_patch")
+    _native_apply_patch_post(replay, "call_native_patch")
+    _shell_pre(replay, "call_shell_patch", _PATCH)
+    replay.append(_file_change("exec-0e5dcfc8-patch"))
+    assert _EXPIRED not in _gaps_after_the_session_ends(replay)
+
+
+def test_a_shell_patch_s_own_file_change_closes_it_beside_hooked_calls(replay: _Replay) -> None:
+    session_start(replay)
+    _native_apply_patch_pre(replay, "call_native_patch")
+    _native_apply_patch_post(replay, "call_native_patch")
+    _shell_pre(replay, "call_shell_patch", _PATCH)
+    replay.append(_file_change("call_shell_patch"))
+    assert _EXPIRED not in _gaps_after_the_session_ends(replay)

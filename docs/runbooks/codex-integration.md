@@ -1830,10 +1830,15 @@ tb4n4's deterministic arm carried, on all 60 attempts, gaps that came from Yoetz
 than the agent's work. Their dispositions:
 
 - **Held rollout tail.** A final line Codex has not finished writing (no newline yet, whether or
-  not it already parses) is held and re-read on the next reconcile; the stream reader no longer
-  reports it as `truncated_payload`. Lines over the 1 MiB bound and unreadable chunks still are.
-  Before this change the gap appeared only in the reconcile result (`yoetz observe reconcile
-  --json`), not in task coverage.
+  not it already parses) is held and re-read on the next reconcile; the reconcile that first holds
+  it no longer reports it as `truncated_payload`. A later reconcile that finds the same tail held
+  with nothing written since does report it: the writer stopped mid-line (killed, or a full disk),
+  and without the newline that row is never ingested. The tail stays held, so a newline that does
+  land still delivers the row. Lines over the 1 MiB bound and unreadable chunks are reported on
+  every pass, as before. Hook-triggered reconciles discard their result, so the gap appears only in
+  the reconcile result (`yoetz observe reconcile --json`), not in task coverage, as before this
+  change; after a Codex crash, run that command twice to see a tail left unfinished after the
+  last hook.
 - **Shell `apply_patch <<EOF`.** A pre-only attempt closed by the observed `FileChange`; see
   [Reviewable native edits](#reviewable-native-edits).
 - **`HookPrompt`.** A Stop hook that continues the turn (Yoetz's closure gate) makes Codex 0.159.3
@@ -2244,13 +2249,17 @@ through the tool registry and fires its own `apply_patch` hooks with the same sh
 `tools.exec_command` fires `Bash` hooks with `tool_input.command`. A shell `apply_patch <<EOF` is
 intercepted by `exec_command` and fires only PreToolUse, so its patch is captured from that event
 with outcome `unknown`. Its pending attempt is pre-only (#1041): it does not wait for a post Codex
-never sends. The rollout's next `FileChange` item in the same session closes it (the attempt whose
-call id the item names, otherwise the session's oldest pre-only attempt); one no file change closes
-before the ten-minute pending deadline or the session's end still records `pending_attempt_expired`.
-Before this, 44 of tb4n4's 60 deterministic attempts carried that gap for this host behaviour alone.
-Limit: in code mode the item id (`exec-<uuid>`) does not name the hook's call, so a nested
-`tools.apply_patch` change in the same session can close a shell patch's attempt in its place; the
-count of closed attempts never exceeds the observed changes. Whole-file heredoc writes (`cat > path <<EOF`, `tee path <<EOF`) and `git
+never sends. A `FileChange` item the rollout writes in the same session closes it: the attempt
+whose call id the item names; an item naming another call the session's hooks reported (in direct
+mode a native `apply_patch` item carries its own call id) is that call's change and closes none;
+only an item whose id names no reported call (code mode's `exec-<uuid>`) closes the session's oldest
+pre-only attempt. One no file change closes before the ten-minute pending deadline or the session's
+end still records `pending_attempt_expired`. Before this, 44 of tb4n4's 60 deterministic attempts
+carried that gap for this host behaviour alone. Limit: in code mode the item id (`exec-<uuid>`)
+does not name the hook's call, so a nested `tools.apply_patch` change in the same session can close
+a shell patch's attempt in its place; a reported call is known from its open pre or the local ring
+of the last 256 observed rows, so a direct call both have dropped (an eviction the ring discloses)
+can do the same. The count of closed attempts never exceeds the observed changes. Whole-file heredoc writes (`cat > path <<EOF`, `tee path <<EOF`) and `git
 apply <<EOF` are captured from the post-tool `Bash` event; writes outside the workspace, such as
 `/tmp` scratch files, are skipped. Edits made by `sed -i`, scripts or `git apply <file>` carry no
 edit bytes in the command and are not captured (the check-time change below still shows their

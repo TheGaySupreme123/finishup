@@ -143,3 +143,36 @@ def test_session_end_clears_only_ended_generation_open_pre(tmp_path: Path) -> No
     # A delayed end from generation one cannot clear generation two's pre.
     store.note_session_end(workspace, _SESSION, generation=1)
     assert store.selection_runtime_status(workspace, _SESSION)["pending_attempts"] == 1
+
+
+def test_a_file_change_naming_another_open_call_closes_no_pre_only_attempt(
+    tmp_path: Path,
+) -> None:
+    """#1041: only an unattributable item id falls back to the oldest pre-only attempt."""
+
+    wall = [_WALL_SECONDS]
+    store, workspace = _store(tmp_path, wall)
+    for call, pre_only in (("call_shell_patch", True), ("call_native_patch", False)):
+        assert store.note_open_pre(
+            workspace,
+            call,
+            "PreToolUse",
+            source=ObservationSource.CODEX_HOOK,
+            session_commitment=_SESSION,
+            source_generation=1,
+            receipt_time=_NOW,
+            pre_only=pre_only,
+        )
+    # A direct call's own change names that call: the shell patch stays pending.
+    assert not store.close_pre_only_attempt(workspace, _SESSION, "call_native_patch")
+    assert store.selection_runtime_status(workspace, _SESSION)["pending_attempts"] == 2
+    # Code mode's ``exec-<uuid>`` names no hook call: the oldest pre-only attempt closes.
+    assert store.close_pre_only_attempt(workspace, _SESSION, "exec-0e5dcfc8-patch")
+    assert store.selection_runtime_status(workspace, _SESSION)["pending_attempts"] == 1
+    assert store.has_open_pre(
+        workspace,
+        "call_native_patch",
+        source=ObservationSource.CODEX_HOOK,
+        session_commitment=_SESSION,
+        source_generation=1,
+    )
