@@ -490,7 +490,9 @@ the check-time capture did not observe a workspace change. Nothing is composed o
 comes before the review's own admission, so a pre-work check asks for no repository grant,
 disclosure decision or review input either, and a missing provider or a policy block
 (`not_configured`, `blocked_by_policy`) is reported by the first check after the edit. A resumed
-check already in `semantic_wait` keeps its decision; the deferral never applies to the closing
+check keeps its decision: one already in `semantic_wait` keeps its review, and one resumed in
+`ready_to_finalize` reads no fresh capture: if its operation owns a review job it reviewed and is
+not deferred, otherwise the frozen prefix decides. The deferral never applies to the closing
 review, and readiness asks for that review (below), so a task whose work is not an edit still
 reaches one. The older stopped-round skip (`semantic_review_skipped_insufficient_packet`, ADR-006
 tb4n1 D3, #983) is a separate rule this section does not change: it can still skip a closing review

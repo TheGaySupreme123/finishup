@@ -4300,7 +4300,9 @@ check recorded, like the `semantic_review_not_requested` it rides with (rule G1)
 check recorded `semantic_route_required: false`, so the check, status and receipt read as a
 `deterministic_only` check on that route would; bounding (`insufficient_coverage`) where review is
 required and not current. The deferral never applies to the closing review (`final_review`, or any
-completion claim), and a resumed check already in `semantic_wait` keeps its decision. Closure
+completion claim). A resumed check keeps its decision: one already in `semantic_wait` keeps its
+review, and one resumed in `ready_to_finalize` reads no fresh capture (a review job its operation
+owns means it reviewed; otherwise the frozen prefix decides). Closure
 readiness counts a deferred check as a use of AI-powered review, so it lists
 `closing_review_required` after a deferral on every route; while the latest check deferred, an
 actionable `semantic_review_not_requested` does not hide it (a routine check would defer again).

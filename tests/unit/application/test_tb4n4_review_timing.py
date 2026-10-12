@@ -88,10 +88,17 @@ def _planned() -> ObservedLedger:
     return ledger
 
 
+_WRITER = "wri_00000000-0000-4000-8000-000000001046"
+_OPERATION = "req_00000000-0000-4000-8000-000000001046"
+
+
 def _frozen(ledger: ObservedLedger, phase: CheckPhase = CheckPhase.LOCAL_READY) -> Any:
     prefix = ledger.prefix
     case = build_deterministic_case(replay(prefix), prefix, CaseAvailabilityFacts())
-    return SimpleNamespace(case=case, lease=SimpleNamespace(phase=phase))
+    return SimpleNamespace(
+        case=case,
+        lease=SimpleNamespace(phase=phase, writer_id=_WRITER, operation_id=_OPERATION),
+    )
 
 
 def _request(mode: str = "semantic_required", *, final_review: bool = False) -> Any:
@@ -287,6 +294,58 @@ async def test_the_skip_names_one_reason_and_the_stopped_round_wins() -> None:
         workspace_changed=None,
     )
     assert gaps == frozenset({SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP})
+
+
+def _resumable_runtime(jobs: dict[tuple[str, str], object]) -> Any:
+    async def no_events(session_id: object, *, through: int) -> Any:
+        del session_id, through
+        for record in ():
+            yield record
+
+    async def load_semantic_job(
+        writer_id: str, operation_id: str, case_digest: str | None = None
+    ) -> object | None:
+        del case_digest
+        return jobs.get((writer_id, operation_id))
+
+    return SimpleNamespace(
+        session_id="ses",
+        capabilities=frozenset({RuntimeCapability.SEMANTIC}),
+        ledger=SimpleNamespace(load_events=no_events, load_semantic_job=load_semantic_job),
+    )
+
+
+async def test_a_check_resumed_to_finalize_keeps_the_decision_its_first_attempt_made() -> None:
+    """Issue #1046 (review): a retry never re-decides the deferral from a live capture.
+
+    A check interrupted after its phase reached ``ready_to_finalize`` resumes there. Its first
+    attempt already decided: if it sent a review (the operation owns a review job), a retry whose
+    capture now fails is not deferred, so the paid review is kept; if it sent none, a retry whose
+    capture now sees a change does not try to dispatch one in a phase that cannot send it.
+    """
+
+    ledger = _planned()
+    frozen = _frozen(ledger, CheckPhase.READY_TO_FINALIZE)
+    jobs: dict[tuple[str, str], object] = {(_WRITER, _OPERATION): object()}
+    runtime = _resumable_runtime(jobs)
+    request = _request("semantic_if_configured")
+    reviewed = await _review_skip_gaps(
+        runtime, request, frozen, route_profile="policy", workspace_changed=None
+    )
+    assert reviewed == frozenset()
+
+    jobs.clear()
+    deferred = await _review_skip_gaps(
+        runtime, request, frozen, route_profile="policy", workspace_changed=True
+    )
+    assert deferred == frozenset({SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP})
+
+    # Before the review phase nothing was sent, so the live capture still decides.
+    ready = _frozen(ledger, CheckPhase.LOCAL_READY)
+    live = await _review_skip_gaps(
+        runtime, request, ready, route_profile="policy", workspace_changed=True
+    )
+    assert live == frozenset()
 
 
 def test_the_deferral_gap_follows_the_recorded_route_and_never_vetoes_local_proof() -> None:
