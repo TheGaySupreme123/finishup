@@ -696,7 +696,8 @@ completeness against the task as findings. A finding of kind `agent_criterion_un
 you set yourself beyond the task's stated scope (your own stress sizes, inputs or configurations)
 that fails: it is not a task requirement. Fix it, or narrow the criterion by responding
 `acknowledged` with the reason; that records a disclosed limitation that does not block (the receipt
-lists it and cannot read clean while it stands).
+lists it and cannot read clean while it stands). Only that answer narrows it: a
+`yoetz-verification-limit` decision does not.
 
 **Findings are advisory; never withdraw working deliverables because of one.** A fallback such
 as "an empty file if unsolved" is for when nothing you have works. A deliverable that passes the

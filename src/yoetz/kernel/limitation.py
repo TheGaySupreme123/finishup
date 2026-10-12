@@ -32,6 +32,10 @@ Guards, each tested:
 
 * **G1** a challenge that asks the agent to ``act`` is never a limitation request, even when the
   obligation carries a ``yoetz-verification-limit`` decision: the reviewer sees an obtainable path.
+  The agent's own criterion (``agent_criterion_unmet``, issue #1043) is a limitation request
+  whatever next step the reviewer asked for, so the decision line never speaks for it: it neither
+  discloses the finding nor marks its obligation externally evaluated. Only the agent's own answer
+  to that finding narrows it.
 * **G2** nothing here reads the agent's own words. An agent that answers an ``act`` finding
   "I could not find it" does not turn it into a limitation, so the pretrain-shard-corruption rescue
   (the acknowledgement re-check sent the agent back; it recovered the inputs) is kept.
@@ -48,7 +52,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final, Literal
 
-from yoetz.domain.findings import Finding, ResponseDisposition, is_limitation_request
+from yoetz.domain.findings import Finding, FindingKind, ResponseDisposition, is_limitation_request
 from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel.concern import subject_obligations
 from yoetz.kernel.finding_resolution import disclosing_response, finding_is_resolved
@@ -108,6 +112,17 @@ class LimitationStanding:
         return self.state == LIMITATION_ACKNOWLEDGED_NOT_DONE
 
 
+def _decision_speaks_for(finding: Finding) -> bool:
+    """Whether a ``yoetz-verification-limit`` decision can stand for this request (guard G1).
+
+    The decision line states a limit only a hidden evaluator can settle; it answers the reviewer's
+    request to state that limit. The agent's own criterion is not one: its probe fails here, and
+    the agent decides whether to fix it or narrow it, by answering that finding (review of #1043).
+    """
+
+    return finding.kind is not FindingKind.AGENT_CRITERION_UNMET
+
+
 def _verification_limit_decisions(
     projection: ProjectionState,
 ) -> dict[str, DisclosureDeclaration]:
@@ -131,7 +146,8 @@ def limitation_standing(
     absent (resolved findings are history, not limits). The agent's own answer is read first and
     decides what the request means: ``acknowledged_not_done`` is the unmet state (the requirement
     is not met), a reasoned ``acknowledged`` or ``self_verified`` is the disclosed state, and a
-    ``yoetz-verification-limit`` decision discloses only a request nobody answered yet.
+    ``yoetz-verification-limit`` decision discloses only a reviewer's request nobody answered yet,
+    never the agent's own criterion (guard G1).
     """
 
     record = projection.findings.get(finding_id)
@@ -167,6 +183,8 @@ def limitation_standing(
             (response.source_event_id,),
             response.source_frontier,
         )
+    if not _decision_speaks_for(finding):
+        return LimitationStanding(finding_id, LIMITATION_REQUESTED, None, (), None)
     decisions = _verification_limit_decisions(projection) if _decisions is None else _decisions
     concerned = subject_obligations(projection, (str(ref) for ref in finding.subject_refs))
     covering = sorted(
@@ -223,7 +241,8 @@ def externally_evaluated_obligations(projection: ProjectionState) -> frozenset[O
     limitation request concerns it (the request names it, or a claim or event it cites does).
     Neither alone qualifies: the decision line alone is the agent's assertion, and a reviewer
     request alone leaves the obligation ordinary work. The agent's own acknowledgement of the
-    obligation, or its words in a response, never mark it (guard G2). How the agent answered the
+    obligation, or its words in a response, never mark it (guard G2), and neither does the agent's
+    own criterion (``agent_criterion_unmet``, guard G1). How the agent answered the
     request does not change the marker: an ``acknowledged_not_done`` answer keeps the *finding*
     unmet (``limitation_acknowledged_not_done``), so the receipt still reads
     ``unresolved_findings_remain`` while the obligation stays disclosed. Derived from the decision
@@ -240,6 +259,8 @@ def externally_evaluated_obligations(projection: ProjectionState) -> frozenset[O
             continue
         record = projection.findings[key]
         assert record.payload is not None
+        if not _decision_speaks_for(record.payload):
+            continue
         concerned.update(
             subject_obligations(projection, (str(ref) for ref in record.payload.subject_refs))
         )
