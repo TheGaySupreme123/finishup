@@ -4272,9 +4272,11 @@ unreleased versions). `is_limitation_request` is true for it whatever next step 
 for, so it reads `limitation_requested` ("to disclose") with next actions `acknowledge` and `repair`:
 the agent fixes it (a later check proves it absent) or narrows it with a reasoned `acknowledged`
 (`limitation_disclosed`, receipt at best `insufficient_coverage`, listed under "Verification
-limits"). The check also routes a reviewer `task_requirement_unmet` there when
-`kernel.review_frame.agent_probe_only` holds: every cited work subject is a hook-observed command
-run that matches none of the requested commands of the effective, unacknowledged, unblocked
+limits"). The check records a reviewer
+`task_requirement_unmet`, or a reviewer's own `agent_criterion_unmet` label, as
+`agent_criterion_unmet` only when `kernel.review_frame.agent_probe_only` holds, and otherwise as
+`task_requirement_unmet`. The predicate holds when every cited work subject is a hook-observed
+command run that matches none of the requested commands of the effective, unacknowledged, unblocked
 obligations, at least one such requested command exists, the case carries none of
 `planned_verification_failed|not_observed|stale|unobservable|outcome_unknown`, and the
 command-identity key is registered. The review summary then says, in fixed words and a count, that

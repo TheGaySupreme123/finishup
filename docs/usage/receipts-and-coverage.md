@@ -307,7 +307,9 @@ Two more things decide what the receipt will say, and status tells you before yo
   task's stated scope (your own stress sizes or configurations, while the task's own sample or
   verifier passes), the finding is `agent_criterion_unmet`, not a task requirement. You may fix it,
   or narrow the criterion by answering `acknowledged` with the reason: the receipt then lists it as
-  a disclosed limitation and reads at best `insufficient_coverage`; it never blocks.
+  a disclosed limitation and reads at best `insufficient_coverage`; it never blocks. When the
+  record does not show that the only failing work is your own probe while the task's own
+  verification passes, the finding is a task requirement, whichever kind the reviewer chose.
 
 While the work is in progress, the reviewer judges incomplete work only (something marked done that
 is not, verification you planned and did not run, a missing or emptied output, a claim the record
