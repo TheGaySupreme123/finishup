@@ -4545,7 +4545,11 @@ Shared closed types:
   domain-separated commitment over the bounded prefix commitment and exact source span, so later
   records remain reachable without an unbounded hook pass. Until then the tail remains pending as
   `truncated_payload`. The marker contains no source bytes, and an invalid or transplanted marker
-  starts a new generation from profile admission rather than authorizing a skip.
+  starts a new generation from profile admission rather than authorizing a skip. An ordinary
+  unterminated final line (Codex still writing it) is held and re-read once its newline lands; it
+  lost nothing, so it is not `truncated_payload` (issue #1041). The compatibility profile also
+  admits the `event_msg.item_completed` item `HookPrompt` (a Stop hook's continuation prompt,
+  Codex 0.159.3) as bookkeeping: no structural field is read from it and it pairs with nothing.
 - `ObservationStatus` — lifecycle `active|degraded|stale|stopped`, source coverage, last
   observation, lag, currently true gaps, unsupported events, and the current `AdviceSnapshot`
   frontier identity. Per-code first/last-seen history is retained separately and does not make a
@@ -5646,7 +5650,14 @@ only later. It keeps the cell's output local too only when a Codex tool hook
 read that call and before the start of a complete stream pass that still did not see the output:
 such a hook fired while the cell ran, so the nested calls' own hook rows are the ledger record of
 the cell. A hook that could belong to the next cell (ingested after the output was written) never
-counts, so every tool hook's own triggered reconcile is what settles it. Otherwise the reader
+counts, so every tool hook's own triggered reconcile is what settles it. It also keeps the output
+local when every nested tool item the rollout wrote while the cell was open was one of Yoetz's own
+MCP calls (an `McpToolCall` whose server is Yoetz's, issue #1038): the cell is then Yoetz's own call
+whatever the hook timing. A Yoetz item counts only while its cell is the session's only open cell;
+any other item, an uninterpretable row, or a Yoetz item read while several cells are open removes
+that mark from every open cell of the session. The call and its output pair on their shared
+`call_id` (Codex 0.159.3 also gives each row its own `ctc_`/`ctco_` `id`; `id` is only a fallback),
+while a completed tool item keeps its own `id`. Otherwise the reader
 delivers the output, which records the cell as its own action and result (the held call row adds
 only content-free metadata), so a cell whose tools fire no hook (only `tools.update_plan`, for
 example) is recorded whether or not other or later cells were hooked. Each cell's decision is

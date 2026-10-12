@@ -1790,15 +1790,57 @@ and the rollout's stream bookkeeping (`Opaque observation kind=event_msg|respons
 token_usage_record`, `Observed completion signal kind=...`), because #564 keeps a successful
 `status`, `receipt` or `read_guidance` post local-only. `kernel/later_material.later_material_class`
 reads them as `yoetz_own_call` and `no_tool_activity`, so `check_current_as_of_earlier_frontier`
-no longer appears for a check followed only by Yoetz calls and a receipt. The rollout names an
-`McpToolCall` item by its tool alone (`status`), which is read as Yoetz's own tool. A nested
-`apply_patch`, an `exec_command` that is not in the hook's `exploration` runner class and an unpaired
-stream output with no tool identity stay `other` and keep the disclosure; a `wait` poll (it only
-returns the output of a cell started earlier) is `no_tool_activity`; a nested
-deliverable or workspace `apply_patch` supersedes the check. A patch whose every path is
-`yoetz_receipt.*`, a Yoetz tree or scratch is `non_counting_write`. Tests:
+no longer appears for a check followed only by Yoetz calls and a receipt. The rollout's
+`McpToolCall` item keeps its `server` and is named as its hook names it (`mcp__yoetz__status`,
+#1038); an item without a server keeps its bare tool name (`status`), which is still read as
+Yoetz's own tool. A nested `apply_patch`, an `exec_command` that is not in the hook's `exploration`
+runner class and an unpaired stream output with no tool identity stay `other` and keep the
+disclosure; a `wait` poll (it only returns the output of a cell started earlier) is
+`no_tool_activity`; a nested deliverable or workspace `apply_patch` supersedes the check. A patch
+whose every path is `yoetz_receipt.*`, a Yoetz tree or scratch is `non_counting_write`. Tests:
 `tests/unit/application/test_tb4n3_later_material_host_shapes.py` drives real Codex hook payloads
 through the ingress and the materializer.
+
+Codex 0.159.3 names every response-item row itself (`custom_tool_call` `id: ctc_...`, its output
+`id: ctco_...`; `fc_`/`fco_` for function calls) beside the `call_id` the call and its output share.
+The reader paired on `id`, so no code-mode cell output ever joined its call: it reached the ledger
+as an unpaired result with no tool identity (`unclassified_observed_evidence`, read as `other`),
+the #917 hold never applied, and in tb4n4's deterministic arm the agent's own `mcp__yoetz__*`
+cells kept `check_current_as_of_earlier_frontier` on 35 of 60 final receipts (#1038). A call and
+its output now pair on `call_id` (`id` only as a fallback), which also folds the stream copy of a
+hooked direct `function_call` into the hook's one action again instead of a second action and an
+unpaired result. A completed tool item
+(`event_msg`/`item_completed`) keeps its own `id` (`exec-<uuid>`, or the call id on a direct call):
+that is the id ADR-022 decision 15 compares with a hook call id, so the item-to-hook link is
+unchanged. On the recorded 0.159.3 slice (`tests/fixtures/codex/rollout-compaction-0.159.3.jsonl`)
+the 28 unpaired cell results are gone; the three cells that ran no nested tool at all still record
+their own `exec` action, as #917 decided, and stay `other`. Whether such itemless cells follow
+the check in the tb4n4 exports, and so still bound some receipts, is for the replay of those
+exports to show.
+
+### Gaps Yoetz and the host made on every attempt (#1041)
+
+tb4n4's deterministic arm carried, on all 60 attempts, gaps that came from Yoetz or the host rather
+than the agent's work. Their dispositions:
+
+- **Held rollout tail.** A final line Codex has not finished writing (no newline yet, whether or
+  not it already parses) is held and re-read on the next reconcile; the stream reader no longer
+  reports it as `truncated_payload`. Lines over the 1 MiB bound and unreadable chunks still are.
+  Before this change the gap appeared only in the reconcile result (`yoetz observe reconcile
+  --json`), not in task coverage.
+- **Shell `apply_patch <<EOF`.** A pre-only attempt closed by the observed `FileChange`; see
+  [Reviewable native edits](#reviewable-native-edits).
+- **`HookPrompt`.** A Stop hook that continues the turn (Yoetz's closure gate) makes Codex 0.159.3
+  write an `event_msg.item_completed` item of type `HookPrompt`. The compatibility profile admits it
+  as bookkeeping (it pairs with nothing and is read as `no_tool_activity` after a check), so it is
+  no longer an `unsupported_event` gap. No exact profile admits it.
+- **Hook latency** (`drain_budget_exhausted`, `hook_followup_deferred`, `drain_connect_timeout`):
+  not lossy, and unchanged. Its material effect was rows landing after a check; with cells paired on
+  `call_id` and Yoetz-only cells kept local whatever the hook timing (#1038), it is to be measured
+  again on the next benchmark before any budget in `observe_hooks` is tuned.
+
+Per host: Claude Code and Cursor have no rollout stream, no code-mode cell and no intercepted
+`apply_patch`, so these are Codex-only.
 
 ### Closure readiness and standing limitations (#913)
 
@@ -2129,8 +2171,19 @@ hooks (`PreToolUse`/`PostToolUse`) was ingested after Yoetz read the call and it
 reconcile completed before the output was read, so the hook fired while the cell ran and its nested
 `exec_command`, `apply_patch` and MCP calls are the ledger record. A hook of the next cell never
 counts for the previous one. This holds when `yoetz observe reconcile` reads the call before its
-nested hook, and for a long-idle session the bounded hook map forgot. A cell whose tools fire no
-hook (only `tools.update_plan`, for example) delivers its output and is recorded, in any session.
+nested hook, and for a long-idle session the bounded hook map forgot. A cell's output also stays
+local when every nested tool item the rollout wrote between the cell's call and its output was one
+of Yoetz's own MCP calls (`McpToolCall` with the Yoetz server, #1038): such a cell is Yoetz's own
+call, recorded by those calls, whatever the hook timing (the hooks landing after the whole cell
+was read, as tb4n4's hook latency showed, no longer leaves it a second `exec` action). A Yoetz
+item counts only while its cell is the session's only open cell; any other nested item, a rollout
+row the reader could not interpret, or a Yoetz item read while several cells are open removes the
+mark from every open cell, so no cell borrows another's Yoetz calls. Limit: after parallel cells,
+or in a session with a cell interrupted before its output (it stays open), later cells fall back to
+the hook rule alone. A cell whose tools fire
+no hook and leave no rollout item (only `tools.update_plan`, for example) delivers its output and is
+recorded, in any session. Since #1038 the output pairs with its call on `call_id`, which Codex
+0.159.3 needs (its rows also carry their own `ctc_`/`ctco_` ids).
 Limits: a cell mixing hooked and unhooked tools stays local, so its unhooked tool is not recorded;
 a hooked cell whose call is read only after all its nested hooks, whose hooks' reconciles did not
 complete before its output was read, whose hooks fired before an upgrade from the earlier cell
@@ -2163,7 +2216,14 @@ result prefix supplies the edit outcome and the structural `exit_status`. In cod
 through the tool registry and fires its own `apply_patch` hooks with the same shape, and each nested
 `tools.exec_command` fires `Bash` hooks with `tool_input.command`. A shell `apply_patch <<EOF` is
 intercepted by `exec_command` and fires only PreToolUse, so its patch is captured from that event
-with outcome `unknown`. Whole-file heredoc writes (`cat > path <<EOF`, `tee path <<EOF`) and `git
+with outcome `unknown`. Its pending attempt is pre-only (#1041): it does not wait for a post Codex
+never sends. The rollout's next `FileChange` item in the same session closes it (the attempt whose
+call id the item names, otherwise the session's oldest pre-only attempt); one no file change closes
+before the ten-minute pending deadline or the session's end still records `pending_attempt_expired`.
+Before this, 44 of tb4n4's 60 deterministic attempts carried that gap for this host behaviour alone.
+Limit: in code mode the item id (`exec-<uuid>`) does not name the hook's call, so a nested
+`tools.apply_patch` change in the same session can close a shell patch's attempt in its place; the
+count of closed attempts never exceeds the observed changes. Whole-file heredoc writes (`cat > path <<EOF`, `tee path <<EOF`) and `git
 apply <<EOF` are captured from the post-tool `Bash` event; writes outside the workspace, such as
 `/tmp` scratch files, are skipped. Edits made by `sed -i`, scripts or `git apply <file>` carry no
 edit bytes in the command and are not captured (the check-time change below still shows their

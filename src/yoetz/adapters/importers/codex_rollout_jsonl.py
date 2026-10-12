@@ -192,9 +192,16 @@ _COMPATIBLE_WRAPPER_TYPES: Final = tuple(
         key=str.encode,
     )
 )
+# Item families only the compatibility profile admits, on the same terms (issue #1041).
+# ``HookPrompt`` is the ``event_msg.item_completed`` item a Codex 0.159.3 rollout writes when a
+# Stop hook continues the turn with a prompt (Yoetz's own closure gate text). Yoetz reads no
+# structural field from it: it names no tool call and pairs with nothing, so it is bookkeeping,
+# not an ``unsupported_event`` gap on every gated attempt.
+_COMPATIBLE_ONLY_ITEM_TYPES: Final = ("HookPrompt",)
 _COMPATIBLE_ITEM_TYPES: Final = tuple(
     sorted(
-        {item for profile in SUPPORTED_ROLLOUT_PROFILES.values() for item in profile.item_types},
+        {item for profile in SUPPORTED_ROLLOUT_PROFILES.values() for item in profile.item_types}
+        | set(_COMPATIBLE_ONLY_ITEM_TYPES),
         key=str.encode,
     )
 )

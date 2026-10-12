@@ -1880,6 +1880,28 @@ def _shell_heredocs(command: str) -> list[tuple[str, str, str]]:
     return found
 
 
+def _intercepted_shell_apply_patch(
+    event_name: str, payload: Mapping[str, JsonValue], source: ObservationSource
+) -> bool:
+    """A Codex shell ``apply_patch <<EOF`` pre-event: the only hook Codex fires for it (#1041).
+
+    Codex intercepts the shell call and applies the patch itself, so no post-tool event follows;
+    the pending attempt is pre-only and the session stream's ``FileChange`` item closes it.
+    """
+
+    if event_name != "PreToolUse" or source is not ObservationSource.CODEX_HOOK:
+        return False
+    if _token_or_none(payload.get("tool_name")) not in _SHELL_TOOL_NAMES:
+        return False
+    arguments = payload.get("tool_input")
+    command = arguments.get("command") if isinstance(arguments, Mapping) else None
+    return (
+        type(command) is str
+        and "<<" in command
+        and any(_SHELL_APPLY_PATCH.search(prefix) for prefix, _, _ in _shell_heredocs(command))
+    )
+
+
 def _shell_edit_contents(
     command: str,
     *,
@@ -5439,6 +5461,7 @@ def handle_observe(
                 source_generation=source_generation,
                 is_pre_event=_is_pre_event(resolved_event),
                 is_post_event=_is_post_event(resolved_event),
+                pre_only=_intercepted_shell_apply_patch(resolved_event, payload, source),
             )
             optional_routine = (
                 not read_protected
