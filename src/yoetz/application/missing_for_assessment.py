@@ -357,10 +357,12 @@ class ReviewFollowUp:
     """One in-check follow-up round: the reviewer asked, Yoetz adds what it holds (#1047).
 
     ``items`` accumulate in request order across the check's rounds, so what an earlier round
-    added keeps its place in every later packet. ``shown_refs`` are the source refs of the
-    excerpts the check's own first packet carried; anything a follow-up packet carries beyond
-    them for an item is what Yoetz added. ``added_refs`` is what earlier rounds already added: a
-    round that would add nothing new is never sent. In process only; never recorded or logged.
+    added keeps its place in every later packet. ``shown_refs`` are the refs whose content the
+    excerpts of the check's own first sent packet held; anything a follow-up packet carries
+    beyond them for an item is what Yoetz added. ``added_refs`` is what earlier sent packets
+    already added, plus what egress withheld from a sent packet under a privacy rule (that rule
+    withholds it from every packet): a round that would add nothing else is never sent. In
+    process only; never recorded or logged.
     """
 
     round: int
@@ -397,6 +399,7 @@ def plan_review_follow_up(
     *,
     previous: ReviewFollowUp | None,
     shown_refs: frozenset[str] | None,
+    privacy_withheld_refs: frozenset[str] = frozenset(),
 ) -> ReviewFollowUp | None:
     """The next in-check follow-up round, or ``None`` when Yoetz has nothing it may add (#1047).
 
@@ -406,8 +409,10 @@ def plan_review_follow_up(
     other item stays the agent's (or Yoetz's disclosed) business exactly as before. A round runs
     only while the reviewer still names such an item, fewer than ``MAX_REVIEW_FOLLOW_UP_ROUNDS``
     rounds ran, and some requested source is neither in the first packet nor added already.
-    ``shown_refs`` (the first packet's excerpt sources) is ``None`` when it is unknown: then
-    nothing can be called added, so no round runs.
+    ``shown_refs`` (what the first sent packet's excerpts held) is ``None`` when it is unknown:
+    then nothing can be called added, so no round runs. ``privacy_withheld_refs`` are the refs
+    the latest sent packet withheld under a privacy rule; they join ``added_refs``, since
+    sending them again would only spend a round.
     """
 
     if previous is not None and previous.round >= MAX_REVIEW_FOLLOW_UP_ROUNDS:
@@ -437,6 +442,7 @@ def plan_review_follow_up(
     if not asked or not items:
         return None
     added: frozenset[str] = frozenset() if previous is None else previous.added_refs
+    added |= privacy_withheld_refs & frozenset(ref for item in items for ref in item.source_refs)
     follow_up = ReviewFollowUp(
         1 if previous is None else previous.round + 1, tuple(items), shown, added
     )

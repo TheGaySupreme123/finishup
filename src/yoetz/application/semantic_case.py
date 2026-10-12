@@ -236,12 +236,14 @@ __all__ = [
     "review_input_manifest_to_json",
     "declared_output_capture_order",
     "declared_output_capture_refs",
+    "excerpt_content_refs",
     "repair_evidence_refs",
     "SemanticPacketView",
     "semantic_case_packet_view",
     "review_packet_content_refs",
     "review_packet_disclosure",
     "review_packet_disclosure_result",
+    "sent_excerpt_content_refs",
     "sent_ledger_refs",
     "semantic_case_to_candidate_context",
     "semantic_case_to_prepared_payload",
@@ -6086,10 +6088,10 @@ def review_input_manifest(
 
     missing_rows: list[ReviewInputMissing] = []
     if follow_up is not None:
-        carried = [item.source_ref for item in excerpt_items]
+        carried = excerpt_content_refs(excerpt_items)
         for follow_up_item in follow_up.items[:8]:
             added = sorted(
-                (frozenset(carried) & follow_up_item.source_refs) - follow_up.shown_refs,
+                (carried & follow_up_item.source_refs) - follow_up.shown_refs,
                 key=str.encode,
             )[:4]
             missing_rows.append(
@@ -6571,6 +6573,72 @@ def _carried_citable_refs(
     return carried & allowed
 
 
+def _excerpt_row_content_refs(
+    section: object, category: object, source_ref: object, linked: object
+) -> tuple[str, ...]:
+    """The refs one excerpt row's content holds; see ``excerpt_content_refs``."""
+
+    if section != "excerpt" or type(source_ref) is not str:
+        return ()
+    if (
+        category != DataCategory.EVIDENCE_EXCERPT.value
+        or not source_ref.startswith("evd_")
+        or type(linked) not in {list, tuple}
+    ):
+        return (source_ref,)
+    parts = (
+        ref
+        for ref in cast(list[object] | tuple[object, ...], linked)
+        if type(ref) is str and ref.startswith("evd_")
+    )
+    return (source_ref, *parts)
+
+
+def excerpt_content_refs(items: Iterable[SemanticCaseItem]) -> frozenset[str]:
+    """The refs whose content these items' excerpts hold (issue #1047).
+
+    Each excerpt's ``source_ref``; a multi-part captured group is one evidence excerpt keyed by
+    its lead, and also holds the other parts' bytes, its ``evd_`` linked references, as
+    ``review_packet_disclosure_result`` counts a carried group. A reviewer may name any part.
+    """
+
+    return frozenset(
+        ref
+        for item in items
+        for ref in _excerpt_row_content_refs(
+            item.section, item.category.value, item.source_ref, item.linked_subject_refs
+        )
+    )
+
+
+def sent_excerpt_content_refs(
+    case: SemanticCase, provider_manifest: Mapping[str, object] | None
+) -> frozenset[str] | None:
+    """The ``excerpt_content_refs`` of the excerpts the exact sent packet carried (issue #1047).
+
+    Read from the packet's provider-bound input manifest, whose sections name the rows that
+    crossed the provider boundary after envelope bounding, privacy admission and minimization;
+    an excerpt the case composed and the sent packet lost is not among them. ``None`` when that
+    manifest is unknown (not retained, or unreadable), so nothing is claimed shown.
+    """
+
+    if type(case) is not SemanticCase:
+        raise TypeError("semantic_case_invalid")
+    manifest = _decode_review_input_manifest(provider_manifest, expected_phase="provider_bound")
+    if manifest is None:
+        return None
+    sent = {
+        item_id
+        for section in (
+            manifest.current_diff,
+            manifest.caller_evidence,
+            manifest.latest_verification,
+        )
+        for item_id in section.selected_item_ids
+    }
+    return excerpt_content_refs(item for item in case.items if item.item_id in sent)
+
+
 def _provider_bound_input_manifest(
     composed: Mapping[str, JsonValue],
     content_rows: Sequence[Mapping[str, JsonValue]],
@@ -6798,11 +6866,16 @@ def _provider_bound_input_manifest(
     )
     if "follow_up_round" in projected:
         # Issue #1047: what Yoetz added is excerpt content; a ref the sent rows only link to was
-        # not added, so only the sources of carried excerpt rows count.
+        # not added, so only what carried excerpt rows hold counts (a group's parts included).
         admitted_refs = {
-            cast(str, row["source_ref"])
+            ref
             for row in content_rows
-            if row.get("section") == "excerpt" and type(row.get("source_ref")) is str
+            for ref in _excerpt_row_content_refs(
+                row.get("section"),
+                row.get("category"),
+                row.get("source_ref"),
+                row.get("linked_subject_refs"),
+            )
         }
     missing_rows: list[JsonValue] = []
     raw_missing = composed.get("missing_inputs")

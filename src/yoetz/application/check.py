@@ -2005,8 +2005,10 @@ class FinalSemanticEvaluation:
     # Ephemeral exact provider-bound row text used to validate reviewer snippets. It is omitted
     # from durable/public result objects; recovery without it rejects unverifiable quotes.
     provider_input_text_by_ref: Mapping[str, tuple[str, ...]] | None = None
-    # Issue #1047: the source refs of the excerpts the composed case carried, so an in-check
-    # follow-up can tell what a later packet adds. In process only; ``None`` when not composed.
+    # Issue #1047: the refs whose content the exact sent packet's excerpts held (a captured
+    # group's parts included), read from its provider-bound manifest, so an in-check follow-up
+    # can tell what was shown and what a later packet adds. In process only; ``None`` when what
+    # was sent is unknown.
     case_excerpt_refs: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
@@ -5061,6 +5063,7 @@ async def _review_follow_up(
             requested.items,
             previous=previous,
             shown_refs=result.case_excerpt_refs,
+            privacy_withheld_refs=result.case_privacy_withheld_refs,
         )
         if follow_up is None:
             break
