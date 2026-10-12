@@ -18,13 +18,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from builders.codex_replay import Replay
 from builders.codex_replay import replay_cell as replay_cell  # noqa: F401  (registers ``replay``)
-from builders.codex_rollout_replay import command_items, drive_rollout, summarize
+from builders.codex_rollout_replay import command_items, drive_rollout, summarize, tool_item
+from yoetz.domain.events import AcceptedEvent
 
 _ROLLOUT = (
     Path(__file__).resolve().parents[2] / "fixtures" / "codex" / "rollout-compaction-0.159.3.jsonl"
@@ -64,3 +65,47 @@ async def test_recorded_compaction_rollout_keeps_every_post_compaction_outcome(
     assert summary["actions_with_conflicting_outcomes"] == 0
     assert summary["actions_with_more_than_two_results"] == 0
     assert summary["pending_after"] == 0
+
+
+def _itemless_cells(records: list[dict[str, Any]]) -> int:
+    """Code-mode cells the slice records with no nested tool item between call and output."""
+
+    open_cells: dict[str, bool] = {}
+    itemless = 0
+    for record in records:
+        raw = record.get("payload")
+        if not isinstance(raw, dict):
+            continue
+        payload = cast(dict[str, Any], raw)
+        kind = payload.get("type")
+        if kind == "custom_tool_call":
+            open_cells[str(payload["call_id"])] = False
+        elif kind == "custom_tool_call_output":
+            itemless += not open_cells.pop(str(payload["call_id"]), True)
+        elif tool_item(record) is not None:
+            open_cells = dict.fromkeys(open_cells, True)
+    return itemless
+
+
+@pytest.mark.anyio
+async def test_recorded_cells_pair_on_call_id_and_hooked_cells_stay_local(replay: Replay) -> None:
+    """#1038: every 0.159.3 cell output pairs with its call on ``call_id`` (not ``ctc_``/``ctco_``).
+
+    On 98f62af this slice delivered every one of its 28 cell outputs as an
+    ``Unpaired observed tool result`` with no tool identity, which the later-material rule counts
+    as ``other``. Now only the cells that ran no nested tool at all keep a wrapper record.
+    """
+
+    records = _records()
+    items = command_items(records)
+    await drive_rollout(replay, records, stated_ids={str(item["id"]): True for item in items})
+    observed = [
+        row
+        for row in replay.ledger._state.records  # pyright: ignore[reportPrivateUsage]
+        if type(row) is AcceptedEvent
+        and row.schema.name in {"action_recorded", "evidence_recorded"}
+    ]
+    descriptions = [str(getattr(row.payload, "description", "")) for row in observed]
+    assert not [text for text in descriptions if text.startswith("Unpaired observed tool result")]
+    wrappers = [text for text in descriptions if "(tool exec)" in text]
+    assert len(wrappers) == _itemless_cells(records) == 3

@@ -20,13 +20,15 @@ value below is a shape-valid placeholder. Replace it with the real fresh or retu
 required by the operation. Also replace every illustrative task string, reference, timestamp,
 frontier sequence, and digest. A frontier must come from the latest accepted result or `status`;
 `head_digest: "genesis"` is valid only with `sequence: "0"`. Keep canonical integers such as
-frontier sequences, limits, and `max_findings` as JSON strings.
+frontier sequences, limits, and `max_findings` as JSON strings (a `status` `limit` sent as a JSON
+integer from 1 to 100 is read as its string).
 
 Use the real client identity for your integration. Never copy a template timestamp as if it were
 the event time; `occurred_at` is your assertion and should be the best real UTC millisecond time
-available. Before a material publication, send the completed `publish_work` request once with
-`dry_run: true`; after a successful preview, reuse the same `request_id` without `dry_run` (or with
-`dry_run: false`).
+available. A preview is optional: a write that fails validation appends nothing and names what
+stopped it, not every error (for drafts, the first rejected draft and its field), so fix that and
+resubmit. When unsure, send the completed `publish_work` request once with `dry_run: true`; after a
+successful preview, reuse the same `request_id` without `dry_run` (or with `dry_run: false`).
 
 Every set-valued list — `obligation_refs`, `obligation_ids`, `supporting_refs`, `limitation_refs`,
 `supersedes_claim_refs`, `causal_parents`, `evidence_refs`, `artifact_refs`, and the other
@@ -210,9 +212,17 @@ task statement: the newest event that carried `task_statement` (`session_opened`
 `session_resumed`, `plan_published` or `plan_revised`) whose statement differs from the one
 before it; `status view=history` lists it, and any event that carried the same statement counts. A plan whose obligations never cite that event returns an agent-actionable
 `task_requirement_unmet` finding that names the id. A `file` item for an existing test the request
-asks you to change also justifies that test edit. A `command` item is never byte-matched with a
-hook-observed run (hooks keep only a keyed commitment), so it stays a disclosed
-`command_attempt_uncorroborated` limitation; resolve the obligation citing the observed run.
+asks you to change also justifies that test edit. A `command` item is a shell command the host
+runs: hooks keep only a keyed commitment of each run, which Yoetz compares with the item. A message
+the program under test receives (a protocol command such as `VERSION`, a query, a keystroke) is
+not a `command` item; state it in `description` or `acceptance_criteria`. Resolve the obligation
+citing the observed run. If a script or client ran the command for you, link that run as shown
+under the action template; the link is disclosed as your equivalence.
+
+To resolve an obligation, publish this same `obligation_published` draft again with a new
+`event_id`, every meaning field exactly as recorded (`status` `view: "obligations"` shows them),
+`status: "resolved"`, and `resolution_evidence_refs` naming the evidence (`evd_`) or result
+(`res_`) ids that show the work done.
 
 A criterion only a hidden evaluator, a private reference or an answer only the user has can
 establish is not its own obligation: it can never be resolved, so it would stay an unmet
@@ -421,6 +431,10 @@ actor who exercised the authority (for example `user:shay` or `harness:cli`), ex
 `actor_id` does. It is never a sentence describing the approval; put the approval story in
 `rationale` or `statement`. A value that merely satisfies the pattern but names no real actor is
 still wrong on the record.
+
+A decision has no id of its own: it is addressed by its draft's `event_id` (for example in a later
+decision's `supersedes_event_id`). A `decision_id` in the payload is accepted and ignored; nothing
+records it, so never cite it.
 
 ```json
 {
@@ -789,6 +803,30 @@ observations still being delivered, and `observations_awaited` reports whether t
   "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "final_review": true,
   "max_findings": "10",
+  "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
+  "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
+}
+```
+
+### `check`: inspect
+
+`"mode": "inspect"` reads instead of checking: it records nothing, mints no findings and runs no
+review, so a timeout is answered by asking again with a fresh `request_id`. It answers what is left
+to close and whose move each gap is, what the hooks observed since the last check, and whether each
+obligation's resolution evidence links to its declared deliverables or commands. Omit `scope`,
+`max_findings`, `policy_packs` and `final_review`; `await_observations: true` is accepted. The host
+still approves it as a `check` call; if the host holds or refuses it, nothing is pending in Yoetz,
+so read `status` instead.
+
+```json
+{
+  "protocol_version": "0.1",
+  "schema_version": "1.0.0",
+  "request_id": "req_00000000-0000-4000-8000-000000000015",
+  "session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
+  "mode": "inspect",
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
 }

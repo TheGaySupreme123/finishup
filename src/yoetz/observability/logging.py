@@ -63,6 +63,9 @@ _FIELD_ORDER: Final = (
     "semantic_rejected_routine_completeness",
     "semantic_rejected_snippet_invalid",
     "semantic_rejected_subject_refs_over_limit",
+    "semantic_rejected_yoetz_process_state",
+    "semantic_challenges_advisory",
+    "semantic_agent_criteria",
     "semantic_review_refs_reduced",
     "semantic_review_snippets_rejected",
     "semantic_restatements_suppressed",
@@ -70,6 +73,10 @@ _FIELD_ORDER: Final = (
     "semantic_rulings_disputed_after_rebuttal",
     "semantic_findings_selected",
     "semantic_findings_suppressed",
+    # One in-check reviewer follow-up round (#1047).
+    "semantic_follow_up_round",
+    "semantic_follow_up_items",
+    "semantic_follow_up_refs_added",
     "semantic_capture_parts_resolved",
     "semantic_diff_parts_resolved",
     "semantic_excerpts_selected",
@@ -141,6 +148,17 @@ def _new_correlation() -> str:
         return new_id(IdKind.CORRELATION)
     except BaseException:
         return _FALLBACK_CORRELATION
+
+
+def _caller_correlation(correlation_id: str | None) -> str:
+    """Keep a valid caller-minted correlation id; mint a fresh one otherwise."""
+
+    if correlation_id is None:
+        return _new_correlation()
+    try:
+        return validate_id(IdKind.CORRELATION, correlation_id)
+    except BaseException:
+        return _new_correlation()
 
 
 def _level_name(level_number: int) -> str:
@@ -381,6 +399,8 @@ def record_unexpected_exception_without_raising(
     operation: str = "unexpected_exception",
     request_id: str | None = None,
     phase: str | None = None,
+    correlation_id: str | None = None,
+    reason_code: str | None = None,
 ) -> str:
     """Emit bounded structural identity for an unexpected internal exception.
 
@@ -388,11 +408,17 @@ def record_unexpected_exception_without_raising(
     service-side and bridge-side records for one failed call be joined exactly, instead of
     guessing from method and timestamp when two calls overlap.
 
+    ``correlation_id`` is an id another process minted and will look up (a service spawned on
+    demand records its startup failure under the id its spawner passed, #1040); an invalid one is
+    replaced by a fresh id, which is returned either way. ``reason_code`` is the exception's own
+    closed refusal token when it carries one but is still reported as unexpected (an endpoint or
+    storage refusal that stops service startup); the sinks gate it like any other token.
+
     In addition to stderr, a durable owner-only diagnostic line is written under ``log_dir()`` so
     a public ``correlation_id`` remains resolvable when harnesses swallow process stderr.
     """
 
-    correlation_id = _new_correlation()
+    correlation_id = _caller_correlation(correlation_id)
     reason = _exception_reason(exc)
     origin = exception_origin(exc)
     try:
@@ -403,6 +429,7 @@ def record_unexpected_exception_without_raising(
             outcome="internal_error",
             reason=reason,
             origin=origin,
+            reason_code=reason_code,
             phase=phase,
         )
     except BaseException:
@@ -417,6 +444,7 @@ def record_unexpected_exception_without_raising(
             reason=reason,
             request_id=request_id,
             origin=origin,
+            reason_code=reason_code,
             phase=phase,
         )
     except BaseException:
@@ -464,13 +492,17 @@ def record_classified_exception_without_raising(
     operation: str,
     request_id: str | None = None,
     phase: str | None = None,
+    reason_code: str | None = None,
+    correlation_id: str | None = None,
 ) -> str:
     """Record a public classified failure with bounded exception identity.
 
     Unlike ``record_unexpected_exception_without_raising``, this is not an internal last-resort:
     ``outcome`` is ``public_error`` so a wire ``correlation_id`` stays joinable to a class-name
     token and optional ``yoetz`` origin without collapsing the failure into ``internal_error``.
-    The sinks still never record ``str(exc)``, paths, or object ids.
+    The sinks still never record ``str(exc)``, paths, or object ids. ``reason_code`` is the
+    exception's own closed refusal token, when it carries one; ``correlation_id`` is a
+    caller-minted id, as for ``record_unexpected_exception_without_raising``.
     """
 
     return _record_bounded_without_raising(
@@ -480,7 +512,9 @@ def record_classified_exception_without_raising(
         outcome="public_error",
         request_id=request_id,
         origin=exception_origin(exc),
+        reason_code=reason_code,
         phase=phase,
+        correlation_id=correlation_id,
     )
 
 
@@ -528,10 +562,11 @@ def _record_bounded_without_raising(
     reason_code: str | None = None,
     phase: str | None = None,
     context: Mapping[str, object] | None = None,
+    correlation_id: str | None = None,
 ) -> str:
     """Mint one correlation id and write it to both sinks. Never raises to callers."""
 
-    correlation_id = _new_correlation()
+    correlation_id = _caller_correlation(correlation_id)
     extra: dict[str, object] = {}
     if context is not None:
         try:

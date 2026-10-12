@@ -40,6 +40,7 @@ __all__ = [
     "CLAIM_REVISION_CORRECTIONS",
     "CONTINUATION_TOKENS",
     "LOCAL_REASON_CONTINUATION_PREFIXES",
+    "READ_ONLY_CHECK_MODES",
     "REASON_CODE_DIRECTIVE_EXEMPTIONS",
     "REASON_REMEDIES",
     "RECOVERY_DIRECTIVES",
@@ -67,6 +68,10 @@ type TimeoutOperationKind = Literal["read", "write", "start"]
 WRITE_OPERATIONS: Final[frozenset[str]] = frozenset(
     {"start", "publish_work", "check", "respond", "receipt"}
 )
+# The ``check`` modes that record nothing (ADR-047: ``inspect``). A check in one of them is a read
+# like ``status``: the daemon, the MCP bridge and the CLI all classify it so, and a lost answer is
+# repeated under a new request_id, never replayed as a write that may have committed.
+READ_ONLY_CHECK_MODES: Final[frozenset[str]] = frozenset({"inspect"})
 
 # Bounds chosen against the original 512-byte ASCII ceiling in ``yoetz.mcp.summaries`` (4,096 since
 # ADR-043): an error identity clause plus a reason/location clause plus a directive plus a guidance
@@ -965,6 +970,9 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         "import_publication_failed",
         "maintenance_state_unverified",
         "start_state_inconsistent",
+        # #1040: a spawned service exited during startup; `phase` names its stage and the
+        # correlation_id resolves its exception class and origin.
+        "service_start_failed",
         # Closure-preparation selection reasons: the reason names the selection to correct and
         # the fixed remedy sentence in ``yoetz.domain.closure.PREPARATION_REMEDIATIONS`` reaches
         # the text channel beside it (tb4n3 formal-crypto S).
@@ -1005,7 +1013,7 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
         ),
         "bridge_invoke_failed": (
             "The bridge failed while calling the local service. A write (start, publish_work, "
-            "check, respond, receipt) may or may not be recorded: replay the same request_id "
+            "check other than an inspection, respond, receipt) may or may not be recorded: replay the same request_id "
             "(never a new one); replay is idempotent and returns the stored result when the "
             "write committed. A read changed nothing: repeat it. Report the correlation_id."
         ),
@@ -1017,13 +1025,13 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
         ),
         "bridge_result_wire_failed": (
             "The bridge could not serialize this call's result. A write (start, publish_work, "
-            "check, respond, receipt) is recorded: replaying its request_id fails the same way, "
+            "check other than an inspection, respond, receipt) is recorded: replaying its request_id fails the same way, "
             "so read status view=operation and view=compact, and never resend it under a new "
             "request_id. A read or dry run changed nothing: repeat it. Report the correlation_id."
         ),
         "bridge_result_validate_failed": (
             "This call's result did not match its response schema. A write (start, publish_work, "
-            "check, respond, receipt) is recorded: replaying its request_id fails the same way, "
+            "check other than an inspection, respond, receipt) is recorded: replaying its request_id fails the same way, "
             "so read status view=operation and view=compact, and never resend it under a new "
             "request_id. A read or dry run changed nothing: repeat it. Report the correlation_id."
         ),
@@ -1066,6 +1074,12 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "The start state recorded for this request is inconsistent. Do not start a "
             "replacement task to escape it: read status for the task you meant to attach to, "
             "and report the correlation_id."
+        ),
+        "service_start_failed": (
+            "The local Yoetz service exited while starting, so it is not running and nothing "
+            "was recorded; retrying fails the same way until the cause is repaired. Give the "
+            "user the correlation_id: 'yoetz service diagnostics --correlation-id' with it names "
+            "the failing stage and exception class. Do not run service lifecycle commands."
         ),
     }
 )
@@ -1138,19 +1152,26 @@ _TIMEOUT_CONTINUATIONS: Final[Mapping[TimeoutOperationKind, str]] = MappingProxy
 
 
 def timeout_operation_kind(
-    operation: object, *, write_operations: frozenset[str] = WRITE_OPERATIONS
+    operation: object,
+    *,
+    write_operations: frozenset[str] = WRITE_OPERATIONS,
+    check_mode: object = None,
 ) -> TimeoutOperationKind | None:
     """Classify a timed-out operation name, or None when the name is not a known operation.
 
     ``start`` is a write whose lost response carries no route ids, so it is its own kind: the
     generic write recovery ("read status view=operation") is an instruction a first start cannot
     follow, and the shipped guidance has always excepted it (replay the exact start once).
+    ``check_mode`` is the request's ``mode``: a ``check`` in a ``READ_ONLY_CHECK_MODES`` mode
+    records nothing, so it is a read (ADR-047).
     """
 
     if type(operation) is not str:
         return None
     if operation == "start":
         return "start"
+    if operation == "check" and type(check_mode) is str and check_mode in READ_ONLY_CHECK_MODES:
+        return "read"
     if operation in write_operations:
         return "write"
     return "read"

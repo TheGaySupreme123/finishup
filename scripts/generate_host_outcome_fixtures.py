@@ -378,7 +378,8 @@ def _codex_rollout() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
             "event_kind": "item_completed",
             "provenance": _DERIVED,
             "tool_call_id": "call_910_stream_mcp",
-            "tool_name": "status",
+            # The item's ``server`` is kept: the stream names it as its hook does (#1038).
+            "tool_name": "mcp__yoetz__status",
             **_expect("success", None, success=None, result_status="completed"),
         },
         {

@@ -144,6 +144,7 @@ from yoetz.protocol.models import (
     StatusRequest,
     StatusResultsPageModel,
     StatusSemanticProgressModel,
+    StatusUndeclaredReferenceModel,
     StatusVersionSliceModel,
     StatusVersionsPageModel,
 )
@@ -157,6 +158,7 @@ from yoetz.protocol.redacted_values import validate_semantic_redacted_values
 __all__ = [
     "Application",
     "StatusInternalResult",
+    "current_closure_readiness",
     "execute_status",
     "semantic_progress_wire",
 ]
@@ -1585,6 +1587,19 @@ async def _closure_readiness(
             FactLineageModel.model_validate(lineage_to_wire(item))
             for item in facts.fact_lineage[:64]
         )
+    if facts.undeclared_references:
+        # tb4n4 (#1044): the files a delivered file names that no item declares, so the Stop
+        # gate can name them. Paths are repository-excerpt content under the privacy projection.
+        optional_fields["undeclared_references"] = tuple(
+            StatusUndeclaredReferenceModel(
+                obligation_id=obligation,
+                item_index=str(index),
+                paths=paths,
+                total=str(total),
+            )
+            for obligation, index, paths, total in facts.undeclared_references[:16]
+            if index is not None
+        )
     optional_fields.update(
         _closure_verdict_fields(
             facts,
@@ -1721,6 +1736,37 @@ async def _lineage_readiness_gaps(
             request_id=request_id,
         )
         return ("lineage_readiness_unavailable",), False
+
+
+async def current_closure_readiness(
+    app: Application,
+    runtime: TaskRuntime,
+    request_id: str,
+    *,
+    route_profile: Literal["policy", "strict"] | None = None,
+) -> tuple[Frontier, StatusClosureReadinessModel]:
+    """The current frontier and the closure readiness every status view prints there (ADR-046).
+
+    For a read that holds its own routed runtime (the ``mode: inspect`` check, ADR-047): the same
+    lineage gaps, review requirement and in-flight rule as ``execute_status``, so the inspection
+    and status can never disagree about what is left. Reads only.
+    """
+
+    frontier, head = await _exact_frontier(runtime, None)
+    lineage_gaps, lineage_self_verified = await _lineage_readiness_gaps(
+        app, runtime, frontier, request_id
+    )
+    readiness = await _closure_readiness(
+        runtime,
+        frontier,
+        None,
+        request_id,
+        lineage_gaps=lineage_gaps,
+        lineage_self_verified=lineage_self_verified,
+        semantic_review_required=_semantic_review_required(app, route_profile),
+        check_in_flight=frontier == head and await _check_in_flight(runtime),
+    )
+    return frontier, readiness
 
 
 async def execute_status(

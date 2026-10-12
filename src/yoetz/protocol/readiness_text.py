@@ -17,10 +17,12 @@ from collections.abc import Mapping
 from typing import Final, Literal, cast
 
 __all__ = [
+    "OBLIGATION_RESOLVE_RECIPE_VARIANTS",
     "READINESS_STATES",
     "awaiting_ruling_variants",
     "check_cause_sentence",
     "closure_counts_variants",
+    "obligation_resolve_recipe_variants",
     "predicted_receipt_variants",
     "readiness_directive",
     "reason_phrases",
@@ -371,3 +373,30 @@ def awaiting_ruling_variants(readiness: object) -> tuple[str, ...]:
     variants.append(f"{lead}; request a check for it, or status view=findings lists them.")
     variants.append(f"{lead}.")
     return tuple(dict.fromkeys(variants))
+
+
+# tb4n4 (#1049): eight resolutions left ``resolution_evidence_refs`` out and were refused. The
+# obligations view is where an agent reads the fields a resolution repeats, so every surface that
+# renders it states the one resolution recipe, that field included (longest variant first).
+OBLIGATION_RESOLVE_RECIPE_VARIANTS: Final[tuple[str, ...]] = (
+    "To resolve an obligation, publish obligation_published again with its obligation_id and every"
+    " other field exactly as recorded, status resolved, and resolution_evidence_refs naming the"
+    " evidence (evd_) or result (res_) ids that show it done.",
+    "Resolve: republish it with status resolved and resolution_evidence_refs (evd_/res_ ids).",
+)
+_RESOLVABLE_OBLIGATION_STATUSES: Final = frozenset({"open", "acknowledged_not_done"})
+
+
+def obligation_resolve_recipe_variants(items: object) -> tuple[str, ...]:
+    """The resolution recipe when an obligations page holds one not yet resolved, else ``()``.
+
+    *items* is the page's rows (wire mappings or models); only the closed ``status`` token is read.
+    """
+
+    if not isinstance(items, (tuple, list)):
+        return ()
+    for item in tuple(cast("tuple[object, ...] | list[object]", items)):
+        status = _field(item, "status")
+        if type(status) is str and status in _RESOLVABLE_OBLIGATION_STATUSES:
+            return OBLIGATION_RESOLVE_RECIPE_VARIANTS
+    return ()

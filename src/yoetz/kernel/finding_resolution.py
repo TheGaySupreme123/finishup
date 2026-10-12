@@ -67,6 +67,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_PACKET_INSUFFICIENT_GAP,
     SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP,
     SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP,
+    SEMANTIC_PROCESS_STATE_FILTERED_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_MISMATCH_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP,
@@ -76,6 +77,7 @@ from yoetz.domain.receipts import (
     SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP,
     SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP,
     SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP,
+    SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
     SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
@@ -111,8 +113,15 @@ from yoetz.kernel.projections import (
     observation_finding_event_ids,
 )
 from yoetz.kernel.task_facts import (
+    INSTALL_INTO_PRIVATE_ENV_GAP,
+    INSTALL_INTO_YOETZ_RUNTIME_GAP,
     OBLIGATION_BLOCKED_GAP,
+    PLANNED_VERIFICATION_AGENT_LINKED_GAP,
+    PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP,
+    PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
+    PLANNED_VERIFICATION_UNOBSERVABLE_GAP,
     TASK_FACT_GAPS,
+    VERIFICATION_ONLY_AS_ROOT_GAP,
     WRITE_OUTSIDE_WORKSPACE_GAP,
 )
 from yoetz.protocol.coverage import LedgerFreshness
@@ -209,6 +218,8 @@ _SEMANTIC_ONLY_GAPS: Final = frozenset(
         # The review round was skipped because the last two completed reviews could not assess
         # the same content (TB4 tb4n1 D3): it says nothing about a local pack.
         SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
+        # The review waited for the first material edit (issue #1046): nothing about a local pack.
+        SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
         SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
         SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
         OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
@@ -287,6 +298,9 @@ _REVIEW_DIALOGUE_DISCLOSURE_GAPS: Final = frozenset(
         SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP,
         SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP,
         SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP,
+        # Issue #1042: "never attempted" during work in progress or Yoetz's own state, not minted.
+        # They say nothing about what the review saw, so they never weaken either proof.
+        SEMANTIC_PROCESS_STATE_FILTERED_GAP,
     }
 )
 # In-place egress redaction of credential-like values (issue #982, owner decision B2): the reviewer
@@ -876,9 +890,27 @@ _FIXED_RULING_TOLERATED_GAPS: Final = _INSUFFICIENT_PACKET_GAPS | frozenset(
 )
 
 
-# Task-fact gaps an explicit ``fixed`` ruling tolerates on its own finding (issue #1000).
+# Task-fact gaps an explicit ``fixed`` ruling tolerates on its own finding (issue #1000). They
+# describe the environment the work ran in (where it wrote, a blocker outside the agent's control)
+# or what Yoetz's observer could confirm of it, never what the reviewer was shown. Issue #1046
+# (tb4n4: 39 ``self_verified`` answers in 24 of 61 tasks, 16 ``resolution_attempt_required``
+# rounds) adds the rest of that family: verification run only as root, installs into a private
+# environment or Yoetz's runtime, and the planned-verification observer heuristics. Each stays a
+# standing disclosure on the receipt (gap table rule G4). Facts about the deliverable itself
+# (``requested_output_*``, ``declared_output_*``, ``deliverable_references_undeclared_file``) and
+# every agent-actionable fact keep blocking.
 _TASK_FACT_GAPS_TOLERATED_WHEN_FIXED: Final = frozenset(
-    {WRITE_OUTSIDE_WORKSPACE_GAP, OBLIGATION_BLOCKED_GAP}
+    {
+        WRITE_OUTSIDE_WORKSPACE_GAP,
+        OBLIGATION_BLOCKED_GAP,
+        VERIFICATION_ONLY_AS_ROOT_GAP,
+        INSTALL_INTO_PRIVATE_ENV_GAP,
+        INSTALL_INTO_YOETZ_RUNTIME_GAP,
+        PLANNED_VERIFICATION_AGENT_LINKED_GAP,
+        PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP,
+        PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
+        PLANNED_VERIFICATION_UNOBSERVABLE_GAP,
+    }
 )
 
 
@@ -1179,11 +1211,13 @@ def resolution_blockers(
         reasons.extend(verdict_reasons)
         tolerated |= verdict_tolerated
         if ruled_fixed:
-            # Task facts about where the agent wrote and which obligations it declared blocked
-            # describe the work, never what the reviewer was shown, so they cannot bound an
-            # explicit, cited ``fixed`` ruling; they stay on the receipt (issue #1000; tb4n1
-            # interleaved-vigenere kept a finding the reviewer ruled fixed open on
-            # write_outside_workspace). A silent review keeps them blocking: a review that did
+            # Task facts about the environment the work ran in (where the agent wrote, which
+            # obligations it declared blocked, verification only as root, installs, what the
+            # observer could confirm of a planned run) describe the work, never what the reviewer
+            # was shown, so they cannot bound an explicit, cited ``fixed`` ruling; they stay on
+            # the receipt (issues #1000 and #1046; tb4n1 interleaved-vigenere kept a finding the
+            # reviewer ruled fixed open on write_outside_workspace, tb4n4 on
+            # verification_only_as_root). A silent review keeps them blocking: a review that did
             # not rule on the finding never said the work they describe repaired it.
             tolerated = tolerated | _TASK_FACT_GAPS_TOLERATED_WHEN_FIXED
         if prior_finding_verdict(check, finding) is None and gaps & _ASSESSMENT_INCOMPLETE_GAPS:
@@ -1486,6 +1520,29 @@ def _finding_resolution_explanation(
     from yoetz.kernel.limitation import limitation_standing
 
     standing = limitation_standing(state, finding_id)
+    if standing is not None and finding_record.payload.kind is FindingKind.AGENT_CRITERION_UNMET:
+        # Issue #1043: the agent's own criterion beyond the task's stated scope, never the task's.
+        if standing.disclosed:
+            return (
+                "Criterion narrowed: the agent narrowed its own criterion (a probe beyond the "
+                "task's stated scope) with a recorded reason. The item is final, is not reviewed "
+                "again and is not agent work; the receipt lists it as a disclosed limitation and "
+                "cannot read clean."
+            )
+        if standing.unmet:
+            return (
+                "Acknowledged, not done: the agent answered `acknowledged_not_done` on its own "
+                "criterion, which says it is NOT met. The item is final, is not reviewed again, "
+                "and the receipt reads unresolved_findings_remain. To narrow the criterion "
+                "instead, respond `reopened` with a reason and then `acknowledged`."
+            )
+        return (
+            "Your own criterion: a probe you authored beyond the task's stated scope fails. It is "
+            "not a task requirement. Fix it (a later check that proves it absent resolves it), or "
+            "narrow the criterion: respond `acknowledged` with the reason, which records a "
+            "disclosed limitation that does not block (the receipt cannot read clean while it is "
+            "listed). Respond `rejected` only if the finding is wrong."
+        )
     if standing is not None:
         if standing.disclosed:
             return (
@@ -1569,9 +1626,20 @@ def _finding_resolution_explanation(
             resolving_check is not None
             and prior_finding_verdict(resolving_check, finding_record.payload) == "fixed"
         ):
+            disclosed = sorted(
+                set(resolving_check.coverage.known_gaps) & _TASK_FACT_GAPS_TOLERATED_WHEN_FIXED,
+                key=str.encode,
+            )
+            environment = (
+                ""
+                if not disclosed
+                else " The environment facts that check recorded ("
+                + ", ".join(disclosed)
+                + ") did not hold it open; the receipt still discloses them."
+            )
             return (
                 f"Resolved by qualifying check {resolving}: the reviewer ruled it fixed on "
-                "material recorded after the finding; retained as history."
+                f"material recorded after the finding; retained as history.{environment}"
             )
         return f"Resolved by qualifying check {resolving}; retained as history."
     attempt = _resolution_attempt(state, finding_record, records, proof_state_cache)

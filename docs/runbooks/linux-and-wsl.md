@@ -38,6 +38,55 @@ refused; nothing is claimed. musl, macOS x86-64, and native Windows remain outsi
 Certifying Linux aarch64 needs a real `ubuntu-24.04-arm` release runner and release evidence in
 `support/runtime-support.json`; until then the diagnostic is the whole claim (issue #724).
 
+## Service startup on glibc before 2.32
+
+Issue #1040: on `condaforge/miniforge3:24.9.2-0` every `yoetz service run` exited 70 with only
+`internal_error: the command could not be completed`. That image is Ubuntu 20.04 with glibc 2.31.
+glibc before 2.32 has no no-follow `fchmodat`, so CPython raises `NotImplementedError` for
+`os.chmod(..., follow_symlinks=False)`, which is how the service set the mode of each endpoint it
+had just bound. The binder now falls back to a by-name `chmod` only after `lstat` shows the entry
+is still the socket it bound, inside the runtime directory it has just verified as owner-only;
+the post-`chmod` check of type, mode, link count and inode is unchanged. Conda itself was not the
+cause: the image sets no `LD_LIBRARY_PATH` or `PYTHON*` variables, and the uv-managed Python does
+not load conda's OpenSSL or SQLite.
+
+Reproduced and fixed in that exact image. The no-follow `fchmodat` arrived in glibc 2.32, so the
+same failure applies by construction, not by test, to every glibc 2.28–2.31 system inside the
+certified cell (Ubuntu 20.04, Debian 11, RHEL/Rocky/Alma 8, and images built on them). Release
+verification runs on
+`ubuntu-24.04` (glibc 2.39), which is why the floor was never exercised. PR CI now installs the
+candidate wheel in that exact image (by digest) and starts, queries and stops the service, and
+`tests/subprocess/test_service_startup_failure.py` repeats the start under the image's environment
+with the glibc 2.31 `chmod` behaviour on every platform.
+
+## Reading a service startup failure
+
+Every startup failure is recorded once, with the stage that failed, the reviewed exception-class
+token, the innermost `yoetz` source location and one correlation id (never exception text or
+paths). Each surface shows the same facts:
+
+| Surface | What it shows |
+|---|---|
+| `yoetz service run` stderr (a harness's `service.log`) | for example `internal_error: the service could not start (stage: activation; exception_not_implemented_error; at yoetz.adapters.control.unix_socket:434); correlation_id err_…`, exit 70; `stopped unexpectedly` when it failed after serving |
+| The structural stderr line before it | `{"component":"service.daemon","operation":"service_startup_failed","phase":…,"reason":…,"origin":…}` |
+| `yoetz service diagnostics --correlation-id err_… --json` | the durable record (`phase`, `reason`, `origin`, and `reason_code` for a typed refusal) |
+| MCP `start`, or any tool call that started the service on demand | `SERVICE_UNAVAILABLE`, `retryable: false`, `safe_details.reason_code: service_start_failed`, `safe_details.phase: <stage>`, the spawned service's correlation id; text `Reason: service_start_failed (stage: <stage>).` |
+| A CLI command that started the service on demand (`yoetz service restart`) | `service_unavailable: the local service exited while starting (stage: …; …); correlation_id err_…`, exit 20 |
+| Setup and drain commands that start it on demand (`yoetz setup vault`, `yoetz setup llm --set`, the interactive `yoetz setup`, the restart after a provider or Codex-subscription change, `yoetz observe drain`) | the same `service_unavailable: … exited while starting …` line on stderr, then the command's own unchanged result and exit code (for example `provider_setup_failed: service_unavailable`, exit 20); the restart stops at the first such failure instead of spawning again. The full-screen window does not print it; `yoetz setup status --next` leads to `yoetz service restart`, which does |
+
+Stages: `import` (a service module or native extension could not load, for example a wheel built
+for a newer C library), `configuration` (configuration or the log sink), `composition` (instance
+identity, singleton, vault), `activation` (endpoint publication, after ready activation when the
+vault unlocks), `serving` (after the service had started). The origin names the source line; the
+exception token names the class. Typed refusals keep their own lines (`instance_expired`,
+`path_contains_symlink`, `service_already_running`, `invalid_request: <config reason>`, …), and
+their record carries that token as `reason_code`. An unsafe runtime directory or endpoint, unsafe
+storage or a required migration stays an unexpected failure (exit 70), but its line and record
+name its own token after the class, for example `(stage: activation;
+exception_local_control_transport_error; runtime_directory_unsafe; at …)`. A spawned service that loses the singleton to a
+live one is not a failure: on-demand start connects to the holder. The bridge stops waiting as
+soon as its spawned service exits with a record, instead of spending its 30-second start budget.
+
 ## Approved-check sandbox
 
 Network-denied approved checks run only under an enforcing sandbox: Seatbelt (`sandbox-exec`,

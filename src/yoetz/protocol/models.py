@@ -82,6 +82,7 @@ __all__ = [
     "MAX_REVIEW_CHALLENGES",
     "MAX_REVIEW_CHANGE_OBSERVATIONS",
     "MAX_REVIEW_EXCERPTS",
+    "MAX_REVIEW_FOLLOW_UP_ROUNDS",
     "MAX_REVIEW_OMISSIONS",
     "MAX_REVIEW_OMISSION_TOTAL",
     "MAX_REVIEW_TEXT_BYTES",
@@ -246,6 +247,9 @@ MAX_PROVIDER_REVIEW_TEXT_CHARS: Final = MAX_REVIEW_TEXT_BYTES // 4
 # the packet; the short reason stays in the durable semantic response, never in structural records.
 MAX_MISSING_FOR_ASSESSMENT: Final = 8
 MAX_MISSING_TARGET_REFS: Final = 4
+# Issue #1047: inside one check Yoetz may answer the reviewer's own request from its records and
+# ask again at most this many times (the review input manifest's ``follow_up_round``).
+MAX_REVIEW_FOLLOW_UP_ROUNDS: Final = 3
 MAX_MISSING_REASON_BYTES: Final = 1_024
 MAX_PROVIDER_MISSING_REASON_CHARS: Final = MAX_MISSING_REASON_BYTES // 4
 MISSING_FOR_ASSESSMENT_KINDS: Final = frozenset(
@@ -831,6 +835,12 @@ def _canonical_positive_uint_wire(value: object) -> str:
 
 
 def _canonical_page_limit_wire(value: object) -> str:
+    # tb4n4 (#1049): four status calls sent ``limit`` as a JSON integer. A page size has one
+    # meaning in either spelling, so an integer from 1 to 100 is read as its canonical decimal
+    # string here, before the schema check, routing or any hash sees the request. ``bool`` is
+    # not admitted (``type(True) is bool``), and every other value keeps the refusal.
+    if type(value) is int and 1 <= value <= 100:
+        value = str(value)
     if type(value) is not str or value not in _CANONICAL_PAGE_LIMITS:
         raise ProtocolValueError("noncanonical_integer_string")
     return value
@@ -1014,6 +1024,8 @@ ReadinessItemWire = Annotated[
     str,
     Field(pattern=r"^(?:unclassified_gap:)?[a-z][a-z0-9_]{0,127}$", max_length=145),
 ]
+# The 0-based index of a requested item inside its obligation (at most 64 items).
+RequestedItemIndexWire = Annotated[str, Field(pattern=r"^(?:[0-9]|[1-5][0-9]|6[0-3])$")]
 # An obligation or a finding the agent recorded as acknowledged, not done.
 AcknowledgedItemIdWire = Annotated[
     str,
@@ -1092,6 +1104,7 @@ type FindingKindWire = Literal[
     "weak_or_stale_response",
     "code_defect",
     "task_requirement_unmet",
+    "agent_criterion_unmet",
 ]
 
 type ProviderFindingKindWire = Literal[
@@ -1111,6 +1124,7 @@ type ProviderFindingKindWire = Literal[
     "weak_or_stale_response",
     "code_defect",
     "task_requirement_unmet",
+    "agent_criterion_unmet",
 ]
 
 type SafeDetailPrimitive = (
@@ -1344,6 +1358,7 @@ _CHILD_FINDING_TRAITS: Final[Mapping[str, tuple[int, bool]]] = MappingProxyType(
         "coordination_overlap": (2, True),
         "code_defect": (1, True),
         "task_requirement_unmet": (1, True),
+        "agent_criterion_unmet": (2, True),
     }
 )
 
@@ -1370,6 +1385,7 @@ class ChildFindingSnapshotModel(_ClosedModel):
         "weak_or_stale_response",
         "code_defect",
         "task_requirement_unmet",
+        "agent_criterion_unmet",
     ]
     origin: Literal["deterministic", "semantic_model_derived"]
     priority: Annotated[int, Field(ge=1, le=3)]
@@ -1659,6 +1675,53 @@ class StartRequestModel(PublicRequestModel):
         return self
 
 
+_IGNORED_DECISION_ID_KEY: Final = "decision_id"
+
+
+def _drop_ignored_decision_ids(drafts: object) -> object:
+    """Drop ``decision_id`` from every ``decision_recorded`` draft payload (tb4n4, #1049).
+
+    ``decision_recorded`` is the one ordinary family without an id of its own (a decision is
+    addressed by its ``event_id``), and ten tb4n4 attempts sent a ``decision_id`` by analogy with
+    ``action_id``, ``claim_id`` and the rest. The key has no meaning in any spelling, so it is
+    accepted and ignored: dropped here, before the schema check and before anything prepares,
+    commits or hashes the drafts. A retry with or without it is therefore the same request (one
+    request digest), and the recorded event never holds it. Every other unknown key, in this and
+    every other family, keeps its ``extra_forbidden`` refusal.
+    """
+
+    if not isinstance(drafts, list | tuple):
+        return drafts
+    sequence = cast(Sequence[object], drafts)
+    adapted: list[object] = []
+    changed = False
+    for draft in sequence:
+        replacement: object = draft
+        if isinstance(draft, Mapping):
+            source = cast(Mapping[object, object], draft)
+            schema: object = source.get("schema")
+            payload: object = source.get("payload")
+            if (
+                isinstance(schema, Mapping)
+                and cast(Mapping[object, object], schema).get("name") == "decision_recorded"
+                and isinstance(payload, Mapping)
+                and _IGNORED_DECISION_ID_KEY in cast(Mapping[object, object], payload)
+            ):
+                kept: dict[object, object] = {
+                    key: value
+                    for key, value in cast(Mapping[object, object], payload).items()
+                    if key != _IGNORED_DECISION_ID_KEY
+                }
+                rebuilt: dict[object, object] = dict(source)
+                rebuilt["payload"] = kept
+                replacement = rebuilt
+                changed = True
+        adapted.append(replacement)
+    if not changed:
+        return sequence
+    return adapted if isinstance(sequence, list) else tuple(adapted)
+
+
 class PublishWorkRequestModel(PublicRequestModel):
     optional_non_null_fields = frozenset({"dry_run"})
 
@@ -1668,6 +1731,18 @@ class PublishWorkRequestModel(PublicRequestModel):
     event_drafts: tuple[JsonValue, ...]
     # When true, validate the batch and return a non-evidential preview without appending.
     dry_run: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_decision_ids(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        source = cast(Mapping[object, object], value)
+        drafts = source.get("event_drafts")
+        adapted = _drop_ignored_decision_ids(drafts)
+        if adapted is drafts:
+            return cast(object, value)
+        return {**source, "event_drafts": adapted}
 
     @model_validator(mode="after")
     def _validate_publish_work_request(self) -> PublishWorkRequestModel:
@@ -1684,7 +1759,13 @@ class CheckRequestModel(PublicRequestModel):
     writer_id: WriterIdWire
     expected_frontier: FrontierModel
     # Omitted mode resolves via VerificationPolicy.default_check_mode in the application facade.
-    mode: Literal["deterministic_only", "semantic_if_configured", "semantic_required"] | None = None
+    # ``inspect`` (issue #1048, ADR-047) reads what is left to close instead of checking: it
+    # records nothing, mints no findings and calls no reviewer; the schema refuses the finding,
+    # pack, closing-review and scope options beside it.
+    mode: (
+        Literal["deterministic_only", "inspect", "semantic_if_configured", "semantic_required"]
+        | None
+    ) = None
     scope: CheckScopeModel | None = None
     max_findings: Literal["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"] | None = None
     policy_packs: tuple[CurrentPolicyPackWire, ...] | None = None
@@ -1698,6 +1779,30 @@ class CheckRequestModel(PublicRequestModel):
     @model_validator(mode="after")
     def _validate_check_request(self) -> CheckRequestModel:
         _validate_model_against_schema(self, "check-request")
+        if self.mode == "inspect":
+            # ADR-047: an inspection mints nothing, so the options of a minting check are refused
+            # beside it, each at its own field. Kept here rather than as a schema conditional,
+            # which observed hosts lower to an unauthorable ``unknown`` check input.
+            present = tuple(
+                name
+                for name in ("final_review", "max_findings", "policy_packs", "scope")
+                if getattr(self, name) is not None
+            )
+            if present:
+                from pydantic import ValidationError as PydanticValidationError
+
+                raise PydanticValidationError.from_exception_data(
+                    type(self).__name__,
+                    [
+                        {
+                            "type": "value_error",
+                            "loc": (name,),
+                            "input": None,
+                            "ctx": {"error": ValueError("extra_forbidden")},
+                        }
+                        for name in present
+                    ],
+                )
         return self
 
 
@@ -3061,6 +3166,7 @@ class CheckProjectedFindingModel(_ClosedModel):
         "weak_or_stale_response",
         "code_defect",
         "task_requirement_unmet",
+        "agent_criterion_unmet",
     ]
     origin: Literal["deterministic", "semantic_model_derived"]
     priority: Annotated[int, Field(ge=1, le=3)]
@@ -3377,7 +3483,7 @@ class ReviewInputMissingModel(_ClosedModel):
 
 
 class ReviewInputManifestModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"review_phase", "omitted_item_total"})
+    optional_non_null_fields = frozenset({"review_phase", "omitted_item_total", "follow_up_round"})
 
     schema_: Literal["yoetz.review-input-manifest/1"] = Field(alias="schema")
     specification: ReviewInputSectionModel
@@ -3395,6 +3501,9 @@ class ReviewInputManifestModel(_ClosedModel):
     omitted_item_total: int | None = Field(default=None, ge=0, le=MAX_REVIEW_OMISSION_TOTAL)
     # Issue #976: the review phase the packet's question set named (closing review = final).
     review_phase: Literal["routine", "final"] | None = None
+    # Issue #1047, optional in place: this packet is the Nth in-check follow-up, sent after Yoetz
+    # added recorded excerpts the reviewer asked for; ``missing_inputs`` then lists that request.
+    follow_up_round: int | None = Field(default=None, ge=1, le=MAX_REVIEW_FOLLOW_UP_ROUNDS)
 
 
 class CheckAwaitingHumanModel(_ClosedModel):
@@ -3810,6 +3919,199 @@ class CheckObservationsAwaitedModel(_ClosedModel):
     pending_count: CanonicalUInt64Wire
 
 
+class CheckInspectionMissingModel(_ClosedModel):
+    """One thing an open obligation still lacks, and whose move it is (issue #1048)."""
+
+    optional_non_null_fields = frozenset({"item_indexes"})
+
+    kind: Literal[
+        "blocker_unconfirmed",
+        "command_attempt_mismatch",
+        "command_run_not_observed",
+        "requested_item_not_attempted",
+        "resolution_evidence_not_cited",
+    ]
+    owner: Literal["agent", "yoetz"]
+    item_indexes: tuple[RequestedItemIndexWire, ...] | None = None
+
+    @model_validator(mode="after")
+    def _validate_inspection_missing(self) -> CheckInspectionMissingModel:
+        if self.item_indexes is not None:
+            _require_unique(self.item_indexes, limit=64)
+        return self
+
+
+class CheckInspectionObligationModel(_ClosedModel):
+    obligation_id: ObligationIdWire
+    closure_class: Literal["agent_work", "settled_disclosed", "settled_unmet"]
+    closure_basis: Literal[
+        "acknowledged_not_done",
+        "blocker_claimed",
+        "blocker_confirmed",
+        "externally_evaluated",
+        "open",
+        "resolved",
+        "resolved_deliverable_emptied",
+    ]
+    missing: Annotated[tuple[CheckInspectionMissingModel, ...], Field(max_length=8)]
+
+
+class CheckInspectionFindingModel(_ClosedModel):
+    finding_id: FindingIdWire
+    closure_class: Literal["agent_work", "awaiting_ruling", "settled_disclosed", "settled_unmet"]
+    closure_basis: Literal[
+        "absence_proved",
+        "absence_proved_after_acknowledged_not_done",
+        "absence_proved_after_self_verified",
+        "acknowledged_not_done_bookkeeping",
+        "acknowledged_not_done_requirement",
+        "disputed_after_rebuttal",
+        "limitation_acknowledged_not_done",
+        "limitation_disclosed",
+        "limitation_requested",
+        "open_answered",
+        "open_unanswered",
+        "rejected_awaiting_ruling",
+        "rejected_review_unavailable",
+        "rejection_accepted",
+        "reopened",
+        "self_verified",
+    ]
+
+
+class CheckInspectionRemainingModel(_ClosedModel):
+    """What is left to close and why: the closure verdict status prints (ADR-046)."""
+
+    optional_non_null_fields = frozenset({"predicted_conclusion"})
+
+    readiness: Literal["action_required", "ready", "ready_with_limitations", "unknown"]
+    predicted_conclusion: (
+        Literal[
+            "insufficient_coverage",
+            "no_unresolved_deterministic_findings",
+            "unresolved_findings_remain",
+        ]
+        | None
+    ) = None
+    agent_actionable: Annotated[tuple[ReadinessItemWire, ...], Field(max_length=128)]
+    standing_limitations: Annotated[tuple[ReadinessItemWire, ...], Field(max_length=128)]
+    obligations: Annotated[tuple[CheckInspectionObligationModel, ...], Field(max_length=64)]
+    obligation_count: CanonicalUInt64Wire
+    findings: Annotated[tuple[CheckInspectionFindingModel, ...], Field(max_length=64)]
+    finding_count: CanonicalUInt64Wire
+
+    @model_validator(mode="after")
+    def _validate_inspection_remaining(self) -> CheckInspectionRemainingModel:
+        _require_unique(self.agent_actionable, limit=128)
+        _require_unique(self.standing_limitations, limit=128)
+        return self
+
+
+class CheckInspectionObservedActionModel(_ClosedModel):
+    """One hook-observed action after the last check; structural facts only, never text."""
+
+    optional_non_null_fields = frozenset(
+        {"tool_name", "write_scope", "outcome", "exit_status", "command_commitment"}
+    )
+
+    event_id: EventIdWire
+    ledger_sequence: CanonicalUInt64Wire
+    action_kind: Literal["command", "edit", "other", "research", "review"]
+    material_class: Literal["edit_or_write", "exploration", "non_counting_write", "other"]
+    tool_name: ObservedToolWire | None = None
+    write_scope: (
+        Literal["notes", "outside_workspace", "scratch", "workspace", "yoetz_owned"] | None
+    ) = None
+    outcome: Literal["failure", "partial", "success", "unknown"] | None = None
+    exit_status: Annotated[int, Field(ge=-(2**31), le=2**31 - 1)] | None = None
+    command_commitment: HmacSha256Commitment | None = None
+
+
+class CheckInspectionObservedModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"last_check_frontier"})
+
+    last_check_frontier: CanonicalUInt64Wire | None = None
+    actions: Annotated[tuple[CheckInspectionObservedActionModel, ...], Field(max_length=64)]
+    action_count: CanonicalUInt64Wire
+
+
+class CheckInspectionDeclaredItemModel(_ClosedModel):
+    index: RequestedItemIndexWire
+    item_kind: Literal["command", "directory", "file"]
+
+
+class CheckInspectionEvidenceSourceModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"command_commitment", "outcome"})
+
+    ref: EvidenceOrResultIdWire
+    origin: Literal["asserted", "observed", "unattributed"]
+    command_commitment: HmacSha256Commitment | None = None
+    outcome: Literal["failure", "partial", "success", "unknown"] | None = None
+    named_item_indexes: tuple[RequestedItemIndexWire, ...]
+
+    @model_validator(mode="after")
+    def _validate_inspection_source(self) -> CheckInspectionEvidenceSourceModel:
+        _require_unique(self.named_item_indexes, limit=64)
+        return self
+
+
+class CheckInspectionAlignmentObligationModel(_ClosedModel):
+    obligation_id: ObligationIdWire
+    alignment: Literal[
+        "evidence_names_declared_item",
+        "evidence_off_declared_items",
+        "evidence_unattributed",
+        "no_declared_items",
+    ]
+    declared_items: Annotated[tuple[CheckInspectionDeclaredItemModel, ...], Field(max_length=64)]
+    sources: Annotated[tuple[CheckInspectionEvidenceSourceModel, ...], Field(max_length=64)]
+
+
+class CheckInspectionAlignmentModel(_ClosedModel):
+    """Where each obligation's resolution evidence came from, beside what it declared.
+
+    ``obligations`` lists flagged rows first; both counts cover every row, listed or not.
+    """
+
+    basis: Literal["recorded_links"]
+    obligations: Annotated[
+        tuple[CheckInspectionAlignmentObligationModel, ...], Field(max_length=64)
+    ]
+    obligation_count: CanonicalUInt64Wire
+    off_declared_count: CanonicalUInt64Wire
+
+
+class CheckInspectionModel(_ClosedModel):
+    """The read-only ``mode: inspect`` branch (issue #1048, ADR-047).
+
+    Carries no verdict, findings, coverage vector or review provenance: an inspection records
+    nothing and mints nothing, so a completion-grade shape here would let a caller conclude from
+    a check that never ran. ``subject_frontier`` is the ledger state it read.
+    """
+
+    optional_non_null_fields = frozenset({"observations_awaited"})
+
+    protocol_version: Literal["0.1"]
+    schema_version: Literal["1.0.0"]
+    request_id: RequestIdWire
+    ok: Literal[True]
+    state: Literal["inspected"]
+    task_id: TaskIdWire
+    session_id: SessionIdWire
+    writer_id: WriterIdWire
+    subject_frontier: FrontierModel
+    remaining: CheckInspectionRemainingModel
+    observed_since_check: CheckInspectionObservedModel
+    evidence_alignment: CheckInspectionAlignmentModel
+    observations_awaited: CheckObservationsAwaitedModel | None = None
+    privacy_projection: PrivacyProjectionModel
+
+    @model_validator(mode="after")
+    def _validate_check_inspection(self) -> CheckInspectionModel:
+        _validate_model_against_schema(self, "check-result")
+        return self
+
+
 class CheckSuccessModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
@@ -3935,7 +4237,8 @@ class CheckSuccessModel(_ClosedModel):
 
 
 type CheckSuccessBranch = Annotated[
-    CheckSuccessModel | CheckAwaitingHumanModel, Field(discriminator="state")
+    CheckSuccessModel | CheckAwaitingHumanModel | CheckInspectionModel,
+    Field(discriminator="state"),
 ]
 type CheckResultBranch = Annotated[
     CheckSuccessBranch | OperationFailureModel, Field(discriminator="ok")
@@ -4813,6 +5116,42 @@ class StatusAwaitingRulingFindingModel(_ClosedModel):
     since_frontier: CanonicalUInt64Wire
 
 
+UndeclaredReferencePathWire = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=256,
+        pattern=r"^[^\u0000-\u001f\u007f/][^\u0000-\u001f\u007f]*$",
+    ),
+]
+
+
+class StatusUndeclaredReferenceModel(_ClosedModel):
+    """A delivered file naming files the change created that no item declares (tb4n4, #1044).
+
+    The declared item that names them, the root-relative files it names (repository-excerpt
+    content: a privacy policy may withhold each one) and how many it names in all, from the
+    applicable check's recorded deliverable state. The Stop gate and the receipt name them.
+    """
+
+    obligation_id: ObligationIdWire
+    item_index: Annotated[str, Field(pattern=r"^(?:[0-9]|[1-5][0-9]|6[0-3])$")]
+    paths: tuple[UndeclaredReferencePathWire | OmittedContentModel, ...] = Field(max_length=8)
+    total: CanonicalPositiveUInt64Wire
+
+    @model_validator(mode="after")
+    def _validate_undeclared_reference(self) -> StatusUndeclaredReferenceModel:
+        if int(self.total) < len(self.paths):
+            raise ValueError("undeclared_reference_total_invalid")
+        for value in self.paths:
+            if (
+                isinstance(value, OmittedContentModel)
+                and value.category is not DataCategory.REPOSITORY_EXCERPT
+            ):
+                raise ValueError("undeclared_reference_omission_category_invalid")
+        return self
+
+
 class StatusClosureReadinessModel(_ClosedModel):
     """What currently bounds a completion conclusion, before a check or receipt is spent.
 
@@ -4857,7 +5196,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     # on the unreleased 1.4.0 wire so a result shaped by an earlier 0.3 build still validates; it
     # is then absent as a whole, never partially present and never null.
     state: Literal["action_required", "ready", "ready_with_limitations", "unknown"] | None = None
-    gap_classification_version: Literal["1", "2", "3", "4", "5", "6", "7"] | None = None
+    gap_classification_version: Literal["1", "2", "3", "4", "5", "6", "7", "8"] | None = None
     agent_actionable: tuple[ReadinessItemWire, ...] | None = None
     standing_limitations: tuple[CodeWire, ...] | None = None
     acknowledged_not_done: tuple[AcknowledgedItemIdWire, ...] | None = None
@@ -4893,11 +5232,18 @@ class StatusClosureReadinessModel(_ClosedModel):
     # observing check and frontier, prior state, observed runs). Optional on the unreleased 1.4.0
     # wire: an earlier 0.3 build omits it, and absence never means the facts have no source.
     fact_lineage: tuple[FactLineageModel, ...] | None = None
+    # tb4n4 (#1044): the delivered files that name files the change created and no item declares
+    # (``deliverable_references_undeclared_file``), with those files. Optional on the unreleased
+    # 1.4.0 wire: absent when the applicable check found none, and from an earlier 0.3 build.
+    undeclared_references: tuple[StatusUndeclaredReferenceModel, ...] | None = Field(
+        default=None, max_length=16
+    )
 
     optional_non_null_fields = frozenset(
         {
             "check_cause",
             "predicted_receipt",
+            "undeclared_references",
             "finding_counts",
             "obligation_counts",
             "rechecks",
@@ -6126,6 +6472,7 @@ _REVIEW_INPUT_MANIFEST_LEAVES: Final = (
     "current_diff/revision",
     "current_diff/source_refs/*",
     "current_diff/status",
+    "follow_up_round",
     "latest_verification/content_bytes",
     "latest_verification/content_digest",
     "latest_verification/item_ids/*",
@@ -6580,6 +6927,65 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
     )
     # Issue #1012: closed state and count of the optional pre-check hook-row wait.
     + _prefix_leaf_patterns("/observations_awaited", ("pending_count", "state"))
+    # Issue #1048 (ADR-047): the read-only inspection branch. Every leaf is an id, a closed
+    # token, a count, a requested-item index or a keyed command commitment; never text or paths.
+    + _prefix_leaf_patterns(
+        "/remaining",
+        (
+            "agent_actionable/*",
+            "finding_count",
+            "obligation_count",
+            "predicted_conclusion",
+            "readiness",
+            "standing_limitations/*",
+        ),
+    )
+    + _prefix_leaf_patterns(
+        "/remaining/obligations/*",
+        (
+            "closure_basis",
+            "closure_class",
+            "missing/*/item_indexes/*",
+            "missing/*/kind",
+            "missing/*/owner",
+            "obligation_id",
+        ),
+    )
+    + _prefix_leaf_patterns(
+        "/remaining/findings/*", ("closure_basis", "closure_class", "finding_id")
+    )
+    + _prefix_leaf_patterns("/observed_since_check", ("action_count", "last_check_frontier"))
+    + _prefix_leaf_patterns(
+        "/observed_since_check/actions/*",
+        (
+            "action_kind",
+            "command_commitment",
+            "event_id",
+            "exit_status",
+            "ledger_sequence",
+            "material_class",
+            "outcome",
+            "tool_name",
+            "write_scope",
+        ),
+    )
+    + _prefix_leaf_patterns(
+        "/evidence_alignment", ("basis", "obligation_count", "off_declared_count")
+    )
+    + _prefix_leaf_patterns(
+        "/evidence_alignment/obligations/*",
+        (
+            "alignment",
+            "declared_items/*/index",
+            "declared_items/*/item_kind",
+            "obligation_id",
+            "sources/*/command_commitment",
+            "sources/*/named_item_indexes/*",
+            "sources/*/origin",
+            "sources/*/outcome",
+            "sources/*/ref",
+        ),
+    )
 )
 
 _RESPOND_STRUCTURAL_POINTERS: Final = (
@@ -6708,6 +7114,12 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "awaiting_ruling_findings/*/since_frontier",
             # ADR-045: closed tokens, counts and service-minted ids only.
             *(f"fact_lineage/*/{leaf}" for leaf in _FACT_LINEAGE_LEAVES),
+            # tb4n4 (#1044): service-minted ids and counts; each path is repository-excerpt
+            # content (``_STATUS_COMMON_CONTENT_RULES``) and a withheld one is the omission marker.
+            "undeclared_references/*/obligation_id",
+            "undeclared_references/*/item_index",
+            "undeclared_references/*/total",
+            *(f"undeclared_references/*/paths/*/{leaf}" for leaf in _OMITTED_CONTENT_LEAVES),
         ),
     )
     # Closed state tokens only (issue #982).
@@ -7337,6 +7749,13 @@ _STATUS_CONTENT_RULES: Final[tuple[tuple[str, str, DataCategory], ...]] = (
         DataCategory.REPOSITORY_EXCERPT,
     ),
 )
+# Content leaves every status view carries (the closure readiness is on each of them).
+_STATUS_COMMON_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
+    (
+        "/closure_readiness/undeclared_references/*/paths/*",
+        DataCategory.REPOSITORY_EXCERPT,
+    ),
+)
 _RECEIPT_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
     ("/document/gaps/*/detail", DataCategory.FINDING_SUMMARY),
     ("/document/findings/*/detail", DataCategory.FINDING_SUMMARY),
@@ -7452,6 +7871,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         rules.append(_leaf_rule("respond", pointer, category))
     for view, pointer, category in _STATUS_CONTENT_RULES:
         rules.append(_leaf_rule("status", pointer, category, status_view=view))
+    for pointer, category in _STATUS_COMMON_CONTENT_RULES:
+        rules.append(_leaf_rule("status", pointer, category))
     for pointer, category in _RECEIPT_CONTENT_RULES:
         rules.append(_leaf_rule("receipt", pointer, category))
 
@@ -7499,8 +7920,10 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1564
-    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2
+        len(result) != 1611
+    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
+        # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
+        # #1047 +2 (follow_up_round)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

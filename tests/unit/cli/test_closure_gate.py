@@ -181,12 +181,22 @@ class _Harness:
         self.readiness: Any = _readiness()
         self.sequence = "5"
         self.status_calls = 0
+        # #1050: the resolved obligations an ``obligations`` view read returns (None: it fails).
+        self.obligation_rows: tuple[Any, ...] | None = ()
+        self.views: list[str] = []
         harness = self
 
         class _Client:
             async def status(self, request: object, *, deadline_ms: int | None = None) -> object:
-                del request, deadline_ms
+                del deadline_ms
                 harness.status_calls += 1
+                view = getattr(request, "view", "compact")
+                harness.views.append(view)
+                if view == "obligations":
+                    if harness.obligation_rows is None:
+                        raise RuntimeError("obligations view unavailable")
+                    page = SimpleNamespace(items=harness.obligation_rows, next_cursor=None)
+                    return SimpleNamespace(root=SimpleNamespace(page=page))
                 return SimpleNamespace(root=_status_branch(harness.readiness, harness.sequence))
 
             async def observation_ingest(self, body: object, *, deadline_ms: int) -> object:
@@ -800,3 +810,260 @@ def test_withdrawn_deliverable_is_voiced_on_the_active_stop_once(
     third = _stop(h, host, session, guarded=True)
     assert "closure gate" not in json.dumps(third)
     assert h.reasons()[-1] == "closure_gate_turn_end_after_continue"
+
+
+# --- tb4n4 (#1044): a delivered file that loads an undeclared file ---------------------------
+
+_UNDECLARED = "deliverable_references_undeclared_file"
+_OBL_REF = "obl_97700000-0000-4000-8000-000000000444"
+
+
+def _undeclared_readiness(*paths: object, total: str = "2", **extra: Any) -> Any:
+    readiness = _readiness(actionable=(_UNDECLARED,))
+    readiness.undeclared_references = (
+        SimpleNamespace(obligation_id=_OBL_REF, item_index="0", paths=paths, total=total),
+    )
+    for name, value in extra.items():
+        setattr(readiness, name, value)
+    return readiness
+
+
+def test_an_undeclared_dependency_gates_and_names_the_files_never_disclosure() -> None:
+    gate = _gate(_undeclared_readiness("artifacts/english_ngrams.npz", 'odd "name".npz', total="3"))
+    assert gate is not None
+    assert gate.items == (_UNDECLARED,)
+    assert (
+        f'Undeclared files: {_OBL_REF} item 0 names "artifacts/english_ngrams.npz",'
+        " \"odd 'name'.npz\" and 1 more." in gate.text
+    )
+    assert "embed its content in the deliverable, rebuild it at run time" in gate.text
+    assert "disclosing the dependency does not clear this" in gate.text
+    # No path is remembered: the gate memory holds no key for it.
+    assert gate.blocker_keys == ()
+
+
+def test_a_withheld_path_reads_withheld_and_an_older_service_still_gets_the_repair() -> None:
+    withheld = SimpleNamespace(omitted=True, category="repository_excerpt", reason="x")
+    gate = _gate(_undeclared_readiness(withheld, total="1"))
+    assert gate is not None
+    assert f"{_OBL_REF} item 0 names (path withheld)." in gate.text
+    older = _readiness(actionable=(_UNDECLARED,))
+    gate = _gate(older)
+    assert gate is not None and gate.items == (_UNDECLARED,)
+    assert "Undeclared files" not in gate.text
+    assert "declare it as a delivered output" in gate.text
+
+
+def test_the_acceptance_invitation_waits_beside_an_undeclared_dependency() -> None:
+    gate = _gate(_undeclared_readiness("a.npz", total="1", rechecks=(acceptance_recheck(),)))
+    assert gate is not None
+    assert "acceptance_criteria" not in gate.text
+    assert not any(key.startswith("accept:") for key in gate.blocker_keys)
+
+
+# --- tb4n4 (#1050): the acceptance re-read only for what the final message does not address --
+
+_RESOLVED_A = "obl_97700000-0000-4000-8000-000000000200"
+_RESOLVED_B = "obl_97700000-0000-4000-8000-000000000201"
+_CRITERIA_A = "The cracker prints the decrypted plaintext for each ciphertext within 60 seconds."
+_CRITERIA_B = "Recovered keys match the reference keys for every sample in tests/keys."
+
+
+def _resolved_row(obligation: str, criteria: object, description: str = "Deliver it") -> Any:
+    return SimpleNamespace(
+        obligation_id=obligation,
+        status="resolved",
+        closure_basis="resolved",
+        acceptance_criteria=criteria,
+        description=description,
+    )
+
+
+def test_the_addressed_rule_is_deterministic_and_conservative() -> None:
+    rows = ((_RESOLVED_A, _CRITERIA_A), (_RESOLVED_B, _CRITERIA_B))
+    # A message that restates the criteria with its result addresses it.
+    message = (
+        "The cracker prints the decrypted plaintext for each ciphertext; the slowest took"
+        " 12 seconds, well within 60 seconds."
+    )
+    assert gate_module.uncovered_acceptance(message, rows) == (_RESOLVED_B,)
+    # Citing the obligation id covers it whatever else the message says.
+    assert gate_module.uncovered_acceptance(f"{_RESOLVED_B}: done.", rows) == (_RESOLVED_A,)
+    # "Done." addresses nothing; a third of the terms is not enough.
+    assert gate_module.uncovered_acceptance("Done. All tests pass.", rows) == rows_ids(rows)
+    assert gate_module.uncovered_acceptance("The cracker works.", rows) == rows_ids(rows)
+    # A withheld text, or one with no term, is covered only by its id.
+    withheld = ((_RESOLVED_A, None), (_RESOLVED_B, "It is ok."))
+    assert gate_module.uncovered_acceptance("ok it is", withheld) == rows_ids(withheld)
+    assert gate_module.uncovered_acceptance(f"{_RESOLVED_A} {_RESOLVED_B}", withheld) == ()
+
+
+def rows_ids(rows: tuple[tuple[str, object], ...]) -> tuple[str, ...]:
+    return tuple(row[0] for row in rows)
+
+
+def test_the_reread_names_the_uncovered_obligations_and_ends_on_a_pure_confirmation() -> None:
+    announced = _readiness(state="ready_with_limitations", actionable=())
+    announced.rechecks = (acceptance_recheck((_RESOLVED_A, _RESOLVED_B)),)
+    named = closure_gate_from_readiness(
+        announced,
+        frontier_sequence="7",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+        acceptance_uncovered=(_RESOLVED_B,),
+    )
+    assert named is not None
+    assert named.items == (gate_module.ACCEPTANCE_RECHECK_ITEM,)
+    assert f"acceptance criteria of resolved obligation(s) {_RESOLVED_B}." in named.text
+    assert _RESOLVED_A not in named.text
+    # The downgrade path is unchanged (#1050 item 3) ...
+    assert "republish that obligation as `acknowledged_not_done`" in named.text
+    assert "`yoetz-verification-limit:<obligation id>`" in named.text
+    # ... and a pure confirmation is the end of it (item 2): no new record, check or receipt.
+    assert "that confirmation alone needs no new record, check or receipt" in named.text
+    # Every resolved obligation addressed: nothing to ask, the agent stops.
+    assert (
+        closure_gate_from_readiness(
+            announced,
+            frontier_sequence="7",
+            frontier_digest=_DIGEST,
+            observation_pending=False,
+            acceptance_uncovered=(),
+        )
+        is None
+    )
+    # Without a final message the re-read is asked as before, for every resolved obligation.
+    today = _gate(announced)
+    assert today is not None
+    assert "read each resolved obligation's acceptance_criteria" in today.text
+    assert "that confirmation alone needs no new record" in today.text
+
+
+def test_beside_an_item_that_needs_a_check_the_named_reread_promises_no_shortcut() -> None:
+    announced = _readiness(actionable=("closing_review_required",))
+    announced.rechecks = (acceptance_recheck((_RESOLVED_A, _RESOLVED_B)),)
+    gate = closure_gate_from_readiness(
+        announced,
+        frontier_sequence="7",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+        acceptance_uncovered=(_RESOLVED_A,),
+    )
+    assert gate is not None
+    assert gate.items == ("closing_review_required", gate_module.ACCEPTANCE_RECHECK_ITEM)
+    assert f"resolved obligation(s) {_RESOLVED_A}." in gate.text
+    assert "needs no new record, check or receipt" not in gate.text
+    covered = closure_gate_from_readiness(
+        announced,
+        frontier_sequence="7",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+        acceptance_uncovered=(),
+    )
+    assert covered is not None and covered.items == ("closing_review_required",)
+
+
+def _acceptance_harness(tmp_path: Path, host: _Host, session: str) -> tuple[_Harness, Any]:
+    h = _Harness(tmp_path, host.key(session))
+    invite = acceptance_recheck((_RESOLVED_A, _RESOLVED_B))
+    h.readiness = _readiness(state="ready_with_limitations", actionable=())
+    h.readiness.rechecks = (invite,)
+    h.obligation_rows = (
+        _resolved_row(_RESOLVED_A, _CRITERIA_A),
+        _resolved_row(_RESOLVED_B, _CRITERIA_B),
+    )
+    return h, invite
+
+
+def _final_stop(
+    h: _Harness, host: _Host, session: str, message: str, *, guarded: bool = False
+) -> Mapping[str, Any]:
+    body = host.body(session, guarded=guarded)
+    if host.name != "cursor":
+        body["last_assistant_message"] = message
+    return h.run(host.handler(), host.event(), body)
+
+
+_ADDRESSED_BOTH = (
+    "The cracker prints the decrypted plaintext for each ciphertext within 60 seconds"
+    f" (slowest 12 seconds). {_RESOLVED_B}: recovered keys match the reference keys."
+)
+
+
+def test_a_final_message_that_addresses_every_criterion_skips_the_reread(
+    tmp_path: Path, host: _Host
+) -> None:
+    """60 of 60 tb4n4 deterministic attempts were asked; 41 then only did Yoetz bookkeeping.
+
+    Codex and Claude Code pass the final message: an addressed set is not asked and the gate
+    records ``closure_gate_acceptance_covered``. Cursor's ``stop`` carries none, so it keeps the
+    re-read as before (per-host decision in the runbooks).
+    """
+
+    session = "gate-acceptance-covered"
+    h, invite = _acceptance_harness(tmp_path, host, session)
+    output = _final_stop(h, host, session, _ADDRESSED_BOTH)
+    if host.name == "cursor":
+        text = _text(host, output)
+        assert "read each resolved obligation's acceptance_criteria" in text
+        assert "obligations" not in h.views  # no second read without a final message
+        assert h.reasons() == ["closure_gate_continued", "closure_gate_acceptance_rechecked"]
+        return
+    assert "closure gate" not in json.dumps(output)
+    assert h.views == ["compact", "obligations"]
+    assert h.reasons() == ["closure_gate_acceptance_covered", "closure_gate_not_required"]
+    # Nothing was asked, so nothing is remembered: a later message that drops it is asked.
+    assert gate_module.closure_gate_reasked_blockers(h.session_id, _state=tmp_path) == frozenset()
+    h.sequence = "6"
+    later = _final_stop(h, host, session, "Done.")
+    text = _text(host, later)
+    assert f"{_RESOLVED_A}, {_RESOLVED_B}." in text
+    assert gate_module.closure_gate_reasked_blockers(h.session_id, _state=tmp_path) == frozenset(
+        {f"{invite.key}@6"}
+    )
+
+
+def test_the_reread_names_only_what_the_message_missed_and_the_downgrade_still_counts(
+    tmp_path: Path, host: _Host
+) -> None:
+    """#1050 items 1 and 3: the uncovered obligation is named; the agent's acknowledgement answers
+    the invite (the acknowledgement re-check does not challenge it); a pure confirmation needs no
+    second round: the next Stop at the same frontier passes."""
+
+    if host.name == "cursor":
+        pytest.skip("Cursor's stop carries no final message (asked as before, test above)")
+    session = "gate-acceptance-named"
+    h, invite = _acceptance_harness(tmp_path, host, session)
+    message = "The cracker prints the decrypted plaintext for each ciphertext within 60 seconds."
+    text = _text(host, _final_stop(h, host, session, message))
+    assert f"resolved obligation(s) {_RESOLVED_B}." in text
+    assert _RESOLVED_A not in text
+    assert h.reasons() == ["closure_gate_continued", "closure_gate_acceptance_rechecked"]
+
+    # A pure "criteria confirmed" answer records nothing: the same frontier passes, and the
+    # already-continued Stop asks nothing more.
+    confirmed = _final_stop(h, host, session, f"{_RESOLVED_B}: confirmed met.", guarded=True)
+    assert "closure gate" not in json.dumps(confirmed)
+    assert h.reasons()[-1] == "closure_gate_turn_end_after_continue"
+
+    # The downgrade path: the agent republishes the unmet obligation acknowledged_not_done after
+    # the invite; status announces the acknowledgement, and it is not challenged.
+    h.sequence = "9"
+    h.readiness.rechecks = (invite, ack_recheck(_RESOLVED_B, since=8))
+    after = _final_stop(h, host, session, "Acknowledged as not done.")
+    assert "closure gate" not in json.dumps(after)
+
+
+def test_an_unreadable_obligations_view_keeps_the_reread(tmp_path: Path, host: _Host) -> None:
+    if host.name == "cursor":
+        pytest.skip("Cursor's stop carries no final message")
+    session = "gate-acceptance-unreadable"
+    h, _invite = _acceptance_harness(tmp_path, host, session)
+    h.obligation_rows = None  # the second read fails
+    text = _text(host, _final_stop(h, host, session, _ADDRESSED_BOTH))
+    assert "read each resolved obligation's acceptance_criteria" in text
+    # A page whose resolved set is not the one the key names (a later frontier) is not trusted.
+    h2, _ = _acceptance_harness(tmp_path / "other", host, session + "-2")
+    h2.obligation_rows = (_resolved_row(_RESOLVED_A, _CRITERIA_A),)
+    text = _text(host, _final_stop(h2, host, session + "-2", _ADDRESSED_BOTH))
+    assert "read each resolved obligation's acceptance_criteria" in text

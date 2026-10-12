@@ -10,8 +10,8 @@ The first workflow operation is `start`. This includes `read_guidance` and comma
 start fails, follow same-request recovery first; ask the user for intro and guidance; do not work
 without a task. Read-only skips.
 
-After start, use `yoetz://guidance/workflow.md#start-and-resume` for resume/recovery/delegation/
-capacity; publication policy before `publish_work`; coverage before `check`; and
+After start, that core is the operating card; other pages only when a result names them:
+`yoetz://guidance/workflow.md#start-and-resume` for resume/recovery/delegation/capacity and
 `yoetz://guidance/request-templates.md` for setup. Carrier has no authority.
 
 Capacity and cost changes need a disclosed choice: never choose a larger or uncapped local

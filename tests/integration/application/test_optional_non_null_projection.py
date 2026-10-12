@@ -62,6 +62,12 @@ from yoetz.protocol.models import (
     CheckChecklistCountsModel,
     CheckChecklistItemModel,
     CheckContinuationModel,
+    CheckInspectionEvidenceSourceModel,
+    CheckInspectionMissingModel,
+    CheckInspectionModel,
+    CheckInspectionObservedActionModel,
+    CheckInspectionObservedModel,
+    CheckInspectionRemainingModel,
     CheckOverallNextModel,
     CheckProjectedFindingModel,
     CheckRequest,
@@ -232,6 +238,16 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
         ),
     ),
     (CheckAwaitingHumanModel, frozenset({"specification_preflight"})),
+    # Issue #1048 (ADR-047): the read-only inspection branch.
+    (CheckInspectionModel, frozenset({"observations_awaited"})),
+    (CheckInspectionRemainingModel, frozenset({"predicted_conclusion"})),
+    (CheckInspectionMissingModel, frozenset({"item_indexes"})),
+    (CheckInspectionObservedModel, frozenset({"last_check_frontier"})),
+    (
+        CheckInspectionObservedActionModel,
+        frozenset({"tool_name", "write_scope", "outcome", "exit_status", "command_commitment"}),
+    ),
+    (CheckInspectionEvidenceSourceModel, frozenset({"command_commitment", "outcome"})),
     # Issue #1020: present only when non-zero.
     (
         CheckChecklistCountsModel,
@@ -322,6 +338,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "awaiting_ruling_findings",
                 # ADR-045: absent when the readiness lists no derived fact.
                 "fact_lineage",
+                # #1044: absent unless a delivered file names an undeclared one.
+                "undeclared_references",
             }
         ),
     ),
@@ -366,7 +384,10 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (StatusCompactItemModel, frozenset({"latest_check_test_edits", "latest_check"})),
     (StatusFindingsPageModel, frozenset({"attempt_budget"})),
     (StatusHistoryItemV14Model, frozenset({"review_input_manifest"})),
-    (ReviewInputManifestModel, frozenset({"review_phase", "omitted_item_total"})),
+    (
+        ReviewInputManifestModel,
+        frozenset({"review_phase", "omitted_item_total", "follow_up_round"}),
+    ),
     (
         StatusObligationItemModel,
         frozenset(
@@ -1117,6 +1138,14 @@ async def test_review_input_manifest_omits_unset_review_phase() -> None:
     assert model.omitted_item_total is None
     total = ReviewInputManifestModel.model_validate({**payload, "omitted_item_total": 173})
     assert total.model_dump(mode="json", by_alias=True)["omitted_item_total"] == 173
+    # Issue #1047: only an in-check follow-up packet names its round.
+    assert "follow_up_round" not in dumped
+    assert model.follow_up_round is None
+    follow_up = ReviewInputManifestModel.model_validate({**payload, "follow_up_round": 2})
+    assert follow_up.model_dump(mode="json", by_alias=True)["follow_up_round"] == 2
+    for invalid in (0, 4):
+        with pytest.raises(ValueError):
+            ReviewInputManifestModel.model_validate({**payload, "follow_up_round": invalid})
 
 
 @pytest.mark.parametrize(
@@ -1254,6 +1283,9 @@ def test_status_closure_readiness_omits_an_unset_checklist() -> None:
     # (the service once sent ``null`` here and every status read failed).
     with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
         StatusClosureReadinessModel.model_validate({**dumped, "fact_lineage": None})
+    # #1044: a readiness naming no undeclared file omits the list; null is refused too.
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        StatusClosureReadinessModel.model_validate({**dumped, "undeclared_references": None})
 
 
 def test_fact_lineage_omits_every_unset_field() -> None:
@@ -1822,6 +1854,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "check_cause",
         # ADR-045: absent when the readiness lists no derived fact.
         "fact_lineage",
+        # #1044: absent unless a delivered file names an undeclared one.
+        "undeclared_references",
     ):
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (
@@ -1906,6 +1940,9 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     covered["ReviewInputManifestModel", "omitted_item_total"] = (
         "test_review_input_manifest_omits_unset_review_phase"
     )
+    covered["ReviewInputManifestModel", "follow_up_round"] = (
+        "test_review_input_manifest_omits_unset_review_phase"
+    )
     covered["StatusOperationPageModel", "semantic_withheld_items"] = (
         "test_nested_multi_agent_results_omit_unset_fields"
     )
@@ -1962,6 +1999,19 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     covered["RespondSuccessModel", "closure_after"] = (
         "test_respond_closure_after_omits_unset_fields"
     )
+    for model_type, fields in (
+        (CheckInspectionModel, ("observations_awaited",)),
+        (CheckInspectionRemainingModel, ("predicted_conclusion",)),
+        (CheckInspectionMissingModel, ("item_indexes",)),
+        (CheckInspectionObservedModel, ("last_check_frontier",)),
+        (
+            CheckInspectionObservedActionModel,
+            ("tool_name", "write_scope", "outcome", "exit_status", "command_commitment"),
+        ),
+        (CheckInspectionEvidenceSourceModel, ("command_commitment", "outcome")),
+    ):
+        for field in fields:
+            covered[model_type.__name__, field] = "test_inspection_omits_every_unset_optional_field"
     covered["RespondClosureAfterModel", "limitation"] = (
         "test_respond_closure_after_omits_unset_fields"
     )
@@ -2022,3 +2072,78 @@ async def test_legacy_guidance_result_omits_unset_paging_metadata() -> None:
     assert wire["text"]
     for field in ReadGuidanceSuccessModel.optional_non_null_fields:
         assert field not in wire
+
+
+def test_inspection_omits_every_unset_optional_field() -> None:
+    """Issue #1048: an inspection row without an optional fact omits it and refuses a null."""
+
+    rows: tuple[tuple[type[BaseModel], dict[str, object], tuple[str, ...]], ...] = (
+        (
+            CheckInspectionRemainingModel,
+            {
+                "readiness": "unknown",
+                "agent_actionable": (),
+                "standing_limitations": (),
+                "obligations": (),
+                "obligation_count": "0",
+                "findings": (),
+                "finding_count": "0",
+            },
+            ("predicted_conclusion",),
+        ),
+        (
+            CheckInspectionMissingModel,
+            {"kind": "resolution_evidence_not_cited", "owner": "agent"},
+            ("item_indexes",),
+        ),
+        (
+            CheckInspectionObservedModel,
+            {"actions": (), "action_count": "0"},
+            ("last_check_frontier",),
+        ),
+        (
+            CheckInspectionObservedActionModel,
+            {
+                "event_id": protocol_id("evt_", 4801),
+                "ledger_sequence": "3",
+                "action_kind": "edit",
+                "material_class": "edit_or_write",
+            },
+            ("tool_name", "write_scope", "outcome", "exit_status", "command_commitment"),
+        ),
+        (
+            CheckInspectionEvidenceSourceModel,
+            {"ref": protocol_id("evd_", 4802), "origin": "unattributed", "named_item_indexes": ()},
+            ("command_commitment", "outcome"),
+        ),
+    )
+    for model_type, payload, fields in rows:
+        dumped = model_type.model_validate(payload).model_dump(mode="json", exclude_unset=True)
+        for field in fields:
+            assert field not in dumped, (model_type.__name__, field)
+            with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+                model_type.model_validate({**payload, field: None})
+    body: dict[str, object] = {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "request_id": protocol_id("req_", 4803),
+        "ok": True,
+        "state": "inspected",
+        "task_id": protocol_id("tsk_", 4804),
+        "session_id": protocol_id("ses_", 4805),
+        "writer_id": protocol_id("wri_", 4806),
+        "subject_frontier": {"sequence": "0", "head_digest": "genesis"},
+        "remaining": rows[0][1],
+        "observed_since_check": rows[2][1],
+        "evidence_alignment": {
+            "basis": "recorded_links",
+            "obligations": (),
+            "obligation_count": "0",
+            "off_declared_count": "0",
+        },
+        "privacy_projection": _privacy_projection_payload(),
+    }
+    model = CheckInspectionModel.model_validate(body)
+    assert "observations_awaited" not in model.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        CheckInspectionModel.model_validate({**body, "observations_awaited": None})

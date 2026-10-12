@@ -163,7 +163,7 @@ it holds the conclusion below clean), `disclosed` (shown, never bounds) and `his
 | A | actionable on both routes |
 | B | bounding on both routes (today's default) |
 | D | disclosed on both routes; D* disclosed on the deterministic route and on a review route that succeeded and reported no insufficiency |
-| R | `semantic_review_not_requested`: disclosed when the check recorded that its route did not require review; actionable while required review is not current; otherwise bounding |
+| R | `semantic_review_not_requested`: disclosed when the check recorded that its route did not require review (a check that asked for `deterministic_only` on such a route records no such code, ADR-033 amendment of 2026-10-12); actionable while required review is not current; otherwise bounding |
 | X | `check_current_as_of_earlier_frontier`: bounding exactly when the standing of the check says a later record is unclassified (`kernel/check_standing`, `CheckStanding.bounds_conclusion`); the agent's own answers are a disclosure |
 | G | host-observation gaps (`captured_object_unavailable`, `host_outcome_unavailable`, `unpaired_event`, `compound_outcome_unavailable`): disclosed only while the applicable check carried the code and its command counters show no unknown or live-failed command; otherwise bounding |
 
@@ -371,6 +371,20 @@ Recorded from the maintainer's decisions of 2026-10-12 (TheGaySupreme123):
    strict" above. No behavior changed. The Stop-gate decisions of the same date are recorded in the
    ADR-033 amendment.
 
+## Amendment (tb4n4, issue #1044): one more row becomes agent work
+
+`deliverable_references_undeclared_file` (a delivered file that loads a file the change created and
+no item declares, ADR-035) moves from the `G4` disclosure family to its own rule `G0c`: readiness
+`A`, actionable on both routes. It is a changed row (`changed=True`, so the frozen
+base-behaviour test names it; 38 changed rows with #1042's and #1046's below);
+`GAP_CLASSIFICATION_VERSION` is `"8"` (status-result 1.4.0 admits it, unreleased, in place).
+Nothing else in the tables changes: the obligation stays `resolved` (the dependency is a delivery
+gap, not a withdrawn file), the receipt reads `insufficient_coverage` through `live_gap_bounds`
+(R10), status reads `action_required`, the check's next step is `review_recorded_work` naming the
+referencing obligation (read from the check's own deliverable states, since the obligation class
+stays `resolved`), and the Stop gate continues the agent on the new `STOP_GATE_TOKENS` entry, so
+check, status, gate and receipt agree through this one row. A disclosure decision is not an exit.
+
 ## Verification
 
 `tests/unit/kernel/test_gap_effect.py`, `test_closure_class.py`, `test_receipt_prediction.py`;
@@ -382,3 +396,27 @@ receipt in three formats, for each tb4n3 shape and its controls);
 `tests/property/test_closure_verdict_properties.py`;
 `tests/integration/application/test_closure_basis_cost.py`;
 `tests/conformance/honesty/test_gap_classification_completeness.py`.
+
+## Amendment 2026-10-12 (tb4n4, issues #1042, #1043, #1046)
+
+Two recorded gap codes join the table in place on the unreleased classification `"8"`, with
+#1044's `G0c` row above (215 recorded codes plus 3 readiness-only rows): `semantic_process_state_filtered` (G5d, disclosed on both routes,
+tolerated by both absence proofs; listed as a changed row because it never bounded) and
+`semantic_review_deferred_before_first_edit` (G7, standing; disclosed where the deferred check
+recorded that its route did not require review and bounding where it did, exactly like the
+`semantic_review_not_requested` it rides with under G1, so a deferral Yoetz chose never reads worse
+than a `deterministic_only` check on the same route; a changed row because it does not bound on
+that route, in the same G7 `D`/`B` family as `semantic_review_not_configured`). The finding kind
+`agent_criterion_unmet` reads through the existing limitation bases (`limitation_requested`,
+`limitation_disclosed`, `limitation_acknowledged_not_done`); its `limitation_requested` row offers
+`acknowledge` and `repair`. Unlike a reviewer's request to state a limit it is work for the check
+continuation: an open one makes `overall_next.action` and `finding_checklist.next`
+`work_open_findings`, never `disclose_limitations`, while the counters still count it under
+`to_disclose`. Only the agent's own answer narrows it into `limitation_disclosed`: a
+`yoetz-verification-limit` decision neither discloses it nor marks its obligation
+`externally_evaluated` (review of #1043). No basis, effect, token or earlier table row changed
+meaning. Decisions and predicates: ADR-040 amendment of 2026-10-12, which also has closure
+readiness ask for the closing review after a deferral where the deferred check's route requires
+review (where it does not, the deferral asks for nothing, like a `deterministic_only` check), so
+check, status, the Stop gate and the receipt agree for a task whose work is not an edit
+(`tests/integration/closure/test_review_deferral_shape.py`).

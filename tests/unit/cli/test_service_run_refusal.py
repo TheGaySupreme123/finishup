@@ -44,7 +44,7 @@ def no_singleton_stamp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_lifecycle_error_maps_to_a_truthful_token_and_exit(
     reason: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def refuse() -> None:
+    def refuse(**_kwargs: object) -> None:
         raise LifecycleError(reason)
 
     monkeypatch.setattr(daemon_module, "main", refuse)
@@ -61,7 +61,7 @@ def test_lifecycle_error_maps_to_a_truthful_token_and_exit(
 def test_service_already_running_names_the_commands_that_can_help(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def refuse() -> None:
+    def refuse(**_kwargs: object) -> None:
         raise LifecycleError("service_already_running")
 
     monkeypatch.setattr(daemon_module, "main", refuse)
@@ -77,7 +77,7 @@ def test_invalid_transition_alone_stays_an_internal_error(
 ) -> None:
     """The one lifecycle reason that names our own defect must not be dressed up as an outcome."""
 
-    def refuse() -> None:
+    def refuse(**_kwargs: object) -> None:
         raise LifecycleError("invalid_transition")
 
     monkeypatch.setattr(daemon_module, "main", refuse)
@@ -101,7 +101,7 @@ def test_holder_pid_is_reported_when_the_lock_stamp_resolves(
     lock.chmod(0o600)
     _redirect_state_dir(monkeypatch, tmp_path)
 
-    def refuse() -> None:
+    def refuse(**_kwargs: object) -> None:
         raise LifecycleError("service_already_running")
 
     monkeypatch.setattr(daemon_module, "main", refuse)
@@ -127,3 +127,101 @@ def test_main_catch_all_never_reports_a_lifecycle_error_as_internal(
     captured = capsys.readouterr().err
     assert "service_draining" in captured
     assert "internal_error" not in captured
+
+
+_STARTUP_ID = "err_11111111-2222-4333-8444-555555555555"
+
+
+@pytest.fixture
+def startup_ring(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    import yoetz.observability.diagnostics as diagnostics
+
+    _redirect_state_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    return tmp_path
+
+
+def test_unexpected_startup_failure_prints_stage_class_origin_and_id(
+    startup_ring: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The conda-image line was only ``internal_error``; the cause was unrecoverable (#1040)."""
+
+    from yoetz.service.startup_failure import ServiceStartupError, StartupFailure
+
+    seen: list[object] = []
+
+    def fail(**kwargs: object) -> None:
+        seen.append(kwargs.get("startup_correlation_id"))
+        raise ServiceStartupError(
+            StartupFailure(
+                stage="activation",
+                reason="exception_not_implemented_error",
+                correlation_id=_STARTUP_ID,
+                origin="yoetz.adapters.control.unix_socket:434",
+            )
+        )
+
+    monkeypatch.setattr(daemon_module, "main", fail)
+    result = CliRunner().invoke(
+        cli.app, ["service", "run", "--startup-correlation-id", _STARTUP_ID]
+    )
+
+    assert seen == [_STARTUP_ID]
+    assert result.exit_code == exit_code_for(PublicErrorCode.INTERNAL_ERROR) == 70
+    assert result.stderr.startswith(
+        "internal_error: the service could not start (stage: activation; "
+        "exception_not_implemented_error; at yoetz.adapters.control.unix_socket:434); "
+        f"correlation_id {_STARTUP_ID}"
+    )
+    assert "the command could not be completed" not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_a_service_module_that_cannot_load_is_an_import_stage_failure(
+    startup_ring: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from yoetz.observability.diagnostics import lookup_diagnostic_records
+
+    monkeypatch.setitem(sys.modules, "yoetz.service.daemon", None)
+    result = CliRunner().invoke(
+        cli.app, ["service", "run", "--startup-correlation-id", _STARTUP_ID]
+    )
+
+    assert result.exit_code == 70
+    assert "internal_error: the service could not start (stage: import; " in result.stderr
+    assert "exception_module_not_found_error" in result.stderr
+    (record,) = lookup_diagnostic_records(_STARTUP_ID, root=startup_ring)
+    assert record["phase"] == "import"
+    assert record["reason"] == "exception_module_not_found_error"
+
+
+def test_an_invalid_startup_correlation_id_is_a_usage_error(
+    startup_ring: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def never(**_kwargs: object) -> None:
+        raise AssertionError("daemon must not start")
+
+    monkeypatch.setattr(daemon_module, "main", never)
+    result = CliRunner().invoke(
+        cli.app, ["service", "run", "--startup-correlation-id", "../not-an-id"]
+    )
+
+    assert result.exit_code == 2
+    assert "../not-an-id" not in result.stderr
+
+
+def test_configuration_refusal_names_its_reason_like_every_other_command(
+    startup_ring: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from yoetz.config.models import ConfigError
+
+    def refuse(**_kwargs: object) -> None:
+        raise ConfigError("unknown_config_env_var", safe_name="YOETZ_PRIVATE_NAME")
+
+    monkeypatch.setattr(daemon_module, "main", refuse)
+    result = CliRunner().invoke(cli.app, ["service", "run"])
+
+    assert result.exit_code == 2
+    assert result.stderr == "invalid_request: unknown_config_env_var\n"

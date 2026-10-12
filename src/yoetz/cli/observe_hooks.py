@@ -93,7 +93,9 @@ from yoetz.cli.hook_io import (
     stderr_line as _stderr_line,
 )
 from yoetz.cli.hook_timing import HookPassTiming, record_hook_pass_timing
+from yoetz.cli.runtime_facts import SHELL_APPLY_PATCH as _SHELL_APPLY_PATCH
 from yoetz.cli.runtime_facts import runtime_structural_facts
+from yoetz.cli.runtime_facts import shell_heredocs as _shell_heredocs
 from yoetz.domain.advice_actions import STANDING_MACHINE_ACTIONS as _STANDING_MACHINE_ACTIONS
 from yoetz.domain.command_segments import (
     COMMAND_COMPOSITIONS,
@@ -165,6 +167,7 @@ from yoetz.protocol.canonical import (
 )
 from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode
 from yoetz.protocol.ids import IdKind, is_valid_id
+from yoetz.protocol.recovery import READ_ONLY_CHECK_MODES
 
 if TYPE_CHECKING:
     from yoetz.adapters.integrations.codex_session_stream import CodexSessionStreamLocator
@@ -577,6 +580,13 @@ def _token_or_none(value: object) -> str | None:
     if value[0] in "._:/+-":
         return None
     return value
+
+
+def _payload_text(payload: Mapping[str, JsonValue], name: str) -> str | None:
+    """A free-text host field read transiently (never stored): the string, or ``None``."""
+
+    value = payload.get(name)
+    return value if type(value) is str and value else None
 
 
 def _consistent_alias_token(
@@ -1843,8 +1853,6 @@ def _native_edit_content(
 
 
 _SHELL_TOOL_NAMES: Final = frozenset({"Bash", "Shell", "shell", "exec_command", "local_shell"})
-_HEREDOC_START: Final = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-_SHELL_APPLY_PATCH: Final = re.compile(r"(?:^|[\s;&|(])apply_patch\s*$")
 _SHELL_GIT_APPLY: Final = re.compile(
     r"(?:^|[\s;&|(])git\s+apply(?:\s+-{1,2}[A-Za-z0-9=-]+)*\s*-?\s*$"
 )
@@ -1853,31 +1861,28 @@ _SHELL_REDIRECT: Final = re.compile(r">>?\s*(['\"]?)([^\s'\";&|<>]+)\1")
 _SHELL_TEE_TARGET: Final = re.compile(
     r"(?:^|[\s;&|(])tee(?:\s+-a)?\s+(['\"]?)([^\s'\";&|<>-][^\s'\";&|<>]*)\1"
 )
-_MAX_SHELL_HEREDOCS: Final = 8
 
 
-def _shell_heredocs(command: str) -> list[tuple[str, str, str]]:
-    """Return bounded ``(prefix, suffix, body)`` triples for each heredoc in a command."""
+def _intercepted_shell_apply_patch(
+    event_name: str, payload: Mapping[str, JsonValue], source: ObservationSource
+) -> bool:
+    """A Codex shell ``apply_patch <<EOF`` pre-event: the only hook Codex fires for it (#1041).
 
-    lines = command.split("\n")
-    found: list[tuple[str, str, str]] = []
-    index = 0
-    while index < len(lines) and len(found) < _MAX_SHELL_HEREDOCS:
-        line = lines[index]
-        match = _HEREDOC_START.search(line)
-        index += 1
-        if match is None:
-            continue
-        delimiter = match.group(2)
-        body: list[str] = []
-        while index < len(lines) and lines[index].strip() != delimiter:
-            body.append(lines[index])
-            index += 1
-        if index >= len(lines):
-            break  # unterminated heredoc: not a complete edit
-        index += 1
-        found.append((line[: match.start()], line[match.end() :], "\n".join(body) + "\n"))
-    return found
+    Codex intercepts the shell call and applies the patch itself, so no post-tool event follows;
+    the pending attempt is pre-only and the session stream's ``FileChange`` item closes it.
+    """
+
+    if event_name != "PreToolUse" or source is not ObservationSource.CODEX_HOOK:
+        return False
+    if _token_or_none(payload.get("tool_name")) not in _SHELL_TOOL_NAMES:
+        return False
+    arguments = payload.get("tool_input")
+    command = arguments.get("command") if isinstance(arguments, Mapping) else None
+    return (
+        type(command) is str
+        and "<<" in command
+        and any(_SHELL_APPLY_PATCH.search(prefix) for prefix, _, _ in _shell_heredocs(command))
+    )
 
 
 def _shell_edit_contents(
@@ -4083,8 +4088,14 @@ def _decide_closure_gate(
     remaining_seconds: float,
     _state: Path | None,
     active_stop: bool = False,
+    final_message: str | None = None,
 ) -> ClosureGate | None:
     """Decide the Stop-time closure gate for one mapped session (#977). Never raises.
+
+    ``final_message`` is the agent's last message when the host's Stop payload carries one
+    (Codex and Claude Code ``last_assistant_message``; Cursor's ``stop`` has none). It only
+    decides which resolved obligations the acceptance re-read names (#1050) and never leaves
+    this process: it is not stored, sent or recorded in a diagnostic.
 
     Reads the service's compact status for the mapped session; the gate fires at most once per
     session and ledger frontier. Every outcome lands in the bounded hook diagnostics so an
@@ -4148,6 +4159,10 @@ def _decide_closure_gate(
                 observation_pending=pending,
                 reasked_blockers=reasked,
                 active_stop=active_stop,
+                final_message=final_message,
+                on_acceptance_covered=lambda: record_hook_diagnostic(
+                    "closure_gate_acceptance_covered", "Stop", _state=_state
+                ),
             )
 
         decided = cast(ClosureGate | None, run(_read))
@@ -4666,6 +4681,7 @@ def handle_observe(
     _include_recap: bool = True,
     _pass_timing: HookPassTiming | None = None,
     _derived_runner_class: RunnerClass | None = None,
+    _stop_final_message: str | None = None,
 ) -> int:
     """Bounded observation ingress for Codex lifecycle hooks. Always exits 0.
 
@@ -5439,6 +5455,7 @@ def handle_observe(
                 source_generation=source_generation,
                 is_pre_event=_is_pre_event(resolved_event),
                 is_post_event=_is_post_event(resolved_event),
+                pre_only=_intercepted_shell_apply_patch(resolved_event, payload, source),
             )
             optional_routine = (
                 not read_protected
@@ -6005,6 +6022,13 @@ def handle_observe(
                 ),
                 _state=_state,
                 active_stop=stop_already_active,
+                # #1050: Codex hands this reader its raw Stop body; Claude Code's adapter passes
+                # the message beside its structural envelope; Cursor's stop carries none.
+                final_message=(
+                    _payload_text(payload, "last_assistant_message")
+                    if source is ObservationSource.CODEX_HOOK
+                    else _stop_final_message
+                ),
             )
             if closure_gate is not None:
                 # The gate is the whole Stop message: it names what remains, and ordinary
@@ -6782,9 +6806,11 @@ def _record_claude_permission_denied(
         _state=_state,
     )
     tool_input = payload.get("tool_input")
-    if isinstance(tool_input, Mapping) and tool_input.get("mode") == "deterministic_only":
-        # This call explicitly opts out of external review; a semantic grant says nothing
-        # about why the host held it. Leave the ordinary host approval path intact.
+    mode = tool_input.get("mode") if isinstance(tool_input, Mapping) else None
+    if mode == "deterministic_only" or (type(mode) is str and mode in READ_ONLY_CHECK_MODES):
+        # This call asks for no external review (a local-only check, or an inspection, #1048);
+        # a semantic grant says nothing about why the host held it. Leave the ordinary host
+        # approval path intact.
         return {}
     from yoetz.cli.hooks import resolve_session_workspace
     from yoetz.cli.host_hold_advisory import (
@@ -7286,6 +7312,11 @@ def _handle_claude_observe(
             _derived_runner_class=derived_runner_class,
             _ingress_gap=claude_ingress_gap,
             _pass_timing=_pass_timing,
+            # #1050: Claude Code's Stop payload names the final message; it decides only which
+            # acceptance re-reads the gate asks and never enters the structural envelope.
+            _stop_final_message=(
+                _payload_text(payload, "last_assistant_message") if raw_event == "Stop" else None
+            ),
         )
         if denied_output is not None:
             hook_io.stdout_json(denied_output, stdout)

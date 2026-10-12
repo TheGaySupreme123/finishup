@@ -283,6 +283,8 @@ def test_the_yield_guidance_matches_the_bridge_call_deadlines() -> None:
     deadlines = dict(bridge._DEFAULT_RPC_DEADLINES_MS)  # pyright: ignore[reportPrivateUsage]
     section = " ".join(_section().split())
     assert f"`check` {deadlines['check']}" in section
+    # ADR-047: an inspection is a read and takes the status deadline.
+    assert f"or {deadlines['status']} with `mode: inspect`" in section
     assert deadlines["respond"] == deadlines["receipt"]
     assert f"`respond` and `receipt` {deadlines['receipt']}" in section
     assert deadlines["start"] == deadlines["publish_work"] == deadlines["status"]

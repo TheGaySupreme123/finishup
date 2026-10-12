@@ -206,6 +206,7 @@ def test_finding_kind_traits_are_exhaustive_and_exact() -> None:
         FindingKind.COORDINATION_OVERLAP: (2, True),
         FindingKind.CODE_DEFECT: (1, True),
         FindingKind.TASK_REQUIREMENT_UNMET: (1, True),
+        FindingKind.AGENT_CRITERION_UNMET: (2, True),
     }
     assert isinstance(FINDING_KIND_TRAITS, MappingProxyType)
     assert dict(FINDING_KIND_TRAITS) == expected

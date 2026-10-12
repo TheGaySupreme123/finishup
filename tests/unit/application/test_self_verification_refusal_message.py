@@ -69,3 +69,26 @@ def test_the_message_is_bounded_with_many_long_tokens() -> None:
     assert blocking[7] in message
     assert blocking[8] not in message
     assert "and 24 more (safe_details.blocking_reasons)" in message
+
+
+def test_a_command_attempt_mismatch_names_the_link_that_clears_it() -> None:
+    """tb4n4 kv (#1049): the generic coverage hint left the agent looping on this code."""
+
+    message = self_verification_refusal_message(("coverage:command_attempt_mismatch",))
+    assert "publish an action_recorded of kind command" in message
+    assert "attempted_items" in message and "causal_parents" in message
+    assert "belongs in the obligation's description or acceptance_criteria" in message
+    assert "a listed coverage code is work you can do" not in message
+    _assert_bounded(message)
+
+
+def test_every_hint_family_at_once_stays_bounded() -> None:
+    from yoetz.application.respond import (
+        _BLOCKING_HINTS,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    tokens = tuple(sorted({token for family, _hint in _BLOCKING_HINTS for token in family}))
+    message = self_verification_refusal_message(tokens)
+    for _family, hint in _BLOCKING_HINTS:
+        assert hint in message
+    _assert_bounded(message)

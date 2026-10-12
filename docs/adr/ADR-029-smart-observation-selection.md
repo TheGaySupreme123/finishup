@@ -76,6 +76,12 @@ Pairing identities remain available for ten minutes so longer tool calls can sti
 Expiry or a fenced session end records `pending_attempt_expired` before retiring that pairing
 state. A later post retains its actual outcome as an unpaired observation with explicit coverage
 limits. These wall-clock deadlines survive restart; a retry cannot extend the original deadline.
+A host call whose host never sends a post is pre-only (issue #1041): a Codex shell
+`apply_patch <<EOF`, which Codex intercepts after firing only its `PreToolUse`. Its pairing state
+is closed, without the gap, by an observed file change of the same session (a rollout
+`FileChange` item): the attempt whose call id it names; an item naming another call the session's
+hooks reported is that call's change and closes none; an item naming no reported call closes the
+session's oldest pre-only attempt. One no observed change closes expires as above.
 
 Accepted outbox rows are immutable pending delivery. Automatic degradation affects future
 optional work; it does not rewrite accepted individual rows as summaries or move protected rows

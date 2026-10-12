@@ -42,6 +42,7 @@ from yoetz.adapters.keys.secret_memory import LocalSecretMemory
 from yoetz.adapters.keys.vault_passphrase import VaultRootEnvelope
 from yoetz.adapters.repository_identity import resolve_repository_privacy_context
 from yoetz.adapters.session_events import SessionEventMonitor
+from yoetz.adapters.sqlite.connection import StorageUnsafeError
 from yoetz.application.observation_await import (
     TaskPendingProbe,
     await_observations_bound,
@@ -64,10 +65,15 @@ from yoetz.application.service import (
     internal_control_json,
     resolve_client_disclosure_sink,
 )
-from yoetz.config.installation import read_instance_identity, verify_instance_binding
+from yoetz.config.installation import (
+    InstanceIdentityError,
+    read_instance_identity,
+    verify_instance_binding,
+)
 from yoetz.config.load import load_config
-from yoetz.config.models import YoetzConfig
+from yoetz.config.models import ConfigError, YoetzConfig
 from yoetz.config.paths import (
+    PathSafetyError,
     bundle_root,
     ensure_owner_only_dir,
     isolated_root,
@@ -111,6 +117,7 @@ from yoetz.ports.control import (
     WorkspaceLocator,
 )
 from yoetz.ports.diagnostics import StartupCheckResult
+from yoetz.ports.host_lineage import HostLineageRegistryError
 from yoetz.ports.keys import KeyStorePort, MacKeyPurpose
 from yoetz.ports.ledger import (
     CheckAdmissionStage,
@@ -146,6 +153,7 @@ from yoetz.protocol.models import (
     StatusRequest,
     StatusResult,
 )
+from yoetz.protocol.recovery import READ_ONLY_CHECK_MODES
 from yoetz.service.check_waits import EXPLICIT_CONTROL_CANCEL, CheckReadWindow, CheckWaits
 from yoetz.service.confidential_protocol import (
     HUMAN_PROTOCOL_MAGIC,
@@ -216,6 +224,7 @@ from yoetz.service.loop_health import ControlPlaneWatchdog
 from yoetz.service.ready_composition import build_ready_application_factory
 from yoetz.service.secret_ingress import SecretIngressService
 from yoetz.service.session_routes import SESSION_ROUTE_FILE_NAME, SessionRouteMemory
+from yoetz.service.startup_failure import ServiceStartupError, record_startup_failure
 from yoetz.service.unlock import UnlockCoordinator, UnlockThrottleRecord, UnlockThrottleStore
 from yoetz.service.vault import VaultError, VaultMode, VaultService
 
@@ -343,6 +352,15 @@ def _request_is_read_only(request: ControlCallRequest) -> bool:
     """Classify support status as a read while keeping project writes write-shaped."""
 
     if request.method in _READ_ONLY_METHODS:
+        return True
+    if (
+        request.method is ControlMethod.CHECK
+        and type(request.body) is CheckRequest
+        and request.body.mode in READ_ONLY_CHECK_MODES
+    ):
+        # ADR-047: an inspection records nothing, so a failure is a read failure to repeat,
+        # never a same-request_id replay of an operation that does not exist. The MCP bridge
+        # and the CLI classify a timed-out inspection by the same modes.
         return True
     if request.method is ControlMethod.PROJECT and isinstance(request.body, Mapping):
         return request.body.get("operation") == "status"
@@ -780,6 +798,12 @@ class ServiceDaemon:
     def composition(self) -> ServiceComposition:
         return self._composition
 
+    @property
+    def started(self) -> bool:
+        """True once ``start`` published the endpoints; a later failure is not a startup one."""
+
+        return self._started
+
     async def start(self) -> None:
         """Acquire singleton authority and publish exactly one admitted state."""
 
@@ -1172,7 +1196,7 @@ class ServiceDaemon:
             if (
                 request.method is ControlMethod.CHECK
                 and type(body) is CheckRequest
-                and body.mode != "deterministic_only"
+                and body.mode not in {"deterministic_only", "inspect"}
             ):
                 check_body = body
 
@@ -4775,19 +4799,92 @@ def _human_error_code(exc: Exception) -> str:
     return "internal_error"
 
 
-async def run_service() -> Never:
-    """Run one foreground service process until a signal requests bounded shutdown."""
+def _startup_failure(exc: Exception, *, stage: str, correlation_id: str | None) -> Exception:
+    """Record a startup failure and return the exception ``run_service`` raises in its place.
 
-    config = load_config({}, os.environ, None)
-    configure_logging(config.logging, LogMode.SERVICE)
-    composition = await _production_composition(_config=config)
-    daemon = ServiceDaemon(_composition=composition)
-    await daemon.serve()
+    A typed refusal (lifecycle, path-safety, instance-identity or configuration) is recorded under
+    its own closed reason token and re-raised unchanged, because the CLI already names each one.
+    Anything else is recorded as unexpected and replaced by ``ServiceStartupError``, which the CLI
+    renders with its stage, exception class and origin instead of a bare ``internal_error``
+    (#1040); an endpoint, storage, lineage or migration refusal keeps its own closed token there
+    too, so the line, the record and a spawner's error name the repair. Losing the singleton to a
+    live service is not a failure of this start and is not recorded: whoever spawned this process
+    connects to the holder instead.
+    """
+
+    reason_code: str | None = None
+    if isinstance(exc, LifecycleError):
+        if exc.reason == "service_already_running":
+            return exc
+        # ``invalid_transition`` names our own defect; ``yoetz.cli.exits`` keeps it internal.
+        reason_code = None if exc.reason == "invalid_transition" else exc.reason
+    elif isinstance(exc, PathSafetyError):
+        reason_code = exc.reason_code
+    elif isinstance(exc, InstanceIdentityError):
+        reason_code = exc.reason
+    elif isinstance(exc, ConfigError):
+        reason_code = exc.reason_code
+    else:
+        failure = record_startup_failure(
+            exc,
+            stage=stage,
+            correlation_id=correlation_id,
+            reason_code=_unnamed_refusal_token(exc),
+            unexpected=True,
+        )
+        return ServiceStartupError(failure)
+    failure = record_startup_failure(
+        exc, stage=stage, correlation_id=correlation_id, reason_code=reason_code
+    )
+    return exc if reason_code is not None else ServiceStartupError(failure)
+
+
+def _unnamed_refusal_token(exc: Exception) -> str | None:
+    """The closed token of a typed refusal ``yoetz service run`` does not name itself, or None.
+
+    Each is validated against its own closed vocabulary when it is raised; no message text is read.
+    """
+
+    if isinstance(exc, LocalControlTransportError):
+        # runtime_directory_unsafe, endpoint_unsafe, endpoint_exists, endpoint_in_use, ...
+        return exc.reason
+    if isinstance(exc, StorageUnsafeError):
+        return exc.reason_code
+    if isinstance(exc, HostLineageRegistryError):
+        return exc.reason.value
+    if isinstance(exc, PublicOperationError):
+        return exc.code.value.lower()
+    return None
+
+
+async def run_service(startup_correlation_id: str | None = None) -> Never:
+    """Run one foreground service process until a signal requests bounded shutdown.
+
+    ``startup_correlation_id`` is the id a spawning process will look a startup failure up under.
+    """
+
+    stage = "configuration"
+    daemon: ServiceDaemon | None = None
+    try:
+        config = load_config({}, os.environ, None)
+        configure_logging(config.logging, LogMode.SERVICE)
+        stage = "composition"
+        composition = await _production_composition(_config=config)
+        stage = "activation"
+        daemon = ServiceDaemon(_composition=composition)
+        await daemon.serve()
+    except Exception as exc:
+        if daemon is not None and daemon.started:
+            stage = "serving"
+        replacement = _startup_failure(exc, stage=stage, correlation_id=startup_correlation_id)
+        if replacement is exc:
+            raise
+        raise replacement from exc
     raise SystemExit(0)
 
 
-def main() -> Never:
+def main(*, startup_correlation_id: str | None = None) -> Never:
     """Synchronous installed entry point with one event-loop owner."""
 
-    anyio.run(run_service)
+    anyio.run(run_service, startup_correlation_id)
     raise SystemExit(0)

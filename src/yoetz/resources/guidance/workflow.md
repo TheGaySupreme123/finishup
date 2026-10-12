@@ -1,7 +1,9 @@
 # Yoetz cooperative workflow
 
-Read before the first `start`, or when resuming without the prior workflow in context. Use the
-current tool schemas; missing schema metadata routes to [request templates](request-templates.md).
+Read when resuming without the prior workflow in context, before delegating, or when a result,
+error or continuation names this page; the [operating card](agent-instructions.md) is enough for
+ordinary work. Use the current tool schemas; missing schema metadata routes to
+[request templates](request-templates.md).
 Yoetz records participant-published facts and checks that bounded record; it does not prove the
 underlying work correct. For operational behavior, this served guidance and the typed result take
 precedence over remembered product behavior. Preserve higher-priority instructions, current user
@@ -130,11 +132,12 @@ Before substantive work, publish the bounded plan, requested outcomes, and accep
 Decompose the user's request into obligations whose `source_refs` cite the task-statement event
 (see [startup](startup.md)); a plan whose obligations never cite it returns an agent-actionable
 `task_requirement_unmet` finding naming that event.
-Read [publication policy](publication-policy.md) before the first `publish_work`; declare explicit
-obligations or the admitted empty-scope reason. Group work into independently reviewable outcomes,
-not one obligation per file. Publish material transitions and evidence as they occur. Delegate only
-when the task warrants and permits it; give each delegate a distinct logical writer and bounded
-assignment, never a transcript. A delegate's summary is a claim, not proof.
+Declare explicit obligations or the admitted empty-scope reason; read
+[publication policy](publication-policy.md) when a result or error names it or an event shape is
+unclear. Group work into independently reviewable outcomes, not one obligation per file. Publish
+material transitions and evidence as they occur. Delegate only when the task warrants and permits
+it; give each delegate a distinct logical writer and bounded assignment, never a transcript. A
+delegate's summary is a claim, not proof.
 
 ## Cadence
 
@@ -145,7 +148,7 @@ assignment, never a transcript. A delegate's summary is a claim, not proof.
 | `start` | Once per task, before substantive work. Pass the user's request verbatim as `task_statement` (see request templates). On resume (same or fresh conversation), `mode=create_or_attach` with the same `workspace_ref` + `external_ref` pair and no `session_id`; attach selectors are `session_id` or the ref pair, never bare `task_id`. When the host's session-start context names a task already mapped to this session, continue it with `mode=attach` and the `session_id` that context names instead of a new pair. |
 | `publish_work` | One batch per material transition, usually one to eight events; a batch admits up to 100, so keep one transition in one batch rather than splitting it. A normal session is a handful of batches, never one per file, tool call, or message. Every set-valued reference list must already be unique and in ascending ASCII order; a one-element dry-run subset cannot demonstrate that kernel rule. |
 | `status` | After resume, compaction, or delegate handoff, and before any completion claim. Not between routine tool calls. |
-| `check` | After the plan refinement and before the first material edit (run that pre-work check with `mode: "deterministic_only"`: there is no work yet for an AI-powered review to judge, and the next check after work begins reviews as configured), after each material milestone, after publishing the completion claim and its evidence, and again after any material edit or new evidence. A check only at the very end finds problems when they are most expensive to fix. When a check returns a finding, change the work, add the corroborating record, or record the justification the finding names (or answer it with `respond`) before checking again: a recheck with no new events returns the same finding. A readable response identifying a finding that check returned is not material change, nor is acknowledging an observation-authored non-actionable finding or publishing `work_closed`; a redacted or unreadable response requires a recheck. Also consider a check when you move between subtasks or phases — after publishing that transition's batch — not only at the completion claim. Use `semantic_if_configured` only when review is known to be optional; select `semantic_required` when the user, effective policy, or named acceptance criterion requires independent AI-powered judgment; omit `mode` when relying on the configured default. Reserve `deterministic_only` for explicitly local/structural work or a deliberate no-egress choice and disclose `semantic_review_not_requested`; classify required review as unmet and keep selecting `semantic_required` in later final checks. Track required review only through `mode=semantic_required` and the receipt's AI-powered review status, never as a plan obligation or requested item: the check is the review, and an open obligation to obtain it reads to the reviewer as unfinished work. The last check before the receipt is the closing review (`final_review: true`). A check with no new events since the last one adds nothing. |
+| `check` | After the plan refinement and before the first material edit (that pre-work check runs the local plan checks only, whatever the mode: Yoetz defers the AI-powered review until your first material edit and sends nothing, disclosed as `semantic_review_deferred_before_first_edit`; the next check after work begins reviews as configured, and the closing review is never deferred), after each material milestone, after publishing the completion claim and its evidence, and again after any material edit or new evidence. A check only at the very end finds problems when they are most expensive to fix. When a check returns a finding, change the work, add the corroborating record, or record the justification the finding names (or answer it with `respond`) before checking again: a recheck with no new events returns the same finding. A readable response identifying a finding that check returned is not material change, nor is acknowledging an observation-authored non-actionable finding or publishing `work_closed`; a redacted or unreadable response requires a recheck. Also consider a check when you move between subtasks or phases — after publishing that transition's batch — not only at the completion claim. Use `semantic_if_configured` only when review is known to be optional; select `semantic_required` when the user, effective policy, or named acceptance criterion requires independent AI-powered judgment; omit `mode` when relying on the configured default. Reserve `deterministic_only` for explicitly local/structural work or a deliberate no-egress choice and disclose `semantic_review_not_requested`; classify required review as unmet and keep selecting `semantic_required` in later final checks. Track required review only through `mode=semantic_required` and the receipt's AI-powered review status, never as a plan obligation or requested item: the check is the review, and an open obligation to obtain it reads to the reviewer as unfinished work. The last check before the receipt is the closing review (`final_review: true`). A check with no new events since the last one adds nothing. |
 
 | `respond` | Once per finding, before the final check for every finding `status view=findings` lists with `disposition: none`, and after it only for the findings that check returned that are still unanswered; a second response replaces the first. `finding_frontier` is any frontier at or after the finding's own record: the item's `finding_frontier` when status carries one, otherwise the current status frontier. Never search historical frontiers, and never use the finding's `subject_frontier`, which precedes that record. Observation-authored non-actionable (priority 3) findings need no response; acknowledge one once only to note its disclosure. |
 | `receipt` | Once at the end, then publish `work_closed` when the work is complete; neither needs another check. Request another receipt only if material state changed after the previous one. |
@@ -200,10 +203,10 @@ before reporting actionable-unresolved, unanswered, or resolved-history counts. 
 “no findings”, “zero actionable findings”, “clean”, or “verified” result; an empty finding set is
 bounded by the evidence and review scope that ran. Keep the final answer no stronger than the receipt.
 
-Read `status` and `closure_readiness` before closing. Resolve remediable open obligations and
+Before closing, read what is left (`check` with `mode: inspect`, or `status` `closure_readiness`). Resolve remediable open obligations and
 publish the completion claim with its evidence; that claim is an assertion, not a conclusion.
-Read [coverage and receipts](coverage-and-receipts.md) before the first `check` for mode selection,
-finding disposition, pending decisions, and coverage-bounded wording. `respond` does not clear a
+Read [coverage and receipts](coverage-and-receipts.md) when a check needs more than the operating
+card: mode selection, finding disposition, pending decisions, and coverage-bounded wording. `respond` does not clear a
 finding: only a later qualifying check of the repaired record may resolve it. Recheck after material
 changes or new evidence, not unchanged state. Run the closing review (`check` with `final_review: true`) after the last material change. Request `receipt`, then publish `work_closed` when
 the work is complete (a receipt never closes work), and report what the receipt supports. The
@@ -251,9 +254,12 @@ decision with the line `yoetz-assumption:<obligation id>` that names the file pa
 Separately, if an obligation is genuinely not done, republish it `acknowledged_not_done` with the
 reason and leave it out of your completion claim: an acknowledged obligation is outside completion
 coverage, so omitting it is not a scope gap. A deliverable that
-names a file you created but did not declare is disclosed (`deliverable_references_undeclared_file`;
-it never stops you): a grader may receive only the declared files, so embed it, build it at run
-time, or declare it. A delivered file that lost most of its lines
+loads a file you created but did not declare (`deliverable_references_undeclared_file`) stops you
+too, and the Stop text and a `full_local` receipt name the file (an export or share receipt only
+counts such files): a grader may receive only the declared files,
+so embed its content in the deliverable, rebuild it at run time, or declare it as a delivered output
+(a requested `file` item with role `output`; a file the task itself provides is role `input`), then
+run `check`. Disclosing the dependency does not resolve it. A delivered file that lost most of its lines
 while files outside the delivered set changed or hold about as many lines is disclosed on the receipt
 (`declared_output_content_moved`; it never stops you): check the deliverable still works where
 the task delivers it. A declared output of a type the review never receives (a binary) is named
@@ -277,12 +283,16 @@ confirmation step that re-check gives you, then stop. A Stop also asks you once 
 marked `acknowledged_not_done` that the review says the task itself requires
 (`finding_premise_disputed`): do that work unless it is genuinely impossible. If you cannot
 finish it, keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
-A Stop asks once to read each resolved obligation's `acceptance_criteria` against your final output:
-if the output does not meet them, republish that obligation `acknowledged_not_done` with the reason;
-if the criteria can only be checked outside this environment (a hidden verifier, a withheld
-artifact) and you did the work, keep it resolved and record a decision with the line
-`yoetz-verification-limit:<obligation id>`. An acknowledgement you publish in answer to that
-question is not challenged again.
+A Stop asks once to read each resolved obligation's `acceptance_criteria` against your final output.
+Where your host passes your final answer to the Stop hook, it asks only about the resolved
+obligations that answer neither names by id nor addresses (states most of the criterion's terms), and
+names them: say in your final answer how each resolved obligation's criterion is met. If the output
+does not meet them, republish that obligation `acknowledged_not_done` with the reason; if the
+criteria can only be checked outside this environment (a hidden verifier, a withheld artifact) and
+you did the work, keep it resolved and record a decision with the line
+`yoetz-verification-limit:<obligation id>`. If every criterion is met, say so in your final answer
+and stop: that confirmation needs no new record, check or receipt. An acknowledgement you publish in
+answer to that question is not challenged again.
 If a script ran the planned command for you (for example `python run_tests.py` calling the
 planned `pytest` command internally), link that run: publish an `action_recorded` with
 `action_kind` `command`, the planned item's exact `value` in `attempted_items`, and the observed
@@ -548,7 +558,7 @@ Same conversation resuming, or a fresh conversation continuing the same work →
 
 Candidate findings are what deterministic packs currently say about the record. They carry no verdict and cannot be cited as a check. An empty candidate list means only that no rule fired in that advisory read. Only a recorded check can support receipt-bounded completion wording.
 
-The cheapest finding is the one that never fires. Before the first `check`, read `status` with `view=obligations`: every row exposes its exact `requested_items` plus the `unattempted_items` subset under the existing obligation-text privacy category. Mark each requested file or `directory` the task must deliver `role: output` and each it only reads `role: input` (`obligation_published` `1.1.0`, required when an obligation carries a role, a `directory` item or `acknowledged_not_done`, and accepted for any obligation), so the check reports a missing or untouched output and never an input. Record each attempted value exactly on `action_recorded.attempted_items` (`attempted_items` belongs to that family alone — never a claim), and do not resolve the obligation while `unattempted_items` remains non-empty. Also confirm that completion scope is declared, every claim has linked evidence, and every declared obligation is resolved or deliberately left open with a stated reason. A typed empty-scope declaration still produces `completion_scope_declared_none` when a completion claim exists; it records the scope decision rather than proving it. This pre-flight costs one status read; an actionable finding costs the receipt for the rest of the task.
+The cheapest finding is the one that never fires. Before the first `check`, look at what is left: `check` with `mode: inspect` names each requested item without an attempt by index and records nothing, and `status` with `view=obligations` shows every row's exact `requested_items` plus the `unattempted_items` subset under the existing obligation-text privacy category. Mark each requested file or `directory` the task must deliver `role: output` and each it only reads `role: input` (`obligation_published` `1.1.0`, required when an obligation carries a role, a `directory` item or `acknowledged_not_done`, and accepted for any obligation), so the check reports a missing or untouched output and never an input. Record each attempted value exactly on `action_recorded.attempted_items` (`attempted_items` belongs to that family alone — never a claim), and do not resolve the obligation while `unattempted_items` remains non-empty. Also confirm that completion scope is declared, every claim has linked evidence, and every declared obligation is resolved or deliberately left open with a stated reason. A typed empty-scope declaration still produces `completion_scope_declared_none` when a completion claim exists; it records the scope decision rather than proving it. This pre-flight costs one read; an actionable finding costs the receipt for the rest of the task.
 
 Two completion findings exist because an agent can believe it finished when it has not, and the record can show that. Both are structural; neither reads prose. `task_requirement_unmet` (subject: the task-statement event, the newest event that carried `task_statement`) fires while the effective plan declares obligations and none cites that statement in `source_refs`, or while a completion claim stands on no plan or an explicit empty scope: decompose the request into new statement-sourced obligations with `plan_revised`, or, when the request asks for no material work and no file changed (shell writes count), record a `decision_recorded` line `yoetz-no-material-work:<statement event id>` with a rationale. `claim_without_admissible_evidence` with the observed-verification wording (subject: the completion claim) fires when hooks observed edits or verification runs and the claim, together with the resolution evidence of the obligations it names, cites no verification made after the latest observed edit — neither a hook-observed run nor your own `command` result or `test_result`/`command_output` evidence published after that edit (self-generated evidence is admissible): run the verification, then replace the claim citing that run (the observed `res_` id from `status view=results`, or your own result). A recheck without that change returns the same finding. If you cannot clear one, answer it with `respond` (`acknowledged_not_done` with the reason, or a dispute with evidence); the receipt still reports it unresolved.
 
@@ -679,6 +689,20 @@ the reviewer sees it labelled as your rendering, and the file itself is never se
 review, checks skip the AI-powered review (`semantic_review_skipped_insufficient_packet`); a real
 repair re-arms it until that cap. Never edit only to get another review.
 
+While work is in progress (a routine review: no completion claim and not `final_review`) the
+reviewer judges incomplete work only: an obligation you marked resolved or left unfinished,
+planned verification you did not run, a missing or emptied output, a claim that something was done
+or ran that the record does not show, or an early stop. A correctness concern it raises then comes
+back as a note in the review summary ("Reviewer correctness notes"), advisory and non-blocking: weigh
+it in your own verification; it needs no `respond`. The closing review judges correctness and
+completeness against the task as findings. A finding of kind `agent_criterion_unmet` is a criterion
+you set yourself beyond the task's stated scope (your own stress sizes, inputs or configurations)
+that fails: it is not a task requirement. Fix it, or narrow the criterion by responding
+`acknowledged` with the reason; that records a disclosed limitation that does not block (the receipt
+lists it and cannot read clean while it stands). Only that answer narrows it: a
+`yoetz-verification-limit` decision does not. While it is open the check's next step is
+`work_open_findings`, not `disclose_limitations`.
+
 **Findings are advisory; never withdraw working deliverables because of one.** A fallback such
 as "an empty file if unsolved" is for when nothing you have works. A deliverable that passes the
 requested command is delivered and its limits disclosed. If you disagree with a finding, answer it
@@ -715,8 +739,9 @@ When `missing_for_assessment` contains an `agent_suppliable` item, supplying or 
 item is the overall next action before requesting an ordinary receipt. The structured
 `overall_next` projection names that action and its bounded target refs (which may be empty for a
 global input); `finding_checklist.next` remains a finding-only continuation and does not override
-it. When open obligations or undisclosed live failures remain, its action is
-`review_recorded_work` with bounded obligation/result/action ids. When only standing,
+it. When open obligations or undisclosed live failures remain, or a delivered file loads a file
+the change created that no item declares, its action is `review_recorded_work` with bounded
+obligation/result/action ids. When only standing,
 `structurally_unavailable_on_this_host` or Yoetz-limit items remain, `overall_next` reports
 `ready_with_limitations` and the receipt endpoint remains available for acknowledging the
 limitation. Such an item stays a disclosed limitation rather than an impossible to-do.

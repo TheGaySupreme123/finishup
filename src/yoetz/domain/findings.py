@@ -150,6 +150,12 @@ class FindingKind(str, Enum):  # noqa: UP042 - exact wire enum base
     # submitted change failed to satisfy.
     CODE_DEFECT = "code_defect"
     TASK_REQUIREMENT_UNMET = "task_requirement_unmet"
+    # Issue #1043 (tb4n4 interleaved-vigenere S): a failure only on probes the agent itself
+    # authored beyond the task's stated scope (its own stress sizes, inputs or configurations). The
+    # criterion is the agent's own commitment, never the task's: the agent may fix it or narrow it
+    # with a recorded reason, which settles it as a disclosed, non-blocking limitation
+    # (``is_limitation_request``). Recorded only on ``finding_recorded`` 1.4.0.
+    AGENT_CRITERION_UNMET = "agent_criterion_unmet"
 
 
 # D7 keeps project coordination local: coordination findings are produced from the admitted
@@ -173,6 +179,7 @@ EXTERNAL_SEMANTIC_FINDING_KINDS: Final[tuple[FindingKind, ...]] = (
     FindingKind.WEAK_OR_STALE_RESPONSE,
     FindingKind.CODE_DEFECT,
     FindingKind.TASK_REQUIREMENT_UNMET,
+    FindingKind.AGENT_CRITERION_UNMET,
 )
 
 
@@ -413,6 +420,7 @@ FINDING_KIND_TRAITS: Final[MappingProxyType[FindingKind, tuple[int, bool]]] = Ma
         FindingKind.COORDINATION_OVERLAP: (2, True),
         FindingKind.CODE_DEFECT: (1, True),
         FindingKind.TASK_REQUIREMENT_UNMET: (1, True),
+        FindingKind.AGENT_CRITERION_UNMET: (2, True),
     }
 )
 
@@ -1830,12 +1838,21 @@ def is_limitation_request(finding: Finding) -> bool:
     A pure function of the recorded finding (so ranking can use it at mint time). It does not
     settle the finding by itself: the closure class stays ``agent_work`` / ``limitation_requested``
     until the agent answers it (``kernel.closure_class``, owner decisions Q4 and 2026-10-12).
+
+    An ``agent_criterion_unmet`` finding (issue #1043) always qualifies, whatever next step the
+    reviewer asked for: the criterion is the agent's own, so narrowing it with a recorded reason is
+    always an honest answer (the owner's nuance: "criteria the agent declared are its commitments";
+    it may keep or narrow them). Fixing it stays open: a later check that proves it absent resolves
+    it like any finding. Only the agent's own answer to it narrows it: a
+    ``yoetz-verification-limit`` decision never does (guard G1, ``kernel.limitation``).
     """
 
+    if finding.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED or finding.challenge is None:
+        return False
+    if finding.kind is FindingKind.AGENT_CRITERION_UNMET:
+        return True
     return (
-        finding.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
-        and finding.challenge is not None
-        and finding.challenge.requested_next_step == LIMITATION_REQUEST_NEXT_STEP
+        finding.challenge.requested_next_step == LIMITATION_REQUEST_NEXT_STEP
         and finding.kind in LIMITATION_REQUEST_REQUIREMENT_KINDS
     )
 

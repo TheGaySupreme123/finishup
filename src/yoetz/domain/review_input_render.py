@@ -12,6 +12,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Final, cast
 
+from yoetz.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
+
 __all__ = [
     "YOETZ_LIMIT_MISSING_TEXT",
     "has_agent_suppliable_missing",
@@ -171,8 +173,15 @@ def render_review_input_manifest_lines(value: object) -> tuple[str, ...]:
     # Issue #976: the review phase is shown when recorded; "final" is the closing review.
     review_phase = _token(source.get("review_phase"), frozenset({"routine", "final"}))
     phase_clause = "" if review_phase is None else f"review phase {review_phase}; "
+    # Issue #1047: this packet is an in-check follow-up Yoetz sent after adding what the reviewer
+    # asked for; its missing inputs are that request.
+    follow_up = _count(source.get("follow_up_round"), MAX_REVIEW_FOLLOW_UP_ROUNDS)
+    follow_up_clause = (
+        "" if not follow_up else f"follow-up round {follow_up} of {MAX_REVIEW_FOLLOW_UP_ROUNDS}; "
+    )
     lines = [
-        f"Review input manifest: {phase}; {phase_clause}selected items {selected}; "
+        f"Review input manifest: {phase}; {phase_clause}{follow_up_clause}"
+        f"selected items {selected}; "
         f"selected excerpt bytes {excerpt_bytes}; {omitted_clause}."
     ]
     for name in _SECTION_NAMES:
@@ -196,7 +205,13 @@ def render_review_input_manifest_lines(value: object) -> tuple[str, ...]:
                 f"supplied {len(_refs(row.get('supplied_refs')))}"
             )
         if safe_missing:
-            lines.append("Manifest missing inputs: " + ", ".join(safe_missing) + ".")
+            label = (
+                "Manifest missing inputs: "
+                if not follow_up
+                else "Review follow-up (the reviewer's request in this check; supplied = Yoetz "
+                "added recorded excerpts for it and asked again): "
+            )
+            lines.append(label + ", ".join(safe_missing) + ".")
     return tuple(lines)
 
 

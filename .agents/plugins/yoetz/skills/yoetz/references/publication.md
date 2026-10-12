@@ -1,6 +1,6 @@
 # Publication topic
 
-Read this topic before the first `publish_work` or when deciding whether a transition, result,
+Read this topic when a result or error names it, or when deciding whether a transition, result,
 evidence item, obligation, or claim belongs in the ledger. Publish the smallest material,
 state-bound facts needed for another participant to understand and check the work.
 

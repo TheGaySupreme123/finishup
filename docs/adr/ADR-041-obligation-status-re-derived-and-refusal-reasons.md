@@ -50,8 +50,10 @@ three ways the closure path did the opposite:
    completion-claimed obligation is now 0 bytes or kept under a tenth of its task-base lines. While
    it stands the obligation's `resolved` is not counted as delivered ("reopened" by derivation;
    the ledger is never rewritten). Restoring the file, republishing the obligation `open` or
-   `acknowledged_not_done` clears it at the next check (a disclosure line does not). `deliverable_references_undeclared_file` is the matching standing disclosure for a
-   deliverable that names an undeclared file the change created.
+   `acknowledged_not_done` clears it at the next check (a disclosure line does not). `deliverable_references_undeclared_file` is the matching fact for a
+   deliverable that names an undeclared file the change created (a standing disclosure here; agent
+   work and a Stop-gate token since #1044, whose only exits are embedding the file, rebuilding it
+   at run time or declaring it: ADR-035 amendment).
 3. **One obligation version rule.** `domain.events.obligation_schema_admits(payload, version)`:
    1.0.0 refuses a `role`, a `directory` item and `acknowledged_not_done`; 1.1.0 is a superset
    and admits every payload. The ingest validator, `closure_prepare` and every hint read it.

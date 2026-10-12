@@ -280,8 +280,36 @@ first. It covers edits made by scripts and commits that no hook captured. A decl
 lives outside the repository (for example `/output/result.json`) is never read by Yoetz itself; when
 the case already holds a capture of it (output a hook recorded, or evidence the agent published
 that names it), that capture is carried with the same priority as the change, under the same
-redaction and never-send checks, and listed in the review input like every other excerpt. Because the starting point is a commit, uncommitted or untracked work that was already in
-your working tree when the task started is included too. Git hooks, helpers, filters and network
+redaction and never-send checks, and listed in the review input like every other excerpt. Because the starting point is a commit, uncommitted work that was already in your
+working tree when the task started is included too. Untracked files that were already there when
+the task started and have not changed since are left out of the change and only counted in its
+header, so the reviewer never reads them as your agent's additions; one that changed is shown whole
+and marked as having existed at the start. To tell them apart, Yoetz keeps, encrypted with the task,
+the names of the untracked files present when the task started and a digest of their file metadata,
+never their content. A Git repository nested inside yours (for example an `api` directory that is
+its own repository) has its own change read from the commit it held when the task started, which
+Yoetz keeps with those names, and shown under its directory, at most eight per check; one that
+cannot be read safely is named in the header with the reason. Yoetz keeps the same names and
+digests for the untracked files inside each such repository, so they are left out or shown exactly
+like the ones in yours. When that commit was not kept for a nested repository yours tracks (for
+example, a task started before this version), its change starts from the commit your repository
+records for it, and the header says that commits made in it before the task may then be included.
+When the untracked files inside a nested repository were not all kept (for example: the task
+started before this version; the repository was created during the task, had no commit when it
+started, came after the eighth nested repository or failed a safety check; or its untracked files
+were too many for Yoetz to keep, had names it cannot store, could not be examined or could not be
+listed in time), they are listed by name only and their content is never sent, because any of them
+may have been there before the task; the header says so and counts them as not shown. When the
+task statement names files the work depends on, such as a specification, a rulebook or the source
+being ported (or the task declares them as inputs), up to four of them
+travel too, each up to 16 KiB, but only when the file is in your repository, has not changed since
+the task started, is not ignored by Git and is not named like a credential. A file Git tracks
+travels only when the task's starting commit was kept, Git compares it normally (a file marked
+skip-worktree or assume-unchanged never travels) and its content still matches that commit
+exactly. Task inputs are labelled as task inputs, not as your agent's work, and pass the same
+redaction and never-send checks. The reviewer also gets one short
+list of the deliverables you declared, whether the change touches each one, and Yoetz's own facts
+about them (for example that a deliverable refers to a file you created but did not declare). Git hooks, helpers, filters and network
 access are off while it is read, credential-like text is redacted, and each part still passes the
 never-send check. Files named like credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and
 similar) are listed by name only and their content is never shown; this is a check on file names, so
@@ -393,6 +421,16 @@ command that differs from the one observed. Every provider — the Codex subscri
 OpenAI-compatible endpoints — gets the same instructions. Track a required review by choosing
 `semantic_required` for each check, not as a plan item.
 
+When the reviewer cannot assess the packet and names recorded content Yoetz already holds — the
+output of a recorded run, its exact command, or a captured edit the packet had no room for — Yoetz
+answers inside the same check: it sends the packet again with that content first and asks again, up
+to three times. Each follow-up packet follows the same policy, limits and never-send rules as the
+first and is its own disclosure with its own privacy receipt, and the content added this way takes
+at most half of the packet's excerpt room. The check records the last answer; the check result and
+the receipt say which follow-up round it answered and what Yoetz added. A follow-up that fails ends
+the check the way a failed review does. Anything else the reviewer names (the task statement, plan
+or claim text, or material only the agent can record) still comes back to the agent as before.
+
 AI-powered output is advisory, provenance-labeled, and deterministically fenced. It never silently
 becomes local-check truth, and it never upgrades a coverage claim.
 
@@ -498,8 +536,9 @@ tokens.
   work so far without judging whether it is complete; a final review judges completeness against
   the task: each stated requirement and requested output, with or without a completion claim.
 - **The closing review.** The receipt is the last step, so the last review before it is a final
-  review. When a task uses AI-powered review, its closure checklist lists `closing_review_required`
-  until a final review is current after the last change; the check result names the review phase.
+  review. When a task uses AI-powered review (or a check deferred a required review before your
+  first edit), its closure checklist lists `closing_review_required` until a final review is current
+  after the last change; the check result names the review phase.
 
 ### Cancelled background review
 

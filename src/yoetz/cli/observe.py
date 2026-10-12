@@ -1683,7 +1683,14 @@ async def _drain_observation_async(
             if client is None:
                 try:
                     client = await connect(ControlClientKind.CLI)
-                except Exception:
+                except Exception as error:
+                    from yoetz.cli.bootstrap import spawned_startup_failure_line
+
+                    # The service this drain started exited while starting: name its stage and
+                    # record (#1040); the summary and exit 20 are unchanged.
+                    startup_line = spawned_startup_failure_line(error)
+                    if startup_line is not None:
+                        typer.echo(startup_line, err=True)
                     tally.note_reason(
                         ObservationGapCode.SERVICE_UNAVAILABLE.value, len(deliverable)
                     )

@@ -63,6 +63,7 @@ from yoetz.mcp.resources import (
     GuidanceResource,
     GuidanceResourceError,
     GuidanceResourcePage,
+    resolve_guidance_topic_uri,
 )
 from yoetz.mcp.resources import (
     list_resources as list_guidance_resources,
@@ -100,8 +101,14 @@ from yoetz.ports.control import (
 from yoetz.ports.integrations import YOETZ_MCP_TOOL_NAMES
 from yoetz.protocol.canonical import JsonValue, canonical_encode
 from yoetz.protocol.consent import CONSENT_PENDING_TTL_SECONDS
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError, SafeDetailValue
+from yoetz.protocol.errors import (
+    SERVICE_STARTUP_PHASES,
+    PublicErrorCode,
+    PublicOperationError,
+    SafeDetailValue,
+)
 from yoetz.protocol.guidance_uris import (
+    ALL_GUIDANCE_URIS,
     FOCUSED_GUIDANCE_URIS,
     GUIDANCE_DOCUMENT_URIS,
     GUIDANCE_TOPIC_URIS,
@@ -127,6 +134,7 @@ from yoetz.protocol.models import (
     public_model_to_wire,
 )
 from yoetz.protocol.recovery import (
+    READ_ONLY_CHECK_MODES,
     REASON_REMEDIES,
     WRITE_OPERATIONS,
     continuation_for_reason,
@@ -318,10 +326,14 @@ _RECORDED_RESULT_STAGES: Final = frozenset(
 )
 
 
-def _stage_continuation(reason: str, operation: str | None) -> str | None:
+def _stage_continuation(
+    reason: str, operation: str | None, check_mode: object = None
+) -> str | None:
     if reason not in _REPLAYABLE_STAGES and reason not in _RECORDED_RESULT_STAGES:
         return None
-    kind = timeout_operation_kind(operation, write_operations=_WRITE_OPERATIONS)
+    kind = timeout_operation_kind(
+        operation, write_operations=_WRITE_OPERATIONS, check_mode=check_mode
+    )
     if kind is None or (kind == "start" and reason in _RECORDED_RESULT_STAGES):
         return None
     return continuation_for_reason("request_timeout", operation_kind=kind)
@@ -334,12 +346,13 @@ def _internal_stage_error(
     correlation_id: str | None,
     host_profile: McpHostProfile,
     operation: str | None = None,
+    check_mode: object = None,
 ) -> types.CallToolResult:
     """An unexpected bridge failure as INTERNAL_ERROR with a typed stage, a remedy and, where the
     remedy is a replay or a lookup, the typed continuation that authorizes it."""
 
     safe_details: dict[str, SafeDetailValue] = {"reason_code": reason}
-    continuation = _stage_continuation(reason, operation)
+    continuation = _stage_continuation(reason, operation, check_mode)
     if continuation is not None:
         safe_details["continuation"] = continuation
     return structured_error_result(
@@ -1573,7 +1586,10 @@ def _control_error_result(
     host_profile: McpHostProfile = "generic",
     vault_initialization_details: Mapping[str, object] | None = None,
     timeout_handle: Mapping[str, object] | None = None,
+    check_mode: object = None,
 ) -> types.CallToolResult:
+    # ``check_mode`` is the request's ``mode``: a ``check`` that records nothing (ADR-047,
+    # ``inspect``) times out as a read, never as a write that may have committed.
     # Prefer the service-minted diagnostic id when present so the agent-facing public error
     # resolves the same durable sink record the daemon already wrote. Never mint a second id for
     # a failure the service already correlated.
@@ -1703,7 +1719,9 @@ def _control_error_result(
             safe_details={"reason_code": "privacy_projection_unavailable"},
         )
     if error.reason == "request_timeout":
-        operation_kind = timeout_operation_kind(operation, write_operations=_WRITE_OPERATIONS)
+        operation_kind = timeout_operation_kind(
+            operation, write_operations=_WRITE_OPERATIONS, check_mode=check_mode
+        )
         if operation_kind == "start":
             # A lost start returns neither session nor writer id, so the operation view the
             # generic write recovery names cannot be queried. The shipped guidance excepts this
@@ -1722,8 +1740,8 @@ def _control_error_result(
             )
         else:
             message = (
-                "The local status read timed out and requested no write. Repeat the read with a "
-                "new request_id."
+                "The local read timed out and requested no write. Repeat the read with a new "
+                "request_id."
             )
         # The read-versus-write distinction above was previously legible only in the free-form
         # message, which the native text channel drops by design; a typed continuation carries it
@@ -1791,6 +1809,33 @@ def _control_error_result(
             safe_details={"reason_code": "service_draining"},
         )
     if error.reason == "service_unavailable":
+        startup = None
+        if error.phase in SERVICE_STARTUP_PHASES:
+            # Imported here: the bridge's import graph stays the ordinary service client alone.
+            from yoetz.service.startup_failure import spawned_startup_failure
+
+            startup = spawned_startup_failure(error.phase, error.correlation_id)
+        if startup is not None:
+            # The service this bridge spawned exited during startup (#1040). Waiting and
+            # retrying cannot help, and "not running; run it" hid why; the record behind the
+            # correlation_id names the stage, exception class and origin, and so does this text.
+            return _control_public_error_result(
+                error,
+                request_id,
+                operation,
+                code=PublicErrorCode.SERVICE_UNAVAILABLE,
+                message=(
+                    f"The local Yoetz service exited while starting ({startup.describe()}), so "
+                    "it is not running and nothing was recorded. Retrying fails the same way "
+                    "until the cause is repaired. Give the user this correlation_id; 'yoetz "
+                    "service diagnostics --correlation-id' with it shows the bounded record. Do "
+                    "not run service lifecycle commands to work around it."
+                ),
+                retryable=False,
+                host_profile=host_profile,
+                safe_details={"reason_code": "service_start_failed", "phase": startup.stage},
+                diagnostic_reason="service_start_failed",
+            )
         if accepted_but_unresponsive(error):
             # A listener that accepted and then went silent is running. Prescribing
             # `yoetz service run` here sent an operator to a command that must refuse (#237).
@@ -2309,6 +2354,9 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
     operation: str,
 ) -> types.CallToolResult:
     request_id = safe_request_id_from(arguments)
+    # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read, like the
+    # daemon classifies it. The value is only compared with a closed set, never echoed.
+    check_mode = arguments.get("mode") if operation == "check" else None
     try:
         request = request_type.model_validate(arguments)
     except ValidationError as exc:
@@ -2336,6 +2384,7 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
             operation=operation,
+            check_mode=check_mode,
         )
     inherited = await _prepare_availability(runtime, request_id)
     if inherited is not None:
@@ -2385,6 +2434,7 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
                 correlation_id=correlation_id,
                 host_profile=runtime.host_profile,
                 operation=operation,
+                check_mode=check_mode,
             )
     except ControlError as exc:
         if exc.reason in _AVAILABILITY_LATCH_REASONS:
@@ -2432,6 +2482,7 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
                 host_profile=runtime.host_profile,
                 vault_initialization_details=vault_initialization_details,
                 timeout_handle=timeout_handle,
+                check_mode=check_mode,
             )
         result = recovered
     except Exception as exc:
@@ -2447,6 +2498,7 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
             operation=operation,
+            check_mode=check_mode,
         )
 
     await _clear_availability(runtime)
@@ -2487,6 +2539,7 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
             operation=operation,
+            check_mode=check_mode,
         )
 
 
@@ -2823,7 +2876,11 @@ async def dispatch_check(
         CheckResult,
         lambda client, request: client.check(
             request,
-            deadline_ms=_rpc_deadline_ms("check"),
+            # ADR-047: an inspection is a read routed like ``status``, so it takes the status
+            # deadline, not the budget of a check that may run an AI-powered review.
+            deadline_ms=_rpc_deadline_ms(
+                "status" if request.mode in READ_ONLY_CHECK_MODES else "check"
+            ),
             route_profile=runtime.route_profile,
             host_profile=runtime.host_profile,
         ),
@@ -3120,6 +3177,15 @@ async def dispatch_read_guidance(
     output.
     """
 
+    raw_uri = arguments.get("uri")
+    if type(raw_uri) is str and raw_uri not in ALL_GUIDANCE_URIS:
+        # tb4n4 (#1049): a guessed anchor that names exactly one catalogued topic of a registered
+        # document (its slug, an explicit anchor beside its heading, or words only it contains)
+        # reads that topic; the result's ``uri`` is the catalogued one. Anything else is refused
+        # below with the registered alternatives.
+        resolved = resolve_guidance_topic_uri(raw_uri)
+        if resolved is not None:
+            arguments = {**arguments, "uri": resolved}
     try:
         request = ReadGuidanceRequest.model_validate(arguments)
     except ValidationError as exc:
@@ -3248,8 +3314,9 @@ def _unknown_guidance_uri_result(
     if document in GUIDANCE_DOCUMENT_URIS:
         anchors = _guidance_topic_anchors(document)
         message = (
-            f"read_guidance has no topic with that anchor in {document}. Topic anchors are exact "
-            "catalog entries; never derive one from a heading, tool, or event name. Retry with "
+            f"read_guidance has no topic with that anchor in {document}, and it names no single "
+            "topic (as a heading slug, an explicit anchor, or words only one anchor holds). Do "
+            "not derive one from a tool or event name. Retry with "
             f"uri {document} to read the whole document, or {document}#<anchor> with one of these "
             f"anchors: {', '.join(anchors)}."
         )

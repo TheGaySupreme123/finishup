@@ -548,6 +548,12 @@ DETERMINISTIC_FINDING_TEMPLATES: Final[
                 " session_opened, session_resumed, plan_published or plan_revised)"
             ),
         ),
+        # Issue #1043: raised only by the AI-powered review (or routed to it by the check); no
+        # local pack emits it. The template exists because every kind needs one.
+        FindingKind.AGENT_CRITERION_UNMET: DeterministicFindingTemplate(
+            "A criterion the agent set for itself beyond the task's stated scope is not met.",
+            "Fix the work, or narrow the criterion by responding acknowledged with the reason.",
+        ),
     }
 )
 if frozenset(DETERMINISTIC_FINDING_TEMPLATES) != frozenset(FindingKind):

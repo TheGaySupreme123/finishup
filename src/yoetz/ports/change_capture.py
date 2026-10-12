@@ -51,6 +51,13 @@ __all__ = [
     "encode_task_change_base",
     "metadata_path_representable",
     "RequestedPathProbe",
+    "MAX_BASELINE_UNTRACKED_FILES",
+    "MAX_NESTED_REPOSITORIES",
+    "MAX_TASK_INPUT_FILES",
+    "MAX_TASK_INPUT_TEXT_BYTES",
+    "NestedUntrackedBaseline",
+    "TaskInputFile",
+    "UntrackedBaselineFile",
 ]
 
 TASK_CHANGE_BASE_MEDIA_TYPE: Final = "application/vnd.yoetz.task-change-base+json"
@@ -62,6 +69,19 @@ _CHECK_CHANGE_SCHEMA: Final = "yoetz.check-change/1"
 MAX_CHECK_CHANGE_TEXT_BYTES: Final = 262_144
 _MAX_FILE_COUNT: Final = 1_000_000
 _HEX: Final = re.compile(r"^[0-9a-f]+$", re.ASCII)
+# The task-start snapshot of untracked files (issue #1045): names and metadata only, bounded so a
+# workspace full of generated files keeps a small base object. Past the bound the snapshot is
+# incomplete and an untracked file it does not name is treated as new, exactly as before.
+MAX_BASELINE_UNTRACKED_FILES: Final = 4_096
+_MAX_BASELINE_PATH_BYTES: Final = 262_144
+# Nested Git repositories whose own change a check renders (issue #1045), and whose HEAD the
+# task-start snapshot records.
+MAX_NESTED_REPOSITORIES: Final = 8
+# Read-only task input files a check may carry (issue #1045): at most this many, each rendered to
+# at most this many bytes (whole, or head and tail with the cut marked).
+MAX_TASK_INPUT_FILES: Final = 4
+MAX_TASK_INPUT_TEXT_BYTES: Final = 16_384
+_MAX_TASK_INPUT_SIZE: Final = (1 << 53) - 1
 
 # ``first_check``: the task recorded no start commit (created before ADR-031, or recording
 # failed), so its first check pinned HEAD as the task's base for every later check.
@@ -103,6 +123,79 @@ def _invalid() -> ValueError:
     return ValueError("change_capture_value_invalid")
 
 
+def _json_path(value: object) -> bool:
+    """A root-relative path a canonical JSON object can hold: no NUL, CR, LF or lone surrogate."""
+
+    if type(value) is not str or not value or any(char in value for char in "\x00\r\n"):
+        return False
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return False
+    return not value.startswith("/") and all(
+        part not in {"", ".", ".."} for part in value.split("/")
+    )
+
+
+def _commit_id(value: object) -> bool:
+    return type(value) is str and len(value) in {40, 64} and _HEX.fullmatch(value) is not None
+
+
+@dataclass(frozen=True, slots=True)
+class UntrackedBaselineFile:
+    """One untracked file as it stood when the task started (issue #1045).
+
+    ``state`` is a digest of the link-free ``stat`` fields the capture compares (file type and
+    permissions, inode, size, modification and change times); no content is read. A file whose
+    fields still digest to ``state`` at check time predates the task and is unchanged, so it is
+    baseline, never an addition.
+    """
+
+    path: str = field(repr=False)
+    state: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not _json_path(self.path):
+            raise _invalid()
+        if (
+            type(self.state) is not str
+            or not self.state.startswith("sha256:")
+            or len(self.state) != 71
+            or _HEX.fullmatch(self.state[7:]) is None
+        ):
+            raise _invalid()
+
+
+@dataclass(frozen=True, slots=True)
+class NestedUntrackedBaseline:
+    """One nested repository's untracked files as they stood when the task started (#1045).
+
+    ``path`` is the repository's root-relative directory (one of the base's ``nested`` rows);
+    ``files`` are its untracked files, relative to that directory, in path order, each with the
+    same ``stat`` digest the outer listing keeps. ``complete`` is false when the listing could not
+    be taken whole within the snapshot's bounds; such a row names no file, and none of the
+    repository's untracked files can then be told apart from one that predates the task.
+    """
+
+    path: str = field(repr=False)
+    complete: bool
+    files: tuple[UntrackedBaselineFile, ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        if not _json_path(self.path) or type(self.complete) is not bool:
+            raise _invalid()
+        if (
+            type(self.files) is not tuple
+            or any(type(item) is not UntrackedBaselineFile for item in self.files)
+            or any(
+                left.path >= right.path
+                for left, right in zip(self.files, self.files[1:], strict=False)
+            )
+            or (self.files and not self.complete)
+        ):
+            raise _invalid()
+
+
 @dataclass(frozen=True, slots=True)
 class TaskChangeBase:
     """The commit a task's check-time change starts from, fixed for the life of the task.
@@ -110,11 +203,23 @@ class TaskChangeBase:
     ``task_start`` bases are HEAD when the task was created. A task without one gets a
     ``first_check`` base: HEAD when its first check ran, pinned so every later check of the task
     diffs from the same commit and commits made in between stay in the change.
+
+    A ``task_start`` base also records the working tree's untracked files at that moment
+    (``untracked``, names and ``stat`` identity only; ``untracked_complete`` is false when the
+    listing exceeded its bound or could not be read), the HEAD of each nested Git repository
+    among them or tracked as a gitlink (``nested``: root-relative directory and commit), and the
+    untracked files of each of those repositories (``nested_untracked``, in path order, sharing
+    the outer listing's name and byte bounds), so files that predate the task are baseline and a
+    nested repository's change starts where the task did (issue #1045).
     """
 
     object_format: Literal["sha1", "sha256"]
     commit: str = field(repr=False)
     origin: TaskChangeBaseOrigin = "task_start"
+    untracked: tuple[UntrackedBaselineFile, ...] = field(default=(), repr=False)
+    untracked_complete: bool = False
+    nested: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+    nested_untracked: tuple[NestedUntrackedBaseline, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         if self.object_format not in {"sha1", "sha256"}:
@@ -128,6 +233,90 @@ class TaskChangeBase:
             or _HEX.fullmatch(self.commit) is None
         ):
             raise _invalid()
+        if (
+            type(self.untracked) is not tuple
+            or len(self.untracked) > MAX_BASELINE_UNTRACKED_FILES
+            or any(type(item) is not UntrackedBaselineFile for item in self.untracked)
+            or sum(len(item.path.encode("utf-8")) for item in self.untracked)
+            > _MAX_BASELINE_PATH_BYTES
+            or len({item.path for item in self.untracked}) != len(self.untracked)
+        ):
+            raise _invalid()
+        if type(self.untracked_complete) is not bool:
+            raise _invalid()
+        if (
+            type(self.nested) is not tuple
+            or len(self.nested) > MAX_NESTED_REPOSITORIES
+            or any(
+                type(item) is not tuple
+                or len(item) != 2
+                or not _json_path(item[0])
+                or not _commit_id(item[1])
+                for item in self.nested
+            )
+            or len({item[0] for item in self.nested}) != len(self.nested)
+        ):
+            raise _invalid()
+        recorded = {item[0] for item in self.nested}
+        if (
+            type(self.nested_untracked) is not tuple
+            or any(type(item) is not NestedUntrackedBaseline for item in self.nested_untracked)
+            or any(item.path not in recorded for item in self.nested_untracked)
+            or any(
+                left.path >= right.path
+                for left, right in zip(
+                    self.nested_untracked, self.nested_untracked[1:], strict=False
+                )
+            )
+        ):
+            raise _invalid()
+        # The nested listings share the outer listing's bounds.
+        files = [*self.untracked, *(item for row in self.nested_untracked for item in row.files)]
+        if (
+            len(files) > MAX_BASELINE_UNTRACKED_FILES
+            or sum(len(item.path.encode("utf-8")) for item in files) > _MAX_BASELINE_PATH_BYTES
+        ):
+            raise _invalid()
+        if self.origin != "task_start" and (
+            self.untracked or self.untracked_complete or self.nested or self.nested_untracked
+        ):
+            # Only the task's own start can say what predates the task.
+            raise _invalid()
+
+
+@dataclass(frozen=True, slots=True)
+class TaskInputFile:
+    """One read-only task input file the check carries for review (issue #1045).
+
+    A file the task statement (or a ``role: input`` requested item) names, inside the checked
+    repository and unchanged since the task started (a tracked one only against a ``task_start``
+    base, and only when its bytes match the base commit), that Git does not ignore. ``text`` is
+    the file whole, or its head and tail with the cut marked, at most ``MAX_TASK_INPUT_TEXT_BYTES``;
+    ``size`` is the file's byte size; ``redacted`` is set by the service after it replaced
+    credential-like spans.
+    """
+
+    path: str = field(repr=False)
+    text: bytes = field(repr=False)
+    size: int
+    redacted: bool = False
+
+    def __post_init__(self) -> None:
+        if not _json_path(self.path):
+            raise _invalid()
+        if (
+            type(self.text) is not bytes
+            or not 1 <= len(self.text) <= MAX_TASK_INPUT_TEXT_BYTES + 256
+        ):
+            raise _invalid()
+        try:
+            self.text.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise _invalid() from exc
+        if type(self.size) is not int or not 0 <= self.size <= _MAX_TASK_INPUT_SIZE:
+            raise _invalid()
+        if type(self.redacted) is not bool:
+            raise _invalid()
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,10 +325,12 @@ class CheckChangeCapture:
 
     ``truncated`` is set whenever a changed file or any of its bytes is missing from ``text``; the
     header names each file that is not shown. ``redacted`` is set by the service after it replaced
-    credential-like spans, never by the adapter. ``base_commit`` is the object id the change was
-    taken against (the task-start commit, HEAD, or the empty tree); it keys the per-file
-    commitments a completed review records, and is empty only for an object written before it
-    existed.
+    credential-like spans in ``text`` or in a task input file, or withheld an input it could not
+    redact, never by the adapter. ``base_commit`` is the object id the change was taken against (the
+    task-start commit, HEAD, or the empty tree); it keys the per-file commitments a completed review
+    records, and is empty only for an object written before it existed. ``inputs`` are the read-only
+    task input files the same read carried (issue #1045); they are not part of the change and never
+    enter ``text``.
     """
 
     base: ChangeBaseKind
@@ -150,11 +341,19 @@ class CheckChangeCapture:
     truncated: bool
     redacted: bool = False
     base_commit: str = field(default="", repr=False)
+    inputs: tuple[TaskInputFile, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         if self.base not in _BASE_KINDS:
             raise _invalid()
         if type(self.text) is not bytes or not 1 <= len(self.text) <= MAX_CHECK_CHANGE_TEXT_BYTES:
+            raise _invalid()
+        if (
+            type(self.inputs) is not tuple
+            or len(self.inputs) > MAX_TASK_INPUT_FILES
+            or any(type(item) is not TaskInputFile for item in self.inputs)
+            or len({item.path for item in self.inputs}) != len(self.inputs)
+        ):
             raise _invalid()
         try:
             self.text.decode("utf-8", errors="strict")
@@ -293,11 +492,14 @@ class ChangeCapturePort(Protocol):
         base: TaskChangeBase | None,
         *,
         priority_paths: tuple[str, ...] = (),
+        input_paths: tuple[str, ...] = (),
     ) -> CheckChangeCapture:
         """Render the change from ``base`` (or HEAD when ``None``) to the working tree.
 
         ``priority_paths`` names the task's declared deliverables; their files are rendered ahead
         of every other file (tb4n2 R7). They order the change only, never widen what is read.
+        ``input_paths`` names candidate read-only task input files (issue #1045); only those inside
+        the repository, unchanged, not ignored and not credential-named are read, into ``inputs``.
         """
         ...
 
@@ -474,17 +676,26 @@ def current_check_workspace_source() -> CheckWorkspaceSource | None:
 def encode_task_change_base(base: TaskChangeBase) -> bytes:
     if type(base) is not TaskChangeBase:
         raise _invalid()
-    return canonical_encode(
-        cast(
-            JsonValue,
-            {
-                "commit": base.commit,
-                "object_format": base.object_format,
-                "origin": base.origin,
-                "schema": _TASK_CHANGE_BASE_SCHEMA,
-            },
-        )
-    )
+    body: dict[str, JsonValue] = {
+        "commit": base.commit,
+        "object_format": base.object_format,
+        "origin": base.origin,
+        "schema": _TASK_CHANGE_BASE_SCHEMA,
+    }
+    if base.untracked or base.untracked_complete or base.nested:
+        # The task-start snapshot (issue #1045). A base without one (written before it existed, or
+        # whose listing could not be read) has none of these keys and keeps its bytes; it reads as
+        # an empty, incomplete snapshot, so every untracked file is new, as before.
+        body["untracked"] = [[item.path, item.state] for item in base.untracked]
+        body["untracked_complete"] = base.untracked_complete
+        body["nested"] = [[path, commit] for path, commit in base.nested]
+        if base.nested_untracked:
+            # Only when recorded, so a base written before nested listings keeps its bytes.
+            body["nested_untracked"] = [
+                [row.path, row.complete, [[item.path, item.state] for item in row.files]]
+                for row in base.nested_untracked
+            ]
+    return canonical_encode(cast(JsonValue, body))
 
 
 def decode_task_change_base(data: bytes) -> TaskChangeBase:
@@ -492,36 +703,108 @@ def decode_task_change_base(data: bytes) -> TaskChangeBase:
     if canonical_encode(parsed) != data or type(parsed) is not dict:
         raise _invalid()
     source = cast(dict[str, object], parsed)
-    if set(source) - {"origin"} != {"commit", "object_format", "schema"}:
+    if set(source) - {
+        "origin",
+        "untracked",
+        "untracked_complete",
+        "nested",
+        "nested_untracked",
+    } != {
+        "commit",
+        "object_format",
+        "schema",
+    }:
         raise _invalid()
     if source["schema"] != _TASK_CHANGE_BASE_SCHEMA:
         raise _invalid()
-    return TaskChangeBase(
+    # Only shapes the encoder writes are read: the snapshot's three keys together or not at all,
+    # ``nested_untracked`` only beside them and never empty or null.
+    snapshot = {"untracked", "untracked_complete", "nested"} & set(source)
+    if snapshot not in (set(), {"untracked", "untracked_complete", "nested"}) or (
+        "nested_untracked" in source and not snapshot
+    ):
+        raise _invalid()
+    untracked_raw = source.get("untracked", [])
+    nested_raw = source.get("nested", [])
+    listings_raw = source.get("nested_untracked", [])
+    if (
+        type(untracked_raw) is not list
+        or type(nested_raw) is not list
+        or type(listings_raw) is not list
+        or ("nested_untracked" in source and not listings_raw)
+    ):
+        raise _invalid()
+    untracked = _baseline_files(cast(list[object], untracked_raw))
+    listings: list[NestedUntrackedBaseline] = []
+    for row in cast(list[object], listings_raw):
+        if type(row) is not list or len(cast(list[object], row)) != 3:
+            raise _invalid()
+        path, complete, files = cast(list[object], row)
+        listings.append(
+            NestedUntrackedBaseline(cast(str, path), cast(bool, complete), _baseline_files(files))
+        )
+    nested: list[tuple[str, str]] = []
+    for row in cast(list[object], nested_raw):
+        if type(row) is not list or len(cast(list[object], row)) != 2:
+            raise _invalid()
+        path, commit = cast(list[object], row)
+        nested.append((cast(str, path), cast(str, commit)))
+    base = TaskChangeBase(
         cast(Literal["sha1", "sha256"], source["object_format"]),
         cast(str, source["commit"]),
         cast(TaskChangeBaseOrigin, source.get("origin", "task_start")),
+        tuple(untracked),
+        cast(bool, source.get("untracked_complete", False)),
+        tuple(nested),
+        tuple(listings),
     )
+    if snapshot and not (base.untracked or base.untracked_complete or base.nested):
+        # An empty snapshot is never written: its keys are left out.
+        raise _invalid()
+    return base
+
+
+def _baseline_files(raw: object) -> tuple[UntrackedBaselineFile, ...]:
+    """Decode ``[[path, state], ...]`` rows of a task-start snapshot strictly."""
+
+    if type(raw) is not list:
+        raise _invalid()
+    files: list[UntrackedBaselineFile] = []
+    for row in cast(list[object], raw):
+        if type(row) is not list or len(cast(list[object], row)) != 2:
+            raise _invalid()
+        path, state = cast(list[object], row)
+        files.append(UntrackedBaselineFile(cast(str, path), cast(str, state)))
+    return tuple(files)
 
 
 def encode_check_change(capture: CheckChangeCapture) -> bytes:
     if type(capture) is not CheckChangeCapture:
         raise _invalid()
-    return canonical_encode(
-        cast(
-            JsonValue,
+    body: dict[str, JsonValue] = {
+        "base": capture.base,
+        "base_commit": capture.base_commit,
+        "omitted_files": capture.omitted_files,
+        "redacted": capture.redacted,
+        "schema": _CHECK_CHANGE_SCHEMA,
+        "text": capture.text.decode("utf-8"),
+        "tracked_files": capture.tracked_files,
+        "truncated": capture.truncated,
+        "untracked_files": capture.untracked_files,
+    }
+    if capture.inputs:
+        # Only present when the read carried task input files (issue #1045), so every object
+        # written without them keeps its bytes.
+        body["inputs"] = [
             {
-                "base": capture.base,
-                "base_commit": capture.base_commit,
-                "omitted_files": capture.omitted_files,
-                "redacted": capture.redacted,
-                "schema": _CHECK_CHANGE_SCHEMA,
-                "text": capture.text.decode("utf-8"),
-                "tracked_files": capture.tracked_files,
-                "truncated": capture.truncated,
-                "untracked_files": capture.untracked_files,
-            },
-        )
-    )
+                "path": item.path,
+                "redacted": item.redacted,
+                "size": item.size,
+                "text": item.text.decode("utf-8"),
+            }
+            for item in capture.inputs
+        ]
+    return canonical_encode(cast(JsonValue, body))
 
 
 def decode_check_change(data: bytes) -> CheckChangeCapture:
@@ -529,7 +812,7 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
     if canonical_encode(parsed) != data or type(parsed) is not dict:
         raise _invalid()
     source = cast(dict[str, object], parsed)
-    if set(source) - {"base_commit"} != {
+    if set(source) - {"base_commit", "inputs"} != {
         "base",
         "omitted_files",
         "redacted",
@@ -542,6 +825,24 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
         raise _invalid()
     if source["schema"] != _CHECK_CHANGE_SCHEMA or type(source["text"]) is not str:
         raise _invalid()
+    inputs_raw = source.get("inputs", [])
+    if type(inputs_raw) is not list or ("inputs" in source and not inputs_raw):
+        raise _invalid()
+    inputs: list[TaskInputFile] = []
+    for row in cast(list[object], inputs_raw):
+        if type(row) is not dict:
+            raise _invalid()
+        fields = cast(dict[str, object], row)
+        if set(fields) != {"path", "redacted", "size", "text"} or type(fields["text"]) is not str:
+            raise _invalid()
+        inputs.append(
+            TaskInputFile(
+                cast(str, fields["path"]),
+                fields["text"].encode("utf-8"),
+                cast(int, fields["size"]),
+                cast(bool, fields["redacted"]),
+            )
+        )
     return CheckChangeCapture(
         base=cast(ChangeBaseKind, source["base"]),
         text=source["text"].encode("utf-8"),
@@ -551,4 +852,5 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
         truncated=cast(bool, source["truncated"]),
         redacted=cast(bool, source["redacted"]),
         base_commit=cast(str, source.get("base_commit", "")),
+        inputs=tuple(inputs),
     )

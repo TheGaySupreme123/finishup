@@ -224,6 +224,19 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
         changed=False,
         codes=("semantic_missing_agent_suppliable",),
     ),
+    # tb4n4 (issue #1044): a delivered file that loads a file the change created and nothing
+    # declares fails where the grader receives only the declared files (interleaved-vigenere S).
+    # Before, a standing disclosure the agent could "resolve" by disclosing the dependency; now an
+    # agent action (embed, rebuild at run time, declare) removes it and nothing else does.
+    _Family(
+        rule="G0c",
+        family="agent_actionable",
+        readiness="A",
+        d_route="A",
+        review_route="A",
+        changed=True,
+        codes=("deliverable_references_undeclared_file",),
+    ),
     _Family(
         rule="G0b",
         family="completion_scope",
@@ -286,7 +299,6 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "content_unselected",
             "declared_output_content_moved",
             "declared_output_not_reviewable",
-            "deliverable_references_undeclared_file",
             "install_into_private_env",
             "install_into_yoetz_runtime",
             "obligation_blocked_outside_agent_control",
@@ -372,6 +384,18 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "semantic_prior_verdicts_unsupported",
             "semantic_restatements_suppressed",
         ),
+    ),
+    # Issue #1042: reviewer challenges calling work "never attempted" during a routine review, or
+    # about Yoetz's own capture or process state. A new code, disclosed from the start: it records what
+    # the check declined to mint, never a limit on what the review saw.
+    _Family(
+        rule="G5d",
+        family="review_dialogue_disclosure",
+        readiness="S",
+        d_route="D",
+        review_route="D",
+        changed=True,
+        codes=("semantic_process_state_filtered",),
     ),
     _Family(
         rule="G6",
@@ -459,6 +483,20 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "semantic_relevance_review_not_run",
             "semantic_review_not_configured",
         ),
+    ),
+    # tb4n4 (issue #1046, review): Yoetz's own deferral of a routine review before the first
+    # material edit. Where the deferred check recorded that its route did not require review it is
+    # a disclosure, like the ``semantic_review_not_requested`` it rides with (rule G1): a check the
+    # agent asked to review must not read worse than a ``deterministic_only`` one on the same
+    # route. Where the route requires review it bounds until a review is current.
+    _Family(
+        rule="G7",
+        family="review_completeness",
+        readiness="S",
+        d_route="D",
+        review_route="B",
+        changed=True,
+        codes=("semantic_review_deferred_before_first_edit",),
     ),
     _Family(
         rule="G8",
@@ -768,6 +806,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "semantic_packet_insufficient",
         "semantic_prior_findings_over_limit",
         "semantic_prior_verdicts_unsupported",
+        "semantic_process_state_filtered",
         "semantic_provider_input_manifest_invalid",
         "semantic_provider_input_manifest_mismatch",
         "semantic_provider_input_manifest_missing",
@@ -778,6 +817,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "semantic_restatements_suppressed",
         "semantic_review_context_withheld",
         "semantic_review_credential_heuristic_disabled",
+        "semantic_review_deferred_before_first_edit",
         "semantic_review_item_withheld",
         "semantic_review_not_configured",
         "semantic_review_not_requested",

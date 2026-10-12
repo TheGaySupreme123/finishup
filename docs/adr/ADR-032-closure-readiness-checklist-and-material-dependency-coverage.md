@@ -73,7 +73,9 @@ names what the receipt will disclose.
    `agent_actionable`, so the conservative default is visible and never reads as done.
 
 4. **One route-dependent code.** `semantic_review_not_requested` is standing on a route where
-   AI-powered review is optional or disabled. It is actionable only when the effective verification
+   AI-powered review is optional or disabled (since issue #1041 a check that asked for
+   `deterministic_only` on such a route records no such code at all; ADR-033 amendment of
+   2026-10-12). It is actionable only when the effective verification
    policy requires AI-powered review, the serving route can dispatch it, and no check whose
    AI-powered review succeeded has been recorded without a later material change (remedy: run it).
    A strict MCP route never dispatches AI-powered review (ADR-018), so a status read served by it

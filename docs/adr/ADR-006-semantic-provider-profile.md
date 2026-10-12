@@ -1371,6 +1371,40 @@ carries `prior_finding_verdicts` (#905) and `missing_for_assessment`, and the un
 `check_recorded` 1.3.0 carries either optional field, or both; a check with neither keeps its
 bytes.
 
+### Packet completeness within the budget (2026-10-12, issue #1045)
+
+tb4n4: 36 of 259 reviews ended `insufficient_packet` and about five wrong findings came from
+missing information, while the packet already carried a median 76 KiB of excerpts. The fix is
+selection inside the approved count and bytes; no bound moves.
+
+- **What the change holds.** ADR-031's #1045 amendment reads a nested repository's own change,
+  leaves untracked files that predate the task out of it, and carries up to four read-only task
+  input files the task statement names as `repository_excerpt` items ranked ahead of older hunks
+  and general output, within a quarter of the excerpt bytes.
+- **The latest run per probe wins.** A command identity is the digest of the run key of the
+  command a result answers: its text with whitespace collapsed, or a hook run's keyed command
+  identity, the same rule `missing_for_assessment` uses to decide that another run of the same
+  command answered a request. A hook run with no identity (`omitted:structural`) identifies nothing,
+  so unrelated commands never supersede each other. When the command ran again later and that newest
+  run left no excerpt the packet can carry (a passing re-run whose output was not captured), every
+  older output of it is marked `superseded_by` the newer result and ranked with superseded runs: a
+  stale probe is never presented as the latest (rs-archive-clone).
+- **The latest output per path wins.** Two `artifact` evidence rows naming the same plain path
+  record one output file at two times; the newer wins and the older is marked `superseded_by` it and
+  ranked last (production-planning and retro showed an exploratory output instead of the final).
+- **The declared deliverables, in one place.** The obligations section begins with one
+  `declared-deliverables` item (`yoetz.declared-deliverables/1`, obligation text, linked to the
+  declaring obligations): each declared `role: output` file or directory (the ADR-035 delivered
+  set, at most 32 rows) with its obligation, item index, kind, declared value and whether the
+  check-time change lists it (`added`, `modified`, `deleted`, `renamed`, `changed` for a directory,
+  `not_changed`, `outside_repository`, or `unknown` when no change was captured, a cut listing
+  cannot prove it, or an absolute value has no known root), and `facts`, the check's closed
+  delivered-set codes (`deliverable_references_undeclared_file`, `declared_output_removed`,
+  `declared_output_emptied`, `declared_output_content_moved`, `requested_output_absent` and the
+  `requested_output_*` codes). Codes only: which file a fact concerns stays in the local check.
+- Every added item is an ordinary case item: recorded on the input manifest, counted in
+  `semantic_case_built`, sized by ceiling planning and released only by the privacy gateway.
+
 ### Yoetz review limits are never agent work (2026-10-07, tb4n1 D1/D3/F2, issue #983)
 
 TB4 run tb4n1 showed the #907 classification turned Yoetz's own packet limits into agent work: 82
@@ -1392,8 +1426,10 @@ Yoetz's own limit, marked as such for the agent, never a blocker; the agent veri
   and
   `yoetz_limit_packet_room` (a target an omission row of the exact sent packet withheld for room,
   selection or policy, never `not_recorded` and never this check's own local finding, or a diff
-  request while the check-time change was clipped or redacted). `evt_` targets resolve to the row
-  their event recorded. The enum is extended in place on the unreleased `check_recorded`
+  request while the check-time change's own text was clipped or redacted, read from the shown-file
+  record: a redacted or withheld task input file alone does not count when that record is complete
+  and names a file, while a missing, incomplete or empty record still counts, conservatively). `evt_` targets resolve
+  to the row their event recorded. The enum is extended in place on the unreleased `check_recorded`
   1.3.0/1.4.0 and `check-result` 1.3.0/1.4.0. An unanswered repeat stays `agent_suppliable` with
   `semantic_missing_non_convergent`: a run never recorded is still owed.
 - One retry (`kernel/review_round.py`): when the newest completed review concluded
@@ -1557,8 +1593,10 @@ claiming completion was never judged for completeness. Decisions:
   and receipt renderings show `omitted items <total> (<count> listed)` when the two differ. Older
   manifests omit it and render their listed count.
 - **Closure integration.** Closure readiness (ADR-032) lists the agent-actionable
-  `closing_review_required` while AI-powered review is required on the route or has completed on the
-  task, and no check since the last material change is a completed final-phase review. A review
+  `closing_review_required` while AI-powered review is required on the route, has completed on the
+  task or was deferred before the first material edit by a check whose route requires it (ADR-040
+  amendment of 2026-10-12, #1046), and
+  no check since the last material change is a completed final-phase review. A review
   attempt after the last material change that was blocked by policy or privacy, not configured,
   classification-uncertain, or denied or expired at human approval satisfies it, because its own
   gaps disclose the limit and a recheck cannot remove it; a timeout or a failed or unavailable
@@ -1636,3 +1674,65 @@ claiming completion was never judged for completeness. Decisions:
   response.
 - Out of scope, recorded for later: reviewer visibility (diff and test-output truncation, vendored
   trees) and reviewer-run commands.
+
+### In-check follow-up rounds (2026-10-12, issue #1047)
+
+**Decision (owner, 2026-10-12; privacy/egress gate acknowledged by the owner's request).** When a
+review concludes `insufficient_packet` and names content Yoetz itself holds, Yoetz answers the
+request inside the same `check` and asks again, at most `MAX_REVIEW_FOLLOW_UP_ROUNDS` (3) times.
+A request used to cost a full agent cycle (36 such rounds in tb4n4), often for recorded output the
+packet only lacked room for.
+
+- **What Yoetz answers.** Only `current_diff_for_path`, `verification_output` and
+  `command_identity` items (`FOLLOW_UP_KINDS`) the check fence kept and classified
+  `agent_suppliable` or `yoetz_limit_packet_room`, naming targets Yoetz holds rows for. Each target
+  resolves to the rows whose excerpts carry it: the target, the rows an `evt_` target recorded, and
+  for a run (an action or its result) the run's results, its action and the evidence they cite;
+  redacted rows never count (`plan_review_follow_up`). `task_statement`, `plan_or_claim_text`,
+  `prior_finding_context` and `other` are never answered by Yoetz; a structurally unavailable,
+  privacy-withheld, redacted or unsupported-type item is never re-sent.
+- **What the packet becomes.** The same case is rebuilt with those excerpts ranked first, item by
+  item in request order, while their bytes fit half of the approved `max_total_excerpt_bytes`
+  (`follow_up_byte_budget`), the per-check share every round of the check draws from; requests
+  accumulate across rounds so earlier additions keep their place. Every packet still fits the
+  approved per-packet count and bytes, the channel ceiling, and the same privacy admission,
+  minimization, redaction and withholding path; nothing here widens what the owner approved. The
+  initial packet is built exactly as before. Item 2 of the issue (a fixed menu of computations, or
+  an approved check run in a sandbox) is deferred.
+- **When a round runs.** Only while the reviewer still concludes `insufficient_packet`, names such
+  an item, and the rebuilt packet carries a requested excerpt no earlier packet of the check
+  carried. What an earlier packet carried is read from its exact sent packet (its provider-bound
+  manifest), never from the composed case: an excerpt composed but left out of the sent packet
+  was not shown and can still be added, and one a round composed but did not send was not added.
+  A captured multi-part group is one excerpt keyed by its lead evidence and carries every part, so
+  a request naming any part is answered by it; when the excerpt's linked references reach their
+  16-ref bound, the capture's own parts are kept ahead of the events and claims that link it (the
+  kept references are still listed in byte order), and a capture has at most 16 parts, so none is
+  dropped. Any other excerpt keeps its first 16 links in byte order, as before. When what was sent is unknown, nothing counts as
+  shown and no round runs; a row the sent packet withheld under a privacy rule never justifies a
+  round, because the same rule withholds it again, and a withheld captured group counts with all
+  its parts, though its omission row names only the lead. Otherwise nothing is dispatched and the
+  check records the last review exactly as before: the request goes back to the agent with its
+  availability classes.
+- **Durability, replay and egress.** Each round is one more dispatch through the privacy
+  coordinator, so it has its own egress authorization and audit record. It runs as its own durable
+  job keyed by its case digest (`semantic_jobs` already admits one job per distinct case of an
+  operation; `load_semantic_job` takes the digest). Its case object names the check's own review
+  job (`follow_up.base_case_digest`) and freezes the base job's endpoint, retries and budget
+  profile with a deadline of its own; at most one job of an operation is live at a time. Every
+  input is the frozen case, the base job's check-time change and the durable responses, so replay
+  rebuilds each round's case byte for byte and recovers it without another provider call.
+- **Failure.** A round that fails, times out or is blocked ends the check exactly as a first
+  review in that state does today (its composed manifest is recorded); one that awaits a disclosure
+  decision suspends the check the same way, and replaying the request resumes that round.
+- **Record and surfaces.** The check records the last round's review. Its `review_input_manifest`
+  carries the optional `follow_up_round` (1–3) and, in a follow-up packet, `missing_inputs` lists
+  the reviewer's in-check request: `supplied` with the excerpt sources Yoetz added (only excerpts
+  that crossed the provider boundary count), else `pending`. The field is added in place to the
+  unreleased check-recorded 1.3.0/1.4.0, check-result 1.3.0/1.4.0, status-result 1.4.0 and
+  outbound-case 1.2.0 schemas. The shared manifest renderer shows the round and the added items in
+  the CLI, the MCP check text, and the receipt's coverage note in JSON, markdown and text. The
+  reviewer is told, in one instruction sentence, how to read a follow-up packet's manifest.
+  Structural progress (`status view=operation`, and the terminal interface that renders it)
+  follows the live round, else the latest round by the round its case object names, never by
+  attempt count or random job id.

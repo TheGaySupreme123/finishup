@@ -54,35 +54,83 @@ def rollout_row(wrapper: str, payload: dict[str, Any], timestamp: str) -> dict[s
     return {"payload": payload, "timestamp": timestamp, "type": wrapper}
 
 
-def exec_cell(call_id: str, source: str, timestamp: str) -> dict[str, Any]:
-    """The model's code-mode cell exactly as the 0.157.1 rollout records it."""
+def exec_cell(
+    call_id: str, source: str, timestamp: str, *, item_id: str | None = None
+) -> dict[str, Any]:
+    """The model's code-mode cell as the rollout records it.
 
+    Without ``item_id`` this is the 0.157.1 shape (``call_id`` only). Codex 0.159.3 also names the
+    row itself, ``id: ctc_...``, beside the ``call_id`` its output shares (#1038): pass ``item_id``
+    for that shape.
+    """
+
+    payload: dict[str, Any] = {
+        "call_id": call_id,
+        "input": source,
+        "name": "exec",
+        "status": "completed",
+        "type": "custom_tool_call",
+    }
+    if item_id is not None:
+        payload["id"] = item_id
+    return rollout_row("response_item", payload, timestamp)
+
+
+def exec_cell_output(
+    call_id: str, result: str, timestamp: str, *, item_id: str | None = None
+) -> dict[str, Any]:
+    """The cell's output row; ``item_id`` adds the 0.159.3 row id (``ctco_...``, #1038)."""
+
+    payload: dict[str, Any] = {
+        "call_id": call_id,
+        "output": [
+            {
+                "text": "Script completed\nWall time 25.3 seconds\nOutput:\n",
+                "type": "input_text",
+            },
+            {"text": result, "type": "input_text"},
+        ],
+        "type": "custom_tool_call_output",
+    }
+    if item_id is not None:
+        payload["id"] = item_id
+    return rollout_row("response_item", payload, timestamp)
+
+
+def mcp_tool_call(
+    item_id: str,
+    tool: str,
+    timestamp: str,
+    *,
+    server: str | None = "yoetz",
+    status: str = "completed",
+) -> dict[str, Any]:
+    """The nested ``McpToolCall`` item Codex 0.159.3 writes for a code-mode MCP call.
+
+    ``server=None`` omits the ``server`` field: the reader then names the item by its tool alone.
+    """
+
+    item: dict[str, Any] = {
+        "arguments": {},
+        "duration": {"nanos": 105_009_526, "secs": 0},
+        "id": item_id,
+        "readOnlyHint": False,
+        "result": {"content": [{"text": "public synthetic", "type": "text"}]},
+        "status": status,
+        "tool": tool,
+        "type": "McpToolCall",
+    }
+    if server is not None:
+        item["server"] = server
     return rollout_row(
-        "response_item",
+        "event_msg",
         {
-            "call_id": call_id,
-            "input": source,
-            "name": "exec",
-            "status": "completed",
-            "type": "custom_tool_call",
-        },
-        timestamp,
-    )
-
-
-def exec_cell_output(call_id: str, result: str, timestamp: str) -> dict[str, Any]:
-    return rollout_row(
-        "response_item",
-        {
-            "call_id": call_id,
-            "output": [
-                {
-                    "text": "Script completed\nWall time 25.3 seconds\nOutput:\n",
-                    "type": "input_text",
-                },
-                {"text": result, "type": "input_text"},
-            ],
-            "type": "custom_tool_call_output",
+            "completed_at_ms": 1_790_704_690_742,
+            "item": item,
+            "started_at_ms": 1_790_704_667_516,
+            "thread_id": HOST,
+            "turn_id": "turn_1",
+            "type": "item_completed",
         },
         timestamp,
     )
@@ -359,12 +407,12 @@ async def sweep_all(cell: Replay, *, capture_hook_output: bool = False) -> Recor
     return recorder
 
 
-def session_start(cell: Replay) -> None:
+def session_start(cell: Replay, *, cli_version: str = "0.157.1") -> None:
     cell.append(
         rollout_row(
             "session_meta",
             {
-                "cli_version": "0.157.1",
+                "cli_version": cli_version,
                 "cwd": str(cell.workspace),
                 "history_mode": "legacy",
                 "id": HOST,

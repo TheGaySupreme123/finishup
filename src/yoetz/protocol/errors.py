@@ -15,6 +15,7 @@ __all__ = [
     "PROTOCOL_REASON_CODES",
     "REASON_CODE_CONTINUATIONS",
     "SAFE_DETAIL_KEYS",
+    "SERVICE_STARTUP_PHASES",
     "ProtocolValueError",
     "PublicErrorCode",
     "PublicOperationError",
@@ -381,6 +382,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "service_generation_changed",
     "service_incompatible",
     "service_stamp_required",
+    "service_start_failed",
     "service_unavailable",
     "session_lineage_fields_incomplete",
     "session_superseded",
@@ -404,7 +406,14 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
 )
 
 _REASON_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 345
+
+# The local service's startup stages (#1040): ``phase`` on a ``service_start_failed`` error names
+# where a spawned service failed. ``yoetz.service.startup_failure`` owns the stage order and fails
+# at import if its stages and this set disagree; this module is a dependency root.
+SERVICE_STARTUP_PHASES: frozenset[str] = frozenset(
+    {"import", "configuration", "composition", "activation", "serving"}
+)
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 346
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)
@@ -872,8 +881,11 @@ def _normalize_detail(key: str, value: object) -> SafeDetailValue | None:
     if key == "phase" and type(value) is str:
         # Stage names are structural tokens owned by the service boundary. Accepting the
         # normalized token here lets an internal control failure carry an explicit handler,
-        # projection, or unknown stage without exposing exception text.
+        # projection, or unknown stage without exposing exception text. The service startup
+        # stages (``yoetz.service.startup_failure``) name where a spawned service failed (#1040).
         if value in {"replay", "model", "digest", "projection", "handler", "unknown"}:
+            return value
+        if value in SERVICE_STARTUP_PHASES:
             return value
         return None
     if key in _ENUM_DETAIL_KEYS:

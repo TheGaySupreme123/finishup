@@ -136,6 +136,11 @@ changes is admission:
   raw bytes. IMP-015 is compatibility evidence, not certification: `0.153.4` still has no exact
   profile, no parser proof, and no `session_stream` facet, and its admission stays
   `partially_understood`.
+- Issue #1041 adds one proven ignored item family on the same terms: `HookPrompt`, the
+  `event_msg.item_completed` item a Codex 0.159.3 rollout writes when a Stop hook continues the
+  turn with a prompt (Yoetz's own closure gate text). It names no tool call and pairs with
+  nothing; admitted on the compatibility profile only, it turns an `unsupported_event` gap on every
+  gated attempt into a bookkeeping row. No exact profile gains it.
 
 Parser compatibility grants no capture consent, no egress authority, and no AI-powered evaluator
 authority.

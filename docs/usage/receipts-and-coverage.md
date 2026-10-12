@@ -70,14 +70,13 @@ Not honest:
 
 ## The trap: a clean local-only check
 
-A clean `deterministic_only` check is **not** an implementation review. When mode is
-`deterministic_only`, or AI-powered review status is `not_requested`, the coverage includes
-`semantic_review_not_requested`. A clean result means “no issue detected within deterministic
-coverage”; it does not remove that limitation from the receipt. Where AI-powered review is not
-required (it is optional or off, or the owner connected this host for local checks only), the check
-records `semantic_route_required: false` and the limitation is disclosed without keeping the
-receipt from a clean conclusion; where review is required, it still keeps the receipt at
-`insufficient_coverage`. If the only things recorded after your last check are your answers to
+A clean `deterministic_only` check is **not** an implementation review. A clean result means “no
+issue detected within deterministic coverage”, and a clean receipt says the same:
+`no_unresolved_deterministic_findings`. Where AI-powered review is required, a `deterministic_only`
+check records `semantic_review_not_requested` and that limitation keeps the receipt at
+`insufficient_coverage`. Where it is not required (it is optional or off, or the owner connected
+this host for local checks only), the check records `semantic_route_required: false` and no
+review gap: it ran the local checks it was asked for, so the receipt lists no missing review. If the only things recorded after your last check are your answers to
 that check's findings, the receipt notes that the check is current as of an earlier point but that
 note alone does not keep it from a clean conclusion. The receipt leads with its scope,
 review status and material limitations, followed by the finding count and frozen check totals.
@@ -89,8 +88,19 @@ select `semantic_required` for the final check and subsequent final rechecks. Re
 no-egress choice; disclose the limitation and keep any required review unmet.
 
 When you fall back to `deterministic_only` because an AI-powered review attempt was blocked or
-unavailable, that earlier gap is carried forward next to `semantic_review_not_requested`, so the
-receipt records that the environment refused rather than that the review was never asked for.
+unavailable, that earlier gap is carried forward to the local-only check, so the receipt records
+that the environment refused rather than that the review was never asked for.
+
+A check you run before your first edit (nothing changed yet, and not the closing review) never
+calls the reviewer, whatever its mode: it runs the local plan checks, sends nothing, and records
+`semantic_review_deferred_before_first_edit`. Where AI-powered review is optional for the check,
+that is a disclosure and does not lower the receipt's conclusion, just as a local-only check would
+not; where review is required, the receipt stays at `insufficient_coverage` until a review runs.
+The next check after you start changing the work reviews as configured, and the closing review is
+never deferred. Where review is required, the closure checklist lists `closing_review_required`
+after a deferred check until you run `check` with `final_review: true`, so work that never needs an
+edit is still reviewed before it closes; where review is optional, a deferred check asks for
+nothing more than a local-only check would.
 
 ## Prose the reviewer will not see whole
 
@@ -299,6 +309,21 @@ Two more things decide what the receipt will say, and status tells you before yo
   then lists it with the requirements you acknowledged as not done and reads
   `unresolved_findings_remain`, exactly like any other requirement left undone. While the request is
   unanswered, the check's next step is `disclose_limitations` when it is all that is left.
+- **A criterion you set yourself.** When the only work a finding cites is your own probe beyond the
+  task's stated scope (your own stress sizes or configurations, while the task's own sample or
+  verifier passes), the finding is `agent_criterion_unmet`, not a task requirement. You may fix it,
+  or narrow the criterion by answering `acknowledged` with the reason: the receipt then lists it as
+  a disclosed limitation and reads at best `insufficient_coverage`; it never blocks. Only your answer
+  narrows it; a `yoetz-verification-limit` decision does not. While it is open, the check's next
+  step is `work_open_findings`, not `disclose_limitations`.
+
+While the work is in progress, the reviewer judges incomplete work only (something marked done that
+is not, verification you planned and did not run, a missing or emptied output, a claim the record
+does not show, an early stop). A correctness concern it raises then is an advisory note in the
+review summary, not a finding. The closing review judges the work against the task in full. A
+reviewer ruling that a finding is fixed, citing material you recorded after it, resolves it even when
+the check records facts about the environment (verification run only as root, installs into a
+private environment); those stay disclosed on the receipt.
 
 Before you ask for a receipt, `closure_readiness.predicted_receipt` names the conclusion it would
 carry and why. The receipt carries the same reasons (`conclusion_basis`) and opens its Summary with
@@ -332,6 +357,14 @@ Three more things the receipt discloses in their own sections, by id only:
   what the file held and at which check. A file created empty (an empty requirements list) never
   raises it; if the task really asked for that file to be empty whatever happens, record a
   `yoetz-assumption` decision that names the file and run `check`.
+- **Deliverables that load undeclared files.** When a delivered source file loads a file you
+  created but did not declare (a model, a word list, a data table), a grader that receives only the
+  declared files gets a program that cannot run. `deliverable_references_undeclared_file` asks you
+  at Stop to fix it and names the files, and the receipt names them (a `default_local_export` or
+  `redacted_share` receipt counts them instead) and stays below clean until you do. Embed the
+  content in the deliverable, rebuild it at run time, or declare the file as a delivered output (a
+  requested `file` item with role `output`; a file the task itself provides is role `input`), then
+  run `check`. Disclosing the dependency does not resolve it.
 - **Planned commands that matched only in part.** A planned command counts as run when an
   observed run matches it exactly, or after dropping wrappers such as `timeout`, `env` and
   `nice` and the interpreter alias `python3`. A run that only began with the planned arguments,

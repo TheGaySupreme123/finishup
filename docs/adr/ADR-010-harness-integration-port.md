@@ -568,7 +568,9 @@ retained or admitted into observation evidence.
 
 Tier 0 remains the intake cue and safety floor. The skill routes through the existing five
 registered guidance resources: workflow before start, publication policy before publish, and
-coverage/receipts before check. Setup, consent, credential/vault and import procedures live in
+coverage/receipts before check. (Amended by ADR-047, 2026-10-12: the core is the operating card;
+those pages are read on demand, when a result, error or continuation names one, not before each
+operation.) Setup, consent, credential/vault and import procedures live in
 request templates and load only for those operations; recovery details load on a corresponding
 error or continuation. They remain available through MCP and installed reference copies.
 

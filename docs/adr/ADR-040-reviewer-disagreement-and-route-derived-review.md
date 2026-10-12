@@ -1,7 +1,8 @@
 # ADR-040: Binding rules for reviewer disagreement; review requirement derived from the route
 
 - Status: accepted (2026-10-08)
-- Issues: #1020 (tb4n2 R1), #1021 (tb4n2 R6), #1024 (tb4n3 RC-1), #1030 (tb4n3 RC-7)
+- Issues: #1020 (tb4n2 R1), #1021 (tb4n2 R6), #1024 (tb4n3 RC-1), #1030 (tb4n3 RC-7), #1042, #1043,
+  #1046 (tb4n4, amendment of 2026-10-12 below)
 - Amends: ADR-034 (finding to-do states), ADR-033 amendment of 2026-10-08 (#986, "record route;
   don't block"), ADR-006 (reviewer instruction)
 - Maintainer acknowledgement: the owner approved all tb4n2 core issues R1-R10, design changes
@@ -14,7 +15,12 @@
   `kernel/finding_resolution.py` (`apply_check_rulings`), `kernel/finding_todo.py`,
   `kernel/receipt_builder.py` (`_conclusion`), `domain/receipts.py`, `kernel/closure_readiness.py`,
   `adapters/providers/openai_responses.py`; guidance `workflow.md`, `coverage-and-receipts.md`
-  and the Codex skill.
+  and the Codex skill. tb4n4 amendment: `kernel/review_frame.py`, `application/check.py`
+  (`validate_semantic_judgment(review_phase=...)`, `_review_deferred_before_first_edit`,
+  `_review_skip_gaps`), `kernel/task_facts.py` (`material_edit_recorded`),
+  `kernel/finding_resolution.py` (`_TASK_FACT_GAPS_TOLERATED_WHEN_FIXED`), `domain/findings.py`
+  (`AGENT_CRITERION_UNMET`, `is_limitation_request`), `kernel/closure_class.py`,
+  `kernel/gap_effect.py` and `kernel/closure_readiness.py` (`_closing_review_facts`).
 
 ## Context
 
@@ -358,3 +364,175 @@ Agent guidance (the four host skills, `workflow.md`, `request-templates.md`,
 `coverage-and-receipts.md`, the finding explanation, the CLI continuation text and the `respond`
 descriptor): "If the requirement may be met but cannot be verified here, respond `acknowledged` with
 the reason; respond `acknowledged_not_done` only when you know it is not met."
+
+## Amendment 2026-10-12 (issues #1042, #1043, #1046, tb4n4): the review judges incomplete work
+
+The owner asked for #1038-#1052 to be fixed together on 2026-10-12 (maintainer TheGaySupreme123);
+that request is the acknowledgement these design-gated changes need. tb4n4 measured the semantic
+arm: of 79 reviewer findings 34% were correctness opinions outside the frame and only 35% were
+in-frame incomplete-work catches; 19% were wrong (agents rejected 14 of 15 with evidence, so the
+cost was time). 5 `action_without_result` and 4 premature "nothing implemented yet" findings were
+about Yoetz's own process state although the instruction forbids it (section 5 dropped only "never
+attempted"). On interleaved-vigenere S the reviewer turned failures of the agent's own oversized
+stress runs (12 streams, seed lengths 9-32, beyond the sample family) into
+`task_requirement_unmet`; the agent spent about forty minutes adding a language model that loaded
+two undeclared data files, and the grader's copy printed nothing. 18 of 61 semantic-arm tasks
+reviewed the plan before any work, and 39 `self_verified` answers in 24 tasks (plus 16
+`resolution_attempt_required` rounds) followed a reviewer `fixed` ruling that environment facts
+such as `verification_only_as_root` kept from closing its finding.
+
+### 1. A routine review judges incomplete work; correctness concerns are advisory (#1042)
+
+The reviewer instruction and the routine question say: during work in progress judge incomplete
+work only (an obligation marked resolved or left unfinished, planned verification not run, a missing
+or emptied output, a done or ran claim the packet does not show, an early stop); work not yet
+started is not a defect; a correctness concern is returned as `code_defect`. The check enforces the
+frame without extra packet bytes: `validate_semantic_judgment(..., review_phase="routine")` records a
+`code_defect` challenge that would mint a new finding as an advisory note, appended to the fenced
+`review_summary` under a fixed Yoetz header and counted in `advisory_notes` (the accounting is
+returned = accepted + rejected + suppressed + advisory). A re-raise of a recorded finding still folds
+onto it. No gap is added: the review saw everything and the note is kept whole. The final phase
+(`final_review`, or any completion claim) is unchanged: correctness and completeness are findings
+there. The phase comes from the review input manifest, else from `select_semantic_budget_profile`;
+a caller that passes none keeps the earlier rules.
+
+### 2. Process state is filtered and disclosed, never minted (#1042)
+
+`kernel/review_frame.py` decides from the frozen projection and the challenge's resolved subjects,
+never the reviewer's words; anything unreadable keeps the challenge.
+
+- `yoetz_process_state_only`: every subject is the hook observation of a call to one of Yoetz's own
+  tools (or its result), or, for `action_without_result`, any hook-observed action (pairing a hook
+  observation with its result is Yoetz's capture; the `check` call is always in flight). A
+  description is trusted only on a service-stamped observation. Reason `yoetz_process_state`, every
+  phase.
+- Section 5 now reads the phase the packet named: during a routine review an AI-powered
+  `requested_item_never_attempted` is dropped (reason `routine_completeness`); the closing review
+  keeps it even when the agent stops without a completion claim, which is exactly the early stop
+  a closing review exists to catch.
+
+"Nothing implemented yet" raised under `task_requirement_unmet` or
+`completion_with_open_obligations` is not filtered: without the reviewer's words it cannot be told
+from a real unmet requirement or an obligation left unfinished (in frame). Those raised before any
+work go with the review before the first edit (section 4), and the routine instruction says work not
+yet started is not a defect; whether that covers all four tb4n4 cases needs the exports.
+
+Both reasons disclose the new standing code `semantic_process_state_filtered` (gap table G5d,
+disclosed on both routes, tolerated by both absence proofs) instead of `semantic_challenges_rejected`,
+which keeps bounding for every other dropped challenge: a challenge about Yoetz's state is not
+material the check failed to carry. Item 3 of #1042 (wrong-finding and in-frame rates per run) is
+the maintainer's harness measurement; the bounded `semantic_review_accounting` record now carries
+`semantic_challenges_advisory`, `semantic_agent_criteria` and `semantic_rejected_yoetz_process_state`
+beside the existing per-reason counts, so a run's findings can be attributed to the frame.
+
+### 3. The agent's own probe is its own criterion (#1043)
+
+New finding kind `agent_criterion_unmet` (priority 2, research-evidence pack): a failure only on
+probes the agent itself authored beyond the task's stated scope. The owner's nuance holds: criteria
+the agent declared are its commitments, so the finding is real; the defect was the label. The
+reviewer is told to use it, never `task_requirement_unmet`, for such a failure.
+`is_limitation_request` is true for this kind whatever next step the reviewer asked for (guard G1
+applies to requirement kinds; narrowing one's own criterion is always honest), so the #1024
+lifecycle applies: `limitation_requested` ("to disclose", never receipt-blocking work),
+next actions `acknowledge` and `repair`; a reasoned `acknowledged` narrows it into
+`limitation_disclosed` (receipt at best `insufficient_coverage`, listed under "Verification limits");
+`acknowledged_not_done` is `limitation_acknowledged_not_done`; a later check that proves it absent
+resolves it. The finding explanation says "Your own criterion ... fix it, or narrow the criterion".
+Two parts of that lifecycle belong to the reviewer's request to state a hidden evaluator's limit and
+never apply to the agent's own criterion (review of #1043). A `yoetz-verification-limit` decision
+neither discloses it nor marks its obligation `externally_evaluated` (`kernel.limitation`, G1): the
+probe fails here, and only the agent's own answer to that finding narrows it, so an unrelated
+decision line recorded for a hidden grader can no longer settle it unanswered. And the check never
+continues with `disclose_limitations` ("no repair is needed") for it: an open one is work, so
+`overall_next.action` and `finding_checklist.next` read `work_open_findings` (the checklist still
+says `decide_at_budget` at the round budget), and the text says fix it, or narrow it with
+`acknowledged` and a reason. The finding counters still count it under `to_disclose`; no token,
+basis or wire shape changed.
+
+Kernel routing (`agent_probe_only`), deterministic and conservative: a reviewer
+`task_requirement_unmet` is recorded as `agent_criterion_unmet` only when (a) at least one effective
+obligation that is neither acknowledged as not done nor confirmed blocked requests a command (the
+task's own sample or verifier as the plan declares it); (b) the case carries none of
+`planned_verification_failed|not_observed|stale|unobservable|outcome_unknown`, so every declared
+verification ran after the last edit and passed; (c) the challenge cites at least one recorded run,
+and every work subject it cites is a hook-observed command run (the action, its result, or output
+evidence that result lists) matching none of those requested commands and not linked by the agent to
+a requested command value (PL6-3, `task_facts.agent_linked_run_events`: the link the task facts
+accept as that obligation's planned verification, `planned_verification_agent_linked`, so a linked
+run is the declared verification, never a run beyond it; review of #1043 x #1049); obligations,
+claims and the plan or statement events it also cites are the requirement being judged; (d) the
+command-identity key is registered (hook rows store commands only as keyed commitments). An edit,
+an agent-published action, a linked run, an unmatched or unreadable row, a frozen prefix the check
+could not read (links unknown), or a missing key keeps `task_requirement_unmet`. The review
+summary says, in fixed words and a count, that the challenge was recorded as the agent's own
+criterion. Residual, disclosed here: hook rows carry neither command text nor paths (privacy), so the
+predicate cannot tell a run of the agent's own stress script from a run of a task-supplied example
+the agent did not declare as verification; such a failure is also routed. It stays a visible,
+never-clean finding the agent must fix or narrow with a reason, and the receipt lists the narrowing.
+
+Wire, all unreleased on 0.3 and changed in place: `finding_kind` gains `agent_criterion_unmet` on
+`finding` 1.4.0, `finding_recorded` 1.4.0 (the only version that carries it), provider judgment
+1.2.0, check-result 1.4.0 and status-result 1.4.0. A delegated child's finding keeps its kind
+on the parent: the lineage child-finding row of `child-dependencies-recorded` 1.0.0 and
+`receipt-document` 1.3.0 (both unreleased, widened in place) admits `agent_criterion_unmet`
+(priority 2, actionable) and the two review kinds it had omitted, `code_defect` and
+`task_requirement_unmet`. Before that, a child holding any of the three produced a manifest outside
+its schema and a parent JSON receipt that failed validation (review of #1043).
+
+### 4. No review before the first material edit (#1046)
+
+A check runs the local checks only and records `not_requested`/`deterministic_mode` with the new
+standing gap `semantic_review_deferred_before_first_edit` (G7, semantic-only for absence proofs; its
+effect follows the route the check recorded, below) when all hold: the phase is routine; the mode,
+the `policy` route and the configured reviewer would dispatch a review (`semantic_required`
+included); the frozen prefix records no material edit (`material_edit_recorded`: a counting
+observed edit or shell write under ADR-042/045, whether or not its result arrived, so a Codex shell
+`apply_patch <<EOF` counts by the files its patch names, or an agent-published `edit` action); and
+the check-time capture did not observe a workspace change. Nothing is composed or sent. The deferral
+comes before the review's own admission, so a pre-work check asks for no repository grant,
+disclosure decision or review input either, and a missing provider or a policy block
+(`not_configured`, `blocked_by_policy`) is reported by the first check after the edit. A resumed
+check keeps its decision: one already in `semantic_wait` keeps its review, and one resumed in
+`ready_to_finalize` reads no fresh capture: if its operation owns a review job it reviewed and is
+not deferred, otherwise the frozen prefix decides. The deferral never applies to the closing
+review, and where the deferred check's route requires review readiness asks for that review
+(below), so a task whose work is not an edit still reaches one there. The older stopped-round skip (`semantic_review_skipped_insufficient_packet`, ADR-006
+tb4n1 D3, #983) is a separate rule this section does not change: it can still skip a closing review
+that is not `semantic_required`.
+The deferral is not a failed review: the verdict reads from the local checks, never
+`incomplete_check`. Its effect follows the route the deferred check recorded, exactly like the
+`semantic_review_not_requested` it rides with (ADR-046 rule G1): where the check recorded
+`semantic_route_required: false` (a route that does not require review) both are disclosed, so the
+check, status and receipt read as a `deterministic_only` check on that route would, and a deferral
+Yoetz chose never reads worse than a local-only check the agent chose; where review is required
+both bound (`insufficient_coverage`) until a review is current. The next check after the first
+edit reviews as configured. Where the deferred check's route requires review, that review stays
+owed: the deferred check counts as a use of AI-powered review for `closing_review_required` (it
+stands in for the review the task owes, also when a `semantic_required` check runs under an
+optional policy), and while the latest check so deferred, the actionable
+`semantic_review_not_requested` no longer hides `closing_review_required`: a routine check would
+only defer again, so the closing review (the Stop gate's review token) is the way to supply it.
+Where the check recorded `semantic_route_required: false`, a deferral asks for nothing, exactly like
+a `deterministic_only` check on that route: counting it as a use there would leave an optional
+reviewer that cannot answer (a missing credential, a provider timeout: neither current nor
+undeliverable) demanding the closing review at every Stop, and the check's own next step would
+disagree with status. The CLI, the MCP check lead and the
+receipt's limitations sentence say "AI-powered review deferred".
+
+### 5. A cited `fixed` ruling closes its finding despite environment facts (#1046)
+
+`_TASK_FACT_GAPS_TOLERATED_WHEN_FIXED` (issue #1000: `write_outside_workspace`,
+`obligation_blocked_outside_agent_control`) now holds every environment fact:
+`verification_only_as_root`, `install_into_private_env`, `install_into_yoetz_runtime` and the
+planned-verification observer heuristics (`agent_linked`, `matched_by_prefix`, `outcome_unknown`,
+`unobservable`). Admission already requires a `fixed` ruling to cite evidence or a result recorded
+after the finding. The facts stay on the receipt (gap table G4) and the resolved finding's
+explanation names the ones its resolving check carried. Facts about the deliverable
+(`requested_output_*`, `declared_output_*`, `deliverable_references_undeclared_file`), every
+agent-actionable fact and a silent review keep blocking.
+
+Gap table: two recorded codes added (215 recorded + 3 readiness-only rows); they ship under the
+unreleased classification version `"8"`, with #1044's `G0c` row (ADR-046). Hosts: the change is in the shared check, kernel and provider
+instruction, so Codex, Claude Code and Cursor behave the same; no host adapter changed. Acceptance
+on the tb4n4 exports (replaying the 60 exports for the wrong-finding and in-frame rates) remains for
+the maintainer.

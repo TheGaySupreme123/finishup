@@ -138,7 +138,12 @@ to 8,192 characters, so the field limit does not protect against excerpt truncat
 When the review recipe selects diff excerpts, Yoetz itself also reads the task's repository at
 check time and gives the reviewer that **check-time change** first: committed and uncommitted
 changes from the commit the task started on, plus untracked files Git does not ignore, including
-edits made by scripts or commits that no hook captured. Yoetz redacts secret-shaped content in that
+edits made by scripts or commits that no hook captured. Untracked files already there when the task
+started and unchanged since are left out, a nested repository's own change is included the same
+way (when the header says its untracked files are named but not shown, give the reviewer evidence
+for one it must read), and up to
+four files the task statement names that the task only reads (a specification, the source being
+ported) travel beside it, so they need no evidence of their own. Yoetz redacts secret-shaped content in that
 check-time change, so no deliverable ever needs hiding: never git-ignore, exclude (including
 `.git/info/exclude`), stash, or move a requested output for privacy. Do not paste or digest the whole diff for the reviewer;
 use `description` for the problem-local hunk or test slice the claim depends on. The
@@ -363,7 +368,7 @@ replay once only for `absent`, use the stored `complete` outcome, and follow an 
 continuation before replaying a `pending` request. A read timeout gets a new read request ID with
 the same intent. Never manufacture a replacement event merely because a response was lost.
 
-Before a material publish over MCP, read `status view=obligations` and inspect the exact `unattempted_items` values before resolving an obligation. Then set `dry_run: true` to validate the batch and preview accepted event ids and coverage without appending. The dry-run result is not evidential and must not be cited as a check, publication, or coverage source. When the preview is acceptable, publish with the same `request_id` and `dry_run` omitted or false.
+A `status` read and a dry run before a publish are optional, not a ritual: the write is all or nothing. A rejected batch appends nothing and names what stopped it, not every error (for drafts, the first rejected draft and its field): fix it and resubmit, since another bad draft surfaces only on the next attempt, as it would in a dry run. An accepted write returns the new frontier and the accepted event ids. Use `dry_run: true` when you are unsure a batch will be accepted (a claim correction, a plan revision, a large batch); the preview is not evidential and must not be cited as a check, publication, or coverage source, and the real publish reuses the same `request_id` with `dry_run` omitted or false. Before resolving an obligation that names requested items, account for each exact value that has no attempt yet. When you need the picture, call `check` with `mode: inspect` instead of several status reads: it records nothing and returns what is left with whose move each gap is (requested items not attempted are named by index), what the hooks observed since the last check, and whether each obligation's resolution evidence links to its declared deliverables or commands. Your host approves it as it approves any `check` call; if the host holds or refuses it, nothing is pending in Yoetz, so read `status` instead. `status view=obligations` shows the exact `unattempted_items` values.
 
 Worked examples for each ordinary publishable family — and a cross-linked
 action/result/evidence/claim batch — live in the `publish_work` tool input schema `examples` entry
@@ -480,8 +485,8 @@ For 100 files, group them into independently reviewable packages, record partial
 
 ### Check completion scope before append
 
-Preview a completion claim with `publish_work dry_run=true`. A
-`completion_claim_outside_plan` gap means its `obligation_refs` extend beyond the effective plan;
+To see these diagnostics before appending, preview a completion claim with `publish_work
+dry_run=true`. A `completion_claim_outside_plan` gap means its `obligation_refs` extend beyond the effective plan;
 `completion_plan_not_claimed` means declared plan refs remain outside that claim. These diagnostics
 also appear after append and in status/check/receipts; they never auto-include obligations.
 

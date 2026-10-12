@@ -129,6 +129,7 @@ from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind, validate_id
 from yoetz.protocol.models import (
     CheckAwaitingHumanModel,
+    CheckInspectionModel,
     CheckRequest,
     CheckResult,
     CheckResultModel,
@@ -499,6 +500,10 @@ from yoetz.application.check import (  # noqa: E402
     check_awaiting_human_json,
     check_internal_json,
 )
+from yoetz.application.check_inspection import (  # noqa: E402
+    CheckInspection,
+    check_inspection_json,
+)
 from yoetz.application.import_review import (  # noqa: E402
     ImportCodexJsonlRequest,
     ImportReportInternal,
@@ -508,6 +513,7 @@ from yoetz.application.import_review import (  # noqa: E402
     execute_review,
     import_request_from_control,
 )
+from yoetz.application.missing_for_assessment import ReviewFollowUp  # noqa: E402
 from yoetz.application.publish_work import (  # noqa: E402
     PublishWorkInternalResult,
     execute_publish_work,
@@ -529,6 +535,7 @@ type UnprojectedControlBody = (
     | PublishWorkInternalResult
     | CheckCommitResult
     | CheckAwaitingHuman
+    | CheckInspection
     | RespondInternalResult
     | StatusInternalResult
     | ReceiptInternalResult
@@ -567,6 +574,20 @@ def _accepts_keyword(function: object, name: str) -> bool:
     return any(
         parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters
+    )
+
+
+def _declares_keyword(function: object, name: str) -> bool:
+    """Whether ``function`` names keyword ``name`` itself; ``**kwargs`` does not count."""
+
+    try:
+        parameters = inspect.signature(cast(Callable[..., object], function)).parameters
+    except TypeError, ValueError:
+        return False
+    parameter = parameters.get(name)
+    return parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
     )
 
 
@@ -665,6 +686,8 @@ def _internal_json(result: UnprojectedControlBody) -> dict[str, JsonValue]:
         return dict(check_internal_json(result).items())
     if type(result) is CheckAwaitingHuman:
         return dict(check_awaiting_human_json(result).items())
+    if type(result) is CheckInspection:
+        return check_inspection_json(result)
     if type(result) is RespondInternalResult:
         return result.as_json()
     if type(result) is StatusInternalResult:
@@ -807,6 +830,8 @@ def _public_model(method: ControlMethod, value: Mapping[str, JsonValue]) -> Proj
     check_success: type[BaseModel] = (
         CheckAwaitingHumanModel
         if value.get("state") in {"awaiting_human", "awaiting_input"}
+        else CheckInspectionModel
+        if value.get("state") == "inspected"
         else CheckSuccessModel
     )
     model: tuple[type[BaseModel], type[BaseModel]] | None = {
@@ -2416,13 +2441,19 @@ class Application:
         host_profile: McpHostProfile = "generic",
         repository_privacy_context: RepositoryPrivacyContext | None = None,
         observations_awaited: CheckObservationsAwaited | None = None,
-    ) -> CheckCommitResult | CheckAwaitingHuman:
+    ) -> CheckCommitResult | CheckAwaitingHuman | CheckInspection:
         """Run one check; ``observations_awaited`` is the daemon's pre-gate wait (issue #1012)."""
 
         from yoetz.application.check import execute_check
 
         await self._require_repository_route(request, repository_privacy_context)
         await self._renew_activity_session(request.session_id, request)
+        if request.mode == "inspect":
+            # ADR-047: a read. No default mode, no workspace capture, no reviewer route.
+            inspection = await execute_check(self, request, route_profile=route_profile)  # pyright: ignore[reportArgumentType]
+            if observations_awaited is not None and type(inspection) is CheckInspection:
+                inspection = replace(inspection, observations_awaited=observations_awaited)
+            return inspection
         # Resolve omitted mode via policy so recorded check events carry the resolved value.
         if request.mode is None:
             request = request.model_copy(
@@ -2794,6 +2825,7 @@ class Application:
         require_complete_specification: bool = False,
         final_review: bool = False,
         task_fact_gaps: tuple[str, ...] = (),
+        follow_up: ReviewFollowUp | None = None,
     ) -> object:
         evaluator = self.semantic_evaluator
         # The closing-review choice (issue #976) and the check-time task-fact codes (#977) reach
@@ -2804,6 +2836,25 @@ class Application:
             extra["final_review"] = True
         if task_fact_gaps and _accepts_keyword(evaluator, "task_fact_gaps"):
             extra["task_fact_gaps"] = task_fact_gaps
+        if follow_up is not None:
+            # An in-check follow-up round (issue #1047) reaches only an evaluator that names the
+            # keyword itself; any other dispatches nothing (``None``), and the first review
+            # stands. It never falls back to a first-review call shape.
+            if not _declares_keyword(evaluator, "follow_up"):
+                return None
+            # Declared by name (checked above); the port protocol keeps it optional so older
+            # evaluator doubles stay assignable.
+            follow_up_evaluator = cast(Callable[..., Awaitable[object]], evaluator)
+            if _accepts_keyword(evaluator, "require_complete_specification"):
+                extra["require_complete_specification"] = require_complete_specification
+            return await follow_up_evaluator(
+                frozen,
+                deterministic_findings,
+                cast(TaskRuntime | None, runtime),
+                lineage_evaluation,
+                follow_up=follow_up,
+                **extra,
+            )
         # Production evaluators accept the task runtime for durable job/attempt coordination.
         # Test doubles may still be binary callables.
         try:

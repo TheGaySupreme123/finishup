@@ -32,14 +32,20 @@ from yoetz.domain.review_input_render import (
 from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from yoetz.mcp.errors import VALIDATION_REASON_TOKENS
 from yoetz.protocol.canonical import JsonValue, ensure_canonical_value
-from yoetz.protocol.errors import PublicErrorCode, normalize_safe_details
+from yoetz.protocol.errors import (
+    SERVICE_STARTUP_PHASES,
+    PublicErrorCode,
+    normalize_safe_details,
+)
 from yoetz.protocol.guidance_uris import ALL_GUIDANCE_URIS
 from yoetz.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
+from yoetz.protocol.inspection_text import inspection_text
 from yoetz.protocol.readiness_text import (
     READINESS_STATES,
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
+    obligation_resolve_recipe_variants,
     predicted_receipt_variants,
     readiness_directive,
     recheck_note,
@@ -61,6 +67,7 @@ __all__ = [
     "render_check_reviewer_output",
     "summary_for_check",
     "summary_for_check_awaiting",
+    "summary_for_check_inspection",
     "summary_for_closure_prepare",
     "summary_for_public_error",
     "summary_for_read_guidance",
@@ -95,6 +102,7 @@ _REVIEW_KINDS: Final = frozenset(
         "weak_or_stale_response",
         "code_defect",
         "task_requirement_unmet",
+        "agent_criterion_unmet",
     }
 )
 # A validation location pointer as ``yoetz.mcp.errors`` builds it: at most eight frozen
@@ -766,6 +774,15 @@ def _obligation_ids_from_status(source: Mapping[str, JsonValue], view: str) -> t
     )
 
 
+def _obligation_resolve_recipe(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """The shared resolution recipe when the obligations page holds an unresolved row."""
+
+    page = source.get("page")
+    if not isinstance(page, Mapping):
+        return ()
+    return obligation_resolve_recipe_variants(cast(Mapping[str, JsonValue], page).get("items"))
+
+
 def _finding_frontiers_from_status(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
     """Pair each revalidated finding ID with the frontier ``respond`` accepts for it (#917).
 
@@ -1132,19 +1149,27 @@ def _reason_location_clause(error: Mapping[str, JsonValue]) -> str:
     candidate: dict[str, object] = {}
     reason = typed.get("reason_code")
     field = typed.get("field")
+    phase = typed.get("phase")
     if type(reason) is str:
         candidate["reason_code"] = reason
     if type(field) is str:
         candidate["field"] = field
+    if type(phase) is str:
+        candidate["phase"] = phase
     gated = normalize_safe_details(candidate)
     gated_reason = gated.get("reason_code")
     gated_field = gated.get("field")
+    gated_phase = gated.get("phase")
     if type(gated_reason) is not str:
         if type(gated_field) is str:
             return f" Field: {gated_field}."
         return ""
     if type(gated_field) is str:
         return f" Reason: {gated_reason} at {gated_field}."
+    if gated_phase in SERVICE_STARTUP_PHASES:
+        # The stage a spawned service failed at (#1040); its exception class and origin are in
+        # the record the correlation_id resolves.
+        return f" Reason: {gated_reason} (stage: {gated_phase})."
     return f" Reason: {gated_reason}."
 
 
@@ -1389,6 +1414,18 @@ def _check_lead_variants(
         and status == "not_requested"
         and reason == "deterministic_mode"
     )
+    if status == "not_requested" and (
+        "semantic_review_deferred_before_first_edit" in _safe_gap_codes(source)
+    ):
+        # Issue #1046: a pre-work check ran the local plan checks only; nothing was sent.
+        return (
+            "AI-powered review deferred until the first material edit (no edit is recorded "
+            "yet; the next check after one reviews, and the closing review is never deferred); "
+            f"local plan check verdict: {verdict}; {counts}",
+            "AI-powered review deferred until the first edit; local plan check verdict: "
+            f"{verdict}; {counts}",
+            f"AI-powered review deferred; local check verdict: {verdict};",
+        )
     if status == "not_requested" and (
         "semantic_review_skipped_insufficient_packet" in _safe_gap_codes(source)
     ):
@@ -1879,6 +1916,11 @@ def summary_for_status(envelope: object) -> str:
             )
         )
     parts.extend(_status_list_parts(render, source, view))
+    if view == "obligations":
+        # tb4n4 (#1049): the view a resolution is authored from names the field it needs.
+        recipe = render.variants("resolve_recipe", lambda: _obligation_resolve_recipe(source))
+        if recipe:
+            parts.append(_opt(*recipe, priority=_P_STATE))
     parts.append(_req(f"unanswered findings: {unanswered}; reported gaps: {gaps}."))
     parts.extend(_closure_section(render, source))
     page = source.get("page")
@@ -2425,6 +2467,23 @@ def summary_for_check_awaiting(envelope: object) -> str:
     )
 
 
+def summary_for_check_inspection(envelope: object) -> str:
+    """Project a ``mode: inspect`` check (ADR-047) onto the text channel.
+
+    The lead lines (what is left, the gap split, what the hooks saw, the alignment count) are
+    required; each obligation, finding, observed action and alignment row is optional detail the
+    bound may drop, since the structured result carries every row.
+    """
+
+    text = inspection_text(_mapping(envelope))
+    return _compose(
+        [
+            _req(" ".join(text.lead)),
+            *(_opt(line, priority=_P_DETAIL) for line in text.details),
+        ]
+    )
+
+
 def summary_for_read_guidance(envelope: object) -> str:
     """Name where a guidance result's full text is, without repeating it (issue #918).
 
@@ -2575,6 +2634,8 @@ def _select_builder(source: Mapping[str, JsonValue]) -> tuple[str, Callable[[obj
         return "error", summary_for_public_error
     if source.get("preparatory_only") is True:
         return "closure_prepare", summary_for_closure_prepare
+    if source.get("state") == "inspected":
+        return "check_inspection", summary_for_check_inspection
     if "verdict" in source:
         return "check", summary_for_check
     if "view" in source:
@@ -2625,6 +2686,8 @@ def _minimal_summary(envelope: object, builder: str) -> str:
             return f"Receipt conclusion: {_safe_token(source.get('conclusion'))};"
         if builder == "closure_prepare":
             return "Closure preparation only;"
+        if builder == "check_inspection":
+            return "Check inspection (read only, nothing recorded);"
         return (
             f"Operation outcome: {_safe_token(source.get('outcome'), fallback='recorded')}; "
             f"{_identity_clause(source)}"

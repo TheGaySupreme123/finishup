@@ -1868,6 +1868,56 @@ async def test_connect_absent_service_names_the_supervisor_repair(
 
 
 @pytest.mark.anyio
+async def test_a_spawned_service_that_failed_to_start_is_named_on_the_start_result(
+    monkeypatch: pytest.MonkeyPatch, diagnostic_root: Path
+) -> None:
+    """The conda-image ``start`` said only "not running; run it" after exit 70 (#1040)."""
+
+    from yoetz.service.startup_failure import record_startup_failure
+
+    try:
+        raise NotImplementedError("chmod: follow_symlinks unavailable on this platform")
+    except NotImplementedError as exc:
+        record_startup_failure(exc, stage="activation", correlation_id=_SERVICE_CORRELATION)
+    _install_connect_failure(
+        monkeypatch,
+        ControlError(
+            "service_unavailable",
+            retryable=False,
+            correlation_id=_SERVICE_CORRELATION,
+            phase="activation",
+        ),
+    )
+    runtime = bridge.build_bridge_runtime()
+    request = _requests()["start"]
+
+    result = await bridge.dispatch_start(request, runtime)
+
+    error = _start_error(result, cast(str, request["request_id"]))
+    assert error["code"] == PublicErrorCode.SERVICE_UNAVAILABLE.value
+    assert error["retryable"] is False
+    assert error["correlation_id"] == _SERVICE_CORRELATION
+    details = cast(dict[str, object], error["safe_details"])
+    assert details["reason_code"] == "service_start_failed"
+    assert details["phase"] == "activation"
+    message = cast(str, error["message"])
+    assert message.startswith(
+        "The local Yoetz service exited while starting "
+        "(stage: activation; exception_not_implemented_error)"
+    )
+    assert message != _ABSENT_SERVICE_MESSAGE
+    text = cast(types.TextContent, result.content[0]).text
+    assert "Reason: service_start_failed (stage: activation)." in text
+    assert "Remedy: The local Yoetz service exited while starting" in text
+    assert _SERVICE_CORRELATION in text
+    # One failure, one id: the bridge reuses the spawned service's record and adds none.
+    (found,) = lookup_diagnostic_records(_SERVICE_CORRELATION, root=diagnostic_root)
+    assert found["operation"] == "service_startup_failed"
+    _assert_no_leakage(result.structuredContent, found)
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
 async def test_connect_accepted_but_unresponsive_does_not_prescribe_service_run(
     monkeypatch: pytest.MonkeyPatch, diagnostic_root: Path
 ) -> None:

@@ -32,7 +32,7 @@ import stat
 import subprocess
 import time
 import zlib
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Literal
@@ -44,9 +44,14 @@ from yoetz.adapters.git_subject_state import (
     open_local_workspace,
     run_read_only_git,
 )
+from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.change_capture import (
+    MAX_BASELINE_UNTRACKED_FILES,
     MAX_CHECK_CHANGE_TEXT_BYTES,
+    MAX_NESTED_REPOSITORIES,
     MAX_PROBED_FILE_SIZE,
+    MAX_TASK_INPUT_FILES,
+    MAX_TASK_INPUT_TEXT_BYTES,
     ChangeBaseKind,
     ChangeCaptureUnavailable,
     ChangeLineCount,
@@ -54,8 +59,11 @@ from yoetz.ports.change_capture import (
     ChangeMetadataEntry,
     CheckChangeCapture,
     CheckChangeMetadata,
+    NestedUntrackedBaseline,
     RequestedPathProbe,
     TaskChangeBase,
+    TaskInputFile,
+    UntrackedBaselineFile,
     metadata_path_representable,
 )
 from yoetz.ports.subject_state import LocalWorkspaceHandle
@@ -170,6 +178,8 @@ type _OmitReason = Literal[
     "unreadable",
     "credential_name",
     "object_unverified",
+    "nested_repository",
+    "nested_untracked",
 ]
 _OMIT_TEXT: Final[dict[_OmitReason, str]] = {
     "credential_name": "not shown: listed by name only, as for every file named like this",
@@ -178,11 +188,28 @@ _OMIT_TEXT: Final[dict[_OmitReason, str]] = {
     "not_regular_file": "not shown: links, special files and multiply linked files are never read",
     "unreadable": "not shown: could not be read safely",
     "object_unverified": "not shown: a Git object its diff needs could not be verified",
+    "nested_repository": "not shown: a nested Git repository whose own change was not read",
+    "nested_untracked": (
+        "not shown: untracked inside a nested repository whose untracked files the task-start "
+        "record does not fully list, so it may predate the task"
+    ),
 }
 # Omitted for what the file is, not its size: its line counts are not shown either.
 _WITHHELD_COUNTS: Final[frozenset[_OmitReason]] = frozenset(
-    {"not_regular_file", "unreadable", "object_unverified"}
+    {
+        "not_regular_file",
+        "unreadable",
+        "object_unverified",
+        "nested_repository",
+        "nested_untracked",
+    }
 )
+# The ``stat`` fields that say an untracked file is still the one the task started with (issue
+# #1045): type and permission bits, inode, size, modification and change time. The change time
+# moves on every content or metadata write and cannot be set back, so a file rewritten with its old
+# modification time restored is still seen as changed. Device and link count are left out: a
+# remount or a second name does not change the file's bytes.
+_BASELINE_FIELDS: Final = (0, 2, 3, 4, 5)
 # (mode, device, inode, size, mtime ns, ctime ns, link count, owner) of one path, never followed.
 type _Identity = tuple[int, int, int, int, int, int, int, int]
 # A path reachable only through a link or a non-directory component.
@@ -223,6 +250,9 @@ class _TrackedRead:
     identities: dict[bytes, _Identity | None]
     # Metadata capture uses a name-status query; content capture keeps the raw query.
     arguments: tuple[str, ...] = ()
+    # Changed gitlinks (submodules and embedded repositories Git tracks): path and the commit the
+    # base tree records for it, ``None`` when the base held no gitlink there.
+    gitlinks: tuple[tuple[bytes, str | None], ...] = ()
 
 
 @dataclass(slots=True)
@@ -233,6 +263,12 @@ class _UntrackedRead:
     listing: bytes | None
     config: tuple[str, ...]
     identities: dict[bytes, _Identity | None]
+    # Untracked files that predate the task (issue #1045): those unchanged since are left out
+    # (``kept``; their identities only join the stability check), the others changed since.
+    kept: frozenset[bytes] = frozenset()
+    preexisting: frozenset[bytes] = frozenset()
+    # Embedded repositories the metadata read listed as their directory (issue #1045).
+    directories: tuple[bytes, ...] = ()
 
 
 @dataclass(slots=True)
@@ -244,6 +280,212 @@ class _Section:
     deleted: str
     text: bytes | None
     omitted: _OmitReason | None
+    # An untracked file that already existed when the task started and changed since (#1045).
+    preexisting: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _Baseline:
+    """The task-start snapshot a capture applies (issue #1045); absent for any other base."""
+
+    files: dict[bytes, str]
+    complete: bool
+    nested: dict[bytes, str]
+    # Each nested repository's own untracked files at task start, relative to its directory;
+    # ``None`` when its listing was incomplete. A repository absent here has no listing.
+    nested_untracked: dict[bytes, dict[bytes, str] | None]
+
+
+@dataclass(slots=True)
+class _NestedRead:
+    """One nested repository's own change, or why it could not be read (issue #1045)."""
+
+    path: bytes
+    base: ChangeBaseKind | None = None
+    sections: list[_Section] | None = None
+    tracked: int = 0
+    untracked: int = 0
+    unlisted_untracked: int = 0
+    listing_truncated: bool = False
+    reason: str | None = None
+    # Its starting commit is the gitlink the outer base tree records, because the task-start
+    # snapshot recorded no HEAD for it (a base recorded before the snapshot named gitlinked
+    # repositories, or one it could not open): commits made in it before the task that the outer
+    # repository does not record are part of its change, and the header says so.
+    from_base_tree: bool = False
+    # Why its untracked files are named only (no task-start listing of them, or an incomplete
+    # one); ``None`` when the listing was complete and they are treated as at the outer level.
+    untracked_unrecorded: Literal["absent", "incomplete"] | None = None
+    # Its untracked files that the listing names with an unchanged digest: left out and counted.
+    kept: int = 0
+
+
+@dataclass(slots=True)
+class _NestedMetadata:
+    """One nested repository's metadata-only change (issue #1045); ``entries`` ``None``: unread."""
+
+    path: bytes
+    entries: list[ChangeMetadataEntry] | None = None
+    tracked: int = 0
+    untracked: int = 0
+    omitted: int = 0
+    unrepresentable: int = 0
+    listing_truncated: bool = False
+
+
+_BASELINE_DOMAIN: Final = b"yoetz/untracked-baseline/v1\x00"
+
+
+def _baseline_state(identity: Sequence[int]) -> str:
+    """The digest a task-start snapshot keeps for one untracked file's ``stat`` (issue #1045)."""
+
+    fields = ",".join(str(identity[index]) for index in _BASELINE_FIELDS)
+    return "sha256:" + hashlib.sha256(_BASELINE_DOMAIN + fields.encode("ascii")).hexdigest()
+
+
+def _apply_baseline(
+    pinned: _Workspace, paths: list[bytes], baseline: _Baseline | None
+) -> tuple[list[bytes], dict[bytes, _Identity | None], set[bytes]]:
+    """Split listed untracked paths by the task-start snapshot (issue #1045).
+
+    Returns the paths still part of the change, the baseline paths left out (with the identity
+    each still had, for the stability check), and the paths that predate the task but changed
+    since. Without a snapshot every path stays and nothing is left out.
+    """
+
+    if baseline is None or not baseline.files:
+        return list(paths), {}, set()
+    remaining: list[bytes] = []
+    kept: dict[bytes, _Identity | None] = {}
+    preexisting: set[bytes] = set()
+    for path in paths:
+        recorded = baseline.files.get(path)
+        if recorded is None:
+            remaining.append(path)
+            continue
+        identity = _path_identity(pinned.descriptor, path)
+        if identity is not None and identity != _BLOCKED and _baseline_state(identity) == recorded:
+            kept[path] = identity
+            continue
+        preexisting.add(path)
+        remaining.append(path)
+    return remaining, kept, preexisting
+
+
+def _baseline(base: TaskChangeBase | None) -> _Baseline | None:
+    """The snapshot of a ``task_start`` base that recorded one; ``None`` otherwise."""
+
+    if base is None or base.origin != "task_start":
+        return None
+    if not (base.untracked or base.untracked_complete or base.nested):
+        return None
+    return _Baseline(
+        {os.fsencode(item.path): item.state for item in base.untracked},
+        base.untracked_complete,
+        {os.fsencode(path): commit for path, commit in base.nested},
+        {
+            os.fsencode(row.path): (
+                {os.fsencode(item.path): item.state for item in row.files} if row.complete else None
+            )
+            for row in base.nested_untracked
+        },
+    )
+
+
+def _nested_start_state(
+    baseline: _Baseline | None, path: bytes, gitlink_commit: str | None
+) -> tuple[str | None, bool, dict[bytes, str] | None, Literal["absent", "incomplete"] | None]:
+    """Where one nested repository's change starts, and its task-start untracked listing (#1045).
+
+    The HEAD the snapshot recorded comes first: the commit the outer base tree records for a
+    gitlink (``gitlink_commit``) can be older than that HEAD, and every commit in between predates
+    the task. Returns the starting commit (``None``: its HEAD now), whether it is the base tree's
+    gitlink commit, the complete untracked listing (``None`` when there is none) and, without
+    one, why: no listing was recorded, or it was incomplete.
+    """
+
+    recorded = None if baseline is None else baseline.nested.get(path)
+    from_base_tree = recorded is None and gitlink_commit is not None
+    if recorded is None:
+        recorded = gitlink_commit
+    if baseline is None or path not in baseline.nested_untracked:
+        return recorded, from_base_tree, None, "absent"
+    listing = baseline.nested_untracked[path]
+    return recorded, from_base_tree, listing, None if listing is not None else "incomplete"
+
+
+def _nested_base(
+    object_format: Literal["sha1", "sha256"], recorded: str | None
+) -> TaskChangeBase | None:
+    if recorded is None or not recorded.strip("0"):
+        return None
+    try:
+        return TaskChangeBase(object_format, recorded)
+    except ValueError:
+        return None
+
+
+def _metadata_listing(
+    tracked: Sequence[ChangeMetadataEntry],
+    tracked_skipped: int,
+    untracked: _UntrackedRead,
+    *,
+    prefix: bytes = b"",
+    named_only: bool = False,
+) -> tuple[list[ChangeMetadataEntry], int, int]:
+    """One repository's metadata entries, unrepresentable count and omitted count.
+
+    ``prefix`` is a nested repository's directory, carried by every path (issue #1045). With
+    ``named_only`` its untracked files cannot be told apart from ones that predate the task, so
+    none is an entry and each counts as omitted, as the full capture names them without showing
+    them. A CR or LF in a name cannot be an entry: such a path is skipped and counted (#1019).
+    """
+
+    directory = os.fsdecode(prefix)
+    entries: list[ChangeMetadataEntry] = []
+    skipped = tracked_skipped
+    for entry in tracked:
+        if not prefix:
+            entries.append(entry)
+            continue
+        name = directory + entry.path
+        original = None if entry.original_path is None else directory + entry.original_path
+        if not metadata_path_representable(name) or (
+            original is not None and not metadata_path_representable(original)
+        ):
+            skipped += 1
+            continue
+        entries.append(replace(entry, path=name, original_path=original))
+    if named_only:
+        return entries, skipped, untracked.total + skipped
+    # An untracked file that predates the task and changed since is a modification, not a new
+    # file (issue #1045).
+    paths = sorted(untracked.identities.keys() - untracked.kept, key=bytes)
+    listed = [
+        ChangeMetadataEntry("M", name)
+        if path in untracked.preexisting
+        else ChangeMetadataEntry("A", name, untracked=True)
+        for path in paths
+        if metadata_path_representable(name := os.fsdecode(prefix + path))
+    ]
+    unrepresentable = skipped + len(paths) - len(listed)
+    return [*entries, *listed], unrepresentable, untracked.total - len(paths) + unrepresentable
+
+
+def _patch_options(prefix: bytes) -> tuple[str, ...]:
+    """Patch options whose ``a/``/``b/`` path prefixes also carry a nested repository's path."""
+
+    if not prefix:
+        return _PATCH_OPTIONS
+    nested = os.fsdecode(prefix)
+    return tuple(
+        f"--src-prefix=a/{nested}"
+        if option == "--src-prefix=a/"
+        else f"--dst-prefix=b/{nested}"
+        if option == "--dst-prefix=b/"
+        else option
+        for option in _PATCH_OPTIONS
+    )
 
 
 def _quote_path(path: bytes) -> str:
@@ -298,6 +540,8 @@ _MAX_LINE_COUNT_TOTAL_BYTES: Final = 64 * 1024 * 1024
 _MAX_REFERENCE_DELIVERABLES: Final = 16
 _MAX_REFERENCE_FILE_BYTES: Final = 256 * 1024
 _MAX_REFERENCE_CANDIDATES: Final = 1_024
+# The (deliverable, referenced file) pairs one read returns (tb4n4, #1044).
+_MAX_REFERENCE_PAIRS: Final = 64
 # A basename shorter than this is too common (``a.py``, ``x``) to count as a reference by itself.
 _MIN_REFERENCE_BASENAME: Final = 5
 _SOURCE_SUFFIXES: Final = frozenset(
@@ -357,6 +601,8 @@ _SMALL_SECTION_BYTES: Final = 4_096
 # How many untracked paths are stat-ed (metadata only) to rank small files ahead of the untracked
 # file limit; paths past this bound keep path order after the ranked ones.
 _MAX_UNTRACKED_ORDER_STATS: Final = 4_096
+# The task-start snapshot's path bytes in all (issue #1045); the port enforces the same bound.
+_MAX_BASELINE_PATH_BYTES: Final = 262_144
 
 
 def _priority_paths(root: Path, values: tuple[str, ...]) -> tuple[bytes, ...]:
@@ -450,6 +696,16 @@ def _untracked_order(
         return (1 if size is not None and size <= _SMALL_SECTION_BYTES else 2, 0, path)
 
     return sorted(ordered, key=rank)
+
+
+def _nested_name(path: bytes) -> str | None:
+    """A nested repository's directory as the task-start base can hold it, else ``None``."""
+
+    try:
+        name = path.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    return None if any(character in name for character in "\x00\r\n") else name
 
 
 def _safe_relative(path: bytes) -> bool:
@@ -593,7 +849,254 @@ class GitChangeCaptureAdapter:
         head = self._rev(pinned, "HEAD^{commit}", deadline)
         # A repository with no commit yet starts from the empty tree, so every file the task adds
         # is still part of its change when HEAD later gains commits.
-        return TaskChangeBase(object_format, head or _EMPTY_TREES[object_format])
+        commit = head or _EMPTY_TREES[object_format]
+        try:
+            untracked, complete, nested, listings = self._start_snapshot(pinned, deadline)
+            return TaskChangeBase(
+                object_format, commit, "task_start", untracked, complete, nested, listings
+            )
+        except ChangeCaptureUnavailable:
+            # The commit is the base; a snapshot that cannot be taken only leaves every untracked
+            # file to be shown as new, exactly as before the snapshot existed.
+            return TaskChangeBase(object_format, commit)
+        except ValueError as exc:
+            # A snapshot the base object refuses is a defect, kept diagnosable; the task still
+            # gets its commit base.
+            record_unexpected_exception_without_raising(
+                exc, component="start", operation="task_change_base_snapshot_dropped"
+            )
+            return TaskChangeBase(object_format, commit)
+
+    def _start_snapshot(
+        self, pinned: _Workspace, deadline: float
+    ) -> tuple[
+        tuple[UntrackedBaselineFile, ...],
+        bool,
+        tuple[tuple[str, str], ...],
+        tuple[NestedUntrackedBaseline, ...],
+    ]:
+        """Untracked files and nested repository HEADs when the task starts (issue #1045).
+
+        Metadata only: Git lists the untracked names (honouring the same ignore files as the
+        capture) and each is ``stat``-ed beneath the validated root without following a link; no
+        file is opened. A nested repository (listed as its directory, or a gitlink the index
+        records whose directory holds its own ``.git`` directory) is opened with every fence the
+        capture uses; its HEAD is read and its own untracked files are listed and ``stat``-ed the
+        same way. Untracked repositories take the ``MAX_NESTED_REPOSITORIES`` places first, as a
+        gitlink still has the commit the outer base tree records for it. Bounded: past
+        ``MAX_BASELINE_UNTRACKED_FILES`` names (or 256 KiB of names) the outer snapshot is
+        incomplete and a later untracked file it does not name is new; a nested repository's
+        listing takes what the outer one left of the same bounds whole, in place order, or is
+        recorded incomplete.
+        """
+
+        self._refuse_unsafe_config(pinned, deadline)
+        excludes = self._repository_excludes_file(pinned, deadline)
+        if excludes is None:
+            excludes = _global_excludes_file(deadline)
+        config = ("-c", f"core.excludesFile={excludes}") if excludes is not None else ()
+        listing, truncated = self._untracked_listing(pinned, config, deadline)
+        complete = not truncated
+        files: list[UntrackedBaselineFile] = []
+        directories: list[bytes] = []
+        path_bytes = 0
+        for path in sorted(_nul_fields(listing)):
+            if not _safe_relative(path.rstrip(b"/")):
+                raise ChangeCaptureUnavailable("unsafe_root")
+            if path.endswith(b"/"):
+                directories.append(path[:-1])
+                continue
+            if (
+                len(files) >= MAX_BASELINE_UNTRACKED_FILES
+                or path_bytes + len(path) > _MAX_BASELINE_PATH_BYTES
+                or _expired(deadline)
+            ):
+                # Past a bound the snapshot no longer names every file, so it is incomplete.
+                complete = False
+                continue
+            identity = _path_identity(pinned.descriptor, path)
+            if identity is None:
+                # Gone already: it cannot be a file this task started with.
+                continue
+            if identity == _BLOCKED:
+                # Git never lists a path behind a link, so this is a failed or raced ``stat``: the
+                # file may still be there, so the snapshot no longer names every file.
+                complete = False
+                continue
+            try:
+                item = UntrackedBaselineFile(
+                    path.decode("utf-8", errors="strict"), _baseline_state(identity)
+                )
+            except ValueError:
+                # A name the snapshot cannot hold: it is incomplete.
+                complete = False
+                continue
+            path_bytes += len(path)
+            files.append(item)
+
+        def repositories() -> Iterator[bytes]:
+            yield from directories
+            # A gitlinked repository's HEAD can be ahead of the commit the outer repository
+            # records for it (commits made in it and never added outside): the change in it
+            # starts from that HEAD, so those earlier commits are never shown as the task's work.
+            for path in self._gitlink_paths(pinned, deadline):
+                git_entry = _path_identity(pinned.descriptor, path + b"/.git")
+                # Only an embedded repository the check-time read would open: never an
+                # uninitialised submodule, or a checkout whose ``.git`` is a file.
+                if git_entry is not None and git_entry != _BLOCKED and stat.S_ISDIR(git_entry[0]):
+                    yield path
+
+        nested: list[tuple[str, str]] = []
+        listings: list[NestedUntrackedBaseline] = []
+        names_left = MAX_BASELINE_UNTRACKED_FILES - len(files)
+        bytes_left = _MAX_BASELINE_PATH_BYTES - path_bytes
+        for path in repositories():
+            if len(nested) >= MAX_NESTED_REPOSITORIES or _expired(deadline):
+                break
+            name = _nested_name(path)
+            if name is None or any(name == recorded for recorded, _ in nested):
+                continue
+            started = self._nested_start(pinned, path, deadline)
+            if started is None:
+                continue
+            commit, found = started
+            nested.append((name, commit))
+            size = 0 if found is None else sum(len(item.path.encode("utf-8")) for item in found)
+            if found is not None and len(found) <= names_left and size <= bytes_left:
+                names_left -= len(found)
+                bytes_left -= size
+                listings.append(NestedUntrackedBaseline(name, True, found))
+            else:
+                # Whole or not at all: a partial listing could not tell its other files apart
+                # from ones that predate the task.
+                listings.append(NestedUntrackedBaseline(name, False))
+        listings.sort(key=lambda row: row.path)
+        return tuple(files), complete, tuple(nested), tuple(listings)
+
+    def _gitlink_paths(self, pinned: _Workspace, deadline: float) -> list[bytes]:
+        """The paths the index records as gitlinks, in path order (issue #1045). Metadata only.
+
+        An index too large to list keeps the gitlinks among the names that fit; one Git cannot
+        list records none. Either way a gitlink not recorded starts from the commit the outer
+        base tree records for it, and the header says so.
+        """
+
+        try:
+            _, listing = self._git(
+                pinned,
+                ("ls-files", "--stage", "-z"),
+                deadline=deadline,
+                limit=_LIST_LIMIT,
+                keep_prefix_on_limit=True,
+            )
+        except GitOutputTruncated as exc:
+            listing = exc.prefix[: exc.prefix.rfind(b"\0") + 1]
+        except ValueError:
+            return []
+        except ChangeCaptureUnavailable as exc:
+            if exc.reason != "git_failed":
+                raise
+            return []
+        paths: set[bytes] = set()
+        for record in _nul_fields(listing):
+            meta, separator, path = record.partition(b"\t")
+            if separator and meta.startswith(b"160000 ") and _safe_relative(path):
+                paths.add(path)
+        return sorted(paths)
+
+    def _nested_start(
+        self, pinned: _Workspace, relative: bytes, deadline: float
+    ) -> tuple[str, tuple[UntrackedBaselineFile, ...] | None] | None:
+        """HEAD and untracked files of the nested repository at ``relative``, or ``None``.
+
+        After the open fence, the repository passes the object-store and effective-config fences
+        its check-time read applies (``_nested_read``) before its HEAD is resolved, so a store
+        borrowed through ``commondir`` or alternates never supplies the starting commit. ``None``
+        records nothing: the capture then starts from its HEAD and says it may miss commits, or
+        refuses it as it was refused here. Only with a HEAD are its untracked files listed (the
+        same ignore files its check-time read honours) and ``stat``-ed beneath its own root
+        without following a link; no file is opened. That listing is ``None`` when it is cut
+        short, would exceed the snapshot's bounds on its own, holds a name the base cannot carry
+        or cannot be taken in time.
+        """
+
+        try:
+            nested = self._open_nested(pinned, relative, deadline)
+            # Metadata only: a borrowed store is refused before the effective-config listing
+            # follows its includes and before HEAD is resolved.
+            self._refuse_unsafe_object_store(nested)
+            self._refuse_unsafe_config(nested, deadline)
+            commit = self._rev(nested, "HEAD^{commit}", deadline)
+        except ChangeCaptureUnavailable:
+            return None
+        if commit is None:
+            return None
+        try:
+            return commit, self._nested_untracked_baseline(nested, deadline)
+        except ChangeCaptureUnavailable, ValueError:
+            return commit, None
+
+    def _nested_untracked_baseline(
+        self, nested: _Workspace, deadline: float
+    ) -> tuple[UntrackedBaselineFile, ...] | None:
+        """The opened nested repository's untracked files in path order, or ``None``."""
+
+        excludes = self._repository_excludes_file(nested, deadline)
+        if excludes is None:
+            excludes = _global_excludes_file(deadline)
+        config = ("-c", f"core.excludesFile={excludes}") if excludes is not None else ()
+        listing, truncated = self._untracked_listing(nested, config, deadline)
+        if truncated:
+            return None
+        files: list[UntrackedBaselineFile] = []
+        path_bytes = 0
+        for path in sorted(_nul_fields(listing)):
+            if path.endswith(b"/"):
+                # A repository nested inside this one is never read; nothing to record.
+                continue
+            if (
+                not _safe_relative(path)
+                or len(files) >= MAX_BASELINE_UNTRACKED_FILES
+                or path_bytes + len(path) > _MAX_BASELINE_PATH_BYTES
+                or _expired(deadline)
+            ):
+                return None
+            identity = _path_identity(nested.descriptor, path)
+            if identity is None:
+                # Gone already: it cannot be a file this task started with.
+                continue
+            if identity == _BLOCKED:
+                # Git never lists a path behind a link, so this is a failed or raced ``stat`` of a
+                # file that may still be there: the listing cannot be complete.
+                return None
+            files.append(
+                UntrackedBaselineFile(
+                    path.decode("utf-8", errors="strict"), _baseline_state(identity)
+                )
+            )
+            path_bytes += len(path)
+        return tuple(files)
+
+    def _open_nested(self, pinned: _Workspace, relative: bytes, deadline: float) -> _Workspace:
+        """Open the nested repository whose top level is ``relative`` under the pinned root.
+
+        The nested root gets every fence of the outer one (``_open``) and must also be exactly the
+        directory reached beneath the outer root descriptor without following a link, so a path
+        swapped for a link to another repository is refused as ``unsafe_root``.
+        """
+
+        expected = _path_identity(pinned.descriptor, relative)
+        if expected is None or expected == _BLOCKED or not stat.S_ISDIR(expected[0]):
+            raise ChangeCaptureUnavailable("unsafe_root")
+        git_entry = _path_identity(pinned.descriptor, relative + b"/.git")
+        if git_entry is not None and git_entry != _BLOCKED and stat.S_ISREG(git_entry[0]):
+            # A submodule checkout: its Git directory lives elsewhere, which is never read.
+            raise ChangeCaptureUnavailable("unsupported_repository")
+        location = pinned.root / os.fsdecode(relative)
+        nested = self._open(os.fspath(location), deadline)
+        if nested.root != location or nested.root_identity != (expected[1], expected[2]):
+            raise ChangeCaptureUnavailable("unsafe_root")
+        return nested
 
     def capture(
         self,
@@ -601,6 +1104,7 @@ class GitChangeCaptureAdapter:
         base: TaskChangeBase | None,
         *,
         priority_paths: tuple[str, ...] = (),
+        input_paths: tuple[str, ...] = (),
     ) -> CheckChangeCapture:
         """Render the change; ``priority_paths`` are the task's declared deliverables (tb4n2 R7).
 
@@ -608,6 +1112,12 @@ class GitChangeCaptureAdapter:
         then come small files, then the rest in path order, so a reviewer packet clipped for room
         never drops a deliverable behind scratch files. The paths only order the change: they
         never widen what is read, and a value outside the repository is ignored.
+
+        Issue #1045: untracked files a ``task_start`` base's snapshot names and that are unchanged
+        since are baseline and left out; a nested Git repository's own change is rendered under
+        its directory; and ``input_paths`` (files the task statement names) that lie in the
+        repository, are not part of the change, are not ignored and are not credential-named are
+        read into ``inputs`` as read-only task input files.
         """
 
         # One deadline bounds the whole capture: every Git call gets at most what is left of it.
@@ -622,7 +1132,9 @@ class GitChangeCaptureAdapter:
         priority = _priority_paths(pinned.root, priority_paths)
         for _ in range(_CAPTURE_ATTEMPTS):
             try:
-                return self._capture_once(pinned, object_format, base, assembly, deadline, priority)
+                return self._capture_once(
+                    pinned, object_format, base, assembly, deadline, priority, input_paths
+                )
             except _ChangedDuringCapture:
                 if _expired(assembly):
                     break
@@ -856,21 +1368,21 @@ class GitChangeCaptureAdapter:
             base_lines = [in_base.get(path) for path in base_paths]
         return ChangeLineCounts(tuple(changed), tuple(base_lines), truncated)
 
-    def count_undeclared_references(
+    def find_undeclared_references(
         self, workspace: str, deliverables: tuple[str, ...], candidates: tuple[str, ...]
-    ) -> int:
-        """Count declared deliverables whose source names a created but undeclared file.
+    ) -> tuple[tuple[int, int], ...]:
+        """Which declared deliverables name which created but undeclared files.
 
-        tb4n2 R2 (ADR-035 amendment): a delivered ``cracker.py`` loaded model files the agent
-        created and never declared, so the graded deliverable failed. ``deliverables`` and
-        ``candidates`` are root-relative paths. Each deliverable with a source-code suffix (or no
-        suffix and a ``#!`` first line) is read from the start, at most
+        tb4n2 R2 / tb4n4 (ADR-035 amendment, issue #1044): a delivered ``cracker.py`` loaded model
+        files the agent created and never declared, so the graded deliverable failed.
+        ``deliverables`` and ``candidates`` are root-relative paths. Each deliverable with a
+        source-code suffix (or no suffix and a ``#!`` first line) is read from the start, at most
         ``_MAX_REFERENCE_FILE_BYTES``, one component at a time without following a link, never
-        when credential-named, multiply linked or binary. It counts when a one-line quoted string
-        literal equals a candidate path, ends with ``/`` and the candidate path, or equals a
-        candidate basename of at least ``_MIN_REFERENCE_BASENAME`` bytes. Only the count leaves
-        this method; no path or content is returned, logged or stored. A point-in-time read that
-        feeds a non-blocking disclosure only.
+        when credential-named, multiply linked or binary. A candidate is referenced when a one-line
+        quoted string literal equals its path, ends with ``/`` and its path, or equals its basename
+        of at least ``_MIN_REFERENCE_BASENAME`` bytes. Returns ``(deliverable index, candidate
+        index)`` pairs into the caller's own tuples, sorted, at most ``_MAX_REFERENCE_PAIRS``: no
+        path or content leaves this method, and nothing is logged.
         """
 
         if (
@@ -885,17 +1397,19 @@ class GitChangeCaptureAdapter:
         ):
             raise ChangeCaptureUnavailable("unsupported_repository")
         if not deliverables or not candidates:
-            return 0
+            return ()
         deadline = time.monotonic() + self._deadline_seconds
         pinned = self._open(workspace, deadline)
-        paths = frozenset(os.fsencode(path) for path in candidates)
-        names = frozenset(
-            name
-            for path in paths
-            if len(name := path.rsplit(b"/", 1)[-1]) >= _MIN_REFERENCE_BASENAME
-        )
-        found = 0
-        for deliverable in deliverables:
+        paths: dict[bytes, list[int]] = {}
+        names: dict[bytes, list[int]] = {}
+        for index, candidate in enumerate(candidates):
+            path = os.fsencode(candidate)
+            paths.setdefault(path, []).append(index)
+            name = path.rsplit(b"/", 1)[-1]
+            if len(name) >= _MIN_REFERENCE_BASENAME:
+                names.setdefault(name, []).append(index)
+        found: set[tuple[int, int]] = set()
+        for position, deliverable in enumerate(deliverables):
             if _expired(deadline):
                 break
             path = os.fsencode(deliverable)
@@ -908,9 +1422,8 @@ class GitChangeCaptureAdapter:
                 continue
             if not suffix and not content.startswith(b"#!"):
                 continue
-            if _references_any(content, paths, names):
-                found += 1
-        return found
+            found.update((position, index) for index in _referenced(content, paths, names))
+        return tuple(sorted(found))[:_MAX_REFERENCE_PAIRS]
 
     def capture_metadata(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeMetadata:
         """Return changed-path facts without reading file or blob content.
@@ -961,8 +1474,10 @@ class GitChangeCaptureAdapter:
         tracked_raw, tracked_entries, tracked_identities, tracked_arguments, tracked_skipped = (
             self._tracked_metadata(pinned, base_id, assembly)
         )
+        gitlinks = self._metadata_gitlinks(pinned, base_id, tracked_identities, assembly)
         index = _path_identity(pinned.descriptor, b".git/index")
-        untracked = self._untracked_metadata(pinned, assembly)
+        baseline = _baseline(base)
+        untracked = self._untracked_metadata(pinned, assembly, baseline)
         tracked = _TrackedRead(tracked_raw, [], tracked_identities, tracked_arguments)
         self._verify_stable(
             pinned,
@@ -974,27 +1489,166 @@ class GitChangeCaptureAdapter:
             packs,
             deadline,
         )
-        metadata_paths = tuple(sorted(untracked.identities, key=bytes))
-        # A CR or LF in a file name cannot be an entry. Skip and count each such path instead of
-        # failing the whole check-time read (issue #1019); the path itself is never kept.
-        untracked_entries = [
-            ChangeMetadataEntry("A", name, untracked=True)
-            for path in metadata_paths
-            if metadata_path_representable(name := os.fsdecode(path))
-        ]
-        unrepresentable = tracked_skipped + len(metadata_paths) - len(untracked_entries)
-        entries = tuple([*tracked_entries, *untracked_entries])
-        omitted = untracked.total - len(metadata_paths) + unrepresentable
+        entries, unrepresentable, omitted = _metadata_listing(
+            tracked_entries, tracked_skipped, untracked
+        )
+        tracked_files = len(tracked_entries) + tracked_skipped
+        untracked_files = untracked.total
+        listing_truncated = untracked.listing_truncated
+        # Nested repositories (issue #1045), read after the outer state proved stable, exactly
+        # where the full capture reads them: an untracked repository's directory counts as one
+        # omitted untracked entry until its own change replaces it, and a changed gitlink whose
+        # repository is not read counts as omitted beside its entry.
+        directories = set(untracked.directories)
+        for read in self._nested_metadata(
+            pinned, gitlinks, untracked.directories, baseline, assembly, deadline
+        ):
+            if read.entries is None:
+                if read.path in gitlinks:
+                    omitted += 1
+                continue
+            if read.path in directories and read.path not in gitlinks:
+                untracked_files -= 1
+                omitted -= 1
+            entries.extend(read.entries)
+            tracked_files += read.tracked
+            untracked_files += read.untracked
+            omitted += read.omitted
+            unrepresentable += read.unrepresentable
+            listing_truncated = listing_truncated or read.listing_truncated
         return CheckChangeMetadata(
             base=base_kind,
-            entries=entries,
-            tracked_files=len(tracked_entries) + tracked_skipped,
-            untracked_files=untracked.total,
+            entries=tuple(entries),
+            tracked_files=tracked_files,
+            untracked_files=untracked_files,
             omitted_files=omitted,
-            truncated=omitted > 0 or untracked.listing_truncated,
+            truncated=omitted > 0 or listing_truncated,
             base_commit=base_id,
             unrepresentable_files=unrepresentable,
         )
+
+    def _metadata_gitlinks(
+        self,
+        pinned: _Workspace,
+        base_id: str,
+        identities: Mapping[bytes, _Identity | None],
+        deadline: float,
+    ) -> dict[bytes, str | None]:
+        """Changed gitlinks and the commit the base tree records for each, as the capture reads.
+
+        Only when a changed path is a directory in the working tree (a tracked file never is) is
+        the raw list read, which names modes and object ids but reads no content.
+        """
+
+        if not any(
+            identity is not None and identity != _BLOCKED and stat.S_ISDIR(identity[0])
+            for identity in identities.values()
+        ):
+            return {}
+        try:
+            _, raw = self._git(
+                pinned, self._raw_arguments(base_id), deadline=deadline, limit=_LIST_LIMIT
+            )
+        except ValueError:
+            raise ChangeCaptureUnavailable("unsupported_repository") from None
+        return {
+            entry.path: (
+                entry.src_oid if entry.src_mode == "160000" and entry.src_oid.strip("0") else None
+            )
+            for entry in _raw_entries(raw)
+            if entry.dst_mode == "160000" and entry.status != "D"
+        }
+
+    def _nested_metadata(
+        self,
+        pinned: _Workspace,
+        gitlinks: Mapping[bytes, str | None],
+        directories: Sequence[bytes],
+        baseline: _Baseline | None,
+        assembly: float,
+        deadline: float,
+    ) -> list[_NestedMetadata]:
+        """Each nested repository's metadata-only change, as ``_nested_reads`` selects them."""
+
+        candidates: dict[bytes, str | None] = dict(gitlinks)
+        for path in directories:
+            candidates.setdefault(path, None)
+        reads: list[_NestedMetadata] = []
+        for path in sorted(candidates):
+            if len(reads) >= MAX_NESTED_REPOSITORIES or _expired(assembly):
+                reads.append(_NestedMetadata(path))
+                continue
+            recorded, _, listing, _ = _nested_start_state(baseline, path, candidates[path])
+            try:
+                reads.append(
+                    self._nested_metadata_read(pinned, path, recorded, listing, assembly, deadline)
+                )
+            except ChangeCaptureUnavailable:
+                reads.append(_NestedMetadata(path))
+        return reads
+
+    def _nested_metadata_read(
+        self,
+        pinned: _Workspace,
+        path: bytes,
+        recorded: str | None,
+        listing: dict[bytes, str] | None,
+        assembly: float,
+        deadline: float,
+    ) -> _NestedMetadata:
+        """One nested repository's change as metadata, with every fence of ``_nested_read``."""
+
+        nested = self._open_nested(pinned, path, assembly)
+        self._refuse_unsafe_config(nested, assembly)
+        object_format = self._object_format(nested, assembly)
+        for _ in range(_CAPTURE_ATTEMPTS):
+            try:
+                packs = self._refuse_unsafe_object_store(nested)
+                head = self._rev(nested, "HEAD^{commit}", assembly)
+                index = _path_identity(nested.descriptor, b".git/index")
+                _, base_id = self._base(
+                    nested, object_format, _nested_base(object_format, recorded), head, assembly
+                )
+                raw, entries, identities, arguments, skipped = self._tracked_metadata(
+                    nested, base_id, assembly
+                )
+                untracked = self._untracked_metadata(
+                    nested, assembly, None if listing is None else _Baseline(listing, True, {}, {})
+                )
+                self._verify_stable(
+                    nested,
+                    base_id,
+                    _TrackedRead(raw, [], identities, arguments),
+                    untracked,
+                    head,
+                    index,
+                    packs,
+                    deadline,
+                )
+            except _ChangedDuringCapture:
+                if _expired(assembly):
+                    break
+                continue
+            listed, unrepresentable, omitted = _metadata_listing(
+                entries, skipped, untracked, prefix=path + b"/", named_only=listing is None
+            )
+            # A repository nested inside this one is never read: its changed gitlink (a changed
+            # path that is a directory) counts as omitted, as the full capture marks it.
+            omitted += sum(
+                1
+                for identity in identities.values()
+                if identity is not None and identity != _BLOCKED and stat.S_ISDIR(identity[0])
+            )
+            return _NestedMetadata(
+                path,
+                listed,
+                len(entries) + skipped,
+                untracked.total,
+                omitted,
+                unrepresentable,
+                untracked.listing_truncated,
+            )
+        raise ChangeCaptureUnavailable("changed_during_capture")
 
     def _capture_once(
         self,
@@ -1004,27 +1658,18 @@ class GitChangeCaptureAdapter:
         assembly: float,
         deadline: float,
         priority: tuple[bytes, ...] = (),
+        input_paths: tuple[str, ...] = (),
     ) -> CheckChangeCapture:
         packs = self._refuse_unsafe_object_store(pinned)
         head = self._rev(pinned, "HEAD^{commit}", assembly)
         index = _path_identity(pinned.descriptor, b".git/index")
-        base_kind: ChangeBaseKind
-        base_id: str | None = None
-        if (
-            base is not None
-            and base.object_format == object_format
-            and self._rev(pinned, base.commit + "^{tree}", assembly) is not None
-        ):
-            base_kind, base_id = base.origin, base.commit
-        elif head is not None:
-            base_kind, base_id = "head", head
-        else:
-            base_kind, base_id = "empty", _EMPTY_TREES[object_format]
+        base_kind, base_id = self._base(pinned, object_format, base, head, assembly)
+        baseline = _baseline(base)
         tracked = self._tracked_sections(pinned, object_format, base_id, assembly, priority)
         untracked = _UntrackedRead(0, [], True, None, (), {})
         if not _expired(assembly):
             try:
-                untracked = self._untracked_sections(pinned, assembly, priority)
+                untracked = self._untracked_sections(pinned, assembly, priority, baseline=baseline)
             except ChangeCaptureUnavailable as exc:
                 if not _ran_out(exc, assembly):
                     raise
@@ -1032,18 +1677,324 @@ class GitChangeCaptureAdapter:
         # count is a lower bound, and the tracked change above still stands.
         self._verify_stable(pinned, base_id, tracked, untracked, head, index, packs, deadline)
         sections = [*tracked.sections, *untracked.sections]
+        # Nested repositories (issue #1045): each one's own change replaces the one-line entry
+        # the outer change gives its directory. Read after the outer state proved stable; each is
+        # its own coherent state, bounded by the same deadline.
+        nested = self._nested_reads(
+            pinned, tracked, untracked, baseline, priority, assembly, deadline
+        )
+        nested_tracked = nested_untracked = nested_unlisted = nested_kept = 0
+        nested_truncated = False
+        for read in nested:
+            if read.sections is None:
+                # Its directory keeps its one-line entry, and a changed gitlink its commit-id
+                # lines; either way the repository's own change is not shown and counts so. The
+                # header says why it was not read.
+                for section in tracked.sections:
+                    if section.path == read.path and section.omitted is None:
+                        section.omitted = "nested_repository"
+                continue
+            placeholder = next(
+                (
+                    section
+                    for section in untracked.sections
+                    if section.path == read.path + b"/" and section.text is None
+                ),
+                None,
+            )
+            if placeholder is not None:
+                # The directory's placeholder gives way to the files the repository changed.
+                untracked.sections.remove(placeholder)
+                sections.remove(placeholder)
+                untracked.total -= 1
+            sections.extend(read.sections)
+            nested_tracked += read.tracked
+            nested_untracked += read.untracked
+            nested_unlisted += read.unlisted_untracked
+            nested_kept += read.kept
+            nested_truncated = nested_truncated or read.listing_truncated
         # Declared deliverables first, then small files, then the rest (tb4n2 R7, P1-11): the
         # body budget and every later packet cut keep the head of this order.
         sections.sort(key=lambda item: _section_rank(item, priority))
+        inputs = self._task_inputs(
+            pinned,
+            input_paths,
+            sections,
+            nested,
+            untracked.kept,
+            deadline,
+            base_kind=base_kind,
+            base_id=base_id,
+            object_format=object_format,
+        )
         return self._render(
             base_kind,
             base_id,
             sections,
-            tracked=len(tracked.sections),
-            untracked=untracked.total,
-            unlisted_untracked=untracked.total - len(untracked.sections),
-            untracked_listing_truncated=untracked.listing_truncated,
+            tracked=len(tracked.sections) + nested_tracked,
+            untracked=untracked.total + nested_untracked,
+            unlisted_untracked=untracked.total - len(untracked.sections) + nested_unlisted,
+            untracked_listing_truncated=untracked.listing_truncated or nested_truncated,
+            baseline=baseline,
+            baseline_unchanged=len(untracked.kept) + nested_kept,
+            nested=nested,
+            inputs=inputs,
         )
+
+    def _base(
+        self,
+        pinned: _Workspace,
+        object_format: Literal["sha1", "sha256"],
+        base: TaskChangeBase | None,
+        head: str | None,
+        deadline: float,
+    ) -> tuple[ChangeBaseKind, str]:
+        """The recorded base when this repository still holds it, else HEAD, else the empty tree."""
+
+        if (
+            base is not None
+            and base.object_format == object_format
+            and self._rev(pinned, base.commit + "^{tree}", deadline) is not None
+        ):
+            return base.origin, base.commit
+        if head is not None:
+            return "head", head
+        return "empty", _EMPTY_TREES[object_format]
+
+    def _nested_reads(
+        self,
+        pinned: _Workspace,
+        tracked: _TrackedRead,
+        untracked: _UntrackedRead,
+        baseline: _Baseline | None,
+        priority: tuple[bytes, ...],
+        assembly: float,
+        deadline: float,
+    ) -> list[_NestedRead]:
+        """Read each nested repository's own change (issue #1045), bounded and in rank order.
+
+        A nested repository is an untracked directory Git lists as its own repository, or a
+        changed gitlink whose working directory is one. Its change starts from the HEAD the
+        task-start snapshot recorded for it, else the commit the outer base tree records for the
+        gitlink (the header then says commits made in it before the task that the outer
+        repository does not record are included), else its HEAD now (disclosed in the header).
+        Its untracked files are treated as at the outer level when the snapshot holds a complete
+        listing of them; otherwise they are named, never read, since any may predate the task.
+        Paths are shown under the directory's path. At most ``MAX_NESTED_REPOSITORIES`` are read;
+        the rest keep their one-line entry.
+        """
+
+        candidates: dict[bytes, str | None] = {}
+        for path, commit in tracked.gitlinks:
+            # A gitlink the base tree does not hold (added during the task, or replacing a file)
+            # has no recorded commit there.
+            candidates.setdefault(path, commit if commit and commit.strip("0") else None)
+        for section in untracked.sections:
+            if section.path.endswith(b"/") and section.text is None:
+                candidates.setdefault(section.path[:-1], None)
+
+        def rank(path: bytes) -> tuple[int, int, bytes]:
+            # A repository holding (or being) a declared deliverable is read first.
+            tier = _priority_tier(path, priority)
+            if tier is None:
+                tier = next(
+                    (index for index, item in enumerate(priority) if item.startswith(path + b"/")),
+                    None,
+                )
+            return (1, 0, path) if tier is None else (0, tier, path)
+
+        reads: list[_NestedRead] = []
+        for path in sorted(candidates, key=rank):
+            if len(reads) >= MAX_NESTED_REPOSITORIES:
+                reads.append(_NestedRead(path, reason="nested_limit"))
+                continue
+            if _expired(assembly):
+                reads.append(_NestedRead(path, reason="capture_limit"))
+                continue
+            recorded, from_base_tree, listing, unrecorded = _nested_start_state(
+                baseline, path, candidates[path]
+            )
+            try:
+                read = self._nested_read(
+                    pinned, path, recorded, listing, priority, assembly, deadline
+                )
+                read.from_base_tree = from_base_tree and read.base == "task_start"
+                read.untracked_unrecorded = unrecorded
+                reads.append(read)
+            except ChangeCaptureUnavailable as exc:
+                reads.append(
+                    _NestedRead(
+                        path, reason="capture_limit" if _ran_out(exc, assembly) else exc.reason
+                    )
+                )
+        return reads
+
+    def _nested_read(
+        self,
+        pinned: _Workspace,
+        path: bytes,
+        recorded: str | None,
+        listing: dict[bytes, str] | None,
+        priority: tuple[bytes, ...],
+        assembly: float,
+        deadline: float,
+    ) -> _NestedRead:
+        """One nested repository's change; ``listing`` is its complete task-start untracked list.
+
+        With ``listing`` its untracked files are split exactly as at the outer level: one it
+        names with an unchanged digest is left out and counted, any other is read and shown.
+        Without one they are named only.
+        """
+
+        nested = self._open_nested(pinned, path, assembly)
+        self._refuse_unsafe_config(nested, assembly)
+        object_format = self._object_format(nested, assembly)
+        prefix = path + b"/"
+        inner = tuple(item[len(prefix) :] for item in priority if item.startswith(prefix))
+        for _ in range(_CAPTURE_ATTEMPTS):
+            try:
+                packs = self._refuse_unsafe_object_store(nested)
+                head = self._rev(nested, "HEAD^{commit}", assembly)
+                index = _path_identity(nested.descriptor, b".git/index")
+                base_kind, base_id = self._base(
+                    nested, object_format, _nested_base(object_format, recorded), head, assembly
+                )
+                tracked = self._tracked_sections(
+                    nested, object_format, base_id, assembly, inner, prefix=prefix
+                )
+                if listing is None:
+                    # No complete task-start listing of its untracked files: none of them can be
+                    # told apart from one that predates the task, so they are named only.
+                    untracked = self._untracked_sections(
+                        nested, assembly, inner, prefix=prefix, read_files=False
+                    )
+                else:
+                    untracked = self._untracked_sections(
+                        nested,
+                        assembly,
+                        inner,
+                        baseline=_Baseline(listing, True, {}, {}),
+                        prefix=prefix,
+                    )
+                self._verify_stable(
+                    nested, base_id, tracked, untracked, head, index, packs, deadline
+                )
+            except _ChangedDuringCapture:
+                if _expired(assembly):
+                    break
+                continue
+            # A repository nested inside this one is never read (issue #1045): its changed
+            # gitlink keeps its commit-id lines and counts as not shown, as at the outer level.
+            inner_gitlinks = {gitlink for gitlink, _ in tracked.gitlinks}
+            for section in tracked.sections:
+                if section.path in inner_gitlinks and section.omitted is None:
+                    section.omitted = "nested_repository"
+                section.path = prefix + section.path
+            return _NestedRead(
+                path,
+                base_kind,
+                [*tracked.sections, *untracked.sections],
+                len(tracked.sections),
+                untracked.total,
+                untracked.total - len(untracked.sections),
+                untracked.listing_truncated,
+                kept=len(untracked.kept),
+            )
+        raise ChangeCaptureUnavailable("changed_during_capture")
+
+    def _task_inputs(
+        self,
+        pinned: _Workspace,
+        values: tuple[str, ...],
+        sections: list[_Section],
+        nested: list[_NestedRead],
+        baseline_kept: frozenset[bytes],
+        deadline: float,
+        *,
+        base_kind: ChangeBaseKind,
+        base_id: str,
+        object_format: Literal["sha1", "sha256"],
+    ) -> tuple[TaskInputFile, ...]:
+        """Read the read-only task input files ``values`` names (issue #1045), bounded.
+
+        A value is read only when it lies inside the repository (lexically, like a requested
+        path) and is unchanged since the task started: an untracked file the task-start snapshot
+        names whose identity has not changed, or, when the change's base is the task's own start
+        (``task_start``), a file Git tracks that this change does not touch, whose index entry is
+        neither skip-worktree nor assume-unchanged (Git does not compare those with the working
+        tree) and whose bytes hash to its blob in the base commit. So it is never the agent's
+        work, never a file Git ignores (an ignored file is neither tracked nor listed untracked),
+        never inside a nested repository and never credential-named; and it must be a regular,
+        singly linked file of the service user reached without a link, holding no NUL byte in
+        its head. At most ``MAX_TASK_INPUT_FILES`` are read, in the order given; each keeps at
+        most ``MAX_TASK_INPUT_TEXT_BYTES``, whole or as head and tail with the cut marked. The
+        read is point-in-time, after the change proved stable. A file that fails any test is
+        skipped silently: nothing about it is returned.
+        """
+
+        if type(values) is not tuple or not values:
+            return ()
+        changed = {section.path.rstrip(b"/") for section in sections}
+        nested_roots = {read.path for read in nested}
+        inputs: list[TaskInputFile] = []
+        seen: set[bytes] = set()
+        for value in values[:_MAX_REQUESTED_PATH_PROBES]:
+            if len(inputs) >= MAX_TASK_INPUT_FILES or _expired(deadline):
+                break
+            relative = _requested_relative_path(pinned.root, value)
+            if relative is None or relative == _ROOT_RELATIVE or relative in seen:
+                continue
+            seen.add(relative)
+            if (
+                relative in changed
+                or _credential_name(relative)
+                or any(
+                    relative == root or relative.startswith(root + b"/") for root in nested_roots
+                )
+            ):
+                continue
+            identity = _path_identity(pinned.descriptor, relative)
+            if identity is None or identity == _BLOCKED or not stat.S_ISREG(identity[0]):
+                continue
+            blob: str | None = None
+            if relative not in baseline_kept:
+                if base_kind != "task_start":
+                    # Absent from a change against a first-check pin or HEAD, a tracked file may
+                    # still be the agent's committed work: it is not unchanged since the start.
+                    continue
+                blob = self._unchanged_tracked_blob(pinned, relative, base_id, deadline)
+                if blob is None:
+                    continue
+            input_file = _task_input(pinned, relative, identity, object_format, blob)
+            if input_file is not None:
+                inputs.append(input_file)
+        return tuple(inputs)
+
+    def _unchanged_tracked_blob(
+        self, pinned: _Workspace, relative: bytes, base_id: str, deadline: float
+    ) -> str | None:
+        """The base commit's blob id for a tracked task input Git compares, else ``None``.
+
+        The file must be one ordinary index entry (``git ls-files -v`` tag ``H``): a
+        skip-worktree (``S``) or assume-unchanged (lowercase) entry is never compared with the
+        working tree, so its absence from the change says nothing about its bytes, and an
+        untracked one (no entry) may be the agent's own. The caller reads the file only when its
+        bytes hash to this blob (issue #1045).
+        """
+
+        try:
+            name = relative.decode("utf-8", errors="strict")
+            _, listed = self._git(
+                pinned,
+                ("ls-files", "-v", "-z", "--", ":(literal)" + name),
+                deadline=deadline,
+                limit=65_536,
+            )
+            if _nul_fields(listed) != [b"H " + relative]:
+                return None
+            return self._rev(pinned, f"{base_id}:{name}", deadline)
+        except UnicodeDecodeError, ValueError, ChangeCaptureUnavailable:
+            return None
 
     # --- Git access --------------------------------------------------------------------------
 
@@ -1365,22 +2316,38 @@ class GitChangeCaptureAdapter:
         options = tuple(option for option in _DIFF_OPTIONS if option != "--no-renames")
         return ("diff", "--name-status", "-z", "--find-renames=100%", *options, base_id, "--")
 
-    def _untracked_metadata(self, pinned: _Workspace, deadline: float) -> _UntrackedRead:
-        """List untracked paths and stat them without opening their files."""
+    def _untracked_metadata(
+        self, pinned: _Workspace, deadline: float, baseline: _Baseline | None = None
+    ) -> _UntrackedRead:
+        """List untracked paths and stat them without opening their files.
+
+        Files the task-start snapshot names with an unchanged identity are baseline (issue #1045):
+        they are left out of the listing's entries and total, and their identities join the
+        stability check so a write while the change is read retakes it.
+        """
 
         excludes = self._repository_excludes_file(pinned, deadline)
         if excludes is None:
             excludes = _global_excludes_file(deadline)
         config = ("-c", f"core.excludesFile={excludes}") if excludes is not None else ()
         listing, listing_truncated = self._untracked_listing(pinned, config, deadline)
-        paths = sorted(_nul_fields(listing))
-        identities: dict[bytes, _Identity | None] = {}
+        paths, kept, preexisting = _apply_baseline(pinned, _nul_fields(listing), baseline)
+        paths.sort()
+        identities: dict[bytes, _Identity | None] = dict(kept)
+        directories: list[bytes] = []
         for index, path in enumerate(paths):
             if index >= _MAX_UNTRACKED_FILES:
                 break
-            if path.endswith(b"/") or not _safe_relative(path):
-                if not _safe_relative(path):
+            if path.endswith(b"/"):
+                # An embedded repository is listed as its directory, never as a file of this
+                # repository: it is no entry here, and its own change is read separately, as the
+                # full capture reads it (issue #1045).
+                if not _safe_relative(path[:-1]):
                     raise ChangeCaptureUnavailable("unsafe_root")
+                directories.append(path[:-1])
+                continue
+            if not _safe_relative(path):
+                raise ChangeCaptureUnavailable("unsafe_root")
             identities[path] = _path_identity(pinned.descriptor, path)
         return _UntrackedRead(
             len(paths),
@@ -1389,6 +2356,9 @@ class GitChangeCaptureAdapter:
             listing,
             config,
             identities,
+            frozenset(kept),
+            frozenset(preexisting),
+            tuple(directories),
         )
 
     def _tracked_sections(
@@ -1398,7 +2368,17 @@ class GitChangeCaptureAdapter:
         base_id: str,
         deadline: float,
         priority: tuple[bytes, ...] = (),
+        *,
+        prefix: bytes = b"",
     ) -> _TrackedRead:
+        """Changed tracked files of one repository; ``prefix`` names a nested one's directory.
+
+        A nested repository's diff carries its directory in every ``a/``/``b/`` path, so its
+        sections read as paths of the outer working tree; its section paths stay relative to its
+        own root here (every Git call and stability check needs them) and the caller prefixes
+        them afterwards.
+        """
+
         try:
             _, raw = self._git(
                 pinned, self._raw_arguments(base_id), deadline=deadline, limit=_LIST_LIMIT
@@ -1463,14 +2443,25 @@ class GitChangeCaptureAdapter:
                 replace(section, status="R") if section.path in rename_targets else section
                 for section in sections
             ]
-        read = _TrackedRead(raw, sections, identities)
+        read = _TrackedRead(
+            raw,
+            sections,
+            identities,
+            # Only a gitlink the base tree already held names a starting commit: one added during
+            # the task (Git's null id) or replacing a file or link (a blob id) records none.
+            gitlinks=tuple(
+                (entry.path, entry.src_oid if entry.src_mode == "160000" else None)
+                for entry in entries
+                if entry.dst_mode == "160000" and entry.status != "D"
+            ),
+        )
         if not sections:
             return read
-        by_path = {section.path: section for section in sections}
+        by_path = {prefix + section.path: section for section in sections}
         try:
             _, whole = self._git(
                 pinned,
-                ("diff", *_PATCH_OPTIONS, base_id, "--"),
+                ("diff", *_patch_options(prefix), base_id, "--"),
                 deadline=deadline,
                 limit=_WHOLE_DIFF_LIMIT,
             )
@@ -1500,6 +2491,7 @@ class GitChangeCaptureAdapter:
                 base_id,
                 sorted(sections, key=lambda item: _tracked_read_rank(item, priority)),
                 deadline,
+                prefix,
             )
         self._verify_section_objects(
             pinned, object_format, entries, sections, identities, deadline, priority
@@ -1550,7 +2542,12 @@ class GitChangeCaptureAdapter:
         return tuple(pairs)
 
     def _per_file_diffs(
-        self, pinned: _Workspace, base_id: str, sections: list[_Section], deadline: float
+        self,
+        pinned: _Workspace,
+        base_id: str,
+        sections: list[_Section],
+        deadline: float,
+        prefix: bytes = b"",
     ) -> None:
         # The whole diff is larger than one bounded read. Fall back to one bounded read per file
         # so an oversized generated file cannot hide the rest of the change.
@@ -1567,7 +2564,7 @@ class GitChangeCaptureAdapter:
                     pinned,
                     (
                         "diff",
-                        *_PATCH_OPTIONS,
+                        *_patch_options(prefix),
                         base_id,
                         "--",
                         ":(literal)" + os.fsdecode(section.path),
@@ -1726,12 +2723,24 @@ class GitChangeCaptureAdapter:
         return listing, False
 
     def _untracked_sections(
-        self, pinned: _Workspace, deadline: float, priority: tuple[bytes, ...] = ()
+        self,
+        pinned: _Workspace,
+        deadline: float,
+        priority: tuple[bytes, ...] = (),
+        *,
+        baseline: _Baseline | None = None,
+        prefix: bytes = b"",
+        read_files: bool = True,
     ) -> _UntrackedRead:
         """Return the untracked total, their sections, and whether the listing was cut short.
 
         Declared deliverables (``priority``) are read first, so the untracked file limit and the
-        deadline never skip one behind scratch files.
+        deadline never skip one behind scratch files. Files the task-start snapshot (``baseline``)
+        names with an unchanged identity are left out and counted (issue #1045); one that changed
+        since is shown as a modification of a file that predates the task. ``prefix`` is a nested
+        repository's directory, carried by every rendered path (issue #1045). Without
+        ``read_files`` (a nested repository whose untracked files the snapshot does not fully
+        list) every file is named as not shown and none is opened.
         """
 
         excludes = self._repository_excludes_file(pinned, deadline)
@@ -1739,37 +2748,67 @@ class GitChangeCaptureAdapter:
             excludes = _global_excludes_file(deadline)
         config = ("-c", f"core.excludesFile={excludes}") if excludes is not None else ()
         listing, listing_truncated = self._untracked_listing(pinned, config, deadline)
-        paths = _untracked_order(pinned, _nul_fields(listing), priority, deadline)
+        listed, kept, preexisting = _apply_baseline(pinned, _nul_fields(listing), baseline)
+        paths = _untracked_order(pinned, listed, priority, deadline)
         sections: list[_Section] = []
-        identities: dict[bytes, _Identity | None] = {}
+        # Baseline files left out still join the stability check: one written while the change
+        # is read takes the capture again.
+        identities: dict[bytes, _Identity | None] = dict(kept)
         for index, path in enumerate(paths):
             if index >= _MAX_UNTRACKED_FILES:
                 break
+            shown = prefix + path
+            status = "M" if path in preexisting else "A"
             if path.endswith(b"/"):
                 # An embedded repository is listed as its directory; its files are not this
-                # repository's change.
-                sections.append(_Section(path, "A", True, "-", "-", None, "not_regular_file"))
+                # repository's change. Its own change is read separately (issue #1045), and this
+                # entry stays only when that read could not be made.
+                sections.append(_Section(shown, "A", True, "-", "-", None, "nested_repository"))
                 continue
             if not _safe_relative(path):
                 raise ChangeCaptureUnavailable("unsafe_root")
             if _credential_name(path):
-                sections.append(_Section(path, "A", True, "-", "-", None, "credential_name"))
+                sections.append(
+                    _Section(
+                        shown, status, True, "-", "-", None, "credential_name", path in preexisting
+                    )
+                )
+                continue
+            if not read_files:
+                sections.append(_Section(shown, status, True, "-", "-", None, "nested_untracked"))
                 continue
             if _expired(deadline):
-                sections.append(_Section(path, "A", True, "-", "-", None, "capture_limit"))
+                sections.append(
+                    _Section(
+                        shown, status, True, "-", "-", None, "capture_limit", path in preexisting
+                    )
+                )
                 continue
             identity = _path_identity(pinned.descriptor, path)
             outcome, content = _read_beneath(
                 pinned.descriptor, path, _MAX_UNTRACKED_FILE_BYTES, identity
             )
             if outcome != "regular" and outcome != "executable":
-                sections.append(_Section(path, "A", True, "-", "-", None, outcome))
+                sections.append(
+                    _Section(shown, status, True, "-", "-", None, outcome, path in preexisting)
+                )
                 continue
             assert content is not None
             identities[path] = identity
-            text, added = _new_file_diff(path, content, outcome == "executable")
-            sections.append(_Section(path, "A", True, added, "0", text, None))
-        return _UntrackedRead(len(paths), sections, listing_truncated, listing, config, identities)
+            text, added = _new_file_diff(shown, content, outcome == "executable")
+            sections.append(
+                _Section(shown, status, True, added, "0", text, None, path in preexisting)
+            )
+        return _UntrackedRead(
+            len(paths),
+            sections,
+            listing_truncated,
+            listing,
+            config,
+            identities,
+            frozenset(kept),
+            frozenset(preexisting),
+        )
 
     def _verify_stable(
         self,
@@ -1856,6 +2895,10 @@ class GitChangeCaptureAdapter:
         untracked: int,
         unlisted_untracked: int,
         untracked_listing_truncated: bool = False,
+        baseline: _Baseline | None = None,
+        baseline_unchanged: int = 0,
+        nested: Sequence[_NestedRead] = (),
+        inputs: tuple[TaskInputFile, ...] = (),
     ) -> CheckChangeCapture:
         body_budget = self._max_text_bytes - _HEADER_BUDGET
         body: list[bytes] = []
@@ -1880,6 +2923,9 @@ class GitChangeCaptureAdapter:
             omitted=omitted,
             unlisted_untracked=unlisted_untracked,
             untracked_listing_truncated=untracked_listing_truncated,
+            baseline=baseline,
+            baseline_unchanged=baseline_unchanged,
+            nested=nested,
         )
         text = header + b"".join(body)
         return CheckChangeCapture(
@@ -1890,7 +2936,128 @@ class GitChangeCaptureAdapter:
             omitted_files=omitted,
             truncated=omitted > 0 or untracked_listing_truncated,
             base_commit=base_id,
+            inputs=inputs,
         )
+
+
+# Fixed sentences for a nested repository the header names (issue #1045); never Git output.
+_NESTED_BASE_TEXT: Final[dict[ChangeBaseKind, str]] = {
+    "task_start": "from the commit it held when the task started",
+    "first_check": "from the commit it held when the task started",
+    "head": (
+        "from its HEAD when this check ran (no starting commit was recorded for it, or the "
+        "recorded one is gone, so commits made in it during the task may be missing)"
+    ),
+    "empty": "from an empty tree (it had no commit when this check ran)",
+}
+# A gitlink whose HEAD at task start was not recorded starts from the commit the outer base tree
+# records for it, which can be older than that HEAD (issue #1045).
+_NESTED_BASE_TREE_TEXT: Final = (
+    "from the commit the base above records for it (its own HEAD when the task started was not "
+    "recorded, so any commits made in it before the task that the outer repository does not "
+    "record are included too)"
+)
+_NESTED_UNTRACKED_TEXT: Final[dict[str, str]] = {
+    "absent": (
+        " Untracked files in it are named but not shown: the task-start record does not list "
+        "them, so any of them may predate the task."
+    ),
+    "incomplete": (
+        " Untracked files in it are named but not shown: the task-start list of them was "
+        "incomplete, so any of them may predate the task."
+    ),
+}
+_NESTED_REASON_TEXT: Final[dict[str, str]] = {
+    "nested_limit": "more nested repositories than one check reads",
+    "capture_limit": "the capture reached its time limit",
+    "changed_during_capture": "it kept changing while it was read",
+    "unsafe_root": "it failed a safety check",
+    "unsupported_repository": "its Git configuration or layout is not supported",
+    "not_git": "Git did not read it as a repository",
+    "git_failed": "Git could not read it",
+    "git_unavailable": "Git is not available",
+    "redaction_incomplete": "it could not be redacted",
+}
+
+
+def _nested_lines(nested: Sequence[_NestedRead]) -> list[str]:
+    lines: list[str] = []
+    for read in nested:
+        quoted = _quote_path(read.path + b"/")
+        if len(quoted) > _MAX_LISTED_PATH_BYTES:
+            quoted = quoted[: _MAX_LISTED_PATH_BYTES - 3] + "..."
+        if read.sections is not None and read.base is not None:
+            start = _NESTED_BASE_TREE_TEXT if read.from_base_tree else _NESTED_BASE_TEXT[read.base]
+            untracked = (
+                _NESTED_UNTRACKED_TEXT[read.untracked_unrecorded]
+                if read.untracked_unrecorded is not None
+                and (read.untracked or read.listing_truncated)
+                else ""
+            )
+            lines.append(
+                f"Nested repository {quoted}: its own change is shown under that directory, "
+                f"{start}.{untracked}"
+            )
+        else:
+            reason = _NESTED_REASON_TEXT.get(read.reason or "", "it could not be read")
+            lines.append(f"Nested repository {quoted}: its own change is not shown ({reason}).")
+    return lines
+
+
+# A task input file larger than this is not read at all (issue #1045); one up to it keeps its head
+# and tail within ``MAX_TASK_INPUT_TEXT_BYTES``.
+_MAX_TASK_INPUT_READ_BYTES: Final = 1024 * 1024
+_TASK_INPUT_ELISION: Final = (
+    "\n[yoetz: {elided} of {total} bytes elided here; head and tail kept]\n"
+)
+
+
+def _task_input(
+    pinned: _Workspace,
+    relative: bytes,
+    identity: _Identity,
+    object_format: Literal["sha1", "sha256"],
+    blob: str | None,
+) -> TaskInputFile | None:
+    """One read-only task input file, whole or head and tail (issue #1045); ``None`` to skip.
+
+    ``blob`` is the base commit's blob for a tracked input: the bytes read must hash to it
+    exactly (no filter or line-ending conversion applied), so content Git did not compare, or
+    changed without Git noticing, is never carried as unchanged.
+    """
+
+    try:
+        name = relative.decode("utf-8", errors="strict")
+        outcome, content = _read_beneath(
+            pinned.descriptor, relative, _MAX_TASK_INPUT_READ_BYTES, identity
+        )
+    except UnicodeDecodeError, _ChangedDuringCapture:
+        return None
+    if outcome not in {"regular", "executable"} or not content:
+        return None
+    if blob is not None:
+        digest = hashlib.new(object_format, b"blob %d\0" % len(content))
+        digest.update(content)
+        if digest.hexdigest() != blob:
+            return None
+    if b"\0" in content[:_BINARY_PROBE_BYTES]:
+        return None
+    total = len(content)
+    if total <= MAX_TASK_INPUT_TEXT_BYTES:
+        text = _decode(content)
+    else:
+        marker = _TASK_INPUT_ELISION.format(elided="0" * len(str(total)), total=total)
+        side = (MAX_TASK_INPUT_TEXT_BYTES - len(marker.encode("utf-8"))) // 2
+        head = content[:side].decode("utf-8", errors="ignore")
+        tail = content[total - side :].decode("utf-8", errors="ignore")
+        elided = total - len(head.encode("utf-8")) - len(tail.encode("utf-8"))
+        text = _decode(
+            (head + _TASK_INPUT_ELISION.format(elided=elided, total=total) + tail).encode("utf-8")
+        )
+    try:
+        return TaskInputFile(name, text, total)
+    except ValueError:
+        return None
 
 
 def _header(
@@ -1903,6 +3070,9 @@ def _header(
     omitted: int,
     unlisted_untracked: int,
     untracked_listing_truncated: bool = False,
+    baseline: _Baseline | None = None,
+    baseline_unchanged: int = 0,
+    nested: Sequence[_NestedRead] = (),
 ) -> bytes:
     lines = [
         "Yoetz check-time change: captured by the Yoetz service when this check ran; "
@@ -1921,10 +3091,33 @@ def _header(
             ),
             "empty": "Base: an empty tree. The repository had no commit when this check ran.",
         }[base],
-        "Scope: committed and uncommitted changes to tracked files since the base, plus "
-        "untracked files Git does not ignore. Uncommitted or untracked work that already existed "
-        "when the base was named is included too.",
+        (
+            "Scope: committed and uncommitted changes to tracked files since the base, plus "
+            "untracked files Git does not ignore. Uncommitted or untracked work that already "
+            "existed when the base was named is included too."
+        )
+        if baseline is None
+        else (
+            "Scope: committed and uncommitted changes to tracked files since the base, plus "
+            "untracked files Git does not ignore, except untracked files that already existed "
+            "when the task started and have not changed since. Uncommitted work on tracked files "
+            "that already existed when the base was named is included too."
+        ),
     ]
+    if baseline is not None:
+        # Issue #1045: what predates the task is its starting state, not the agent's work.
+        if baseline_unchanged:
+            lines.append(
+                f"Untracked files that already existed when the task started and are unchanged "
+                f"since: {baseline_unchanged}. They are the task's starting state, not part of "
+                "this change, and are not listed."
+            )
+        if not baseline.complete:
+            lines.append(
+                "The task-start list of untracked files was incomplete, so an untracked file "
+                "listed below as added may predate the task."
+            )
+    lines.extend(_nested_lines(nested))
     if not tracked and not untracked and not untracked_listing_truncated:
         lines.append("Changed files: none. The working tree matches the base.")
     else:
@@ -1952,6 +3145,10 @@ def _header(
                 note
                 for note in (
                     "untracked" if section.untracked else "",
+                    "existed when the task started; its earlier content was not recorded, so it "
+                    "is shown whole"
+                    if section.preexisting
+                    else "",
                     "" if section.omitted is None else _OMIT_TEXT[section.omitted],
                 )
                 if note
@@ -2124,19 +3321,21 @@ def _read_prefix_beneath(root_descriptor: int, path: bytes, limit: int) -> bytes
             os.close(descriptor)
 
 
-def _references_any(content: bytes, paths: frozenset[bytes], names: frozenset[bytes]) -> bool:
-    """Whether a one-line quoted literal in ``content`` names one of ``paths`` (see caller)."""
+def _referenced(
+    content: bytes, paths: Mapping[bytes, list[int]], names: Mapping[bytes, list[int]]
+) -> set[int]:
+    """The candidate indexes a one-line quoted literal in ``content`` names (see caller)."""
 
+    found: set[int] = set()
     for match in _STRING_LITERAL.finditer(content):
         literal = match.group(1) or match.group(2) or match.group(3) or b""
-        if literal in paths or literal in names:
-            return True
+        found.update(paths.get(literal, ()))
+        found.update(names.get(literal, ()))
         start = literal.find(b"/")
         while start != -1:
-            if literal[start + 1 :] in paths:
-                return True
+            found.update(paths.get(literal[start + 1 :], ()))
             start = literal.find(b"/", start + 1)
-    return False
+    return found
 
 
 def _identity(facts: os.stat_result) -> _Identity:

@@ -108,6 +108,7 @@ from yoetz.protocol.ids import validate_opaque_item_id
 from yoetz.protocol.models import (
     MAX_MISSING_FOR_ASSESSMENT,
     MAX_MISSING_TARGET_REFS,
+    MAX_REVIEW_FOLLOW_UP_ROUNDS,
     MAX_TASK_STATEMENT_BYTES,
     MISSING_FOR_ASSESSMENT_KINDS,
     MISSING_ITEM_AVAILABILITIES,
@@ -2869,11 +2870,47 @@ def check_change_files_from_json(value: object) -> CheckChangeShownFiles:
 
 # ADR-045: what one check read of a declared output file, and what the check concluded from it
 # and from the earlier checks of the same path. Closed tokens, counts and ids only; the path is a
-# keyed commitment, never text.
+# keyed commitment, never text. The one exception (tb4n4, issue #1044, ADR-035 amendment) is
+# ``undeclared_references``: the root-relative paths of files the change created that a source
+# deliverable names and no requested item declares, so the receipt and the Stop gate can name the
+# file the agent must embed, rebuild or declare.
 DELIVERABLE_CHANGES: Final = ("emptied", "truncated", "removed", "unchanged")
 DELIVERABLE_PROOFS: Final = ("task_base", "earlier_check")
 DELIVERABLE_BASES: Final = ("delivered", "verified", "present")
 MAX_DELIVERABLE_STATES: Final = 64
+MAX_UNDECLARED_REFERENCES: Final = 8
+MAX_UNDECLARED_REFERENCE_CHARS: Final = 256
+
+
+def undeclared_reference_path_valid(value: object) -> bool:
+    """Whether *value* may be recorded as an undeclared reference (tb4n4, #1044).
+
+    A plain root-relative path of 1-256 characters: valid UTF-8, no control character, no leading
+    ``/`` and no empty, ``.`` or ``..`` segment. Anything else is counted but never named.
+    """
+
+    if type(value) is not str or not 1 <= len(value) <= MAX_UNDECLARED_REFERENCE_CHARS:
+        return False
+    if value.startswith("/") or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        return False
+    if any(part in {"", ".", ".."} for part in value.split("/")):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _undeclared_references(value: object) -> tuple[str, ...]:
+    raw = _tuple(value, 0, MAX_UNDECLARED_REFERENCES)
+    if any(not undeclared_reference_path_valid(item) for item in raw):
+        raise ProtocolValueError("invalid_event_value_type")
+    paths = cast(tuple[str, ...], raw)
+    keys = tuple(path.encode("utf-8") for path in paths)
+    if keys != tuple(sorted(set(keys))):
+        raise ProtocolValueError("duplicate_set_member")
+    return paths
 
 
 @dataclass(frozen=True, slots=True)
@@ -2912,12 +2949,27 @@ class DeliverableState:
     # The file is a type the review packet never carries (binary by Git's NUL sniff, or an
     # unlisted file with a binary suffix) and a review ran: the deliverable was not reviewed.
     unreviewable: bool = False
+    # tb4n4 (#1044): the files the change created that this source deliverable names and no item
+    # declares (``deliverable_references_undeclared_file``), root-relative and sorted, at most
+    # ``MAX_UNDECLARED_REFERENCES``; ``undeclared_reference_count`` is present only when more
+    # were found than are named here (a longer list, or a path that cannot be named).
+    undeclared_references: tuple[str, ...] = ()
+    undeclared_reference_count: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "obligation_id", obligation_id(self.obligation_id))
         object.__setattr__(self, "item_index", _bounded_integer(self.item_index, 0, 63))
         if type(self.unreviewable) is not bool:
             raise ProtocolValueError("invalid_event_value_type")
+        object.__setattr__(
+            self, "undeclared_references", _undeclared_references(self.undeclared_references)
+        )
+        if self.undeclared_reference_count is not None:
+            count = _bounded_integer(self.undeclared_reference_count, 1, _MAX_SAFE_INTEGER)
+            if count <= len(self.undeclared_references):
+                # Present only when it says more than the named list does.
+                raise ProtocolValueError("invalid_event_value_type")
+            object.__setattr__(self, "undeclared_reference_count", count)
         if self.path_key is not None:
             validate_commitment(self.path_key)
         for name in ("size_bytes", "lines", "base_lines", "prior_size_bytes", "prior_lines"):
@@ -2956,7 +3008,10 @@ class DeliverableState:
         }
         if self.unreviewable:
             wire["unreviewable"] = True
+        if self.undeclared_references:
+            wire["undeclared_references"] = self.undeclared_references
         for name in (
+            "undeclared_reference_count",
             "path_key",
             "size_bytes",
             "lines",
@@ -2993,6 +3048,8 @@ class DeliverableState:
                     "prior_frontier",
                     "accepted_by",
                     "unreviewable",
+                    "undeclared_references",
+                    "undeclared_reference_count",
                 }
             ),
         )
@@ -3026,6 +3083,9 @@ class DeliverableState:
             raise ProtocolValueError("invalid_event_value_type")
         prior_event = text("prior_event_id")
         accepted = text("accepted_by")
+        references = cast(object, source.get("undeclared_references", ()))
+        if not isinstance(references, (list, tuple)):
+            raise ProtocolValueError("invalid_event_value_type")
         return cls(
             obligation_id=obligation_id(obligation),
             item_index=item_index,
@@ -3042,6 +3102,10 @@ class DeliverableState:
             prior_frontier=integer("prior_frontier"),
             accepted_by=None if accepted is None else event_id(accepted),
             unreviewable=unreviewable,
+            undeclared_references=cast(
+                tuple[str, ...], tuple(cast(list[object] | tuple[object, ...], references))
+            ),
+            undeclared_reference_count=integer("undeclared_reference_count"),
         )
 
 
@@ -3563,12 +3627,20 @@ def _review_input_manifest_from_json(value: JsonValue | None) -> JsonObject | No
                 "omitted_item_count",
             }
         ),
-        optional=frozenset({"review_phase", "omitted_item_total"}),
+        optional=frozenset({"review_phase", "omitted_item_total", "follow_up_round"}),
     )
     if _field(source, "schema") != "yoetz.review-input-manifest/1":
         raise ProtocolValueError("invalid_event_value_type")
     if "review_phase" in source and source["review_phase"] not in {"routine", "final"}:
         raise ProtocolValueError("invalid_event_value_type")
+    if "follow_up_round" in source:
+        # Issue #1047: the in-check follow-up round the recorded packet was.
+        follow_up_round = source["follow_up_round"]
+        if (
+            type(follow_up_round) is not int
+            or not 1 <= follow_up_round <= MAX_REVIEW_FOLLOW_UP_ROUNDS
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
     if _field(source, "phase") not in {"composed", "provider_bound"}:
         raise ProtocolValueError("invalid_event_value_type")
     for key in _REVIEW_INPUT_SECTION_NAMES:
@@ -5399,6 +5471,7 @@ def _validate_event_schema_payload(
         has_new_kind = payload.kind in {
             FindingKind.CODE_DEFECT,
             FindingKind.TASK_REQUIREMENT_UNMET,
+            FindingKind.AGENT_CRITERION_UNMET,
         }
         if has_snippet or has_new_kind:
             if schema.version != FINDING_SNIPPET_EVENT_SCHEMA_VERSION:

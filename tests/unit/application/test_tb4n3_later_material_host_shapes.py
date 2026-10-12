@@ -8,7 +8,8 @@ rows that come out. Nothing here hand-writes an action description.
 
 Host decisions pinned here (and recorded in docs/runbooks/*-integration.md):
 
-* Codex: ``mcp__yoetz__<tool>`` from hooks, the bare ``<tool>`` from the rollout's ``McpToolCall``.
+* Codex: ``mcp__yoetz__<tool>`` from hooks and, since #1038, from the rollout's ``McpToolCall``
+  (its ``server`` is kept); the bare ``<tool>`` only from an item that names no server.
 * Claude Code: ``mcp__plugin_yoetz_yoetz__<tool>``.
 * Cursor: ``yoetz:<tool>`` / ``plugin-yoetz-yoetz:<tool>`` when the server is named; the ordinary
   profile's generic ``MCP:<tool>`` names no server and is read by the closed Yoetz basenames.
@@ -383,7 +384,7 @@ def test_stream_evidence_rows(description: str, expected: _C) -> None:
 
 
 def test_bare_stream_tool_name_is_yoetz_own() -> None:
-    """The Codex rollout names an ``McpToolCall`` item by its tool alone (``status``)."""
+    """An ``McpToolCall`` item without a ``server`` names its tool alone (``status``)."""
 
     from yoetz.domain.yoetz_tools import yoetz_tool_spelling
 

@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Concatenate, Final, TypeVar, cast
+from typing import Concatenate, Final, Literal, TypeVar, cast
 
 from yoetz.adapters.integrations.observation_admission import (
     ROUTINE_SUMMARY_INVALID_GAP,
@@ -1280,11 +1280,20 @@ class _CodeModeCell:
     before a complete stream pass that still did not see the output (see
     ``_ToolHookSession.settled``); the decision, once made, is replayed
     unchanged.
+
+    ``session`` and ``nested`` (#1038) record what the rollout wrote while the cell
+    was open: ``yoetz`` when every nested tool item read so far was one of Yoetz's
+    own MCP calls read while it was the session's only open cell, ``other`` once any
+    other tool item, an uninterpretable row, or an unattributable Yoetz item was read.
+    A Yoetz-only cell is Yoetz's own call, so its output also stays local. Cells
+    stored before this field have neither and keep the rule above.
     """
 
     hook_clock_at_start: int
     output_local: bool | None
     touched: int
+    session: str | None = None
+    nested: Literal["yoetz", "other"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1547,7 +1556,16 @@ def _code_mode_cells_from_json(raw: object) -> dict[str, _CodeModeCell]:
             start = touched
         if type(start) is not int or not 0 <= start <= _MAX_SAFE_INTEGER:
             continue
-        cells[key] = _CodeModeCell(start, local, touched)
+        # #1038: an unreadable session or nested mark reads as absent, which keeps the #917 rule.
+        session = entry.get("session")
+        nested = entry.get("nested")
+        cells[key] = _CodeModeCell(
+            start,
+            local,
+            touched,
+            session=cast(str, session) if _pending_rollout_item_token(session) else None,
+            nested=nested if nested in ("yoetz", "other") else None,
+        )
     return dict(
         sorted(cells.items(), key=lambda item: item[1].touched)[-_MAX_CODEX_TOOL_HOOK_ENTRIES:]
     )
@@ -1562,6 +1580,11 @@ class _OpenPre:
     receipt and a wall-clock deadline.  Pairing scope is copied from the
     envelope so a restart or a reused host correlation id cannot extend the
     wrong pending attempt.
+
+    ``pre_only`` (#1041) marks a call whose host never sends a post: a Codex
+    shell ``apply_patch <<EOF`` that Codex intercepts. The session stream's
+    observed file change closes it (``close_pre_only_attempt``); one nothing
+    closes still expires with ``pending_attempt_expired``.
     """
 
     event_kind: str
@@ -1571,6 +1594,7 @@ class _OpenPre:
     correlation_id: str
     receipt_time: Timestamp | None
     deadline: Timestamp | None
+    pre_only: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -1641,6 +1665,7 @@ def _open_pre_to_json(value: _OpenPre) -> JsonObject:
             "correlation_id": value.correlation_id,
             "receipt_time": None if value.receipt_time is None else value.receipt_time.wire,
             "deadline": None if value.deadline is None else value.deadline.wire,
+            **({"pre_only": True} if value.pre_only else {}),
         }
     )
 
@@ -1714,6 +1739,7 @@ def _open_pre_from_json(
             correlation_id=correlation_id,
             receipt_time=receipt_time,
             deadline=deadline,
+            pre_only=row.get("pre_only") is True,
         )
     except ProtocolValueError, TypeError, ValueError:
         return None
@@ -1745,6 +1771,26 @@ def _open_pre_map_from_json(
         if len(result) >= _MAX_OPEN_PRE:
             break
     return result
+
+
+def _session_hook_call(state: _WorkspaceState, session_commitment: str, call_id: str) -> bool:
+    """Whether a Codex hook of this session reported ``call_id`` (#1041).
+
+    Its pre may still be open, or its hook rows retained in the local envelope ring; a call
+    the ring and the open-pre map both dropped reads as unreported.
+    """
+
+    if any(
+        entry.session_commitment == session_commitment and entry.correlation_id == call_id
+        for entry in (state.open_pre or {}).values()
+    ):
+        return True
+    return any(
+        envelope.source is ObservationSource.CODEX_HOOK
+        and envelope.session_commitment == session_commitment
+        and envelope.structural_payload.get("tool_call_id") == call_id
+        for envelope in state.envelopes or ()
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -5122,12 +5168,14 @@ class LocalObservationStore:
         session_commitment: str | None = None,
         source_generation: int | None = None,
         receipt_time: Timestamp | None = None,
+        pre_only: bool = False,
     ) -> bool:
         """Record an open Pre event awaiting its Post.
 
         New hook callers provide the complete source/session/generation scope.
         The unscoped form remains readable for pre-#607 local state and tests,
-        but it is never used by the shared ingress.
+        but it is never used by the shared ingress. ``pre_only`` marks a call
+        whose host sends no post (#1041, ``_OpenPre.pre_only``).
         """
 
         with self._lock:
@@ -5186,7 +5234,54 @@ class LocalObservationStore:
                 correlation_id=correlation_id,
                 receipt_time=stamp,
                 deadline=_open_pre_deadline(stamp),
+                pre_only=pre_only and session_commitment is not None and source is not None,
             )
+            self._save(workspace, state)
+            return True
+
+    def close_pre_only_attempt(
+        self, workspace: str, session_commitment: str, correlation_id: str | None = None
+    ) -> bool:
+        """Close one pre-only pending attempt of a session with an observed file change (#1041).
+
+        Codex intercepts a shell ``apply_patch <<EOF`` and fires only its
+        ``PreToolUse``; the session stream's ``FileChange`` item is the observed
+        result of that patch. The attempt whose call id the item names is closed.
+        An item naming another call the session's hooks reported (a direct call's
+        own id, such as a native ``apply_patch``) is that call's change and closes
+        nothing; only an id no hook reported (code mode's ``exec-<uuid>``) closes
+        the session's oldest pre-only attempt. Nothing else is closed: an attempt
+        no file change closes still expires with ``pending_attempt_expired``.
+        Returns whether an attempt was closed.
+        """
+
+        with self._lock:
+            state = self._load(workspace)
+            assert state.open_pre is not None
+            candidates = [
+                (key, entry)
+                for key, entry in state.open_pre.items()
+                if entry.pre_only and entry.session_commitment == session_commitment
+            ]
+            if not candidates:
+                return False
+            chosen = next(
+                (key for key, entry in candidates if entry.correlation_id == correlation_id),
+                None,
+            )
+            if chosen is None:
+                if correlation_id is not None and _session_hook_call(
+                    state, session_commitment, correlation_id
+                ):
+                    return False
+                chosen = min(
+                    candidates,
+                    key=lambda item: (
+                        "" if item[1].receipt_time is None else item[1].receipt_time.wire,
+                        item[0],
+                    ),
+                )[0]
+            del state.open_pre[chosen]
             self._save(workspace, state)
             return True
 
@@ -6161,18 +6256,57 @@ class LocalObservationStore:
             if key in state.code_mode_cells:
                 return True
             self._remember_code_mode_cell(
-                state, key, _CodeModeCell(state.codex_tool_hook_clock, None, 0)
+                state,
+                key,
+                _CodeModeCell(state.codex_tool_hook_clock, None, 0, session=session_commitment),
             )
             self._save(workspace, state)
             return True
 
-    def finish_code_mode_cell(self, workspace: str, session_commitment: str, call_id: str) -> bool:
-        """Return whether a code-mode cell's output stays local (#917).
+    def note_code_mode_nested_item(
+        self, workspace: str, session_commitment: str, *, yoetz_owned: bool
+    ) -> None:
+        """Mark the open code-mode cells of a session with one nested rollout row (#1038).
 
-        It stays local only when a Codex tool hook of this session was ingested
+        The stream reads a cell's nested tool items between its call and its output.
+        A Yoetz MCP item keeps the session's only open cell ``yoetz`` (unless it is
+        already ``other``). Any other tool item, a row the reader could not interpret,
+        or a Yoetz item read while more than one cell is open (parallel cells, or a
+        cell interrupted before its output) makes every open cell of the session
+        ``other``: a row that cannot be attributed only ever removes the mark, so no
+        cell borrows another cell's Yoetz calls.
+        """
+
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            open_cells = [
+                (key, cell)
+                for key, cell in state.code_mode_cells.items()
+                if cell.session == session_commitment and cell.output_local is None
+            ]
+            mark: Literal["yoetz", "other"] = (
+                "yoetz" if yoetz_owned and len(open_cells) == 1 else "other"
+            )
+            changed = False
+            for key, cell in open_cells:
+                nested = "other" if cell.nested == "other" else mark
+                if nested != cell.nested:
+                    state.code_mode_cells[key] = dataclasses.replace(cell, nested=nested)
+                    changed = True
+            if changed:
+                self._save(workspace, state)
+
+    def finish_code_mode_cell(self, workspace: str, session_commitment: str, call_id: str) -> bool:
+        """Return whether a code-mode cell's output stays local (#917, #1038).
+
+        It stays local when a Codex tool hook of this session was ingested
         after the stream read the cell's call and has since been settled by a
         complete stream pass that did not see the output: that hook fired while
-        the cell ran, so the nested hook rows are the cell's record. Otherwise
+        the cell ran, so the nested hook rows are the cell's record. It also
+        stays local when every nested tool item the rollout wrote inside the
+        cell was one of Yoetz's own MCP calls (#1038): such a cell is Yoetz's
+        own call, recorded by those calls whatever the hook timing. Otherwise
         the output is delivered and records the cell; a hook that may belong to
         a later cell never removes this cell's record. An output whose call was
         never noted is delivered.
@@ -6188,7 +6322,9 @@ class LocalObservationStore:
             if current.output_local is not None:
                 return current.output_local
             entry = (state.codex_tool_hooks or {}).get(session_commitment)
-            local = entry is not None and entry.settled > current.hook_clock_at_start
+            local = current.nested == "yoetz" or (
+                entry is not None and entry.settled > current.hook_clock_at_start
+            )
             self._remember_code_mode_cell(
                 state, key, dataclasses.replace(current, output_local=local)
             )
@@ -10408,12 +10544,14 @@ class LocalObservationStore:
         source_generation: int,
         is_pre_event: bool,
         is_post_event: bool,
+        pre_only: bool = False,
     ) -> tuple[ObservationIngestResult, ObservationEnvelope]:
         """Atomically admit one hook envelope and update its pairing state.
 
         The batch is owned here when a direct caller has not already opened
         one. Hook ingress opens an outer batch so its outbox enqueue remains in
         the same local transaction; nested use keeps that transaction intact.
+        ``pre_only`` marks a pre-event whose host never sends a post (#1041).
         """
 
         if type(envelope) is not ObservationEnvelope:
@@ -10473,6 +10611,7 @@ class LocalObservationStore:
                 source_generation=envelope.cursor.source_generation,
                 is_pre_event=expected_pre,
                 is_post_event=expected_post,
+                pre_only=pre_only is True and expected_pre,
             )
 
     def _ingest_with_pairing(
@@ -10487,6 +10626,7 @@ class LocalObservationStore:
         source_generation: int,
         is_pre_event: bool,
         is_post_event: bool,
+        pre_only: bool = False,
     ) -> tuple[ObservationIngestResult, ObservationEnvelope]:
         """Admit one hook envelope and update its pairing state atomically.
 
@@ -10622,6 +10762,7 @@ class LocalObservationStore:
                     session_commitment=session_commitment,
                     source_generation=source_generation,
                     receipt_time=envelope.receipt_time,
+                    pre_only=pre_only,
                 )
             elif paired and is_post_event and envelope.event_kind == "PostToolUse":
                 if correlation_id is None:
@@ -11956,6 +12097,8 @@ class LocalObservationStore:
                             "hook_clock_at_start": cell.hook_clock_at_start,
                             "output_local": cell.output_local,
                             "touched": cell.touched,
+                            **({} if cell.session is None else {"session": cell.session}),
+                            **({} if cell.nested is None else {"nested": cell.nested}),
                         }
                     )
                     for key, cell in sorted(

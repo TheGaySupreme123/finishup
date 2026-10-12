@@ -36,7 +36,10 @@ from types import MappingProxyType
 from typing import Final, Literal, cast
 
 from yoetz.domain.events import CheckRecordedPayload, LedgerRecord
-from yoetz.domain.receipts import COMPLETION_PLAN_NOT_CLAIMED_GAP
+from yoetz.domain.receipts import (
+    COMPLETION_PLAN_NOT_CLAIMED_GAP,
+    SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
+)
 from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel import finding_todo as _finding_todo_module
 from yoetz.kernel.check_standing import CheckCause, CheckStanding, check_standing
@@ -53,7 +56,7 @@ from yoetz.kernel.closure_class import (
     finding_closures,
     obligation_closures,
 )
-from yoetz.kernel.delivered_set import deliverable_lineage
+from yoetz.kernel.delivered_set import deliverable_lineage, undeclared_reference_rows
 from yoetz.kernel.fact_lineage import MAX_FACT_LINEAGE_ITEMS, FactLineage
 from yoetz.kernel.finding_resolution import finding_is_resolved
 from yoetz.kernel.finding_todo import (
@@ -139,8 +142,13 @@ __all__ = [
 # agent-actionable readiness token ``finding_rejection_awaiting_ruling`` was added. The standing
 # disclosures ``planned_verification_matched_by_prefix`` and
 # ``declared_output_not_reviewable`` were added and ``declared_output_emptied`` became a path-keyed
-# fact with provenance (tb4n3 RC-5, issue #1028, ADR-045).
-GAP_CLASSIFICATION_VERSION: Final = "7"
+# fact with provenance (tb4n3 RC-5, issue #1028, ADR-045). "8" (tb4n4, unreleased): the standing
+# disclosure ``deliverable_references_undeclared_file`` became an agent-actionable task fact and
+# Stop-gate token (issue #1044, ADR-035 amendment); the standing disclosure
+# ``semantic_process_state_filtered`` (issue #1042) and the standing limit
+# ``semantic_review_deferred_before_first_edit`` (issue #1046; disclosed where the deferred check's
+# route did not require review, gap table G7) were added (ADR-040 amendment).
+GAP_CLASSIFICATION_VERSION: Final = "8"
 # Issue #1020 (ADR-040): a current AI-powered finding the reviewer repeated over the agent's
 # reasoned rejection without newer material. A standing disagreement; never agent work.
 FINDING_DISPUTED_AFTER_REBUTTAL_GAP: Final = "finding_disputed_after_rebuttal"
@@ -318,10 +326,16 @@ class ClosureReadinessFacts:
     blocked_obligation_confirmations: tuple[tuple[ObligationId, EventId], ...] = ()
     # Issue #976. Whether a closing review (final phase) is current since the last material
     # change, or a review attempt since then could not complete for a reason the agent cannot
-    # remove; and whether any AI-powered review completed on this task. The defaults keep a
-    # hand-built fact set at its pre-#976 answer.
+    # remove; and whether any AI-powered review completed on this task, or was deferred before the
+    # first material edit by a check whose route requires review (issue #1046: the review the task
+    # owes). The defaults keep a hand-built fact set at its pre-#976 answer.
     closing_review_current: bool = True
     semantic_review_used: bool = False
+    # Issue #1046 (review): the latest recorded check deferred a review its route requires before
+    # the first material edit, so a routine check cannot supply the missing review; only the
+    # closing review can, and readiness asks for it even while ``semantic_review_not_requested``
+    # is agent work.
+    semantic_review_deferred: bool = False
     # Issue #984: current findings in the terminal ``self_verified`` state. Not agent work (they
     # never count as receipt-blocking); readiness discloses them as ``finding_self_verified``.
     self_verified_finding_ids: tuple[FindingId, ...] = ()
@@ -352,6 +366,9 @@ class ClosureReadinessFacts:
     obligation_closures: tuple[ObligationClosure, ...] | None = None
     # ADR-045: where each derived task fact came from, so the agent sees why a code fired.
     fact_lineage: tuple[FactLineage, ...] = ()
+    # tb4n4 (#1044): the undeclared files the applicable check found delivered files naming,
+    # ``(obligation id, item index, paths, total)`` (``delivered_set.undeclared_reference_rows``).
+    undeclared_references: tuple[tuple[str, int | None, tuple[str, ...], int], ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -365,6 +382,7 @@ class ClosureReadinessFacts:
             or type(self.semantic_review_current) is not bool
             or type(self.closing_review_current) is not bool
             or type(self.semantic_review_used) is not bool
+            or type(self.semantic_review_deferred) is not bool
             or (self.check_cause is not None and type(self.check_cause) is not CheckCause)
             or (
                 self.finding_closures is not None
@@ -526,29 +544,49 @@ def _semantic_review_current(
 _UNDELIVERABLE_SEMANTIC_STATUSES: Final = UNDELIVERABLE_SEMANTIC_STATUSES
 
 
+def _review_deferred(payload: CheckRecordedPayload) -> bool:
+    """Whether this check deferred a review its route requires before the first edit (#1046).
+
+    A check on a route that did not require review records ``semantic_route_required: false``;
+    there the deferral is a disclosure that asks for nothing, exactly like a ``deterministic_only``
+    check on that route (review of #1046: otherwise an unreachable optional reviewer would keep
+    the closing review demanded forever).
+    """
+
+    return (
+        SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in payload.coverage.known_gaps
+        and payload.semantic_route_required is not False
+    )
+
+
 def _closing_review_facts(
     state: ProjectionState,
     records: tuple[LedgerRecord, ...],
     limitations: frozenset[FindingId],
-) -> tuple[bool, bool]:
-    """Return ``(closing_review_current, semantic_review_used)`` for this prefix (issue #976).
+) -> tuple[bool, bool, bool]:
+    """``(closing_review_current, semantic_review_used, semantic_review_deferred)`` (#976).
 
     A check is the closing review when its recorded review input manifest names the final
     phase. A check recorded before the manifest carried the phase was final exactly when an
     effective completion claim preceded it; with no material change since it, the current
     projection's claim answers that.
+
+    Issue #1046 (review): a check that deferred, before the first material edit, a review its
+    route requires counts as using AI-powered review, because it stands in for the review the task
+    owes; so a task whose work is not an edit is still asked for the closing review there. The
+    third value says the latest check so deferred: no routine check can supply that review.
     """
 
-    used = False
-    for record in records:
-        payload = record.payload
-        if (
-            record.schema.name == "check_recorded"
-            and type(payload) is CheckRecordedPayload
-            and payload.semantic_status is SemanticStatus.SUCCEEDED
-        ):
-            used = True
-            break
+    checks = tuple(
+        record.payload
+        for record in records
+        if record.schema.name == "check_recorded" and type(record.payload) is CheckRecordedPayload
+    )
+    used = any(
+        payload.semantic_status is SemanticStatus.SUCCEEDED or _review_deferred(payload)
+        for payload in checks
+    )
+    deferred = bool(checks) and _review_deferred(checks[-1])
     for record in reversed(records):
         payload = record.payload
         if record.schema.name != "check_recorded" or type(payload) is not CheckRecordedPayload:
@@ -563,21 +601,21 @@ def _closing_review_facts(
             )
             for later in records
         ):
-            return False, used
+            return False, used, deferred
         status = payload.semantic_status
         if status in _UNDELIVERABLE_SEMANTIC_STATUSES:
-            return True, used
+            return True, used, deferred
         if _review_round_stopped(payload):
-            return review_round_stopped(records), used
+            return review_round_stopped(records), used, deferred
         if status is not SemanticStatus.SUCCEEDED:
             continue
         manifest = payload.review_input_manifest
         phase = None if manifest is None else manifest.get("review_phase")
         if phase == "final":
-            return True, used
+            return True, used, deferred
         if phase is None and completion_claim_present(state):
-            return True, used
-    return False, used
+            return True, used, deferred
+    return False, used, deferred
 
 
 def _acknowledged_obligation_ids(state: ProjectionState) -> tuple[ObligationId, ...]:
@@ -705,7 +743,9 @@ def closure_readiness_facts(
     blocked_open = tuple(
         sorted({item for item in open_obligations if item in blocked}, key=str.encode)
     )
-    closing_current, review_used = _closing_review_facts(state, records, limitations)
+    closing_current, review_used, review_deferred = _closing_review_facts(
+        state, records, limitations
+    )
     applicability, standing = _check_applicability(state, records)
     return ClosureReadinessFacts(
         check_applicability=applicability,
@@ -727,6 +767,7 @@ def closure_readiness_facts(
         ),
         closing_review_current=closing_current,
         semantic_review_used=review_used,
+        semantic_review_deferred=review_deferred,
         self_verified_finding_ids=tuple(sorted(self_verified, key=str.encode)),
         disputed_after_rebuttal_finding_ids=tuple(sorted(disputed, key=str.encode)),
         limitation_refs_required=tuple(
@@ -744,6 +785,7 @@ def closure_readiness_facts(
             obligation_classes[key] for key in sorted(obligation_classes, key=str.encode)
         ),
         fact_lineage=current_fact_lineage(state, records, applicability),
+        undeclared_references=current_undeclared_references(state, records, applicability),
     )
 
 
@@ -763,23 +805,55 @@ def current_fact_lineage(
     """
 
     items: list[FactLineage] = []
-    latest = state.latest_tested_state
-    if applicability == "applicable" and latest is not None:
-        check_record = next(
-            (record for record in records if record.event_id == latest.source_check_event_id),
-            None,
-        )
-        if check_record is not None and type(check_record.payload) is CheckRecordedPayload:
-            items.extend(
-                deliverable_lineage(
-                    check_record.event_id,
-                    check_record.payload.subject_frontier.sequence,
-                    check_record.payload.deliverable_states,
-                )
+    found = _applicable_check_payload(state, records, applicability)
+    if found is not None:
+        check_record, payload = found
+        items.extend(
+            deliverable_lineage(
+                check_record.event_id,
+                payload.subject_frontier.sequence,
+                payload.deliverable_states,
             )
+        )
     items.extend(task_fact_signals(state, records).lineage)
     ordered = sorted(dict.fromkeys(items), key=lambda item: item.sort_key)
     return tuple(ordered[:MAX_FACT_LINEAGE_ITEMS])
+
+
+def _applicable_check_payload(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    applicability: CheckApplicability,
+) -> tuple[LedgerRecord, CheckRecordedPayload] | None:
+    """The newest check's record and payload while that check still applies, else ``None``."""
+
+    latest = state.latest_tested_state
+    if applicability != "applicable" or latest is None:
+        return None
+    check_record = next(
+        (record for record in records if record.event_id == latest.source_check_event_id),
+        None,
+    )
+    if check_record is None or type(check_record.payload) is not CheckRecordedPayload:
+        return None
+    return check_record, check_record.payload
+
+
+def current_undeclared_references(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    applicability: CheckApplicability,
+) -> tuple[tuple[str, int | None, tuple[str, ...], int], ...]:
+    """The undeclared files the applicable check found delivered files naming (tb4n4, #1044).
+
+    Read from the newest check's recorded deliverable states, and only while that check still
+    applies, exactly like the deliverable lineage: a stale check names nothing.
+    """
+
+    found = _applicable_check_payload(state, records, applicability)
+    if found is None:
+        return ()
+    return undeclared_reference_rows(found[1].deliverable_states)
 
 
 @dataclass(frozen=True, slots=True)
@@ -916,12 +990,15 @@ def derive_closure_readiness(
     actionable.extend(code for code in split_actionable if code not in actionable)
     # Issue #976: the receipt is the last step, so the last review before it judges
     # completeness. Required on a route that requires AI-powered review, and on any task that
-    # already used it; not repeated while the missing review is already the actionable item.
+    # already used it (or deferred it before the first edit where its route requires it, #1046);
+    # not repeated while the missing review is already the actionable item, unless the latest check
+    # deferred it: then no routine check can supply it and the closing review, the Stop gate's
+    # review token, is the way.
     if (
         facts is not None
         and (semantic_review_required or facts.semantic_review_used)
         and not facts.closing_review_current
-        and "semantic_review_not_requested" not in actionable
+        and ("semantic_review_not_requested" not in actionable or facts.semantic_review_deferred)
     ):
         actionable.append("closing_review_required")
     for token in live_blockers:

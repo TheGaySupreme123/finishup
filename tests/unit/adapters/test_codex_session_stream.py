@@ -105,6 +105,14 @@ def test_incremental_partial_line_then_complete(tmp_path: Path) -> None:
     advance = reader.advance(path)
     assert advance.envelopes == ()
     assert advance.partial_line.startswith(b'{"payload":')
+    # A tail Codex is still writing is held, not truncated (#1041): complete JSON without its
+    # newline, and a line cut mid-object, both wait for the next read.
+    assert ObservationGapCode.TRUNCATED_PAYLOAD.value not in advance.gaps
+    cut = tmp_path / "cut.jsonl"
+    cut.write_bytes(first[:-7])
+    held = _reader(session).advance(cut)
+    assert held.partial_line == first[:-7]
+    assert ObservationGapCode.TRUNCATED_PAYLOAD.value not in held.gaps
     path.write_bytes(first + b"\n")
     advance2 = reader.advance(path)
     assert len(advance2.envelopes) == 1
@@ -1665,6 +1673,18 @@ def test_0_150_1_stream_admits_from_header_and_envelopes_carry_no_content(
         if "action" in envelope.structural_payload
     }
     assert {"function_call", "custom_tool_call", "McpToolCall", "CommandExecution"} <= actions
+    # Since 0.150.1 every response-item row names itself (``fc_``/``ctc_``) beside the ``call_id``
+    # its output shares; each call and its output carry that shared id (#1038).
+    call_ids = {
+        str(envelope.structural_payload.get("action")): envelope.structural_payload.get(
+            "tool_call_id"
+        )
+        for envelope in advance.envelopes
+        if envelope.structural_payload.get("action")
+        in {"function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"}
+    }
+    assert call_ids["function_call"] == call_ids["function_call_output"] == "call_yoetz_1"
+    assert call_ids["custom_tool_call"] == call_ids["custom_tool_call_output"] == "call_shell_1"
     dumped = json.dumps(
         [
             {
@@ -2141,7 +2161,8 @@ def test_unknown_and_incompatible_lines_stay_bounded_under_compatible_profile(
     path.write_bytes(_fixture_bytes(_COMPATIBLE_0153, "truncated"))
     truncated = _header_selected_reader(session).advance(path)
     assert ObservationGapCode.UNSUPPORTED_FORMAT.value not in truncated.gaps
-    assert ObservationGapCode.TRUNCATED_PAYLOAD.value in truncated.gaps
+    # The unterminated tail is held for the next read, not lost (#1041).
+    assert ObservationGapCode.TRUNCATED_PAYLOAD.value not in truncated.gaps
     assert truncated.cursor.event_position == 2
     assert truncated.partial_line.startswith(b"{")
 
@@ -3111,3 +3132,142 @@ def test_a_call_open_past_the_ring_still_owns_its_copy() -> None:
         (item_b, post_a), _DECIDE_SESSION, ((_CMD, "call-a"), (_CMD, "call-b"))
     )
     assert kept_open == {"item-b": "pending"}
+
+
+def test_0_159_3_calls_pair_with_outputs_on_call_id_not_their_row_ids(tmp_path: Path) -> None:
+    """#1038: a 0.159.3 row names itself (``fc_``/``ctc_``) beside the ``call_id`` it shares."""
+
+    home = tmp_path / "codex-home"
+    sessions = home / "sessions"
+    sessions.mkdir(parents=True)
+    session_id = "019f9b27-c1de-7a61-9c5e-5d0b8975aa38"
+    target = sessions / f"rollout-{session_id}.jsonl"
+    target.write_bytes(
+        encode_lines(
+            session_meta(cli_version="0.159.3", history_mode="paginated"),
+            response_item(
+                {
+                    "arguments": "{}",
+                    "call_id": "call_shell_1038",
+                    "id": "fc_1038",
+                    "name": "shell",
+                    "type": "function_call",
+                }
+            ),
+            response_item(
+                {
+                    "call_id": "call_shell_1038",
+                    "exit_code": 0,
+                    "id": "fco_1038",
+                    "output": "ok",
+                    "status": "completed",
+                    "type": "function_call_output",
+                }
+            ),
+            item_completed(
+                {
+                    "arguments": {},
+                    "id": "exec-1038-mcp",
+                    "result": {"content": []},
+                    "server": "yoetz",
+                    "status": "completed",
+                    "tool": "status",
+                    "type": "McpToolCall",
+                }
+            ),
+        )
+    )
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    session = store.session_commitment(session_id)
+    store.bind_session(workspace, session)
+
+    reconcile_session_stream(
+        store,
+        workspace_commitment=workspace,
+        session_commitment=session,
+        codex_session_id=session_id,
+        locator=CodexSessionStreamLocator(home),
+    )
+
+    rows = {
+        str(row.envelope.structural_payload.get("action")): row.envelope
+        for row in store.list_pending_outbox_rows(workspace)
+    }
+    call, output = rows["function_call"], rows["function_call_output"]
+    assert call.structural_payload["tool_call_id"] == "call_shell_1038"
+    assert output.structural_payload["tool_call_id"] == "call_shell_1038"
+    assert output.structural_payload.get("tool_name") == "shell"
+    assert ObservationGapCode.UNPAIRED_EVENT.value not in output.gap_codes
+    batch = materialize_observation_envelope(output, task_id="task_stream_pair_1038")
+    assert tuple(item.role for item in batch.drafts) == ("action", "result")
+    # A completed item keeps its own id (the one decision 15 compares with a hook call id), and
+    # an MCP item keeps its server, as its hook spells it.
+    mcp = rows["McpToolCall"]
+    assert mcp.structural_payload["tool_call_id"] == "exec-1038-mcp"
+    assert mcp.structural_payload["tool_name"] == "mcp__yoetz__status"
+
+
+@pytest.mark.parametrize(
+    ("server", "tool", "expected"),
+    [
+        (None, "status", "status"),
+        ("yoetz", "status", "mcp__yoetz__status"),
+        ("github", "status", "mcp__github__status"),
+        # A named server the reader cannot fold into ``mcp__<server>__<tool>``: a Yoetz tool name
+        # under it is not attributable, any other name keeps its name rules.
+        ("ci__bot", "status", None),
+        ("_priv", "check", None),
+        ("x" * 130, "receipt", None),
+        ("ci__bot", "edit_file", "edit_file"),
+    ],
+    ids=["no-server", "yoetz", "github", "double-underscore", "leading-underscore", "long", "edit"],
+)
+def test_mcp_item_is_named_by_its_server(
+    server: str | None, tool: str, expected: str | None
+) -> None:
+    """#1038: only an ``McpToolCall`` naming no server keeps a Yoetz tool's bare name."""
+
+    item: dict[str, Any] = {"id": "exec-1038-mcp", "status": "completed", "tool": tool}
+    if server is not None:
+        item["server"] = server
+    item["type"] = "McpToolCall"
+    record = CodexParsedRecord(
+        1, 0, 200, "event_msg", "McpToolCall", JsonObject(item_completed(item))
+    )
+
+    structural, _gaps = stream_module.structural_from_stream_record(record)
+
+    assert structural.get("tool_name") == expected
+
+
+def test_hook_prompt_row_is_bookkeeping_not_an_unsupported_event(tmp_path: Path) -> None:
+    """#1041: the Stop hook's prompt row (``HookPrompt``) is admitted as bookkeeping."""
+
+    path = tmp_path / "session.jsonl"
+    path.write_bytes(
+        encode_lines(
+            session_meta(cli_version="0.159.3", history_mode="paginated"),
+            item_completed(
+                {
+                    "fragments": [{"hook_run_id": "stop-1", "text": "CANARY_HOOK_PROMPT"}],
+                    "id": "item_hook_prompt_1",
+                    "type": "HookPrompt",
+                }
+            ),
+        )
+    )
+    advance = _header_selected_reader("hmac-sha256:" + ("e" * 64)).advance(path)
+    assert ObservationGapCode.UNSUPPORTED_EVENT.value not in advance.gaps
+    assert advance.reason_codes == ()
+    prompt = advance.envelopes[-1]
+    assert prompt.event_kind == "event_msg"
+    assert prompt.structural_payload.get("action") == "HookPrompt"
+    assert "tool_name" not in prompt.structural_payload
+    assert "CANARY_HOOK_PROMPT" not in json.dumps(dict(prompt.structural_payload))
+    descriptions = [
+        str(getattr(item.draft.payload, "description", ""))
+        for item in materialize_observation_envelope(prompt, task_id=_STREAM_TASK_ID).drafts
+    ]
+    assert descriptions == ["Opaque observation kind=event_msg"]

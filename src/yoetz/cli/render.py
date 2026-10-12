@@ -24,9 +24,11 @@ from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_te
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.errors import normalize_safe_details
 from yoetz.protocol.ids import validate_opaque_item_id
+from yoetz.protocol.inspection_text import inspection_text
 from yoetz.protocol.models import (
     CheckAwaitingHumanModel,
     CheckFindingChecklistModel,
+    CheckInspectionModel,
     CheckOverallNextModel,
     CheckProjectedFindingModel,
     CheckSuccessModel,
@@ -52,6 +54,7 @@ from yoetz.protocol.readiness_text import (
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
+    obligation_resolve_recipe_variants,
     predicted_receipt_variants,
     readiness_directive,
     recheck_note,
@@ -82,6 +85,7 @@ __all__ = [
     "render_human_check",
     "render_human_error",
     "render_human_findings",
+    "render_human_inspection",
     "render_human_receipt",
     "render_human_status",
     "render_local_recovery_lines",
@@ -311,11 +315,15 @@ def _render_checklist(
 # disclosure to make, never repair work. Alone it is the ``disclose_limitations`` continuation;
 # beside real work it rides in ``work_open_findings`` and the text names how it is answered. The
 # agent's answer decides what it means: ``acknowledged`` says the requirement may be met but
-# cannot be verified here, ``acknowledged_not_done`` says it is not met.
+# cannot be verified here, ``acknowledged_not_done`` says it is not met. The agent's own criterion
+# (``agent_criterion_unmet``, issue #1043) reads the same closure basis but its probe fails here:
+# it is always work (fix it, or narrow it), never the disclosure-only continuation. The checklist
+# rows carry no kind, so the text names both answers.
 _LIMITATION_REQUEST_ALSO: Final = (
     " For a reviewer's request to state a limit, respond acknowledged with the reason if the "
     "requirement may be met but cannot be verified here (acknowledged_not_done only when you "
-    "know it is not met) instead of repairing it."
+    "know it is not met) instead of repairing it. An agent_criterion_unmet is your own "
+    "criterion: fix it, or narrow it with acknowledged and a reason."
 )
 
 
@@ -355,7 +363,9 @@ def _render_overall_next(
             action = (
                 "Repair or answer the named open findings (a limitation request among them needs "
                 "only a response: acknowledged with the reason if it may be met but cannot be "
-                "verified here, acknowledged_not_done only when you know it is not met)"
+                "verified here, acknowledged_not_done only when you know it is not met; an "
+                "agent_criterion_unmet is your own criterion: fix it, or narrow it with "
+                "acknowledged and a reason)"
             )
         else:
             action = "Repair or answer the named open findings"
@@ -492,6 +502,13 @@ def render_human_check(result: CheckSuccessModel) -> str:
         for item in result.semantic_withheld_items:
             lines.append(f"- {item.item_id}: {_token(item.reason)}")
     lines.extend(_semantic_redacted_value_lines(result.semantic_redacted_values))
+    if "semantic_review_deferred_before_first_edit" in tuple(result.coverage.known_gaps):
+        # Issue #1046: a pre-work check runs the local plan checks only.
+        lines.append(
+            "AI-powered review deferred: no material edit is recorded yet, so this check ran the "
+            "local plan checks only and sent nothing. The next check after your first edit "
+            "reviews as configured; the closing review is never deferred."
+        )
     if "semantic_review_skipped_insufficient_packet" in tuple(result.coverage.known_gaps):
         lines.append(
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
@@ -873,6 +890,10 @@ def render_human_status(result: StatusSuccessModel) -> str:
                 lines.append(
                     f"{obligation.obligation_id}: {remaining} more command attempts; use JSON status for all items"
                 )
+        # tb4n4 (#1049): the same resolution recipe the MCP status text states, field included.
+        recipe = obligation_resolve_recipe_variants(result.page.items)
+        if recipe:
+            lines.append(recipe[0])
     gaps = tuple(result.gaps) + tuple(result.coverage.known_gaps)
     lines.append("Gaps: " + (", ".join(dict.fromkeys(gaps)) if gaps else "none"))
     lines.extend(_check_time_change_sentences(tuple(dict.fromkeys(gaps))))
@@ -1263,3 +1284,18 @@ def render_human_awaiting_human(result: CheckAwaitingHumanModel) -> str:
         lines.append(f"Expires at: {continuation.expires_at}")
     lines.append(f"Then replay the same check with request_id {continuation.replay_request_id}.")
     return "\n".join(lines)
+
+
+def render_human_inspection(result: CheckInspectionModel) -> str:
+    """Render a ``mode: inspect`` check (ADR-047): what is left, what hooks saw, where evidence came from.
+
+    The same lines as the MCP text channel (``yoetz.protocol.inspection_text``). No verdict or
+    coverage appears: an inspection is a read, not a check result.
+    """
+
+    if type(result) is not CheckInspectionModel:
+        raise TypeError("check_result_invalid")
+    text = inspection_text(
+        cast(Mapping[str, JsonValue], result.model_dump(mode="json", exclude_unset=True))
+    )
+    return "\n".join((*text.lead, *text.details))

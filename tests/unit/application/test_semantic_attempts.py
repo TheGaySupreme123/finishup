@@ -464,9 +464,10 @@ class _FakeLedger:
         return object()
 
     async def load_semantic_job(
-        self, writer_id: str, operation_id: str
+        self, writer_id: str, operation_id: str, case_digest: str | None = None
     ) -> SemanticJobRecord | None:
         assert (writer_id, operation_id) == (_WRITER, _OP)
+        assert case_digest is None or self.job is None or case_digest == self.job.case_digest
         return self.job
 
     async def list_semantic_attempts(self, job_id: str) -> tuple[SemanticAttemptRecord, ...]:

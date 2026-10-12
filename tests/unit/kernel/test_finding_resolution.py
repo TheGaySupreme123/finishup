@@ -1675,12 +1675,26 @@ def test_silence_never_closes_an_ai_finding_over_excerpts_the_budget_cut() -> No
 
 
 @pytest.mark.parametrize(
-    "gap", ["write_outside_workspace", "obligation_blocked_outside_agent_control"]
+    "gap",
+    [
+        "write_outside_workspace",
+        "obligation_blocked_outside_agent_control",
+        # Issue #1046 (tb4n4): the environment family. A container task runs as root; the
+        # reviewer ruled the finding fixed and the agent answered self_verified anyway.
+        "verification_only_as_root",
+        "install_into_private_env",
+        "install_into_yoetz_runtime",
+        "planned_verification_agent_linked",
+        "planned_verification_matched_by_prefix",
+        "planned_verification_outcome_unknown",
+        "planned_verification_unobservable",
+    ],
 )
 def test_task_facts_about_the_work_never_bound_a_fixed_ruling(gap: str) -> None:
     """Issue #1000 (tb4n1 interleaved-vigenere): the reviewer ruled its finding fixed, but the
     later check carried ``write_outside_workspace``, a fact about where the agent wrote, not about
-    what the reviewer was shown, and the finding stayed open."""
+    what the reviewer was shown, and the finding stayed open. Issue #1046 extends it to every
+    environment fact (tb4n4: ``verification_only_as_root``)."""
 
     from yoetz.kernel.finding_resolution import resolution_blockers
 
@@ -1710,6 +1724,82 @@ def test_task_facts_about_the_work_never_bound_a_fixed_ruling(gap: str) -> None:
             finding, 4, check, frozenset(), proof_state=_changed_state(check)
         ) == (*extra, f"coverage:{gap}")
         assert _resolves(finding, check) is False
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        # About the deliverable or what the reviewer was shown, never the environment.
+        "requested_output_unchanged",
+        "declared_output_not_reviewable",
+        "deliverable_references_undeclared_file",
+        # Agent-actionable: the agent removes it by its own action.
+        "edited_after_last_verification",
+        "planned_verification_failed",
+    ],
+)
+def test_facts_about_the_deliverable_still_bound_a_fixed_ruling(gap: str) -> None:
+    """Issue #1046 stops at the environment family: a fixed ruling never outranks a fact about the
+    deliverable, about what the reviewer could see, or about work the agent still owes."""
+
+    from yoetz.kernel.finding_resolution import resolution_blockers
+
+    finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    coverage = _coverage(gaps=(gap,), semantic=True, freshness=LedgerFreshness.PARTIAL)
+    check = _ruled(
+        _check(semantic=_SEMANTIC_OK, coverage=coverage),
+        (1, "fixed"),
+        conclusion="no_material_discrepancy",
+    )
+    assert resolution_blockers(
+        finding, 4, check, frozenset(), proof_state=_changed_state(check)
+    ) == (f"coverage:{gap}",)
+    assert _resolves(finding, check) is False
+
+
+def test_a_fixed_ruling_resolution_names_the_environment_facts_it_did_not_wait_for() -> None:
+    """Issue #1046: the resolved finding's explanation says the environment facts stay disclosed
+    on the receipt, so closing the finding never reads as Yoetz having verified them away."""
+
+    from types import SimpleNamespace
+
+    from yoetz.domain.events import LedgerRecord
+    from yoetz.kernel.finding_resolution import finding_resolution_explanation
+
+    finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    coverage = _coverage(
+        gaps=("content_unselected", "verification_only_as_root"),
+        semantic=True,
+        freshness=LedgerFreshness.PARTIAL,
+    )
+    check = _ruled(
+        _check(tested=9, semantic=_SEMANTIC_OK, coverage=coverage),
+        (1, "fixed"),
+        conclusion="no_material_discrepancy",
+    )
+    state = replace(
+        empty_projection_state(),
+        frontier=9,
+        head_digest=_DIGEST,
+        findings={fnd(1): finding_record(finding, 4, resolved_by_check_event_id=evt(9))},
+    )
+    records = (
+        SimpleNamespace(
+            event_id=evt(9),
+            schema=SimpleNamespace(name="check_recorded"),
+            ledger=SimpleNamespace(ingestion_sequence=9),
+            payload=check,
+        ),
+    )
+    explanation = finding_resolution_explanation(
+        state, fnd(1), cast(tuple[LedgerRecord, ...], records)
+    )
+    assert explanation == (
+        f"Resolved by qualifying check {evt(9)}: the reviewer ruled it fixed on material "
+        "recorded after the finding; retained as history. The environment facts that check "
+        "recorded (verification_only_as_root) did not hold it open; the receipt still "
+        "discloses them."
+    )
 
 
 def test_a_fixed_ruling_resolves_despite_citations_the_fence_reduced() -> None:

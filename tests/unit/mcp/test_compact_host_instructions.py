@@ -38,7 +38,7 @@ from yoetz.ports.control import McpHostProfile
 # and the policy-route destination disclosure (#479) ride on top and are never trimmed to fit.
 COMPACT_BODY_CAP_BYTES = 2_048
 # The Claude body hash locks the current compact startup contract, including guidance recovery.
-CLAUDE_BODY_SHA256 = "sha256:fb83123109b73040144b35bf8d976bb85daca908aa321ed4c843dbe0f2d78eee"
+CLAUDE_BODY_SHA256 = "sha256:126d3c3d59bc10c7c96ca87f8136ebfac90fe83ec4bd33ce00ae9928450cf86a"
 COMPACT_HOSTS: tuple[McpHostProfile, ...] = ("codex", "cursor")
 # The longer of the two route lines the bridge appends to every body.
 LONGEST_ROUTE_LINE = (
@@ -161,8 +161,10 @@ def test_the_compact_body_names_every_guidance_document_and_how_to_read_it() -> 
     for resource in GUIDANCE_RESOURCES:
         assert f"`{resource.uri}`" in text, resource.uri
         assert read_resource(resource.uri), resource.uri
-    assert "`yoetz://guidance/publication-policy.md` before `publish_work`" in text
-    assert "`yoetz://guidance/coverage-and-receipts.md` before `check`" in text
+    # Issue #1048: the four procedure pages are on demand, never a read before every write.
+    assert "only when a result names one or you are unsure" in text
+    assert "before `publish_work`" not in text
+    assert "before `check`" not in text
     assert "page and verify empty or clipped guidance" in text
 
 

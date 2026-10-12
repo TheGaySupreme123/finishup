@@ -301,8 +301,8 @@ CLAUDE_CODE_INITIALIZE_INSTRUCTIONS: Final = (
     "Subagents whose assignment names no handle or parent session skip it.\n"
     "\n"
     "Before `start`, read `yoetz://guidance/agent-instructions.md`; if empty or clipped, page and "
-    "verify. Do not list resources. After `start`, read workflow, publication, coverage, or "
-    "request-template topics. Cadence: "
+    "verify. Do not list resources. After `start`, read workflow, publication, coverage or "
+    "request-template topics only on demand. Cadence: "
     "`publish_work` per transition, `check`, `receipt` last. Never claim active before `start`; "
     "never invent a task. If it fails, follow its continuation, then ask; do not work without a "
     "task.\n"
@@ -348,9 +348,9 @@ COMPACT_INITIALIZE_INSTRUCTIONS: Final = (
     "\n"
     "Before the first `start`, call `read_guidance` on `yoetz://guidance/agent-instructions.md`; "
     "page and verify empty or clipped guidance. After `start`, read workflow "
-    "`yoetz://guidance/workflow.md` for recovery or delegation, `yoetz://guidance/publication-policy.md` "
-    "before `publish_work`, `yoetz://guidance/coverage-and-receipts.md` before `check`, and "
-    "`yoetz://guidance/request-templates.md` for missing schemas or setup.\n"
+    "`yoetz://guidance/workflow.md`, `yoetz://guidance/publication-policy.md`, "
+    "`yoetz://guidance/coverage-and-receipts.md` or `yoetz://guidance/request-templates.md` only "
+    "when a result names one or you are unsure.\n"
     "\n"
     "Cadence: `start`, `publish_work`, `check`, `respond`, `receipt`. Never claim active before "
     "`start`; never invent a task, id, finding, verdict or receipt. If `start` fails, follow its "
@@ -1391,7 +1391,10 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
             mode["description"] = (
                 "Omit to use the configured default. Select semantic_required for a known "
                 "requirement, including final rechecks; semantic_if_configured only when review "
-                "is known to be optional."
+                "is known to be optional. inspect is a read: it records nothing, mints no "
+                "findings, runs no review and takes no scope, max_findings, policy_packs or "
+                "final_review; it returns what is left to close and why, what hooks observed "
+                "since the last check, and where each obligation's evidence came from."
             )
         scope = properties.get("scope")
         if isinstance(scope, dict):
@@ -1893,7 +1896,11 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "Check recorded work",
         "Runs the requested recorded-work checks and records the result; it returns at most "
         "max_findings findings plus a suppressed count, and status with view=findings reads the "
-        "rest. A no_issue_detected verdict does not mean the work is correct. Choose mode "
+        "rest. mode=inspect instead reads, records nothing and runs no review: one call for what "
+        "is left to close and why, what hooks observed since the last check, and whether each "
+        "obligation's evidence links to its declared deliverables or commands; use it instead "
+        "of repeated status reads. A no_issue_detected verdict does not mean the work is "
+        "correct. Choose mode "
         "deliberately: semantic_required when the user, effective policy or acceptance requires "
         "it, including subsequent final checks. Omit mode to preserve the configured default; "
         "use semantic_if_configured only when review is known to be optional. Reserve "
@@ -2123,7 +2130,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
             {
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
-                "check": "sha256:f4e91ea5ae6138ca381d3a990340067b6e28a545340eec9c0ca4737a18f06166",
+                "check": "sha256:e2918f20e8569f49d9ca6d8acf9464bfa130d3f9218150bbcdf269d2c8be2482",
                 "respond": "sha256:41dee68d3de5fa8d4d9d95a70f01660c1fab93bbf47c8a93ca0c7253abd11433",
                 "status": "sha256:fcc6116a60b0b0938bebc5b327663fafeee1f28c6dffcd4a6ccb628711531551",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
@@ -2135,7 +2142,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
             {
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
-                "check": "sha256:3cd2326917a550c0a24f3e94c6141f41b1549107030154c3e5b29f46bfaef78b",
+                "check": "sha256:5288325f21a2f4f13990fae882c18a4345239eecf09703a0b843c81a49d3dc40",
                 "respond": "sha256:41dee68d3de5fa8d4d9d95a70f01660c1fab93bbf47c8a93ca0c7253abd11433",
                 "status": "sha256:fcc6116a60b0b0938bebc5b327663fafeee1f28c6dffcd4a6ccb628711531551",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
@@ -2147,8 +2154,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:9576c84c3b7476c7c3d9520ba18dec6ef7d852a1d96c5a29b4bc2348eafbb05d",
-        "strict": "sha256:346964d57cf6c679a4b69d89c62172a1649d3d678922ae60a343dc85f4bca38f",
+        "policy": "sha256:6311e9b21741e5c0e9ef998e062198ecb6df6f24d51d88435d6aed94de3fe604",
+        "strict": "sha256:d5bf01594f41c378a8a0502ffb883b3915ebafb18ab3d3a5a1493ed96ac252c4",
     }
 )
 

@@ -43,6 +43,7 @@ from yoetz.domain.receipts import (
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     PREEXISTING_TEST_INFORMATIONAL_GAPS,
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
+    SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
     SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
@@ -74,6 +75,10 @@ from yoetz.domain.receipts import (
 from yoetz.domain.review_input_render import (
     render_review_input_manifest_compat_line,
     render_review_input_manifest_coverage_note,
+)
+from yoetz.domain.task_fact_tokens import (
+    DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
+    undeclared_reference_variants,
 )
 from yoetz.domain.task_statement import (
     TASK_STATEMENT_NOT_AUTHORIZED_GAP,
@@ -121,7 +126,7 @@ from yoetz.kernel.completion_scope import (
     SCOPE_REPAIR,
     completion_scope_differences,
 )
-from yoetz.kernel.delivered_set import deliverable_lineage
+from yoetz.kernel.delivered_set import deliverable_lineage, undeclared_reference_rows
 from yoetz.kernel.deterministic_checks import (
     CALLER_DIGEST_PROVENANCE_GAPS,
     CaseAvailabilityFacts,
@@ -796,16 +801,28 @@ def _derive_receipt_fact_lineage(context: ReceiptBuildContext) -> tuple[FactLine
     return tuple(sorted(dict.fromkeys(items), key=lambda item: item.sort_key))
 
 
-def _check_change_gap_text(context: ReceiptBuildContext, code: str) -> str | None:
+def _check_change_gap_text(
+    context: ReceiptBuildContext, code: str, *, name_paths: bool = True
+) -> str | None:
     """The fixed sentence for a check-time code; for the legacy-resolution disclosure (R945-02),
     also the affected resolved findings, at most 16 by id and the rest as a count. A task fact
     that carries provenance (ADR-045) also says why it fired, from the same lineage status
-    shows."""
+    shows. ``name_paths=False`` counts the undeclared files instead of naming them: their paths
+    are repository-excerpt content only ``full_local`` carries."""
 
     later = _later_material_text(context, code)
     if later is not None:
         return later
     sentence = check_time_change_gap_sentence(code)
+    if sentence is not None and code == DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP:
+        # tb4n4 (#1044): name the undeclared files from the applicable check's recorded
+        # deliverable states, with the same sentence the Stop gate prints.
+        check = context.applicable_check
+        rows = undeclared_reference_rows(check.deliverable_states) if check is not None else ()
+        if not name_paths:
+            rows = tuple((obligation, index, (), total) for obligation, index, _, total in rows)
+        named = undeclared_reference_variants(rows)
+        return f"{sentence} {named[0]}" if named else sentence
     if sentence is not None and code != CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP:
         why = lineage_texts(_receipt_fact_lineage(context), code)
         if why:
@@ -1231,14 +1248,15 @@ def route_did_not_require_review(check: CheckRecordedPayload | None) -> bool:
     """True when ``check`` recorded a route that did not require AI-powered review (#986).
 
     Only an explicit ``semantic_route_required: false`` on a local-only check (``not_requested``)
-    qualifies; an absent field is the safe default and keeps the missing review blocking.
+    qualifies; an absent field is the safe default and keeps the missing review blocking. Since
+    #1041 such a check no longer records ``semantic_review_not_requested`` when it asked for no
+    review, so the gap itself is not part of the test.
     """
 
     return (
         check is not None
         and check.semantic_route_required is False
         and check.semantic_status is SemanticStatus.NOT_REQUESTED
-        and SEMANTIC_REVIEW_NOT_REQUESTED_GAP in check.coverage.known_gaps
     )
 
 
@@ -2200,6 +2218,13 @@ def _sections(
                 "the last assessed review, could not assess the review packet (a Yoetz limit). "
                 f"Coverage is limited by: {limited_by}."
             )
+        elif not_requested and SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in gap_codes:
+            # Issue #1046: the applicable check ran before any material edit.
+            gap_body = (
+                "AI-powered review was deferred: the applicable check recorded no material edit "
+                "yet, so it ran the local plan checks only; the review runs after the first edit. "
+                f"Coverage is limited by: {limited_by}."
+            )
         elif not_requested:
             gap_body = (
                 "AI-powered review was not requested (local-only check). "
@@ -2628,12 +2653,14 @@ def build_receipt(
         )
     )
     proof_state_cache: dict[tuple[int, int, str], ProjectionState | None] = {}
+    # The export profiles clear gap details; the sections they keep never copy a path (#1044).
+    name_paths = redaction_profile is ReceiptRedactionProfile.FULL_LOCAL
     sections = _sections(
         check_change_gap_texts={
             code: text
             for code in context.coverage.known_gaps
             if code not in historical
-            and (text := _check_change_gap_text(context, code)) is not None
+            and (text := _check_change_gap_text(context, code, name_paths=name_paths)) is not None
         },
         include=include,
         conclusion=conclusion,

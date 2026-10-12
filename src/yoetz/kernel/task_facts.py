@@ -224,6 +224,7 @@ __all__ = [
     "BlockerDeclaration",
     "acting_started",
     "acknowledged_obligation_ids",
+    "agent_linked_run_events",
     "observed_planned_commands",
     "observed_run_from_command",
     "BLOCKER_NOTICE_CLAIMED",
@@ -247,6 +248,7 @@ __all__ = [
     "declared_output_items",
     "deliverable_path_identity",
     "effective_obligations",
+    "material_edit_recorded",
     "open_effective_obligations",
     "register_command_identity_key",
     "planned_match",
@@ -961,6 +963,40 @@ def _agent_linked_runs(
     }
 
 
+def agent_linked_run_events(
+    projection: ProjectionState, records: Iterable[LedgerRecord]
+) -> frozenset[EventId]:
+    """The observed command actions the agent linked to a requested command value (PL6-3).
+
+    The links ``task_fact_signals`` accepts as an obligation's planned verification (see
+    ``_agent_linked_runs``), for the requested command values of every effective obligation,
+    keyed by the linked run's hook-observed ``action_recorded`` event. A run in this set is the
+    task's declared verification by the agent's own declaration, never a run beyond it (review of
+    #1043 x #1049). ``records`` must be the accepted prefix that produced ``projection``.
+    """
+
+    prefix = tuple(records)
+    observed = observed_event_ids_from_records(prefix)
+    state = _observed_state(projection, observed, cooperative_event_ids_from_records(prefix))
+    linked = _agent_linked_runs(projection, prefix, state, observed)
+    if not linked:
+        return frozenset()
+    events: set[EventId] = set()
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for item in payload.requested_items:
+            if item.item_kind is not RequestedItemKind.COMMAND:
+                continue
+            events.update(
+                run.action_event
+                for run in linked.get((obligation, item.value), ())
+                if run.action_event is not None
+            )
+    return frozenset(events)
+
+
 def non_counting_edits_exempt(projection: ProjectionState) -> frozenset[str]:
     """The write tokens whose edits are exempt from the stale rule for this task (ADR-042).
 
@@ -1095,6 +1131,15 @@ def _observed_state(
             # "not observed".
             tokens = observed_action_runtime_tokens(payload.description)
             command_tokens.update(tokens)
+            if observed_shell_write_counts(payload.description, exempt):
+                # ADR-045: a shell write counts whatever its outcome, so one whose result never
+                # arrives counts like a pending edit. A Codex shell ``apply_patch <<EOF`` is
+                # always one: Codex applies the patch itself and fires only the pre-event
+                # (#1041), so its write token is the ledger's only record of the edit (#1046).
+                latest_edit = max(latest_edit or 0, action.source_frontier)
+                latest_edit_event = action.source_event_id
+                edit_tokens.update(tokens & (SHELL_EDIT_TOKENS | NON_COUNTING_WRITE_TOKENS))
+                acting = True
             runs.append(
                 _ObservedRun(
                     action.source_frontier,
@@ -1186,6 +1231,29 @@ def observed_planned_commands(
         if planned is not None and any(planned_match(run, planned) is not None for run in runs):
             matched.add(value)
     return frozenset(matched)
+
+
+def material_edit_recorded(
+    projection: ProjectionState,
+    observed: frozenset[EventId],
+    cooperative: frozenset[EventId],
+) -> bool:
+    """Whether the prefix records a material edit of the work (issue #1046).
+
+    An observed edit or shell write that counts (ADR-042: not only scratch or Yoetz-owned paths;
+    ADR-045: ``cat > f``, ``sed -i``), the same edits that make a later check stale, or an edit
+    action the agent published. Plans, reads, runs and Yoetz's own calls are not edits. The check's
+    workspace capture is the other half of the answer; callers combine the two.
+    """
+
+    if _observed_state(projection, observed, cooperative).latest_edit is not None:
+        return True
+    return any(
+        row.payload is not None
+        and row.payload.action_kind is ActionKind.EDIT
+        and row.source_event_id in cooperative
+        for row in projection.actions.values()
+    )
 
 
 def acting_started(

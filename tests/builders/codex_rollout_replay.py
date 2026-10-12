@@ -31,6 +31,7 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
+from yoetz.kernel.observed_failures import observed_action_tool
 from yoetz.kernel.task_facts import task_fact_signals
 
 __all__ = ["RolloutRun", "command_items", "drive_rollout", "summarize"]
@@ -128,10 +129,18 @@ def post_response(item: dict[str, Any], *, stated: bool) -> Any:
 
 
 def _command_actions(cell: Replay) -> list[ActionRecordedPayload]:
+    """The recorded nested commands, in order.
+
+    A code-mode cell that ran no nested tool keeps its own ``exec`` wrapper action (#917; it pairs
+    with its call since #1038), which the materializer files as a command. It is not one of the
+    rollout's command items, so it is left out of the per-item comparison.
+    """
+
     return [
-        cast(ActionRecordedPayload, row.payload)
+        payload
         for row in cell.rows("action_recorded")
-        if cast(ActionRecordedPayload, row.payload).action_kind is ActionKind.COMMAND
+        if (payload := cast(ActionRecordedPayload, row.payload)).action_kind is ActionKind.COMMAND
+        and observed_action_tool(payload.description) != "exec"
     ]
 
 

@@ -321,6 +321,13 @@ installation-vault recovery without exposing secrets to agents. Passphrase setup
 input with `*` and re-prompt invalid or mismatched values; they never accept a secret through a
 flag, pipe, or the full-screen window.
 
+A service that cannot start says why. `yoetz service run` names the failing stage and the kind of
+error and prints a correlation id for `yoetz service diagnostics --correlation-id`; a command that
+started the service for you (`yoetz service restart`, `yoetz setup vault`, `yoetz setup llm --set`,
+`yoetz observe drain`) prints the same stage and id, and an agent whose session tried to start the
+service receives `service_start_failed` with that stage and id instead of being told to start it
+again.
+
 ## What a fresh installation does not do
 
 An unconfigured installation is **provider-egress-free and local-only**. No task content is sent

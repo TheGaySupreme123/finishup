@@ -142,6 +142,7 @@ __all__ = [
     "SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP",
     "SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP",
     "SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP",
+    "SEMANTIC_PROCESS_STATE_FILTERED_GAP",
     "SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP",
     "SEMANTIC_CHALLENGES_REJECTED_GAP",
     "SEMANTIC_REVIEW_SNIPPET_INVALID_GAP",
@@ -150,6 +151,7 @@ __all__ = [
     "SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP",
     "SEMANTIC_MISSING_ITEMS_REJECTED_GAP",
     "SEMANTIC_MISSING_NON_CONVERGENT_GAP",
+    "SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP",
     "SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP",
     "SEMANTIC_MISSING_UNAVAILABLE_GAP",
     "SEMANTIC_MISSING_YOETZ_LIMIT_GAP",
@@ -177,6 +179,7 @@ __all__ = [
     "resolved_finding_ids_for_render",
     "unresolved_findings_for_render",
     "semantic_coverage_gap_code",
+    "recorded_semantic_outcome_gap_code",
     "check_time_change_gap_sentence",
     "TASK_FACT_GAP_SENTENCES",
     "check_time_change_unavailable_reason_gap",
@@ -283,6 +286,12 @@ SEMANTIC_MISSING_NON_CONVERGENT_GAP: Final = "semantic_missing_non_convergent"
 SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
     "semantic_review_skipped_insufficient_packet"
 )
+# Issue #1046 (tb4n4: 18 of 61 semantic-arm tasks reviewed the plan before any work): a routine
+# check with no material edit recorded and no workspace change observed runs the local plan checks
+# only; the AI-powered review waits for the first edit, and the closing review is never deferred.
+# Nothing was composed or sent. Like the skipped round, never agent work in itself; the next check
+# after an edit reviews as configured.
+SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP: Final = "semantic_review_deferred_before_first_edit"
 # A successful provider call can still lose the exact post-admission input manifest.  Keep the
 # failure reason closed and coverage-bounded so a composed manifest is never presented as what the
 # provider received.  These are internal provenance facts surfaced as ordinary receipt gaps.
@@ -328,6 +337,12 @@ SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP: Final = "semantic_prior_verdicts_unsupp
 # Issue #905: a challenge that restated a recorded AI-powered finding (same kind, subjects within
 # that finding's, nothing recorded since) was "seen again, suppressed" instead of minted twice.
 SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP: Final = "semantic_restatements_suppressed"
+# Issue #1042: reviewer challenges the check did not record as findings because they called work
+# "never attempted" during a routine review (``routine_completeness``, ADR-040 section 5) or were
+# about Yoetz's own capture or process state (``yoetz_process_state``). A disclosure of the review
+# dialogue, never a limit on what the review saw: it does not bound the receipt and does not veto
+# an absence proof.
+SEMANTIC_PROCESS_STATE_FILTERED_GAP: Final = "semantic_process_state_filtered"
 # The check-time change (ADR-031) is the service's own read of the task's repository when a check
 # runs. Each code names one limit on what that single object could show the reviewer. None of
 # them describes an input of a local policy pack, so they bound the review and the receipt only.
@@ -531,9 +546,11 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " it for the reviewer."
         ),
         "deliverable_references_undeclared_file": (
-            "A declared delivered source file names a workspace file that is not a declared output"
-            " or input; a grader may receive only the declared files. Embed it, rebuild it at"
-            " runtime, or disclose the dependency."
+            "A declared delivered source file names a file the change created that no requested"
+            " item declares; a grader may receive only the declared files, so the deliverable can"
+            " fail where the task delivers it. Embed the file's content in the deliverable,"
+            " rebuild it at run time, or declare it as a delivered output; disclosing the"
+            " dependency does not resolve it."
         ),
         "install_into_yoetz_runtime": (
             "A package install resolved to Yoetz's own runtime interpreter, not the task's."
@@ -599,6 +616,27 @@ def semantic_coverage_gap_code(status: SemanticStatus, reason: SemanticReason) -
     if status is SemanticStatus.NOT_CONFIGURED:
         return SEMANTIC_REVIEW_NOT_CONFIGURED_GAP
     return SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP
+
+
+def recorded_semantic_outcome_gap_code(
+    status: SemanticStatus, reason: SemanticReason, *, route_required: bool | None
+) -> str | None:
+    """The review-outcome gap a reader folds beside a recorded check's own ``known_gaps``.
+
+    ``semantic_coverage_gap_code`` re-derives the code for a legacy payload whose ``known_gaps``
+    may lack it. A check that recorded ``semantic_route_required: false`` with ``not_requested``
+    (``deterministic_mode``) is new enough that its ``known_gaps`` say exactly what it disclosed:
+    since #1041 a check that asked for no review on a route that required none records no
+    ``semantic_review_not_requested``, and a reader must not add it back.
+    """
+
+    if (
+        route_required is False
+        and status is SemanticStatus.NOT_REQUESTED
+        and reason is SemanticReason.DETERMINISTIC_MODE
+    ):
+        return None
+    return semantic_coverage_gap_code(status, reason)
 
 
 class ReceiptConclusion(str, Enum):  # noqa: UP042 - exact wire enum base

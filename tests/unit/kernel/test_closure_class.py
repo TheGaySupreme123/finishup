@@ -513,6 +513,65 @@ def test_a_verification_limit_decision_discloses_the_request_without_a_response(
     )
 
 
+def test_a_verification_limit_decision_never_settles_the_agents_own_criterion() -> None:
+    """Review of #1043, guard G1: only the agent's own reasoned answer narrows its criterion.
+
+    ``agent_criterion_unmet`` is a limitation request whatever next step the reviewer asked for,
+    so a ``yoetz-verification-limit`` decision on its obligation (recorded for a hidden grader, as
+    the Stop gate advises) settled it unanswered: the agent never learned its probe fails, and the
+    explanation said it narrowed the criterion with a reason. The decision line also never makes
+    that obligation externally evaluated: the criterion is not a hidden evaluator's.
+    """
+
+    ledger, obligation = _limit_ledger()
+    ledger.append(
+        EventSchema("decision_recorded", "1.0.0"),
+        DecisionRecordedPayload(
+            statement=f"yoetz-verification-limit:{obligation}",
+            rationale="The real grader is hidden; the sample passes.",
+            authority=actor_id("agt_codex"),
+        ),
+        observed=False,
+    )
+    replayed = replay(ledger.prefix)
+    criterion = _finding(
+        1,
+        kind=FindingKind.AGENT_CRITERION_UNMET,
+        semantic=True,
+        next_step="act",
+        refs=(obligation,),
+    )
+    state = replace(
+        replayed,
+        frontier=max(replayed.frontier, 20),
+        findings={fnd(1): finding_record(criterion, replayed.frontier)},
+    )
+    standing = limitation_standing(state, fnd(1))
+    assert standing is not None
+    assert (standing.state, standing.basis) == ("limitation_requested", None)
+    closure = finding_closure(state, fnd(1))
+    assert closure is not None
+    assert (closure.closure_class, closure.basis, closure.next_actions) == (
+        FindingClosureClass.AGENT_WORK,
+        "limitation_requested",
+        ("acknowledge", "repair"),
+    )
+    assert limitation_requested_ids(state) == (fnd(1),)
+    assert limitation_disclosed_ids(state) == ()
+    classes = obligation_closures(state, records=ledger.prefix)
+    assert classes[obligation_id(obligation)].basis == "open"
+
+    # The agent's own reasoned answer narrows it, decision line or not.
+    narrowed = replace(
+        state, responses={fnd(1): _response(1, ResponseDisposition.ACKNOWLEDGED, reasoned=True)}
+    )
+    answered = limitation_standing(narrowed, fnd(1))
+    assert answered is not None
+    assert (answered.state, answered.basis) == ("limitation_disclosed", "respond_acknowledgement")
+    settled = finding_closure(narrowed, fnd(1))
+    assert settled is not None and settled.basis == "limitation_disclosed"
+
+
 def test_the_agents_own_words_never_make_a_finding_a_limitation() -> None:
     """Guard G2: an acknowledgement reason that says "could not find it" changes nothing."""
 

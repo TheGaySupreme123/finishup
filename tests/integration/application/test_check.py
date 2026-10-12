@@ -123,6 +123,22 @@ _WRITER = "wri_30000000-0000-4000-8000-000000000001"
 _REQUEST = "req_30000000-0000-4000-8000-000000000001"
 
 
+@pytest.fixture(autouse=True)
+def work_has_begun(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These cases exercise the review path, so the work has begun in every frozen case.
+
+    Issue #1046 defers the AI-powered review until the first material edit; that decision is
+    locked by ``tests/unit/application/test_tb4n4_review_timing.py`` and
+    ``tests/integration/application/test_tb4n4_review_before_first_edit.py``. The synthetic cases
+    here carry no edit action, so without this every review below would be deferred.
+    """
+
+    def edited(*_args: object) -> bool:
+        return True
+
+    monkeypatch.setattr(check_module, "material_edit_recorded", edited)
+
+
 class _Ids:
     def __init__(self) -> None:
         self.count = 0
@@ -969,7 +985,9 @@ async def test_resolved_declared_scope_reaches_clean_check_verdict() -> None:
 
 
 @pytest.mark.anyio
-async def test_deterministic_only_returns_scoped_clean_with_standing_review_gap() -> None:
+async def test_deterministic_only_returns_scoped_clean_without_a_review_gap() -> None:
+    """A local-only check asked for on a route that requires no review discloses none (#1041)."""
+
     action = ActionRecordedPayload(
         act(1),
         ActionKind.COMMAND,
@@ -1009,7 +1027,14 @@ async def test_deterministic_only_returns_scoped_clean_with_standing_review_gap(
     assert checked.verdict.value == "no_issue_detected"
     assert checked.semantic_status is SemanticStatus.NOT_REQUESTED
     assert checked.semantic_reason is SemanticReason.DETERMINISTIC_MODE
-    assert checked.coverage.known_gaps == ("semantic_review_not_requested",)
+    assert checked.coverage.known_gaps == ()
+
+    # Where the policy requires review, asking for none is still disclosed (and is agent work).
+    required = _App()
+    required.verification_policy = VerificationPolicy(semantic="required")
+    required.ledger.frozen = FrozenCase(case, required.ledger.frozen.lease)
+    unmet = await execute_check_commit(required, _request("deterministic_only"))
+    assert unmet.coverage.known_gaps == ("semantic_review_not_requested",)
 
 
 @pytest.mark.anyio
@@ -1053,7 +1078,8 @@ async def test_disabled_policy_resolves_omitted_mode_to_scoped_clean() -> None:
     assert checked.verdict.value == "no_issue_detected"
     assert checked.semantic_status is SemanticStatus.NOT_REQUESTED
     assert checked.semantic_reason is SemanticReason.DETERMINISTIC_MODE
-    assert checked.coverage.known_gaps == ("semantic_review_not_requested",)
+    # The owner's disabled policy made the check local-only by request: no review gap (#1041).
+    assert checked.coverage.known_gaps == ()
 
 
 @pytest.mark.anyio

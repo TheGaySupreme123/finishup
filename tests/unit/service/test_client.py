@@ -6,6 +6,7 @@ import asyncio
 import gc
 import os
 import stat
+import subprocess
 import time
 from collections.abc import Buffer, Generator
 from contextlib import contextmanager
@@ -421,6 +422,124 @@ async def test_on_demand_connect_spawns_only_after_absent_service(
     connected = await connect_service_on_demand(ControlClientKind.MCP_BRIDGE, timeout_seconds=0.2)
     assert connected is expected
     assert spawned == 1
+
+
+class _ExitedProcess:
+    """A spawned service that has already exited (``poll`` returns its code)."""
+
+    def __init__(self, code: int | None) -> None:
+        self.code = code
+
+    def poll(self) -> int | None:
+        return self.code
+
+
+@pytest.mark.anyio
+async def test_on_demand_names_a_spawned_service_startup_failure_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The conda-image bridge waited its whole budget, then said only "not running" (#1040)."""
+
+    import yoetz.observability.diagnostics as diagnostics
+    import yoetz.service.client as client_module
+    from yoetz.service.startup_failure import record_startup_failure
+
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    startup_id = new_id(IdKind.CORRELATION)
+    attempts = 0
+
+    async def unavailable(_kind: ControlClientKind, **_kwargs: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        raise ControlError("service_unavailable", retryable=True)
+
+    def spawn() -> object:
+        record_startup_failure(
+            NotImplementedError("chmod: follow_symlinks unavailable on this platform"),
+            stage="activation",
+            correlation_id=startup_id,
+        )
+        return client_module._SpawnedService(  # pyright: ignore[reportPrivateUsage]
+            cast(subprocess.Popen[bytes], _ExitedProcess(70)), startup_id
+        )
+
+    monkeypatch.setattr(client_module, "_connect_service_attempt", unavailable)
+    monkeypatch.setattr(client_module, "_spawn_service_process", spawn)
+    monkeypatch.setattr(client_module, "_SERVICE_START_POLL_SECONDS", 0.01)
+    started = time.monotonic()
+    with pytest.raises(ControlError) as raised:
+        await connect_service_on_demand(ControlClientKind.MCP_BRIDGE, timeout_seconds=30.0)
+
+    assert time.monotonic() - started < 5.0
+    assert attempts == 2
+    assert raised.value.reason == "service_unavailable"
+    assert raised.value.retryable is False
+    assert raised.value.phase == "activation"
+    assert raised.value.correlation_id == startup_id
+
+
+@pytest.mark.anyio
+async def test_on_demand_keeps_waiting_when_the_spawned_service_lost_the_singleton(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spawn that exits without a startup record lost a race; the holder still answers."""
+
+    import yoetz.observability.diagnostics as diagnostics
+    import yoetz.service.client as client_module
+
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    expected = object()
+    attempts = 0
+
+    async def scripted(_kind: ControlClientKind, **_kwargs: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise ControlError("service_unavailable", retryable=True)
+        return expected
+
+    def spawn() -> object:
+        return client_module._SpawnedService(  # pyright: ignore[reportPrivateUsage]
+            cast(subprocess.Popen[bytes], _ExitedProcess(20)), new_id(IdKind.CORRELATION)
+        )
+
+    monkeypatch.setattr(client_module, "_connect_service_attempt", scripted)
+    monkeypatch.setattr(client_module, "_spawn_service_process", spawn)
+    monkeypatch.setattr(client_module, "_SERVICE_START_POLL_SECONDS", 0.01)
+
+    assert await connect_service_on_demand(ControlClientKind.MCP_BRIDGE, timeout_seconds=5.0) is (
+        expected
+    )
+    assert attempts == 3
+
+
+def test_on_demand_spawn_passes_the_id_it_will_look_a_failure_up_under(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yoetz.service.client as client_module
+
+    observed: list[object] = []
+
+    def popen(command: object, **_kwargs: object) -> object:
+        observed.append(command)
+        return _ExitedProcess(None)
+
+    monkeypatch.setattr(client_module, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(client_module.subprocess, "Popen", popen)
+
+    spawned = client_module._spawn_service_process()  # pyright: ignore[reportPrivateUsage]
+
+    (command,) = observed
+    assert isinstance(command, tuple)
+    assert command[1:] == (
+        "-m",
+        "yoetz",
+        "service",
+        "run",
+        "--startup-correlation-id",
+        spawned.startup_correlation_id,
+    )
+    assert spawned.startup_correlation_id.startswith("err_")
 
 
 @pytest.mark.anyio

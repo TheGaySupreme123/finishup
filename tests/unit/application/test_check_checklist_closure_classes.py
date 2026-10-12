@@ -22,7 +22,7 @@ from unit.kernel.test_closure_class import (  # pyright: ignore[reportMissingImp
     _state,  # pyright: ignore[reportPrivateUsage]
 )
 from yoetz.application.check import build_finding_checklist, build_overall_next
-from yoetz.domain.findings import ResponseDisposition
+from yoetz.domain.findings import FindingKind, ResponseDisposition
 
 # What ``build_overall_next`` reads of a check result once no finding is left for the agent.
 _RESULT: Any = SimpleNamespace(
@@ -86,6 +86,47 @@ def test_a_limitation_request_to_disclose_outranks_a_ruling_to_request() -> None
     assert checklist.next == "disclose_limitations"
     overall = build_overall_next(_RESULT, checklist, state)
     assert overall is not None and overall.action == "disclose_limitations"
+
+
+def test_the_agents_own_criterion_is_work_to_fix_or_narrow_never_disclose_only() -> None:
+    """Review of #1043: ``agent_criterion_unmet`` reads ``limitation_requested`` with next actions
+    ``acknowledge`` and ``repair``. Its probe demonstrably fails, so "disclose the limitation, no
+    repair is needed" would steer an honest agent to ``acknowledged_not_done``: alone, beside a
+    reviewer's limitation request or a ruling to request, it is work (fix it, or narrow it)."""
+
+    criterion = _finding(1, kind=FindingKind.AGENT_CRITERION_UNMET, semantic=True, next_step="act")
+    state, closure = _one(criterion)
+    assert (closure.basis, closure.next_actions) == (
+        "limitation_requested",
+        ("acknowledge", "repair"),
+    )
+    checklist = build_finding_checklist(state, attempt_budget=5)
+    assert checklist.next == "work_open_findings"
+    overall = build_overall_next(_RESULT, checklist, state)
+    assert overall is not None
+    assert (overall.status, overall.action) == ("action_required", "work_open_findings")
+    assert overall.target_refs == (str(fnd(1)),)
+
+    limitation = _finding(2, semantic=True, next_step="state_unresolved_limitation")
+    rejected = _finding(3, semantic=True, next_step="act")
+    mixed = _state(
+        {
+            fnd(1): finding_record(criterion, 4),
+            fnd(2): finding_record(limitation, 5),
+            fnd(3): finding_record(rejected, 6),
+        },
+        {fnd(3): _response(3, ResponseDisposition.REJECTED, reasoned=True)},
+    )
+    checklist = build_finding_checklist(mixed, attempt_budget=5)
+    assert checklist.next == "work_open_findings"
+    overall = build_overall_next(_RESULT, checklist, mixed)
+    assert overall is not None and overall.action == "work_open_findings"
+    assert overall.target_refs == (str(fnd(1)), str(fnd(2)))
+
+    # Narrowed with a reason, it is settled and nothing is left to do.
+    narrowed, closure = _one(criterion, ResponseDisposition.ACKNOWLEDGED, reasoned=True)
+    assert closure.basis == "limitation_disclosed"
+    assert build_finding_checklist(narrowed, attempt_budget=5).next == "request_receipt"
 
 
 def test_a_limitation_request_answered_not_done_is_settled_unmet_not_work_to_disclose() -> None:

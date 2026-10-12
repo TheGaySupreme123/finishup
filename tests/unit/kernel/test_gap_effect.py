@@ -1,7 +1,12 @@
 """One table of what each gap code does to a receipt (tb4n3 RC-3, issue #1026, ADR-046).
 
-The 178 unchanged rows must keep today's behaviour under both routes; the 35 changed rows are
+The 180 unchanged rows must keep today's behaviour under both routes; the 38 changed rows are
 named here, each with its rule, so a reviewer reads exactly which codes the round re-labels.
+tb4n4: ``deliverable_references_undeclared_file`` became agent work (#1044, changed);
+``semantic_review_deferred_before_first_edit`` (issue #1046) follows the recorded route like the
+``semantic_review_not_requested`` it rides with (disclosed where the route did not require review,
+bounding where it did), so it is listed as changed; ``semantic_process_state_filtered`` (issue
+#1042) is disclosed from the start, so it is listed as changed.
 """
 
 from __future__ import annotations
@@ -103,6 +108,7 @@ _CHANGED = frozenset(
         "semantic_prior_findings_over_limit",
         "semantic_prior_verdicts_unsupported",
         "semantic_restatements_suppressed",
+        "semantic_process_state_filtered",
         "semantic_review_credential_heuristic_disabled",
         "semantic_review_value_redacted",
         "semantic_review_snippet_invalid",
@@ -110,6 +116,10 @@ _CHANGED = frozenset(
         "optional_semantic_review_registration_drift",
         "semantic_relevance_review_not_run",
         "semantic_review_not_configured",
+        # tb4n4 (#1044): a disclosure that is now agent work (rule G0c).
+        "deliverable_references_undeclared_file",
+        # tb4n4 (#1046, review): Yoetz's own deferral is disclosed where review is not required.
+        "semantic_review_deferred_before_first_edit",
     }
 )
 _CARRIED = frozenset(_GUARDED_AT_BASE)
@@ -117,7 +127,7 @@ _CARRIED = frozenset(_GUARDED_AT_BASE)
 
 def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group() -> None:
     assert set(GAP_EFFECT_TABLE) == set(GAP_CLASSIFICATION)
-    assert len(GAP_EFFECT_TABLE) == 216  # the 213 recorded codes + 3 readiness-only finding tokens
+    assert len(GAP_EFFECT_TABLE) == 218  # the 215 recorded codes + 3 readiness-only finding tokens
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
@@ -126,7 +136,7 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
 def test_exactly_the_documented_rows_are_marked_changed() -> None:
     changed = {code for code, row in GAP_EFFECT_TABLE.items() if row.changed}
     assert changed == _CHANGED
-    assert len(changed) == 35
+    assert len(changed) == 38
 
 
 @pytest.mark.parametrize("route_requires_review", [False, True])
@@ -165,6 +175,28 @@ def test_the_review_not_requested_gap_follows_the_recorded_route() -> None:
     assert gap_effect(code, current).kind is GapEffectKind.STANDING_BOUNDING
     # An absent recorded route (the default) keeps the missing review bounding.
     assert gap_effect(code).kind is GapEffectKind.STANDING_BOUNDING
+
+
+def test_the_review_deferral_follows_the_recorded_route_like_the_missing_review() -> None:
+    """Issue #1046 (review): a deferral never reads worse than ``deterministic_only`` would.
+
+    Where the deferred check recorded that its route did not require review, the deferral is a
+    disclosure exactly like the ``semantic_review_not_requested`` it rides with; where the route
+    requires review (or the route is unknown) it bounds, and it is never agent work: the closing
+    review, not a routine check, supplies the review.
+    """
+
+    code = "semantic_review_deferred_before_first_edit"
+    optional = GapContext(route_requires_review=False)
+    assert gap_effect(code, optional).kind is GapEffectKind.DISCLOSED
+    assert gap_effect("semantic_review_not_requested", optional).kind is GapEffectKind.DISCLOSED
+    for context in (
+        GapContext(),
+        GapContext(route_requires_review=True, review_required=True),
+        GapContext(route_requires_review=True, review_required=True, review_current=True),
+    ):
+        assert gap_effect(code, context).kind is GapEffectKind.STANDING_BOUNDING
+    assert GAP_EFFECT_TABLE[code].rule == "G7"
 
 
 def test_the_earlier_frontier_gap_is_never_actionable() -> None:

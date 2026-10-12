@@ -37,8 +37,10 @@ evidence is recorded in #767.
 ## Conditional agent guidance
 
 The skill keeps its activation boundary, core workflow, and safety floor in the entrypoint.
-Read workflow guidance before `start`, publication policy before `publish_work`, and coverage
-and receipts before `check`. Setup/consent, vault/credential operations, transcript import, and
+Before `start` read the core, `agent-instructions.md`: it is the operating card and is enough for
+ordinary work. Workflow, publication policy, and coverage and receipts are read only when a result,
+error or continuation names them, or when unsure; no status read or dry run is required before a
+write, and `check` with `mode: inspect` gives the picture in one read (ADR-047). Setup/consent, vault/credential operations, transcript import, and
 recommendation decisions route to the corresponding sections of request templates only when
 needed. Already-read guidance need not be fetched again while present in context.
 
@@ -964,7 +966,7 @@ still requires agent action, the `Stop` hook continues the agent once with `deci
 `stop_hook_active` on each Stop after the first (codex-rs `turn.rs`; its test
 `stop_hook_can_block_multiple_times_in_same_turn`), so the cap below is Yoetz's own: a
 single-turn `codex exec` run gets the gate once and at most one further continuation (an announced re-check or a withdrawn deliverable not yet voiced).
-Ordinary advice is withheld at Stop because Codex can only render it as `decision: block`. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`, read on the route the session's MCP server named on its last successful `status` or `check`, remembered across service restarts); it fires when `agent_actionable` holds open obligations, an unconfirmed blocker, an unrepaired receipt-blocking finding (agent work only), a finding the agent rejected that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`), a planned verification that was not observed, failed, or ran before the latest edit, an edit to the work after the last verification run (`edited_after_last_verification`; temporary scratch and Yoetz-owned writes such as a saved receipt never count, ADR-042), a git-ignored requested output, or a declared deliverable deleted or renamed away (`declared_output_removed`, ADR-035), or a declared deliverable that held content and is now empty or truncated (`declared_output_emptied`, ADR-041 and ADR-045: keyed on the file, not the obligation, so acknowledging or republishing the obligation does not clear it; the gate text says why from the file's recorded history and names the one exit, a `yoetz-assumption` decision that names the file; a standing `declared_output_content_moved` disclosure adds an informational note to gate text that fires anyway, never a token), at most once per ledger frontier and session (owner-only `observation/closure-gate.json`). Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). Verification items (planned verification and edits after the last verification run) are dropped only while this task's own hook rows are still draining after the Stop drain, and the text says so only then. The text pushes repair first: a receipt-blocking finding the agent repaired but Yoetz cannot prove (a Yoetz limit) is self-verified and answered with `respond` `self_verified`; `acknowledged_not_done` is the last resort; a Yoetz limit is never a `yoetz-blocker`, and the blocker sentence appears only while obligations are open. An open obligation named by a `yoetz-blocker:<kind>` decision is not listed as work, but each new `<obligation id>:<kind>` is re-asked once: the re-check names the obligation and claimed kind from the `blocker` entries of `closure_readiness.rechecks`, says recoverable data, a failing test, an infeasible-looking result or a Yoetz limit is not a blocker (finish the obligation and disclose the limit), and only there tells the agent how to confirm a genuine one: publish the same line again in a later decision (the blocker offer never says so, and a confirmed row is never re-asked). Because blockers are usually published after the first gate, the re-check also runs on a Stop the host already continued: there it reads status, continues the agent only for a re-check key status announced that the gate has not asked, or a withdrawn deliverable not yet voiced (never for ordinary items), at most once per Stop and at most two gate continuations per turn (owner-only `observation/closure-gate-turns.json`, reset at every Stop the host did not continue; an unreadable counter counts as the cap), and lets the agent stop on any error, a short budget, or a memory write failure. Asked keys are remembered per session (owner-only `observation/closure-gate-blockers.json`, at most 64). Ordinary advice is never delivered at Stop; it waits for the next tool event or session start. Standing advice a Stop withheld rides the first later `PostToolUse`. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_active_stop_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_acceptance_rechecked`, `closure_gate_turn_end_after_continue` (an already-continued Stop that emitted nothing: the normal end of a continued turn, renamed from `closure_gate_loop_guard`), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `yoetz observe status`. The text also says an inherent verification limit or a best-effort choice is disclosed with a `yoetz-assumption:` or `yoetz-verification-limit:` decision line, never blocked, and names an obligation-level `acknowledged_not_done` as the last resort (#995, #997). Re-checks are not riders on other tokens (tb4n3 RC-8, #1031). Status announces them in `closure_readiness.rechecks` (acceptance, acknowledgement, blocker, premise, each with a content key; the same list `status`, `closure_prepare`, the CLI and the TUI show, and the status directive names it: "At Stop you will be asked once to re-read: ..."), and the gate asks exactly the announced ones, each once per session and key (`accept:<h8 of the resolved obligation ids>@<invite frontier>`, `ack:<obligation id>`, `<obligation id>:<kind>` for a blocker, `premise:<acknowledged count>`, all in the blocker-key file; closed items `acceptance_recheck`, `acknowledgement_recheck`, `blocker_recheck`, `premise_recheck`). A readiness without the list (a service older than the gate) announces none, so the gate asks none. The acceptance re-read (A-12) asks the agent to read each resolved obligation's acceptance_criteria against its final output and to republish an unmet one as `acknowledged_not_done`, or, when the criteria can only be checked outside this environment, to keep it resolved and record `yoetz-verification-limit:<obligation id>`. It costs one extra Stop turn at most once per resolved set; it is never offered beside open obligations, a rejected finding awaiting a ruling or a withdrawn deliverable (it stays unasked and is asked at a later Stop), and an acknowledgement published after it is not challenged by the acknowledgement re-check. The premise ask stays on Stops the host has not already continued; the acknowledgement and acceptance re-checks may continue an already-continued Stop within the same caps. A finding the agent rejected with a reason that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`) sends the agent to `check` with `final_review: true` and never offers acknowledgement; `receipt_findings_unresolved` counts agent-work findings only, and `self_verified` is offered only while `finding_counts.self_verify_eligible` is positive. A deliverable that held content and is now empty or gone (`declared_output_emptied`, `declared_output_removed`) is voiced once per key (`emptied:<h8 of the declaring obligation items>`) even on an already-continued Stop, with the rule and obligation ids and never a path (every Stop after the first gate is an already-continued Stop in a single-turn run). The premise and acknowledgement texts say that if the agent cannot finish the work it keeps the working deliverable: acknowledgement never requires withdrawing or emptying it. Host decision: supported, same code path (the gate, its texts, its re-check list and its memory are shared by the Codex, Claude Code and Cursor Stop handlers; the only difference is how an already-continued Stop is detected, `stop_hook_active`). See ADR-033 and issues #977, #984, #985, #1031.
+Ordinary advice is withheld at Stop because Codex can only render it as `decision: block`. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`, read on the route the session's MCP server named on its last successful `status` or `check`, remembered across service restarts); it fires when `agent_actionable` holds open obligations, an unconfirmed blocker, an unrepaired receipt-blocking finding (agent work only), a finding the agent rejected that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`), a planned verification that was not observed, failed, or ran before the latest edit, an edit to the work after the last verification run (`edited_after_last_verification`; temporary scratch and Yoetz-owned writes such as a saved receipt never count, ADR-042), a git-ignored requested output, or a declared deliverable deleted or renamed away (`declared_output_removed`, ADR-035), or a declared deliverable that held content and is now empty or truncated (`declared_output_emptied`, ADR-041 and ADR-045: keyed on the file, not the obligation, so acknowledging or republishing the obligation does not clear it; the gate text says why from the file's recorded history and names the one exit, a `yoetz-assumption` decision that names the file; a standing `declared_output_content_moved` disclosure adds an informational note to gate text that fires anyway, never a token), or a delivered source file that loads a file the agent created and no requested item declares (`deliverable_references_undeclared_file`, #1044, ADR-035 amendment: the text names each such file, quoted and bounded, from `closure_readiness.undeclared_references` and tells the agent to embed it, rebuild it at run time or declare it as a delivered output; disclosing the dependency does not clear it, and no path is remembered), at most once per ledger frontier and session (owner-only `observation/closure-gate.json`). Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). Verification items (planned verification and edits after the last verification run) are dropped only while this task's own hook rows are still draining after the Stop drain, and the text says so only then. The text pushes repair first: a receipt-blocking finding the agent repaired but Yoetz cannot prove (a Yoetz limit) is self-verified and answered with `respond` `self_verified`; `acknowledged_not_done` is the last resort; a Yoetz limit is never a `yoetz-blocker`, and the blocker sentence appears only while obligations are open. An open obligation named by a `yoetz-blocker:<kind>` decision is not listed as work, but each new `<obligation id>:<kind>` is re-asked once: the re-check names the obligation and claimed kind from the `blocker` entries of `closure_readiness.rechecks`, says recoverable data, a failing test, an infeasible-looking result or a Yoetz limit is not a blocker (finish the obligation and disclose the limit), and only there tells the agent how to confirm a genuine one: publish the same line again in a later decision (the blocker offer never says so, and a confirmed row is never re-asked). Because blockers are usually published after the first gate, the re-check also runs on a Stop the host already continued: there it reads status, continues the agent only for a re-check key status announced that the gate has not asked, or a withdrawn deliverable not yet voiced (never for ordinary items), at most once per Stop and at most two gate continuations per turn (owner-only `observation/closure-gate-turns.json`, reset at every Stop the host did not continue; an unreadable counter counts as the cap), and lets the agent stop on any error, a short budget, or a memory write failure. Asked keys are remembered per session (owner-only `observation/closure-gate-blockers.json`, at most 64). Ordinary advice is never delivered at Stop; it waits for the next tool event or session start. Standing advice a Stop withheld rides the first later `PostToolUse`. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_active_stop_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_acceptance_rechecked`, `closure_gate_turn_end_after_continue` (an already-continued Stop that emitted nothing: the normal end of a continued turn, renamed from `closure_gate_loop_guard`), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `yoetz observe status`. The text also says an inherent verification limit or a best-effort choice is disclosed with a `yoetz-assumption:` or `yoetz-verification-limit:` decision line, never blocked, and names an obligation-level `acknowledged_not_done` as the last resort (#995, #997). Re-checks are not riders on other tokens (tb4n3 RC-8, #1031). Status announces them in `closure_readiness.rechecks` (acceptance, acknowledgement, blocker, premise, each with a content key; the same list `status`, `closure_prepare`, the CLI and the TUI show, and the status directive names it: "At Stop you will be asked once to re-read: ..."), and the gate asks exactly the announced ones, each once per session and key (`accept:<h8 of the resolved obligation ids>@<invite frontier>`, `ack:<obligation id>`, `<obligation id>:<kind>` for a blocker, `premise:<acknowledged count>`, all in the blocker-key file; closed items `acceptance_recheck`, `acknowledgement_recheck`, `blocker_recheck`, `premise_recheck`). A readiness without the list (a service older than the gate) announces none, so the gate asks none. The acceptance re-read (A-12) asks the agent to read each resolved obligation's acceptance_criteria against its final output and to republish an unmet one as `acknowledged_not_done`, or, when the criteria can only be checked outside this environment, to keep it resolved and record `yoetz-verification-limit:<obligation id>`. It costs one extra Stop turn at most once per resolved set; it is never offered beside open obligations, a rejected finding awaiting a ruling, a withdrawn deliverable or an undeclared dependency (it stays unasked and is asked at a later Stop), and an acknowledgement published after it is not challenged by the acknowledgement re-check. Where it rides alone it ends by saying that a pure confirmation needs no new record, check or receipt (#1050). Final message (#1050, ADR-033 amendment): Codex's Stop body carries `last_assistant_message`, so the re-read is asked only for the resolved obligations that message neither cites by id nor addresses (at least two thirds of the criterion's terms), and names them; one bounded `status view=obligations` read (750 ms) supplies the criteria and is trusted only when its resolved set matches the announced key; a fully addressed set is not asked and records `closure_gate_acceptance_covered`; a body over the trusted size carries no message and keeps the re-read for every resolved set. The message is read in the hook process only, never stored, sent or put in a diagnostic. Host decision: supported. The premise ask stays on Stops the host has not already continued; the acknowledgement and acceptance re-checks may continue an already-continued Stop within the same caps. A finding the agent rejected with a reason that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`) sends the agent to `check` with `final_review: true` and never offers acknowledgement; `receipt_findings_unresolved` counts agent-work findings only, and `self_verified` is offered only while `finding_counts.self_verify_eligible` is positive. A deliverable that held content and is now empty or gone (`declared_output_emptied`, `declared_output_removed`) is voiced once per key (`emptied:<h8 of the declaring obligation items>`) even on an already-continued Stop, with the rule and obligation ids and never a path (every Stop after the first gate is an already-continued Stop in a single-turn run). The premise and acknowledgement texts say that if the agent cannot finish the work it keeps the working deliverable: acknowledgement never requires withdrawing or emptying it. Host decision: supported, same code path (the gate, its texts, its re-check list and its memory are shared by the Codex, Claude Code and Cursor Stop handlers; the only difference is how an already-continued Stop is detected, `stop_hook_active`). See ADR-033 and issues #977, #984, #985, #1031.
 
 Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Codex: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
 
@@ -1790,15 +1792,98 @@ and the rollout's stream bookkeeping (`Opaque observation kind=event_msg|respons
 token_usage_record`, `Observed completion signal kind=...`), because #564 keeps a successful
 `status`, `receipt` or `read_guidance` post local-only. `kernel/later_material.later_material_class`
 reads them as `yoetz_own_call` and `no_tool_activity`, so `check_current_as_of_earlier_frontier`
-no longer appears for a check followed only by Yoetz calls and a receipt. The rollout names an
-`McpToolCall` item by its tool alone (`status`), which is read as Yoetz's own tool. A nested
-`apply_patch`, an `exec_command` that is not in the hook's `exploration` runner class and an unpaired
-stream output with no tool identity stay `other` and keep the disclosure; a `wait` poll (it only
-returns the output of a cell started earlier) is `no_tool_activity`; a nested
-deliverable or workspace `apply_patch` supersedes the check. A patch whose every path is
-`yoetz_receipt.*`, a Yoetz tree or scratch is `non_counting_write`. Tests:
+no longer appears for a check followed only by Yoetz calls and a receipt. The rollout's
+`McpToolCall` item keeps its `server` and is named as its hook names it (`mcp__yoetz__status`,
+#1038); an item without a server keeps its bare tool name (`status`), which is still read as
+Yoetz's own tool. An item whose server cannot be spelled that way (the server is not a plain
+token, for example it contains `__` or starts with `_` or `-`, or the scoped name is too long)
+names no tool when its tool has a Yoetz name, so it is never read as Yoetz's; any other tool name
+under it is kept. A nested `apply_patch`, an `exec_command` that is
+not in the hook's `exploration` runner class and an unpaired stream output with no tool identity
+stay `other` and keep the
+disclosure; a `wait` poll (it only returns the output of a cell started earlier) is
+`no_tool_activity`; a nested deliverable or workspace `apply_patch` supersedes the check. A patch
+whose every path is `yoetz_receipt.*`, a Yoetz tree or scratch is `non_counting_write`. Tests:
 `tests/unit/application/test_tb4n3_later_material_host_shapes.py` drives real Codex hook payloads
 through the ingress and the materializer.
+
+Codex 0.159.3 names every response-item row itself (`custom_tool_call` `id: ctc_...`, its output
+`id: ctco_...`; `fc_`/`fco_` for function calls) beside the `call_id` the call and its output share.
+The reader paired on `id`, so no code-mode cell output ever joined its call: it reached the ledger
+as an unpaired result with no tool identity (`unclassified_observed_evidence`, read as `other`),
+the #917 hold never applied, and in tb4n4's deterministic arm the agent's own `mcp__yoetz__*`
+cells kept `check_current_as_of_earlier_frontier` on 35 of 60 final receipts (#1038). A call and
+its output now pair on `call_id` (`id` only as a fallback), which also folds the stream copy of a
+hooked direct `function_call` into the hook's one action again instead of a second action and an
+unpaired result. A completed tool item
+(`event_msg`/`item_completed`) keeps its own `id` (`exec-<uuid>`, or the call id on a direct call):
+that is the id ADR-022 decision 15 compares with a hook call id, so the item-to-hook link is
+unchanged. On the recorded 0.159.3 slice (`tests/fixtures/codex/rollout-compaction-0.159.3.jsonl`)
+the 28 unpaired cell results are gone; the three cells that ran no nested tool at all still record
+their own `exec` action, as #917 decided, and stay `other`. Whether such itemless cells follow
+the check in the tb4n4 exports, and so still bound some receipts, is for the replay of those
+exports to show.
+
+### Gaps Yoetz and the host made on every attempt (#1041)
+
+tb4n4's deterministic arm carried, on all 60 attempts, gaps that came from Yoetz or the host rather
+than the agent's work. Their dispositions:
+
+- **Held rollout tail.** A final line Codex has not finished writing (no newline yet, whether or
+  not it already parses) is held and re-read on the next reconcile; the stream reader no longer
+  reports it as `truncated_payload`. Lines over the 1 MiB bound and unreadable chunks still are.
+  Before this change the gap appeared only in the reconcile result (`yoetz observe reconcile
+  --json`), not in task coverage.
+- **Shell `apply_patch <<EOF`.** A pre-only attempt closed by the observed `FileChange`; see
+  [Reviewable native edits](#reviewable-native-edits).
+- **`HookPrompt`.** A Stop hook that continues the turn (Yoetz's closure gate) makes Codex 0.159.3
+  write an `event_msg.item_completed` item of type `HookPrompt`. The compatibility profile admits it
+  as bookkeeping (it pairs with nothing and is read as `no_tool_activity` after a check), so it is
+  no longer an `unsupported_event` gap. No exact profile admits it.
+- **`semantic_review_not_requested`.** Not recorded for a `deterministic_only` check on a route
+  that does not require AI-powered review; see
+  [Closure readiness and standing limitations](#closure-readiness-and-standing-limitations-913).
+- **Hook latency** (`drain_budget_exhausted`, `hook_followup_deferred`, `drain_connect_timeout`):
+  not lossy, and unchanged. Its material effect was rows landing after a check; with cells paired on
+  `call_id` and Yoetz-only cells kept local whatever the hook timing (#1038), it is to be measured
+  again on the next benchmark before any budget in `observe_hooks` is tuned.
+
+Per host: Claude Code and Cursor have no rollout stream, no code-mode cell and no intercepted
+`apply_patch`, so the first three are Codex-only; the `semantic_review_not_requested` rule is
+service-side and the same on every host.
+
+### Inspection check on Codex (#1048)
+
+`check` with `"mode": "inspect"` is a read inside Yoetz: it records nothing, mints no finding, runs
+no review and needs no Yoetz disclosure decision, so a lost answer is answered by asking again with
+a fresh `request_id`. One call returns what is left to close (the `status` readiness split, then
+every unresolved obligation and finding with what it lacks and whose move it is), the
+hook-observed actions since the last check, and whether each obligation's resolution evidence links
+to its declared deliverables or requested commands (`evidence_off_declared_items` when it does
+not). Use it instead of a series of `status` reads where Codex admits `check`; no status read or
+`dry_run` is required before `publish_work`. The startup read is the operating card
+(`agent-instructions.md`); the larger pages are read on demand. ADR-047. The MCP `check` tool
+(including code mode, where an inspection takes the 30,000 ms `status` deadline) and `yoetz check`
+carry the mode.
+`apply_patch` edits are listed by write class, never by path.
+
+Host approval is per tool, not per mode. An inspection is a call of the MCP `check` tool, whose
+descriptor is the same for every `mode` (`readOnlyHint: false`; `openWorldHint: true` on the
+policy route), so Codex gates it exactly as it gates any `check`
+([Auto review and host admission](#auto-review-and-host-admission)). On the policy route it needs
+approval under `approval_mode = auto`, the guardian decides it under
+`approvals_reviewer = "auto_review"`, and under approval policy `never` Codex refuses it
+(`MCP tool call requires approval, but approval policy is never`) before Yoetz runs, unless the
+trusted project's admission (`approval_mode = "approve"` for `check`) applies. On the strict route
+(`openWorldHint: false`) Codex does not ask. `status` (`readOnlyHint: true`) needs no approval
+under that rule. Decision: supported behind the `check` gate. A held or refused inspection is a
+host hold with nothing pending in Yoetz and no review to protect, so the agent reads `status`
+(readiness, `view=obligations`) instead and continues; the review-hold rules do not apply to it
+(guidance `review.md`). Capability gap, owner issue #1048: admission needs a policy route and a
+repository grant that permits external review, so on a policy route without that grant an
+inspection costs an approval (or, under policy `never`, a refusal) that the `status` reads it
+replaces do not. Closing it needs a read-only advertisement for inspection: one descriptor per
+tool cannot carry a hint per mode, and a separate tool is the alternative ADR-047 rejected.
 
 ### Closure readiness and standing limitations (#913)
 
@@ -1818,7 +1903,9 @@ standing on a local-only or optional route and on the strict MCP route (which ne
 AI-powered review), and agent-actionable only when the verification policy requires AI-powered
 review, the serving route can dispatch it, and none has succeeded since the last material change.
 A check on a route that did not require AI-powered review records `semantic_route_required:
-false`; there the code no longer bounds the receipt conclusion (issue #986, same on every host).
+false`; there the code no longer bounds the receipt conclusion (issue #986, same on every host). A check that asked for `deterministic_only` on such a route records no
+`semantic_review_not_requested` at all, so no receipt, status or readiness view lists it (issue
+#1041, same on every host).
 The strict local-only MCP route is such a route even when the verification policy is `required`,
 unless the check asked for `semantic_required` (issue #1021, ADR-040, same on every host). A strict process whose applied Codex route record says `policy` (registration drift, #537) still
 follows the verification policy.
@@ -2129,8 +2216,20 @@ hooks (`PreToolUse`/`PostToolUse`) was ingested after Yoetz read the call and it
 reconcile completed before the output was read, so the hook fired while the cell ran and its nested
 `exec_command`, `apply_patch` and MCP calls are the ledger record. A hook of the next cell never
 counts for the previous one. This holds when `yoetz observe reconcile` reads the call before its
-nested hook, and for a long-idle session the bounded hook map forgot. A cell whose tools fire no
-hook (only `tools.update_plan`, for example) delivers its output and is recorded, in any session.
+nested hook, and for a long-idle session the bounded hook map forgot. A cell's output also stays
+local when every nested tool item the rollout wrote between the cell's call and its output was one
+of Yoetz's own MCP calls (`McpToolCall` with the Yoetz server, or with no server and a Yoetz tool
+name, read as the later-material rule reads it; #1038): such a cell is Yoetz's own
+call, recorded by those calls, whatever the hook timing (the hooks landing after the whole cell
+was read, as tb4n4's hook latency showed, no longer leaves it a second `exec` action). A Yoetz
+item counts only while its cell is the session's only open cell; any other nested item, a rollout
+row the reader could not interpret, or a Yoetz item read while several cells are open removes the
+mark from every open cell, so no cell borrows another's Yoetz calls. Limit: after parallel cells,
+or in a session with a cell interrupted before its output (it stays open), later cells fall back to
+the hook rule alone. A cell whose tools fire
+no hook and leave no rollout item (only `tools.update_plan`, for example) delivers its output and is
+recorded, in any session. Since #1038 the output pairs with its call on `call_id`, which Codex
+0.159.3 needs (its rows also carry their own `ctc_`/`ctco_` ids).
 Limits: a cell mixing hooked and unhooked tools stays local, so its unhooked tool is not recorded;
 a hooked cell whose call is read only after all its nested hooks, whose hooks' reconciles did not
 complete before its output was read, whose hooks fired before an upgrade from the earlier cell
@@ -2163,7 +2262,23 @@ result prefix supplies the edit outcome and the structural `exit_status`. In cod
 through the tool registry and fires its own `apply_patch` hooks with the same shape, and each nested
 `tools.exec_command` fires `Bash` hooks with `tool_input.command`. A shell `apply_patch <<EOF` is
 intercepted by `exec_command` and fires only PreToolUse, so its patch is captured from that event
-with outcome `unknown`. Whole-file heredoc writes (`cat > path <<EOF`, `tee path <<EOF`) and `git
+with outcome `unknown`. Its pending attempt is pre-only (#1041): it does not wait for a post Codex
+never sends. A `FileChange` item the rollout writes in the same session closes it: the attempt
+whose call id the item names; an item naming another call the session's hooks reported (in direct
+mode a native `apply_patch` item carries its own call id) is that call's change and closes none;
+only an item whose id names no reported call (code mode's `exec-<uuid>`) closes the session's oldest
+pre-only attempt. One no file change closes before the ten-minute pending deadline or the session's
+end still records `pending_attempt_expired`. Its pending action is the ledger's only record of the
+edit (the `FileChange` item stays local), so the hook gives it the write scope of the files its
+patch headers name (`*** Update File: ...`), classified as the native `apply_patch` tool's paths
+are: it counts as an edit for the latest-edit fact, supersedes an earlier check as an edit, and is
+the first material edit that re-arms a deferred review where the check-time capture is unavailable
+(a non-git workspace; #1046 review). Before this, 44 of tb4n4's 60 deterministic attempts
+carried that gap for this host behaviour alone. Limit: in code mode the item id (`exec-<uuid>`)
+does not name the hook's call, so a nested `tools.apply_patch` change in the same session can close
+a shell patch's attempt in its place; a reported call is known from its open pre or the local ring
+of the last 256 observed rows, so a direct call both have dropped (an eviction the ring discloses)
+can do the same. The count of closed attempts never exceeds the observed changes. Whole-file heredoc writes (`cat > path <<EOF`, `tee path <<EOF`) and `git
 apply <<EOF` are captured from the post-tool `Bash` event; writes outside the workspace, such as
 `/tmp` scratch files, are skipped. Edits made by `sed -i`, scripts or `git apply <file>` carry no
 edit bytes in the command and are not captured (the check-time change below still shows their
@@ -2201,8 +2316,15 @@ task's repository once, when the check runs, and puts the result ahead of every 
 review packet. It covers committed and uncommitted changes to tracked files since the commit
 recorded when the task started, plus untracked files Git does not ignore (`.gitignore`,
 `.git/info/exclude`, a repository `core.excludesFile` and your global Git ignore file). Because the
-base is a commit, uncommitted or untracked work that was already there when the task started is
-included too. A header lists every changed file with its line counts and says which files were not
+base is a commit, uncommitted work that was already there when the task started is included too;
+untracked files that were already there and are unchanged since are left out and only counted in the
+header, because `start` records their names and a metadata digest with the base (#1045). A nested Git
+repository has its own change read under its directory, from the HEAD `start` recorded for it when
+there is one; its untracked files are left out or shown like the outer ones when `start` listed them
+whole, and are otherwise named but never read. Up to four read-only task input files the task
+statement names travel as separate repository excerpts (ADR-031, #1045 amendment). This is the same
+on every host: it reads the repository, not a host capture. A header lists every changed
+file with its line counts and says which files were not
 shown. Script edits (`sed -i`, Python rewrites, `git apply <file>`), commits and hooks that never
 fired are therefore reviewed even though no capture exists for them.
 
@@ -2292,8 +2414,10 @@ rendering is unchanged.
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the
 common 60-second host MCP tool limit; `start`, `publish_work` and `status` keep 30 seconds and
-`check` keeps 300 seconds. Set `YOETZ_MCP_DEADLINE_MS_<TOOL>` (one tool) or
-`YOETZ_MCP_DEADLINE_MS` (every tool except `check`) in the MCP server environment to change them;
+`check` keeps 300 seconds (a `check` with `mode: inspect` is a read and takes the `status`
+deadline). Set `YOETZ_MCP_DEADLINE_MS_<TOOL>` (one tool) or
+`YOETZ_MCP_DEADLINE_MS` (every tool except `check`; an inspection follows the `status` variables) in
+the MCP server environment to change them;
 values are milliseconds, clamped to 1,000-900,000. Keep them below the host's own tool timeout.
 A timeout may follow a committed write. For `publish_work`, `respond` and `receipt` the bridge
 checks `status view=operation` once and, when the write already completed, returns its stored
@@ -2407,3 +2531,30 @@ other hosts. The Stop hook and the MCP `respond` tool take the shared path; a Co
 Verification: `tests/integration/application/test_tb4n3_limits_dialogue_shapes.py` drives the real
 check, respond, status and receipt operations with a compliant reviewer; a live Codex transcript on
 macOS, Linux and WSL 2 is not recorded for this change.
+
+### Call-schema traps on Codex (tb4n4, #1049)
+
+Host decision: supported, no host-specific code. Every change lives in the shared protocol request
+models, the MCP bridge's `read_guidance` dispatch and error hints, the status text and the kernel's
+`command_attempts` rule, so Codex takes the same path as the other hosts. What a Codex agent can rely on:
+
+- `decision_recorded` carries no id of its own; a `decision_id` in its payload is accepted and
+  ignored (never recorded, and a retry with or without it replays the same request).
+- A `status` `limit` sent as a JSON integer from 1 to 100 is read as its decimal string.
+- A `read_guidance` anchor that names exactly one catalogued topic of its document (the heading's
+  slug, an explicit anchor beside it, or words only that anchor contains) reads that topic; the
+  result's `uri` is the catalogued one. An ambiguous or unknown anchor is still refused with the
+  document's anchors.
+- A resolution without `resolution_evidence_refs` (omitted, empty or the wrong id kind) is refused
+  with the sentence that says what the list holds; the `status` `view: "obligations"` text states the resolution recipe, that field included.
+- A run linked to a requested command with a `command` action (the PL6-3 link) is a disclosed
+  equivalence: it reads `command_attempt_uncorroborated`, never `command_attempt_mismatch`, and a
+  `self_verified` refusal on a remaining `command_attempt_mismatch` names that link as the exit.
+- A `result_recorded` payload's `evidence_refs` still names evidence ids only; the refusal for a
+  `res_` id names where a result id goes.
+
+Verification: `tests/unit/mcp/test_tb4n4_call_traps.py`, `tests/unit/kernel/test_tb4n4_command_link.py`
+and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the recorded shapes
+through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
+the tb4n4 exports themselves were not replayed, and a live Codex transcript on macOS, Linux and
+WSL 2 is not recorded for this change.
