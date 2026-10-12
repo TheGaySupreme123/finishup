@@ -120,7 +120,8 @@ Every `INTERNAL_ERROR` the bridge or a service operation path produces carries a
 `bridge_request_validation_failed`, `bridge_invoke_failed`, `bridge_error_mapping_failed`,
 `bridge_result_wire_failed`, `bridge_result_validate_failed`, `closure_prepare_failed`,
 `check_pipeline_failed`, `import_publication_failed`, `maintenance_state_unverified` and
-`start_state_inconsistent`. Their messages claim only what the failing site knows: an invoke or
+`start_state_inconsistent`, and `service_start_failed` for a spawned service that exited during
+startup (issue #1040; `phase` names the stage). Their messages claim only what the failing site knows: an invoke or
 import failure says the write may or may not be recorded; a failed check says it may not have
 produced a verdict, to replay its request_id once (a committed check returns its stored verdict) and
 only then to run it again under a new request_id. Status faults were already

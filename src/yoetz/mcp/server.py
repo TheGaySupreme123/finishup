@@ -101,7 +101,12 @@ from yoetz.ports.control import (
 from yoetz.ports.integrations import YOETZ_MCP_TOOL_NAMES
 from yoetz.protocol.canonical import JsonValue, canonical_encode
 from yoetz.protocol.consent import CONSENT_PENDING_TTL_SECONDS
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError, SafeDetailValue
+from yoetz.protocol.errors import (
+    SERVICE_STARTUP_PHASES,
+    PublicErrorCode,
+    PublicOperationError,
+    SafeDetailValue,
+)
 from yoetz.protocol.guidance_uris import (
     ALL_GUIDANCE_URIS,
     FOCUSED_GUIDANCE_URIS,
@@ -1793,6 +1798,33 @@ def _control_error_result(
             safe_details={"reason_code": "service_draining"},
         )
     if error.reason == "service_unavailable":
+        startup = None
+        if error.phase in SERVICE_STARTUP_PHASES:
+            # Imported here: the bridge's import graph stays the ordinary service client alone.
+            from yoetz.service.startup_failure import spawned_startup_failure
+
+            startup = spawned_startup_failure(error.phase, error.correlation_id)
+        if startup is not None:
+            # The service this bridge spawned exited during startup (#1040). Waiting and
+            # retrying cannot help, and "not running; run it" hid why; the record behind the
+            # correlation_id names the stage, exception class and origin, and so does this text.
+            return _control_public_error_result(
+                error,
+                request_id,
+                operation,
+                code=PublicErrorCode.SERVICE_UNAVAILABLE,
+                message=(
+                    f"The local Yoetz service exited while starting ({startup.describe()}), so "
+                    "it is not running and nothing was recorded. Retrying fails the same way "
+                    "until the cause is repaired. Give the user this correlation_id; 'yoetz "
+                    "service diagnostics --correlation-id' with it shows the bounded record. Do "
+                    "not run service lifecycle commands to work around it."
+                ),
+                retryable=False,
+                host_profile=host_profile,
+                safe_details={"reason_code": "service_start_failed", "phase": startup.stage},
+                diagnostic_reason="service_start_failed",
+            )
         if accepted_but_unresponsive(error):
             # A listener that accepted and then went silent is running. Prescribing
             # `yoetz service run` here sent an operator to a command that must refuse (#237).

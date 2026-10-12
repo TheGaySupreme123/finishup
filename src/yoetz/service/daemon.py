@@ -64,10 +64,15 @@ from yoetz.application.service import (
     internal_control_json,
     resolve_client_disclosure_sink,
 )
-from yoetz.config.installation import read_instance_identity, verify_instance_binding
+from yoetz.config.installation import (
+    InstanceIdentityError,
+    read_instance_identity,
+    verify_instance_binding,
+)
 from yoetz.config.load import load_config
-from yoetz.config.models import YoetzConfig
+from yoetz.config.models import ConfigError, YoetzConfig
 from yoetz.config.paths import (
+    PathSafetyError,
     bundle_root,
     ensure_owner_only_dir,
     isolated_root,
@@ -216,6 +221,7 @@ from yoetz.service.loop_health import ControlPlaneWatchdog
 from yoetz.service.ready_composition import build_ready_application_factory
 from yoetz.service.secret_ingress import SecretIngressService
 from yoetz.service.session_routes import SESSION_ROUTE_FILE_NAME, SessionRouteMemory
+from yoetz.service.startup_failure import ServiceStartupError, record_startup_failure
 from yoetz.service.unlock import UnlockCoordinator, UnlockThrottleRecord, UnlockThrottleStore
 from yoetz.service.vault import VaultError, VaultMode, VaultService
 
@@ -779,6 +785,12 @@ class ServiceDaemon:
     @property
     def composition(self) -> ServiceComposition:
         return self._composition
+
+    @property
+    def started(self) -> bool:
+        """True once ``start`` published the endpoints; a later failure is not a startup one."""
+
+        return self._started
 
     async def start(self) -> None:
         """Acquire singleton authority and publish exactly one admitted state."""
@@ -4775,19 +4787,63 @@ def _human_error_code(exc: Exception) -> str:
     return "internal_error"
 
 
-async def run_service() -> Never:
-    """Run one foreground service process until a signal requests bounded shutdown."""
+def _startup_failure(exc: Exception, *, stage: str, correlation_id: str | None) -> Exception:
+    """Record a startup failure and return the exception ``run_service`` raises in its place.
 
-    config = load_config({}, os.environ, None)
-    configure_logging(config.logging, LogMode.SERVICE)
-    composition = await _production_composition(_config=config)
-    daemon = ServiceDaemon(_composition=composition)
-    await daemon.serve()
+    A typed refusal (lifecycle, path-safety, instance-identity or configuration) is recorded under
+    its own closed reason token and re-raised unchanged, because the CLI already names each one.
+    Anything else is recorded as unexpected and replaced by ``ServiceStartupError``, which the CLI
+    renders with its stage, exception class and origin instead of a bare ``internal_error``
+    (#1040). Losing the singleton to a live service is not a failure of this start and is not
+    recorded: whoever spawned this process connects to the holder instead.
+    """
+
+    reason_code: str | None = None
+    if isinstance(exc, LifecycleError):
+        if exc.reason == "service_already_running":
+            return exc
+        # ``invalid_transition`` names our own defect; ``yoetz.cli.exits`` keeps it internal.
+        reason_code = None if exc.reason == "invalid_transition" else exc.reason
+    elif isinstance(exc, PathSafetyError):
+        reason_code = exc.reason_code
+    elif isinstance(exc, InstanceIdentityError):
+        reason_code = exc.reason
+    elif isinstance(exc, ConfigError):
+        reason_code = exc.reason_code
+    failure = record_startup_failure(
+        exc, stage=stage, correlation_id=correlation_id, reason_code=reason_code
+    )
+    return exc if reason_code is not None else ServiceStartupError(failure)
+
+
+async def run_service(startup_correlation_id: str | None = None) -> Never:
+    """Run one foreground service process until a signal requests bounded shutdown.
+
+    ``startup_correlation_id`` is the id a spawning process will look a startup failure up under.
+    """
+
+    stage = "configuration"
+    daemon: ServiceDaemon | None = None
+    try:
+        config = load_config({}, os.environ, None)
+        configure_logging(config.logging, LogMode.SERVICE)
+        stage = "composition"
+        composition = await _production_composition(_config=config)
+        stage = "activation"
+        daemon = ServiceDaemon(_composition=composition)
+        await daemon.serve()
+    except Exception as exc:
+        if daemon is not None and daemon.started:
+            stage = "serving"
+        replacement = _startup_failure(exc, stage=stage, correlation_id=startup_correlation_id)
+        if replacement is exc:
+            raise
+        raise replacement from exc
     raise SystemExit(0)
 
 
-def main() -> Never:
+def main(*, startup_correlation_id: str | None = None) -> Never:
     """Synchronous installed entry point with one event-loop owner."""
 
-    anyio.run(run_service)
+    anyio.run(run_service, startup_correlation_id)
     raise SystemExit(0)

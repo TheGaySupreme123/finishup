@@ -2069,8 +2069,27 @@ def service_restart(json_output: _JSON = False) -> None:
 
 
 @service_app.command("run")
-def service_run() -> None:
+def service_run(
+    startup_correlation_id: Annotated[
+        str | None,
+        typer.Option(
+            "--startup-correlation-id",
+            hidden=True,
+            help="Internal: the err_… id the spawning process looks a startup failure up under.",
+        ),
+    ] = None,
+) -> None:
     """Run the persistent service in the foreground."""
+
+    if startup_correlation_id is not None:
+        from yoetz.protocol.ids import IdKind, validate_id
+
+        try:
+            validate_id(IdKind.CORRELATION, startup_correlation_id)
+        except TypeError, ValueError:
+            _finish(_usage_failure())
+    # Import-light: it must record a failure to import the daemon itself (#1040).
+    from yoetz.service.startup_failure import ServiceStartupError, record_startup_failure
 
     try:
         from yoetz.service.daemon import main as daemon_main
@@ -2080,26 +2099,54 @@ def service_run() -> None:
         # so recognize only that exact absent module here rather than turning
         # an arbitrary broken import into an operator-facing dependency claim.
         if error.name != "cryptography.hazmat.primitives.kdf.argon2":
-            raise
+            failure = record_startup_failure(
+                error, stage="import", correlation_id=startup_correlation_id
+            )
+            _stderr(failure.line())
+            raise typer.Exit(exit_code_for(PublicErrorCode.INTERNAL_ERROR)) from None
+        record_startup_failure(
+            error,
+            stage="import",
+            correlation_id=startup_correlation_id,
+            reason_code="passphrase_kdf_unavailable",
+        )
         _stderr(
             "passphrase_kdf_unavailable: reinstall this Yoetz package before starting "
             "a passphrase vault"
         )
         raise typer.Exit(exit_code_for(PublicErrorCode.SERVICE_UNAVAILABLE)) from None
+    except Exception as error:
+        # A module that cannot load here (a native extension built for a newer C library) is
+        # named by stage and exception class, never a bare internal_error.
+        failure = record_startup_failure(
+            error, stage="import", correlation_id=startup_correlation_id
+        )
+        _stderr(failure.line())
+        raise typer.Exit(exit_code_for(PublicErrorCode.INTERNAL_ERROR)) from None
 
     # Free at this point: the daemon import above already composed the lifecycle module.
     from yoetz.config.installation import InstanceIdentityError
+    from yoetz.config.models import ConfigError
     from yoetz.config.paths import PathSafetyError
     from yoetz.service.lifecycle import LifecycleError
 
     try:
-        daemon_main()
+        daemon_main(startup_correlation_id=startup_correlation_id)
+    except ServiceStartupError as error:
+        # Already recorded under the printed correlation id with its stage, exception class and
+        # yoetz origin; the harness that captures this stream gets the reason, not a bare token.
+        _stderr(error.failure.line())
+        _finish(exit_code_for(PublicErrorCode.INTERNAL_ERROR))
     except LifecycleError as error:
         _finish(_lifecycle_failure(error))
     except (InstanceIdentityError, PathSafetyError) as error:
         # An instance whose identity, pin, root, or lifetime cannot be trusted is refused before
         # the singleton is taken (issue #604); name the condition, never a traceback.
         _finish(_instance_failure(error))
+    except ConfigError as error:
+        # The same refusal every other command gives a configuration it cannot load.
+        _stderr(f"invalid_request: {error.reason_code}")
+        _finish(2)
 
 
 @service_app.command("isolation")

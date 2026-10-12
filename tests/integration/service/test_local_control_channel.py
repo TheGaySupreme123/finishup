@@ -268,3 +268,87 @@ async def test_close_never_unlinks_a_replaced_endpoint(runtime_directory: Path) 
     finally:
         replacement.close()
         endpoint.unlink()
+
+
+def _without_no_follow_chmod(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Make ``os.chmod`` behave as CPython does on glibc before 2.32 (#1040).
+
+    There ``fchmodat(..., AT_SYMLINK_NOFOLLOW)`` always fails with ``ENOTSUP`` and CPython raises
+    ``NotImplementedError`` for ``follow_symlinks=False``; that is what made every service start
+    exit 70 on ``condaforge/miniforge3:24.9.2-0`` (Ubuntu 20.04, glibc 2.31).
+    """
+
+    real_chmod = os.chmod
+    refused: list[bool] = []
+
+    def chmod(
+        path: object, mode: int, *, dir_fd: int | None = None, follow_symlinks: bool = True
+    ) -> None:
+        if not follow_symlinks:
+            refused.append(True)
+            raise NotImplementedError("chmod: follow_symlinks unavailable on this platform")
+        real_chmod(path, mode, dir_fd=dir_fd)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(os, "chmod", chmod)
+    return refused
+
+
+@pytest.mark.anyio
+async def test_endpoints_bind_owner_only_where_no_follow_chmod_is_unavailable(
+    runtime_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    refused = _without_no_follow_chmod(monkeypatch)
+    listeners = (
+        await bind_control_listener(),
+        await bind_secret_listener(),
+        await bind_human_control_listener(),
+    )
+    try:
+        assert len(refused) == 3
+        for basename in (
+            CONTROL_ENDPOINT_BASENAME,
+            SECRET_ENDPOINT_BASENAME,
+            HUMAN_CONTROL_ENDPOINT_BASENAME,
+        ):
+            facts = (runtime_directory / basename).lstat()
+            assert stat.S_ISSOCK(facts.st_mode)
+            assert stat.S_IMODE(facts.st_mode) == ENDPOINT_MODE
+        accept_task = asyncio.create_task(listeners[0].accept())
+        client = await connect_control()
+        server = await accept_task
+        await client.aclose()
+        await server.aclose()
+    finally:
+        for listener in listeners:
+            await close_endpoint(listener)
+
+
+def test_no_follow_fallback_never_chmods_through_a_replaced_entry(
+    runtime_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from yoetz.adapters.control.unix_socket import (
+        _restrict_bound_endpoint,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    _without_no_follow_chmod(monkeypatch)
+    target = runtime_directory / "target"
+    target.write_bytes(b"")
+    target.chmod(0o640)
+    endpoint = runtime_directory / CONTROL_ENDPOINT_BASENAME
+    endpoint.symlink_to(target)
+    with pytest.raises(LocalControlTransportError, match="endpoint_unsafe"):
+        _restrict_bound_endpoint(endpoint, (target.stat().st_dev, target.stat().st_ino))
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    endpoint.unlink()
+
+    bound = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        bound.bind(os.fspath(endpoint))
+        facts = endpoint.lstat()
+        with pytest.raises(LocalControlTransportError, match="endpoint_unsafe"):
+            _restrict_bound_endpoint(endpoint, (facts.st_dev, facts.st_ino + 1))
+        _restrict_bound_endpoint(endpoint, (facts.st_dev, facts.st_ino))
+        assert stat.S_IMODE(endpoint.lstat().st_mode) == ENDPOINT_MODE
+    finally:
+        bound.close()
+        endpoint.unlink()

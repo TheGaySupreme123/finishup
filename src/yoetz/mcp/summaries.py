@@ -32,7 +32,11 @@ from yoetz.domain.review_input_render import (
 from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from yoetz.mcp.errors import VALIDATION_REASON_TOKENS
 from yoetz.protocol.canonical import JsonValue, ensure_canonical_value
-from yoetz.protocol.errors import PublicErrorCode, normalize_safe_details
+from yoetz.protocol.errors import (
+    SERVICE_STARTUP_PHASES,
+    PublicErrorCode,
+    normalize_safe_details,
+)
 from yoetz.protocol.guidance_uris import ALL_GUIDANCE_URIS
 from yoetz.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
 from yoetz.protocol.readiness_text import (
@@ -1142,19 +1146,27 @@ def _reason_location_clause(error: Mapping[str, JsonValue]) -> str:
     candidate: dict[str, object] = {}
     reason = typed.get("reason_code")
     field = typed.get("field")
+    phase = typed.get("phase")
     if type(reason) is str:
         candidate["reason_code"] = reason
     if type(field) is str:
         candidate["field"] = field
+    if type(phase) is str:
+        candidate["phase"] = phase
     gated = normalize_safe_details(candidate)
     gated_reason = gated.get("reason_code")
     gated_field = gated.get("field")
+    gated_phase = gated.get("phase")
     if type(gated_reason) is not str:
         if type(gated_field) is str:
             return f" Field: {gated_field}."
         return ""
     if type(gated_field) is str:
         return f" Reason: {gated_reason} at {gated_field}."
+    if gated_phase in SERVICE_STARTUP_PHASES:
+        # The stage a spawned service failed at (#1040); its exception class and origin are in
+        # the record the correlation_id resolves.
+        return f" Reason: {gated_reason} (stage: {gated_phase})."
     return f" Reason: {gated_reason}."
 
 

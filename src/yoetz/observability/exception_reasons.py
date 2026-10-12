@@ -48,7 +48,11 @@ EXCEPTION_REASONS: Final[Mapping[str, str]] = MappingProxyType(
         "FileNotFoundError": "exception_file_not_found_error",
         "FullError": "exception_full_error",
         "HostLineageRegistryError": "exception_host_lineage_registry_error",
+        # A native extension or module that cannot load on this platform (an image whose C
+        # library is older than a wheel needs) fails service startup at import (#1040).
+        "ImportError": "exception_import_error",
         "IndexError": "exception_index_error",
+        "InstanceIdentityError": "exception_instance_identity_error",
         "InterruptedError": "exception_interrupted_error",
         "IsADirectoryError": "exception_is_a_directory_error",
         "KeyError": "exception_key_error",
@@ -56,6 +60,7 @@ EXCEPTION_REASONS: Final[Mapping[str, str]] = MappingProxyType(
         "LookupError": "exception_lookup_error",
         "MemoryError": "exception_memory_error",
         "MisuseError": "exception_misuse_error",
+        "ModuleNotFoundError": "exception_module_not_found_error",
         "NotADBError": "exception_not_a_db_error",
         "NotADirectoryError": "exception_not_a_directory_error",
         "NotImplementedError": "exception_not_implemented_error",

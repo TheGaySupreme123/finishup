@@ -222,14 +222,33 @@ def _open_service_stderr_log() -> BinaryIO:
         raise
 
 
-def _spawn_service_process() -> None:
-    command = (sys.executable, "-m", "yoetz", "service", "run")
+@dataclass(frozen=True, slots=True)
+class _SpawnedService:
+    """A detached service this process started, and the id it records a startup failure under."""
+
+    process: subprocess.Popen[bytes]
+    startup_correlation_id: str
+
+
+def _spawn_service_process() -> _SpawnedService:
+    """Start one detached service that records any startup failure under a fresh id (#1040)."""
+
+    startup_correlation_id = new_id(IdKind.CORRELATION)
+    command = (
+        sys.executable,
+        "-m",
+        "yoetz",
+        "service",
+        "run",
+        "--startup-correlation-id",
+        startup_correlation_id,
+    )
     with _open_service_stderr_log() as stderr_log:
         if os.name == "nt":
             creationflags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) | int(
                 getattr(subprocess, "DETACHED_PROCESS", 0),
             )
-            subprocess.Popen(  # noqa: S603 - fixed interpreter/module/arguments
+            process = subprocess.Popen(  # noqa: S603 - fixed interpreter/module/arguments
                 command,
                 close_fds=True,
                 creationflags=creationflags,
@@ -239,7 +258,7 @@ def _spawn_service_process() -> None:
                 stderr=stderr_log,
             )
         else:
-            subprocess.Popen(  # noqa: S603 - fixed interpreter/module/arguments
+            process = subprocess.Popen(  # noqa: S603 - fixed interpreter/module/arguments
                 command,
                 close_fds=True,
                 env=_service_environment(),
@@ -248,6 +267,31 @@ def _spawn_service_process() -> None:
                 stderr=stderr_log,
                 start_new_session=True,
             )
+    return _SpawnedService(process, startup_correlation_id)
+
+
+def _spawned_startup_failure(spawned: _SpawnedService) -> ControlError | None:
+    """Name the startup failure of a service this process spawned, once it has exited.
+
+    A spawned service that exits having recorded a startup failure under the id it was given will
+    fail the same way on every spawn, so waiting out the rest of the budget only hides why. One
+    that exits without a record (it lost the singleton to a concurrent start) says nothing, and
+    the caller keeps polling for whichever service holds the endpoint.
+    """
+
+    if spawned.process.poll() is None:
+        return None
+    from yoetz.service.startup_failure import read_startup_failure
+
+    failure = read_startup_failure(spawned.startup_correlation_id)
+    if failure is None:
+        return None
+    return ControlError(
+        "service_unavailable",
+        retryable=False,
+        correlation_id=failure.correlation_id,
+        phase=failure.stage,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1718,9 +1762,10 @@ async def connect_service_on_demand(
         or holder.service_version != __version__
     ):
         raise ControlError("service_incompatible", retryable=True)
+    spawned: _SpawnedService | None = None
     if holder is None:
         try:
-            _spawn_service_process()
+            spawned = _spawn_service_process()
         except OSError as exc:
             raise ControlError("service_unavailable", retryable=True) from exc
 
@@ -1740,4 +1785,9 @@ async def connect_service_on_demand(
             last_error = exc
             if exc.reason != "service_unavailable":
                 raise
+        if spawned is not None and spawned.process.poll() is not None:
+            startup_failure = _spawned_startup_failure(spawned)
+            if startup_failure is not None:
+                raise startup_failure from last_error
+            spawned = None
     raise ControlError("service_unavailable", retryable=True) from last_error
