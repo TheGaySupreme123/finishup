@@ -237,8 +237,9 @@ class _TrackedRead:
     identities: dict[bytes, _Identity | None]
     # Metadata capture uses a name-status query; content capture keeps the raw query.
     arguments: tuple[str, ...] = ()
-    # Changed gitlinks (submodules and embedded repositories Git tracks): path and base commit.
-    gitlinks: tuple[tuple[bytes, str], ...] = ()
+    # Changed gitlinks (submodules and embedded repositories Git tracks): path and the commit the
+    # base tree records for it, ``None`` when the base held no gitlink there.
+    gitlinks: tuple[tuple[bytes, str | None], ...] = ()
 
 
 @dataclass(slots=True)
@@ -1351,9 +1352,9 @@ class GitChangeCaptureAdapter:
 
         candidates: dict[bytes, str | None] = {}
         for path, commit in tracked.gitlinks:
-            # A gitlink the base tree does not hold (added during the task) has Git's null id as
-            # its source: no recorded commit, so the task-start snapshot's HEAD applies.
-            candidates.setdefault(path, commit if commit.strip("0") else None)
+            # A gitlink the base tree does not hold (added during the task, or replacing a file)
+            # has no recorded commit, so the task-start snapshot's HEAD applies.
+            candidates.setdefault(path, commit if commit and commit.strip("0") else None)
         for section in untracked.sections:
             if section.path.endswith(b"/") and section.text is None:
                 candidates.setdefault(section.path[:-1], None)
@@ -1961,8 +1962,10 @@ class GitChangeCaptureAdapter:
             raw,
             sections,
             identities,
+            # Only a gitlink the base tree already held names a starting commit: one added during
+            # the task (Git's null id) or replacing a file or link (a blob id) records none.
             gitlinks=tuple(
-                (entry.path, entry.src_oid)
+                (entry.path, entry.src_oid if entry.src_mode == "160000" else None)
                 for entry in entries
                 if entry.dst_mode == "160000" and entry.status != "D"
             ),
