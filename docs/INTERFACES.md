@@ -5752,7 +5752,8 @@ such a hook fired while the cell ran, so the nested calls' own hook rows are the
 the cell. A hook that could belong to the next cell (ingested after the output was written) never
 counts, so every tool hook's own triggered reconcile is what settles it. It also keeps the output
 local when every nested tool item the rollout wrote while the cell was open was one of Yoetz's own
-MCP calls (an `McpToolCall` whose server is Yoetz's, issue #1038): the cell is then Yoetz's own call
+MCP calls (an `McpToolCall` whose server is Yoetz's, or that names no server and a Yoetz tool, as
+`later_material` reads it; issue #1038): the cell is then Yoetz's own call
 whatever the hook timing. A Yoetz item counts only while its cell is the session's only open cell;
 any other item, an uninterpretable row, or a Yoetz item read while several cells are open removes
 that mark from every open cell of the session. The call and its output pair on their shared

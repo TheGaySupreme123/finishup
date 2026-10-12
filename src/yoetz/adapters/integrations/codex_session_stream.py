@@ -2367,10 +2367,13 @@ def _note_code_mode_nested_item(
 ) -> bool:
     """Mark the session's open code-mode cells with one nested rollout row (#1038).
 
-    A completed tool item is the rollout's record of a call a cell made: a Yoetz MCP item
-    (``mcp__<Yoetz server>__<tool>``) keeps an open cell Yoetz-only, any other tool item or an
-    uninterpretable row does not. Returns ``False`` only when the mark could not persist, so
-    the cursor never passes a row whose mark a later output decision would miss.
+    A completed tool item is the rollout's record of a call a cell made: a Yoetz MCP item keeps
+    an open cell Yoetz-only, any other tool item or an uninterpretable row does not. "Yoetz MCP
+    item" is the later-material rule's reading (``yoetz_tool_spelling``): ``mcp__<Yoetz
+    server>__<tool>``, or the bare Yoetz tool name an item without a ``server`` keeps; another
+    server's tool of the same name is ``mcp__<server>__<tool>`` and is not Yoetz's. Returns
+    ``False`` only when the mark could not persist, so the cursor never passes a row whose mark
+    a later output decision would miss.
     """
 
     if envelope.event_kind == "unsupported_event":
@@ -2379,7 +2382,7 @@ def _note_code_mode_nested_item(
         structural = envelope.structural_payload
         yoetz_owned = (
             structural.get("action") == "McpToolCall"
-            and yoetz_tool_spelling(structural.get("tool_name")) == "server_scoped"
+            and yoetz_tool_spelling(structural.get("tool_name")) is not None
         )
     else:
         return True
