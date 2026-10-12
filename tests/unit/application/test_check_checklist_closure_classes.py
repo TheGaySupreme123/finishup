@@ -9,11 +9,27 @@ overall continuation must not say "Repair the open findings".
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 
-from unit.kernel.test_closure_class import _finding, _one  # pyright: ignore[reportMissingImports]
-from yoetz.application.check import build_finding_checklist
+from builders.policy_cases import finding_record, fnd
+from unit.kernel.test_closure_class import (  # pyright: ignore[reportMissingImports]
+    _finding,  # pyright: ignore[reportPrivateUsage]
+    _one,  # pyright: ignore[reportPrivateUsage]
+    _response,  # pyright: ignore[reportPrivateUsage]
+    _state,  # pyright: ignore[reportPrivateUsage]
+)
+from yoetz.application.check import build_finding_checklist, build_overall_next
 from yoetz.domain.findings import ResponseDisposition
+
+# What ``build_overall_next`` reads of a check result once no finding is left for the agent.
+_RESULT: Any = SimpleNamespace(
+    missing_for_assessment=(),
+    totals={"commands": {"live_failed": "0"}},
+    coverage=SimpleNamespace(known_gaps=()),
+)
 
 
 def test_a_reasoned_acknowledgement_of_a_limitation_request_is_not_open_work() -> None:
@@ -27,12 +43,49 @@ def test_a_reasoned_acknowledgement_of_a_limitation_request_is_not_open_work() -
     assert checklist.next == "request_receipt"
 
 
-def test_a_pending_limitation_request_is_still_something_to_do() -> None:
+def test_a_pending_limitation_request_is_something_to_disclose() -> None:
+    """Owner decision 2026-10-12: when it is the only remaining agent work the continuation has
+    its own value, so the JSON and the text agree and nothing says "repair"."""
+
     finding = _finding(1, semantic=True, next_step="state_unresolved_limitation")
     state, closure = _one(finding)
     assert closure.basis == "limitation_requested"
     checklist = build_finding_checklist(state, attempt_budget=5)
+    assert checklist.next == "disclose_limitations"
+    overall = build_overall_next(_RESULT, checklist, state)
+    assert overall is not None
+    assert (overall.status, overall.action) == ("action_required", "disclose_limitations")
+    assert overall.target_refs == (str(fnd(1)),)
+
+
+def test_a_limitation_request_beside_real_work_keeps_work_open_findings() -> None:
+    limitation = _finding(1, semantic=True, next_step="state_unresolved_limitation")
+    work = _finding(2, semantic=True, next_step="act")
+    state = _state(
+        {fnd(1): finding_record(limitation, 4), fnd(2): finding_record(work, 5)},
+    )
+    checklist = build_finding_checklist(state, attempt_budget=5)
     assert checklist.next == "work_open_findings"
+    overall = build_overall_next(_RESULT, checklist, state)
+    assert overall is not None
+    assert overall.action == "work_open_findings"
+    # Both are named, so the text can say how each is answered.
+    assert overall.target_refs == (str(fnd(1)), str(fnd(2)))
+
+
+def test_a_limitation_request_to_disclose_outranks_a_ruling_to_request() -> None:
+    """The agent can disclose now; the ruling needs a check after it: disclose first."""
+
+    limitation = _finding(1, semantic=True, next_step="state_unresolved_limitation")
+    rejected = _finding(2, semantic=True, next_step="act")
+    state = _state(
+        {fnd(1): finding_record(limitation, 4), fnd(2): finding_record(rejected, 5)},
+        {fnd(2): _response(2, ResponseDisposition.REJECTED, reasoned=True)},
+    )
+    checklist = build_finding_checklist(state, attempt_budget=5)
+    assert checklist.next == "disclose_limitations"
+    overall = build_overall_next(_RESULT, checklist, state)
+    assert overall is not None and overall.action == "disclose_limitations"
 
 
 def test_a_limitation_request_answered_not_done_is_settled_unmet_not_work_to_disclose() -> None:
@@ -46,6 +99,9 @@ def test_a_limitation_request_answered_not_done_is_settled_unmet_not_work_to_dis
     assert checklist.next == "request_receipt"
     assert checklist.closure_counts is not None
     assert (checklist.closure_counts.unmet, checklist.closure_counts.disclosed) == (1, 0)
+    overall = build_overall_next(_RESULT, checklist, state, predicted_conclusion=None)
+    assert overall is not None
+    assert (overall.status, overall.action) == ("ready_with_limitations", "request_receipt")
 
 
 def test_a_rejection_no_reviewer_can_rule_on_is_not_open_work(

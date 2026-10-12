@@ -297,7 +297,8 @@ Two more things decide what the receipt will say, and status tells you before yo
   `yoetz-verification-limit:<obligation id>` covering the obligation the challenge concerns does the
   same. If you know the requirement is not met, answer `acknowledged_not_done` instead: the receipt
   then lists it with the requirements you acknowledged as not done and reads
-  `unresolved_findings_remain`, exactly like any other requirement left undone.
+  `unresolved_findings_remain`, exactly like any other requirement left undone. While the request is
+  unanswered, the check's next step is `disclose_limitations` when it is all that is left.
 
 Before you ask for a receipt, `closure_readiness.predicted_receipt` names the conclusion it would
 carry and why. The receipt carries the same reasons (`conclusion_basis`) and opens its Summary with

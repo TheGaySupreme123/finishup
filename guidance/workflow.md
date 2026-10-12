@@ -265,7 +265,8 @@ disclosed (`planned_verification_matched_by_prefix`). Repair first. If
 you repaired a finding and Yoetz still cannot prove it (a Yoetz limit), verify it yourself, record
 that evidence, and respond `self_verified`; respond `acknowledged_not_done` only if you truly
 cannot or will not do it. A reviewer's limitation request (`requested_next_step`
-`state_unresolved_limitation`) asks you to state a limit, not to repair: your answer decides what it means.
+`state_unresolved_limitation`; when it is all that is left, the check's next step is
+`disclose_limitations`) asks you to state a limit, not to repair: your answer decides what it means.
 If the requirement may be met but cannot be verified here, respond `acknowledged` with the reason;
 respond `acknowledged_not_done` only when you know it is not met, and the receipt then keeps
 `unresolved_findings_remain`. A Yoetz limit is never a `yoetz-blocker`: record a blocker only for an

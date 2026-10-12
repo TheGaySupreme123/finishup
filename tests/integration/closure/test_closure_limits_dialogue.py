@@ -123,9 +123,10 @@ async def test_a_limitation_request_is_to_disclose_never_blocking_work_on_every_
 
 
 async def test_the_check_text_asks_to_disclose_a_limitation_request_never_to_repair_it() -> None:
-    """The check wire counts a pending limitation request under ``work_open_findings`` (no enum
-    value for "to disclose"), so the CLI words that step from the items' closure basis: every
-    agent-facing sentence must be true, and a limitation request is never repair work (Q4)."""
+    """The check wire has its own continuation for "the only work left is to disclose"
+    (``disclose_limitations``, owner decision 2026-10-12), so the JSON and the text agree: every
+    agent-facing sentence must be true, and a limitation request is never repair work (Q4). The
+    text also says how the answer decides what it means."""
 
     from yoetz.application.check import check_internal_json
     from yoetz.cli.render import render_human_check
@@ -141,8 +142,11 @@ async def test_the_check_text_asks_to_disclose_a_limitation_request_never_to_rep
     wire = check_internal_json(checked)
     overall = wire["overall_next"]
     assert isinstance(overall, Mapping)
+    assert overall["action"] == "disclose_limitations"
+    assert overall["status"] == "action_required"
+    assert tuple(overall["target_refs"]) == (finding.finding_id,)  # type: ignore[arg-type]
     checklist = CheckFindingChecklistModel.model_validate(wire["finding_checklist"])
-    assert checklist.next == "work_open_findings"
+    assert checklist.next == "disclose_limitations"
     assert [item.closure_basis for item in checklist.items if item.todo_state == "open"] == [
         "limitation_requested"
     ]
@@ -160,10 +164,25 @@ async def test_the_check_text_asks_to_disclose_a_limitation_request_never_to_rep
         coverage=CoverageModel.model_construct(known_gaps=()),
     )
     text = render_human_check(model)
-    assert "Disclose the named limitation requests" in text
+    assert text.count("Disclose the named limitation requests") == 2  # checklist and overall
     assert finding.finding_id in text
     assert "Repair" not in text and "repair the" not in text.lower()
     assert "no repair is needed" in text
+    assert "acknowledged_not_done only when you know it is not met" in text
+    assert "Overall next [action_required]: Disclose" in text
+
+    # The MCP text carries the same token as the wire.
+    from yoetz.mcp.summaries import summary_for_check
+
+    summary = summary_for_check(
+        {
+            "ok": True,
+            "verdict": "issue_detected",
+            "overall_next": wire["overall_next"],
+            "finding_checklist": wire["finding_checklist"],
+        }
+    )
+    assert "overall next: disclose_limitations; status: action_required" in summary
 
 
 @pytest.mark.parametrize(

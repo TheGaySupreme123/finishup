@@ -695,6 +695,11 @@ async def test_a_limitation_request_needs_one_answer_and_the_answer_decides_what
         "limitation_requested",
         ("acknowledge",),
     )
+    # The only remaining agent work is the disclosure, so the check says so (owner decision
+    # 2026-10-12): its own continuation value, never "work_open_findings" (repair).
+    assert checked.finding_checklist is not None and checked.overall_next is not None
+    assert checked.finding_checklist.next == "disclose_limitations"
+    assert checked.overall_next.action == "disclose_limitations"
 
     # Acknowledging a reviewer finding needs one recorded attempt after it (issue #885).
     attempt = protocol_id("evd_", 7390)

@@ -2393,7 +2393,8 @@ other hosts. The Stop hook and the MCP `respond` tool take the shared path; a Co
   `yoetz-verification-limit:<obligation id>` decision says the requirement may be met but cannot be
   verified here, and settles it as a disclosed verification limit with no recorded resolution
   attempt required (never clean, at best `insufficient_coverage`); `acknowledged_not_done` says the
-  requirement is NOT met and keeps `unresolved_findings_remain` like any unmet requirement.
+  requirement is NOT met and keeps `unresolved_findings_remain` like any unmet requirement. When an
+  unanswered request is the only agent work left, the check's next step is `disclose_limitations`.
   The Stop hook and readiness read the same closure class on every host.
 - `acknowledged_not_done` is no longer a one-way door: `respond` with `reopened` and a reason takes
   it back, and a qualifying `check` that tested the work after the answer resolves it (also for

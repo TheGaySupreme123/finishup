@@ -101,6 +101,42 @@ def test_the_at_budget_decision_survives_when_the_full_to_do_clause_cannot_fit(
     assert "finding checklist next: decide_at_budget (at budget 2);" in tight
 
 
+def test_a_limitation_request_alone_is_named_by_its_own_continuation_token() -> None:
+    """Owner decision 2026-10-12: ``disclose_limitations`` on both the task and checklist
+    continuations, beside the "to disclose" counter, and never the repair token."""
+
+    envelope = _check_envelope("disclose_limitations")
+    ref = "fnd_59000000-0000-4000-8000-000000000001"
+    envelope["overall_next"] = {
+        "action": "disclose_limitations",
+        "status": "action_required",
+        "target_refs": [ref],
+    }
+    checklist = envelope["finding_checklist"]
+    assert isinstance(checklist, dict)
+    checklist["counts"] = {
+        **checklist["counts"],
+        "to_do": "0",
+        "awaiting_ruling": "0",
+        "unmet": "0",
+        "disclosed": "0",
+        "to_disclose": "1",
+    }
+    text = summary_for_check(envelope)
+    assert "overall next: disclose_limitations; status: action_required" in text
+    assert f"targets: {ref}" in text
+    assert "next: disclose_limitations" in text
+    assert "to disclose: 1" in text
+    assert "work_open_findings" not in text
+    # A malformed task continuation without targets is dropped like the other target-bearing ones.
+    envelope["overall_next"] = {
+        "action": "disclose_limitations",
+        "status": "action_required",
+        "target_refs": [],
+    }
+    assert "overall next: disclose_limitations" not in summary_for_check(envelope)
+
+
 def test_no_compact_cue_is_invented_below_the_budget() -> None:
     text = summary_for_check(_check_envelope("work_open_findings"))
     assert "decide_at_budget" not in text

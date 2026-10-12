@@ -750,18 +750,31 @@ _TODO_STATES: Final = frozenset(
         "verified_resolved",
     }
 )
-# The closed "next:" tokens of the finding checklist (issue #905).
+# The closed "next:" tokens of the finding checklist (issue #905). ``disclose_limitations``
+# (owner decision 2026-10-12, #1024) is the only remaining agent work being a reviewer's
+# limitation request the agent has not answered yet; real work keeps ``work_open_findings``.
 ChecklistNext = Literal[
-    "decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"
+    "decide_at_budget",
+    "disclose_limitations",
+    "request_receipt",
+    "request_ruling",
+    "work_open_findings",
 ]
 _CHECKLIST_NEXT: Final = frozenset(
-    {"decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"}
+    {
+        "decide_at_budget",
+        "disclose_limitations",
+        "request_receipt",
+        "request_ruling",
+        "work_open_findings",
+    }
 )
 MAX_CHECKLIST_ITEMS: Final = 100
 
 OverallNextAction = Literal[
     "supply_missing_input",
     "work_open_findings",
+    "disclose_limitations",
     "request_ruling",
     "review_recorded_work",
     "request_receipt",
@@ -771,6 +784,7 @@ _OVERALL_NEXT_ACTIONS: Final = frozenset(
     {
         "supply_missing_input",
         "work_open_findings",
+        "disclose_limitations",
         "request_ruling",
         "review_recorded_work",
         "request_receipt",
@@ -939,6 +953,7 @@ class CheckOverallNext:
             in {
                 "supply_missing_input",
                 "work_open_findings",
+                "disclose_limitations",
                 "request_ruling",
                 "review_recorded_work",
             }
@@ -946,7 +961,13 @@ class CheckOverallNext:
         ):
             raise _invalid()
         if (
-            self.action in {"work_open_findings", "request_ruling", "review_recorded_work"}
+            self.action
+            in {
+                "work_open_findings",
+                "disclose_limitations",
+                "request_ruling",
+                "review_recorded_work",
+            }
             and not self.target_refs
         ):
             raise _invalid()

@@ -3590,7 +3590,13 @@ class CheckFindingChecklistModel(_ClosedModel):
     attempt_budget: CanonicalPositiveUInt64Wire
     counts: CheckChecklistCountsModel
     items: tuple[CheckChecklistItemModel, ...]
-    next: Literal["decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"]
+    next: Literal[
+        "decide_at_budget",
+        "disclose_limitations",
+        "request_receipt",
+        "request_ruling",
+        "work_open_findings",
+    ]
 
     @model_validator(mode="after")
     def _validate_checklist(self) -> CheckFindingChecklistModel:
@@ -3607,6 +3613,7 @@ class CheckOverallNextModel(_ClosedModel):
     action: Literal[
         "supply_missing_input",
         "work_open_findings",
+        "disclose_limitations",
         "request_ruling",
         "review_recorded_work",
         "request_receipt",
@@ -3624,13 +3631,20 @@ class CheckOverallNextModel(_ClosedModel):
         if self.action in {
             "supply_missing_input",
             "work_open_findings",
+            "disclose_limitations",
             "request_ruling",
             "review_recorded_work",
         }:
             if self.status != "action_required":
                 raise ValueError("check_overall_next_action_invalid")
             if (
-                self.action in {"work_open_findings", "request_ruling", "review_recorded_work"}
+                self.action
+                in {
+                    "work_open_findings",
+                    "disclose_limitations",
+                    "request_ruling",
+                    "review_recorded_work",
+                }
                 and not self.target_refs
             ):
                 raise ValueError("check_overall_next_targets_invalid")

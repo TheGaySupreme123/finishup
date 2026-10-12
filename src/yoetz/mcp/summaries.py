@@ -357,7 +357,13 @@ _TODO_STATES: Final = (
     "disputed_after_rebuttal",
 )
 _CHECKLIST_NEXT: Final = frozenset(
-    {"decide_at_budget", "request_receipt", "request_ruling", "work_open_findings"}
+    {
+        "decide_at_budget",
+        "disclose_limitations",
+        "request_receipt",
+        "request_ruling",
+        "work_open_findings",
+    }
 )
 _BUDGET: Final = re.compile(r"^(?:[1-9]|[1-4][0-9]|50)$", re.ASCII)
 _ROUNDS: Final = re.compile(r"^(?:0|[1-9][0-9]{0,17})$", re.ASCII)
@@ -560,6 +566,7 @@ def _overall_next_parts(source: Mapping[str, JsonValue]) -> list[Part]:
     if action not in {
         "supply_missing_input",
         "work_open_findings",
+        "disclose_limitations",
         "request_ruling",
         "review_recorded_work",
         "request_receipt",
@@ -577,7 +584,11 @@ def _overall_next_parts(source: Mapping[str, JsonValue]) -> list[Part]:
         if isinstance(raw_refs, (list, tuple))
         else ()
     )
-    if action in {"work_open_findings", "request_ruling", "review_recorded_work"} and not refs:
+    if (
+        action
+        in {"work_open_findings", "disclose_limitations", "request_ruling", "review_recorded_work"}
+        and not refs
+    ):
         return []
     if action == "request_receipt" and refs:
         return []

@@ -442,5 +442,6 @@ decides what it means (owner decision 2026-10-12, ADR-046 amendment): a reasoned
 `limitation_disclosed` (the requirement may be met but cannot be verified here), and the receipt
 then discloses it in "Verification limits" at `insufficient_coverage`; `acknowledged_not_done` says
 the requirement is not met, so it is `limitation_acknowledged_not_done`, an unmet requirement at
-`unresolved_findings_remain`. An `act` challenge never qualifies, and neither do the agent's own words.
+`unresolved_findings_remain`. When it is the only agent work left the check's next step is
+`disclose_limitations`. An `act` challenge never qualifies, and neither do the agent's own words.
 Details: ADR-046 section 1.

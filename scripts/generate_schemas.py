@@ -3757,8 +3757,11 @@ def _add_check_closure_verdict(definitions: dict[str, JsonValue]) -> None:
             "then": {"required": list(closure_counter_names)},
         }
     )
+    # ``disclose_limitations``: the only remaining agent work is a reviewer's limitation request
+    # the agent has not answered (owner decision 2026-10-12, #1024).
     cast(dict[str, JsonValue], checklist_properties["next"])["enum"] = [
         "decide_at_budget",
+        "disclose_limitations",
         "request_receipt",
         "request_ruling",
         "work_open_findings",
@@ -3769,6 +3772,7 @@ def _add_check_closure_verdict(definitions: dict[str, JsonValue]) -> None:
     action["enum"] = [
         "supply_missing_input",
         "work_open_findings",
+        "disclose_limitations",
         "request_ruling",
         "review_recorded_work",
         "request_receipt",
@@ -3788,6 +3792,7 @@ def _add_check_closure_verdict(definitions: dict[str, JsonValue]) -> None:
         )
         if action_condition.get("enum") == ["work_open_findings", "review_recorded_work"]:
             action_condition["enum"] = [
+                "disclose_limitations",
                 "request_ruling",
                 "review_recorded_work",
                 "work_open_findings",

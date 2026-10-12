@@ -6975,7 +6975,9 @@ the basis could not be read):
   `view=obligations` rows: `closure_class`, `closure_basis`.
 - `check` `finding_checklist.counts`: `to_do`, `awaiting_ruling`, `unmet`, `disclosed`,
   `to_disclose` (the group travels together); items carry `closure_class` and `closure_basis`;
-  `finding_checklist.next` and `overall_next.action` add `request_ruling`; `overall_next` adds
+  `finding_checklist.next` and `overall_next.action` add `request_ruling` and `disclose_limitations`
+  (owner decision 2026-10-12: the only remaining agent work is a reviewer's limitation request nobody
+  answered; mixed with real work the value stays `work_open_findings`); `overall_next` adds
   `predicted_conclusion`.
 - `receipt-document` 1.3.0 (additive, in place): `limitation_disclosed_finding_ids`,
   `conclusion_basis {reasons[{code, rule, count, refs, since_frontier?}], reason_total}`, and a gap
@@ -8577,7 +8579,9 @@ Wire (the earlier checklist fields remain available in their original versions):
   review_rounds}` (at most 100: the current actionable items, newest row per issue, open items
   first and otherwise in rank order, final rows included; coverage limitations are not to-dos);
   `next` is `decide_at_budget` (an open item reached the budget: repair with new evidence or
-  respond `acknowledged_not_done`), `work_open_findings`, or `request_receipt`. It is current
+  respond `acknowledged_not_done`), `work_open_findings`, `disclose_limitations` (the only agent
+  work left is a reviewer's limitation request nobody answered; `check-result` 1.4.0, owner
+  decision 2026-10-12), or `request_receipt`. It is current
   projection context attached after the commit, like advisory notes, and is omitted when that read
   is unavailable; it is never part of the check event.
 - `status-result` `1.4.0` findings view: each row carries `todo_state` and `review_rounds`
@@ -8625,6 +8629,8 @@ Wire (the earlier checklist fields remain available in their original versions):
   The additive `overall_next` projection carries the task-level `status`, `action`, and bounded
   `target_refs`; its `action` is `supply_missing_input` for those targets (the refs may be empty
   when the reviewer named a global input), `work_open_findings` for open findings,
+  `disclose_limitations` when the only open findings are reviewer limitation requests nobody
+  answered (`check-result` 1.4.0; the targets are those requests),
   `review_recorded_work` for open obligations or undisclosed live failures, or `request_receipt`
   when no agent action remains. The finding checklist's `next` remains finding-only and is labeled
   that way beside this continuation. When only standing or structurally unavailable limits remain,

@@ -218,6 +218,11 @@ _CHECKLIST_NEXT_TEXT: Final = {
         + " Respond acknowledged_not_done with a reason only if you truly will not or cannot "
         "do it. Checks are never throttled."
     ),
+    "disclose_limitations": (
+        "Disclose the named limitation requests: respond acknowledged with the reason if the "
+        "requirement may be met but cannot be verified here; respond acknowledged_not_done only "
+        "when you know it is not met. No repair is needed."
+    ),
     "request_receipt": "No open findings remain on the list; request the receipt.",
     "request_ruling": (
         "You rejected finding(s) and the reviewer has not ruled yet: run check with "
@@ -302,44 +307,33 @@ def _render_checklist(
     return lines
 
 
-# tb4n3 RC-1 (ADR-046, owner decision Q4): a reviewer's limitation request is counted with the
-# open findings on the check wire, but it is a disclosure to make, never repair work.
-_LIMITATION_REQUEST_NEXT: Final = (
-    "Disclose the named limitation requests: respond acknowledged with the reason the reviewer "
-    "cannot verify it here; no repair is needed."
-)
+# tb4n3 RC-1 (ADR-046, owner decisions Q4 and 2026-10-12): a reviewer's limitation request is a
+# disclosure to make, never repair work. Alone it is the ``disclose_limitations`` continuation;
+# beside real work it rides in ``work_open_findings`` and the text names how it is answered. The
+# agent's answer decides what it means: ``acknowledged`` says the requirement may be met but
+# cannot be verified here, ``acknowledged_not_done`` says it is not met.
 _LIMITATION_REQUEST_ALSO: Final = (
-    " For a reviewer's request to state a limit, respond acknowledged with the reason instead "
-    "of repairing it."
+    " For a reviewer's request to state a limit, respond acknowledged with the reason if the "
+    "requirement may be met but cannot be verified here (acknowledged_not_done only when you "
+    "know it is not met) instead of repairing it."
 )
 
 
-def _open_limitation_requests(checklist: CheckFindingChecklistModel | None) -> tuple[bool, bool]:
-    """Whether some, and whether all, open checklist items are limitation requests.
-
-    "All" is claimed only when every open item is listed (the counts cover the whole list).
-    """
+def _open_limitation_requests(checklist: CheckFindingChecklistModel | None) -> bool:
+    """Whether some open (agent work) checklist item is a limitation request still to disclose."""
 
     if checklist is None:
-        return False, False
+        return False
     # ADR-046: agent work is the closure class, not the to-do state (a disclosed limitation keeps
     # an ``open`` to-do state but is settled).
-    open_items = [item for item in checklist.items if item.closure_class == "agent_work"]
-    requests = [item for item in open_items if item.closure_basis == "limitation_requested"]
-    counts = checklist.counts
-    if counts.to_do is not None and counts.awaiting_ruling is not None:
-        total = int(counts.to_do) - int(counts.awaiting_ruling) + int(counts.to_disclose or "0")
-    else:
-        total = int(counts.open)
-    complete = len(open_items) == total
-    return bool(requests), bool(requests) and complete and len(requests) == len(open_items)
+    return any(
+        item.closure_class == "agent_work" and item.closure_basis == "limitation_requested"
+        for item in checklist.items
+    )
 
 
 def _open_findings_next_text(checklist: CheckFindingChecklistModel, default: str) -> str:
-    some, every = _open_limitation_requests(checklist)
-    if every:
-        return _LIMITATION_REQUEST_NEXT
-    return default + _LIMITATION_REQUEST_ALSO if some else default
+    return default + _LIMITATION_REQUEST_ALSO if _open_limitation_requests(checklist) else default
 
 
 def _render_overall_next(
@@ -350,17 +344,18 @@ def _render_overall_next(
             "Supply the named review input as new records tied to the named refs "
             "(never change your work to fit the reviewer)"
         )
+    elif next_step.action == "disclose_limitations":
+        action = (
+            "Disclose the named limitation requests (respond acknowledged with the reason if the "
+            "requirement may be met but cannot be verified here; acknowledged_not_done only when "
+            "you know it is not met; no repair is needed)"
+        )
     elif next_step.action == "work_open_findings":
-        some, every = _open_limitation_requests(checklist)
-        if every:
+        if _open_limitation_requests(checklist):
             action = (
-                "Disclose the named limitation requests (respond acknowledged with the reason; "
-                "no repair is needed)"
-            )
-        elif some:
-            action = (
-                "Repair or answer the named open findings (a limitation request needs only an "
-                "acknowledged response with the reason)"
+                "Repair or answer the named open findings (a limitation request among them needs "
+                "only a response: acknowledged with the reason if it may be met but cannot be "
+                "verified here, acknowledged_not_done only when you know it is not met)"
             )
         else:
             action = "Repair or answer the named open findings"
