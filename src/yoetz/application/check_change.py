@@ -269,7 +269,12 @@ async def _pin_first_check_base(
             raise TypeError("task_change_base_invalid")
         # Only the task's own start can say which untracked files predate the task (#1045).
         pinned = replace(
-            head, origin="first_check", untracked=(), untracked_complete=False, nested=()
+            head,
+            origin="first_check",
+            untracked=(),
+            untracked_complete=False,
+            nested=(),
+            nested_untracked=(),
         )
         ref = await _store(
             runtime, encode_task_change_base(pinned), TASK_CHANGE_BASE_MEDIA_TYPE, clock

@@ -55,6 +55,7 @@ __all__ = [
     "MAX_NESTED_REPOSITORIES",
     "MAX_TASK_INPUT_FILES",
     "MAX_TASK_INPUT_TEXT_BYTES",
+    "NestedUntrackedBaseline",
     "TaskInputFile",
     "UntrackedBaselineFile",
 ]
@@ -166,6 +167,36 @@ class UntrackedBaselineFile:
 
 
 @dataclass(frozen=True, slots=True)
+class NestedUntrackedBaseline:
+    """One nested repository's untracked files as they stood when the task started (#1045).
+
+    ``path`` is the repository's root-relative directory (one of the base's ``nested`` rows);
+    ``files`` are its untracked files, relative to that directory, in path order, each with the
+    same ``stat`` digest the outer listing keeps. ``complete`` is false when the listing could not
+    be taken whole within the snapshot's bounds; such a row names no file, and none of the
+    repository's untracked files can then be told apart from one that predates the task.
+    """
+
+    path: str = field(repr=False)
+    complete: bool
+    files: tuple[UntrackedBaselineFile, ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        if not _json_path(self.path) or type(self.complete) is not bool:
+            raise _invalid()
+        if (
+            type(self.files) is not tuple
+            or any(type(item) is not UntrackedBaselineFile for item in self.files)
+            or any(
+                left.path >= right.path
+                for left, right in zip(self.files, self.files[1:], strict=False)
+            )
+            or (self.files and not self.complete)
+        ):
+            raise _invalid()
+
+
+@dataclass(frozen=True, slots=True)
 class TaskChangeBase:
     """The commit a task's check-time change starts from, fixed for the life of the task.
 
@@ -175,9 +206,11 @@ class TaskChangeBase:
 
     A ``task_start`` base also records the working tree's untracked files at that moment
     (``untracked``, names and ``stat`` identity only; ``untracked_complete`` is false when the
-    listing exceeded its bound or could not be read) and the HEAD of each nested Git repository
-    among them (``nested``: root-relative directory and commit), so files that predate the task
-    are baseline and a nested repository's change starts where the task did (issue #1045).
+    listing exceeded its bound or could not be read), the HEAD of each nested Git repository
+    among them or tracked as a gitlink (``nested``: root-relative directory and commit), and the
+    untracked files of each of those repositories (``nested_untracked``, in path order, sharing
+    the outer listing's name and byte bounds), so files that predate the task are baseline and a
+    nested repository's change starts where the task did (issue #1045).
     """
 
     object_format: Literal["sha1", "sha256"]
@@ -186,6 +219,7 @@ class TaskChangeBase:
     untracked: tuple[UntrackedBaselineFile, ...] = field(default=(), repr=False)
     untracked_complete: bool = False
     nested: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+    nested_untracked: tuple[NestedUntrackedBaseline, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         if self.object_format not in {"sha1", "sha256"}:
@@ -223,8 +257,28 @@ class TaskChangeBase:
             or len({item[0] for item in self.nested}) != len(self.nested)
         ):
             raise _invalid()
+        recorded = {item[0] for item in self.nested}
+        if (
+            type(self.nested_untracked) is not tuple
+            or any(type(item) is not NestedUntrackedBaseline for item in self.nested_untracked)
+            or any(item.path not in recorded for item in self.nested_untracked)
+            or any(
+                left.path >= right.path
+                for left, right in zip(
+                    self.nested_untracked, self.nested_untracked[1:], strict=False
+                )
+            )
+        ):
+            raise _invalid()
+        # The nested listings share the outer listing's bounds.
+        files = [*self.untracked, *(item for row in self.nested_untracked for item in row.files)]
+        if (
+            len(files) > MAX_BASELINE_UNTRACKED_FILES
+            or sum(len(item.path.encode("utf-8")) for item in files) > _MAX_BASELINE_PATH_BYTES
+        ):
+            raise _invalid()
         if self.origin != "task_start" and (
-            self.untracked or self.untracked_complete or self.nested
+            self.untracked or self.untracked_complete or self.nested or self.nested_untracked
         ):
             # Only the task's own start can say what predates the task.
             raise _invalid()
@@ -235,8 +289,9 @@ class TaskInputFile:
     """One read-only task input file the check carries for review (issue #1045).
 
     A file the task statement (or a ``role: input`` requested item) names, inside the checked
-    repository, that the check-time change does not touch and Git does not ignore. ``text`` is the
-    file whole, or its head and tail with the cut marked, at most ``MAX_TASK_INPUT_TEXT_BYTES``;
+    repository and unchanged since the task started (a tracked one only against a ``task_start``
+    base, and only when its bytes match the base commit), that Git does not ignore. ``text`` is
+    the file whole, or its head and tail with the cut marked, at most ``MAX_TASK_INPUT_TEXT_BYTES``;
     ``size`` is the file's byte size; ``redacted`` is set by the service after it replaced
     credential-like spans.
     """
@@ -634,6 +689,12 @@ def encode_task_change_base(base: TaskChangeBase) -> bytes:
         body["untracked"] = [[item.path, item.state] for item in base.untracked]
         body["untracked_complete"] = base.untracked_complete
         body["nested"] = [[path, commit] for path, commit in base.nested]
+        if base.nested_untracked:
+            # Only when recorded, so a base written before nested listings keeps its bytes.
+            body["nested_untracked"] = [
+                [row.path, row.complete, [[item.path, item.state] for item in row.files]]
+                for row in base.nested_untracked
+            ]
     return canonical_encode(cast(JsonValue, body))
 
 
@@ -642,7 +703,13 @@ def decode_task_change_base(data: bytes) -> TaskChangeBase:
     if canonical_encode(parsed) != data or type(parsed) is not dict:
         raise _invalid()
     source = cast(dict[str, object], parsed)
-    if set(source) - {"origin", "untracked", "untracked_complete", "nested"} != {
+    if set(source) - {
+        "origin",
+        "untracked",
+        "untracked_complete",
+        "nested",
+        "nested_untracked",
+    } != {
         "commit",
         "object_format",
         "schema",
@@ -652,14 +719,23 @@ def decode_task_change_base(data: bytes) -> TaskChangeBase:
         raise _invalid()
     untracked_raw = source.get("untracked", [])
     nested_raw = source.get("nested", [])
-    if type(untracked_raw) is not list or type(nested_raw) is not list:
+    listings_raw = source.get("nested_untracked")
+    if (
+        type(untracked_raw) is not list
+        or type(nested_raw) is not list
+        or (listings_raw is not None and (type(listings_raw) is not list or not listings_raw))
+    ):
+        # An empty ``nested_untracked`` is never written, so it is never read either.
         raise _invalid()
-    untracked: list[UntrackedBaselineFile] = []
-    for row in cast(list[object], untracked_raw):
-        if type(row) is not list or len(cast(list[object], row)) != 2:
+    untracked = _baseline_files(cast(list[object], untracked_raw))
+    listings: list[NestedUntrackedBaseline] = []
+    for row in cast(list[object], listings_raw or []):
+        if type(row) is not list or len(cast(list[object], row)) != 3:
             raise _invalid()
-        path, state = cast(list[object], row)
-        untracked.append(UntrackedBaselineFile(cast(str, path), cast(str, state)))
+        path, complete, files = cast(list[object], row)
+        listings.append(
+            NestedUntrackedBaseline(cast(str, path), cast(bool, complete), _baseline_files(files))
+        )
     nested: list[tuple[str, str]] = []
     for row in cast(list[object], nested_raw):
         if type(row) is not list or len(cast(list[object], row)) != 2:
@@ -673,7 +749,22 @@ def decode_task_change_base(data: bytes) -> TaskChangeBase:
         tuple(untracked),
         cast(bool, source.get("untracked_complete", False)),
         tuple(nested),
+        tuple(listings),
     )
+
+
+def _baseline_files(raw: object) -> tuple[UntrackedBaselineFile, ...]:
+    """Decode ``[[path, state], ...]`` rows of a task-start snapshot strictly."""
+
+    if type(raw) is not list:
+        raise _invalid()
+    files: list[UntrackedBaselineFile] = []
+    for row in cast(list[object], raw):
+        if type(row) is not list or len(cast(list[object], row)) != 2:
+            raise _invalid()
+        path, state = cast(list[object], row)
+        files.append(UntrackedBaselineFile(cast(str, path), cast(str, state)))
+    return tuple(files)
 
 
 def encode_check_change(capture: CheckChangeCapture) -> bytes:

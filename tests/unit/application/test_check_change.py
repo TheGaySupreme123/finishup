@@ -291,7 +291,11 @@ async def test_first_check_pin_drops_a_task_start_snapshot(
 ) -> None:
     """Only the task's own start says which untracked files predate it (#1045)."""
 
-    from yoetz.ports.change_capture import TaskChangeBase, UntrackedBaselineFile
+    from yoetz.ports.change_capture import (
+        NestedUntrackedBaseline,
+        TaskChangeBase,
+        UntrackedBaselineFile,
+    )
 
     _pin = getattr(check_change_module, "_pin_first_check_base")
     stored: list[bytes] = []
@@ -304,6 +308,11 @@ async def test_first_check_pin_drops_a_task_start_snapshot(
                 untracked=(UntrackedBaselineFile("x.txt", "sha256:" + "0" * 64),),
                 untracked_complete=True,
                 nested=(("api", "b" * 40),),
+                nested_untracked=(
+                    NestedUntrackedBaseline(
+                        "api", True, (UntrackedBaselineFile("notes.md", "sha256:" + "1" * 64),)
+                    ),
+                ),
             )
 
     class Ledger:
