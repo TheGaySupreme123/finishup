@@ -129,3 +129,149 @@ def test_declared_deliverables_reach_the_port_and_a_plain_port_keeps_working() -
     _capture_redacted(PlainPort(), "/repo", None)
 
     assert seen == [("out.json",)]
+
+
+# --- Issue #1045: task input files and the task-start snapshot -----------------------------------
+
+
+def test_task_input_paths_are_the_files_the_statement_names_then_declared_inputs() -> None:
+    from builders.policy_cases import make_case, obl, obligation_record, plan_record
+    from yoetz.application.check_change import task_input_paths
+    from yoetz.domain.events import (
+        ObligationPublishedPayload,
+        ObligationStatus,
+        PlanPublishedPayload,
+        RequestedItem,
+        RequestedItemKind,
+        RequestedItemRole,
+    )
+
+    obligation = obligation_record(
+        ObligationPublishedPayload(
+            obl(1),
+            "Port the form",
+            "form.py behaves like the VBA form",
+            ObligationStatus.OPEN,
+            requested_items=(
+                RequestedItem(
+                    RequestedItemKind.FILE, "rules/RULEBOOK.txt", RequestedItemRole.INPUT
+                ),
+                RequestedItem(RequestedItemKind.FILE, "form.py", RequestedItemRole.OUTPUT),
+            ),
+        ),
+        1,
+    )
+    case = make_case(
+        plans={1: plan_record(PlanPublishedPayload(1, "Port the form", (obl(1),)), 1)},
+        obligations={obl(1): obligation},
+        extra_refs=(obl(1),),
+    )
+    statement = (
+        "Port the VBA UserForm in /app/vba/UserForm1.frm to Python (see `DESIGN.md` and "
+        "spec/rules.txt). Use main.c, e.g. numpy 3.10, i.e. https://example.invalid/x.md. "
+        "Write the result to /app/out/ and DESIGN.md again."
+    )
+
+    paths = task_input_paths(case.projection, statement)
+
+    assert paths == (
+        "/app/vba/UserForm1.frm",
+        "DESIGN.md",
+        "spec/rules.txt",
+        "main.c",
+        "rules/RULEBOOK.txt",
+    )
+    assert task_input_paths(case.projection, None) == ("rules/RULEBOOK.txt",)
+
+
+def test_task_input_files_are_redacted_one_by_one_and_dropped_when_they_cannot_be() -> None:
+    from yoetz.ports.change_capture import TaskInputFile
+
+    secret = b'password = "a8F3kL9qZx7Pw2Rt"\n'
+    capture = CheckChangeCapture(
+        base="task_start",
+        text=b"diff --git a/a.py b/a.py\n+print('kept')\n",
+        tracked_files=1,
+        untracked_files=0,
+        omitted_files=0,
+        truncated=False,
+        inputs=(
+            TaskInputFile("spec.md", b"# Spec\n" + secret, 7 + len(secret)),
+            TaskInputFile("rules.md", b"# Rules\nno secrets here\n", 24),
+        ),
+    )
+
+    redacted = _redacted(capture)
+
+    spec, rules = redacted.inputs
+    assert spec.redacted and b"a8F3kL9qZx7Pw2Rt" not in spec.text and b"[REDACTED]" in spec.text
+    assert rules == capture.inputs[1]
+    # The change itself was clean, so it is not marked redacted.
+    assert redacted.text == capture.text and not redacted.redacted
+
+
+def test_task_inputs_reach_the_port_only_when_asked_for() -> None:
+    _capture_redacted = getattr(check_change_module, "_capture_redacted")
+    seen: list[tuple[str, ...]] = []
+
+    class InputPort:
+        def capture(
+            self,
+            workspace: str,
+            base: object,
+            *,
+            priority_paths: tuple[str, ...] = (),
+            input_paths: tuple[str, ...] = (),
+        ) -> CheckChangeCapture:
+            seen.append(input_paths)
+            return _capture(b"diff --git a/a.py b/a.py\n+print('kept')\n")
+
+    class PlainPort:
+        def capture(self, workspace: str, base: object) -> CheckChangeCapture:
+            return _capture(b"diff --git a/a.py b/a.py\n+print('kept')\n")
+
+    _capture_redacted(InputPort(), "/repo", None, (), ("DESIGN.md",))
+    _capture_redacted(PlainPort(), "/repo", None, (), ())
+
+    assert seen == [("DESIGN.md",)]
+
+
+@pytest.mark.anyio
+async def test_first_check_pin_drops_a_task_start_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the task's own start says which untracked files predate it (#1045)."""
+
+    from yoetz.ports.change_capture import TaskChangeBase, UntrackedBaselineFile
+
+    _pin = getattr(check_change_module, "_pin_first_check_base")
+    stored: list[bytes] = []
+
+    class Port:
+        def read_task_base(self, workspace: str) -> TaskChangeBase:
+            return TaskChangeBase(
+                "sha1",
+                "a" * 40,
+                untracked=(UntrackedBaselineFile("x.txt", "sha256:" + "0" * 64),),
+                untracked_complete=True,
+                nested=(("api", "b" * 40),),
+            )
+
+    class Ledger:
+        async def record_task_change_base(self, ref: object) -> bool:
+            return True
+
+        async def load_task_change_base(self) -> object:
+            return None
+
+    async def store(runtime: object, data: bytes, media_type: str, clock: object) -> object:
+        stored.append(data)
+        return object()
+
+    monkeypatch.setattr(check_change_module, "_store", store)
+    runtime = SimpleNamespace(ledger=Ledger())
+
+    pinned = await _pin(runtime, Port(), "/repo", object(), "req_x")
+
+    assert pinned == TaskChangeBase("sha1", "a" * 40, "first_check")
+    assert b"untracked" not in stored[0] and b"nested" not in stored[0]

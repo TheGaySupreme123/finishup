@@ -41,6 +41,7 @@ from yoetz.ports.change_capture import ChangeMetadataEntry, CheckChangeCapture, 
 
 __all__ = [
     "PreExistingTestEdits",
+    "check_change_header_entries",
     "preexisting_test_edits",
 ]
 
@@ -397,14 +398,27 @@ def _header_entries(capture: CheckChangeCapture) -> tuple[tuple[str, str | None]
         else:
             count = re.search(r" \(\+[0-9-]", remainder)
             path = remainder if count is None else remainder[: count.start()]
-            for note in (" not shown:", " untracked"):
-                marker = path.find(note)
-                if marker >= 0:
-                    path = path[:marker]
-                    break
+            # The first fixed note ends the path (``x untracked; not shown: ...``).
+            markers = [
+                marker for note in (" not shown:", " untracked") if (marker := path.find(note)) >= 0
+            ]
+            if markers:
+                path = path[: min(markers)]
         if path:
             entries.append((status, _decode_git_path(path)))
     return tuple(entries)
+
+
+def check_change_header_entries(
+    capture: CheckChangeCapture,
+) -> tuple[tuple[str, str | None], ...]:
+    """``(status, path)`` for each file the check-time change header lists, in listing order.
+
+    ``path`` is ``None`` for a listed name that cannot be decoded. In process only (issue #1045:
+    the review packet's declared-deliverable rows say whether the change lists each deliverable).
+    """
+
+    return _header_entries(capture)
 
 
 def _statement_events(

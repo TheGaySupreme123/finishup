@@ -1371,6 +1371,40 @@ carries `prior_finding_verdicts` (#905) and `missing_for_assessment`, and the un
 `check_recorded` 1.3.0 carries either optional field, or both; a check with neither keeps its
 bytes.
 
+### Packet completeness within the budget (2026-10-12, issue #1045)
+
+tb4n4: 36 of 259 reviews ended `insufficient_packet` and about five wrong findings came from
+missing information, while the packet already carried a median 76 KiB of excerpts. The fix is
+selection inside the approved count and bytes; no bound moves.
+
+- **What the change holds.** ADR-031's #1045 amendment reads a nested repository's own change,
+  leaves untracked files that predate the task out of it, and carries up to four read-only task
+  input files the task statement names as `repository_excerpt` items ranked ahead of older hunks
+  and general output, within a quarter of the excerpt bytes.
+- **The latest run per probe wins.** A command identity is the digest of the run key of the
+  command a result answers: its text with whitespace collapsed, or a hook run's keyed command
+  identity, the same rule `missing_for_assessment` uses to decide that another run of the same
+  command answered a request. A hook run with no identity (`omitted:structural`) identifies nothing,
+  so unrelated commands never supersede each other. When the command ran again later and that newest
+  run left no excerpt the packet can carry (a passing re-run whose output was not captured), every
+  older output of it is marked `superseded_by` the newer result and ranked with superseded runs: a
+  stale probe is never presented as the latest (rs-archive-clone).
+- **The latest output per path wins.** Two `artifact` evidence rows naming the same plain path
+  record one output file at two times; the newer wins and the older is marked `superseded_by` it and
+  ranked last (production-planning and retro showed an exploratory output instead of the final).
+- **The declared deliverables, in one place.** The obligations section begins with one
+  `declared-deliverables` item (`yoetz.declared-deliverables/1`, obligation text, linked to the
+  declaring obligations): each declared `role: output` file or directory (the ADR-035 delivered
+  set, at most 32 rows) with its obligation, item index, kind, declared value and whether the
+  check-time change lists it (`added`, `modified`, `deleted`, `renamed`, `changed` for a directory,
+  `not_changed`, `outside_repository`, or `unknown` when no change was captured, a cut listing
+  cannot prove it, or an absolute value has no known root), and `facts`, the check's closed
+  delivered-set codes (`deliverable_references_undeclared_file`, `declared_output_removed`,
+  `declared_output_emptied`, `declared_output_content_moved`, `requested_output_absent` and the
+  `requested_output_*` codes). Codes only: which file a fact concerns stays in the local check.
+- Every added item is an ordinary case item: recorded on the input manifest, counted in
+  `semantic_case_built`, sized by ceiling planning and released only by the privacy gateway.
+
 ### Yoetz review limits are never agent work (2026-10-07, tb4n1 D1/D3/F2, issue #983)
 
 TB4 run tb4n1 showed the #907 classification turned Yoetz's own packet limits into agent work: 82

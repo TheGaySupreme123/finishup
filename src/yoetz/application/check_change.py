@@ -39,6 +39,7 @@ from yoetz.observability.privacy import redact_sensitive_content
 from yoetz.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     MAX_CHECK_CHANGE_TEXT_BYTES,
+    MAX_TASK_INPUT_TEXT_BYTES,
     TASK_CHANGE_BASE_MEDIA_TYPE,
     ChangeCapturePort,
     ChangeCaptureUnavailable,
@@ -48,6 +49,7 @@ from yoetz.ports.change_capture import (
     CheckWorkspaceSource,
     RequestedPathProbe,
     TaskChangeBase,
+    TaskInputFile,
     decode_check_change,
     decode_task_change_base,
     encode_check_change,
@@ -60,6 +62,7 @@ from yoetz.protocol.canonical import JsonValue
 
 __all__ = [
     "declared_output_paths",
+    "task_input_paths",
     "CheckChangeOutcome",
     "capture_structural_check_change",
     "capture_check_time_change",
@@ -263,7 +266,10 @@ async def _pin_first_check_base(
         head = await asyncio.to_thread(port.read_task_base, workspace)
         if type(head) is not TaskChangeBase:
             raise TypeError("task_change_base_invalid")
-        pinned = replace(head, origin="first_check")
+        # Only the task's own start can say which untracked files predate the task (#1045).
+        pinned = replace(
+            head, origin="first_check", untracked=(), untracked_complete=False, nested=()
+        )
         ref = await _store(
             runtime, encode_task_change_base(pinned), TASK_CHANGE_BASE_MEDIA_TYPE, clock
         )
@@ -288,16 +294,9 @@ async def _pin_first_check_base(
     return None
 
 
-def _redacted(capture: CheckChangeCapture) -> CheckChangeCapture:
-    """Apply native capture's redaction; the egress never-send scan still runs on every part.
+def _redacted_text(text: bytes) -> tuple[bytes, bool]:
+    """Redact until a pass finds nothing; ``redaction_incomplete`` past the pass bound."""
 
-    One scanner call reports a bounded number of findings, and source code such as a parser can
-    hold more credential-shaped assignments (``token = ...``) than that. Scanning again until a
-    pass finds nothing redacts every span; text that still has findings after the pass bound is
-    withheld whole, never offered partly redacted.
-    """
-
-    text = capture.text
     redacted = False
     for _ in range(_MAX_REDACTION_PASSES):
         replaced, detected = redact_sensitive_content(text)
@@ -306,9 +305,45 @@ def _redacted(capture: CheckChangeCapture) -> CheckChangeCapture:
         text, redacted = replaced, True
     else:
         raise ChangeCaptureUnavailable("redaction_incomplete")
+    if redacted:
+        text = text.decode("utf-8", errors="replace").encode("utf-8")
+    return text, redacted
+
+
+def _redacted_inputs(inputs: tuple[TaskInputFile, ...]) -> tuple[TaskInputFile, ...]:
+    """Redact each task input file like the change (#1045); drop one that cannot be redacted."""
+
+    kept: list[TaskInputFile] = []
+    for item in inputs:
+        try:
+            text, redacted = _redacted_text(item.text)
+            if redacted:
+                limit = MAX_TASK_INPUT_TEXT_BYTES + 256
+                text = text[:limit].decode("utf-8", errors="ignore").encode("utf-8")
+                item = replace(item, text=text, redacted=True)
+        except ChangeCaptureUnavailable, ValueError:
+            # Withheld whole, never offered partly redacted; the change itself still stands.
+            continue
+        kept.append(item)
+    return tuple(kept)
+
+
+def _redacted(capture: CheckChangeCapture) -> CheckChangeCapture:
+    """Apply native capture's redaction; the egress never-send scan still runs on every part.
+
+    One scanner call reports a bounded number of findings, and source code such as a parser can
+    hold more credential-shaped assignments (``token = ...``) than that. Scanning again until a
+    pass finds nothing redacts every span; text that still has findings after the pass bound is
+    withheld whole, never offered partly redacted. Task input files the read carried (#1045) get
+    the same redaction, each on its own.
+    """
+
+    inputs = _redacted_inputs(capture.inputs)
+    if inputs != capture.inputs:
+        capture = replace(capture, inputs=inputs)
+    text, redacted = _redacted_text(capture.text)
     if not redacted:
         return capture
-    text = text.decode("utf-8", errors="replace").encode("utf-8")
     truncated = capture.truncated
     if len(text) > MAX_CHECK_CHANGE_TEXT_BYTES:
         text = text[:MAX_CHECK_CHANGE_TEXT_BYTES].decode("utf-8", errors="ignore").encode("utf-8")
@@ -321,13 +356,16 @@ def _capture_redacted(
     workspace: str,
     base: TaskChangeBase | None,
     priority_paths: tuple[str, ...] = (),
+    input_paths: tuple[str, ...] = (),
 ) -> CheckChangeCapture:
-    # A port without deliverable ordering (an embedded or test port) keeps its own order.
-    capture = (
-        port.capture(workspace, base, priority_paths=priority_paths)
-        if priority_paths
-        else port.capture(workspace, base)
-    )
+    # A port without deliverable ordering or task inputs (an embedded or test port) is called
+    # exactly as before when neither is asked for.
+    options: dict[str, tuple[str, ...]] = {}
+    if priority_paths:
+        options["priority_paths"] = priority_paths
+    if input_paths:
+        options["input_paths"] = input_paths
+    capture = port.capture(workspace, base, **options)
     if type(capture) is not CheckChangeCapture:
         raise TypeError("check_change_capture_invalid")
     return _redacted(capture)
@@ -342,10 +380,12 @@ async def capture_check_time_change(
     clock: ClockPort,
     request_id: str,
     priority_paths: tuple[str, ...] = (),
+    input_paths: tuple[str, ...] = (),
 ) -> CheckChangeOutcome:
     """Capture, redact and store one check's change; every failure is a disclosed absence.
 
     ``priority_paths`` are the declared deliverables (``declared_output_paths``), rendered first.
+    ``input_paths`` are candidate task input files (``task_input_paths``, issue #1045).
     """
 
     if type(source) is not CheckWorkspaceSource:
@@ -369,7 +409,7 @@ async def capture_check_time_change(
         # Capture and every redaction pass run off the event loop: a parser-sized change needs
         # dozens of full scans, which would otherwise stall every other connection for seconds.
         capture = await asyncio.to_thread(
-            _capture_redacted, port, source.workspace, base, priority_paths
+            _capture_redacted, port, source.workspace, base, priority_paths, input_paths
         )
         ref = await _store(runtime, encode_check_change(capture), CHECK_CHANGE_MEDIA_TYPE, clock)
         return CheckChangeOutcome(CheckTimeChange(ref, capture))
@@ -560,6 +600,64 @@ def declared_output_paths(projection: ProjectionState) -> tuple[str, ...]:
             elif item.role is None:
                 unroled.append(item.value)
     return tuple(dict.fromkeys((*declared, *unroled)))[:_MAX_REQUESTED_OUTPUT_PROBES]
+
+
+# Words of the task statement that name a file (issue #1045): a path with a slash, or a file name
+# with a short extension holding a letter (``DESIGN.md``, ``main.c``; never ``e.g`` or ``3.10``).
+# Quotes, brackets and sentence punctuation around a word are not part of it.
+_STATEMENT_WORD: Final = re.compile(r"[^\s`'\"()<>\[\]{},;]+")
+_STATEMENT_WORD_EDGE: Final = ".:!?*"
+_STATEMENT_FILE_NAME: Final = re.compile(
+    r"(?P<stem>[A-Za-z0-9_@+~=-][A-Za-z0-9_.@+~=-]*)\.(?P<extension>[A-Za-z0-9]{1,10})"
+)
+_MAX_STATEMENT_INPUT_CANDIDATES: Final = 16
+
+
+def _statement_file_word(word: str) -> str | None:
+    value = word.strip(_STATEMENT_WORD_EDGE)
+    if not value or "://" in value or value.endswith("/") or len(value) > 1_024:
+        return None
+    name = value.rsplit("/", 1)[-1]
+    match = _STATEMENT_FILE_NAME.fullmatch(name)
+    if "/" in value.strip("/"):
+        # A path with a directory part names a file unless its last part is plainly not one.
+        return value if name and not name.startswith("-") else None
+    if match is None or not any(char.isalpha() for char in match.group("extension")):
+        return None
+    if len(match.group("extension")) == 1 and len(match.group("stem")) < 2:
+        return None
+    return value
+
+
+def task_input_paths(projection: ProjectionState, statement: str | None) -> tuple[str, ...]:
+    """Candidate read-only task input files for the check-time read (issue #1045).
+
+    The files the task statement names (a spec, the source to port, a rulebook, ``DESIGN.md``) in
+    the order it names them, then the ``role: input`` requested files of effective obligations.
+    Only plain literal paths count, at most 16. The statement is read in process only to find
+    these words; nothing here is stored or logged, and the adapter reads a candidate only when it
+    lies inside the repository, is unchanged by the task, is not ignored and is not
+    credential-named.
+    """
+
+    candidates: list[str] = []
+    if type(statement) is str:
+        for word in _STATEMENT_WORD.findall(statement):
+            value = _statement_file_word(word)
+            if value is not None and _plain_path(value):
+                candidates.append(value)
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for item in payload.requested_items:
+            if (
+                item.item_kind is RequestedItemKind.FILE
+                and item.role is RequestedItemRole.INPUT
+                and _plain_path(item.value)
+            ):
+                candidates.append(item.value)
+    return tuple(dict.fromkeys(candidates))[:_MAX_STATEMENT_INPUT_CANDIDATES]
 
 
 async def requested_output_states(

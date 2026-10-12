@@ -65,6 +65,7 @@ __all__ = [
     "MissingItemsReview",
     "check_change_binary_paths",
     "check_change_text_paths",
+    "command_run_key",
     "observed_image_evidence",
     "review_missing_for_assessment",
     "supplied_since",
@@ -846,6 +847,16 @@ def _run_key(payload: ActionRecordedPayload | None) -> _RunKey | None:
         digest = command.removeprefix("omitted:").split(" ", 1)[0]
         return None if digest in {"", "structural"} else ("digest", digest)
     return ("command", command) if command else None
+
+
+def command_run_key(payload: ActionRecordedPayload | None) -> tuple[str, str] | None:
+    """What makes two recorded runs the same command (see ``_run_key``), for packet selection.
+
+    Shared with the review packet's latest-run rule (issue #1045), so "the same probe" means the
+    same thing when the packet keeps the newest run as when a missing-item request is answered.
+    """
+
+    return _run_key(payload)
 
 
 def _workspace_roots(workspace_root: str | None) -> frozenset[str]:

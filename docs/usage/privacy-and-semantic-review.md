@@ -280,8 +280,22 @@ first. It covers edits made by scripts and commits that no hook captured. A decl
 lives outside the repository (for example `/output/result.json`) is never read by Yoetz itself; when
 the case already holds a capture of it (output a hook recorded, or evidence the agent published
 that names it), that capture is carried with the same priority as the change, under the same
-redaction and never-send checks, and listed in the review input like every other excerpt. Because the starting point is a commit, uncommitted or untracked work that was already in
-your working tree when the task started is included too. Git hooks, helpers, filters and network
+redaction and never-send checks, and listed in the review input like every other excerpt. Because the starting point is a commit, uncommitted work that was already in your
+working tree when the task started is included too. Untracked files that were already there when
+the task started and have not changed since are left out of the change and only counted in its
+header, so the reviewer never reads them as your agent's additions; one that changed is shown whole
+and marked as having existed at the start. To tell them apart, Yoetz keeps, encrypted with the task,
+the names of the untracked files present when the task started and a digest of their file metadata,
+never their content. A Git repository nested inside yours (for example an `api` directory that is
+its own repository) has its own change read the same way and shown under its directory, at most
+eight per check; one that cannot be read safely is named in the header with the reason. When the
+task statement names files the work depends on, such as a specification, a rulebook or the source
+being ported (or the task declares them as inputs), up to four of them travel too, each up to
+16 KiB, but only when the file is in your repository, has not changed since the task started, is
+not ignored by Git and is not named like a credential; they are labelled as task inputs, not as your
+agent's work, and pass the same redaction and never-send checks. The reviewer also gets one short
+list of the deliverables you declared, whether the change touches each one, and Yoetz's own facts
+about them (for example that a deliverable refers to a file you created but did not declare). Git hooks, helpers, filters and network
 access are off while it is read, credential-like text is redacted, and each part still passes the
 never-send check. Files named like credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and
 similar) are listed by name only and their content is never shown; this is a check on file names, so

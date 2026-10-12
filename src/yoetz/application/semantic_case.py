@@ -26,6 +26,7 @@ from yoetz.application.check import (
 from yoetz.application.missing_for_assessment import (
     check_change_binary_paths,
     check_change_text_paths,
+    command_run_key,
     observed_image_evidence,
     supplied_since,
     unsupported_data_type,
@@ -105,7 +106,9 @@ from yoetz.domain.values import (
     finding_id as finding_id_value,
 )
 from yoetz.kernel.claims import effective_claim_items
+from yoetz.kernel.delivered_set import declared_delivered_items
 from yoetz.kernel.deterministic_checks import (
+    REQUESTED_OUTPUT_ABSENT_FACT,
     DeterministicAssessment,
     DeterministicCase,
     FrozenHistoryEvent,
@@ -124,13 +127,27 @@ from yoetz.kernel.projections import (
     ProjectionState,
 )
 from yoetz.kernel.task_facts import (
+    DECLARED_OUTPUT_CONTENT_MOVED_GAP,
+    DECLARED_OUTPUT_EMPTIED_GAP,
+    DECLARED_OUTPUT_REMOVED_GAP,
+    DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
+    REQUESTED_OUTPUT_GIT_IGNORED_GAP,
+    REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP,
+    REQUESTED_OUTPUT_OUTSIDE_WORKSPACE_GAP,
+    REQUESTED_OUTPUT_UNCHANGED_GAP,
+    REQUESTED_OUTPUT_UNVERIFIED_GAP,
     acknowledged_obligation_ids,
     blocker_declarations,
     disclosure_declarations,
     effective_obligations,
     open_effective_obligations,
 )
-from yoetz.ports.change_capture import CHECK_CHANGE_MEDIA_TYPE, CheckChangeCapture
+from yoetz.kernel.test_edit_visibility import check_change_header_entries
+from yoetz.ports.change_capture import (
+    CHECK_CHANGE_MEDIA_TYPE,
+    MAX_TASK_INPUT_FILES,
+    CheckChangeCapture,
+)
 from yoetz.ports.objects import ObjectKind, ObjectRef
 from yoetz.ports.semantic import (
     MAX_PRIOR_FINDING_ITEMS,
@@ -184,6 +201,8 @@ __all__ = [
     "MAX_TASK_STATEMENT_ITEM_BYTES",
     "TASK_STATEMENT_ITEM_ID",
     "CHECK_TIME_CHANGE_ITEM_PREFIX",
+    "DECLARED_DELIVERABLES_ITEM_ID",
+    "TASK_INPUT_ITEM_PREFIX",
     "CheckTimeChangeShownFile",
     "check_time_change_bytes_carried",
     "check_time_change_parts_carried",
@@ -202,6 +221,7 @@ __all__ = [
     "SEMANTIC_REVIEW_PURPOSE",
     "assemble_filtered_review_packet",
     "build_semantic_case",
+    "carries_task_inputs",
     "recorded_blockers",
     "acknowledged_obligation_rows",
     "BLOCKER_REVIEW_INSTRUCTION",
@@ -709,6 +729,32 @@ class CheckTimeChange:
 # Item ids sort ahead of every other case item, so the provider document lists the change first.
 CHECK_TIME_CHANGE_ITEM_PREFIX: Final = "change-check-time-"
 _CHECK_TIME_CHANGE_SOURCE_REF: Final = "check-time-change"
+# Read-only task input files the same service read carried (issue #1045): one excerpt each, ranked
+# with the change's leftover parts ahead of older edits and general output, within at most a
+# quarter of the recipe's excerpt bytes on that first offer.
+TASK_INPUT_ITEM_PREFIX: Final = "task-input-"
+_TASK_INPUT_SOURCE_REF: Final = "task-input"
+_TASK_INPUT_SHARE_DIVISOR: Final = 4
+_TASK_INPUT_LABEL: Final = (
+    "[Yoetz task input file {path} ({size} bytes{cut}): named by the task, unchanged since the "
+    "task started, read by the Yoetz service when this check ran; not the agent's work]\n"
+)
+
+
+def carries_task_inputs(selection: ReviewSelectionPolicy) -> bool:
+    """Whether a review under ``selection`` carries read-only task input files (issue #1045).
+
+    They ride the check-time read, are named by the task statement and leave as repository
+    excerpts, so the recipe must carry the change, the statement and the ``repository`` kind.
+    """
+
+    return (
+        selection.carries_check_time_change
+        and TASK_STATEMENT_SECTION in selection.sections
+        and "repository" in selection.excerpt_kinds
+    )
+
+
 _CHECK_TIME_CHANGE_MARKER: Final = "[Yoetz check-time change, part {index} of {count}]\n"
 # The first part cut to the room a narrowed case leaves (issue #983): the reviewer still reads the
 # change's leading bytes, and the cut is disclosed as a truncated change.
@@ -1301,6 +1347,140 @@ def _task_statement_item(
             content_digest="sha256:" + hashlib.sha256(content).hexdigest(),
         ),
         elided,
+    )
+
+
+DECLARED_DELIVERABLES_ITEM_ID: Final = "declared-deliverables"
+_DECLARED_DELIVERABLES_SCHEMA: Final = "yoetz.declared-deliverables/1"
+_MAX_DECLARED_DELIVERABLE_ROWS: Final = 32
+# The check's closed delivered-set facts the reviewer reads beside the declared deliverables
+# (issue #1045). Codes only: which file a fact concerns stays in the local check result.
+_DELIVERED_SET_FACTS: Final = frozenset(
+    {
+        DECLARED_OUTPUT_CONTENT_MOVED_GAP,
+        DECLARED_OUTPUT_EMPTIED_GAP,
+        DECLARED_OUTPUT_REMOVED_GAP,
+        DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
+        REQUESTED_OUTPUT_ABSENT_FACT,
+        REQUESTED_OUTPUT_GIT_IGNORED_GAP,
+        REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP,
+        REQUESTED_OUTPUT_OUTSIDE_WORKSPACE_GAP,
+        REQUESTED_OUTPUT_UNCHANGED_GAP,
+        REQUESTED_OUTPUT_UNVERIFIED_GAP,
+    }
+)
+_CHANGE_STATUS: Final[Mapping[str, str]] = MappingProxyType(
+    {"A": "added", "M": "modified", "D": "deleted", "R": "renamed"}
+)
+
+
+def _deliverable_change_status(
+    value: str,
+    kind: str,
+    listed: Mapping[str, str],
+    change: CheckChangeCapture | None,
+    workspace_root: str | None,
+) -> str:
+    """Whether the check-time change lists one declared deliverable, in one closed word."""
+
+    if change is None:
+        return "unknown"
+    if value.startswith("/"):
+        if workspace_root is None:
+            return "unknown"
+        root = posixpath.normpath(workspace_root).rstrip("/")
+        path = posixpath.normpath(value)
+        if path != root and not path.startswith(root + "/"):
+            return "outside_repository"
+        relative = path[len(root) + 1 :]
+    else:
+        relative = posixpath.normpath(value)
+    if not relative or relative == ".":
+        return "unknown"
+    if kind == "directory":
+        statuses = {
+            status for path, status in listed.items() if path.startswith(relative.rstrip("/") + "/")
+        }
+        if statuses:
+            return "changed"
+    elif relative in listed:
+        return listed[relative]
+    # A header cut for room cannot prove a file unchanged.
+    return "unknown" if change.truncated else "not_changed"
+
+
+def _declared_deliverables_item(
+    projection: ProjectionState,
+    allowed: frozenset[str],
+    change: CheckChangeCapture | None,
+    facts: Iterable[str],
+    workspace_root: str | None,
+    over_limit: set[str],
+) -> SemanticCaseItem | None:
+    """One compact row set naming the task's declared deliverables (issue #1045).
+
+    The reviewer otherwise has to piece the delivered set together from every obligation's
+    requested items, and took an exploratory output for the final one. Each row is a declared
+    ``role: output`` file or directory (the ADR-035 delivered set): its obligation, kind, the
+    declared value, and whether the check-time change lists it. ``facts`` are the check's closed
+    delivered-set codes (``deliverable_references_undeclared_file`` and the rest). The values are
+    the agent's own obligation text, so the item is obligation text and leaves only where
+    obligations may.
+    """
+
+    rows: list[dict[str, JsonValue]] = []
+    refs: list[str] = []
+    order = 0
+    listed: dict[str, str] = {}
+    if change is not None:
+        for status, path in check_change_header_entries(change):
+            if path is not None:
+                listed.setdefault(path, _CHANGE_STATUS.get(status, "changed"))
+    for obligation, index, kind, value in declared_delivered_items(projection):
+        record = projection.obligations.get(obligation)
+        ref = str(obligation)
+        if record is None or record.redacted or ref not in allowed:
+            continue
+        if len(rows) >= _MAX_DECLARED_DELIVERABLE_ROWS:
+            break
+        rows.append(
+            {
+                "in_check_time_change": _deliverable_change_status(
+                    value, kind, listed, change, workspace_root
+                ),
+                "item_index": index,
+                "item_kind": kind,
+                "obligation_id": ref,
+                "value": value,
+            }
+        )
+        if ref not in refs:
+            refs.append(ref)
+        order = max(order, record.source_frontier)
+    if not rows:
+        return None
+    present = sorted(set(facts) & _DELIVERED_SET_FACTS, key=str.encode)
+    text, fit = _bounded_json(
+        {
+            "deliverables": cast(JsonValue, rows),
+            "facts": cast(JsonValue, present),
+            "kind": "declared_deliverables",
+            "schema": _DECLARED_DELIVERABLES_SCHEMA,
+        }
+    )
+    if fit != "whole":
+        # Clipped like any oversized obligation payload, and named the same way.
+        over_limit.add(DECLARED_DELIVERABLES_ITEM_ID)
+    return _content_item(
+        item_id=DECLARED_DELIVERABLES_ITEM_ID,
+        section="obligation",
+        category=DataCategory.OBLIGATION_TEXT,
+        source_kind="obligation",
+        source_ref=refs[0],
+        linked_subject_refs=tuple(refs[:MAX_SEMANTIC_ITEM_SUBJECT_REFS]),
+        occurred_order=order,
+        text=text,
+        over_limit=over_limit,
     )
 
 
@@ -2125,6 +2305,8 @@ class _ExcerptCandidate:
     structural_only: bool = False
     # An image or binary file the packet never carries, named by this row (issue #983).
     binary_notice: bool = False
+    # The output path an ``artifact`` evidence row records (issue #1045); newest per path wins.
+    artifact_path: str | None = None
 
 
 # Offered (free slots, free bytes); returns the items and refs it admitted in that room.
@@ -2232,16 +2414,22 @@ type _VerificationRun = tuple[str, ResultOutcome, str, str]
 
 def _verification_identities(
     projection: ProjectionState,
-) -> tuple[dict[str, _VerificationRun], dict[str, _VerificationRun]]:
+) -> tuple[dict[str, _VerificationRun], dict[str, _VerificationRun], dict[str, tuple[int, str]]]:
     """Map evidence and result refs to the command whose run they record.
 
-    Each run is ``(identity, outcome, action ref)``. Identity is the digest of the recorded command
-    text of the action a result answers; nothing else is inferred. Captured tool output carries no command until #910 records one, so it stays
-    unidentified and competes by recency. The digest never leaves this function's callers.
+    Each run is ``(identity, outcome, action ref, result ref)``. Identity is the digest of the
+    command's run key (``command_run_key``: the recorded text with whitespace collapsed, or a
+    hook's keyed command identity; issue #1045), the same rule that decides whether a missing-item
+    request was answered by another run of the same command. A hook run recorded without a command
+    identity (``omitted:structural``) identifies nothing, so unrelated commands never supersede
+    each other. The third map holds, per identity, the newest recorded run (its frontier and result
+    ref), whether or not that run's output can be carried. The digest never leaves this function's
+    callers.
     """
 
     by_evidence: dict[str, _VerificationRun] = {}
     by_result: dict[str, _VerificationRun] = {}
+    newest: dict[str, tuple[int, str]] = {}
     for result_ref, row in sorted(
         projection.results.items(),
         key=lambda pair: (pair[1].source_frontier, str(pair[0]).encode("ascii")),
@@ -2255,15 +2443,39 @@ def _verification_identities(
             or action.payload is None
             or action.redacted
             or action.payload.action_kind is not ActionKind.COMMAND
-            or not action.payload.command
         ):
             continue
-        identity = "command:" + hashlib.sha256(action.payload.command.encode("utf-8")).hexdigest()
+        key = command_run_key(action.payload)
+        if key is None:
+            continue
+        identity = "command:" + hashlib.sha256("\x00".join(key).encode("utf-8")).hexdigest()
         run = (identity, payload.outcome, str(payload.action_id), str(result_ref))
         by_result[str(result_ref)] = run
+        newest[identity] = (row.source_frontier, str(result_ref))
         for evidence_ref in payload.evidence_refs:
             by_evidence[str(evidence_ref)] = run
-    return by_evidence, by_result
+    return by_evidence, by_result, newest
+
+
+def _artifact_path(payload: EvidenceRecordedPayload) -> str | None:
+    """The normalized path an ``artifact`` evidence row records, or ``None`` (issue #1045).
+
+    Two artifact rows with the same path record the same output file at two times, so the newer
+    one supersedes the older. Only a plain path counts: no whitespace, glob, scheme or ``:``.
+    """
+
+    reference = payload.reference
+    if (
+        payload.evidence_kind is not EvidenceKind.ARTIFACT
+        or reference is None
+        or not reference
+        or _NOT_AN_ARTIFACT_PATH.search(reference) is not None
+    ):
+        return None
+    return posixpath.normpath(reference)
+
+
+_NOT_AN_ARTIFACT_PATH: Final = re.compile(r"[\s*?\[\]{}~$`:]")
 
 
 # Image and binary files (TB4 tb4n1 D6, issues #983 and #1004). The packet is text: their bytes
@@ -2655,6 +2867,7 @@ def _evidence_candidates(
                     and payload.content_digest is None
                 ),
                 binary_notice=binary is not None and binary[1],
+                artifact_path=None if captured_group is not None else _artifact_path(payload),
             )
         )
     return candidates
@@ -2724,7 +2937,9 @@ def _select_targeted_excerpts(
     part_limit = min(excerpt_limit, selection.max_total_excerpt_bytes)
     omissions: list[ReviewOmission] = []
     gaps: set[str] = set()
-    verification_by_evidence, verification_by_result = _verification_identities(projection)
+    verification_by_evidence, verification_by_result, newest_runs = _verification_identities(
+        projection
+    )
     candidates = _evidence_candidates(
         projection=projection,
         allowed=allowed,
@@ -2876,11 +3091,25 @@ def _select_targeted_excerpts(
             runs.setdefault(candidate.verification_identity, {}).setdefault(
                 candidate.verification_run, []
             ).append(index)
-    for by_run in runs.values():
+    for identity, by_run in runs.items():
         ordered = sorted(
             by_run.values(), key=lambda members: max(recency(i) for i in members), reverse=True
         )
         latest_run = ordered[0]
+        newest_recorded = newest_runs.get(identity)
+        if (
+            newest_recorded is not None
+            and newest_recorded[1] != candidates[latest_run[0]].verification_run
+            and newest_recorded[1] in allowed
+        ):
+            # Issue #1045: the command ran again later and that run left no output this packet
+            # can carry. Every output here is older than the latest run, so none is presented as
+            # the latest: each is marked superseded by the newer run and ranked last.
+            for members in ordered:
+                for index in members:
+                    if index not in current_diffs:
+                        superseded_by.setdefault(index, (newest_recorded[1],))
+            continue
         newest_refs = tuple(sorted({candidates[i].source_ref for i in latest_run}, key=str.encode))
         for index in latest_run:
             reserved_runs.add(index)
@@ -2899,6 +3128,21 @@ def _select_targeted_excerpts(
             for index in members:
                 if index not in current_diffs:
                     superseded_by.setdefault(index, newest_refs)
+    # The newest recorded output of one artifact path wins; older rows of the same path are
+    # superseded and ranked last (issue #1045).
+    newest_artifact: dict[str, int] = {}
+    for index, candidate in enumerate(candidates):
+        if candidate.artifact_path is None:
+            continue
+        known = newest_artifact.get(candidate.artifact_path)
+        if known is None or recency(index) > recency(known):
+            newest_artifact[candidate.artifact_path] = index
+    for index, candidate in enumerate(candidates):
+        if candidate.artifact_path is None:
+            continue
+        newest_index = newest_artifact[candidate.artifact_path]
+        if newest_index != index and index not in current_diffs:
+            superseded_by.setdefault(index, (candidates[newest_index].source_ref,))
     # The exact command of a reserved run travels beside its output, so the reviewer can name
     # which verification it reads (Expanded selection only carries command text).
     reserved_actions = {
@@ -3965,6 +4209,21 @@ def _build_semantic_case_once(
                 _omit(source_ref, DataCategory.OBLIGATION_TEXT, "obligation", "not_selected")
             )
 
+    # --- Declared deliverables (issue #1045): the delivered set in one row set, first ---
+    if "obligations" in sections:
+        deliverables = _declared_deliverables_item(
+            projection,
+            allowed,
+            None if check_time_change is None else check_time_change.capture,
+            capture_gap_set,
+            workspace_root,
+            over_limit,
+        )
+        if deliverables is not None:
+            items.append(deliverables)
+            # Ahead of every obligation row, so the obligation cap never drops it.
+            obligation_ids.insert(0, deliverables.item_id)
+
     # --- Claims ---
     for claim_id, record in effective_claim_items(projection):
         ref = str(claim_id)
@@ -4456,6 +4715,94 @@ def _build_semantic_case_once(
             check_change_parts = _check_time_change_parts(
                 change.text, _check_time_change_part_limit(selection)
             )
+    # Read-only task input files (issue #1045), linked to the statement that names them.
+    task_inputs: tuple[tuple[str, bool], ...] = ()
+    task_input_links: tuple[str, ...] = ()
+    task_inputs_admitted = 0
+    if check_time_change is not None and carries_task_inputs(selection):
+        statement_links: set[str] = (
+            {str(recorded_statement.source_event_id)} & allowed
+            if recorded_statement is not None
+            else set()
+        )
+        task_input_links = tuple(sorted({*statement_links, *check_change_links}, key=str.encode))[
+            :MAX_SEMANTIC_ITEM_SUBJECT_REFS
+        ]
+        if task_input_links:
+            task_inputs = tuple(
+                (
+                    _TASK_INPUT_LABEL.format(
+                        path=_marker_path(item.path),
+                        size=item.size,
+                        cut="" if len(item.text) >= item.size else ", head and tail shown",
+                    )
+                    + _neutralised_agent_text(item.text.decode("utf-8")),
+                    len(item.text) < item.size,
+                )
+                for item in check_time_change.capture.inputs
+            )
+
+    def task_input_excerpts(
+        slot_limit: int, byte_limit: int
+    ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
+        """The next task input files that fit, one excerpt each (issue #1045)."""
+
+        nonlocal task_inputs_admitted
+        admitted_items: list[SemanticCaseItem] = []
+        admitted_refs: list[TargetedExcerptRef] = []
+        bytes_used = 0
+        limit = min(selection.max_excerpt_bytes, MAX_SEMANTIC_ITEM_BYTES)
+        while task_inputs_admitted < len(task_inputs) and len(admitted_refs) < slot_limit:
+            text, cut = task_inputs[task_inputs_admitted]
+            size = min(len(text.encode("utf-8")), limit)
+            if bytes_used + size > byte_limit:
+                break
+            item = _content_item(
+                item_id=f"{TASK_INPUT_ITEM_PREFIX}{task_inputs_admitted + 1:02d}",
+                section="excerpt",
+                category=DataCategory.REPOSITORY_EXCERPT,
+                source_kind="repository",
+                source_ref=_TASK_INPUT_SOURCE_REF,
+                linked_subject_refs=task_input_links,
+                occurred_order=0,
+                text=text,
+                limit=limit,
+            )
+            if cut or len(text.encode("utf-8")) > limit:
+                truncated_item_ids.add(item.item_id)
+            admitted_items.append(item)
+            admitted_refs.append(
+                TargetedExcerptRef(
+                    excerpt_item_id=item.item_id,
+                    source_kind="repository",
+                    linked_subject_refs=task_input_links,
+                    subject_state_relation=SubjectStateRelation.UNKNOWN,
+                    content_visibility="available",
+                    content_digest=item.content_digest,
+                    content_bytes=item.content_bytes,
+                )
+            )
+            bytes_used += item.content_bytes
+            task_inputs_admitted += 1
+        return tuple(admitted_items), tuple(admitted_refs)
+
+    def lower_rank_room(
+        slot_limit: int, byte_limit: int
+    ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
+        """Room the reserved excerpt classes leave: task inputs (within their share), then the
+        change's remaining parts, all ahead of older edits and general output (#983, #1045)."""
+
+        input_items, input_refs = task_input_excerpts(
+            min(slot_limit, MAX_TASK_INPUT_FILES),
+            min(byte_limit, selection.max_total_excerpt_bytes // _TASK_INPUT_SHARE_DIVISOR),
+        )
+        used = sum(ref.content_bytes for ref in input_refs)
+        if not check_change_parts:
+            return input_items, input_refs
+        change_items, change_refs = check_time_change_parts(
+            max(0, slot_limit - len(input_refs)), max(0, byte_limit - used)
+        )
+        return (*input_items, *change_items), (*input_refs, *change_refs)
 
     def check_time_change_parts(
         slot_limit: int, byte_limit: int
@@ -4552,7 +4899,7 @@ def _build_semantic_case_once(
             captured_group_leader=captured_group_leader,
             excerpt_count_budget=selection.max_excerpts - len(targeted),
             excerpt_byte_budget=(max(0, total_excerpt_budget - excerpt_bytes_used)),
-            before_lower_ranks=check_time_change_parts if check_change_parts else None,
+            before_lower_ranks=lower_rank_room if check_change_parts or task_inputs else None,
             declared_output_refs=declared_output_capture_order(projection, allowed, workspace_root),
             # A suffix-less binary the change marked (a compiled ``solver``) gets the same
             # "not sent" notice as a named binary type (tb4n2 P1-12).
@@ -4572,8 +4919,16 @@ def _build_semantic_case_once(
         truncated_item_ids.update(excerpts.truncated_item_ids)
         excerpt_bytes_used += sum(ref.content_bytes for ref in excerpts.targeted)
 
-        # Parts still left backfill whatever budget every other excerpt left.
+        # Parts still left backfill whatever budget every other excerpt left, then task inputs
+        # the first offer's share left out (issue #1045).
         admit_check_time_change(selection.max_excerpts, selection.max_total_excerpt_bytes)
+        input_items, input_refs = task_input_excerpts(
+            max(0, selection.max_excerpts - len(targeted)),
+            max(0, total_excerpt_budget - excerpt_bytes_used),
+        )
+        items.extend(input_items)
+        targeted.extend(input_refs)
+        excerpt_bytes_used += sum(ref.content_bytes for ref in input_refs)
 
     if check_time_change is not None:
         if not check_change_admitted:

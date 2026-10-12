@@ -85,6 +85,7 @@ from yoetz.application.check_change import (
     check_time_change_selected,
     declared_output_paths,
     recover_check_time_change,
+    task_input_paths,
 )
 from yoetz.application.coordination import (
     EncryptedCoordinationDetailStore,
@@ -169,6 +170,7 @@ from yoetz.application.semantic_case import (
     SemanticPacketView,
     build_semantic_case,
     captured_edit_paths,
+    carries_task_inputs,
     check_time_change_bytes_carried,
     semantic_case_packet_view,
     semantic_case_to_candidate_context,
@@ -4948,6 +4950,18 @@ def _privacy_gated_semantic_evaluator(
                             request_id=frozen.lease.operation_id,
                             # Declared deliverables first, so a clipped packet keeps them.
                             priority_paths=declared_output_paths(frozen.case.projection),
+                            # Read-only task inputs the statement names (#1045), only where the
+                            # recipe carries both the statement and repository excerpts.
+                            input_paths=(
+                                task_input_paths(
+                                    frozen.case.projection,
+                                    None
+                                    if frozen.case.task_statement is None
+                                    else frozen.case.task_statement.text,
+                                )
+                                if carries_task_inputs(review_selection)
+                                else ()
+                            ),
                         )
             test_edit_gaps = (
                 ()
