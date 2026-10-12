@@ -288,9 +288,9 @@ SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
 )
 # Issue #1046 (tb4n4: 18 of 61 semantic-arm tasks reviewed the plan before any work): a routine
 # check with no material edit recorded and no workspace change observed runs the local plan checks
-# only; the AI-powered review waits for the first edit, and the closing review always runs. Nothing
-# was composed or sent. Like the skipped round, never agent work in itself; the next check after an
-# edit reviews as configured.
+# only; the AI-powered review waits for the first edit, and the closing review is never deferred.
+# Nothing was composed or sent. Like the skipped round, never agent work in itself; the next check
+# after an edit reviews as configured.
 SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP: Final = "semantic_review_deferred_before_first_edit"
 # A successful provider call can still lose the exact post-admission input manifest.  Keep the
 # failure reason closed and coverage-bounded so a composed manifest is never presented as what the

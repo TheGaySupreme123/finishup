@@ -94,7 +94,7 @@ that the environment refused rather than that the review was never asked for.
 A check you run before your first edit (nothing changed yet, and not the closing review) never
 calls the reviewer, whatever its mode: it runs the local plan checks, sends nothing, and records
 `semantic_review_deferred_before_first_edit`. The next check after you start changing the work
-reviews as configured, and the closing review always runs.
+reviews as configured, and the closing review is never deferred.
 
 ## Prose the reviewer will not see whole
 

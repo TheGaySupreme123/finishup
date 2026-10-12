@@ -4,7 +4,7 @@ tb4n4: 18 of 61 semantic-arm tasks ran a review of the plan before any work, and
 ``insufficient_packet`` answers came from those. A routine check with no material edit recorded
 and no workspace change observed runs the local plan checks only, discloses
 ``semantic_review_deferred_before_first_edit`` and composes or sends nothing; the closing review
-always runs. These cases decide the deferral over hook-observed ledgers replayed through the
+is never deferred. These cases decide the deferral over hook-observed ledgers replayed through the
 production case builder.
 """
 
@@ -131,7 +131,7 @@ def test_a_plan_time_check_defers_the_review_for_every_reviewing_mode() -> None:
     assert _deferred(ledger, workspace_changed=None) is True
 
 
-def test_the_closing_review_and_a_completion_claim_always_review() -> None:
+def test_the_closing_review_and_a_completion_claim_are_never_deferred() -> None:
     ledger = _planned()
     assert _deferred(ledger, request=_request(final_review=True)) is False
     ledger.append(

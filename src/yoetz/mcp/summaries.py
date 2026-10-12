@@ -1420,7 +1420,7 @@ def _check_lead_variants(
         # Issue #1046: a pre-work check ran the local plan checks only; nothing was sent.
         return (
             "AI-powered review deferred until the first material edit (no edit is recorded "
-            "yet; the next check after one reviews, and the closing review always runs); "
+            "yet; the next check after one reviews, and the closing review is never deferred); "
             f"local plan check verdict: {verdict}; {counts}",
             "AI-powered review deferred until the first edit; local plan check verdict: "
             f"{verdict}; {counts}",

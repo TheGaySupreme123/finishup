@@ -501,7 +501,7 @@ def render_human_check(result: CheckSuccessModel) -> str:
         lines.append(
             "AI-powered review deferred: no material edit is recorded yet, so this check ran the "
             "local plan checks only and sent nothing. The next check after your first edit "
-            "reviews as configured; the closing review always runs."
+            "reviews as configured; the closing review is never deferred."
         )
     if "semantic_review_skipped_insufficient_packet" in tuple(result.coverage.known_gaps):
         lines.append(
