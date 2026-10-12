@@ -300,10 +300,13 @@ readiness it is given (ADR-033 amendment).
   agent disclosed with `acknowledged` (or a decision line), and an acknowledged
   `action_without_result` bookkeeping finding, now read `insufficient_coverage` (never clean)
   instead of `unresolved_findings_remain`. A limitation request answered `acknowledged_not_done`
-  keeps `unresolved_findings_remain`. The replay of the fifty-five n2 and n3 exports that moved six
-  receipts, none to clean, was measured under the earlier Q4 reading (any acknowledgement
-  discloses); it was not repeated after the 2026-10-12 decision, which moves back every receipt
-  whose limitation request was answered `acknowledged_not_done`.
+  keeps `unresolved_findings_remain`. Replay of the fifty-five n2 and n3 exports under the
+  2026-10-12 decision: two receipts move (cargo-flight-dispatch D and pretrain-shard-corruption D
+  in n3, each an acknowledged `action_without_result` bookkeeping finding) and none reaches clean;
+  every limitation request answered `acknowledged_not_done` (lake S n2/n3, ks S, vpp S, payments S,
+  cargo S) keeps `unresolved_findings_remain`, and pretrain S's self-verified request reads
+  disclosed. Under the earlier Q4 reading (any acknowledgement discloses) the same replay had moved
+  six.
 * The host-observation guard (G) on the receipt now also requires the check's command counters to be
   complete; before, the check carrying the code was the only guard. It moved no label in the
   replayed corpus (the same checks were already below clean).
