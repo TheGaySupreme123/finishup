@@ -471,8 +471,11 @@ ADR-042/045, or an agent-published `edit` action); and the check-time capture di
 workspace change. Nothing is composed or sent. The deferral comes before the review's own admission,
 so a pre-work check asks for no repository grant, disclosure decision or review input either, and a
 missing provider or a policy block (`not_configured`, `blocked_by_policy`) is reported by the first
-check after the edit. A resumed check already in `semantic_wait` keeps its decision; the closing
-review always runs, so a task whose work is not an edit is still reviewed.
+check after the edit. A resumed check already in `semantic_wait` keeps its decision; the deferral
+never applies to the closing review, so a task whose work is not an edit still reaches one. The
+older stopped-round skip (`semantic_review_skipped_insufficient_packet`, ADR-006 tb4n1 D3, #983) is a
+separate rule this section does not change: it can still skip a closing review that is not
+`semantic_required`.
 The deferral is not a failed review: the verdict reads from the local checks (`insufficient_coverage`
 while review is required), never `incomplete_check`. Readiness is unchanged (the review is still
 required and not current), so the next check after the first edit reviews as configured. The CLI,

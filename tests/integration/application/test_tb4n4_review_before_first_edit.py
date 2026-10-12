@@ -8,7 +8,7 @@ composition with a hermetic reviewer that records every case it is shown:
   ``not_requested`` with ``semantic_review_deferred_before_first_edit`` and never composes a case;
 * the CLI and MCP summaries say why in the same words;
 * after the first published edit the next check reviews as configured;
-* the closing review (``final_review``) always runs, edit or not.
+* the closing review (``final_review``) is never deferred, edit or not.
 """
 
 from __future__ import annotations

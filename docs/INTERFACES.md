@@ -1476,8 +1476,13 @@ Two further check-path operations describe a review that did reach a provider:
 `routine_completeness`, `yoetz_process_state`),
 `semantic_review_refs_reduced`, `semantic_review_snippets_rejected`,
 `semantic_restatements_suppressed`, `semantic_challenges_advisory` (routine correctness notes,
-#1042), `semantic_agent_criteria` (#1043), `semantic_findings_selected`,
-`semantic_findings_suppressed`.
+#1042), `semantic_agent_criteria` (#1043), `semantic_prior_rulings_set_aside`,
+`semantic_rulings_disputed_after_rebuttal`, `semantic_findings_selected`,
+`semantic_findings_suppressed`. A third operation, `semantic_review_follow_up`, is appended once
+per in-check follow-up round (#1047) with `semantic_follow_up_round`, `semantic_follow_up_items` and
+`semantic_follow_up_refs_added`. Every one of these counters is a closed integer field of both the
+stderr sink and the durable diagnostic ring (`observability/privacy._INTEGER_FIELDS`,
+`observability/diagnostics._FIELD_ORDER`); a name either sink does not know is dropped there.
 The counts reconcile (`returned == accepted + rejected + suppressed restatements + advisory notes`,
 `accepted == selected + suppressed findings`), so
 "the reviewer answered and none of it reached you" is never invisible. Challenge text, refs, and
@@ -4281,8 +4286,11 @@ observed no workspace change, runs the local checks only: `semantic_status` `not
 `semantic_review_deferred_before_first_edit` (rule G7, bounding on both routes, a semantic-only gap
 for absence proofs). Nothing is composed or sent. `semantic_required` included: the deferral is not
 a failed review, so the verdict reads from the local checks (`insufficient_coverage` while review is
-required and not current), never `incomplete_check`. The closing review (`final_review`, or any
-completion claim) always runs, and a resumed check already in `semantic_wait` keeps its decision.
+required and not current), never `incomplete_check`. The deferral never applies to the closing
+review (`final_review`, or any completion claim), and a resumed check already in `semantic_wait`
+keeps its decision. The older stopped-round skip (`semantic_review_skipped_insufficient_packet`,
+`kernel/review_round.py`) is a separate rule the deferral does not change: it can still skip a
+closing review that is not `semantic_required`.
 The deferral is decided before the review's own admission, so a pre-work check also asks for no
 repository grant, disclosure decision or review input, and a missing provider or a policy block is
 reported (`not_configured`, `blocked_by_policy`) by the first check after the edit instead.

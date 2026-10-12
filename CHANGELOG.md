@@ -232,7 +232,7 @@ reverse-chronological released versions.
 - A check before the first material edit no longer calls the AI-powered reviewer, whatever its
   mode: it runs the local checks, sends nothing and records
   `semantic_review_deferred_before_first_edit`; the next check after an edit reviews as configured
-  and the closing review always runs. A reviewer ruling that a finding is fixed, citing material
+  and the closing review is never deferred. A reviewer ruling that a finding is fixed, citing material
   recorded after it, now closes the finding even when the check records environment facts such as
   verification run only as root; those facts stay disclosed on the receipt (#1046).
 

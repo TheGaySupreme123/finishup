@@ -1640,7 +1640,8 @@ def _review_deferred_before_first_edit(
     reviewer), when the frozen ledger records no material edit (``material_edit_recorded``) and
     the check-time workspace capture did not observe a change. tb4n4: 18 of 61 semantic-arm tasks
     reviewed the plan before any work, and most routine ``insufficient_packet`` answers were
-    those. The closing review always runs, so a task whose work is not an edit is still reviewed.
+    those. The deferral never applies to the closing review, so a task whose work is not an edit
+    still reaches one (the tb4n1 D3 stopped-round skip above is a separate rule).
     A check already waiting on a review keeps it (a resumed attempt never changes its decision).
     """
 
