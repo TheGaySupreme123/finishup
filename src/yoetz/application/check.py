@@ -5245,6 +5245,60 @@ def _credential_heuristic_gaps(semantic_result: FinalSemanticEvaluation) -> froz
     return frozenset()
 
 
+async def _semantic_evaluation_with_follow_up(
+    app: Application,
+    request: CheckRequest,
+    runtime: TaskRuntime,
+    frozen: FrozenCase,
+    deterministic: tuple[Finding, ...],
+    *,
+    route_profile: Literal["policy", "strict"],
+    lineage_evaluation: LineageEvaluation | None,
+    round_stopped: bool,
+    deterministic_output_gaps: Iterable[str],
+    output_absent: bool,
+) -> FinalSemanticEvaluation:
+    """The check's AI-powered review: the first round, then any in-check follow-up (#1047).
+
+    Kept out of ``execute_check_commit`` so the commit path stays within what the type checker
+    can analyze; the order and arguments are exactly the commit path's own.
+    """
+
+    task_fact_gaps = tuple(
+        sorted(
+            {
+                *deterministic_output_gaps,
+                *((REQUESTED_OUTPUT_ABSENT_FACT,) if output_absent else ()),
+            },
+            key=str.encode,
+        )
+    )
+    result = await _semantic_evaluation(
+        app,
+        request,
+        runtime,
+        frozen,
+        deterministic,
+        route_profile=route_profile,
+        lineage_evaluation=lineage_evaluation,
+        require_complete_specification=request.mode == "semantic_required",
+        round_stopped=round_stopped,
+        task_fact_gaps=task_fact_gaps,
+    )
+    # Issue #1047: the reviewer's own request for recorded content is answered in this check.
+    return await _review_follow_up(
+        app,
+        request,
+        runtime,
+        frozen,
+        deterministic,
+        result,
+        lineage_evaluation=lineage_evaluation,
+        require_complete_specification=request.mode == "semantic_required",
+        task_fact_gaps=task_fact_gaps,
+    )
+
+
 async def execute_check_commit(
     app: Application,
     request: CheckRequest,
@@ -5615,16 +5669,7 @@ async def execute_check_commit(
                 CheckPhase.SEMANTIC_WAIT,
             )
             frozen = FrozenCase(frozen.case, lease)
-        task_fact_gaps = tuple(
-            sorted(
-                {
-                    *deterministic_output_gaps,
-                    *((REQUESTED_OUTPUT_ABSENT_FACT,) if output_absent else ()),
-                },
-                key=str.encode,
-            )
-        )
-        semantic_result = await _semantic_evaluation(
+        semantic_result = await _semantic_evaluation_with_follow_up(
             app,
             request,
             runtime,
@@ -5632,21 +5677,9 @@ async def execute_check_commit(
             deterministic,
             route_profile=route_profile,
             lineage_evaluation=lineage_evaluation,
-            require_complete_specification=request.mode == "semantic_required",
             round_stopped=round_stopped,
-            task_fact_gaps=task_fact_gaps,
-        )
-        # Issue #1047: the reviewer's own request for recorded content is answered in this check.
-        semantic_result = await _review_follow_up(
-            app,
-            request,
-            runtime,
-            frozen,
-            deterministic,
-            semantic_result,
-            lineage_evaluation=lineage_evaluation,
-            require_complete_specification=request.mode == "semantic_required",
-            task_fact_gaps=task_fact_gaps,
+            deterministic_output_gaps=deterministic_output_gaps,
+            output_absent=output_absent,
         )
         # Durable AI-powered review attempts may renew the check lease (TTL 60s vs timeout up to 300s).
         if semantic_result.operation_lease is not None:

@@ -829,9 +829,7 @@ def _undeclared_readiness(*paths: object, total: str = "2", **extra: Any) -> Any
 
 
 def test_an_undeclared_dependency_gates_and_names_the_files_never_disclosure() -> None:
-    gate = _gate(
-        _undeclared_readiness("artifacts/english_ngrams.npz", 'odd "name".npz', total="3")
-    )
+    gate = _gate(_undeclared_readiness("artifacts/english_ngrams.npz", 'odd "name".npz', total="3"))
     assert gate is not None
     assert gate.items == (_UNDECLARED,)
     assert (
