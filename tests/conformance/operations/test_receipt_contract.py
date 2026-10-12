@@ -602,10 +602,20 @@ async def test_receipt_wording_is_weaker_than_document() -> None:
     assert text_receipt.human_text is not None
     assert text_receipt.conclusion == json_receipt.conclusion
 
-    forbidden = ("fully verified", "all work is complete", "proof of correctness", "passed")
+    forbidden = ("fully verified", "all work is complete", "passed")
     lowered = text_receipt.human_text.lower()
     for phrase in forbidden:
         assert phrase not in lowered
+    # "proof of correctness" may appear only as the honest negation ("... is not proof of
+    # correctness"), the rule of tests/conformance/honesty/test_receipt_wording.py. A receipt with
+    # no declared gap now reaches that sentence (#1041: a local-only check by request on a route
+    # that requires no review discloses no missing review).
+    phrase = "proof of correctness"
+    start = lowered.find(phrase)
+    while start != -1:
+        context = lowered[max(0, start - 60) : start + 40]
+        assert "not " in lowered[max(0, start - 16) : start], context
+        start = lowered.find(phrase, start + 1)
     # The wording never claims a stronger conclusion than the canonical document: an
     # ``unresolved_findings_remain`` receipt must say so, not "clear" or "resolved".
     assert "unresolved" in lowered
