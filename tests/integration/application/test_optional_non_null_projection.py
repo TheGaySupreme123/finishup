@@ -338,6 +338,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "awaiting_ruling_findings",
                 # ADR-045: absent when the readiness lists no derived fact.
                 "fact_lineage",
+                # #1044: absent unless a delivered file names an undeclared one.
+                "undeclared_references",
             }
         ),
     ),
@@ -1270,6 +1272,9 @@ def test_status_closure_readiness_omits_an_unset_checklist() -> None:
     # (the service once sent ``null`` here and every status read failed).
     with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
         StatusClosureReadinessModel.model_validate({**dumped, "fact_lineage": None})
+    # #1044: a readiness naming no undeclared file omits the list; null is refused too.
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        StatusClosureReadinessModel.model_validate({**dumped, "undeclared_references": None})
 
 
 def test_fact_lineage_omits_every_unset_field() -> None:
@@ -1838,6 +1843,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "check_cause",
         # ADR-045: absent when the readiness lists no derived fact.
         "fact_lineage",
+        # #1044: absent unless a delivered file names an undeclared one.
+        "undeclared_references",
     ):
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (
