@@ -252,7 +252,8 @@ Separately, if an obligation is genuinely not done, republish it `acknowledged_n
 reason and leave it out of your completion claim: an acknowledged obligation is outside completion
 coverage, so omitting it is not a scope gap. A deliverable that
 loads a file you created but did not declare (`deliverable_references_undeclared_file`) stops you
-too, and the Stop text and the receipt name the file: a grader may receive only the declared files,
+too, and the Stop text and a `full_local` receipt name the file (an export or share receipt only
+counts such files): a grader may receive only the declared files,
 so embed its content in the deliverable, rebuild it at run time, or declare it as a delivered output
 (a requested `file` item with role `output`; a file the task itself provides is role `input`), then
 run `check`. Disclosing the dependency does not resolve it. A delivered file that lost most of its lines
