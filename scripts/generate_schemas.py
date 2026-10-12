@@ -7304,13 +7304,19 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         }
         # Closed runtime facts the hook derives at the host boundary (#977): where a package
         # install resolved its interpreter, an edit outside the workspace, the effective user.
-        # ``write_scope`` also names an edit whose every path is scratch or Yoetz-owned (ADR-042).
+        # ``write_scope`` also names an edit whose every path is scratch or Yoetz-owned (ADR-042),
+        # the agent's own notes, and a shell command that writes the workspace (ADR-045). The enum
+        # is the hook's own closed set: a value the hook emits and this wire refuses fails client
+        # validation on every drain pass and never reaches the ledger (#1039).
+        from yoetz.domain.command_segments import MAX_COMMAND_COMMITMENTS
+        from yoetz.domain.write_scope import WRITE_SCOPES
+
         fields["install_target"] = {
             "enum": ["private_env", "system", "unresolved", "workspace_env", "yoetz_runtime"],
             "type": "string",
         }
         fields["write_scope"] = {
-            "enum": ["outside_workspace", "scratch", "yoetz_owned"],
+            "enum": cast(list[JsonValue], sorted(WRITE_SCOPES)),
             "type": "string",
         }
         fields["effective_user"] = {"enum": ["non_root", "root"], "type": "string"}
@@ -7358,7 +7364,8 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "type": "array",
         }
         # Keyed commitments to the simple commands of a compound or wrapped command and what the
-        # whole outcome means for one of them (#977): planned-verification matching only.
+        # whole outcome means for one of them (#977): planned-verification matching only. The
+        # list also carries the canonical commitments (ADR-045), so its bound is the hook's.
         fields["command_segment_commitments"] = {
             "items": {
                 "maxLength": 76,
@@ -7366,7 +7373,7 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                 "pattern": _CONTROL_COMMITMENT_PATTERN,
                 "type": "string",
             },
-            "maxItems": 32,
+            "maxItems": MAX_COMMAND_COMMITMENTS,
             "minItems": 1,
             "type": "array",
             "uniqueItems": True,
