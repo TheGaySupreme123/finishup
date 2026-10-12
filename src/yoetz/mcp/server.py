@@ -63,6 +63,7 @@ from yoetz.mcp.resources import (
     GuidanceResource,
     GuidanceResourceError,
     GuidanceResourcePage,
+    resolve_guidance_topic_uri,
 )
 from yoetz.mcp.resources import (
     list_resources as list_guidance_resources,
@@ -102,6 +103,7 @@ from yoetz.protocol.canonical import JsonValue, canonical_encode
 from yoetz.protocol.consent import CONSENT_PENDING_TTL_SECONDS
 from yoetz.protocol.errors import PublicErrorCode, PublicOperationError, SafeDetailValue
 from yoetz.protocol.guidance_uris import (
+    ALL_GUIDANCE_URIS,
     FOCUSED_GUIDANCE_URIS,
     GUIDANCE_DOCUMENT_URIS,
     GUIDANCE_TOPIC_URIS,
@@ -3120,6 +3122,15 @@ async def dispatch_read_guidance(
     output.
     """
 
+    raw_uri = arguments.get("uri")
+    if type(raw_uri) is str and raw_uri not in ALL_GUIDANCE_URIS:
+        # tb4n4 (#1049): a guessed anchor that names exactly one catalogued topic of a registered
+        # document (its slug, an explicit anchor beside its heading, or words only it contains)
+        # reads that topic; the result's ``uri`` is the catalogued one. Anything else is refused
+        # below with the registered alternatives.
+        resolved = resolve_guidance_topic_uri(raw_uri)
+        if resolved is not None:
+            arguments = {**arguments, "uri": resolved}
     try:
         request = ReadGuidanceRequest.model_validate(arguments)
     except ValidationError as exc:
@@ -3248,8 +3259,9 @@ def _unknown_guidance_uri_result(
     if document in GUIDANCE_DOCUMENT_URIS:
         anchors = _guidance_topic_anchors(document)
         message = (
-            f"read_guidance has no topic with that anchor in {document}. Topic anchors are exact "
-            "catalog entries; never derive one from a heading, tool, or event name. Retry with "
+            f"read_guidance has no topic with that anchor in {document}, and it names no single "
+            "topic (as a heading slug, an explicit anchor, or words only one anchor holds). Do "
+            "not derive one from a tool or event name. Retry with "
             f"uri {document} to read the whole document, or {document}#<anchor> with one of these "
             f"anchors: {', '.join(anchors)}."
         )

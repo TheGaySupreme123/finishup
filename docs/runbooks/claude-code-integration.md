@@ -1872,3 +1872,30 @@ other hosts. The Stop hook and the MCP `respond` tool take the shared path; a Cl
 Verification: `tests/integration/application/test_tb4n3_limits_dialogue_shapes.py` drives the real
 check, respond, status and receipt operations with a compliant reviewer; a live Claude Code transcript on
 macOS, Linux and WSL 2 is not recorded for this change.
+
+### Call-schema traps on Claude Code (tb4n4, #1049)
+
+Host decision: supported, no host-specific code. Every change lives in the shared protocol request
+models, the MCP bridge's `read_guidance` dispatch and error hints, the status text and the kernel's
+`command_attempts` rule, so Claude Code takes the same path as the other hosts. What a Claude Code agent can rely on:
+
+- `decision_recorded` carries no id of its own; a `decision_id` in its payload is accepted and
+  ignored (never recorded, and a retry with or without it replays the same request).
+- A `status` `limit` sent as a JSON integer from 1 to 100 is read as its decimal string.
+- A `read_guidance` anchor that names exactly one catalogued topic of its document (the heading's
+  slug, an explicit anchor beside it, or words only that anchor contains) reads that topic; the
+  result's `uri` is the catalogued one. An ambiguous or unknown anchor is still refused with the
+  document's anchors.
+- A resolution without `resolution_evidence_refs` (omitted, empty or the wrong id kind) is refused
+  with the sentence that says what the list holds; the `status` `view: "obligations"` text states the resolution recipe, that field included.
+- A run linked to a requested command with a `command` action (the PL6-3 link) is a disclosed
+  equivalence: it reads `command_attempt_uncorroborated`, never `command_attempt_mismatch`, and a
+  `self_verified` refusal on a remaining `command_attempt_mismatch` names that link as the exit.
+- A `result_recorded` payload's `evidence_refs` still names evidence ids only; the refusal for a
+  `res_` id names where a result id goes.
+
+Verification: `tests/unit/mcp/test_tb4n4_call_traps.py`, `tests/unit/kernel/test_tb4n4_command_link.py`
+and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the recorded shapes
+through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
+the tb4n4 exports themselves were not replayed, and a live Claude Code transcript on macOS, Linux and
+WSL 2 is not recorded for this change.

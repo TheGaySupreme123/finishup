@@ -34,7 +34,11 @@ exact wire authority.
 Before starting ordinary work, read the startup core once. Codex, Claude Code and Cursor then load
 small guidance topics when needed: publication before recording work, review before checking,
 receipt before closure, and recovery on an error. After compaction, reacquire the core and the
-topic for the current operation. Anchored guidance links return only their named section.
+topic for the current operation. Anchored guidance links return only their named section. An
+anchor that is not listed but names exactly one section of that document (the section heading
+written another way, an anchor the text places under it, or words only its anchor contains) reads
+that section, and the result names its listed link; an anchor that could mean several sections is
+refused with the document's listed anchors.
 
 If an MCP host drops schema examples or renders required fields as unknown, read the topic for
 that operation, such as `yoetz://guidance/request-templates.md#publish-work-plan-plus-obligation`.
@@ -216,7 +220,9 @@ same-task attach that rotates the active session and writer, but never crosses i
 bundle. Stored outcome, frontiers, and accepted event ids are present only when the operation is a
 complete `publish_work`; other states omit them rather than invent detail.
 `view=obligations` includes each requested item and its exact unattempted subset, subject to the
-existing obligation-text projection policy. `view=results` resolves `res_` ids to bounded structural
+existing obligation-text projection policy, and its text states how to resolve an obligation:
+publish it again with every field as recorded, `status` `resolved`, and `resolution_evidence_refs`
+naming the evidence or result ids that show the work done. `view=results` resolves `res_` ids to bounded structural
 facts: source event, payload availability, outcome, linked action, and linked evidence ids.
 
 Before completion, read `declared_obligation_count`, `no_obligations_reason`, and

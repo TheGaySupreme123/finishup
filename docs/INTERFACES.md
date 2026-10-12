@@ -183,7 +183,21 @@ share a field name with different admitted shapes), names the admitted shape of 
 `allOf` peer rule (`each obligation_changes entry with change superseded or waived requires
 reason`), names the absent keys of a payload `required` list before reciting it, and lists enums of
 up to 16 members. Checked-in sentences in the MCP error module cover contract facts a pattern only
-implies (which id kind a reference list names, `status` `limit`, `at_frontier`, and `filter`).
+implies (which id kind a reference list names, `status` `limit`, `at_frontier`, and `filter`). The
+`obligation_published` `resolution_evidence_refs` sentence also answers a rejection located at the
+list itself, so a resolution that omits the list or sends it empty is told what it holds: one or
+more evidence (`evd_`) or result (`res_`) ids, with every other field repeated (tb4n4, #1049).
+
+Two request shapes are read instead of refused (tb4n4, #1049). Both are normalized by the protocol
+request model before the schema check, so every surface that validates a request (MCP bridge, CLI,
+service) reads them alike, and the validated request, its request digest and anything recorded are
+byte-identical to the canonical spelling. A `status` `limit` sent as a JSON integer from 1 to 100 is
+read as its canonical decimal string (`bool`, `0`, `101`, a float or any other value keeps the
+refusal). A `decision_id` key in a `decision_recorded` draft payload is accepted and ignored: a
+decision has no id of its own (it is addressed by its `event_id`), so the key is dropped before the
+drafts are prepared, a retry of the same `request_id` with or without it is a replay of one request,
+and the recorded event never holds it. Every other unadmitted key, in every family, keeps its
+`extra_forbidden` refusal. The advertised schemas keep the one canonical spelling (ADR-002).
 
 For an `extra_forbidden` payload rejection whose unknown key is a known field with exactly one
 legal owning event family among the ordinary `publish_work` families, `safe_details` additionally
@@ -431,7 +445,15 @@ section, keeps the anchored URI in `document_id` and every continuation, and bou
 before paging. Runtime admission uses the closed topic catalog while the advertised schema uses a
 compact URI pattern so the full heading catalog is not repeated in every host tool declaration. A
 parent document remains available for fallback and full archival reads; a topic read is the normal
-continuation when one procedure is named. An anchor outside the catalog on a registered document is
+continuation when one procedure is named. A `read_guidance` call whose anchor on one of the five
+documents is not catalogued but names exactly one catalogued topic of that document reads that topic,
+and the result's `uri` is the catalogued one (tb4n4, #1049; `mcp.resources.resolve_guidance_topic_uri`).
+The anchor names a topic when it is the topic's anchor once case, `_` and punctuation fold the shared
+slug way (`publish_work-decision`), an explicit `<a id>` target the document writes under that
+topic's heading (`publication-policy.md#attempt-accounting`), or words that all appear in that
+topic's anchor and in no other anchor of the document (`request-templates.md#decision`). Two or more
+candidates never resolve; `resources/read` keeps exact URIs. Any other anchor outside the catalog
+on a registered document is
 rejected as `INVALID_REQUEST` with `safe_details.field = "/uri"` and a message listing that
 document's registered anchors plus the whole-document retry; an unregistered document lists the
 registered document and focused-topic URIs. Only catalog constants appear; the caller's URI is
@@ -7480,7 +7502,12 @@ continues to describe caller-asserted accounting. Relations are:
 - `matching_observed_attempt`: one distinct readable command equals the requested UTF-8 text;
 - `asserted_observed_mismatch`: an assertion names the requested command, but explicitly linked
   readable observation describes a different command;
-- `unknown`: observation is absent, omitted, redacted, ambiguous, or exceeds the displayed bound.
+- `unknown`: observation is absent, omitted, redacted, ambiguous, or exceeds the displayed bound,
+  or a linked run that does not match is the agent's own declared equivalence: a cooperative
+  `command` action naming the exact value in `attempted_items` with that observed run in
+  `causal_parents` (the PL6-3 link of ADR-033, which the planned-verification fact already reads as
+  run and discloses as `planned_verification_agent_linked`). Such a link therefore yields
+  `command_attempt_uncorroborated`, never `command_attempt_mismatch` (tb4n4, #1049).
 
 Only service-stamped observation authorship is eligible. Explicit correlation is an action's
 causal parent naming an observed action, or an obligation's resolution result naming that action.

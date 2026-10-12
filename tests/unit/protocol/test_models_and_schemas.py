@@ -943,6 +943,10 @@ def test_human_status_bounds_command_attempts_without_truncating_json(attempt_co
     assert type(parsed.root) is models.StatusSuccessModel
     rendered = render_human_status(parsed.root)
     assert rendered.count(" command item ") == min(attempt_count, 3)
+    # tb4n4 (#1049): the open obligation's view states the resolution recipe, field included.
+    from yoetz.protocol.readiness_text import OBLIGATION_RESOLVE_RECIPE_VARIANTS
+
+    assert OBLIGATION_RESOLVE_RECIPE_VARIANTS[0] in rendered
     if attempt_count > 3:
         assert f"{attempt_count - 3} more command attempts" in rendered
         assert "use JSON status for all items" in rendered
