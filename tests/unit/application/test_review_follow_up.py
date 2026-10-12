@@ -494,13 +494,13 @@ def _send(semantic: SemanticCase) -> bytes:
 
 
 def _captured_group_case(
-    newer: int,
+    newer: int, *, claims: int = 1
 ) -> tuple[DeterministicCase, tuple[CapturedSemanticContent, ...], CapturedContentScope]:
     """A two-part captured output (lead ``evd(20)``, part ``evd(21)``) and ``newer`` later runs.
 
     The parts are one excerpt keyed by the lead; the newer outputs outrank it, so a packet with
-    room for ``newer`` excerpts omits the group. One claim cites every row, so each part stays in
-    the packet's citable frontier.
+    room for ``newer`` excerpts omits the group. ``claims`` claims each cite every row, so each
+    part stays in the packet's citable frontier.
     """
 
     from unit.application.test_semantic_case import (
@@ -557,13 +557,16 @@ def _captured_group_case(
             ),
             30 + number,
         )
-    claims = {
-        clm(1): record(
-            ClaimRecordedPayload(clm(1), ClaimKind.COMPLETION, "Output captured", tuple(evidence)),
-            99,
+    citing = {
+        clm(number): record(
+            ClaimRecordedPayload(
+                clm(number), ClaimKind.COMPLETION, "Output captured", tuple(evidence)
+            ),
+            80 + number,
         )
+        for number in range(1, claims + 1)
     }
-    case = make_case(evidence=evidence, claims=claims, extra_refs=(*evidence, clm(1)))
+    case = make_case(evidence=evidence, claims=citing, extra_refs=(*evidence, *citing))
     phase = scope.phase_bindings[0][1]
     scope = replace(scope, phase_bindings=((str(evd(20)), phase), (str(evd(21)), phase)))
     return case, tuple(parts), scope
@@ -624,6 +627,45 @@ def test_a_request_for_a_later_part_of_an_omitted_captured_group_is_answered() -
     ]
     # A linked claim or event is not part of the group: only its ``evd_`` parts count.
     assert excerpt_content_refs((group,)) == {str(evd(20)), str(evd(21))}
+
+
+@pytest.mark.parametrize("claims", [1, 15])
+def test_every_part_of_a_group_is_linked_even_when_citing_claims_fill_the_bound(
+    claims: int,
+) -> None:
+    """An excerpt links at most 16 refs; a capture's own parts come before linking claims.
+
+    The parts are what the group's bytes hold and how a request naming any of them is matched
+    (#1047). A list that fits is every linked ref in byte order, exactly as before; past the
+    bound, the claims that sort before ``evd_`` no longer push the parts out.
+    """
+
+    case, captured, scope = _captured_group_case(newer=0, claims=claims)
+    semantic = _build(case, captured_content=captured, captured_content_scope=scope)
+    (group,) = (item for item in semantic.items if item.item_id == f"excerpt-{evd(20)}")
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    citing = sorted((str(clm(number)) for number in range(1, claims + 1)), key=str.encode)
+    every = {str(evd(20)), str(evd(21)), str(evt(20)), str(evt(21)), *citing} & allowed
+    if len(every) <= 16:
+        assert group.linked_subject_refs == tuple(sorted(every, key=str.encode))
+    else:
+        assert group.linked_subject_refs == tuple(
+            sorted((str(evd(20)), str(evd(21)), *citing[:14]), key=str.encode)
+        )
+    assert excerpt_content_refs((group,)) == {str(evd(20)), str(evd(21))}
+    shown = sent_excerpt_content_refs(semantic, _provider_manifest(_send(semantic)))
+    assert shown is not None and str(evd(21)) in shown
+    # Shown already: a request naming the second part sends no round.
+    assert (
+        plan_review_follow_up(
+            case.projection,
+            allowed,
+            (_requested("verification_output", str(evd(21))),),
+            previous=None,
+            shown_refs=shown,
+        )
+        is None
+    )
 
 
 def test_a_ref_a_sent_packet_withheld_under_a_privacy_rule_never_justifies_a_round() -> None:

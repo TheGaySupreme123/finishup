@@ -8279,7 +8279,8 @@ follow-up packet its `missing_inputs` list the in-check request, `supplied` with
 sources (provider-bound: only excerpts that crossed the boundary) or `pending`. The evaluation's
 in-process `case_excerpt_refs` (`application.semantic_case.sent_excerpt_content_refs`: what the
 exact sent packet's excerpts held, read from its provider-bound manifest, a captured group's
-`evd_` parts included; `None` when unknown) lets the check tell what was shown and what a round
+`evd_` parts included, which its linked references keep ahead of linking events and claims within
+their 16-ref bound; `None` when unknown) lets the check tell what was shown and what a round
 added; refs a sent packet withheld under a privacy rule join `ReviewFollowUp.added_refs`, a
 withheld captured group's parts with its lead (`withheld_excerpt_content_refs`). The evaluator seam takes the
 optional keyword `follow_up` (returning `None` when nothing was dispatched); the facade forwards it

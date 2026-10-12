@@ -2807,31 +2807,31 @@ def _evidence_candidates(
             clipped = len(encoded) > excerpt_limit
             parts = [_head_tail(encoded, excerpt_limit) if clipped else text]
         group_refs = captured_group.evidence_refs if captured_group is not None else ()
-        linked = tuple(
-            sorted(
-                {
-                    ref,
-                    *group_refs,
-                    str(record.source_event_id),
-                    *(
-                        str(projection.evidence[validate_evidence_id(evidence_ref)].source_event_id)
-                        for evidence_ref in group_refs
-                        if validate_evidence_id(evidence_ref) in projection.evidence
-                    ),
-                    *(
-                        str(claim_id)
-                        for claim_id, claim_record in effective_claim_items(projection)
-                        if claim_record.payload is not None
-                        and any(
-                            str(support) in (set(group_refs) if group_refs else {ref})
-                            for support in claim_record.payload.supporting_refs
-                        )
-                    ),
-                }
-                & allowed,
-                key=str.encode,
-            )
-        )[:16]
+        subjects = {
+            ref,
+            *group_refs,
+            str(record.source_event_id),
+            *(
+                str(projection.evidence[validate_evidence_id(evidence_ref)].source_event_id)
+                for evidence_ref in group_refs
+                if validate_evidence_id(evidence_ref) in projection.evidence
+            ),
+            *(
+                str(claim_id)
+                for claim_id, claim_record in effective_claim_items(projection)
+                if claim_record.payload is not None
+                and any(
+                    str(support) in (set(group_refs) if group_refs else {ref})
+                    for support in claim_record.payload.supporting_refs
+                )
+            ),
+        } & allowed
+        # Within the 16-ref bound the capture's own evidence (its lead and every part) comes
+        # before the events and claims that link it: the parts are what this excerpt's bytes
+        # hold (issue #1047). A list that fits is exactly every subject, in byte order.
+        members = sorted({ref, *group_refs} & subjects, key=str.encode)[:16]
+        others = sorted(subjects.difference(members), key=str.encode)
+        linked = tuple(sorted([*members, *others[: 16 - len(members)]], key=str.encode))
         if not linked:
             if captured_group is not None:
                 gaps.add("content_unselected")

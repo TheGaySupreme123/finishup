@@ -1701,7 +1701,9 @@ packet only lacked room for.
   manifest), never from the composed case: an excerpt composed but left out of the sent packet
   was not shown and can still be added, and one a round composed but did not send was not added.
   A captured multi-part group is one excerpt keyed by its lead evidence and carries every part, so
-  a request naming any part is answered by it. When what was sent is unknown, nothing counts as
+  a request naming any part is answered by it; the excerpt's linked references (at most 16) list
+  the capture's own parts before the events and claims that link it, and a capture has at most 16
+  parts, so none is dropped. When what was sent is unknown, nothing counts as
   shown and no round runs; a row the sent packet withheld under a privacy rule never justifies a
   round, because the same rule withholds it again, and a withheld captured group counts with all
   its parts, though its omission row names only the lead. Otherwise nothing is dispatched and the
