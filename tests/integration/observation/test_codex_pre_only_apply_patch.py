@@ -12,13 +12,20 @@ from __future__ import annotations
 
 from typing import Any
 
+import anyio
+
 from builders.codex_replay import Replay as _Replay
 from builders.codex_replay import (
     replay_cell,  # noqa: F401  # pyright: ignore[reportUnusedImport]  (registers the ``replay`` fixture)
     rollout_row,
     session_start,
+    sweep_all,
 )
 from yoetz.domain.observation import ObservationStatusQuery
+from yoetz.kernel.later_material import LaterMaterialClass, classify_later_material
+from yoetz.kernel.observed_failures import observed_event_ids_from_records
+from yoetz.kernel.reducers import replay as reduce_replay
+from yoetz.kernel.task_facts import cooperative_event_ids_from_records, material_edit_recorded
 
 _EXPIRED = "pending_attempt_expired"
 _PATCH = (
@@ -153,3 +160,45 @@ def test_a_shell_patch_s_own_file_change_closes_it_beside_hooked_calls(replay: _
     _shell_pre(replay, "call_shell_patch", _PATCH)
     replay.append(_file_change("call_shell_patch"))
     assert _EXPIRED not in _gaps_after_the_session_ends(replay)
+
+
+def _ledger_after_the_turn(cell: _Replay) -> tuple[Any, ...]:
+    cell.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
+    anyio.run(sweep_all, cell)
+    return tuple(cell.ledger._state.records)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_shell_patch_is_a_material_edit_though_its_result_never_arrives(replay: _Replay) -> None:
+    """#1046 review: the ledger's only record of the patch is its pending command action.
+
+    Codex fires only the pre-event and its ``FileChange`` stays local, so the action carries the
+    write the hook read off the patch's file headers. Where the check-time capture is unavailable
+    (a non-git workspace, as here) that write is what lets the first check after the edit review
+    as configured instead of deferring again; it also supersedes an earlier check as an edit.
+    """
+
+    session_start(replay)
+    _shell_pre(replay, "call_patch", _PATCH)
+    replay.append(_file_change("call_patch"))
+    records = _ledger_after_the_turn(replay)
+    state = reduce_replay(records)
+    (action,) = [row.payload for row in state.actions.values() if row.payload is not None]
+    assert "(write workspace)" in action.description
+    assert not state.results
+    observed = observed_event_ids_from_records(records)
+    cooperative = cooperative_event_ids_from_records(records)
+    assert material_edit_recorded(state, observed, cooperative) is True
+    (recorded,) = replay.rows("action_recorded")
+    assert classify_later_material(recorded, state).material_class is (
+        LaterMaterialClass.EDIT_OR_WRITE
+    )
+
+
+def test_an_ordinary_pending_command_is_still_no_edit(replay: _Replay) -> None:
+    session_start(replay)
+    _shell_pre(replay, "call_build", "make build")
+    records = _ledger_after_the_turn(replay)
+    state = reduce_replay(records)
+    observed = observed_event_ids_from_records(records)
+    cooperative = cooperative_event_ids_from_records(records)
+    assert material_edit_recorded(state, observed, cooperative) is False

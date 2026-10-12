@@ -486,14 +486,17 @@ standing gap `semantic_review_deferred_before_first_edit` (G7, semantic-only for
 effect follows the route the check recorded, below) when all hold: the phase is routine; the mode,
 the `policy` route and the configured reviewer would dispatch a review (`semantic_required`
 included); the frozen prefix records no material edit (`material_edit_recorded`: a counting
-observed edit or shell write under ADR-042/045, or an agent-published `edit` action); and the
-check-time capture did not observe a workspace change. Nothing is composed or sent. The deferral
+observed edit or shell write under ADR-042/045, whether or not its result arrived, so a Codex shell
+`apply_patch <<EOF` counts by the files its patch names, or an agent-published `edit` action); and
+the check-time capture did not observe a workspace change. Nothing is composed or sent. The deferral
 comes before the review's own admission, so a pre-work check asks for no repository grant,
 disclosure decision or review input either, and a missing provider or a policy block
 (`not_configured`, `blocked_by_policy`) is reported by the first check after the edit. A resumed
-check already in `semantic_wait` keeps its decision; the deferral never applies to the closing
-review, and readiness asks for that review (below), so a task whose work is not an edit still
-reaches one. The older stopped-round skip (`semantic_review_skipped_insufficient_packet`, ADR-006
+check keeps its decision: one already in `semantic_wait` keeps its review, and one resumed in
+`ready_to_finalize` reads no fresh capture: if its operation owns a review job it reviewed and is
+not deferred, otherwise the frozen prefix decides. The deferral never applies to the closing
+review, and where the deferred check's route requires review readiness asks for that review
+(below), so a task whose work is not an edit still reaches one there. The older stopped-round skip (`semantic_review_skipped_insufficient_packet`, ADR-006
 tb4n1 D3, #983) is a separate rule this section does not change: it can still skip a closing review
 that is not `semantic_required`.
 The deferral is not a failed review: the verdict reads from the local checks, never
@@ -502,13 +505,18 @@ The deferral is not a failed review: the verdict reads from the local checks, ne
 `semantic_route_required: false` (a route that does not require review) both are disclosed, so the
 check, status and receipt read as a `deterministic_only` check on that route would, and a deferral
 Yoetz chose never reads worse than a local-only check the agent chose; where review is required
-both bound (`insufficient_coverage`) until a review is current. The review stays owed: the next
-check after the first edit reviews as configured, and closure readiness asks for the closing review
-after a deferral on every route. A deferred check counts as a use of AI-powered review for
-`closing_review_required` (it stands in for the review the task would have run), and while the
-latest check deferred, the actionable `semantic_review_not_requested` on a required route no longer
-hides `closing_review_required`: a routine check would only defer again, so the closing review
-(the Stop gate's review token) is the way to supply it. The CLI, the MCP check lead and the
+both bound (`insufficient_coverage`) until a review is current. The next check after the first
+edit reviews as configured. Where the deferred check's route requires review, that review stays
+owed: the deferred check counts as a use of AI-powered review for `closing_review_required` (it
+stands in for the review the task owes, also when a `semantic_required` check runs under an
+optional policy), and while the latest check so deferred, the actionable
+`semantic_review_not_requested` no longer hides `closing_review_required`: a routine check would
+only defer again, so the closing review (the Stop gate's review token) is the way to supply it.
+Where the check recorded `semantic_route_required: false`, a deferral asks for nothing, exactly like
+a `deterministic_only` check on that route: counting it as a use there would leave an optional
+reviewer that cannot answer (a missing credential, a provider timeout: neither current nor
+undeliverable) demanding the closing review at every Stop, and the check's own next step would
+disagree with status. The CLI, the MCP check lead and the
 receipt's limitations sentence say "AI-powered review deferred".
 
 ### 5. A cited `fixed` ruling closes its finding despite environment facts (#1046)

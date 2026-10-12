@@ -34,6 +34,8 @@ for delivery are reduced here to closed tokens and nothing else crosses into the
   every path is Yoetz's own material (a saved ``yoetz_receipt.*``/``yoetz_export.*``, Yoetz's state
   or isolation root, ``.agents/plugins/yoetz``, ``.agents/skills/yoetz``) reports ``yoetz_owned``
   (``domain.write_scope``, ADR-042): neither makes an earlier verification stale.
+  A shell ``apply_patch <<EOF`` heredoc writes the files its patch headers name, classified
+  the same way (Codex intercepts it and fires only the pre-event, #1041).
 * ``effective_user`` — ``root`` or ``non_root``: the effective user this hook process (spawned by
   the host beside the agent's commands) runs as. It says nothing about the delivery environment.
 
@@ -57,8 +59,11 @@ from yoetz.protocol.canonical import JsonValue
 
 __all__ = [
     "INSTALL_TARGET_VALUES",
+    "SHELL_APPLY_PATCH",
     "install_target_class",
     "runtime_structural_facts",
+    "shell_apply_patch_paths",
+    "shell_heredocs",
 ]
 
 INSTALL_TARGET_VALUES: Final = (
@@ -86,6 +91,52 @@ _PATCH_PATH: Final = re.compile(
 )
 _SHELL_TOOLS: Final = frozenset({"Bash", "bash", "Shell", "shell", "exec_command", "local_shell"})
 _LOCATION_FLAGS: Final = ("--target", "-t", "--prefix", "--root")
+_HEREDOC_START: Final = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+# A heredoc fed to ``apply_patch``: the line before ``<<`` ends in the command name.
+SHELL_APPLY_PATCH: Final = re.compile(r"(?:^|[\s;&|(])apply_patch\s*$")
+_MAX_SHELL_HEREDOCS: Final = 8
+
+
+def shell_heredocs(command: str) -> list[tuple[str, str, str]]:
+    """Return bounded ``(prefix, suffix, body)`` triples for each heredoc in a command."""
+
+    lines = command.split("\n")
+    found: list[tuple[str, str, str]] = []
+    index = 0
+    while index < len(lines) and len(found) < _MAX_SHELL_HEREDOCS:
+        line = lines[index]
+        match = _HEREDOC_START.search(line)
+        index += 1
+        if match is None:
+            continue
+        delimiter = match.group(2)
+        body: list[str] = []
+        while index < len(lines) and lines[index].strip() != delimiter:
+            body.append(lines[index])
+            index += 1
+        if index >= len(lines):
+            break  # unterminated heredoc: not a complete edit
+        index += 1
+        found.append((line[: match.start()], line[match.end() :], "\n".join(body) + "\n"))
+    return found
+
+
+def shell_apply_patch_paths(command: str) -> tuple[str, ...]:
+    """The files a shell ``apply_patch <<EOF`` heredoc names (``*** Update File: ...``).
+
+    Codex intercepts such a call and applies the patch itself (#1041), so the command's own
+    tokens show no write; the patch's file headers are the write, exactly as for the native
+    ``apply_patch`` tool. Only a complete heredoc fed to ``apply_patch`` counts.
+    """
+
+    if "<<" not in command or "apply_patch" not in command:
+        return ()
+    return tuple(
+        match.strip()
+        for prefix, _suffix, body in shell_heredocs(command)
+        if SHELL_APPLY_PATCH.search(prefix)
+        for match in _PATCH_PATH.findall(body)
+    )
 
 
 def _raw_command(tool_input: Mapping[str, JsonValue]) -> str | None:
@@ -394,8 +445,15 @@ def runtime_structural_facts(
         # ADR-045: one classifier decides every written path, the one an edit tool uses: a real
         # write outside the workspace, a write into it (an edit), or only notes, Yoetz material
         # (``cp a.json /opt/yoetz_receipt.json`` is Yoetz-owned, not outside) or scratch.
+        # A shell ``apply_patch <<EOF`` writes the files its patch names (#1046 review): Codex
+        # intercepts it and fires only this pre-event, so this token is the only record that it
+        # changed the work.
         scope = shell_write_scope(
-            command, workspace=workspace_locator, inside=inside, owned_roots=_owned_roots()
+            command,
+            workspace=workspace_locator,
+            inside=inside,
+            owned_roots=_owned_roots(),
+            also_written=shell_apply_patch_paths(command),
         )
         if scope is not None:
             facts["write_scope"] = scope

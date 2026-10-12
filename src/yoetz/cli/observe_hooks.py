@@ -93,7 +93,9 @@ from yoetz.cli.hook_io import (
     stderr_line as _stderr_line,
 )
 from yoetz.cli.hook_timing import HookPassTiming, record_hook_pass_timing
+from yoetz.cli.runtime_facts import SHELL_APPLY_PATCH as _SHELL_APPLY_PATCH
 from yoetz.cli.runtime_facts import runtime_structural_facts
+from yoetz.cli.runtime_facts import shell_heredocs as _shell_heredocs
 from yoetz.domain.advice_actions import STANDING_MACHINE_ACTIONS as _STANDING_MACHINE_ACTIONS
 from yoetz.domain.command_segments import (
     COMMAND_COMPOSITIONS,
@@ -1851,8 +1853,6 @@ def _native_edit_content(
 
 
 _SHELL_TOOL_NAMES: Final = frozenset({"Bash", "Shell", "shell", "exec_command", "local_shell"})
-_HEREDOC_START: Final = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-_SHELL_APPLY_PATCH: Final = re.compile(r"(?:^|[\s;&|(])apply_patch\s*$")
 _SHELL_GIT_APPLY: Final = re.compile(
     r"(?:^|[\s;&|(])git\s+apply(?:\s+-{1,2}[A-Za-z0-9=-]+)*\s*-?\s*$"
 )
@@ -1861,31 +1861,6 @@ _SHELL_REDIRECT: Final = re.compile(r">>?\s*(['\"]?)([^\s'\";&|<>]+)\1")
 _SHELL_TEE_TARGET: Final = re.compile(
     r"(?:^|[\s;&|(])tee(?:\s+-a)?\s+(['\"]?)([^\s'\";&|<>-][^\s'\";&|<>]*)\1"
 )
-_MAX_SHELL_HEREDOCS: Final = 8
-
-
-def _shell_heredocs(command: str) -> list[tuple[str, str, str]]:
-    """Return bounded ``(prefix, suffix, body)`` triples for each heredoc in a command."""
-
-    lines = command.split("\n")
-    found: list[tuple[str, str, str]] = []
-    index = 0
-    while index < len(lines) and len(found) < _MAX_SHELL_HEREDOCS:
-        line = lines[index]
-        match = _HEREDOC_START.search(line)
-        index += 1
-        if match is None:
-            continue
-        delimiter = match.group(2)
-        body: list[str] = []
-        while index < len(lines) and lines[index].strip() != delimiter:
-            body.append(lines[index])
-            index += 1
-        if index >= len(lines):
-            break  # unterminated heredoc: not a complete edit
-        index += 1
-        found.append((line[: match.start()], line[match.end() :], "\n".join(body) + "\n"))
-    return found
 
 
 def _intercepted_shell_apply_patch(

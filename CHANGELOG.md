@@ -247,11 +247,11 @@ reverse-chronological released versions.
   `semantic_review_deferred_before_first_edit`; the next check after an edit reviews as configured
   and the closing review is never deferred. Where review is optional the deferral is disclosed and
   does not lower the receipt, as a local-only check would not; where it is required it bounds the
-  receipt until a review runs. After a deferral, `status` and the Stop gate ask for the closing
-  review on every route, so work that needs no edit is still reviewed. A reviewer ruling that a
-  finding is fixed, citing material recorded after it, now closes the finding even when the check
-  records environment facts such as verification run only as root; those facts stay disclosed on
-  the receipt (#1046).
+  receipt until a review runs, and `status` and the Stop gate then ask for the closing review, so
+  work that needs no edit is still reviewed. A check retried after an interruption keeps the review
+  decision its first attempt made. A reviewer ruling that a finding is fixed, citing material
+  recorded after it, now closes the finding even when the check records environment facts such as
+  verification run only as root; those facts stay disclosed on the receipt (#1046).
 
 - A local-only check you asked for (`deterministic_only`) on a route that does not require
   AI-powered review no longer lists `semantic_review_not_requested` on the receipt, in `status` or
@@ -336,9 +336,11 @@ reverse-chronological released versions.
   calls, and a hooked direct call is recorded once (#1038).
 
 - In Codex, a shell `apply_patch <<EOF` no longer leaves a "pending attempt expired" limitation
-  once the rollout shows the file change; a rollout line Codex is still writing is no longer
-  reported as a truncated payload; and Codex's record of a Stop-hook prompt is no longer an
-  unsupported event (#1041).
+  once the rollout shows the file change, and it counts as an edit of the files its patch names
+  although Codex reports no result for it: it makes an earlier verification stale and lets the next
+  check review, where a non-git workspace gives no other sign of the change; a rollout line Codex
+  is still writing is no longer reported as a truncated payload; and Codex's record of a Stop-hook
+  prompt is no longer an unsupported event (#1041).
 
 - A shell command that writes into the workspace (`cat > f`, `sed -i`), one that writes only the
   agent's own notes, and a long build or simulator command now reach Yoetz's record. The local

@@ -327,13 +327,14 @@ class ClosureReadinessFacts:
     # Issue #976. Whether a closing review (final phase) is current since the last material
     # change, or a review attempt since then could not complete for a reason the agent cannot
     # remove; and whether any AI-powered review completed on this task, or was deferred before the
-    # first material edit (issue #1046: the review the task would have run). The defaults keep a
-    # hand-built fact set at its pre-#976 answer.
+    # first material edit by a check whose route requires review (issue #1046: the review the task
+    # owes). The defaults keep a hand-built fact set at its pre-#976 answer.
     closing_review_current: bool = True
     semantic_review_used: bool = False
-    # Issue #1046 (review): the latest recorded check deferred its review before the first
-    # material edit, so a routine check cannot supply the missing review; only the closing review
-    # can, and readiness asks for it even while ``semantic_review_not_requested`` is agent work.
+    # Issue #1046 (review): the latest recorded check deferred a review its route requires before
+    # the first material edit, so a routine check cannot supply the missing review; only the
+    # closing review can, and readiness asks for it even while ``semantic_review_not_requested``
+    # is agent work.
     semantic_review_deferred: bool = False
     # Issue #984: current findings in the terminal ``self_verified`` state. Not agent work (they
     # never count as receipt-blocking); readiness discloses them as ``finding_self_verified``.
@@ -544,9 +545,18 @@ _UNDELIVERABLE_SEMANTIC_STATUSES: Final = UNDELIVERABLE_SEMANTIC_STATUSES
 
 
 def _review_deferred(payload: CheckRecordedPayload) -> bool:
-    """Whether this check deferred its review before the first material edit (issue #1046)."""
+    """Whether this check deferred a review its route requires before the first edit (#1046).
 
-    return SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in payload.coverage.known_gaps
+    A check on a route that did not require review records ``semantic_route_required: false``;
+    there the deferral is a disclosure that asks for nothing, exactly like a ``deterministic_only``
+    check on that route (review of #1046: otherwise an unreachable optional reviewer would keep
+    the closing review demanded forever).
+    """
+
+    return (
+        SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in payload.coverage.known_gaps
+        and payload.semantic_route_required is not False
+    )
 
 
 def _closing_review_facts(
@@ -561,10 +571,10 @@ def _closing_review_facts(
     effective completion claim preceded it; with no material change since it, the current
     projection's claim answers that.
 
-    Issue #1046 (review): a check that deferred its review before the first material edit counts
-    as using AI-powered review, because it stands in for the review the task would have run; so a
-    task whose work is not an edit is still asked for the closing review, on every route. The
-    third value says the latest check deferred: no routine check can supply that review.
+    Issue #1046 (review): a check that deferred, before the first material edit, a review its
+    route requires counts as using AI-powered review, because it stands in for the review the task
+    owes; so a task whose work is not an edit is still asked for the closing review there. The
+    third value says the latest check so deferred: no routine check can supply that review.
     """
 
     checks = tuple(
@@ -980,9 +990,10 @@ def derive_closure_readiness(
     actionable.extend(code for code in split_actionable if code not in actionable)
     # Issue #976: the receipt is the last step, so the last review before it judges
     # completeness. Required on a route that requires AI-powered review, and on any task that
-    # already used it (or deferred it before the first edit, #1046); not repeated while the missing
-    # review is already the actionable item, unless the latest check deferred it: then no routine
-    # check can supply it and the closing review, the Stop gate's review token, is the way.
+    # already used it (or deferred it before the first edit where its route requires it, #1046);
+    # not repeated while the missing review is already the actionable item, unless the latest check
+    # deferred it: then no routine check can supply it and the closing review, the Stop gate's
+    # review token, is the way.
     if (
         facts is not None
         and (semantic_review_required or facts.semantic_review_used)

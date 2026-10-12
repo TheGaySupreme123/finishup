@@ -1690,7 +1690,9 @@ def _review_deferred_before_first_edit(
     reviewed the plan before any work, and most routine ``insufficient_packet`` answers were
     those. The deferral never applies to the closing review, so a task whose work is not an edit
     still reaches one (the tb4n1 D3 stopped-round skip above is a separate rule).
-    A check already waiting on a review keeps it (a resumed attempt never changes its decision).
+    A check already waiting on a review keeps it (a resumed attempt never changes its decision);
+    a check resumed in ``ready_to_finalize`` decides through ``_review_skip_gaps`` from durable
+    state only, never from a fresh capture.
     """
 
     if (
@@ -1726,10 +1728,20 @@ async def _review_skip_gaps(
     tb4n1 D3: the round stopped after the one insufficient-packet retry. Issue #1046: the check
     runs before the first material edit (``_review_deferred_before_first_edit``). Empty when the
     check reviews as configured.
+
+    A check resumed in ``ready_to_finalize`` already made this decision before it was
+    interrupted (#1046 review): if it sent a review, the operation owns a review job and the
+    check is never deferred on retry, so a paid review is kept; if it sent none, a capture that
+    now sees a change cannot make it dispatch one in a phase that cannot send it. The live
+    capture is not read there; the frozen ledger prefix decides, as for the stopped round.
     """
 
     if await _review_round_stopped_at(runtime, request, frozen):
         return frozenset({SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP})
+    if frozen.lease.phase is CheckPhase.READY_TO_FINALIZE:
+        if await _review_job_recorded(runtime, frozen):
+            return frozenset()
+        workspace_changed = None
     if _review_deferred_before_first_edit(
         request,
         runtime,
@@ -1739,6 +1751,28 @@ async def _review_skip_gaps(
     ):
         return frozenset({SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP})
     return frozenset()
+
+
+async def _review_job_recorded(runtime: TaskRuntime, frozen: FrozenCase) -> bool:
+    """Whether this check operation already owns an AI-powered review job (#1046 review).
+
+    An unreadable answer counts as none: the resumed check then decides from the frozen prefix,
+    which is what a check that sent no review decided too.
+    """
+
+    load = getattr(runtime.ledger, "load_semantic_job", None)
+    if not callable(load):
+        return False
+    try:
+        job = await cast(Callable[[str, str], Awaitable[object | None]], load)(
+            frozen.lease.writer_id, frozen.lease.operation_id
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc, component="check", operation="review_job_read"
+        )
+        return False
+    return job is not None
 
 
 def _undeclared_reference_refs(result: CheckCommitResult) -> tuple[str, ...]:

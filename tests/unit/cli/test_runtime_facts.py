@@ -259,6 +259,30 @@ def test_apply_patch_absolute_vs_relative(tmp_path: Path) -> None:
     assert _facts("apply_patch", {"command": inside}, tmp_path) == {}
 
 
+def test_a_shell_apply_patch_heredoc_writes_the_files_its_patch_names(tmp_path: Path) -> None:
+    """#1046 review: Codex intercepts ``apply_patch <<EOF`` and fires only the pre-event.
+
+    The patch's file headers are the write, classified exactly as the native tool's; a heredoc
+    fed to anything else, or one that never closes, names nothing.
+    """
+
+    def scope(command: str) -> JsonValue:
+        return _facts("Bash", {"command": command}, tmp_path).get("write_scope")
+
+    def patch(header: str, prefix: str = "apply_patch") -> str:
+        return f"{prefix} <<'EOF'\n*** Begin Patch\n{header}\n@@\n-a\n+b\n*** End Patch\nEOF"
+
+    assert scope(patch("*** Update File: src/a.py")) == "workspace"
+    assert scope(patch(f"*** Add File: {tmp_path}/b.py")) == "workspace"
+    assert scope(patch("*** Add File: /elsewhere/x")) == "outside_workspace"
+    assert scope(patch("*** Add File: /tmp/scratch.txt")) is None
+    assert scope("cd src && " + patch("*** Update File: a.py")) == "workspace"
+    assert scope(patch("*** Update File: src/a.py", prefix="cat")) is None
+    assert scope("apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: src/a.py\n") is None
+    # The native tool's own facts are unchanged: a workspace patch claims no token.
+    assert _facts("apply_patch", {"command": patch("*** Update File: src/a.py")}, tmp_path) == {}
+
+
 def test_shell_redirect_scope(tmp_path: Path) -> None:
     assert (
         _facts("Bash", {"command": "echo x > /opt/elsewhere/y"}, tmp_path)["write_scope"]

@@ -16,7 +16,7 @@ from typing import Any, cast
 
 import pytest
 
-from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
+from builders.observed_runs import INSTALLATION_KEY, ObservedLedger, command_identity_for
 from yoetz.application.check import (
     _review_deferred_before_first_edit,  # pyright: ignore[reportPrivateUsage]
     _review_skip_gaps,  # pyright: ignore[reportPrivateUsage]
@@ -41,6 +41,7 @@ from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, build_deter
 from yoetz.kernel.finding_resolution import SEMANTIC_ONLY_GAPS
 from yoetz.kernel.gap_effect import GapContext, GapEffectKind, gap_effect
 from yoetz.kernel.observed_failures import (
+    observed_action_description,
     observed_event_ids_from_records,
 )
 from yoetz.kernel.reducers import replay
@@ -87,10 +88,17 @@ def _planned() -> ObservedLedger:
     return ledger
 
 
+_WRITER = "wri_00000000-0000-4000-8000-000000001046"
+_OPERATION = "req_00000000-0000-4000-8000-000000001046"
+
+
 def _frozen(ledger: ObservedLedger, phase: CheckPhase = CheckPhase.LOCAL_READY) -> Any:
     prefix = ledger.prefix
     case = build_deterministic_case(replay(prefix), prefix, CaseAvailabilityFacts())
-    return SimpleNamespace(case=case, lease=SimpleNamespace(phase=phase))
+    return SimpleNamespace(
+        case=case,
+        lease=SimpleNamespace(phase=phase, writer_id=_WRITER, operation_id=_OPERATION),
+    )
 
 
 def _request(mode: str = "semantic_required", *, final_review: bool = False) -> Any:
@@ -160,13 +168,39 @@ def test_a_check_that_would_not_dispatch_a_review_is_left_as_it_was() -> None:
 
 @pytest.mark.parametrize(
     "work",
-    ["observed_edit", "observed_shell_write", "published_edit", "workspace_change"],
+    [
+        "observed_edit",
+        "observed_shell_write",
+        "pre_only_shell_patch",
+        "published_edit",
+        "workspace_change",
+    ],
 )
 def test_the_first_material_edit_rearms_the_review(work: str) -> None:
     ledger = _planned()
     workspace_changed: bool | None = None
     if work == "observed_edit":
         ledger.edit()
+    elif work == "pre_only_shell_patch":
+        # A Codex shell ``apply_patch <<EOF``: Codex applies it itself and fires only the
+        # pre-event (#1041), so the ledger holds a pending command carrying the write the hook
+        # read off the patch's file headers, and no result ever. Where the check-time capture is
+        # unavailable (``workspace_changed`` None), it alone must re-arm the review.
+        ledger.append(
+            EventSchema("action_recorded", "1.0.0"),
+            ActionRecordedPayload(
+                action_id("act_00000000-0000-4000-8000-000000000301"),
+                ActionKind.COMMAND,
+                observed_action_description(
+                    "Observed pending command via Codex hook",
+                    "Bash",
+                    "compound",
+                    write_scope="workspace",
+                ),
+                command=command_identity_for("apply_patch <<'EOF'"),
+            ),
+            observed=True,
+        )
     elif work == "observed_shell_write":
         ledger.run(
             "sed -i s/a/b/ parser.py",
@@ -188,6 +222,23 @@ def test_the_first_material_edit_rearms_the_review(work: str) -> None:
         # A host whose writes are opaque scripts records no edit; the check-time capture does.
         workspace_changed = True
     assert _deferred(ledger, workspace_changed=workspace_changed) is False
+
+
+def test_a_pending_command_with_no_write_is_not_a_material_edit() -> None:
+    """Control: a command whose result never arrived and that wrote nothing visible."""
+
+    ledger = _planned()
+    ledger.append(
+        EventSchema("action_recorded", "1.0.0"),
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000302"),
+            ActionKind.COMMAND,
+            observed_action_description("Observed pending command via Codex hook", "Bash", "build"),
+            command=command_identity_for("make build"),
+        ),
+        observed=True,
+    )
+    assert _deferred(ledger) is True
 
 
 def test_a_scratch_write_is_not_a_material_edit() -> None:
@@ -243,6 +294,58 @@ async def test_the_skip_names_one_reason_and_the_stopped_round_wins() -> None:
         workspace_changed=None,
     )
     assert gaps == frozenset({SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP})
+
+
+def _resumable_runtime(jobs: dict[tuple[str, str], object]) -> Any:
+    async def no_events(session_id: object, *, through: int) -> Any:
+        del session_id, through
+        for record in ():
+            yield record
+
+    async def load_semantic_job(
+        writer_id: str, operation_id: str, case_digest: str | None = None
+    ) -> object | None:
+        del case_digest
+        return jobs.get((writer_id, operation_id))
+
+    return SimpleNamespace(
+        session_id="ses",
+        capabilities=frozenset({RuntimeCapability.SEMANTIC}),
+        ledger=SimpleNamespace(load_events=no_events, load_semantic_job=load_semantic_job),
+    )
+
+
+async def test_a_check_resumed_to_finalize_keeps_the_decision_its_first_attempt_made() -> None:
+    """Issue #1046 (review): a retry never re-decides the deferral from a live capture.
+
+    A check interrupted after its phase reached ``ready_to_finalize`` resumes there. Its first
+    attempt already decided: if it sent a review (the operation owns a review job), a retry whose
+    capture now fails is not deferred, so the paid review is kept; if it sent none, a retry whose
+    capture now sees a change does not try to dispatch one in a phase that cannot send it.
+    """
+
+    ledger = _planned()
+    frozen = _frozen(ledger, CheckPhase.READY_TO_FINALIZE)
+    jobs: dict[tuple[str, str], object] = {(_WRITER, _OPERATION): object()}
+    runtime = _resumable_runtime(jobs)
+    request = _request("semantic_if_configured")
+    reviewed = await _review_skip_gaps(
+        runtime, request, frozen, route_profile="policy", workspace_changed=None
+    )
+    assert reviewed == frozenset()
+
+    jobs.clear()
+    deferred = await _review_skip_gaps(
+        runtime, request, frozen, route_profile="policy", workspace_changed=True
+    )
+    assert deferred == frozenset({SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP})
+
+    # Before the review phase nothing was sent, so the live capture still decides.
+    ready = _frozen(ledger, CheckPhase.LOCAL_READY)
+    live = await _review_skip_gaps(
+        runtime, request, ready, route_profile="policy", workspace_changed=True
+    )
+    assert live == frozenset()
 
 
 def test_the_deferral_gap_follows_the_recorded_route_and_never_vetoes_local_proof() -> None:

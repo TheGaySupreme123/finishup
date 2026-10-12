@@ -416,6 +416,7 @@ continuation: an open one makes `overall_next.action` and `finding_checklist.nex
 `yoetz-verification-limit` decision neither discloses it nor marks its obligation
 `externally_evaluated` (review of #1043). No basis, effect, token or earlier table row changed
 meaning. Decisions and predicates: ADR-040 amendment of 2026-10-12, which also has closure
-readiness ask for the closing review after a deferral on every route, so check, status, the Stop
-gate and the receipt agree for a task whose work is not an edit
+readiness ask for the closing review after a deferral where the deferred check's route requires
+review (where it does not, the deferral asks for nothing, like a `deterministic_only` check), so
+check, status, the Stop gate and the receipt agree for a task whose work is not an edit
 (`tests/integration/closure/test_review_deferral_shape.py`).
