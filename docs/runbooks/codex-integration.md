@@ -1830,10 +1830,15 @@ tb4n4's deterministic arm carried, on all 60 attempts, gaps that came from Yoetz
 than the agent's work. Their dispositions:
 
 - **Held rollout tail.** A final line Codex has not finished writing (no newline yet, whether or
-  not it already parses) is held and re-read on the next reconcile; the stream reader no longer
-  reports it as `truncated_payload`. Lines over the 1 MiB bound and unreadable chunks still are.
-  Before this change the gap appeared only in the reconcile result (`yoetz observe reconcile
-  --json`), not in task coverage.
+  not it already parses) is held and re-read on the next reconcile; the reconcile that first holds
+  it no longer reports it as `truncated_payload`. A later reconcile that finds the same tail held
+  with nothing written since does report it: the writer stopped mid-line (killed, or a full disk),
+  and without the newline that row is never ingested. The tail stays held, so a newline that does
+  land still delivers the row. Lines over the 1 MiB bound and unreadable chunks are reported on
+  every pass, as before. Hook-triggered reconciles discard their result, so the gap appears only in
+  the reconcile result (`yoetz observe reconcile --json`), not in task coverage, as before this
+  change; after a Codex crash, run that command twice to see a tail left unfinished after the
+  last hook.
 - **Shell `apply_patch <<EOF`.** A pre-only attempt closed by the observed `FileChange`; see
   [Reviewable native edits](#reviewable-native-edits).
 - **`HookPrompt`.** A Stop hook that continues the turn (Yoetz's closure gate) makes Codex 0.159.3

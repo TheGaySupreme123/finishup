@@ -4659,9 +4659,12 @@ Shared closed types:
   records remain reachable without an unbounded hook pass. Until then the tail remains pending as
   `truncated_payload`. The marker contains no source bytes, and an invalid or transplanted marker
   starts a new generation from profile admission rather than authorizing a skip. An ordinary
-  unterminated final line (Codex still writing it) is held and re-read once its newline lands; it
-  lost nothing, so it is not `truncated_payload` (issue #1041). The compatibility profile also
-  admits the `event_msg.item_completed` item `HookPrompt` (a Stop hook's continuation prompt,
+  unterminated final line (Codex still writing it) is held and re-read once its newline lands; the
+  read that first holds it reports no `truncated_payload`. A read that finds the same tail held
+  again with no byte written since (a writer that stopped mid-line) reports `truncated_payload`
+  for that pass; the tail stays held, so a late newline still delivers its row. The gap is in the
+  reconcile result only, never recorded as task coverage (issue #1041). The compatibility profile
+  also admits the `event_msg.item_completed` item `HookPrompt` (a Stop hook's continuation prompt,
   Codex 0.159.3) as bookkeeping: no structural field is read from it and it pairs with nothing.
 - `ObservationStatus` — lifecycle `active|degraded|stale|stopped`, source coverage, last
   observation, lag, currently true gaps, unsupported events, and the current `AdviceSnapshot`

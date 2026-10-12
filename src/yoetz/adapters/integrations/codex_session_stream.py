@@ -1624,6 +1624,8 @@ class SessionStreamReader:
         # A retained partial first line has not established admission. Keep requiring the exact
         # session header until a complete admitted line advances the durable cursor.
         require_admission = event_position == 0
+        # The tail the previous read held (persisted between reconciles); see the end of this read.
+        prior_hold = self.partial_line
         try:
             with path.open("rb") as handle:
                 handle.seek(byte_position + partial_source_bytes)
@@ -1805,9 +1807,9 @@ class SessionStreamReader:
         hold = b""
         for index, line in enumerate(parsed.lines):
             if not line.terminated:
-                # A tail Codex is still writing is held and re-read once its newline lands; it
-                # lost nothing, so it is no ``truncated_payload`` (#1041). Oversize lines and
-                # unreadable chunks above keep the gap.
+                # A tail Codex is still writing is held and re-read once its newline lands; the
+                # read that first holds it reports no ``truncated_payload`` (#1041). A stalled
+                # tail is named below; oversize lines and unreadable chunks above keep the gap.
                 hold = line.content
                 break
             consumed = line.byte_end
@@ -1895,7 +1897,13 @@ class SessionStreamReader:
             mapping_version=STREAM_MAPPING_VERSION,
         )
         self.cursor = cursor
-        # ``truncated_final_line``/``final_newline_absent`` name the held tail: not a loss.
+        # ``truncated_final_line``/``final_newline_absent`` name the held tail, which a live
+        # writer completes: not a loss on the read that first holds it. The same bytes held
+        # again with nothing written since are a writer that stopped mid-line (killed, or a full
+        # disk), so this read names them (#1041); the tail stays held, so a late newline still
+        # delivers its row.
+        if hold and consumed == 0 and hold == prior_hold:
+            gaps.add(ObservationGapCode.TRUNCATED_PAYLOAD.value)
         if "unsupported_codex_profile" in parsed.stream_gaps:
             gaps.add(ObservationGapCode.UNSUPPORTED_FORMAT.value)
         return SessionStreamAdvance(
