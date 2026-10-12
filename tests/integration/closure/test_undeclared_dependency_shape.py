@@ -226,6 +226,16 @@ async def test_vigenere_undeclared_models_block_closure_and_are_named_everywhere
         checked = await run.check_in("semantic_if_configured")
         assert _CODE in checked.coverage.known_gaps
         assert checked.verdict.value != "no_issue_detected"
+        # The check's own next step agrees with status and the Stop gate: agent work on the
+        # obligation whose delivered file loads the models, never "request the receipt and
+        # disclose" (ADR-046 G0c; the obligation itself stays ``resolved``).
+        assert checked.overall_next is not None
+        assert (checked.overall_next.status, checked.overall_next.action) == (
+            "action_required",
+            "review_recorded_work",
+        )
+        assert checked.overall_next.target_refs == (_OBLIGATION,)
+        assert checked.overall_next.acknowledged_incomplete_endpoint is None
 
         gathered = await _surfaces(run)
         status = gathered.status["compact"]
@@ -242,7 +252,9 @@ async def test_vigenere_undeclared_models_block_closure_and_are_named_everywhere
             "2",
         )
         # The one verdict: every surface reads below clean for the same reason set.
-        assert_surfaces_agree(gathered, conclusion=_INSUFFICIENT, counts=_NO_FINDINGS)
+        assert_surfaces_agree(
+            gathered, conclusion=_INSUFFICIENT, counts=_NO_FINDINGS, check=checked
+        )
         # The MCP text summary names no path (honesty rule: no user-controlled text there).
         assert "english_ngrams" not in summary_for_status(status.as_json())
 
@@ -311,6 +323,10 @@ async def test_a_disclosure_does_not_clear_it_and_declaring_or_embedding_does(
         workspace.loads_models = False
         cleared = await run.check_in("semantic_if_configured")
         assert _CODE not in cleared.coverage.known_gaps
+        # The cracker's obligation is no longer the next step's target (the models' own open
+        # obligation, published above, still is).
+        assert cleared.overall_next is not None
+        assert _OBLIGATION not in cleared.overall_next.target_refs
         status = await run.status("compact")
         assert _CODE not in (status.closure_readiness.agent_actionable or ())
         assert status.closure_readiness.undeclared_references is None

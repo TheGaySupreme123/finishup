@@ -8860,7 +8860,9 @@ Wire (the earlier checklist fields remain available in their original versions):
   when the reviewer named a global input), `work_open_findings` for open findings,
   `disclose_limitations` when the only open findings are reviewer limitation requests nobody
   answered (`check-result` 1.4.0; the targets are those requests),
-  `review_recorded_work` for open obligations or undisclosed live failures, or `request_receipt`
+  `review_recorded_work` for open obligations, undisclosed live failures or a delivered file that
+  loads an undeclared file (`deliverable_references_undeclared_file`, #1044; the target is the
+  referencing obligation, which stays `resolved`), or `request_receipt`
   when no agent action remains. The finding checklist's `next` remains finding-only and is labeled
   that way beside this continuation. When only standing or structurally unavailable limits remain,
   `overall_next.status` is

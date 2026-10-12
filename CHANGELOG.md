@@ -213,7 +213,8 @@ reverse-chronological released versions.
 
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,
   a data table) now stops closure instead of being only disclosed: the Stop hook continues the agent
-  and names each such file, `status` lists them (`closure_readiness.undeclared_references`), and the
+  and names each such file, `status` lists them (`closure_readiness.undeclared_references`), the
+  check's next step names the referencing obligation as work (`review_recorded_work`), and the
   receipt stays below clean until the content is embedded, rebuilt at run time, or the file is
   declared as a delivered output. A `full_local` receipt names the files; an export or share receipt
   counts them and names none. Disclosing the dependency no longer resolves it. An untracked file the

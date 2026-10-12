@@ -1503,6 +1503,9 @@ def build_overall_next(
     recorded_work_refs, disclosed_live_failure = _recorded_work_refs(
         result, projection, coverage_by_ref, obligations
     )
+    recorded_work_refs = _bounded_overall_refs(
+        (*recorded_work_refs, *_undeclared_reference_refs(result))
+    )
     if recorded_work_refs:
         return CheckOverallNext(
             status="action_required",
@@ -1707,6 +1710,24 @@ async def _review_skip_gaps(
     ):
         return frozenset({SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP})
     return frozenset()
+
+
+def _undeclared_reference_refs(result: CheckCommitResult) -> tuple[str, ...]:
+    """The obligations whose delivered file loads an undeclared file this check found (#1044).
+
+    ADR-046 rule ``G0c``: the fact is agent work on every surface, but its obligation stays
+    ``resolved``, so the obligation classes never name it. The referencing deliverable's recorded
+    state does; if no state names the files, every deliverable the check read is the target.
+    """
+
+    if DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP not in result.coverage.known_gaps:
+        return ()
+    named = tuple(
+        str(state.obligation_id)
+        for state in result.deliverable_states
+        if state.undeclared_references or state.undeclared_reference_count
+    )
+    return named or tuple(str(state.obligation_id) for state in result.deliverable_states)
 
 
 def _bounded_overall_refs(values: Iterable[object]) -> tuple[str, ...]:

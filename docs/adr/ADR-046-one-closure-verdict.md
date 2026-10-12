@@ -379,9 +379,10 @@ no item declares, ADR-035) moves from the `G4` disclosure family to its own rule
 base-behaviour test names it; 37 changed rows with #1042's below); `GAP_CLASSIFICATION_VERSION` is `"8"` (status-result 1.4.0 admits
 it, unreleased, in place). Nothing else in the tables changes: the obligation stays `resolved` (the
 dependency is a delivery gap, not a withdrawn file), the receipt reads `insufficient_coverage`
-through `live_gap_bounds` (R10), status reads `action_required`, and the Stop gate continues the
-agent on the new `STOP_GATE_TOKENS` entry, so check, status, gate and receipt agree through this
-one row. A disclosure decision is not an exit.
+through `live_gap_bounds` (R10), status reads `action_required`, the check's next step is
+`review_recorded_work` naming the referencing obligation (read from the check's own deliverable
+states, since the obligation class stays `resolved`), and the Stop gate continues the agent on the
+new `STOP_GATE_TOKENS` entry, so check, status, gate and receipt agree through this one row. A disclosure decision is not an exit.
 
 ## Verification
 
