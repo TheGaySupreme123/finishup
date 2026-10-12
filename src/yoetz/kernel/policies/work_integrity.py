@@ -13,7 +13,9 @@ from yoetz.domain.events import (
     EvidenceKind,
     ObligationChangeKind,
     ObligationStatus,
+    RequestedItem,
     RequestedItemKind,
+    RequestedItemRole,
     ResponseDisposition,
     ResultOutcome,
 )
@@ -34,11 +36,7 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
-from yoetz.kernel.command_attempts import (
-    attempted_items_for_obligation,
-    unattempted_item_indexes,
-    value_in_attempted,
-)
+from yoetz.kernel.command_attempts import attempted_items_for_obligation, value_in_attempted
 from yoetz.kernel.deterministic_checks import (
     CALLER_DIGEST_PROVENANCE_GAPS,
     OBSERVED_FAILURE_LIVE_FACT,
@@ -347,10 +345,11 @@ def _requested_item_findings(
         )
         # tb4n2 E4 (P1-7): an item the obligation only reads (``role: input``) is never "not
         # attempted", and "never attempted" waits for work on *this* obligation (or a completion
-        # claim naming it), never for any action anywhere in the task. The accounting is shared
-        # with the ``mode: inspect`` check (ADR-047), which names the items by index.
-        unattempted = reportable and bool(
-            unattempted_item_indexes(payload.requested_items, attempted, matched_commands)
+        # claim naming it), never for any action anywhere in the task.
+        unattempted = reportable and any(
+            not _item_attempted(item, attempted, matched_commands)
+            for item in payload.requested_items
+            if getattr(item, "role", None) is not RequestedItemRole.INPUT
         )
         absent = reportable and any(
             (obligation_ref, index) in absent_outputs
@@ -375,6 +374,26 @@ def _requested_item_findings(
 
 
 _NON_PRODUCING_ACTIONS: Final = frozenset({ActionKind.RESEARCH, ActionKind.REVIEW})
+
+
+def _item_attempted(
+    item: RequestedItem, attempted: frozenset[str], matched_commands: frozenset[str]
+) -> bool:
+    """Whether one requested item was attempted (ADR-045): named, spelled alike, or observed run.
+
+    A value named in ``attempted_items`` counts exactly as before. A file or directory counts when
+    the agent named the same path in another spelling (``out/x.log`` for ``/app/out/x.log``), and
+    a command counts when a hook-observed run matched it (exactly, up to wrappers, or by its
+    leading arguments or flags): the agent ran it, whether or not it said so.
+    """
+
+    if item.value in attempted:
+        return True
+    if item.item_kind is RequestedItemKind.COMMAND:
+        return item.value in matched_commands
+    if item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}:
+        return value_in_attempted(item.value, attempted)
+    return False
 
 
 def reportable_absent_outputs(

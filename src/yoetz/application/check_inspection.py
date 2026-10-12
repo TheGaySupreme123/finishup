@@ -55,7 +55,6 @@ from yoetz.kernel.closure_class import (
 from yoetz.kernel.command_attempts import (
     attempted_items_for_obligation,
     command_attempts,
-    unattempted_item_indexes,
     value_in_attempted,
 )
 from yoetz.kernel.later_material import (
@@ -72,9 +71,7 @@ from yoetz.kernel.observed_failures import (
 )
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.task_facts import (
-    cooperative_event_ids_from_records,
     effective_obligations,
-    observed_planned_commands,
     observed_run_from_command,
     planned_match,
     requested_command_identity,
@@ -182,44 +179,12 @@ def _missing(
     return row
 
 
-def _observed_requested_commands(
-    projection: ProjectionState,
-    records: tuple[LedgerRecord, ...],
-    obligations: Iterable[ObligationClosure],
-) -> frozenset[str]:
-    """The requested commands of these obligations some hook-observed run matched (ADR-045)."""
-
-    values = {
-        item.value
-        for closure in obligations
-        if (record := projection.obligations.get(closure.obligation_id)) is not None
-        and record.payload is not None
-        for item in record.payload.requested_items
-        if item.item_kind is RequestedItemKind.COMMAND
-    }
-    if not values:
-        return frozenset()
-    return observed_planned_commands(
-        projection,
-        observed_event_ids_from_records(records),
-        cooperative_event_ids_from_records(records),
-        values,
-    )
-
-
 def _obligation_missing(
     projection: ProjectionState,
     records: tuple[LedgerRecord, ...],
     closure: ObligationClosure,
-    *,
-    matched_commands: frozenset[str],
 ) -> list[JsonValue]:
-    """What one agent-work obligation still lacks, and whose move it is.
-
-    Requested items without an attempt follow the deterministic policy's own accounting
-    (``unattempted_item_indexes``): an input is never "not attempted", and a requested command a
-    hook-observed run matched (``matched_commands``) was attempted however the agent published it.
-    """
+    """What one agent-work obligation still lacks, and whose move it is."""
 
     record = projection.obligations.get(closure.obligation_id)
     payload = None if record is None else record.payload
@@ -232,7 +197,11 @@ def _obligation_missing(
         return []
     rows: list[JsonValue] = []
     attempted = attempted_items_for_obligation(projection, closure.obligation_id)
-    unattempted = unattempted_item_indexes(payload.requested_items, attempted, matched_commands)
+    unattempted = [
+        index
+        for index, item in enumerate(payload.requested_items)
+        if not value_in_attempted(item.value, attempted)
+    ]
     if unattempted:
         rows.append(_missing("requested_item_not_attempted", "agent", unattempted))
     mismatched: list[int] = []
@@ -275,16 +244,10 @@ def inspection_remaining(
         (item for item in findings if item.closure_class in _FINDING_ORDER),
         key=lambda item: (_FINDING_ORDER[item.closure_class], str(item.finding_id).encode()),
     )
-    listed = open_obligations[:MAX_INSPECTION_ROWS]
-    matched_commands = _observed_requested_commands(
-        projection,
-        records,
-        (item for item in listed if item.closure_class is ObligationClosureClass.AGENT_WORK),
-    )
     obligation_rows: list[JsonValue] = []
-    for item in listed:
+    for item in open_obligations[:MAX_INSPECTION_ROWS]:
         missing = (
-            _obligation_missing(projection, records, item, matched_commands=matched_commands)
+            _obligation_missing(projection, records, item)
             if item.closure_class is ObligationClosureClass.AGENT_WORK
             else []
         )

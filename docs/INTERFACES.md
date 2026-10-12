@@ -8796,11 +8796,8 @@ coverage, versions or `result_frontier`), every leaf structural:
   names `{kind, owner, item_indexes?}` with `kind` `requested_item_not_attempted`,
   `resolution_evidence_not_cited`, `command_attempt_mismatch`, `blocker_unconfirmed` (owner
   `agent`) or `command_run_not_observed` (owner `yoetz`: an asserted command attempt with no
-  linked hook observation); `requested_item_not_attempted` names the items the deterministic
-  `requested_item_never_attempted` accounting counts as unattempted
-  (`kernel/command_attempts.unattempted_item_indexes`: never a `role: input` item, and never a
-  requested command a hook-observed run matched); `findings` (at most 64; `finding_count`) — every
-  finding whose class is not `resolved`, as `{finding_id, closure_class, closure_basis}`.
+  linked hook observation); `findings` (at most 64; `finding_count`) — every finding whose class is
+  not `resolved`, as `{finding_id, closure_class, closure_basis}`.
 - `observed_since_check` — `last_check_frontier` (absent before any check), `action_count`, and
   the newest 64 hook-observed `action_recorded` rows after that frontier whose `later_material`
   class is `edit_or_write`, `exploration`, `non_counting_write` or `other` (Yoetz's own calls and

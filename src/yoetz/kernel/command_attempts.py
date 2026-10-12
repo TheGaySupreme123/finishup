@@ -3,17 +3,10 @@
 from __future__ import annotations
 
 import posixpath
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from yoetz.domain.events import (
-    ActionKind,
-    LedgerRecord,
-    RequestedItem,
-    RequestedItemKind,
-    RequestedItemRole,
-    is_observation_authored,
-)
+from yoetz.domain.events import ActionKind, LedgerRecord, is_observation_authored
 from yoetz.domain.values import ActionId, EventId, ObligationId, ResultId
 from yoetz.kernel.projections import ProjectionState
 from yoetz.protocol.models import StatusCommandAttemptModel
@@ -56,46 +49,6 @@ def value_in_attempted(value: str, attempted: Iterable[str]) -> bool:
 
     items = tuple(attempted)
     return value in items or any(same_requested_path(value, item) for item in items)
-
-
-def requested_item_attempted(
-    item: RequestedItem, attempted: frozenset[str], matched_commands: frozenset[str]
-) -> bool:
-    """Whether one requested item was attempted (ADR-045): named, spelled alike, or observed run.
-
-    A value named in ``attempted_items`` counts exactly as before. A file or directory counts when
-    the agent named the same path in another spelling (``out/x.log`` for ``/app/out/x.log``), and
-    a command counts when a hook-observed run matched it (exactly, up to wrappers, or by its
-    leading arguments or flags; ``matched_commands`` is ``task_facts.observed_planned_commands``):
-    the agent ran it, whether or not it said so.
-    """
-
-    if item.value in attempted:
-        return True
-    if item.item_kind is RequestedItemKind.COMMAND:
-        return item.value in matched_commands
-    if item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}:
-        return value_in_attempted(item.value, attempted)
-    return False
-
-
-def unattempted_item_indexes(
-    items: Sequence[RequestedItem], attempted: frozenset[str], matched_commands: frozenset[str]
-) -> tuple[int, ...]:
-    """The indexes of one obligation's requested items that still have no attempt.
-
-    The one accounting ``requested_item_never_attempted`` and the ``mode: inspect`` check share
-    (ADR-045, ADR-047), so an inspection never names an item the check would not: an item the
-    obligation only reads (``role: input``) is never "not attempted" (tb4n2 E4), and every other
-    item is decided by ``requested_item_attempted``.
-    """
-
-    return tuple(
-        index
-        for index, item in enumerate(items)
-        if getattr(item, "role", None) is not RequestedItemRole.INPUT
-        and not requested_item_attempted(item, attempted, matched_commands)
-    )
 
 
 def attempted_items_for_obligation(
