@@ -1412,6 +1412,108 @@ def test_nested_repository_that_fails_a_fence_is_named_and_not_read(tmp_path: Pa
     assert capture.truncated
 
 
+def _nested_commit(nested: Path, content: str, message: str) -> None:
+    (nested / "server.py").write_text(content, encoding="utf-8")
+    _git(
+        nested,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-am",
+        message,
+    )
+
+
+def test_changed_gitlink_whose_repository_is_not_read_counts_as_not_shown(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a submodule checkout (its ``.git`` is a file) is never opened, so its own
+    change is not shown; the gitlink's commit-id lines alone must not read as a complete change."""
+
+    repository = _repository(tmp_path)
+    nested = repository / "api"
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet", f"--separate-git-dir={tmp_path / 'api.git'}")
+    (nested / "server.py").write_text("def handler():\n    return 'v1'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _nested_commit(nested, "def handler():\n    return 'v1'\n", "nested baseline")
+    _git(repository, "add", "--", "api")
+    _commit(repository, "track api as a gitlink")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    _nested_commit(nested, "SUBMODULE_CANARY = 1\n", "work inside the submodule")
+
+    capture = adapter.capture(os.fspath(repository), base)
+
+    text = _text(capture)
+    assert "SUBMODULE_CANARY" not in text
+    assert "+Subproject commit" in text  # the outer gitlink lines still stand
+    assert (
+        "Nested repository api/: its own change is not shown (its Git configuration or layout is "
+        "not supported)." in text
+    )
+    assert "  M api (+1 -1) not shown: a nested Git repository whose own change was not read" in (
+        text
+    )
+    assert "Changed files: 1 tracked, 0 untracked. Not shown: 1." in text
+    assert capture.omitted_files == 1 and capture.truncated
+
+
+def test_gitlink_added_over_an_untracked_repository_starts_at_its_task_start_head(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: untracked at task start, staged as a new gitlink later. The new gitlink's
+    source commit is Git's null id, which must not hide the snapshot's starting commit."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert [path for path, _ in base.nested] == ["api"]
+    _nested_commit(nested, "def handler():\n    return 'COMMITTED_IN_TASK'\n", "cut over")
+    _git(repository, "add", "--", "api")
+
+    text = _text(adapter.capture(os.fspath(repository), base))
+
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started." in text
+    )
+    assert "diff --git a/api/server.py b/api/server.py" in text
+    assert "-    return 'v1'" in text and "+    return 'COMMITTED_IN_TASK'" in text
+
+
+def test_nested_repository_borrowing_another_store_is_refused_at_task_start(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a ``commondir`` naming another repository is refused before its HEAD is
+    read, so that repository's commit never becomes the task's starting state."""
+
+    repository = _repository(tmp_path)
+    other = _nested_repository(tmp_path, "other")
+    _nested_commit(other, "OTHER_REPOSITORY = 1\n", "another repository's work")
+    other_head = _git(other, "rev-parse", "HEAD").strip()
+    nested = _nested_repository(repository)
+    assert _git(nested, "rev-parse", "HEAD").strip() != other_head
+    (nested / ".git" / "commondir").write_text(os.fspath(other / ".git") + "\n", "utf-8")
+    adapter = GitChangeCaptureAdapter()
+
+    base = adapter.read_task_base(os.fspath(repository))
+
+    assert base.origin == "task_start"
+    assert base.nested == ()
+    assert other_head not in encode_task_change_base(base).decode("utf-8")
+    # Check time refuses the same repository for the same reason.
+    text = _text(adapter.capture(os.fspath(repository), base))
+    assert (
+        "Nested repository api/: its own change is not shown (its Git configuration or layout is "
+        "not supported)." in text
+    )
+
+
 def test_task_input_files_the_statement_names_are_read_only_when_unchanged(
     tmp_path: Path,
 ) -> None:

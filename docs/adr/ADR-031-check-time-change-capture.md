@@ -310,9 +310,11 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    and a SHA-256 digest of its link-free `stat` fields (file type and permission bits, inode, size,
    modification and change time), at most 4096 names and 256 KiB of names; and the HEAD of each
    nested repository among them (an untracked directory Git lists as its own repository), opened
-   with every fence of decision 4, at most 8. No file is opened. Past a bound, or with a name the
-   object cannot hold, the snapshot is incomplete; a snapshot that cannot be taken at all leaves the
-   base exactly as before. The snapshot rides the same encrypted base object (`yoetz.task-change-base/1`,
+   with every fence of decision 4 (the borrowed-store and effective-config refusals included) before
+   its HEAD is resolved, at most 8; one a fence refuses records no HEAD, so no other repository's
+   commit can become its starting state. No file is opened. Past a bound, or with a name the object
+   cannot hold, the snapshot is incomplete; a snapshot that cannot be taken at all leaves the base
+   exactly as before. The snapshot rides the same encrypted base object (`yoetz.task-change-base/1`,
    optional `untracked`, `untracked_complete` and `nested` keys; a base without them keeps its
    bytes). A `first_check` pin never carries one: only the task's own start can say what predates
    it.
@@ -335,8 +337,9 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    may miss commits made in it during the task. Its paths carry its directory (`a/api/server.py`), so
    the deliverable order, the 256 KiB bound, the packet split and the shown-file record treat its
    files as files of the change; the outer one-line entry for an untracked repository gives way to
-   them. A repository that cannot be read keeps that entry ("not shown: a nested Git repository
-   whose own change was not read"), counts as not shown (`check_time_change_truncated`), and the
+   them. A repository that cannot be read keeps its outer entry (that one-line entry, or a changed
+   gitlink's commit-id lines) marked "not shown: a nested Git repository whose own change was not
+   read", counts as not shown (`check_time_change_truncated`), and the
    header names why in one fixed sentence (`nested_limit`, the deadline, or the closed reason of
    decision 8); no Git output is recorded. A repository nested inside a nested one is not read. The
    structural metadata read (requested-output states, test-edit accounting) does not descend into
@@ -355,8 +358,9 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    point-in-time, after the change proved stable. Inputs are stored in the same encrypted
    check-change object (optional `inputs`, so every object without them keeps its bytes), redacted
    one by one with the same detector (one that cannot be fully redacted is dropped; any redaction
-   reports `check_time_change_redacted`), frozen with the job, and never part of the change text or
-   the shown-file record. Nothing about a skipped candidate is returned or recorded.
+   or dropped input reports `check_time_change_redacted`, even when the change text needed none),
+   frozen with the job, and never part of the change text or the shown-file record. Nothing about
+   a skipped candidate is returned or recorded.
 5. **In the packet.** Each input is one `repository_excerpt` item (`task-input-NN`, source kind
    `repository`, source ref `task-input`), linked to the statement event (else to the change's
    links), labelled as a task input the service read, unchanged since the task started and not the

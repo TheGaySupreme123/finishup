@@ -195,6 +195,18 @@ def _change_text(candidate: CandidateContext) -> str:
     return "".join(parts)
 
 
+def _packet_gaps(candidate: CandidateContext) -> list[str]:
+    """The known gaps the review packet the privacy gateway was offered carries."""
+
+    envelope = strict_json_parse(
+        next(item.plaintext for item in candidate.items if item.item_id == REVIEW_PACKET_ITEM_ID)
+    )
+    assert isinstance(envelope, dict)
+    packet = cast(dict[str, object], envelope["review_packet"])
+    coverage = cast(dict[str, object], packet["coverage"])
+    return cast(list[str], coverage["known_gaps"])
+
+
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
@@ -750,3 +762,79 @@ async def test_nested_repository_task_input_and_deliverables_reach_the_recorded_
     assert "task-input-01" in cast(list[str], caller["item_ids"])
     assert "declared-deliverables" in cast(list[str], packet["obligation_item_ids"])
     assert all(scan_exact_bytes(item.plaintext) == () for item in candidate.items)
+
+
+@pytest.mark.anyio
+async def test_changed_submodule_whose_own_change_is_not_read_is_disclosed_as_truncated(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a submodule checkout is never opened, so the check's coverage must say
+    its change was cut even though the gitlink's commit-id lines are shown."""
+
+    repository = _repository(tmp_path)
+    nested = repository / "api"
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet", f"--separate-git-dir={tmp_path / 'api.git'}")
+    (nested / "server.py").write_text("DATABASE = 'legacy'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _git(nested, "commit", "--quiet", "-m", "api baseline")
+    _git(repository, "add", "--", "api")
+    _git(repository, "commit", "--quiet", "-m", "track api")
+    frozen, runtime = await _kea_case(memory_adapter(append_command()), repository)
+    (nested / "server.py").write_text("DATABASE = 'SUBMODULE_CANARY'\n", encoding="utf-8")
+    _git(nested, "commit", "--quiet", "-am", "cut over")
+    privacy = _Privacy(task_id=runtime.task_id, profile=ReviewContextProfile.EXPANDED)
+
+    with check_workspace_source_scope(CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)):
+        waiting = await _evaluator(privacy, runtime)(frozen, (), runtime)
+
+    text = _change_text(privacy.candidates[0])
+    assert "SUBMODULE_CANARY" not in text
+    assert "Nested repository api/: its own change is not shown" in text
+    assert "Not shown: 1." in text
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in _packet_gaps(privacy.candidates[0])
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in waiting.case_content_gaps
+
+
+@pytest.mark.anyio
+async def test_a_redacted_task_input_is_disclosed_even_when_the_change_is_clean(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: redacting only a task input file still reports the redaction."""
+
+    from builders.policy_cases import evt
+    from yoetz.domain.task_statement import RecordedTaskStatement
+
+    repository = _repository(tmp_path)
+    (repository / "spec").mkdir()
+    (repository / "spec" / "RULES.md").write_text(
+        f"# Rules\nRULES_INPUT_MARKER\ndeploy_token = '{_SECRET}'\n", encoding="utf-8"
+    )
+    _git(repository, "add", "--", "spec/RULES.md")
+    _git(repository, "commit", "--quiet", "-m", "rules")
+    frozen, runtime = await _kea_case(memory_adapter(append_command()), repository)
+    _python_rewrite(repository, "String(key)", "`${typeof key}:${String(key)}`")
+    frozen = FrozenCase(
+        replace(
+            frozen.case,
+            task_statement=RecordedTaskStatement(
+                text="Keep numeric and string keys apart; follow spec/RULES.md exactly.",
+                source_event_id=evt(1),
+                source_family="session_opened",
+                ingestion_sequence=1,
+            ),
+        ),
+        frozen.lease,
+    )
+    privacy = _Privacy(task_id=runtime.task_id, profile=ReviewContextProfile.EXPANDED)
+
+    with check_workspace_source_scope(CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)):
+        waiting = await _evaluator(privacy, runtime)(frozen, (), runtime)
+
+    candidate = privacy.candidates[0]
+    assert "[REDACTED]" not in _change_text(candidate)  # the change itself needed nothing
+    task_input = next(item for item in candidate.items if item.item_id == "task-input-01")
+    assert b"RULES_INPUT_MARKER" in task_input.plaintext
+    assert _SECRET.encode() not in task_input.plaintext and b"[REDACTED]" in task_input.plaintext
+    assert CHECK_TIME_CHANGE_REDACTED_GAP in _packet_gaps(candidate)
+    assert CHECK_TIME_CHANGE_REDACTED_GAP in waiting.case_content_gaps

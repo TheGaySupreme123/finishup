@@ -336,12 +336,13 @@ def _redacted(capture: CheckChangeCapture) -> CheckChangeCapture:
     hold more credential-shaped assignments (``token = ...``) than that. Scanning again until a
     pass finds nothing redacts every span; text that still has findings after the pass bound is
     withheld whole, never offered partly redacted. Task input files the read carried (#1045) get
-    the same redaction, each on its own.
+    the same redaction, each on its own; an input redacted or withheld marks the capture
+    ``redacted`` even when the change text needed nothing, so the review discloses it.
     """
 
     inputs = _redacted_inputs(capture.inputs)
     if inputs != capture.inputs:
-        capture = replace(capture, inputs=inputs)
+        capture = replace(capture, inputs=inputs, redacted=True)
     text, redacted = _redacted_text(capture.text)
     if not redacted:
         return capture

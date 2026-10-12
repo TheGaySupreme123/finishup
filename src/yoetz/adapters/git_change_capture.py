@@ -776,10 +776,19 @@ class GitChangeCaptureAdapter:
         return tuple(files), complete, tuple(nested)
 
     def _nested_head(self, pinned: _Workspace, relative: bytes, deadline: float) -> str | None:
-        """HEAD of the nested repository at ``relative`` under the root, or ``None``."""
+        """HEAD of the nested repository at ``relative`` under the root, or ``None``.
+
+        The repository passes every fence its check-time read applies (``_nested_read``) before
+        Git resolves anything in it, so a store borrowed through ``commondir`` or alternates
+        never supplies the starting commit. ``None`` records nothing: the capture then starts
+        from its HEAD and says it may miss commits, or refuses it as it was refused here.
+        """
 
         try:
             nested = self._open_nested(pinned, relative, deadline)
+            # Metadata only, so a borrowed store is refused before Git reads its config.
+            self._refuse_unsafe_object_store(nested)
+            self._refuse_unsafe_config(nested, deadline)
             return self._rev(nested, "HEAD^{commit}", deadline)
         except ChangeCaptureUnavailable:
             return None
@@ -1258,7 +1267,12 @@ class GitChangeCaptureAdapter:
         nested_truncated = False
         for read in nested:
             if read.sections is None:
-                # Its directory keeps its one-line entry; the header says why it was not read.
+                # Its directory keeps its one-line entry, and a changed gitlink its commit-id
+                # lines; either way the repository's own change is not shown and counts so. The
+                # header says why it was not read.
+                for section in tracked.sections:
+                    if section.path == read.path and section.omitted is None:
+                        section.omitted = "nested_repository"
                 continue
             placeholder = next(
                 (
@@ -1337,7 +1351,9 @@ class GitChangeCaptureAdapter:
 
         candidates: dict[bytes, str | None] = {}
         for path, commit in tracked.gitlinks:
-            candidates.setdefault(path, commit)
+            # A gitlink the base tree does not hold (added during the task) has Git's null id as
+            # its source: no recorded commit, so the task-start snapshot's HEAD applies.
+            candidates.setdefault(path, commit if commit.strip("0") else None)
         for section in untracked.sections:
             if section.path.endswith(b"/") and section.text is None:
                 candidates.setdefault(section.path[:-1], None)
