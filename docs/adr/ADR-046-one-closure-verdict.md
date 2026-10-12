@@ -375,8 +375,8 @@ Recorded from the maintainer's decisions of 2026-10-12 (TheGaySupreme123):
 
 `deliverable_references_undeclared_file` (a delivered file that loads a file the change created and
 no item declares, ADR-035) moves from the `G4` disclosure family to its own rule `G0c`: readiness
-`A`, actionable on both routes. It is the 36th changed row (`changed=True`, so the frozen
-base-behaviour test names it); `GAP_CLASSIFICATION_VERSION` is `"8"` (status-result 1.4.0 admits
+`A`, actionable on both routes. It is a changed row (`changed=True`, so the frozen
+base-behaviour test names it; 37 changed rows with #1042's below); `GAP_CLASSIFICATION_VERSION` is `"8"` (status-result 1.4.0 admits
 it, unreleased, in place). Nothing else in the tables changes: the obligation stays `resolved` (the
 dependency is a delivery gap, not a withdrawn file), the receipt reads `insufficient_coverage`
 through `live_gap_bounds` (R10), status reads `action_required`, and the Stop gate continues the
@@ -397,8 +397,8 @@ receipt in three formats, for each tb4n3 shape and its controls);
 
 ## Amendment 2026-10-12 (tb4n4, issues #1042, #1043, #1046)
 
-Two recorded gap codes join the table in place on the unreleased classification `"7"` (215 recorded
-codes plus 3 readiness-only rows): `semantic_process_state_filtered` (G5d, disclosed on both routes,
+Two recorded gap codes join the table in place on the unreleased classification `"8"`, with
+#1044's `G0c` row above (215 recorded codes plus 3 readiness-only rows): `semantic_process_state_filtered` (G5d, disclosed on both routes,
 tolerated by both absence proofs; listed as a changed row because it never bounded) and
 `semantic_review_deferred_before_first_edit` (G7, standing and bounding on both routes, like any
 missing review). The finding kind `agent_criterion_unmet` reads through the existing limitation

@@ -497,8 +497,8 @@ explanation names the ones its resolving check carried. Facts about the delivera
 (`requested_output_*`, `declared_output_*`, `deliverable_references_undeclared_file`), every
 agent-actionable fact and a silent review keep blocking.
 
-Gap table: two recorded codes added (215 recorded + 3 readiness-only rows); the classification
-version stays the unreleased `"7"`. Hosts: the change is in the shared check, kernel and provider
+Gap table: two recorded codes added (215 recorded + 3 readiness-only rows); they ship under the
+unreleased classification version `"8"`, with #1044's `G0c` row (ADR-046). Hosts: the change is in the shared check, kernel and provider
 instruction, so Codex, Claude Code and Cursor behave the same; no host adapter changed. Acceptance
 on the tb4n4 exports (replaying the 60 exports for the wrong-finding and in-frame rates) remains for
 the maintainer.
