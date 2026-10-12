@@ -1859,17 +1859,35 @@ service-side and the same on every host.
 
 ### Inspection check on Codex (#1048)
 
-`check` with `"mode": "inspect"` is a read: it records nothing, mints no finding, runs no review
-and needs no approval, so a lost answer is answered by asking again with a fresh `request_id`. One
-call returns what is left to close (the `status` readiness split, then every unresolved obligation
-and finding with what it lacks and whose move it is), the hook-observed actions since the last
-check, and whether each obligation's resolution evidence links to its declared deliverables or
-requested commands (`evidence_off_declared_items` when it does not). Use it instead of a series of
-`status` reads; no status read or `dry_run` is required before `publish_work`. The startup read is
-the operating card (`agent-instructions.md`); the larger pages are read on demand. ADR-047. Codex has
-no host-specific behavior: the MCP `check` tool (including code mode, with the ordinary `check`
-cell deadline) and `yoetz check` carry the mode. `apply_patch` edits are listed by write class,
-never by path.
+`check` with `"mode": "inspect"` is a read inside Yoetz: it records nothing, mints no finding, runs
+no review and needs no Yoetz disclosure decision, so a lost answer is answered by asking again with
+a fresh `request_id`. One call returns what is left to close (the `status` readiness split, then
+every unresolved obligation and finding with what it lacks and whose move it is), the
+hook-observed actions since the last check, and whether each obligation's resolution evidence links
+to its declared deliverables or requested commands (`evidence_off_declared_items` when it does
+not). Use it instead of a series of `status` reads where Codex admits `check`; no status read or
+`dry_run` is required before `publish_work`. The startup read is the operating card
+(`agent-instructions.md`); the larger pages are read on demand. ADR-047. The MCP `check` tool
+(including code mode, with the ordinary `check` cell deadline) and `yoetz check` carry the mode.
+`apply_patch` edits are listed by write class, never by path.
+
+Host approval is per tool, not per mode. An inspection is a call of the MCP `check` tool, whose
+descriptor is the same for every `mode` (`readOnlyHint: false`; `openWorldHint: true` on the
+policy route), so Codex gates it exactly as it gates any `check`
+([Auto review and host admission](#auto-review-and-host-admission)). On the policy route it needs
+approval under `approval_mode = auto`, the guardian decides it under
+`approvals_reviewer = "auto_review"`, and under approval policy `never` Codex refuses it
+(`MCP tool call requires approval, but approval policy is never`) before Yoetz runs, unless the
+trusted project's admission (`approval_mode = "approve"` for `check`) applies. On the strict route
+(`openWorldHint: false`) Codex does not ask. `status` (`readOnlyHint: true`) needs no approval
+under that rule. Decision: supported behind the `check` gate. A held or refused inspection is a
+host hold with nothing pending in Yoetz and no review to protect, so the agent reads `status`
+(readiness, `view=obligations`) instead and continues; the review-hold rules do not apply to it
+(guidance `review.md`). Capability gap, owner issue #1048: admission needs a policy route and a
+repository grant that permits external review, so on a policy route without that grant an
+inspection costs an approval (or, under policy `never`, a refusal) that the `status` reads it
+replaces do not. Closing it needs a read-only advertisement for inspection: one descriptor per
+tool cannot carry a hint per mode, and a separate tool is the alternative ADR-047 rejected.
 
 ### Closure readiness and standing limitations (#913)
 

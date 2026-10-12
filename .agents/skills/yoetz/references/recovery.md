@@ -23,7 +23,9 @@ id because nothing was written.
 
 When an auto-review host refuses or holds a check, Yoetz did not run. Preserve the exact proposed
 check body and request id; host approval authorizes that invocation only. Do not publish a completion
-claim, request a receipt, or downgrade to `deterministic_only` while approval is pending.
+claim, request a receipt, or downgrade to `deterministic_only` while approval is pending. A held or
+refused inspection (`mode: inspect`) requests no review and leaves nothing pending: read `status`
+instead.
 
 After a named startup repair or retry ends in terminal unavailability, continue only when Yoetz is
 optional, no write or approval is pending, and the user or host permits it; disclose the uncovered

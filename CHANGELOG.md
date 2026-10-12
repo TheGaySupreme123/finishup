@@ -14,7 +14,8 @@ reverse-chronological released versions.
   obligation's resolution evidence links to its declared deliverables or requested commands
   (`evidence_off_declared_items` when it does not); obligations whose evidence has no such link are
   listed first, and the answer counts every obligation and every such case even when the list is
-  shortened. Available through MCP `check` and `yoetz check` on every host (#1048, ADR-047).
+  shortened. Available through MCP `check` and `yoetz check` on every host; your agent host
+  approves it as it approves any `check` call (#1048, ADR-047).
 
 - When the AI-powered reviewer answers `insufficient_packet` and names a recorded run's output, its
   exact command, or a captured edit Yoetz holds but had no room to send, the same check now sends
@@ -258,7 +259,8 @@ reverse-chronological released versions.
 - The startup guidance is a compact operating card, enough for ordinary work; the workflow,
   publication, coverage and request-template pages are read on demand. Reading `status` or
   previewing with `dry_run` before every publish is no longer part of the guidance: a publish that
-  fails validation appends nothing and names every error (#1048).
+  fails validation appends nothing and names what stopped it (for events, the first rejected event
+  and its field), and the agent fixes that and sends it again (#1048).
 
 - `yoetz service run` refuses an unusable configuration with `invalid_request: <reason>` (exit 2),
   like other commands, instead of `internal_error` (#1040).

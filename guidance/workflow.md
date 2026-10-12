@@ -1,7 +1,9 @@
 # Yoetz cooperative workflow
 
-Read before the first `start`, or when resuming without the prior workflow in context. Use the
-current tool schemas; missing schema metadata routes to [request templates](request-templates.md).
+Read when resuming without the prior workflow in context, before delegating, or when a result,
+error or continuation names this page; the [operating card](agent-instructions.md) is enough for
+ordinary work. Use the current tool schemas; missing schema metadata routes to
+[request templates](request-templates.md).
 Yoetz records participant-published facts and checks that bounded record; it does not prove the
 underlying work correct. For operational behavior, this served guidance and the typed result take
 precedence over remembered product behavior. Preserve higher-priority instructions, current user
@@ -130,11 +132,12 @@ Before substantive work, publish the bounded plan, requested outcomes, and accep
 Decompose the user's request into obligations whose `source_refs` cite the task-statement event
 (see [startup](startup.md)); a plan whose obligations never cite it returns an agent-actionable
 `task_requirement_unmet` finding naming that event.
-Read [publication policy](publication-policy.md) before the first `publish_work`; declare explicit
-obligations or the admitted empty-scope reason. Group work into independently reviewable outcomes,
-not one obligation per file. Publish material transitions and evidence as they occur. Delegate only
-when the task warrants and permits it; give each delegate a distinct logical writer and bounded
-assignment, never a transcript. A delegate's summary is a claim, not proof.
+Declare explicit obligations or the admitted empty-scope reason; read
+[publication policy](publication-policy.md) when a result or error names it or an event shape is
+unclear. Group work into independently reviewable outcomes, not one obligation per file. Publish
+material transitions and evidence as they occur. Delegate only when the task warrants and permits
+it; give each delegate a distinct logical writer and bounded assignment, never a transcript. A
+delegate's summary is a claim, not proof.
 
 ## Cadence
 

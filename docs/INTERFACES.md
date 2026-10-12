@@ -8780,10 +8780,12 @@ reviewer and egresses nothing, so the daemon, the MCP bridge and the CLI classif
 by one set of modes (`protocol/recovery.READ_ONLY_CHECK_MODES`): a failure, a timeout included, is
 a retryable read failure answered by a fresh request (`read_timeout_new_identity`, no
 `replay_request_id`), never a same-`request_id` replay, and the daemon never runs it detached. The
-bridge gives it the `status` call deadline. The request model refuses `final_review`,
-`max_findings`, `policy_packs` and `scope` beside it, each at its own field with reason
-`extra_forbidden` (kept out of the JSON Schema: a root conditional lowers the advertised check
-input to `unknown` on observed hosts);
+bridge gives it the `status` call deadline. The MCP `check` descriptor and its annotations are the
+same for every mode, so a host approves, holds or admits an inspection exactly as any `check`
+(ADR-047 host decisions; the host runbooks record each host). The request model refuses
+`final_review`, `max_findings`, `policy_packs` and `scope` beside it, each at its own field with
+reason `extra_forbidden` (kept out of the JSON Schema: a root conditional lowers the advertised
+check input to `unknown` on observed hosts);
 `await_observations` is accepted and reported as on any check. `expected_frontier` is not
 compared. The answer is the `inspection` branch of `check-result` 1.4.0 (`state: inspected`,
 discriminated beside `complete` and `awaiting_human`/`awaiting_input`; no verdict, findings,

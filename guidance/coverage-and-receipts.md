@@ -448,6 +448,11 @@ denial. The cue alone proves neither the grant nor approval. A SessionStart gran
 snapshot, not proof of current authorization at a later hold. For a confirmed grant, propose the
 owner's `yoetz integrate <host> admission grant` as a durable fix; never write it yourself.
 
+An inspection (`check` with `mode: inspect`) is the same host tool, so a host that holds or refuses
+`check` holds or refuses it too, and host admission of `check` admits it. It requests no review,
+so the rules above do not apply to it: nothing is pending in Yoetz, so read `status` instead and
+continue; no fallback choice is needed.
+
 
 ## When a check is waiting on a local decision
 

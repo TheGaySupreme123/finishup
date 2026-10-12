@@ -1,7 +1,8 @@
 # Review topic
 
-Read this topic before the first `check`, when a finding or pending review appears, or when a final
-check must be recovered. A check evaluates only the recorded, readable, frontier-bound packet.
+Read this topic when a check needs more than the operating card: a finding or pending review
+appears, a final check must be recovered, or a result names it. A check evaluates only the
+recorded, readable, frontier-bound packet.
 
 Select `semantic_required` when the user, effective policy, or named acceptance criterion requires
 independent AI-powered review. Omit `mode` for the configured default. Use
@@ -15,7 +16,9 @@ before invocation is not a Yoetz result: Yoetz did not run. Preserve the exact p
 body and `request_id`; host approval authorizes this invocation only. While pending, do not publish a
 completion claim, request a receipt, create a fresh check, or switch mode. After approval, invoke
 the same body and request id. After denial, cancellation, or expiry, continue without review only
-after the user explicitly chooses that fallback.
+after the user explicitly chooses that fallback. A host gates an inspection (`mode: inspect`) like
+any `check` call, but it requests no review: if the host holds or refuses it, nothing is pending in
+Yoetz, so read `status` instead and continue.
 
 `awaiting_human` is nonterminal, neither a gap to disclose nor a retry to spend. Do not create a new
 check request. Read `status view=operation` for the original request, show the exact continuation,

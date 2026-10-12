@@ -1,7 +1,7 @@
 # Receipt topic
 
-Read this topic before closure or final prose. A receipt reports the recorded scope and its limits;
-it is not a pass and never closes work.
+Read this topic when closure or final prose needs more than the operating card, or a result names
+it. A receipt reports the recorded scope and its limits; it is not a pass and never closes work.
 
 Before the final check, publish the completion claim and current evidence, read what is left
 (`check` with `mode: inspect` records nothing; or `status`), answer each unanswered finding, and check the repaired/current record. Answer each finding once; its
