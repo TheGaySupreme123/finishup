@@ -12,26 +12,33 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
 import integration.service.test_semantic_fallback_dispatch as fallback
 import integration.service.test_semantic_non_dispatch as non_dispatch
+import yoetz.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import append_command, memory_adapter, sqlite_adapter
 from builders.policy_cases import evd, res
 from unit.application.test_review_follow_up import (
+    _captured_group_case,  # pyright: ignore[reportPrivateUsage]
     _verification_case,  # pyright: ignore[reportPrivateUsage]
 )
 from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
 from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.application.check import FinalSemanticEvaluation
+from yoetz.application.check import (
+    FinalSemanticEvaluation,
+    _review_follow_up,  # pyright: ignore[reportPrivateUsage]
+)
 from yoetz.application.egress import SemanticEgressProviderOutcome, SemanticEgressSuccess
 from yoetz.application.missing_for_assessment import ReviewFollowUp, plan_review_follow_up
 from yoetz.application.semantic_case import (
     assemble_filtered_review_packet,
     review_packet_disclosure_result,
 )
+from yoetz.application.semantic_content import CapturedContentResolution
 from yoetz.domain.events import MissingForAssessmentItem
 from yoetz.domain.findings import SemanticDispatchKind, SemanticFailureClass
 from yoetz.domain.privacy import (
@@ -181,22 +188,15 @@ def _plan(case: DeterministicCase, first: FinalSemanticEvaluation) -> ReviewFoll
     return follow_up
 
 
-async def _setup(
-    adapter: MemoryLedgerAdapter | SqliteLedger,
-    *,
-    fail_with_output: bool = False,
-    fail_always: bool = False,
-    filler: int = 70,
-    room_cuts: int = 0,
-) -> tuple[DeterministicCase, FrozenCase, TaskRuntime, _ReviewerPrivacy, _FollowUpEvaluator]:
-    durable, runtime = await _durable_semantic_case(adapter)
-    # 70 newer output rows push the superseded first run past the Expanded 64-excerpt count.
-    built, _refs = _verification_case(filler)
-    # The durable lease froze its own one-event frontier; read the same rows at it (their order
-    # then falls back to their ids, which number them in the same order).
+def _at_lease_frontier(built: DeterministicCase, durable: FrozenCase) -> DeterministicCase:
+    """``built`` read at the durable lease's own one-event frontier.
+
+    The rows' order then falls back to their ids, which number them in the same order.
+    """
+
     frontier = durable.lease.frontier
     projection = built.projection
-    case = replace(
+    return replace(
         built,
         frontier=frontier,
         projection=replace(
@@ -221,6 +221,20 @@ async def _setup(
             },
         ),
     )
+
+
+async def _setup(
+    adapter: MemoryLedgerAdapter | SqliteLedger,
+    *,
+    fail_with_output: bool = False,
+    fail_always: bool = False,
+    filler: int = 70,
+    room_cuts: int = 0,
+) -> tuple[DeterministicCase, FrozenCase, TaskRuntime, _ReviewerPrivacy, _FollowUpEvaluator]:
+    durable, runtime = await _durable_semantic_case(adapter)
+    # 70 newer output rows push the superseded first run past the Expanded 64-excerpt count.
+    built, _refs = _verification_case(filler)
+    case = _at_lease_frontier(built, durable)
     privacy = _ReviewerPrivacy(
         task_id=runtime.task_id,
         fail_with_output=fail_with_output,
@@ -383,6 +397,153 @@ async def test_shown_and_added_are_what_the_sent_packets_carried_not_the_compose
     assert again_second is not None
     assert again_second.case_excerpt_refs == second.case_excerpt_refs
     assert privacy.calls == 3
+
+
+_LEAD, _PART = str(evd(20)), str(evd(21))
+_GROUP = f"excerpt-{_LEAD}"
+
+
+class _GroupWithholdingPrivacy(_Privacy):
+    """Its sent packets withhold a captured group's excerpt under the never-send heuristic.
+
+    The omission row names the group by its lead alone; the reviewer asks for the second part.
+    """
+
+    def __init__(self, *, task_id: str) -> None:
+        super().__init__(task_id=task_id, profile=ReviewContextProfile.EXPANDED)
+        self.offered: list[frozenset[str]] = []
+
+    async def evaluate_semantic(self, candidate: object, deadline: object) -> object:
+        del deadline
+        assert type(candidate) is CandidateContext
+        self.calls += 1
+        content = {item.item_id: item.plaintext for item in candidate.items}
+        self.offered.append(frozenset(content))
+        envelope = strict_json_parse(content.pop(REVIEW_PACKET_ITEM_ID))
+        assert isinstance(envelope, dict)
+        held = frozenset({_GROUP}) & frozenset(content)
+        sent = {item_id: text for item_id, text in content.items() if item_id not in held}
+        disclosure = review_packet_disclosure_result(
+            assemble_filtered_review_packet(
+                envelope,
+                content_by_id=sent,
+                included_item_ids=frozenset(sent),
+                withheld_item_ids=held,
+            )
+        ).disclosure
+        assert disclosure is not None
+        binding = cast(ProviderBinding, candidate.provider_binding)
+        digest = candidate.subject_digest
+        assert digest is not None
+        ordinal = self.calls
+        return SemanticEgressSuccess(
+            request_id=candidate.request_id,
+            privacy_proposal_id=f"ppr_55000000-0000-4000-8000-00000000{ordinal:04d}",
+            authorization_id=f"aut_55000000-0000-4000-8000-00000000{ordinal:04d}",
+            dispatch_kind=SemanticDispatchKind.EXTERNAL,
+            result=SemanticResultSuccess(
+                SemanticJudgment(
+                    "insufficient_packet",
+                    (),
+                    missing_for_assessment=(
+                        MissingForAssessment(
+                            "verification_output", (_PART,), "The capture's second part."
+                        ),
+                    ),
+                    review_summary="The captured output is not in the packet.",
+                ),
+                _provenance(binding, status=SemanticStatus.SUCCEEDED, failure_class=None),
+            ),
+            case_digest=digest,
+            privacy_receipt_id=f"egr_55000000-0000-4000-8000-00000000{ordinal:04d}",
+            request_commitment="hmac-sha256:" + "6" * 64,
+            disclosure=disclosure,
+            withheld_item_ids=tuple(held),
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "adapter_factory",
+    (memory_adapter, sqlite_adapter),
+    ids=("memory", "sqlite"),
+)
+async def test_a_privacy_withheld_captured_group_is_withheld_whichever_part_is_named(
+    adapter_factory: Callable[[object], MemoryLedgerAdapter | SqliteLedger],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The evaluation names every part of a group its sent packet withheld (#1047).
+
+    The packet's omission row names the group by its lead; the check still reads a request for
+    the second part as the same privacy limit, live and on recovery, and sends no round for it.
+    """
+
+    built, captured, scope = _captured_group_case(newer=0)
+
+    async def resolve(**kwargs: object) -> CapturedContentResolution:
+        del kwargs
+        return CapturedContentResolution(scope=scope, content=captured, gaps=())
+
+    def workspace(runtime: TaskRuntime) -> str:
+        del runtime
+        return scope.workspace_commitment
+
+    # The group's retained parts, as the observation store would resolve them for this task.
+    monkeypatch.setattr(ready_composition_module, "_observation_workspace_for_runtime", workspace)
+    monkeypatch.setattr(ready_composition_module, "resolve_captured_semantic_content", resolve)
+    adapter = adapter_factory(append_command())
+    durable, runtime = await _durable_semantic_case(adapter)
+    case = _at_lease_frontier(built, durable)
+    privacy = _GroupWithholdingPrivacy(task_id=runtime.task_id)
+    evaluator = cast(
+        _FollowUpEvaluator,
+        _paired_evaluator(cast(Any, privacy), runtime, fallback_binding=None),
+    )
+
+    async def evaluate_semantic_check(
+        frozen: FrozenCase,
+        deterministic_findings: tuple[object, ...],
+        runtime: TaskRuntime | None = None,
+        lineage_evaluation: object | None = None,
+        follow_up: ReviewFollowUp | None = None,
+    ) -> FinalSemanticEvaluation | None:
+        del lineage_evaluation
+        return await evaluator(frozen, deterministic_findings, runtime, follow_up=follow_up)
+
+    app = SimpleNamespace(evaluate_semantic_check=evaluate_semantic_check)
+    request = SimpleNamespace(final_review=False, request_id=durable.lease.operation_id)
+
+    async def loop(result: FinalSemanticEvaluation) -> object:
+        assert result.operation_lease is not None
+        return await _review_follow_up(
+            cast(Any, app),
+            cast(Any, request),
+            runtime,
+            FrozenCase(case, result.operation_lease),
+            (),
+            result,
+            lineage_evaluation=None,
+            require_complete_specification=False,
+            task_fact_gaps=(),
+        )
+
+    first = await evaluator(FrozenCase(case, durable.lease), (), runtime)
+
+    assert first is not None and first.status is SemanticStatus.SUCCEEDED
+    assert privacy.calls == 1 and _GROUP in privacy.offered[0]
+    assert {_LEAD, _PART} <= first.case_privacy_withheld_refs
+    assert first.case_excerpt_refs is not None
+    assert not {_LEAD, _PART} & first.case_excerpt_refs
+    assert await loop(first) is first
+    assert privacy.calls == 1
+
+    # Recovery reads the same refs back from the durable response, over the same case.
+    assert first.operation_lease is not None
+    again = await evaluator(FrozenCase(case, first.operation_lease), (), runtime)
+    assert again is not None and again.judgment == first.judgment
+    assert again.case_privacy_withheld_refs == first.case_privacy_withheld_refs
+    assert await loop(again) is again
+    assert privacy.calls == 1
 
 
 @pytest.mark.anyio
