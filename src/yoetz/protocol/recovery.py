@@ -40,6 +40,7 @@ __all__ = [
     "CLAIM_REVISION_CORRECTIONS",
     "CONTINUATION_TOKENS",
     "LOCAL_REASON_CONTINUATION_PREFIXES",
+    "READ_ONLY_CHECK_MODES",
     "REASON_CODE_DIRECTIVE_EXEMPTIONS",
     "REASON_REMEDIES",
     "RECOVERY_DIRECTIVES",
@@ -67,6 +68,10 @@ type TimeoutOperationKind = Literal["read", "write", "start"]
 WRITE_OPERATIONS: Final[frozenset[str]] = frozenset(
     {"start", "publish_work", "check", "respond", "receipt"}
 )
+# The ``check`` modes that record nothing (ADR-047: ``inspect``). A check in one of them is a read
+# like ``status``: the daemon, the MCP bridge and the CLI all classify it so, and a lost answer is
+# repeated under a new request_id, never replayed as a write that may have committed.
+READ_ONLY_CHECK_MODES: Final[frozenset[str]] = frozenset({"inspect"})
 
 # Bounds chosen against the original 512-byte ASCII ceiling in ``yoetz.mcp.summaries`` (4,096 since
 # ADR-043): an error identity clause plus a reason/location clause plus a directive plus a guidance
@@ -1147,19 +1152,26 @@ _TIMEOUT_CONTINUATIONS: Final[Mapping[TimeoutOperationKind, str]] = MappingProxy
 
 
 def timeout_operation_kind(
-    operation: object, *, write_operations: frozenset[str] = WRITE_OPERATIONS
+    operation: object,
+    *,
+    write_operations: frozenset[str] = WRITE_OPERATIONS,
+    check_mode: object = None,
 ) -> TimeoutOperationKind | None:
     """Classify a timed-out operation name, or None when the name is not a known operation.
 
     ``start`` is a write whose lost response carries no route ids, so it is its own kind: the
     generic write recovery ("read status view=operation") is an instruction a first start cannot
     follow, and the shipped guidance has always excepted it (replay the exact start once).
+    ``check_mode`` is the request's ``mode``: a ``check`` in a ``READ_ONLY_CHECK_MODES`` mode
+    records nothing, so it is a read (ADR-047).
     """
 
     if type(operation) is not str:
         return None
     if operation == "start":
         return "start"
+    if operation == "check" and type(check_mode) is str and check_mode in READ_ONLY_CHECK_MODES:
+        return "read"
     if operation in write_operations:
         return "write"
     return "read"

@@ -16,8 +16,10 @@ wire shape. It grants no runtime, credential, disclosure, egress or destructive-
 `src/yoetz/application/check.py` (`execute_check` routes `mode: inspect` there),
 `src/yoetz/application/status.py` (`current_closure_readiness`),
 `src/yoetz/application/service.py`, `src/yoetz/service/daemon.py` (read-only classification, never
-detached), `src/yoetz/protocol/models.py` (`CheckInspectionModel`, the request refusal, the leaf
-rules), `src/yoetz/protocol/inspection_text.py`, `src/yoetz/cli/render.py`,
+detached), `src/yoetz/protocol/recovery.py` (`READ_ONLY_CHECK_MODES`, `timeout_operation_kind`),
+`src/yoetz/mcp/server.py` and `src/yoetz/cli/bootstrap.py` (a timed-out inspection is a read; the
+bridge's `status` deadline), `src/yoetz/protocol/models.py` (`CheckInspectionModel`, the request
+refusal, the leaf rules), `src/yoetz/protocol/inspection_text.py`, `src/yoetz/cli/render.py`,
 `src/yoetz/mcp/summaries.py`, `src/yoetz/mcp/descriptors.py`, `scripts/generate_schemas.py`,
 `scripts/generate_check_inspection_fixture.py`,
 `guidance/agent-instructions.md` (the operating card), `guidance/publication-policy.md`,
@@ -53,8 +55,13 @@ other resolution evidence.
 
 `inspect` is a value of the existing `check` `mode`, not a new tool or operation. It is a read,
 routed exactly like `status` (payload read; no write capability, no frozen case, no event, no
-operation record, no finding, no reviewer, no egress). The daemon classifies it read-only, so a
-failure is a retryable read failure answered by a fresh request, and never runs it detached.
+operation record, no finding, no reviewer, no egress). The daemon, the MCP bridge and the CLI
+classify it read-only by one set of modes (`READ_ONLY_CHECK_MODES`), so a failure, a timeout
+included, is a retryable read failure answered by a fresh request (continuation
+`read_timeout_new_identity`, no `replay_request_id`), and the daemon never runs it detached. The
+bridge gives it the `status` call deadline (30 seconds by default), not the 300 seconds kept for a
+check that may run an AI-powered review: an inspection waiting on a running review's dispatch gate
+then gets a typed read timeout inside the common 60-second host tool limit.
 **It is not recorded.** `status` reads are not recorded either; an inspection changes nothing that
 closure, a receipt or a later check reads, so an event would only add a record the next
 inspection must classify as Yoetz's own activity.
@@ -165,7 +172,9 @@ declared supervisor command and configuration, an unattempted obligation, observ
 the check) and the aligned case; it asserts the ledger head does not move, every leaf classifies
 structural, and the CLI and MCP texts agree; a keyed observed run of the requested supervisor
 command is named and the bypassing harness run is flagged; an input and an observed requested
-command are never listed as unattempted. Golden vectors CAN-017
+command are never listed as unattempted. `tests/unit/mcp/test_recovery_directive_delivery.py`
+holds the bridge's and the CLI's read classification of a failed inspection and its `status`
+deadline beside an unchanged minting check. Golden vectors CAN-017
 (`fixtures/canonical/check-inspection-1.4.0.case.json`) freeze the request rule and the branch.
 `tests/conformance/surfaces/test_operating_card.py`
 measures the card and holds the guidance changes. The real-data replay of the tb4n4 exports

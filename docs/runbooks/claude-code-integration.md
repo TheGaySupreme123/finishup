@@ -1770,7 +1770,8 @@ rendering is unchanged.
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the
 common 60-second host MCP tool limit; `start`, `publish_work` and `status` keep 30 seconds and
-`check` keeps 300 seconds. Set `YOETZ_MCP_DEADLINE_MS_<TOOL>` (one tool) or
+`check` keeps 300 seconds (a `check` with `mode: inspect` is a read and takes the `status`
+deadline). Set `YOETZ_MCP_DEADLINE_MS_<TOOL>` (one tool) or
 `YOETZ_MCP_DEADLINE_MS` (every tool except `check`) in the MCP server environment to change them;
 values are milliseconds, clamped to 1,000-900,000. Keep them below the host's own tool timeout.
 A timeout may follow a committed write. For `publish_work`, `respond` and `receipt` the bridge
