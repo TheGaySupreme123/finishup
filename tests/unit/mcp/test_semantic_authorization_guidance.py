@@ -32,10 +32,22 @@ def _flat(path: Path) -> str:
 
 
 def _review_guidance(entrypoint: Path) -> str:
-    # Procedures are conditional, but each entrypoint must make their owner reachable.
+    # Procedures are conditional, but each entrypoint must make their owners reachable. Since the
+    # progressive-guidance split (#961) the budgeted skills name only the mandatory core, and the
+    # core names the review owner (coverage-and-receipts) and the closure owner (workflow).
     text = _flat(entrypoint)
+    if entrypoint != _AGENT_INSTRUCTIONS:
+        assert "yoetz://guidance/agent-instructions.md" in text
+        text += " " + _flat(_AGENT_INSTRUCTIONS)
     assert "yoetz://guidance/coverage-and-receipts.md" in text
-    return text + " " + _flat(_REPO_ROOT / "guidance/coverage-and-receipts.md")
+    assert "yoetz://guidance/workflow.md" in text
+    return " ".join(
+        (
+            text,
+            _flat(_REPO_ROOT / "guidance/coverage-and-receipts.md"),
+            _flat(_REPO_ROOT / "guidance/workflow.md"),
+        )
+    )
 
 
 def _skill() -> str:

@@ -16,30 +16,30 @@ row through the real sweeper and observation coordinator into a task ledger.
 from __future__ import annotations
 
 import asyncio
-import io
 import json
-import uuid
-from collections.abc import Iterator
-from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Literal, cast
 
-import apsw
 import pytest
 
-from builders.ledger_adapters import FixedClock, FixedIds, MemoryObjects, ownership_fence
+from builders.codex_replay import (
+    HOST,
+    command_execution,
+    compact,
+    exec_cell,
+    exec_cell_output,
+    replay_cell,  # noqa: F401  # pyright: ignore[reportUnusedImport]  (registers the ``replay`` fixture)
+    rollout_row,
+    running_run,
+    session_start,
+    sweep_all,
+)
+from builders.codex_replay import Recorder as _Recorder
+from builders.codex_replay import Replay as _Replay
+from builders.codex_replay import build_coordinator as _coordinator
 from builders.observed_runs import ObservedLedger, omissions, omitted_results, receipt_limitations
-from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping
 from yoetz.adapters.integrations.observation_admission import build_routine_read_summary
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.memory.importer import MemoryImportState
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application.observation_coordinator import ObservationCoordinator
 from yoetz.application.observation_drain import ObservationOutboxSweeper
 from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.cli import observe_hooks
 from yoetz.domain.events import (
     AcceptedEvent,
     ActionKind,
@@ -53,272 +53,16 @@ from yoetz.domain.observation import (
     ObservationEnvelope,
     ObservationGapCode,
     ObservationIngestRequest,
-    ObservationIngestResult,
     ObservationSource,
 )
-from yoetz.ports.runtime import RuntimeCapability, TaskRuntime
-from yoetz.protocol.canonical import canonical_encode
 from yoetz.protocol.coverage import PublicationChannel
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
-
-HOST = "019f9b27-c1de-7a61-9c5e-5d0b89759417"
-_WALL_START = 1_790_704_600.0
-
-
-def _rollout_row(wrapper: str, payload: dict[str, Any], timestamp: str) -> dict[str, Any]:
-    return {"payload": payload, "timestamp": timestamp, "type": wrapper}
-
-
-def _exec_cell(call_id: str, source: str, timestamp: str) -> dict[str, Any]:
-    """The model's code-mode cell exactly as the 0.157.1 rollout records it."""
-
-    return _rollout_row(
-        "response_item",
-        {
-            "call_id": call_id,
-            "input": source,
-            "name": "exec",
-            "status": "completed",
-            "type": "custom_tool_call",
-        },
-        timestamp,
-    )
-
-
-def _exec_cell_output(call_id: str, result: str, timestamp: str) -> dict[str, Any]:
-    return _rollout_row(
-        "response_item",
-        {
-            "call_id": call_id,
-            "output": [
-                {
-                    "text": "Script completed\nWall time 25.3 seconds\nOutput:\n",
-                    "type": "input_text",
-                },
-                {"text": result, "type": "input_text"},
-            ],
-            "type": "custom_tool_call_output",
-        },
-        timestamp,
-    )
-
-
-def _command_execution(
-    item_id: str, command: str, exit_code: int, timestamp: str
-) -> dict[str, Any]:
-    """The nested ``CommandExecution`` item Codex writes for a code-mode shell call."""
-
-    return _rollout_row(
-        "event_msg",
-        {
-            "completed_at_ms": 1_790_704_690_742,
-            "item": {
-                "command": ["/bin/bash", "-lc", command],
-                "cwd": "file:///app",
-                "duration": {"nanos": 226_084_509, "secs": 23},
-                "exit_code": exit_code,
-                "id": item_id,
-                "parsed_cmd": [{"cmd": command, "type": "unknown"}],
-                "source": "unified_exec_startup",
-                "status": "failed" if exit_code else "completed",
-                "stderr": "",
-                "stdout": "public synthetic output",
-                "type": "CommandExecution",
-            },
-            "started_at_ms": 1_790_704_667_516,
-            "thread_id": HOST,
-            "turn_id": "turn_1",
-            "type": "item_completed",
-        },
-        timestamp,
-    )
-
-
-@dataclass
-class _Replay:
-    """A consented Codex workspace, its rollout, and one task ledger behind a real coordinator."""
-
-    root: Path
-    workspace: Path
-    rollout: Path
-    store: LocalObservationStore
-    commitment: str
-    session: str
-    task_id: str
-    mapping: LifecycleMapping
-    ledger: MemoryLedgerAdapter
-    ids: FixedIds
-    objects: MemoryObjects
-    task_store: SqliteObservationStore
-    wall: list[float] = field(default_factory=lambda: [_WALL_START])
-
-    def append(self, *rows: dict[str, Any]) -> None:
-        with self.rollout.open("ab") as handle:
-            for row in rows:
-                handle.write(json.dumps(row, separators=(",", ":"), sort_keys=True).encode())
-                handle.write(b"\n")
-
-    def hook(self, event: str, **fields: Any) -> None:
-        payload: dict[str, Any] = {
-            "cwd": str(self.workspace),
-            "hook_event_name": event,
-            "model": "gpt-6-sol",
-            "permission_mode": "bypassPermissions",
-            "session_id": HOST,
-            "transcript_path": str(self.rollout),
-            **fields,
-        }
-        assert (
-            observe_hooks.handle_observe(
-                event_name=event,
-                stdin_bytes=canonical_encode(payload),
-                stdout=io.BytesIO(),
-                workspace=str(self.workspace),
-                _state=self.root,
-                skip_service=True,
-            )
-            == 0
-        )
-
-    def advance(self, seconds: float) -> None:
-        self.wall[0] += seconds
-
-    def rows(self, name: str) -> list[AcceptedEvent]:
-        return [
-            row
-            for row in self.ledger._state.records
-            if type(row) is AcceptedEvent and row.schema.name == name
-        ]
-
-
-@pytest.fixture
-def replay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Replay]:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    home = tmp_path / "codex-home"
-    sessions = home / "sessions" / "2026" / "09" / "29"
-    sessions.mkdir(parents=True)
-    home.chmod(0o700)
-    rollout = sessions / f"rollout-2026-09-29T17-54-00-{HOST}.jsonl"
-    rollout.write_bytes(b"")
-    rollout.chmod(0o600)
-    monkeypatch.setenv("CODEX_HOME", str(home))
-    root = tmp_path / "isolated"
-    store = LocalObservationStore(_state=root)
-    commitment = store.workspace_commitment(str(workspace.resolve()))
-    store.grant_consent(commitment)
-    session = store.bind_codex_session(commitment, HOST)
-    task_id = PREFIX_BY_KIND[IdKind.TASK] + str(uuid.uuid4())
-    mapping = LifecycleMapping(
-        mapping_version=1,
-        codex_session_id=HOST,
-        yoetz_task_id=task_id,
-        yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-        yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
-        last_frontier=None,
-    )
-    ids = FixedIds()
-    objects = MemoryObjects(ids)
-    ledger = MemoryLedgerAdapter(
-        task_id=task_id,
-        ownership_fence=ownership_fence(),
-        state=MemoryLedgerState(),
-        import_state=MemoryImportState(),
-        transaction_lock=asyncio.Lock(),
-        clock=FixedClock(),
-        ids=ids,
-        objects=objects,
-    )
-    db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": task_id, "owner_generation": "1"})
-    cell = _Replay(
-        root,
-        workspace,
-        rollout,
-        store,
-        commitment,
-        session,
-        task_id,
-        mapping,
-        ledger,
-        ids,
-        objects,
-        SqliteObservationStore(db),
-    )
-
-    # The admission buffer's five-second pending-attempt deadline runs on the
-    # store's wall clock; the replay advances it the way the host session did.
-    def _replay_wall(_store: LocalObservationStore) -> float:
-        return cell.wall[0]
-
-    monkeypatch.setattr(LocalObservationStore, "_wall_now", _replay_wall)
-    yield cell
-
-
-def _coordinator(cell: _Replay) -> ObservationCoordinator:
-    class _RuntimePort:
-        async def route(self, command: object) -> TaskRuntime:
-            return TaskRuntime(
-                cell.task_id,
-                cast(str, getattr(command, "session_id")),
-                cast(str, getattr(command, "writer_id")),
-                frozenset(
-                    {
-                        RuntimeCapability.STRUCTURAL_READ,
-                        RuntimeCapability.PAYLOAD_READ,
-                        RuntimeCapability.WRITE,
-                    }
-                ),
-                cell.ledger,
-                cell.objects,  # type: ignore[arg-type]
-                object(),  # type: ignore[arg-type]
-                "0.1.0",
-                "0.1.0",
-                "0.1",
-                "1.0.0",
-                ownership_fence(),
-                observation=cell.task_store,
-            )
-
-        async def release(self, released: object) -> None:
-            del released
-
-    class _Coordinator(ObservationCoordinator):
-        async def _enqueue_verification(self, *args: object, **kwargs: object) -> None:  # type: ignore[override]
-            del args, kwargs
-
-        async def _run_advice(self, *args: object, **kwargs: object) -> None:  # type: ignore[override]
-            del args, kwargs
-
-    return _Coordinator(
-        runtime=_RuntimePort(),  # type: ignore[arg-type]
-        local=cell.store,
-        clock=FixedClock(),  # type: ignore[arg-type]
-        ids=cell.ids,  # type: ignore[arg-type]
-        state_root=cell.root,
-        mapping_loader=lambda *_args, **_kwargs: cell.mapping,  # pyright: ignore[reportUnknownLambdaType, reportUnknownArgumentType]
-    )
-
-
-class _Recorder:
-    """Deliver every outbox row to the real coordinator and keep the delivered envelopes."""
-
-    def __init__(self, coordinator: ObservationCoordinator) -> None:
-        self.coordinator = coordinator
-        self.delivered: list[ObservationEnvelope] = []
-
-    async def ingest_request(self, request: ObservationIngestRequest) -> ObservationIngestResult:
-        result = await self.coordinator.ingest_request(request)
-        if result.disposition.value in {"accepted", "duplicate"}:
-            self.delivered.append(request.envelope)
-        return result
 
 
 def _code_mode_session(cell: _Replay) -> dict[str, int]:
     """Drive one realistic code-mode session; return the host calls it made."""
 
     cell.append(
-        _rollout_row(
+        rollout_row(
             "session_meta",
             {
                 "cli_version": "0.157.1",
@@ -334,7 +78,7 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
 
     # Example 1 (#910): one cell, one failing typecheck through tools.exec_command.
     cell.append(
-        _exec_cell(
+        exec_cell(
             "call_cellTypecheck",
             'const r=await tools.exec_command({cmd:"npm run test-type",workdir:"/app"});text(r)\n',
             "2026-09-29T17:57:47.000Z",
@@ -344,7 +88,7 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
     cell.hook("PreToolUse", tool_name="Bash", tool_use_id="call_nTypecheck", tool_input=command)
     cell.advance(23.0)
     cell.append(
-        _command_execution("exec-42439c0d-a", "npm run test-type", 2, "2026-09-29T17:58:10.743Z")
+        command_execution("exec-42439c0d-a", "npm run test-type", 2, "2026-09-29T17:58:10.743Z")
     )
     cell.hook(
         "PostToolUse",
@@ -362,7 +106,7 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
         ),
     )
     cell.append(
-        _exec_cell_output(
+        exec_cell_output(
             "call_cellTypecheck",
             '{"chunk_id":"d74c6f","exit_code":2,"output":"error TS2322"}',
             "2026-09-29T17:58:12.000Z",
@@ -373,7 +117,7 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
     # stay local by contract (#564); each post carries the call.
     cell.advance(2.0)
     cell.append(
-        _exec_cell(
+        exec_cell(
             "call_cellPublish",
             "await tools.mcp__yoetz__publish_work({dry_run:true});"
             "await tools.mcp__yoetz__publish_work({dry_run:false});\n",
@@ -396,14 +140,12 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
             tool_input=publish_input,
             tool_response={"content": [{"text": "published", "type": "text"}], "isError": False},
         )
-    cell.append(
-        _exec_cell_output("call_cellPublish", '{"published":2}', "2026-09-29T17:55:03.582Z")
-    )
+    cell.append(exec_cell_output("call_cellPublish", '{"published":2}', "2026-09-29T17:55:03.582Z"))
 
     # A nested apply_patch and a passing rerun in one cell.
     cell.advance(2.0)
     cell.append(
-        _exec_cell(
+        exec_cell(
             "call_cellPatch",
             'tools.apply_patch("*** Begin Patch\\n*** End Patch");'
             'await tools.exec_command({cmd:"npm run test-type"});\n',
@@ -424,7 +166,7 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
     cell.hook("PreToolUse", tool_name="Bash", tool_use_id="call_nRerun", tool_input=command)
     cell.advance(20.0)
     cell.append(
-        _command_execution("exec-42439c0d-b", "npm run test-type", 0, "2026-09-29T17:59:21.000Z")
+        command_execution("exec-42439c0d-b", "npm run test-type", 0, "2026-09-29T17:59:21.000Z")
     )
     cell.hook(
         "PostToolUse",
@@ -433,13 +175,13 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
         tool_input=command,
         tool_response=json.dumps({"chunk_id": "e1", "exit_code": 0, "output": "ok"}),
     )
-    cell.append(_exec_cell_output("call_cellPatch", '{"exit_code":0}', "2026-09-29T17:59:22.000Z"))
+    cell.append(exec_cell_output("call_cellPatch", '{"exit_code":0}', "2026-09-29T17:59:22.000Z"))
 
     # A routine read whose pre is flushed individually at its five-second
     # deadline (ADR-029) before the read fails.
     cell.advance(2.0)
     cell.append(
-        _exec_cell(
+        exec_cell(
             "call_cellRead",
             'await tools.exec_command({cmd:"cat missing-public.txt"});\n',
             "2026-09-29T17:59:30.000Z",
@@ -452,7 +194,7 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
         cell.commitment, summary_builder=build_routine_read_summary
     )
     cell.append(
-        _command_execution(
+        command_execution(
             "exec-42439c0d-c", "cat missing-public.txt", 1, "2026-09-29T17:59:36.000Z"
         )
     )
@@ -463,7 +205,7 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
         tool_input=read,
         tool_response=json.dumps({"chunk_id": "f1", "exit_code": 1, "output": "No such file"}),
     )
-    cell.append(_exec_cell_output("call_cellRead", '{"exit_code":1}', "2026-09-29T17:59:37.000Z"))
+    cell.append(exec_cell_output("call_cellRead", '{"exit_code":1}', "2026-09-29T17:59:37.000Z"))
     cell.hook("Stop", last_assistant_message="Typecheck rerun passed.", stop_hook_active=False)
     return {"shell": 3, "patch": 1, "mcp": 2, "cells": 4, "stream_items": 3}
 
@@ -609,7 +351,7 @@ async def test_cell_without_tool_hooks_is_still_recorded(replay: _Replay) -> Non
     """
 
     replay.append(
-        _rollout_row(
+        rollout_row(
             "session_meta",
             {
                 "cli_version": "0.157.1",
@@ -623,12 +365,12 @@ async def test_cell_without_tool_hooks_is_still_recorded(replay: _Replay) -> Non
     )
     replay.hook("SessionStart", source="startup")
     replay.append(
-        _exec_cell(
+        exec_cell(
             "call_cellPlan",
             'await tools.update_plan({plan:[{step:"public",status:"completed"}]});\n',
             "2026-09-29T17:54:10.000Z",
         ),
-        _exec_cell_output("call_cellPlan", '{"ok":true}', "2026-09-29T17:54:11.000Z"),
+        exec_cell_output("call_cellPlan", '{"ok":true}', "2026-09-29T17:54:11.000Z"),
     )
     replay.hook("Stop", last_assistant_message="Plan updated.", stop_hook_active=False)
     assert replay.store.codex_tool_hook_count(replay.commitment, replay.session) == 0
@@ -702,7 +444,7 @@ async def test_unhooked_cell_after_hooked_cells_is_still_recorded(replay: _Repla
     """A cell whose tools fire no hook keeps its record even after other cells were hooked."""
 
     replay.append(
-        _rollout_row(
+        rollout_row(
             "session_meta",
             {
                 "cli_version": "0.157.1",
@@ -716,7 +458,7 @@ async def test_unhooked_cell_after_hooked_cells_is_still_recorded(replay: _Repla
     )
     replay.hook("SessionStart", source="startup")
     replay.append(
-        _exec_cell(
+        exec_cell(
             "call_cellHooked",
             'const r=await tools.exec_command({cmd:"npm run test-type"});text(r)\n',
             "2026-09-29T17:57:47.000Z",
@@ -732,13 +474,13 @@ async def test_unhooked_cell_after_hooked_cells_is_still_recorded(replay: _Repla
         tool_response=json.dumps({"chunk_id": "a1", "exit_code": 0, "output": "ok"}),
     )
     replay.append(
-        _exec_cell_output("call_cellHooked", '{"exit_code":0}', "2026-09-29T17:58:12.000Z"),
-        _exec_cell(
+        exec_cell_output("call_cellHooked", '{"exit_code":0}', "2026-09-29T17:58:12.000Z"),
+        exec_cell(
             "call_cellPlan",
             'await tools.update_plan({plan:[{step:"public",status:"completed"}]});\n',
             "2026-09-29T17:58:20.000Z",
         ),
-        _exec_cell_output("call_cellPlan", '{"ok":true}', "2026-09-29T17:58:21.000Z"),
+        exec_cell_output("call_cellPlan", '{"ok":true}', "2026-09-29T17:58:21.000Z"),
     )
     replay.hook("Stop", last_assistant_message="Plan updated.", stop_hook_active=False)
 
@@ -768,19 +510,6 @@ async def test_unhooked_cell_after_hooked_cells_is_still_recorded(replay: _Repla
     )
 
 
-async def _sweep_all(cell: _Replay) -> _Recorder:
-    recorder = _Recorder(_coordinator(cell))
-    sweeper = ObservationOutboxSweeper(cell.store, recorder)
-    try:
-        for _ in range(8):
-            if (await sweeper.sweep()).attempted == 0:
-                break
-    finally:
-        sweeper.close()
-    assert cell.store.list_pending_outbox_rows(cell.commitment) == ()
-    return recorder
-
-
 def _claim_ledger(cell: _Replay) -> ObservedLedger:
     """The task ledger's observed actions/results, in order, ahead of a cooperative claim."""
 
@@ -791,29 +520,12 @@ def _claim_ledger(cell: _Replay) -> ObservedLedger:
     return ledger
 
 
-def _session_start(cell: _Replay) -> None:
-    cell.append(
-        _rollout_row(
-            "session_meta",
-            {
-                "cli_version": "0.157.1",
-                "cwd": str(cell.workspace),
-                "history_mode": "legacy",
-                "id": HOST,
-                "originator": "codex_exec",
-            },
-            "2026-09-29T17:54:00.000Z",
-        )
-    )
-    cell.hook("SessionStart", source="startup")
-
-
 def _hooked_run(cell: _Replay, call: str, item: str, exit_code: int, timestamp: str) -> None:
     """One nested ``tools.exec_command``: its hooks and the rollout's own item for it."""
 
     command = {"command": "npm run test-type"}
     cell.hook("PreToolUse", tool_name="Bash", tool_use_id=call, tool_input=command)
-    cell.append(_command_execution(item, "npm run test-type", exit_code, timestamp))
+    cell.append(command_execution(item, "npm run test-type", exit_code, timestamp))
     cell.hook(
         "PostToolUse",
         tool_name="Bash",
@@ -839,9 +551,9 @@ async def test_hook_and_stream_copies_of_one_command_are_one_run(replay: _Replay
     paths, leaves the claim clean.
     """
 
-    _session_start(replay)
+    session_start(replay)
     _hooked_run(replay, "call_red", "exec-910-red", 2, "2026-09-29T17:58:10.000Z")
-    recorder = await _sweep_all(replay)
+    recorder = await sweep_all(replay)
     actions = [cast(ActionRecordedPayload, row.payload) for row in replay.rows("action_recorded")]
     results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
     assert len(actions) == 1 and len(results) == 1
@@ -853,8 +565,12 @@ async def test_hook_and_stream_copies_of_one_command_are_one_run(replay: _Replay
         if envelope.event_kind == "item_completed"
     ]
     assert len(held) == 1
-    assert held[0].structural_payload["command_commitment"] == actions[0].command.removeprefix(
-        "omitted:"
+    # The action's command field is the whole-command commitment, then (for a composed command or
+    # a simple one with arguments) its composition and segment commitments (#977, ADR-045): the
+    # rollout copy holds the whole-command commitment, which is the field's first word.
+    assert (
+        held[0].structural_payload["command_commitment"]
+        == (actions[0].command.removeprefix("omitted:").split(" ", 1)[0])
     )
     assert held[0].source_identity not in {item.source_identity for item in recorder.delivered}
     accounting = replay.store.selection_accounting(replay.commitment)
@@ -865,7 +581,7 @@ async def test_hook_and_stream_copies_of_one_command_are_one_run(replay: _Replay
     assert omitted_results(red_latest) == (results[0].result_id,)
 
     _hooked_run(replay, "call_green", "exec-910-green", 0, "2026-09-29T17:59:10.000Z")
-    await _sweep_all(replay)
+    await sweep_all(replay)
     assert len(replay.rows("result_recorded")) == 2
     green = _claim_ledger(replay)
     green.claim(versioned=True)
@@ -876,14 +592,14 @@ async def test_hook_and_stream_copies_of_one_command_are_one_run(replay: _Replay
 async def test_stream_only_command_items_are_recorded_with_outcomes(replay: _Replay) -> None:
     """Without tool hooks the rollout items are the only record, so they are delivered."""
 
-    _session_start(replay)
+    session_start(replay)
     replay.append(
-        _command_execution("exec-910-a", "npm run test-type", 2, "2026-09-29T17:58:10.000Z"),
-        _command_execution("exec-910-b", "npm run  test-type", 0, "2026-09-29T17:59:10.000Z"),
+        command_execution("exec-910-a", "npm run test-type", 2, "2026-09-29T17:58:10.000Z"),
+        command_execution("exec-910-b", "npm run  test-type", 0, "2026-09-29T17:59:10.000Z"),
     )
     replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
     assert replay.store.codex_tool_hook_count(replay.commitment, replay.session) == 0
-    await _sweep_all(replay)
+    await sweep_all(replay)
     actions = [cast(ActionRecordedPayload, row.payload) for row in replay.rows("action_recorded")]
     results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
     assert [(item.outcome, item.exit_status) for item in results] == [
@@ -896,39 +612,17 @@ async def test_stream_only_command_items_are_recorded_with_outcomes(replay: _Rep
     assert omissions(ledger) == ()
 
 
-def _running_run(cell: _Replay, call: str) -> None:
-    """A nested exec_command whose process outlives its yield window: the hook states no exit."""
-
-    command = {"command": "cargo test"}
-    cell.hook("PreToolUse", tool_name="Bash", tool_use_id=call, tool_input=command)
-    cell.hook(
-        "PostToolUse",
-        tool_name="Bash",
-        tool_use_id=call,
-        tool_input=command,
-        tool_response=json.dumps(
-            {
-                "chunk_id": call[-6:],
-                "original_token_count": 0,
-                "output": "public synthetic output",
-                "session_id": 3,
-                "wall_time_seconds": 10.0,
-            }
-        ),
-    )
-
-
 @pytest.mark.anyio
 async def test_held_item_corrects_an_outcome_less_hook_result_when_ids_join(
     replay: _Replay,
 ) -> None:
     """ADR-022 decision 15 on the real reader path: the gate never holds the only outcome."""
 
-    _session_start(replay)
-    _running_run(replay, "call_join")
-    replay.append(_command_execution("call_join", "cargo test", 101, "2026-09-29T18:00:10.000Z"))
+    session_start(replay)
+    running_run(replay, "call_join")
+    replay.append(command_execution("call_join", "cargo test", 101, "2026-09-29T18:00:10.000Z"))
     replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
-    await _sweep_all(replay)
+    await sweep_all(replay)
     actions = replay.rows("action_recorded")
     results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
     assert len(actions) == 1
@@ -942,13 +636,11 @@ async def test_held_item_corrects_an_outcome_less_hook_result_when_ids_join(
 async def test_still_running_hook_result_is_completed_from_the_rollout(replay: _Replay) -> None:
     """Delay, not drop: an exit the hook never saw reaches the ledger from the rollout item."""
 
-    _session_start(replay)
-    _running_run(replay, "call_long")
-    replay.append(
-        _command_execution("exec-910-long", "cargo test", 101, "2026-09-29T18:00:10.000Z")
-    )
+    session_start(replay)
+    running_run(replay, "call_long")
+    replay.append(command_execution("exec-910-long", "cargo test", 101, "2026-09-29T18:00:10.000Z"))
     replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
-    await _sweep_all(replay)
+    await sweep_all(replay)
     results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
     assert (ResultOutcome.FAILURE, 101) in [(item.outcome, item.exit_status) for item in results]
 
@@ -957,10 +649,10 @@ async def test_still_running_hook_result_is_completed_from_the_rollout(replay: _
 async def test_stream_only_patch_item_does_not_retire_a_failure(replay: _Replay) -> None:
     """A rollout ``FileChange`` is an edit, but #909 still requires a covering rerun."""
 
-    _session_start(replay)
+    session_start(replay)
     replay.append(
-        _command_execution("exec-910-red", "npm run test-type", 2, "2026-09-29T17:58:10.000Z"),
-        _rollout_row(
+        command_execution("exec-910-red", "npm run test-type", 2, "2026-09-29T17:58:10.000Z"),
+        rollout_row(
             "event_msg",
             {
                 "completed_at_ms": 1_790_704_700_000,
@@ -982,7 +674,7 @@ async def test_stream_only_patch_item_does_not_retire_a_failure(replay: _Replay)
     )
     replay.hook("Stop", last_assistant_message="Fixed.", stop_hook_active=False)
     assert replay.store.codex_tool_hook_count(replay.commitment, replay.session) == 0
-    await _sweep_all(replay)
+    await sweep_all(replay)
     kinds = [
         cast(ActionRecordedPayload, row.payload).action_kind
         for row in replay.rows("action_recorded")
@@ -1011,13 +703,11 @@ async def test_same_command_calls_each_keep_their_only_exit(
     id that joins neither hook call, is delivered as the first call's only exit.
     """
 
-    _session_start(replay)
-    _running_run(replay, "call_first")
+    session_start(replay)
+    running_run(replay, "call_first")
     command = {"command": "cargo test"}
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_second", tool_input=command)
-    replay.append(
-        _command_execution("exec-910-second", "cargo test", 0, "2026-09-29T18:00:05.000Z")
-    )
+    replay.append(command_execution("exec-910-second", "cargo test", 0, "2026-09-29T18:00:05.000Z"))
     replay.hook(
         "PostToolUse",
         tool_name="Bash",
@@ -1034,10 +724,10 @@ async def test_same_command_calls_each_keep_their_only_exit(
         ),
     )
     replay.append(
-        _command_execution("exec-910-first", "cargo test", first_exit, "2026-09-29T18:00:10.000Z")
+        command_execution("exec-910-first", "cargo test", first_exit, "2026-09-29T18:00:10.000Z")
     )
     replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
-    recorder = await _sweep_all(replay)
+    recorder = await sweep_all(replay)
     results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
     facts = sorted(((item.outcome.value, item.exit_status) for item in results), key=repr)
     expected_stream = (
@@ -1101,14 +791,14 @@ async def test_item_read_before_its_outcome_less_post_is_released_once(
     already moved past it and a later stream row may already have reached the task.
     """
 
-    _session_start(replay)
+    session_start(replay)
     command = {"command": "cargo test"}
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_before_post", tool_input=command)
-    replay.append(_command_execution(item_id, "cargo test", 101, "2026-09-29T18:00:10.000Z"))
+    replay.append(command_execution(item_id, "cargo test", 101, "2026-09-29T18:00:10.000Z"))
     if later_row:
         # A stream-only tool row after the item, delivered before the item is decided.
         replay.append(
-            _rollout_row(
+            rollout_row(
                 "response_item",
                 {
                     "arguments": json.dumps({"command": ["ls"]}),
@@ -1118,7 +808,7 @@ async def test_item_read_before_its_outcome_less_post_is_released_once(
                 },
                 "2026-09-29T18:00:11.000Z",
             ),
-            _rollout_row(
+            rollout_row(
                 "response_item",
                 {"call_id": "call_stream_only", "output": "x", "type": "function_call_output"},
                 "2026-09-29T18:00:12.000Z",
@@ -1126,7 +816,7 @@ async def test_item_read_before_its_outcome_less_post_is_released_once(
         )
     _interleaved_pre(replay)
     if later_row:
-        await _sweep_all(replay)
+        await sweep_all(replay)
     replay.hook(
         "PostToolUse",
         tool_name="Bash",
@@ -1144,9 +834,9 @@ async def test_item_read_before_its_outcome_less_post_is_released_once(
     )
     _interleaved_post(replay)
     replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
-    recorder = await _sweep_all(replay)
+    recorder = await sweep_all(replay)
     replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
-    recorder_again = await _sweep_all(replay)
+    recorder_again = await sweep_all(replay)
     results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
     facts = [(item.outcome, item.exit_status) for item in results]
     assert facts.count((ResultOutcome.FAILURE, 101)) == 1
@@ -1169,11 +859,11 @@ async def test_item_read_before_its_outcome_less_post_is_released_once(
 async def test_item_read_before_its_stated_post_stays_one_run(replay: _Replay) -> None:
     """The ordinary copy read ahead of its post settles as that post's copy, never delivered."""
 
-    _session_start(replay)
+    session_start(replay)
     command = {"command": "npm run test-type"}
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_red", tool_input=command)
     replay.append(
-        _command_execution("exec-910-red", "npm run test-type", 2, "2026-09-29T17:58:10.000Z")
+        command_execution("exec-910-red", "npm run test-type", 2, "2026-09-29T17:58:10.000Z")
     )
     _interleaved_pre(replay)
     assert len(replay.store.pending_rollout_items(replay.commitment, replay.session)) == 1
@@ -1194,7 +884,7 @@ async def test_item_read_before_its_stated_post_stays_one_run(replay: _Replay) -
     )
     _interleaved_post(replay)
     replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
-    recorder = await _sweep_all(replay)
+    recorder = await sweep_all(replay)
     results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
     assert [(item.outcome, item.exit_status) for item in results].count(
         (ResultOutcome.FAILURE, 2)
@@ -1236,12 +926,12 @@ async def test_parallel_same_command_runs_keep_each_outcome(
     exit, whether the items are read before or after the posts, and in either item order.
     """
 
-    _session_start(replay)
+    session_start(replay)
     command = {"command": "cargo test"}
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_run_a", tool_input=command)
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_run_b", tool_input=command)
-    item_a = _command_execution("exec-910-run-a", "cargo test", 1, "2026-09-29T18:00:20.000Z")
-    item_b = _command_execution("exec-910-run-b", "cargo test", 0, "2026-09-29T18:00:10.000Z")
+    item_a = command_execution("exec-910-run-a", "cargo test", 1, "2026-09-29T18:00:20.000Z")
+    item_b = command_execution("exec-910-run-b", "cargo test", 0, "2026-09-29T18:00:10.000Z")
     items = (item_b, item_a) if b_item_first else (item_a, item_b)
     if items_first:
         replay.append(*items)
@@ -1254,7 +944,7 @@ async def test_parallel_same_command_runs_keep_each_outcome(
         _interleaved_pre(replay)
     _interleaved_post(replay)
     replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
-    recorder = await _sweep_all(replay)
+    recorder = await sweep_all(replay)
     results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
     facts = [(item.outcome, item.exit_status) for item in results]
     assert facts.count((ResultOutcome.FAILURE, 1)) == 1
@@ -1299,11 +989,11 @@ async def test_pending_item_evicted_from_the_envelope_ring_is_delivered_unpaired
 
     from yoetz.adapters.integrations import observation_local
 
-    _session_start(replay)
+    session_start(replay)
     command = {"command": "cargo test"}
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_evicted", tool_input=command)
     replay.append(
-        _command_execution("exec-910-evicted", "cargo test", 101, "2026-09-29T18:00:10.000Z")
+        command_execution("exec-910-evicted", "cargo test", 101, "2026-09-29T18:00:10.000Z")
     )
     _interleaved_pre(replay)
     assert len(replay.store.pending_rollout_items(replay.commitment, replay.session)) == 1
@@ -1319,7 +1009,7 @@ async def test_pending_item_evicted_from_the_envelope_ring_is_delivered_unpaired
         for envelope in replay.store.list_envelopes(replay.commitment)
     )
     replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
-    recorder = await _sweep_all(replay)
+    recorder = await sweep_all(replay)
     # Its pairing is unproven, so it is unpaired evidence, not an attributed run.
     assert _unpaired_evidence(replay) == ["Unpaired observed tool result exit=101"]
     assert _unpaired_items(recorder) == [101]
@@ -1335,7 +1025,7 @@ async def test_pending_items_over_the_bound_are_delivered_unpaired(
     from yoetz.adapters.integrations import codex_session_stream
 
     monkeypatch.setattr(codex_session_stream, "MAX_PENDING_ROLLOUT_ITEMS", 1, raising=False)
-    _session_start(replay)
+    session_start(replay)
     replay.hook(
         "PreToolUse", tool_name="Bash", tool_use_id="call_old", tool_input={"command": "make"}
     )
@@ -1343,8 +1033,8 @@ async def test_pending_items_over_the_bound_are_delivered_unpaired(
         "PreToolUse", tool_name="Bash", tool_use_id="call_new", tool_input={"command": "cargo test"}
     )
     replay.append(
-        _command_execution("exec-910-old", "make", 2, "2026-09-29T18:00:10.000Z"),
-        _command_execution("exec-910-new", "cargo test", 0, "2026-09-29T18:00:11.000Z"),
+        command_execution("exec-910-old", "make", 2, "2026-09-29T18:00:10.000Z"),
+        command_execution("exec-910-new", "cargo test", 0, "2026-09-29T18:00:11.000Z"),
     )
     _interleaved_pre(replay)
     # The next reconcile finds two undecided items over a bound of one.
@@ -1353,7 +1043,7 @@ async def test_pending_items_over_the_bound_are_delivered_unpaired(
     _post(replay, "call_old", "make", 2)
     _post(replay, "call_new", "cargo test", 0)
     replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
-    recorder = await _sweep_all(replay)
+    recorder = await sweep_all(replay)
     assert _unpaired_items(recorder) == [2]
     assert _unpaired_evidence(replay) == ["Unpaired observed tool result exit=2"]
     assert replay.store.pending_rollout_items(replay.commitment) == ()
@@ -1417,13 +1107,13 @@ async def test_item_whose_owed_post_left_the_ring_is_disclosed_not_dropped(
     B's stated post then proves only B's item; A's item is delivered as unpaired evidence.
     """
 
-    _session_start(replay)
+    session_start(replay)
     command = {"command": "cargo test"}
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_run_a", tool_input=command)
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_run_b", tool_input=command)
     _post(replay, "call_run_a", "cargo test", None)
-    item_a = _command_execution("exec-910-run-a", "cargo test", 1, "2026-09-29T18:00:20.000Z")
-    item_b = _command_execution("exec-910-run-b", "cargo test", 0, "2026-09-29T18:00:10.000Z")
+    item_a = command_execution("exec-910-run-a", "cargo test", 1, "2026-09-29T18:00:20.000Z")
+    item_b = command_execution("exec-910-run-b", "cargo test", 0, "2026-09-29T18:00:10.000Z")
     replay.append(*((item_b, item_a) if b_item_first else (item_a, item_b)))
     _interleaved_pre(replay)
     assert len(replay.store.pending_rollout_items(replay.commitment, replay.session)) == 2
@@ -1431,7 +1121,7 @@ async def test_item_whose_owed_post_left_the_ring_is_disclosed_not_dropped(
     assert _hook_rows(replay, "PostToolUse", "call_run_a") == []
     _post(replay, "call_run_b", "cargo test", 0)
     replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
-    await _sweep_all(replay)
+    await sweep_all(replay)
     assert _disclosed_failure(replay, 1)
     assert replay.store.pending_rollout_items(replay.commitment) == ()
 
@@ -1442,14 +1132,14 @@ async def test_item_whose_post_follows_the_turn_end_is_disclosed_not_dropped(
 ) -> None:
     """#910: Stop stored before the call's post leaves no proof of copy; the exit is disclosed."""
 
-    _session_start(replay)
+    session_start(replay)
     command = {"command": "cargo test"}
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_late", tool_input=command)
-    replay.append(_command_execution("exec-910-late", "cargo test", 1, "2026-09-29T18:00:10.000Z"))
+    replay.append(command_execution("exec-910-late", "cargo test", 1, "2026-09-29T18:00:10.000Z"))
     _interleaved_pre(replay)
     replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
     _post(replay, "call_late", "cargo test", None)
-    await _sweep_all(replay)
+    await sweep_all(replay)
     assert _disclosed_failure(replay, 1)
     assert replay.store.pending_rollout_items(replay.commitment) == ()
 
@@ -1464,20 +1154,20 @@ async def test_evicted_pre_of_a_parallel_run_keeps_it_open(
     post must not take B's item as A's exit, and A's exit-1 item must reach the ledger.
     """
 
-    _session_start(replay)
+    session_start(replay)
     command = {"command": "cargo test"}
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_run_a", tool_input=command)
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_run_b", tool_input=command)
-    replay.append(_command_execution("exec-910-run-b", "cargo test", 0, "2026-09-29T18:00:10.000Z"))
+    replay.append(command_execution("exec-910-run-b", "cargo test", 0, "2026-09-29T18:00:10.000Z"))
     _interleaved_pre(replay)
     _flood_until_items_are_oldest(replay, monkeypatch)
     assert _hook_rows(replay, "PreToolUse", "call_run_a") == []
     assert _hook_rows(replay, "PreToolUse", "call_run_b") == []
     _post(replay, "call_run_a", "cargo test", None)
-    replay.append(_command_execution("exec-910-run-a", "cargo test", 1, "2026-09-29T18:00:20.000Z"))
+    replay.append(command_execution("exec-910-run-a", "cargo test", 1, "2026-09-29T18:00:20.000Z"))
     _post(replay, "call_run_b", "cargo test", 0)
     replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
-    recorder = await _sweep_all(replay)
+    recorder = await sweep_all(replay)
     assert _disclosed_failure(replay, 1)
     delivered = [
         envelope.structural_payload.get("exit_status")
@@ -1503,11 +1193,11 @@ async def test_item_of_a_silent_session_is_released_after_idle_reconciles(
         reconcile_session_stream,
     )
 
-    _session_start(replay)
+    session_start(replay)
     command = {"command": "cargo test"}
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_run_a", tool_input=command)
     replay.hook("PreToolUse", tool_name="Bash", tool_use_id="call_run_b", tool_input=command)
-    replay.append(_command_execution("exec-910-run-a", "cargo test", 1, "2026-09-29T18:00:20.000Z"))
+    replay.append(command_execution("exec-910-run-a", "cargo test", 1, "2026-09-29T18:00:20.000Z"))
     _post(replay, "call_run_a", "cargo test", None)
     # B never finishes and the session stores nothing more: a crash.
     assert len(replay.store.pending_rollout_items(replay.commitment)) == 1
@@ -1526,7 +1216,7 @@ async def test_item_of_a_silent_session_is_released_after_idle_reconciles(
     assert len(replay.store.pending_rollout_items(replay.commitment)) == 1
     reconcile()
     assert replay.store.pending_rollout_items(replay.commitment) == ()
-    await _sweep_all(replay)
+    await sweep_all(replay)
     assert _disclosed_failure(replay, 1)
 
 
@@ -1543,7 +1233,7 @@ async def test_concurrent_pre_and_post_deliveries_record_one_action(
     """
 
     replay.append(
-        _rollout_row(
+        rollout_row(
             "session_meta",
             {
                 "cli_version": "0.157.1",
@@ -1648,3 +1338,76 @@ async def test_concurrent_pre_and_post_deliveries_record_one_action(
     # its own read then saw the action the first delivery committed.
     assert lock.contended.is_set()
     assert len(lookups) == 2 and lookups[0] is None and lookups[1] is not None
+
+
+@pytest.mark.anyio
+async def test_compaction_keeps_folding_stream_outcomes_into_hook_calls(
+    replay: _Replay,
+) -> None:
+    """#1019 (tb4n2 N-1, pretrain D): a post-compaction outcome still corrects its hook call.
+
+    Before the fix every shell call after the compact start became two actions: the hook's
+    ``Bash`` row with an unknown outcome and a separate stream ``CommandExecution`` action.
+    """
+
+    session_start(replay)
+    running_run(replay, "call_before")
+    replay.append(command_execution("call_before", "cargo test", 101, "2026-09-29T18:00:10.000Z"))
+    await sweep_all(replay)
+    compact(replay)
+    hook_generation = replay.store.current_session_generation(replay.commitment, replay.session)
+    assert hook_generation == 2
+    running_run(replay, "call_after")
+    replay.append(command_execution("call_after", "cargo test", 0, "2026-09-29T18:05:10.000Z"))
+    replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
+    await sweep_all(replay)
+    actions = [cast(ActionRecordedPayload, row.payload) for row in replay.rows("action_recorded")]
+    results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
+    assert len(actions) == 2
+    assert all(item.action_kind is ActionKind.COMMAND for item in actions)
+    by_action: dict[str, list[tuple[ResultOutcome, int | None]]] = {}
+    for item in results:
+        by_action.setdefault(str(item.action_id), []).append((item.outcome, item.exit_status))
+    assert sorted(by_action.values(), key=repr) == sorted(
+        [
+            [(ResultOutcome.UNKNOWN, None), (ResultOutcome.FAILURE, 101)],
+            [(ResultOutcome.UNKNOWN, None), (ResultOutcome.SUCCESS, 0)],
+        ],
+        key=repr,
+    )
+    # Every unknown hook row is superseded by its stream outcome: none stays unknown alone.
+    assert all(
+        any(outcome is not ResultOutcome.UNKNOWN for outcome, _ in facts)
+        for facts in by_action.values()
+    )
+    # A replay of the whole outbox is idempotent: no second action, no second correction.
+    await sweep_all(replay)
+    assert len(replay.rows("action_recorded")) == 2
+    assert len(replay.rows("result_recorded")) == 4
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mismatch", ["call_id", "command"])
+async def test_compaction_alias_never_folds_a_different_call_or_command(
+    replay: _Replay, mismatch: str
+) -> None:
+    """#1019 guard: a different call id or command commitment never corrects the hook call."""
+
+    session_start(replay)
+    compact(replay)
+    running_run(replay, "call_after")
+    item = "call_other" if mismatch == "call_id" else "call_after"
+    command = "cargo test" if mismatch == "call_id" else "cargo build"
+    replay.append(command_execution(item, command, 0, "2026-09-29T18:05:10.000Z"))
+    replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
+    await sweep_all(replay)
+    actions = [cast(ActionRecordedPayload, row.payload) for row in replay.rows("action_recorded")]
+    results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
+    hook_action = next(item.action_id for item in actions if "Codex hook" in item.description)
+    hook_facts = [
+        (item.outcome, item.exit_status) for item in results if item.action_id == hook_action
+    ]
+    # The hook call keeps its unknown outcome; the success belongs to another action.
+    assert hook_facts == [(ResultOutcome.UNKNOWN, None)]
+    assert len(actions) == 2
+    assert (ResultOutcome.SUCCESS, 0) in [(item.outcome, item.exit_status) for item in results]

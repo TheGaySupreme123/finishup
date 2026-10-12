@@ -291,8 +291,8 @@ async def test_public_coordination_context_finding_disposition_and_recheck(
         assert finding.policy_id == "coordination"
         assert checked.versions.policy_packs == (
             "coordination/0.1.0",
-            "research-evidence/0.1.0",
-            "work-integrity/0.1.0",
+            "research-evidence/0.2.0",
+            "work-integrity/0.3.0",
         )
 
         acknowledged = await service.app.respond(

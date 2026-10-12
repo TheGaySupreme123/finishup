@@ -407,7 +407,9 @@ Code, or Cursor to connect, sign in, or repair one. When intent is recorded and 
 structurally unusable, `connect_provider` is still produced, including when the fact has no factory
 id. Delivery stays on the standing session-boundary channels: Codex and Claude Code `SessionStart`
 and `Stop`, and Cursor `sessionStart`. `PostToolUse` does not carry it. Cursor `stop` still does
-not emit `followup_message`. No privacy widening, provider connection, or credential action is implied.
+not emit `followup_message` for advice. No privacy widening, provider connection, or credential action is implied.
+The one later exception is the Stop-time closure gate (ADR-033, #977): Codex `decision: block`,
+Claude Code `additionalContext`, and Cursor `followup_message`, once per ledger frontier.
 
 **Amendment (2026-08-14):** Hook advice delivery no longer falls back to the workspace-wide
 `advice_snapshot` for task-scoped conditions. Before a Codex session is mapped, task-scoped

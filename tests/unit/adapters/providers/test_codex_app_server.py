@@ -35,7 +35,10 @@ from yoetz.adapters.providers.codex_app_server import (
     CodexRuntimeStatus,
 )
 from yoetz.adapters.providers.data_use_catalog import data_use_record_for_endpoint
-from yoetz.adapters.providers.openai_responses import SEMANTIC_REVIEW_INSTRUCTION
+from yoetz.adapters.providers.openai_responses import (
+    JUDGMENT_JSON_SCHEMA,
+    SEMANTIC_REVIEW_INSTRUCTION,
+)
 from yoetz.domain.findings import SemanticFailureClass
 from yoetz.domain.privacy import (
     ApprovedOutboundCase,
@@ -288,7 +291,7 @@ def test_local_binding_rejects_a_mac_cell_on_linux_before_file_access(
         _profile().verify_local_binding()
 
 
-def test_codex_output_schema_omits_only_provider_rejected_uniqueness_keyword() -> None:
+def test_codex_output_schema_omits_provider_rejected_keywords() -> None:
     def keys(value: object) -> set[str]:
         if type(value) is dict:
             source = cast(dict[str, object], value)
@@ -303,10 +306,9 @@ def test_codex_output_schema_omits_only_provider_rejected_uniqueness_keyword() -
             return result
         return set()
 
-    assert "uniqueItems" in keys(module.JUDGMENT_JSON_SCHEMA)
-    assert "uniqueItems" not in keys(
-        module._CODEX_JUDGMENT_JSON_SCHEMA  # pyright: ignore[reportPrivateUsage]
-    )
+    assert "uniqueItems" in keys(JUDGMENT_JSON_SCHEMA)
+    sent = keys(module._CODEX_JUDGMENT_JSON_SCHEMA)  # pyright: ignore[reportPrivateUsage]
+    assert not {"allOf", "default", "if", "not", "then", "uniqueItems"} & sent
 
 
 def _case() -> ApprovedOutboundCase:
@@ -454,7 +456,9 @@ class _Runtime:
                     "item": {
                         "type": "agentMessage",
                         "text": (
-                            '{"conclusion":"no_material_discrepancy","reviewer_challenges":[],"prior_finding_verdicts":[]}'
+                            '{"conclusion":"no_material_discrepancy",'
+                            '"review_summary":"The supplied packet was reviewed.",'
+                            '"verified":[],"reviewer_challenges":[],"prior_finding_verdicts":[]}'
                         ),
                     }
                 },

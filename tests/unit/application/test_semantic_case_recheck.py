@@ -50,7 +50,7 @@ from yoetz.ports.semantic import SemanticCase
 from yoetz.protocol.coverage import EvidenceImmutability
 from yoetz.protocol.ids import IdKind, new_id
 
-_PACKS = ("research-evidence/0.1.0", "work-integrity/0.1.0")
+_PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 _PROFILES = (
     ReviewContextProfile.STRUCTURAL,
     ReviewContextProfile.GOAL_AWARE,

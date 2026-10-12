@@ -183,7 +183,8 @@ def proposed_obligations(request: Mapping[str, JsonValue] | None) -> list[str]:
             isinstance(schema, dict)
             and schema.get("name") == "obligation_published"
             and isinstance(payload, dict)
-            and payload.get("status") == "open"
+            # acknowledged_not_done (#1002) is not resolved: counted like open.
+            and payload.get("status") in {"open", "acknowledged_not_done"}
         ):
             ref = payload.get("obligation_id")
             if isinstance(ref, str) and is_valid_id(IdKind.OBLIGATION, ref):

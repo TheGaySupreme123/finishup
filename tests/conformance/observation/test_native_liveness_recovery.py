@@ -219,7 +219,7 @@ async def _check(service: MultiAgentService, task: StartInternalResult) -> Check
                 "expected_frontier": _frontier_json(getattr(status, "head_frontier")),
                 "mode": "deterministic_only",
                 "max_findings": "10",
-                "policy_packs": ["research-evidence/0.1.0", "work-integrity/0.1.0"],
+                "policy_packs": ["research-evidence/0.2.0", "work-integrity/0.3.0"],
             }
         ),
         repository_privacy_context=_REPOSITORY,

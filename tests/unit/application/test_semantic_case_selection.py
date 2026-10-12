@@ -38,8 +38,12 @@ from yoetz.application.semantic_case import (
     MAX_PRIOR_FINDINGS,
     CapturedContentScope,
     CapturedSemanticContent,
+    assemble_filtered_review_packet,
+    bounded_case_envelope,
     build_semantic_case,
     captured_edit_paths,
+    review_input_manifest_to_json,
+    review_packet_disclosure_result,
     semantic_case_to_prepared_payload,
 )
 from yoetz.cli import observe_hooks as observe_hooks_module
@@ -1144,7 +1148,7 @@ def test_full_excerpts_never_crowd_the_prior_findings_section_out() -> None:
         return f"output {index}\n" + "x" * 16_000 + "\nDONE"
 
     open_findings = {
-        fnd(number): finding_record(_semantic(number, challenge=_CHALLENGE), 90 + number)
+        fnd(number): finding_record(_semantic(number, challenge=_CHALLENGE), 80 + number)
         for number in range(1, MAX_PRIOR_FINDINGS + 1)
     }
     ledger = _ledger(
@@ -1220,6 +1224,58 @@ def test_past_the_omission_cap_the_gap_is_the_trace() -> None:
     semantic = _build_case(case, ReviewContextProfile.CUSTOM, selection)
     assert len(semantic.packet.omissions) <= 4
     assert "content_unselected" in semantic.packet.coverage.known_gaps
+
+
+def test_the_manifest_reports_the_true_omission_total_past_the_listed_cap() -> None:
+    """Issue #976 (tb4n1 D11): the listed count saturates at 64; the total is the real count."""
+
+    refs = tuple(evd(number) for number in range(1, 91))
+    evidence = {
+        ref: evidence_record(
+            EvidenceRecordedPayload(
+                ref,
+                EvidenceKind.TEST_RESULT,
+                EvidenceImmutability.METADATA_ONLY,
+                timestamp_from_string("2026-09-27T00:00:00.000Z"),
+                description=f"run {number}: 12 passed",
+            ),
+            number,
+        )
+        for number, ref in enumerate(refs, start=1)
+    }
+    claim = record(
+        ClaimRecordedPayload(clm(1), ClaimKind.COMPLETION, "Lookups repaired", refs[:64]), 99
+    )
+    case = make_case(evidence=evidence, claims={clm(1): claim}, extra_refs=(clm(1),))
+    semantic = _build_case(case, ReviewContextProfile.EXPANDED, _expanded_16())
+
+    manifest = semantic.packet.input_manifest
+    assert manifest is not None
+    assert len(semantic.packet.omissions) == manifest.omitted_item_count == 64
+    assert manifest.omitted_item_total is not None
+    assert manifest.omitted_item_total >= len(refs) - 16 > 64
+    encoded = review_input_manifest_to_json(manifest)
+    assert encoded["omitted_item_total"] == manifest.omitted_item_total
+    # The provider-bound projection carries it, and the disclosure check re-derives it exactly.
+    content_by_id = {item.item_id: item.content for item in semantic.items}
+    prepared = assemble_filtered_review_packet(
+        cast(dict[str, JsonValue], strict_json_parse(bounded_case_envelope(semantic))),
+        content_by_id=content_by_id,
+        included_item_ids=set(content_by_id),
+    )
+    result = review_packet_disclosure_result(prepared)
+    assert result.failure is None
+    assert result.disclosure is not None
+    provider = result.disclosure.provider_input_manifest
+    assert provider is not None
+    assert provider["omitted_item_count"] == 64
+    assert provider["omitted_item_total"] == manifest.omitted_item_total
+    # Below the cap the two agree.
+    small, _ = _ledger_evidence_case(20)
+    below = _build_case(small, ReviewContextProfile.EXPANDED, _expanded_16()).packet
+    assert below.input_manifest is not None
+    assert below.input_manifest.omitted_item_total == below.input_manifest.omitted_item_count
+    assert below.input_manifest.omitted_item_count == len(below.omissions)
 
 
 def test_relevance_exclusion_is_a_policy_choice_not_a_budget_cut() -> None:

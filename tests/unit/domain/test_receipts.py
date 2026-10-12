@@ -18,6 +18,7 @@ from yoetz.domain.findings import (
     TokenUsage,
 )
 from yoetz.domain.receipts import (
+    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     ReceiptConclusion,
     ReceiptDocument,
     ReceiptRedactionCategory,
@@ -28,6 +29,7 @@ from yoetz.domain.receipts import (
     receipt_weakest_coverage,
     render_receipt_compact,
     render_receipt_human,
+    unresolved_findings_for_render,
 )
 from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from yoetz.protocol.errors import ProtocolValueError
@@ -151,7 +153,16 @@ def test_receipt_document_is_frozen_and_exactly_shaped() -> None:
         "semantic_provenance",
         "acknowledged_not_done_finding_ids",
         "rejection_accepted_finding_ids",
+        "self_verified_finding_ids",
+        "disputed_after_rebuttal_finding_ids",
+        "duplicate_finding_links",
         "semantic_withheld_items",
+        "semantic_redacted_values",
+        "disclosed_assumptions",
+        "acknowledged_not_done_obligation_ids",
+        "premise_disputed_finding_ids",
+        "limitation_disclosed_finding_ids",
+        "conclusion_basis",
     )
     assert is_dataclass(document)
     assert ReceiptDocument.__slots__ == expected_fields
@@ -176,11 +187,59 @@ def test_receipt_withheld_items_round_trip_and_human_projection() -> None:
     assert "item text was not sent or echoed" in rendered
 
 
+def test_receipt_redacted_values_round_trip_and_render_refs_lines_and_agent_line() -> None:
+    """PL2-1 (issue #982): refs and line numbers only, plus the fixed agent line once."""
+
+    wire = _variant("deterministic-current.case.json", "current_complete")
+    wire["semantic_withheld_items"] = [
+        {"item_id": "excerpt-withheld", "reason": "never_send_heuristic"}
+    ]
+    wire["semantic_redacted_values"] = [
+        {
+            "disposition": "value_replaced",
+            "item_id": "excerpt-replaced",
+            "lines": [2, 9],
+            "source_ref": "evd_10000000-0000-4000-8000-000000000021",
+        },
+        {"disposition": "item_withheld", "item_id": "excerpt-withheld", "lines": [4]},
+    ]
+    document = receipt_document_from_json(wire)
+    encoded = receipt_document_to_json(document)
+    assert encoded["semantic_redacted_values"] == wire["semantic_redacted_values"]
+    assert receipt_document_from_json(encoded) == document
+    for markdown in (True, False):
+        rendered = render_receipt_human(document, markdown=markdown)
+        assert (
+            "evd_10000000-0000-4000-8000-000000000021 (item excerpt-replaced): value replaced, "
+            "lines 2, 9"
+        ) in rendered
+        assert "excerpt-withheld: item withheld, line 4" in rendered
+        assert rendered.count(SEMANTIC_REDACTED_VALUES_AGENT_LINE) == 1
+        assert rendered.isascii()
+
+
+def test_receipt_rejects_redacted_values_that_carry_more_than_structure() -> None:
+    wire = _variant("deterministic-current.case.json", "current_complete")
+    wire["semantic_redacted_values"] = [
+        {"disposition": "value_replaced", "item_id": "x", "lines": [1], "value": "secret"}
+    ]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(wire)
+    wire["semantic_redacted_values"] = [
+        {"disposition": "value_replaced", "item_id": "x", "lines": [1], "source_ref": "a/b.py"}
+    ]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(wire)
+
+
 def test_historical_receipt_omits_withheld_items() -> None:
     wire = _variant("deterministic-current.case.json", "current_complete")
     document = receipt_document_from_json(wire)
     assert document.semantic_withheld_items == ()
     assert "semantic_withheld_items" not in receipt_document_to_json(document)
+    assert document.semantic_redacted_values == ()
+    assert "semantic_redacted_values" not in receipt_document_to_json(document)
+    assert SEMANTIC_REDACTED_VALUES_AGENT_LINE not in render_receipt_human(document, markdown=True)
 
 
 def test_children_use_receipt_document_1_3_artifact_and_keep_inner_version() -> None:
@@ -197,6 +256,172 @@ def test_children_use_receipt_document_1_3_artifact_and_keep_inner_version() -> 
     document = receipt_document_from_json(wire)
     assert document.schema_version == "1.0.0"
     assert receipt_document_to_json(document) == wire
+
+
+def _terminal_artifact(conclusion: str) -> dict[str, Any]:
+    wire = _variant("unresolved-findings.case.json", "mixed_open_responses")
+    versions = cast(dict[str, Any], wire["versions"])
+    for entry in cast(list[dict[str, str]], versions["schema_versions"]):
+        if entry["schema_id"] == "receipts/receipt-document":
+            entry["schema_version"] = "1.3.0"
+    wire["children"] = {"children": []}
+    wire["conclusion"] = conclusion
+    return wire
+
+
+def test_self_verified_ids_get_their_own_section_and_never_read_clean() -> None:
+    """Issue #984 (ADR-034): the agent's own verification is disclosed, never a clean receipt."""
+
+    wire = _terminal_artifact("insufficient_coverage")
+    findings = cast(list[dict[str, Any]], wire["findings"])
+    finding = cast(str, findings[0]["finding_id"])
+    wire["self_verified_finding_ids"] = [finding]
+    document = receipt_document_from_json(wire)
+    assert document.self_verified_finding_ids == (finding,)
+    encoded = receipt_document_to_json(document)
+    assert encoded["self_verified_finding_ids"] == [finding]
+    assert receipt_document_from_json(encoded) == document
+    for markdown in (True, False):
+        rendered = render_receipt_human(document, markdown=markdown)
+        assert "Self-verified by the agent; Yoetz could not prove the repair" in rendered
+        assert f"- {finding}" in rendered
+    assert finding not in {item.finding_id for item in unresolved_findings_for_render(document)}
+
+    clean = _terminal_artifact("no_unresolved_deterministic_findings")
+    clean["self_verified_finding_ids"] = [finding]
+    with pytest.raises(ProtocolValueError) as exc_info:
+        receipt_document_from_json(clean)
+    _assert_reason(exc_info, "invalid_receipt_conclusion")
+
+
+def test_disputed_after_rebuttal_ids_get_their_own_section_and_never_read_clean() -> None:
+    """Issue #1020 (ADR-040): a standing reviewer disagreement is disclosed, never clean."""
+
+    wire = _terminal_artifact("insufficient_coverage")
+    findings = cast(list[dict[str, Any]], wire["findings"])
+    finding = cast(str, findings[0]["finding_id"])
+    wire["disputed_after_rebuttal_finding_ids"] = [finding]
+    document = receipt_document_from_json(wire)
+    assert document.disputed_after_rebuttal_finding_ids == (finding,)
+    encoded = receipt_document_to_json(document)
+    assert encoded["disputed_after_rebuttal_finding_ids"] == [finding]
+    assert receipt_document_from_json(encoded) == document
+    for markdown in (True, False):
+        rendered = render_receipt_human(document, markdown=markdown)
+        assert "Disputed after rebuttal" in rendered
+        assert "The reviewer and the agent disagree" in rendered
+        assert f"- {finding}" in rendered
+    assert finding not in {item.finding_id for item in unresolved_findings_for_render(document)}
+
+    clean = _terminal_artifact("no_unresolved_deterministic_findings")
+    clean["disputed_after_rebuttal_finding_ids"] = [finding]
+    with pytest.raises(ProtocolValueError) as exc_info:
+        receipt_document_from_json(clean)
+    _assert_reason(exc_info, "invalid_receipt_conclusion")
+    # A finding is in at most one terminal section.
+    both = _terminal_artifact("insufficient_coverage")
+    both["disputed_after_rebuttal_finding_ids"] = [finding]
+    both["self_verified_finding_ids"] = [finding]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(both)
+
+
+def test_disclosed_assumptions_round_trip_with_ids_and_kind_only() -> None:
+    """Issue #995: disclosures are ids and a closed kind only, on the 1.3.0 artifact."""
+
+    obligation = "obl_00000000-0000-4000-8000-000000000001"
+    decision = "evt_00000000-0000-4000-8000-000000000009"
+    wire = _terminal_artifact("insufficient_coverage")
+    wire["disclosed_assumptions"] = [
+        {"obligation_id": obligation, "kind": "assumption", "decision_event_id": decision},
+        {"obligation_id": obligation, "kind": "verification_limit", "decision_event_id": decision},
+    ]
+    document = receipt_document_from_json(wire)
+    assert [item.kind for item in document.disclosed_assumptions] == [
+        "assumption",
+        "verification_limit",
+    ]
+    encoded = receipt_document_to_json(document)
+    assert encoded["disclosed_assumptions"] == wire["disclosed_assumptions"]
+    assert receipt_document_from_json(encoded) == document
+    for markdown in (True, False):
+        rendered = render_receipt_human(document, markdown=markdown)
+        assert "Assumptions and verification limits the agent disclosed" in rendered
+        assert f"- {obligation}: verification_limit (decision {decision})" in rendered
+
+    bad_kind = _terminal_artifact("insufficient_coverage")
+    bad_kind["disclosed_assumptions"] = [
+        {"obligation_id": obligation, "kind": "blocker", "decision_event_id": decision}
+    ]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(bad_kind)
+    prose = _terminal_artifact("insufficient_coverage")
+    prose["disclosed_assumptions"] = [
+        {
+            "obligation_id": obligation,
+            "kind": "assumption",
+            "decision_event_id": decision,
+            "rationale": "never copied",
+        }
+    ]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(prose)
+    empty = _terminal_artifact("insufficient_coverage")
+    empty["disclosed_assumptions"] = []
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(empty)
+    legacy = _variant("deterministic-current.case.json", "current_complete")
+    legacy["disclosed_assumptions"] = [
+        {"obligation_id": obligation, "kind": "assumption", "decision_event_id": decision}
+    ]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(legacy)
+
+
+def test_acknowledged_obligations_get_their_own_section_and_never_read_clean() -> None:
+    """Issue #997 (ADR-032 slice C): an obligation the agent will not do is disclosed by id."""
+
+    obligation = "obl_00000000-0000-4000-8000-000000000003"
+    wire = _terminal_artifact("insufficient_coverage")
+    wire["acknowledged_not_done_obligation_ids"] = [obligation]
+    document = receipt_document_from_json(wire)
+    assert document.acknowledged_not_done_obligation_ids == (obligation,)
+    encoded = receipt_document_to_json(document)
+    assert encoded["acknowledged_not_done_obligation_ids"] == [obligation]
+    assert receipt_document_from_json(encoded) == document
+    for markdown in (True, False):
+        rendered = render_receipt_human(document, markdown=markdown)
+        assert "Obligations acknowledged as not done" in rendered
+        assert f"- {obligation}" in rendered
+
+    clean = _terminal_artifact("no_unresolved_deterministic_findings")
+    clean["acknowledged_not_done_obligation_ids"] = [obligation]
+    with pytest.raises(ProtocolValueError) as exc_info:
+        receipt_document_from_json(clean)
+    _assert_reason(exc_info, "invalid_receipt_conclusion")
+    legacy = _variant("deterministic-current.case.json", "current_complete")
+    legacy["acknowledged_not_done_obligation_ids"] = [obligation]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(legacy)
+
+
+def test_premise_disputed_findings_are_a_subset_with_their_own_section() -> None:
+    """Issue #984 (D7a): acknowledged findings the review says the task requires."""
+
+    wire = _terminal_artifact("unresolved_findings_remain")
+    finding = cast(str, cast(list[dict[str, Any]], wire["findings"])[0]["finding_id"])
+    wire["acknowledged_not_done_finding_ids"] = [finding]
+    wire["premise_disputed_finding_ids"] = [finding]
+    document = receipt_document_from_json(wire)
+    assert document.premise_disputed_finding_ids == (finding,)
+    assert receipt_document_from_json(receipt_document_to_json(document)) == document
+    for markdown in (True, False):
+        rendered = render_receipt_human(document, markdown=markdown)
+        assert "Not done although the review says the task requires it" in rendered
+    unacknowledged = _terminal_artifact("unresolved_findings_remain")
+    unacknowledged["premise_disputed_finding_ids"] = [finding]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(unacknowledged)
 
 
 def test_children_are_rejected_under_the_legacy_receipt_artifact() -> None:
@@ -494,7 +719,11 @@ def test_render_receipt_human_projects_sections_and_advisory_count() -> None:
 
 
 def test_render_receipt_human_marks_bounded_truncation() -> None:
-    """#437: the wire bound cannot silently erase later receipt sections."""
+    """#437: the wire bound cannot silently erase later receipt sections.
+
+    tb4n3 RC-2 (A7): the cut is by section. A 32 KiB first section is shortened, the marker names
+    it, and every later section keeps its heading and its content.
+    """
 
     wire = _variant("unresolved-findings.case.json", "mixed_open_responses")
     wire["sections"][0]["body"] = "x" * 32_768
@@ -502,8 +731,13 @@ def test_render_receipt_human_marks_bounded_truncation() -> None:
 
     rendered = render_receipt_human(document, markdown=True)
 
-    assert len(rendered) == 32_768
-    assert rendered.endswith("remaining canonical section content is omitted.]")
+    assert len(rendered) <= 32_768
+    assert "truncated at 32768 characters" in rendered
+    assert "shortened sections: Summary" in rendered
+    assert rendered.endswith("holds every section in full.]")
+    for section in document.sections[1:]:
+        assert f"## {section.title}" in rendered
+        assert section.body[:60] in rendered
 
 
 def test_registration_drift_compact_names_policy_recovery() -> None:
@@ -596,3 +830,44 @@ def test_genuine_strict_ceiling_compact_keeps_terminal_wording() -> None:
         "review was blocked before dispatch by network-egress policy. No provider attempt "
         "or AI-powered finding was recorded."
     )
+
+
+def test_duplicate_links_round_trip_by_ids_and_render_in_their_own_section() -> None:
+    """Issue #996: holding ``duplicate_of`` links, ids only, on the 1.3.0 artifact."""
+
+    wire = _terminal_artifact("unresolved_findings_remain")
+    findings = cast(list[dict[str, Any]], wire["findings"])
+    duplicate = cast(str, findings[0]["finding_id"])
+    earlier = "fnd_00000000-0000-4000-8000-000000000996"
+    wire["duplicate_finding_links"] = [
+        {"finding_id": duplicate, "duplicate_of_finding_id": earlier}
+    ]
+    document = receipt_document_from_json(wire)
+    assert [
+        (item.finding_id, item.duplicate_of_finding_id) for item in document.duplicate_finding_links
+    ] == [(duplicate, earlier)]
+    encoded = receipt_document_to_json(document)
+    assert encoded["duplicate_finding_links"] == wire["duplicate_finding_links"]
+    assert receipt_document_from_json(encoded) == document
+    for markdown, heading in ((True, "## Linked duplicates"), (False, "Linked duplicates")):
+        rendered = render_receipt_human(document, markdown=markdown)
+        assert heading in rendered
+        assert f"- {duplicate} duplicates {earlier}" in rendered
+        assert "never resolves a finding by itself" in rendered
+    # The link never settles the row: it stays among the unresolved findings it reads as.
+    assert duplicate in {item.finding_id for item in unresolved_findings_for_render(document)}
+
+    for bad in (
+        [{"finding_id": duplicate, "duplicate_of_finding_id": duplicate}],  # itself
+        [{"finding_id": earlier, "duplicate_of_finding_id": duplicate}],  # not carried
+        [{"finding_id": duplicate, "duplicate_of_finding_id": earlier, "reason": "x"}],  # prose
+        [],  # present only when non-empty
+    ):
+        broken = deepcopy(wire)
+        broken["duplicate_finding_links"] = bad
+        with pytest.raises(ProtocolValueError):
+            receipt_document_from_json(broken)
+    legacy = _variant("unresolved-findings.case.json", "mixed_open_responses")
+    legacy["duplicate_finding_links"] = wire["duplicate_finding_links"]
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(legacy)

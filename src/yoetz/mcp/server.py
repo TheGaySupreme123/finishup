@@ -79,8 +79,9 @@ from yoetz.mcp.semantic_destination import (
 )
 from yoetz.mcp.summaries import (
     render_check_reviewer_output,
-    render_safe_compact_summary,
-    summary_for_closure_prepare,
+    render_publish_blocker_notices,
+    render_safe_compact_summary_detailed,
+    summary_for_check_awaiting,
     summary_for_read_guidance,
 )
 from yoetz.observability.logging import (
@@ -99,7 +100,12 @@ from yoetz.ports.control import (
 from yoetz.ports.integrations import YOETZ_MCP_TOOL_NAMES
 from yoetz.protocol.canonical import JsonValue, canonical_encode
 from yoetz.protocol.consent import CONSENT_PENDING_TTL_SECONDS
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from yoetz.protocol.errors import PublicErrorCode, PublicOperationError, SafeDetailValue
+from yoetz.protocol.guidance_uris import (
+    FOCUSED_GUIDANCE_URIS,
+    GUIDANCE_DOCUMENT_URIS,
+    GUIDANCE_TOPIC_URIS,
+)
 from yoetz.protocol.ids import IdKind, new_id, safe_request_id_from
 from yoetz.protocol.models import (
     CheckRequest,
@@ -121,6 +127,7 @@ from yoetz.protocol.models import (
     public_model_to_wire,
 )
 from yoetz.protocol.recovery import (
+    REASON_REMEDIES,
     WRITE_OPERATIONS,
     continuation_for_reason,
     timeout_operation_kind,
@@ -199,10 +206,18 @@ _MAX_CLOSURE_RESULT_BYTES: Final = MAX_JSON_FRAME_BYTES - 65_536
 # URI-only request shape; otherwise validation fails before the caller receives continuation
 # metadata to reconstruct the document.
 _MAX_LEGACY_GUIDANCE_DOCUMENT_BYTES: Final = 65_536
+# Every closure-preparation reason is a protocol reason code of its own, so the text names the
+# selection to correct and its remedy. A mapped code such as ``frontier_changed`` would hand a read
+# a write's instruction (set ``expected_frontier``). The two file-output reasons belong to the CLI
+# and never cross MCP.
+_CLOSURE_CLI_ONLY_REASONS: Final = frozenset(
+    {"closure_output_unwritable", "closure_output_not_durable"}
+)
 _CLOSURE_PUBLIC_REASON_CODES: Final = MappingProxyType(
     {
-        "closure_snapshot_unavailable": "frontier_changed",
-        "closure_result_too_large": "payload_too_large",
+        reason: reason
+        for reason in PREPARATION_REMEDIATIONS
+        if reason not in _CLOSURE_CLI_ONLY_REASONS
     }
 )
 _INVALID_URI_ESCAPE: Final = re.compile(r"%(?![0-9A-Fa-f]{2})", re.ASCII)
@@ -241,14 +256,18 @@ _INHERITED_AVAILABILITY_SUFFIX: Final = (
     "commands that the earlier message did not name. Only the original request_id replays after "
     "that repair."
 )
-# One wording for both post-commit projection failures — the service's own (control reason
-# `response_projection_failed`) and the bridge's. In both the operation stands and the only safe
-# recovery is replaying the same request_id, so the caller must never see them differ.
+# The service's own post-commit projection failure (control reason `response_projection_failed`).
+# The operation stands. Replaying the same request_id loads the stored result and is safe, but it
+# re-runs the same projection: if that replay also fails the failure is deterministic, so the
+# message says to stop replaying and read status instead (tb4n3 RC-2). The remedy is the one the
+# text channel renders (`REASON_REMEDIES`), so the two cannot disagree.
 _RESPONSE_PROJECTION_FAILED_MESSAGE: Final = (
-    "The operation completed on the local service, but its response could not be shaped. "
-    "Retry with the same request_id to load the stored result."
+    "The operation completed on the local service. " + REASON_REMEDIES["response_projection_failed"]
 )
 _RESPONSE_PROJECTION_FAILED_DETAILS: Final = {"reason_code": "response_projection_failed"}
+# A text section that failed to render is recorded, but one runaway renderer must not write an
+# unbounded run of diagnostics for a single response.
+_MAX_RECORDED_SUMMARY_FAILURES: Final = 3
 # Issue #512: when the vault has never been initialized, the natural start-first flow must hand
 # the agent a typed initialization-required continuation instead of an ordinary terminal dead
 # end. Every value below is a repository literal mirrored by the closed token sets in
@@ -266,6 +285,74 @@ _READ_PROJECTION_FAILED_MESSAGE: Final = (
     "the authoritative frontier."
 )
 _READ_PROJECTION_FAILED_DETAILS: Final = {"reason_code": "read_projection_failed"}
+# Each unexpected bridge failure names the stage that failed and what the agent can safely do next
+# (tb4n3 RC-2): a bare "the bridge could not complete the operation" told the agent nothing about
+# whether its write had been recorded. The remedy text is shared with the text channel through
+# ``REASON_REMEDIES`` so the structured message and the text projection cannot disagree.
+_INTERNAL_STAGE_HEADS: Final = MappingProxyType(
+    {
+        "bridge_request_validation_failed": "The bridge could not validate the request (stage: request validation).",
+        "bridge_invoke_failed": "The bridge could not complete the operation (stage: service call).",
+        "bridge_error_mapping_failed": "The bridge could not translate the service's failure (stage: error mapping).",
+        "closure_prepare_failed": "Closure preparation failed unexpectedly (stage: preparation).",
+        "bridge_result_wire_failed": "The bridge could not serialize the result (stage: wire).",
+        "bridge_result_validate_failed": "The result failed its response schema (stage: validate).",
+    }
+)
+_INTERNAL_STAGE_MESSAGES: Final = MappingProxyType(
+    {reason: f"{head} {REASON_REMEDIES[reason]}" for reason, head in _INTERNAL_STAGE_HEADS.items()}
+)
+
+
+# Stages whose remedy is a replay or a repeat. A ``retryable: false`` error is terminal except for
+# its typed continuation (guidance workflow.md "Errors and continuations"), so the remedy text alone
+# would leave a compliant agent stopped: each of these carries the same operation-kind continuation a
+# timeout does (read: repeat under a new id; write: look the operation up, replay only when absent;
+# start: replay under the same id). The result-serialization stages differ for start: a replayed
+# start would fail the same way and has no ids to look up, so no continuation travels there.
+_REPLAYABLE_STAGES: Final = frozenset(
+    {"bridge_request_validation_failed", "bridge_invoke_failed", "bridge_error_mapping_failed"}
+)
+_RECORDED_RESULT_STAGES: Final = frozenset(
+    {"bridge_result_wire_failed", "bridge_result_validate_failed"}
+)
+
+
+def _stage_continuation(reason: str, operation: str | None) -> str | None:
+    if reason not in _REPLAYABLE_STAGES and reason not in _RECORDED_RESULT_STAGES:
+        return None
+    kind = timeout_operation_kind(operation, write_operations=_WRITE_OPERATIONS)
+    if kind is None or (kind == "start" and reason in _RECORDED_RESULT_STAGES):
+        return None
+    return continuation_for_reason("request_timeout", operation_kind=kind)
+
+
+def _internal_stage_error(
+    reason: str,
+    *,
+    request_id: str | None,
+    correlation_id: str | None,
+    host_profile: McpHostProfile,
+    operation: str | None = None,
+) -> types.CallToolResult:
+    """An unexpected bridge failure as INTERNAL_ERROR with a typed stage, a remedy and, where the
+    remedy is a replay or a lookup, the typed continuation that authorizes it."""
+
+    safe_details: dict[str, SafeDetailValue] = {"reason_code": reason}
+    continuation = _stage_continuation(reason, operation)
+    if continuation is not None:
+        safe_details["continuation"] = continuation
+    return structured_error_result(
+        PublicErrorCode.INTERNAL_ERROR,
+        _INTERNAL_STAGE_MESSAGES[reason],
+        retryable=False,
+        request_id=request_id,
+        correlation_id=correlation_id,
+        safe_details=safe_details,
+        host_profile=host_profile,
+    )
+
+
 # Two facts are known for certain when envelope-first recovery cannot answer: this body failed
 # bridge-local validation, and the recovery oracle could not be reached. The certain, actionable
 # one leads; the durability caveat is stated plainly beside it rather than in place of it (issues
@@ -840,10 +927,65 @@ async def close_bridge_runtime(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> None:
         await _close_client(client)
 
 
+def _record_summary_degradation(
+    failures: Sequence[tuple[str, BaseException]],
+    *,
+    request_id: str | None,
+    operation: str | None,
+) -> str:
+    """Record which builder or clause of a text projection failed; return the agent-facing note.
+
+    The structured result is complete when this runs, so a text failure is a diagnostic, never an
+    error: each distinct site gets its own durable diagnostic line (component, operation, the
+    ``<builder>.<clause>`` site as the phase, exception class and ``yoetz`` origin) and the first
+    correlation id is named on the text so the failure is resolvable from what the agent sees.
+    """
+
+    seen: set[str] = set()
+    first_correlation: str | None = None
+    first_site: str | None = None
+    for site, exc in failures:
+        if site in seen or len(seen) >= _MAX_RECORDED_SUMMARY_FAILURES:
+            continue
+        seen.add(site)
+        builder = site.partition(".")[0]
+        correlation = record_unexpected_exception_without_raising(
+            exc,
+            component="mcp.bridge",
+            operation=(
+                f"{operation}_summary_degraded"
+                if operation is not None and _SINK_OPERATION.fullmatch(operation) is not None
+                else f"{builder}_summary_degraded"
+            ),
+            request_id=request_id,
+            phase=site,
+        )
+        if first_correlation is None:
+            first_correlation, first_site = correlation, site
+    if first_correlation is None or first_site is None:
+        return ""
+    return (
+        f"Text summary degraded at {first_site} (diagnostic correlation_id: {first_correlation}); "
+        "the structured result is complete and is the record to read."
+    )
+
+
+def _guarded_text(
+    site: str, build: Callable[[], str], failures: list[tuple[str, BaseException]]
+) -> str:
+    try:
+        return build()
+    except Exception as exc:  # noqa: BLE001 - a text section is optional; the record is structured
+        failures.append((site, exc))
+        return ""
+
+
 def _result_text(
     wire: Mapping[str, object],
     *,
     host_profile: McpHostProfile = "generic",
+    request_id: str | None = None,
+    operation: str | None = None,
 ) -> str:
     """Project one result onto the model-visible text channel for the selected host.
 
@@ -851,34 +993,74 @@ def _result_text(
     plugin therefore opts into an exact canonical-JSON copy in ``content`` while retaining the
     structured result. Other hosts keep the privacy-minimized bounded summary. The Cursor copy
     adds no fields: it is byte-for-byte a second encoding of the already-authorized wire body.
+
+    This function does not raise for a result it was handed (tb4n3 RC-2): the operation has
+    committed by the time it runs, so a text section that fails to render is omitted, named in the
+    text, and recorded as a service diagnostic -- the structured result is returned either way.
     """
 
-    if host_profile == "cursor":
-        return canonical_encode(cast(JsonValue, dict(wire))).decode("utf-8")
-    if host_profile not in {"generic", "codex", "claude"}:
+    if host_profile not in {"generic", "codex", "claude", "cursor"}:
         raise ValueError("mcp_host_profile_invalid")
+    failures: list[tuple[str, BaseException]] = []
+    if host_profile == "cursor":
+        try:
+            return canonical_encode(cast(JsonValue, dict(wire))).decode("utf-8")
+        except Exception as exc:  # noqa: BLE001 - fall back to the bounded summary below
+            failures.append(("cursor.canonical_json", exc))
+    rendered = render_safe_compact_summary_detailed(wire)
+    failures.extend(rendered.failures)
+    compact = rendered.text
     if wire.get("preparatory_only") is True:
-        return summary_for_closure_prepare(wire)
-    compact = render_safe_compact_summary(wire)
-    reviewer = render_check_reviewer_output(wire)
-    totals = render_check_totals(wire.get("totals"))
-    manifest = render_review_input_manifest_compact(wire.get("review_input_manifest"))
-    if manifest and manifest in compact:
-        manifest = ""
-    return "\n".join(part for part in (compact, totals, manifest, reviewer) if part)
+        parts: tuple[str, ...] = (compact,)
+    else:
+        awaiting = _guarded_text("awaiting", lambda: summary_for_check_awaiting(wire), failures)
+        if awaiting:
+            # A paused check has no verdict; its continuation is the only actionable fact, so it
+            # leads.
+            compact = f"{awaiting}\n{compact}" if compact else awaiting
+        reviewer = _guarded_text(
+            "reviewer_output", lambda: render_check_reviewer_output(wire), failures
+        )
+        totals = _guarded_text("totals", lambda: render_check_totals(wire.get("totals")), failures)
+        manifest = _guarded_text(
+            "manifest",
+            lambda: render_review_input_manifest_compact(wire.get("review_input_manifest")),
+            failures,
+        )
+        if manifest and manifest in compact:
+            manifest = ""
+        # #985: a publish result's fixed yoetz-blocker challenge reaches the model, dry runs
+        # included.
+        blocker_notices = _guarded_text(
+            "blocker_notices", lambda: render_publish_blocker_notices(wire), failures
+        )
+        parts = (compact, totals, manifest, reviewer, blocker_notices)
+    note = (
+        _record_summary_degradation(failures, request_id=request_id, operation=operation)
+        if failures
+        else ""
+    )
+    return "\n".join(part for part in (*parts, note) if part)
 
 
 def result_from_public_model(
     result: object,
     *,
     host_profile: McpHostProfile = "generic",
+    request_id: str | None = None,
+    operation: str | None = None,
 ) -> types.CallToolResult:
     """Validate and project one public result to structured plus host-compatible text."""
 
     wire = public_model_to_wire(result)
     return types.CallToolResult(
         content=[
-            types.TextContent(type="text", text=_result_text(wire, host_profile=host_profile))
+            types.TextContent(
+                type="text",
+                text=_result_text(
+                    wire, host_profile=host_profile, request_id=request_id, operation=operation
+                ),
+            )
         ],
         structuredContent=cast(dict[str, object], wire),
         isError=wire.get("ok") is False,
@@ -1726,20 +1908,20 @@ def _control_error_result(
             request_id,
             operation,
             code=PublicErrorCode.INTERNAL_ERROR,
-            message="The bridge could not complete the operation.",
+            message=_INTERNAL_STAGE_MESSAGES["bridge_invoke_failed"],
             retryable=False,
             host_profile=host_profile,
-            safe_details={"reason_code": "internal_error"},
+            safe_details={"reason_code": "bridge_invoke_failed"},
         )
     # Last resort: a ControlError reason this mapper does not yet name. Keep the unexpected
     # recorder so a future vocabulary addition cannot silently ship as a public-error class.
     if error.correlation_id is not None:
-        return structured_error_result(
-            PublicErrorCode.INTERNAL_ERROR,
-            "The bridge could not complete the operation.",
+        return _internal_stage_error(
+            "bridge_invoke_failed",
             request_id=request_id,
             correlation_id=error.correlation_id,
             host_profile=host_profile,
+            operation=operation,
         )
     correlation_id = record_unexpected_exception_without_raising(
         error,
@@ -1747,12 +1929,12 @@ def _control_error_result(
         operation=f"{operation}_internal_error",
         request_id=request_id,
     )
-    return structured_error_result(
-        PublicErrorCode.INTERNAL_ERROR,
-        "The bridge could not complete the operation.",
+    return _internal_stage_error(
+        "bridge_invoke_failed",
         request_id=request_id,
         correlation_id=correlation_id,
         host_profile=host_profile,
+        operation=operation,
     )
 
 
@@ -2148,12 +2330,12 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             operation=f"{operation}_request_internal_error",
             request_id=request_id,
         )
-        return structured_error_result(
-            PublicErrorCode.INTERNAL_ERROR,
-            "The bridge could not complete the operation.",
+        return _internal_stage_error(
+            "bridge_request_validation_failed",
             request_id=request_id,
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
+            operation=operation,
         )
     inherited = await _prepare_availability(runtime, request_id)
     if inherited is not None:
@@ -2197,12 +2379,12 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
                 operation=f"{operation}_public_error_internal_error",
                 request_id=request_id,
             )
-            return structured_error_result(
-                PublicErrorCode.INTERNAL_ERROR,
-                "The bridge could not complete the operation.",
+            return _internal_stage_error(
+                "bridge_error_mapping_failed",
                 request_id=request_id,
                 correlation_id=correlation_id,
                 host_profile=runtime.host_profile,
+                operation=operation,
             )
     except ControlError as exc:
         if exc.reason in _AVAILABILITY_LATCH_REASONS:
@@ -2259,34 +2441,52 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             operation=f"{operation}_internal_error",
             request_id=request_id,
         )
-        return structured_error_result(
-            PublicErrorCode.INTERNAL_ERROR,
-            "The bridge could not complete the operation.",
+        return _internal_stage_error(
+            "bridge_invoke_failed",
             request_id=request_id,
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
+            operation=operation,
         )
 
     await _clear_availability(runtime)
+    stage = "wire"
     try:
         wire = public_model_to_wire(result)
+        stage = "validate"
         validated = result_type.model_validate(wire)
-        return result_from_public_model(validated, host_profile=runtime.host_profile)
+        stage = "wire"
+        return result_from_public_model(
+            validated,
+            host_profile=runtime.host_profile,
+            request_id=request_id,
+            operation=operation,
+        )
     except Exception as exc:
+        # The operation committed. Only a structural failure reaches here -- the result cannot be
+        # serialized or does not match its schema. A failure of the *text* projection never does:
+        # `_result_text` omits what it cannot render and the structured result is still returned
+        # (tb4n3 RC-2). The stage is named in the message because replay would rebuild the same
+        # result and fail the same way.
         correlation_id = record_unexpected_exception_without_raising(
             exc,
             component="mcp.bridge",
             operation=f"{operation}_response_projection_failed",
             request_id=request_id,
         )
-        return structured_error_result(
-            PublicErrorCode.INTERNAL_ERROR,
-            _RESPONSE_PROJECTION_FAILED_MESSAGE,
-            retryable=True,
+        # A failure the service reported (ok:false) was not a write that succeeded: it has the
+        # error-translation remedy, not the recorded-write one.
+        reported_failure = getattr(getattr(result, "root", result), "ok", True) is False
+        return _internal_stage_error(
+            "bridge_error_mapping_failed"
+            if reported_failure
+            else "bridge_result_validate_failed"
+            if stage == "validate"
+            else "bridge_result_wire_failed",
             request_id=request_id,
             correlation_id=correlation_id,
-            safe_details=dict(_RESPONSE_PROJECTION_FAILED_DETAILS),
             host_profile=runtime.host_profile,
+            operation=operation,
         )
 
 
@@ -2595,12 +2795,12 @@ async def dispatch_publish_work(
             operation="publish_work_request_internal_error",
             request_id=request_id,
         )
-        return structured_error_result(
-            PublicErrorCode.INTERNAL_ERROR,
-            "The bridge could not complete the operation.",
+        return _internal_stage_error(
+            "bridge_request_validation_failed",
             request_id=request_id,
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
+            operation="publish_work",
         )
     return await _dispatch(
         arguments,
@@ -2690,12 +2890,12 @@ async def dispatch_closure_prepare(
             operation="closure_prepare_request_internal_error",
             request_id=request_id,
         )
-        return structured_error_result(
-            PublicErrorCode.INTERNAL_ERROR,
-            "The bridge could not complete the operation.",
+        return _internal_stage_error(
+            "bridge_request_validation_failed",
             request_id=request_id,
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
+            operation="closure_prepare",
         )
 
     inherited = await _prepare_availability(runtime, request_id)
@@ -2723,6 +2923,7 @@ async def dispatch_closure_prepare(
             request.selection,
             client_kind="cooperative_agent",
             integration="cooperative_mcp",
+            scope_to_selection=True,
         )
         if len(canonical_encode(cast(JsonValue, prepared))) > _MAX_CLOSURE_RESULT_BYTES:
             raise ValueError("closure_result_too_large")
@@ -2754,12 +2955,12 @@ async def dispatch_closure_prepare(
                 operation="closure_prepare_public_error_internal_error",
                 request_id=request_id,
             )
-            return structured_error_result(
-                PublicErrorCode.INTERNAL_ERROR,
-                "The bridge could not complete the operation.",
+            return _internal_stage_error(
+                "bridge_error_mapping_failed",
                 request_id=request_id,
                 correlation_id=correlation_id,
                 host_profile=runtime.host_profile,
+                operation="closure_prepare",
             )
     except ControlError as exc:
         if exc.reason in _AVAILABILITY_LATCH_REASONS:
@@ -2789,9 +2990,8 @@ async def dispatch_closure_prepare(
                 operation="closure_prepare_internal_error",
                 request_id=request_id,
             )
-            return structured_error_result(
-                PublicErrorCode.INTERNAL_ERROR,
-                "The bridge could not complete the operation.",
+            return _internal_stage_error(
+                "closure_prepare_failed",
                 request_id=request_id,
                 correlation_id=correlation_id,
                 host_profile=runtime.host_profile,
@@ -2816,9 +3016,8 @@ async def dispatch_closure_prepare(
             operation="closure_prepare_internal_error",
             request_id=request_id,
         )
-        return structured_error_result(
-            PublicErrorCode.INTERNAL_ERROR,
-            "The bridge could not complete the operation.",
+        return _internal_stage_error(
+            "closure_prepare_failed",
             request_id=request_id,
             correlation_id=correlation_id,
             host_profile=runtime.host_profile,
@@ -2826,7 +3025,12 @@ async def dispatch_closure_prepare(
 
     await _clear_availability(runtime)
     try:
-        projected = result_from_public_model(result, host_profile=runtime.host_profile)
+        projected = result_from_public_model(
+            result,
+            host_profile=runtime.host_profile,
+            request_id=request_id,
+            operation="closure_prepare",
+        )
         if (
             _serialized_mcp_result_bytes(
                 projected,
@@ -2836,14 +3040,15 @@ async def dispatch_closure_prepare(
         ):
             return structured_error_result(
                 PublicErrorCode.LIMIT_EXCEEDED,
-                "closure_result_too_large: use the CLI closure-prepare --output path or read status pages directly.",
+                f"closure_result_too_large: {PREPARATION_REMEDIATIONS['closure_result_too_large']}",
                 request_id=request_id,
-                safe_details={"reason_code": "payload_too_large"},
+                safe_details={"reason_code": "closure_result_too_large"},
                 operation="closure_prepare",
                 host_profile=runtime.host_profile,
             )
         return projected
     except Exception as exc:
+        # Closure preparation is a read: nothing was recorded, so nothing is committed to replay.
         correlation_id = record_unexpected_exception_without_raising(
             exc,
             component="mcp.bridge",
@@ -2852,11 +3057,11 @@ async def dispatch_closure_prepare(
         )
         return structured_error_result(
             PublicErrorCode.INTERNAL_ERROR,
-            _RESPONSE_PROJECTION_FAILED_MESSAGE,
+            _READ_PROJECTION_FAILED_MESSAGE,
             retryable=True,
             request_id=request_id,
             correlation_id=correlation_id,
-            safe_details=dict(_RESPONSE_PROJECTION_FAILED_DETAILS),
+            safe_details=dict(_READ_PROJECTION_FAILED_DETAILS),
             host_profile=runtime.host_profile,
         )
 
@@ -2871,6 +3076,35 @@ async def dispatch_receipt(
         lambda client, request: client.receipt(request, deadline_ms=_rpc_deadline_ms("receipt")),
         runtime,
         "receipt",
+    )
+
+
+def _guidance_page_size_message(raw: object) -> str:
+    """Say which way a rejected guidance ``page_size`` is wrong, never echoing the value.
+
+    tb4n1: five reads sent ``"32768"``, ``"20000"``, or ``"16000"`` (three in a row for one page
+    sequence); the range sentence alone did not say the value was too large. The class of the
+    mistake is computed from the value; only the frozen bounds are printed.
+    """
+
+    bounds = f"between 4 and {MAX_GUIDANCE_PAGE_SIZE} bytes inclusive"
+    if type(raw) is int:
+        problem = 'page_size is a decimal string such as "4096", not a JSON number'
+    elif type(raw) is str and raw.isascii() and raw.isdigit() and len(raw) <= 19:
+        value = int(raw)
+        if value > MAX_GUIDANCE_PAGE_SIZE:
+            problem = f"page_size exceeds the maximum of {MAX_GUIDANCE_PAGE_SIZE} bytes"
+        elif value < 4:
+            problem = "page_size is below the minimum of 4 bytes"
+        else:
+            problem = "page_size must be canonical, with no leading zeros"
+    else:
+        problem = 'page_size must be a canonical decimal string such as "4096"'
+    return (
+        f"Guidance {problem}; it must be a canonical UTF-8 byte count {bounds}. Retry with "
+        'page="0" and page_size="4096" or another value in that range, then advance page with '
+        "the same page_size, revision, and digest; page numbers depend on page_size, so restart "
+        "at page 0 whenever page_size changes."
     )
 
 
@@ -2890,6 +3124,11 @@ async def dispatch_read_guidance(
         request = ReadGuidanceRequest.model_validate(arguments)
     except ValidationError as exc:
         locations = safe_validation_locations(exc)
+        if any(
+            tuple(error.get("loc", ())) == ("uri",)
+            for error in exc.errors(include_url=False, include_context=False, include_input=False)
+        ):
+            return _unknown_guidance_uri_result(arguments.get("uri"), runtime=runtime)
         page_size_reason = next(
             (
                 location.get("reason")
@@ -2899,11 +3138,7 @@ async def dispatch_read_guidance(
             None,
         )
         if page_size_reason == "guidance_page_size_invalid":
-            message = (
-                "Guidance page_size must be a canonical UTF-8 byte string between 4 and "
-                "16384 bytes inclusive; retry with page=0 and page_size=4096 or another "
-                "value in that range."
-            )
+            message = _guidance_page_size_message(arguments.get("page_size"))
         elif page_size_reason == "guidance_page_invalid":
             message = "Guidance page must be a canonical page number; restart at page 0."
         elif page_size_reason == "guidance_revision_digest_mismatch":
@@ -2924,13 +3159,7 @@ async def dispatch_read_guidance(
         except GuidanceResourceError:
             resource = None
     if resource is None:
-        return structured_error_result(
-            PublicErrorCode.INVALID_REQUEST,
-            "read_guidance rejects an unknown guidance URI.",
-            safe_details={"argument_count": len(arguments)},
-            operation="read_guidance",
-            host_profile=runtime.host_profile,
-        )
+        return _unknown_guidance_uri_result(request.uri, runtime=runtime)
     paged = any(
         value is not None
         for value in (request.page, request.page_size, request.revision, request.digest)
@@ -2993,6 +3222,60 @@ async def dispatch_read_guidance(
         structuredContent=cast(dict[str, object], wire),
         isError=False,
     )
+
+
+def _guidance_topic_anchors(document_uri: str) -> tuple[str, ...]:
+    """Return the closed catalog's topic anchors for one registered guidance document."""
+
+    prefix = document_uri + "#"
+    return tuple(uri[len(prefix) :] for uri in GUIDANCE_TOPIC_URIS if uri.startswith(prefix))
+
+
+def _unknown_guidance_uri_result(
+    uri: object,
+    *,
+    runtime: BridgeRuntime,
+) -> types.CallToolResult:
+    """Reject an unregistered guidance URI with the exact registered alternatives.
+
+    Benchmark transcripts showed agents deriving topic anchors from heading text or tool names
+    (``#publish-work``, ``#publish_work-plan-revision``) and receiving a bare INVALID_REQUEST with
+    nothing to retry against. The retry options named here are closed-catalog constants: the caller's
+    URI is used only to select which registered document's catalog to list and is never echoed.
+    """
+
+    document = uri.partition("#")[0] if type(uri) is str else None
+    if document in GUIDANCE_DOCUMENT_URIS:
+        anchors = _guidance_topic_anchors(document)
+        message = (
+            f"read_guidance has no topic with that anchor in {document}. Topic anchors are exact "
+            "catalog entries; never derive one from a heading, tool, or event name. Retry with "
+            f"uri {document} to read the whole document, or {document}#<anchor> with one of these "
+            f"anchors: {', '.join(anchors)}."
+        )
+    else:
+        message = (
+            "read_guidance accepts only a registered guidance URI. Retry with one of these "
+            f"documents: {', '.join(GUIDANCE_DOCUMENT_URIS)}; or one focused topic: "
+            f"{', '.join(FOCUSED_GUIDANCE_URIS)}."
+        )
+    result = structured_error_result(
+        PublicErrorCode.INVALID_REQUEST,
+        message,
+        safe_details={"field": "/uri"},
+        operation="read_guidance",
+        host_profile=runtime.host_profile,
+    )
+    if runtime.host_profile != "cursor" and len(result.content) == 1:
+        # The text channel otherwise omits the message. This one is built only from closed catalog
+        # constants, so the model-visible retry options are safe to show. Cursor's text is already
+        # the full JSON envelope and must not be duplicated.
+        first = result.content[0]
+        if isinstance(first, types.TextContent):
+            result.content = [
+                types.TextContent(type="text", text=f"{first.text}\n{message}"),
+            ]
+    return result
 
 
 def read_guidance_page(
@@ -3204,7 +3487,16 @@ async def _handle_call_tool_request(
 
 
 async def list_resources(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> list[types.Resource]:
-    """List only static manifest-verified guidance; never touch the service slot."""
+    """List only static manifest-verified guidance; never touch the service slot.
+
+    The wire listing carries no fractional number. Codex builds its rmcp client with serde_json's
+    ``arbitrary_precision`` feature, under which rmcp before modelcontextprotocol/rust-sdk#1300
+    cannot decode a buffered float such as ``annotations.priority: 0.9``; the whole
+    ``ListResourcesResult`` then falls through to ``CustomResult`` and Codex reports
+    ``resources/list failed: Unexpected response type`` (every Codex attempt in the full3
+    benchmark). The registry keeps its relative priority, and the listing order already carries
+    it, so ``priority`` is omitted for every host rather than advertised to some.
+    """
 
     return [
         types.Resource(
@@ -3216,7 +3508,6 @@ async def list_resources(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> list[types.
             size=resource.size,
             annotations=types.Annotations(
                 audience=cast(list[types.Role], list(resource.annotations.audience)),
-                priority=resource.annotations.priority,
             ),
         )
         for resource in runtime.resources

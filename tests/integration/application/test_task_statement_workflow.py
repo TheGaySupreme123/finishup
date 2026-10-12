@@ -37,7 +37,7 @@ from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
 from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
 from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue
+from yoetz.protocol.canonical import JsonValue, canonical_encode
 from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.models import FrontierModel, PublishWorkRequest, StartRequest
 
@@ -148,7 +148,7 @@ def _app() -> tuple[Application, _WorkflowRuntime]:
         waiver_authorizer=lambda _: False,
         import_publication_authorizer=lambda _: False,
         profile=RuntimeProfile.TEST_FAKE,
-        policy_packs=("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        policy_packs=("research-evidence/0.2.0", "work-integrity/0.3.0"),
         version_manifest=start_app.version_manifest,
         enforce_repository_identity=False,
     )
@@ -291,6 +291,30 @@ async def test_reattach_with_a_statement_records_it_on_the_resumed_session() -> 
     assert (resumed.schema.name, resumed.schema.version) == ("session_resumed", "1.2.0")
     current = current_task_statement(records)
     assert current is not None and current.text == _AMENDED
+
+
+async def test_a_repeated_unchanged_statement_keeps_the_earlier_event_current() -> None:
+    """Pilot blocker D2: a re-attach repeating the statement does not move its event."""
+
+    app, runtime = _app()
+    created = await app.start(_start(9088, _REQUEST))
+    attached = await app.start(_start(9089, _REQUEST))
+    assert attached.task_id == created.task_id
+    ledger, _ = runtime.resources[created.task_id]
+    records = tuple(ledger._state.records)  # pyright: ignore[reportPrivateUsage]
+    opened, resumed = records[0], records[-1]
+    assert (resumed.schema.name, resumed.schema.version) == ("session_resumed", "1.2.0")
+    current = current_task_statement(records)
+    assert current is not None
+    assert current.source_event_id == opened.event_id
+    assert current.source_family == "session_opened"
+    assert set(current.equivalent_event_ids) == {opened.event_id, resumed.event_id}
+
+    case = build_deterministic_case(replay(records), records, CaseAvailabilityFacts())
+    assert case.task_statement == current
+    encoded = deterministic_case_to_json(case)
+    assert "equivalent_event_ids" in canonical_encode(encoded).decode()
+    assert deterministic_case_from_json(encoded) == case
 
 
 @pytest.mark.parametrize("preset_version", ["1.1.0", "1.2.0"])

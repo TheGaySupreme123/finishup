@@ -31,7 +31,9 @@ from yoetz.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ConsentSource,
+    CredentialHeuristic,
     EgressChannel,
+    EgressOriginOperation,
     EgressReceipt,
     LocalDisclosureReceipt,
     LocalDisclosureSink,
@@ -569,6 +571,11 @@ def _secret_scan_from_wire(value: object, *, legacy_unknown: bool = False) -> Re
             if source.get("not_run_reason") is None
             else PrivacyReason(cast(str, source["not_run_reason"]))
         ),
+        credential_heuristic=(
+            CredentialHeuristic.ENFORCED
+            if source.get("credential_heuristic") is None
+            else CredentialHeuristic(cast(str, source["credential_heuristic"]))
+        ),
     )
 
 
@@ -678,6 +685,11 @@ def _receipt_view_from_wire(value: object) -> PrivacyReceiptView:
                 None
                 if "request_commitment" not in receipt
                 else _request_commitment_from_wire(receipt["request_commitment"])
+            ),
+            origin_operation=(
+                None
+                if "origin_operation" not in receipt
+                else EgressOriginOperation(cast(str, receipt["origin_operation"]))
             ),
         )
         return NetworkEgressReceiptView(kind="network_egress", receipt=network_receipt)

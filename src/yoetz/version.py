@@ -27,6 +27,12 @@ from yoetz.protocol.canonical import (
     strict_json_parse,
 )
 from yoetz.protocol.errors import ProtocolValueError
+from yoetz.protocol.policy_packs import (
+    COORDINATION_POLICY_ID,
+    RESEARCH_EVIDENCE_POLICY_ID,
+    WORK_INTEGRITY_POLICY_ID,
+    current_policy_pack,
+)
 
 __all__ = [
     "BUNDLE_SCHEMA_VERSION",
@@ -67,9 +73,9 @@ EGRESS_RECEIPT_SCHEMA_VERSION: Final = "1.1.0"
 PRIVACY_CLASSIFIER_RULESET_VERSION: Final = "privacy-classifier/0.1.0"
 ENGINE_VERSION: Final = "0.1.0"
 PROJECTION_VERSION: Final = "yoetz/0.1.0"
-WORK_INTEGRITY_POLICY_VERSION: Final = "work-integrity/0.1.0"
-RESEARCH_EVIDENCE_POLICY_VERSION: Final = "research-evidence/0.1.0"
-COORDINATION_POLICY_VERSION: Final = "coordination/0.1.0"
+WORK_INTEGRITY_POLICY_VERSION: Final = current_policy_pack(WORK_INTEGRITY_POLICY_ID)
+RESEARCH_EVIDENCE_POLICY_VERSION: Final = current_policy_pack(RESEARCH_EVIDENCE_POLICY_ID)
+COORDINATION_POLICY_VERSION: Final = current_policy_pack(COORDINATION_POLICY_ID)
 OBJECT_FORMAT_VERSION: Final = "yoetz-object/1"
 # Static identity on the status versions slice. Distinct from catalog/bundle schema counters
 # and from live SQLite user_version. Not a probed runtime fact.
@@ -102,7 +108,7 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # One independently reviewed cardinality tripwire guards the generated resource manifest. All
 # per-kind counts are derived from the manifest entries so adding a resource has exactly one
 # hand-authored count to review and the owning resource-ripple command can regenerate the rest.
-REVIEWED_RESOURCE_COUNT: Final = 304
+REVIEWED_RESOURCE_COUNT: Final = 307
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -145,7 +151,7 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("provider-judgment", "1.2.0"),
     ("public-error", "1.0.0"),
     ("publish-work-request", "1.2.0"),
-    ("publish-work-result", "1.0.0"),
+    ("publish-work-result", "1.1.0"),
     ("read-guidance-request", "1.1.0"),
     ("read-guidance-result", "1.1.0"),
     ("receipt-document", "1.3.0"),
@@ -796,6 +802,7 @@ def build_version_manifest(*, include_optional_probes: bool = False) -> VersionM
                 in {
                     "check_recorded",
                     "claim_recorded",
+                    "obligation_published",
                     "plan_published",
                     "plan_revised",
                     "response_recorded",

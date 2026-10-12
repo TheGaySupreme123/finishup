@@ -8,6 +8,72 @@ reverse-chronological released versions.
 
 ### Added
 
+- When a host starts your agent again after a context compaction, Yoetz now adds a short recap of
+  what it recorded to the context the agent is given: the held task, session and writer ids, the
+  head frontier, the plan counts, the readiness state, open obligations, findings waiting for an
+  answer, the latest check's verdict and frontier, the declared deliverables, and one next-step
+  sentence. Every line names its source (the status view and ledger position, the check, the hook
+  mapping or the local outbox), withheld text stays withheld, and it is bounded to about two and a
+  half thousand characters with a line naming anything left out. It is a read of `status`: it
+  records nothing and is not evidence. Codex and Claude Code show it; Cursor does not report a
+  compaction, so nothing changes there (#1027, ADR-044, `docs/usage/after-compaction.md`). The
+  compact `status` item also carries `latest_check` (the latest check's event, examined frontier and
+  verdict) when a check is recorded, and each `obligations` item says whether it is
+  `in_current_plan` (a waived or superseded obligation is listed but not current).
+
+- When the external reviewer's copy of your work had a possible credential replaced or an item
+  withheld, checks, receipts and `status view=operation` now name the item and its line numbers
+  (`semantic_redacted_values`; never the value) and tell the agent, once, that local checks saw the
+  values and it should verify the repair itself and respond `self_verified` rather than reshape its
+  work (#982).
+
+- You can turn off the possible-credential filter for the external AI reviewer in one repository
+  with `yoetz privacy credential-heuristic disable`, and back on with `enable` (#982). Off, values
+  that only look like passwords or tokens are sent to the external reviewer as written instead of
+  as `[withheld-by-yoetz:possible-credential]`; local outputs (agent context, local model) keep the
+  filter, and known credential shapes, private keys, URL passwords and an unfinished scan still
+  block or redact. The setting is part of the repository's privacy grant: turning it off applies
+  only after the trusted approval on your terminal (in a repository without a grant, it walks the
+  normal grant approval), and no agent can apply it; turning it back on applies at once to that
+  repository. `--machine-default` changes the installation-wide default new grants start from.
+  `yoetz status` and MCP `status` show the repository state and the default before any check;
+  `privacy show`, `provider status`, `/privacy`, every external privacy receipt
+  (`secret_scan.credential_heuristic`) and every check whose external review ran under it
+  (`semantic_review_credential_heuristic_disabled`) say so. Existing policies keep their exact
+  bytes and digests.
+
+- Local checks now report facts about the task's own work, not only about the ledger (#977,
+  ADR-033). Closure readiness, check results and receipts name a planned verification (an
+  obligation's requested command) that hooks never saw run, that failed on its latest run, or that
+  last ran before your latest edit; an edit after the last test, lint, typecheck or build run; a
+  requested output file that is missing (a receipt-blocking finding, even if an action named it),
+  git-ignored or excluded, unchanged, or outside the repository; and package installs that went
+  into Yoetz's own runtime or a private environment, writes outside the workspace, and
+  verification that only ran as root. Matching uses the hooks' keyed command identity; no command
+  text or path is stored. The work-integrity pack is now `0.3.0`.
+
+- The Stop hook continues an agent once per ledger state when closure still names its work (open
+  obligations, an unrepaired receipt-blocking finding, a missing or stale planned verification, a
+  git-ignored requested output), on Codex (`decision: block`), Claude Code (`additionalContext`)
+  and Cursor (`followup_message`). Host loop guards are honoured, and every decision is visible in
+  `yoetz observe status` hook diagnostics (#977).
+
+- A blocker outside the agent's control is now explicit: a `decision_recorded` naming the
+  obligations with the statement line `yoetz-blocker:<authority|consent|credential|
+  dependency_unavailable>`. Those obligations read as a disclosed standing limitation (#977).
+  Yoetz cannot verify the claim, so the first Stop after it is recorded asks the agent once to
+  confirm each blocked obligation and its kind (status `closure_readiness.blocked_obligations`
+  names them). That Stop says that data the task calls recoverable, a failing test or an
+  infeasible-looking result is not a blocker. Stopping again honours the blocker without asking
+  again. The closing review checks each recorded blocker once against the task and challenges one
+  the task contradicts, as an ordinary finding the agent answers with `respond` (#976).
+
+- Hooks classify three closed runtime facts per tool call (`install_target`, `write_scope`,
+  `effective_user`; no path or command text) on the unreleased control-request 2.9.0, and
+  observation advice 0.1.8 tells the agent once when a package install went into Yoetz's own
+  runtime or a private environment, or a write landed outside the workspace. A publish rejected for
+  its result `outcome` now names the closed outcome set and the blocker line (#977).
+
 - `yoetz closure-prepare --output <file>` saves the complete inventory or prepared request to an
   owner-only file, replaced whole, and prints a short summary, so agents query the file instead of
   preparing again (#916).
@@ -109,6 +175,16 @@ reverse-chronological released versions.
 
 ### Changed
 
+- `requested_item_never_attempted` is no longer raised before the agent has started acting, and
+  its repair text no longer suggests revising the obligation as the default exit (#977).
+
+- Checks run the `research-evidence/0.2.0` and `work-integrity/0.2.0` policy packs (work-integrity
+  is now `0.3.0`, see #977 above), and status
+  reports `gap_classification_version` `"2"`, so results produced under the new task-statement,
+  observed-run corroboration and test-edit rules carry their own identifiers. Checks and findings
+  recorded under `0.1.0` stay readable, and a later check can still resolve a finding recorded
+  before the upgrade. A check request that names a pack must name its current version. The
+  publish-work result moves to schema 1.1.0 (control 2.9.0); the released 1.0.0 keeps `0.1.0`.
 - Codex and Cursor now receive a compact initialize instructions body (at most 2,048 bytes)
   instead of the 19.8 KB `agent-instructions.md` document, which Codex code mode copied into
   every Yoetz tool description. The body keeps when to call `start`, the no-false-activation,
@@ -142,6 +218,43 @@ reverse-chronological released versions.
 
 ### Fixed
 
+- After a Codex context compaction, every command's real exit status was lost: each stream completion
+  was refused by the ledger and quarantined as `ledger_rejected`, so post-compaction test runs stayed
+  `unknown` (183 outcomes across 7 of 7 compacted tb4n3 attempts). The completion is now bound to its
+  hook call's generation before its captured content is looked up, and a delivery whose every event
+  the ledger already holds is treated as the duplicate it is, with its explicit outcome still applied
+  to the recorded action (#1027, ADR-022).
+
+- Withholding a credential-like value from the external reviewer no longer taints the whole check
+  (#982, a regression from per-item withholding). Only the value is replaced, in place, by
+  `[withheld-by-yoetz:possible-credential]`, and the rest of the item is still reviewed
+  (`semantic_review_value_redacted`). An item is withheld only when that cannot be done
+  (`semantic_review_item_withheld`). Both bound only the AI-powered review; neither adds
+  `content_redacted` or blocks local finding resolution any more. A capture-time `content_redacted`
+  no longer vetoes local proof either.
+
+- A closing review with one withheld item keeps a valid provider manifest and its `final` review
+  phase (#979).
+
+- Status no longer fails when every open obligation is named by a recorded blocker, and a check
+  whose only remaining gap is such a blocker no longer fails internally with
+  `invalid_ranked_findings`; standing task facts are disclosures, not `ledger_stale_or_incomplete`
+  findings (#977).
+- `yoetz observe checks status` no longer reports a workspace without `.yoetz/checks.toml` as
+  `invalid_policy` (exit 20). Approved checks are optional: it now reports `state: not_configured`
+  and exits successfully; `preview`, `trust` and `run` say `policy_not_configured`, and only a
+  real read or parse fault says `invalid_policy`. Every such failure, and the guidance, now states
+  that this is Yoetz configuration, never a `yoetz-blocker` (#977).
+- AI-powered reviewer challenges are no longer dropped when a citation or quote cannot be proved.
+  The review packet now lists as citable only the records it actually sent; a challenge keeps the
+  sent records it cites (disclosed as `semantic_review_refs_reduced`), and one that cites no sent
+  record is shown in the review summary as an advisory, unverified concern (`ref_not_carried`)
+  rather than vanishing. Quotes are matched against the sent text tolerantly (whitespace, JSON
+  encoding, typographic punctuation, the redaction marker) and recorded as the exact sent span;
+  each rejection reason is counted separately in diagnostics (#976).
+- Requested-output facts (an output left unchanged or written outside the workspace) are now
+  reported only for items named in a recorded `edit` action's attempted items; an item named only
+  by a command, research, or other action no longer reports as an unchanged requested output (#977).
 - A repaired AI-powered finding can now resolve in a long session. A recheck over a bounded review
   scope used to require every item the reviewer cited to be shown again, but the repair's own work
   pushed those early items out of the review's recent-history window, and correcting the criticised

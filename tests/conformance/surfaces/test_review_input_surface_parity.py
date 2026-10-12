@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from yoetz.cli.render import render_human_check
 from yoetz.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
-from yoetz.mcp.summaries import render_safe_compact_summary
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
 from yoetz.protocol.models import (
     CheckMissingItemModel,
     CheckSuccessModel,
@@ -99,4 +99,4 @@ def test_check_cli_and_mcp_share_bounded_manifest_and_missing_projection() -> No
     assert "specification: withheld" in mcp
     assert "overall next: supply_missing_input" in mcp
     assert "res_00000000-0000-4000-8000-000000000002" in mcp
-    assert len(render_safe_compact_summary(wire).encode("ascii")) <= 512
+    assert len(render_safe_compact_summary(wire).encode("ascii")) <= MAX_SUMMARY_BYTES

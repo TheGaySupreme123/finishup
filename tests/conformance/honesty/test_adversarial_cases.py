@@ -729,8 +729,17 @@ def test_adv_claim_fixtures_fail_closed(fixture_loader: FixtureLoader) -> None:
         overlap = union & kinds
         assert not overlap, (adv_id, overlap)
         union |= kinds
+    # Kinds outside the adversarial corpus, each with its owning coverage:
+    # - COORDINATION_OVERLAP comes from the coordination projection, not a policy pack.
+    # - CODE_DEFECT is named only by the AI-powered verifying reviewer (#906).
+    # - TASK_REQUIREMENT_UNMET is AI-reviewer-named, and its one deterministic producer (an
+    #   unjustified pre-existing test edit, #961) is locked by
+    #   tests/unit/kernel/test_test_edit_visibility.py and
+    #   tests/integration/application/test_check.py; it has no ADV case yet.
     expected_generic_kinds = frozenset(FindingKind) - {
         FindingKind.COORDINATION_OVERLAP,
+        FindingKind.CODE_DEFECT,
+        FindingKind.TASK_REQUIREMENT_UNMET,
     }
     assert union == expected_generic_kinds, expected_generic_kinds - union
 

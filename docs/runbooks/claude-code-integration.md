@@ -376,7 +376,7 @@ Claude Code's native MCP profile (`yoetz mcp serve --host claude`) delivers
 results. Cooperative `EVENT_INVALID` therefore cannot rely on `safe_details` reaching the model.
 Decision for Claude Code (issue #579): supported here — the text summary names frozen
 `reason_code` and JSON-pointer `field` (for example `unsorted_set_field at
-/event_drafts/4/payload/obligation_refs`) within the 512-byte bound, with no caller prose. The
+/event_drafts/4/payload/obligation_refs`) within the bounded text channel (4,096 bytes), with no caller prose. The
 public message for `unsorted_set_field`/`duplicate_set_member` states the ascending-ASCII rule.
 This is the same token class as the `Repair:` clause (issue #266).
 
@@ -424,7 +424,9 @@ as a failure, a red -> green cycle used to leave an unclearable finding. Now a l
 the same command (only the latest run is judged; a pass clears it), or a later successful
 `Edit`/`Write`/`MultiEdit` post-event, retires the earlier failure before a completion claim; the
 receipt names it once as history. A `PermissionRequest` for an edit tool is not an edit, and a
-file written by a `Bash` heredoc is a command, not an observed edit. The hook computes an
+file written by a `Bash` heredoc is a command, not an observed edit (for supersession; the
+stale-verification rule counts a `Bash` command that visibly writes the workspace as an edit,
+ADR-045). The hook computes an
 installation-keyed `command_commitment` from `tool_input.command` on `PreToolUse`, `PostToolUse`,
 and `PostToolUseFailure`, then discards the text. Decision: supported on the ordinary profile; the
 default structural profile observes no generic `Bash` calls, so it records no command identity.
@@ -699,19 +701,32 @@ did not independently prove the intervening digest chain. This cell proves the b
 workflow and lane separation. Production model behavior, semantic advice content, marketplace
 activation, and support for the pinned `2.1.241` capability cell remain outside its coverage.
 
-Advice uses Claude Code's documented output contract. `SessionStart`, `PostToolUse`,
-`PostToolUseFailure`, and `Stop` may emit `hookSpecificOutput.additionalContext`. The failure event
+Advice uses Claude Code's documented output contract. `SessionStart`, `PostToolUse`, and
+`PostToolUseFailure` may emit `hookSpecificOutput.additionalContext`; at `Stop` that channel
+carries only the closure gate (#985). The failure event
 keeps `hookEventName: PostToolUseFailure` even though Yoetz normalizes its internal advice cadence
 to `PostToolUse`. At `Stop`, additional context is Claude Code's non-error feedback channel: it
 continues through the same `stop_hook_active` loop guard as a blocking decision, but is labelled as
-feedback rather than an error. Yoetz never emits `decision: block` to Claude Code. `SessionEnd`
+feedback rather than an error, so ordinary advice there would spend the continuation the gate
+needs and is withheld until the next tool event or session start. Claude Code sets
+`stop_hook_active` when it is already continuing because of a Stop hook and still honours a
+further continuation; it has no fixed cap, so Yoetz's caps below bound it. Yoetz never emits
+`decision: block` to Claude Code. **Stop-time
+closure gate (host decision: supported).** When a mapped session stops while closure still requires
+agent action, `Stop` carries the gate text in that same `additionalContext` channel, which continues
+the conversation; after `stop_hook_active` is set only an announced re-check not yet asked, or a withdrawn
+deliverable not yet voiced, may follow, so the
+gate continues Claude Code at most twice per turn. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`, read on the route the session's MCP server named on its last successful `status` or `check`, remembered across service restarts); it fires when `agent_actionable` holds open obligations, an unconfirmed blocker, an unrepaired receipt-blocking finding (agent work only), a finding the agent rejected that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`), a planned verification that was not observed, failed, or ran before the latest edit, an edit to the work after the last verification run (`edited_after_last_verification`; temporary scratch and Yoetz-owned writes such as a saved receipt never count, ADR-042), a git-ignored requested output, or a declared deliverable deleted or renamed away (`declared_output_removed`, ADR-035), or a declared deliverable that held content and is now empty or truncated (`declared_output_emptied`, ADR-041 and ADR-045: keyed on the file, not the obligation, so acknowledging or republishing the obligation does not clear it; the gate text says why from the file's recorded history and names the one exit, a `yoetz-assumption` decision that names the file; a standing `declared_output_content_moved` disclosure adds an informational note to gate text that fires anyway, never a token), at most once per ledger frontier and session (owner-only `observation/closure-gate.json`). Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). Verification items (planned verification and edits after the last verification run) are dropped only while this task's own hook rows are still draining after the Stop drain, and the text says so only then. The text pushes repair first: a receipt-blocking finding the agent repaired but Yoetz cannot prove (a Yoetz limit) is self-verified and answered with `respond` `self_verified`; `acknowledged_not_done` is the last resort; a Yoetz limit is never a `yoetz-blocker`, and the blocker sentence appears only while obligations are open. An open obligation named by a `yoetz-blocker:<kind>` decision is not listed as work, but each new `<obligation id>:<kind>` is re-asked once: the re-check names the obligation and claimed kind from the `blocker` entries of `closure_readiness.rechecks`, says recoverable data, a failing test, an infeasible-looking result or a Yoetz limit is not a blocker (finish the obligation and disclose the limit), and only there tells the agent how to confirm a genuine one: publish the same line again in a later decision (the blocker offer never says so, and a confirmed row is never re-asked). Because blockers are usually published after the first gate, the re-check also runs on a Stop the host already continued: there it reads status, continues the agent only for a re-check key status announced that the gate has not asked, or a withdrawn deliverable not yet voiced (never for ordinary items), at most once per Stop and at most two gate continuations per turn (owner-only `observation/closure-gate-turns.json`, reset at every Stop the host did not continue; an unreadable counter counts as the cap), and lets the agent stop on any error, a short budget, or a memory write failure. Asked keys are remembered per session (owner-only `observation/closure-gate-blockers.json`, at most 64). Ordinary advice is never delivered at Stop; it waits for the next tool event or session start. Standing advice a Stop withheld rides the first later `PostToolUse`. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_active_stop_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_acceptance_rechecked`, `closure_gate_turn_end_after_continue` (an already-continued Stop that emitted nothing: the normal end of a continued turn, renamed from `closure_gate_loop_guard`), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `yoetz observe status`. The text also says an inherent verification limit or a best-effort choice is disclosed with a `yoetz-assumption:` or `yoetz-verification-limit:` decision line, never blocked, and names an obligation-level `acknowledged_not_done` as the last resort (#995, #997). Re-checks are not riders on other tokens (tb4n3 RC-8, #1031). Status announces them in `closure_readiness.rechecks` (acceptance, acknowledgement, blocker, premise, each with a content key; the same list `status`, `closure_prepare`, the CLI and the TUI show, and the status directive names it: "At Stop you will be asked once to re-read: ..."), and the gate asks exactly the announced ones, each once per session and key (`accept:<h8 of the resolved obligation ids>@<invite frontier>`, `ack:<obligation id>`, `<obligation id>:<kind>` for a blocker, `premise:<acknowledged count>`, all in the blocker-key file; closed items `acceptance_recheck`, `acknowledgement_recheck`, `blocker_recheck`, `premise_recheck`). A readiness without the list (a service older than the gate) announces none, so the gate asks none. The acceptance re-read (A-12) asks the agent to read each resolved obligation's acceptance_criteria against its final output and to republish an unmet one as `acknowledged_not_done`, or, when the criteria can only be checked outside this environment, to keep it resolved and record `yoetz-verification-limit:<obligation id>`. It costs one extra Stop turn at most once per resolved set; it is never offered beside open obligations, a rejected finding awaiting a ruling or a withdrawn deliverable (it stays unasked and is asked at a later Stop), and an acknowledgement published after it is not challenged by the acknowledgement re-check. The premise ask stays on Stops the host has not already continued; the acknowledgement and acceptance re-checks may continue an already-continued Stop within the same caps. A finding the agent rejected with a reason that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`) sends the agent to `check` with `final_review: true` and never offers acknowledgement; `receipt_findings_unresolved` counts agent-work findings only, and `self_verified` is offered only while `finding_counts.self_verify_eligible` is positive. A deliverable that held content and is now empty or gone (`declared_output_emptied`, `declared_output_removed`) is voiced once per key (`emptied:<h8 of the declaring obligation items>`) even on an already-continued Stop, with the rule and obligation ids and never a path (every Stop after the first gate is an already-continued Stop in a single-turn run). The premise and acknowledgement texts say that if the agent cannot finish the work it keeps the working deliverable: acknowledgement never requires withdrawing or emptying it. Host decision: supported, same code path (the gate, its texts, its re-check list and its memory are shared by the Codex, Claude Code and Cursor Stop handlers; the only difference is how an already-continued Stop is detected, `stop_hook_active`). See ADR-033 and issues #977, #984, #985, #1031. `SessionEnd`
 emits `{}`. Provider-repair advice is standing advice (#844). Claude Code delivers it only on
-`SessionStart` and `Stop`, still as `additionalContext` and never as `decision: block`.
-`PostToolUse` does not carry it. A private or no-egress install, an install with no provider
+`SessionStart`, or on the first `PostToolUse` after a `Stop` that withheld it, as
+`additionalContext` and never as `decision: block`; `Stop` no longer carries it (#985).
+Any other `PostToolUse` does not carry it. A private or no-egress install, an install with no provider
 endpoint, and an install whose verification is disabled do not emit `connect_provider` or another
 provider-repair request. The service emits it only when verification is not disabled, a provider
 endpoint is bound, network egress is permitted, and an LLM inference channel is enabled, and the
 provider is still structurally unusable, including when no factory id is available.
+
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Claude Code: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
 
 Observation-health advice follows the same boundary: `refresh_observation` for source lag, a stale
 cursor, a drain backlog, service unavailability, or a locked vault stays in operator status and
@@ -871,22 +886,53 @@ measurements are not recorded yet; the gap is owned by issue #915. The frontier-
 change applies here unchanged: an ordinary-profile `PostToolUse` with no pending advice returns
 `{}`.
 
-### Oversized hook payloads (issue #667)
+### Oversized hook payloads (issue #667, tb4n1 B5)
 
-A Claude Code hook body over the 256 KiB ingress cap (`MAX_HOOK_STDIN_BYTES`) is refused at
-stdin, before any parse. Claude Code does not use Cursor's 1 MiB identity skim, so the oversized
-event stays an unparsed gap. The hook stays fail-open and the host continues. Yoetz records the
-bounded `claude_payload_too_large` reason against that event in `yoetz observe status` hook
-diagnostics, and notes the `payload_too_large` coverage gap on the consented workspace, where
+The Claude Code hook ingress cap is 1 MiB (`MAX_HOOK_STDIN_BYTES`, shared by every host); a body
+at or under it is parsed in full and its captured content stays bounded by the content budget. It
+was 256 KiB until tb4n1 (B5), when Yoetz's own `closure_prepare` replies, image reads, and large
+outputs outgrew it and lost their PostToolUse rows, leaving the pre-events unpaired.
+
+`yoetz hooks claude-observe` now skims a complete body up to 8 MiB (`MAX_HOOK_SKIM_BYTES`) with the
+same safety rules as the full parse:
+
+- Image, audio, and video bytes (a `Read` of an image returns `type: image` with base64 under
+  `file`; MCP tools return `image` blocks) are replaced with a fixed placeholder. If the body then
+  fits the 1 MiB cap it is admitted whole and records no gap.
+- A Yoetz MCP tool (`mcp__plugin_yoetz_yoetz__*` or `mcp__yoetz__*`, `closure_prepare` included)
+  keeps a closed identity row: session, tool, call id, lineage ids, and outcome flags. Its content
+  is never captured in any case, so the row is complete, pairs with its pre-event, and records no
+  gap.
+- Any other body still over the cap keeps the same identity row with the
+  `payload_content_omitted` gap and the `claude_payload_content_omitted` hook diagnostic. Command
+  text, file contents, and output are not retained.
+
+A body over the skim cap, or a complete oversized body that fails the parse, is still refused
+before any row exists. The hook stays fail-open and the host continues. Yoetz records the bounded
+`claude_payload_too_large` reason against that event in `yoetz observe status` hook diagnostics,
+and notes the `payload_too_large` coverage gap on the consented workspace, where
 `yoetz observe status` shows it. That workspace gap does not yet reach task receipts: no row
-exists, so a receipt simply has no evidence for the dropped event rather than naming the loss. This host ingress previously swallowed every
-refusal into a bare `{}` with no record at all, so a dropped large edit left no trace.
-The cap is fixed and shared by every host; raising it is not an operator control. Each reader
-consumes at most cap-plus-one bytes, so the true size of a refused body is never measured and
-never recorded — the bound itself is the whole fact. Nothing about the event is parsed, so the
-hook name the host supplied on the command line is the only identity the record can carry: no
-tool name, session, or path. The refusal costs exactly that one event; the next ordinary event
-still ingests.
+exists, so a receipt simply has no evidence for the dropped event rather than naming the loss.
+The caps are fixed; raising them is not an operator control. A reader consumes at most
+cap-plus-one bytes, so the true size of a refused body is never measured and never recorded. The
+refusal costs exactly that one event; the next ordinary event still ingests.
+
+Matcher decision (tb4n1 B5): the ordinary profile keeps its `.*` tool matchers, and the structural
+profile keeps its Yoetz-scoped matcher. Excluding Yoetz tools from PostToolUse alone would leave
+their pre-events unpaired, excluding them from both would drop the delivered record of Yoetz
+mutations and failures, and the structural profile exists only to observe Yoetz's own tools. The
+size problem is fixed in the reader instead.
+
+Observed images (P3-2, issue #1013): A Claude Code `Read` of an image returns `type: image` with base64 under `file`, and MCP tools
+return `image` blocks. Before the bytes are
+dropped, the hook records up to 8 images per call as digest-only facts: SHA-256 and byte count of
+the decoded image, a media type sniffed from its bytes (PNG, JPEG, GIF, WebP, else
+`image/unknown`), and pixel width and height read from the header only. The service records one
+`evidence_recorded` row per image (`artifact`, `content_digest`, `digest_only`), listed in the
+call's result `evidence_refs`, with the description `Observed image tool result <type> <w>x<h>
+(<n> bytes); pixels were not captured or sent`. No pixel is captured, stored, or sent; the agent
+can cite the evidence id as its own inspection of the output. This holds at every body size up to
+the 8 MiB skim cap.
 
 ### Smart observation selection (issue #687)
 
@@ -945,7 +991,10 @@ the shared store path with no Claude-specific behavior. Lowering, revoking, expi
 larger selection can leave more accepted rows than the new target holds. Those rows still drain,
 and the store keeps finite room, tied only to them, for refused-input loss, delivery attempts, and
 session ends. A refused hook reports `hook_observe_degraded: outbox_overflow; loss accounted`
-only after the loss is durable. If a `SessionEnd` hook cannot persist its local end, it stays
+only after the loss is durable. The notice ends with `cause=<cause>`, the closed admission
+dimension that refused, and the same cause is recorded as the `admission_loss_<cause>` reason in
+`hook_diagnostics.reasons` (ADR-029, tb4n1 B3). Only later inputs of the lost host call, or calls it
+spawned, carry `observation_input_loss`; the shared store path applies this to every host. If a `SessionEnd` hook cannot persist its local end, it stays
 fail-open within its three-second budget. It prints
 `hook_observe_degraded: session_end_unrecorded` and records that reason in
 `hook_diagnostics.reasons`.
@@ -1230,7 +1279,8 @@ The current Claude Code MCP surface advertises the read-only `closure_prepare/1.
 Discover its declaration before use and pass the returned session and writer identities with an
 explicit selection. It inventories one pinned status frontier or prepares one explicit draft; it
 never appends, judges work, or claims completion. The complete response frame is bounded: an
-oversized inventory returns `LIMIT_EXCEEDED` without partial data. When the declaration is absent,
+draft phases echo only the rows the selection names, and an oversized inventory returns
+`LIMIT_EXCEEDED` (`closure_result_too_large`) without partial data. When the declaration is absent,
 use `yoetz closure-prepare --session-id <returned-session> --writer-id <returned-writer>` with
 `--output <file>` outside the repository. This shared route is supported through the local bridge
 on macOS, Linux, and WSL 2; native Windows has no supported Yoetz MCP route. MCP discovery,
@@ -1273,13 +1323,29 @@ once, a code the running build does not know stays agent-actionable as `unclassi
 and nothing is removed from `known_gaps` or the receipt. `semantic_review_not_requested` is
 standing on a local-only or optional route and on the strict MCP route (which never dispatches
 AI-powered review), and agent-actionable only when the verification policy requires AI-powered
-review, the serving route can dispatch it, and none has succeeded since the last material change. At
+review, the serving route can dispatch it, and none has succeeded since the last material change.
+A check on a route that did not require AI-powered review records `semantic_route_required:
+false`; there the code no longer bounds the receipt conclusion (issue #986, same on every host).
+The strict local-only MCP route is such a route even when the verification policy is `required`,
+unless the check asked for `semantic_required` (issue #1021, ADR-040, same on every host).
+At
 `closure_readiness.state: ready_with_limitations` the agent requests the receipt without another
 check; the receipt conclusion is unchanged (a local-only check stays `insufficient_coverage`).
 
 X-HOST evidence: the derivation is covered by service-side contract tests over a Codex-shaped
 ledger replay; a dogfood transcript on this host across macOS, Linux and WSL 2 has not been
 recorded yet. That gap is owned by issue #913.
+
+### What follows the last check on Claude Code (tb4n3 RC-6, #1029)
+
+Claude Code names Yoetz's tools `mcp__plugin_yoetz_yoetz__<tool>` (or `mcp__yoetz__<tool>` for an
+external registration); both are read as Yoetz's own calls. `Read`, `Grep` and `Glob` are the
+hook's `exploration` class; `Edit`, `Write`, `MultiEdit` and `NotebookEdit` are edits that
+supersede a check unless every path is scratch or a Yoetz receipt; `Bash` is classified by its
+command (`exploration` only for a closed read-only set, otherwise `other`). The `Stop` hook's
+completion-signal evidence names no tool call. Decision: supported, same service-side rule as
+Codex; tested through the real ingress in
+`tests/unit/application/test_tb4n3_later_material_host_shapes.py`.
 
 ### Bounded workflow recovery examples (#613)
 
@@ -1388,6 +1454,11 @@ with the host's ordinary fail-open output, does not retain that input, and recor
 under `store_lock_events` in `yoetz observe status`); holds of one second or more are recorded
 as `store_lock_long_hold`. Neither is reported as `observe` or `workspace_unconsented`.
 
+This host shares the observe pass: an unexpected exception is recorded as
+`observe_<exception class>` (`observe_exception_unavailable` for an unlisted class) and a drain
+preflight names its stage (`drain_connect_timeout`, `drain_connect_failed`,
+`native_content_stage_failed`), as described in INTERFACES (tb4n2 N-3).
+
 For shared-store measurements and the remaining native-host coverage boundary, see
 [the performance runbook](observation-selection-performance.md).
 
@@ -1411,8 +1482,18 @@ privacy choices; new settings such as Expanded review require a separate exact a
 Claude Code's generic MCP profile delivers only the text `content` for `isError` results, so this
 host is the one that most depends on the directive reaching the text channel. A public error
 carrying a registered `continuation` token renders its frozen directive, any carried consent
-commands, its guidance pointer, and its nudge inside the 512-byte text projection, dropped from the
+commands, its guidance pointer, and its nudge inside the bounded (4,096-byte) text projection, dropped from the
 least load-bearing end when the budget is tight.
+
+**Bounded text and committed operations (ADR-043, issue #1025).** Because this host reads only the
+text `content` of an `isError` result and the summary of a success, the summary is composed with its
+required core first (verdict or error identity and location, the `overall next` instruction, the
+review status/reason, the frontier with its head digest) and never raises. A text that cannot be
+built never fails a committed call: the omitted clause is named
+(`summary_render_failed:<builder>.<clause>`), a service diagnostic records it, and the structured
+result is returned. Hook `additionalContext` over Yoetz's own 2,000-character cap ends with a cut
+marker; no Claude Code document available here states a limit, so the cap is Yoetz's own. The
+behavior is the same on macOS, Linux and WSL 2.
 
 This is the host where the gap was observed: before ADR-030 a `VAULT_LOCKED` result whose
 `safe_details` already carried `vault_initialization_required` and its prepare command reached the
@@ -1452,7 +1533,7 @@ configured.
 
 **Provider outcomes (issue #742).** A check whose AI-powered review failed carries a
 `continuation_for_semantic_outcome` token in the shared CLI and MCP check projections. Claude
-Code depends on the MCP text channel, so the token and, when the 512-byte budget allows, the
+Code depends on the MCP text channel, so the token and, when the bounded text budget allows, the
 directive appear there. Raw provider text never reaches that projection. Hook advisories never
 carry this token; SessionStart's vault-locked advisory appends its own `vault_unlock_required`
 token after the host-specific prefix (issue #739). No Claude-specific recovery wording is
@@ -1466,6 +1547,22 @@ service facts, identical for every host; progress never includes provider text, 
 or account identity. A read from a different session or writer of the same task may return
 retryable `BUNDLE_BUSY` while the check runs. This is shared service behavior, not evidence of a
 fresh installed native Claude Code dogfood run.
+
+## Post-compaction recap (issue #1027, ADR-044)
+
+Decision for Claude Code: **supported.** Claude Code reports `source: compact` on the `SessionStart`
+that follows a compaction; the wrapper encodes it as the structural action `claude_session_compact`
+and the shared observe pass reads the mapped session's compact `status`, then one bounded `obligations`
+view, and appends the receipt-style recap to `hookSpecificOutput.additionalContext` after the held-ids
+cue and the admission notice. The whole context is at most 4,000 characters (the recap at most 2,400;
+every other hook context keeps 2,000). Each line names its source, withheld text stays withheld, and any
+failure leaves the held-ids cue unchanged. `startup`, `resume` and `clear` starts are unchanged.
+
+No `PreCompact` hook is registered, and none is needed: the recap is composed after the compaction from
+the ledger, and the ordinary pass already drained the outbox when the last tool hook ran. Claude
+Code's own limit on hook context size is not asserted here; the 4,000-character bound is Yoetz's.
+Native acceptance of the recap on an installed Claude Code remains a pending dogfood lane; the
+behavior is covered by hook-level tests only.
 
 ## Cold service attachment and recovery (issue #670)
 
@@ -1661,6 +1758,19 @@ under that same request ID. Never mint a replacement write ID to recover an unkn
 A lost first `start` still uses exact same-body replay because session/writer IDs may be absent.
 This behavior is identical on macOS, Linux and Windows via WSL 2. CLI callers may set `--deadline-ms`.
 
+## Possible-credential filter opt-out (issue #982)
+
+Decision for Claude Code: supported, service-side, identical on every host. `credential_heuristic` is a
+field of the current repository's privacy grant that the service applies only to external
+AI-reviewer egress; agent-context projection and the local model keep the filter. Claude Code needs no
+host-specific step and gets no write path: `yoetz privacy credential-heuristic disable` is a
+widening that applies only after the trusted-terminal decision (walking the grant-creation
+ceremony when the repository has no grant), `enable` is an immediate per-repository tightening,
+and `--machine-default` moves only the default for new grants. MCP `status` carries
+`credential_heuristic` (`repository`, `machine_default`) before any check; MCP tools and hooks can
+only see the setting (status, the `semantic_review_credential_heuristic_disabled` check gap, the
+external receipt's `secret_scan.credential_heuristic`). No Claude Code capability gap.
+
 ## Privacy receipts listing (issue #921)
 
 `yoetz privacy receipts list` and `get` are host-agnostic: every host's sessions write receipts
@@ -1734,3 +1844,31 @@ its post share one action (described as observed via Claude Code hook), and a po
 keeps the standing `unpaired_event` record and triggers one "Yoetz notice (no response needed)"
 per new orphan scope instead of a recurring stale-observation advisory. Claude Code has no
 code-mode cell, so the stream wrapper rule does not apply.
+
+### Limitation requests, `reopened` and one dialogue per concern on Claude Code (tb4n3 RC-1 and RC-7, #1024, #1030)
+
+Host decision: supported, no host-specific code. The change lives in the shared kernel, `respond`
+and review paths (ADR-034 and ADR-040 amendments of 2026-10-11), so Claude Code behaves exactly as the
+other hosts. The Stop hook and the MCP `respond` tool take the shared path; a Claude Code session sees the same `respond` description and the same `closure_after`. What a Claude Code agent can rely on:
+
+- A reviewer finding that asks the agent to `state_unresolved_limitation` is a to-disclose item, not
+  repair work. `kernel/limitation.limitation_standing` reads it; `finding_blocks_receipt` is false
+  for it. The agent's answer decides what it means (owner decision 2026-10-12, ADR-040 and ADR-046
+  amendments): one reasoned `respond` `acknowledged` (or `self_verified`) or a
+  `yoetz-verification-limit:<obligation id>` decision says the requirement may be met but cannot be
+  verified here, and settles it as a disclosed verification limit with no recorded resolution
+  attempt required (never clean, at best `insufficient_coverage`); `acknowledged_not_done` says the
+  requirement is NOT met and keeps `unresolved_findings_remain` like any unmet requirement. When an
+  unanswered request is the only agent work left, the check's next step is `disclose_limitations`.
+  The Stop hook and readiness read the same closure class on every host.
+- `acknowledged_not_done` is no longer a one-way door: `respond` with `reopened` and a reason takes
+  it back, and a qualifying `check` that tested the work after the answer resolves it (also for
+  `self_verified`).
+- One concern stays one finding: a re-raise over a settled item (or an open item of the same kind
+  over the same concern) is recorded on that item and listed in the check's review summary instead of
+  minting a new id; the agent's own earlier rebuttal stands after a later acknowledgement.
+- Never empty or withdraw a working deliverable over a finding or an "empty file if unsolved" clause.
+
+Verification: `tests/integration/application/test_tb4n3_limits_dialogue_shapes.py` drives the real
+check, respond, status and receipt operations with a compliant reviewer; a live Claude Code transcript on
+macOS, Linux and WSL 2 is not recorded for this change.

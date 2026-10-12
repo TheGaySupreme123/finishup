@@ -2271,7 +2271,7 @@ async def test_ready_factory_completes_and_projects_deterministic_check(tmp_path
                 },
                 "mode": "deterministic_only",
                 "max_findings": "3",
-                "policy_packs": ["work-integrity/0.1.0"],
+                "policy_packs": ["work-integrity/0.3.0"],
             }
         )
         checked = await app.check(check_request)
@@ -2524,7 +2524,7 @@ async def test_ready_factory_deterministic_check_records_semantic_not_requested_
                     },
                     "mode": "deterministic_only",
                     "max_findings": "3",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             )
         )
@@ -2551,7 +2551,7 @@ async def test_ready_factory_deterministic_check_records_semantic_not_requested_
                         "head_digest": frontier.head_digest,
                     },
                     "max_findings": "3",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             )
         )
@@ -2581,7 +2581,7 @@ async def test_ready_factory_deterministic_check_records_semantic_not_requested_
                     },
                     "mode": "semantic_required",
                     "max_findings": "3",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             )
         )
@@ -2611,7 +2611,7 @@ async def test_ready_factory_deterministic_check_records_semantic_not_requested_
                     },
                     "mode": "deterministic_only",
                     "max_findings": "3",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             )
         )
@@ -3626,7 +3626,7 @@ async def test_ready_check_never_activates_provider_from_machine_policy_without_
                 },
                 "mode": "semantic_required",
                 "max_findings": "3",
-                "policy_packs": ["work-integrity/0.1.0"],
+                "policy_packs": ["work-integrity/0.3.0"],
             }
         )
         first = await app.check(original_request)
@@ -3702,7 +3702,7 @@ async def test_ready_check_never_activates_provider_from_machine_policy_without_
                     },
                     "mode": "semantic_required",
                     "max_findings": "3",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             )
         )

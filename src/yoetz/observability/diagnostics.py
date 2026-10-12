@@ -49,6 +49,13 @@ _FIELD_ORDER: Final = (
     "semantic_challenges_returned",
     "semantic_candidates_accepted",
     "semantic_challenges_rejected",
+    "semantic_rejected_hidden_source_claim",
+    "semantic_rejected_ref_not_carried",
+    "semantic_rejected_ref_outside_case",
+    "semantic_rejected_snippet_invalid",
+    "semantic_rejected_subject_refs_over_limit",
+    "semantic_review_refs_reduced",
+    "semantic_review_snippets_rejected",
     "semantic_restatements_suppressed",
     "semantic_prior_rulings_set_aside",
     "semantic_findings_selected",
@@ -71,6 +78,9 @@ _FIELD_ORDER: Final = (
     # vanished from the durable ring an operator actually reads.
     "duration_ms",
     "operation_count",
+    # Closed control-plane identity of an abandoned response write (tb4n2 NEW-8).
+    "control_method",
+    "client_kind",
 )
 _lock = Lock()
 

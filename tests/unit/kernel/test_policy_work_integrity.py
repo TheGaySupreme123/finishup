@@ -29,6 +29,7 @@ from yoetz.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     ClaimRecordedPayloadV1_1,
+    DecisionRecordedPayload,
     EvidenceKind,
     EvidenceRecordedPayload,
     ObligationChange,
@@ -39,6 +40,7 @@ from yoetz.domain.events import (
     PlanRevisedPayload,
     RequestedItem,
     RequestedItemKind,
+    RequestedItemRole,
     ResponseDisposition,
     ResponseRecordedPayload,
     ResultOutcome,
@@ -54,22 +56,46 @@ from yoetz.domain.findings import (
 )
 from yoetz.domain.values import (
     SubjectStateRef,
+    actor_id,
     object_id,
     timestamp_from_string,
 )
 from yoetz.kernel.deterministic_checks import (
+    REQUESTED_OUTPUT_ABSENT_FACT,
     CaseGap,
+    DeterministicCase,
     render_deterministic_finding_text,
     run_deterministic_policies,
 )
-from yoetz.kernel.policies.work_integrity import WORK_INTEGRITY_POLICY_PACK
-from yoetz.kernel.projections import ContradictionKey, ContradictionRecord
+from yoetz.kernel.policies.work_integrity import (
+    WORK_INTEGRITY_POLICY_PACK,
+    reportable_absent_outputs,
+    work_integrity_findings,
+)
+from yoetz.kernel.projections import (
+    ContradictionKey,
+    ContradictionRecord,
+    DecisionProjectionRecord,
+)
 from yoetz.protocol.coverage import EvidenceImmutability
 from yoetz.protocol.models import SemanticReason, SemanticStatus
 
 _NOW = timestamp_from_string("2026-01-01T00:00:00.000Z")
 _DIGEST_A = "sha256:" + "1" * 64
 _DIGEST_B = "sha256:" + "2" * 64
+
+
+def _decision_record(payload: DecisionRecordedPayload) -> DecisionProjectionRecord:
+    from yoetz.domain.events import encode_payload
+    from yoetz.protocol.canonical import canonical_digest
+
+    return DecisionProjectionRecord(
+        payload=payload,
+        payload_digest=canonical_digest(encode_payload(payload)),
+        redacted=False,
+        source_event_id=evt(50),
+        source_frontier=4,
+    )
 
 
 def _kinds(case: object) -> tuple[FindingKind, ...]:
@@ -162,12 +188,31 @@ def test_completion_with_open_obligations_and_waiver_nontrigger() -> None:
     assert FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS not in _kinds(waived)
 
 
+def _unrelated_action(number: int, obligation: int | None = None) -> ActionRecordedPayload:
+    """A published action that attempts a different item, optionally scoped to an obligation.
+
+    tb4n2 E4 (P1-7): "never attempted" needs work on *this* obligation. tb4n3 RC-5 (ADR-045): a
+    global action (no ``obligation_refs``) works only on the obligations whose items it names, so
+    tests that need work on one obligation scope the action to it; a global action that names
+    nothing of an obligation used to mark every obligation "acted on" (lake S).
+    """
+
+    return ActionRecordedPayload(
+        action_id=act(number),
+        action_kind=ActionKind.EDIT,
+        description="Work on the task",
+        obligation_refs=() if obligation is None else (obl(obligation),),
+        attempted_items=("other-item",),
+    )
+
+
 def test_requested_item_never_attempted_and_exact_attempt_nontrigger() -> None:
     obligation = _open_obligation(1, requested="item-1")
     plan = PlanPublishedPayload(1, "Plan", (obl(1),))
     trigger = make_case(
         plans={1: plan_record(plan, 1)},
         obligations={obl(1): obligation_record(obligation, 2)},
+        actions={act(9): record(_unrelated_action(9, 1), 3)},
     )
     assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in _kinds(trigger)
     attempted = make_case(
@@ -198,12 +243,101 @@ def test_identical_requested_items_require_obligation_scoped_attempt() -> None:
         actions={act(1): record(scoped, 4)},
     )
 
-    findings = [
-        assessment
-        for assessment in run_deterministic_policies(case, WORK_INTEGRITY_POLICY_PACK).assessments
-        if assessment.candidate.kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
-    ]
-    assert [assessment.candidate.subject_refs for assessment in findings] == [(obl(2),)]
+    def findings(case: DeterministicCase) -> list[tuple[object, ...]]:
+        return [
+            assessment.candidate.subject_refs
+            for assessment in run_deterministic_policies(
+                case, WORK_INTEGRITY_POLICY_PACK
+            ).assessments
+            if assessment.candidate.kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
+        ]
+
+    # tb4n2 E4 (P1-7): work on the first obligation is not work on the second, so the second's
+    # item is not "never attempted" until a completion claim names it (no global "started").
+    assert findings(case) == []
+    claim = ClaimRecordedPayload(
+        claim_id=clm(1),
+        claim_kind=ClaimKind.COMPLETION,
+        statement="Complete",
+        supporting_refs=(),
+        obligation_refs=(obl(1), obl(2)),
+    )
+    claimed = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={
+            obl(1): obligation_record(first, 2),
+            obl(2): obligation_record(second, 3),
+        },
+        actions={act(1): record(scoped, 4)},
+        claims={clm(1): record(claim, 5)},
+    )
+    assert findings(claimed) == [(obl(2),)]
+
+
+def test_input_role_items_are_never_reported_unattempted() -> None:
+    """tb4n2 E4 (P1-7): formal S ``/root/data``, interleaved D sample inputs.
+
+    An obligation whose only requested item is ``role: input`` is read by the task, never
+    delivered, so neither work on it nor a completion claim makes it "never attempted". An
+    output-role sibling on the same obligation still is.
+    """
+
+    reads = ObligationPublishedPayload(
+        obligation_id=obl(1),
+        description="Read the samples",
+        evidence_expectation="Typed evidence",
+        status=ObligationStatus.OPEN,
+        requested_items=(
+            RequestedItem(RequestedItemKind.FILE, "/root/data", RequestedItemRole.INPUT),
+        ),
+    )
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    claim = ClaimRecordedPayload(
+        claim_id=clm(1),
+        claim_kind=ClaimKind.COMPLETION,
+        statement="Complete",
+        supporting_refs=(),
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(reads, 2)},
+        actions={act(9): record(_unrelated_action(9), 3)},
+        claims={clm(1): record(claim, 4)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(case)
+
+    mixed = replace(
+        reads,
+        requested_items=(
+            *reads.requested_items,
+            RequestedItem(RequestedItemKind.FILE, "/app/out.json", RequestedItemRole.OUTPUT),
+        ),
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(mixed, 2)},
+        actions={act(9): record(_unrelated_action(9), 3)},
+        claims={clm(1): record(claim, 4)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in _kinds(case)
+
+
+def test_research_alone_never_reports_an_item_unattempted() -> None:
+    """tb4n2 E4 (P1-7): lake S got "no recorded attempt" after one research action."""
+
+    obligation = _open_obligation(1, requested="item-1")
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    research = ActionRecordedPayload(
+        action_id=act(9),
+        action_kind=ActionKind.RESEARCH,
+        description="Read the inputs",
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(obligation, 2)},
+        actions={act(9): record(research, 3)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(case)
 
 
 def test_requested_item_on_carried_revision_uses_effective_plan_scope() -> None:
@@ -219,9 +353,181 @@ def test_requested_item_on_carried_revision_uses_effective_plan_scope() -> None:
     case = make_case(
         plans={1: plan_record(initial, 1), 2: plan_record(revision, 2)},
         obligations={obl(2): obligation_record(obligation, 3)},
+        actions={act(9): record(_unrelated_action(9, 2), 4)},
     )
 
     assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in _kinds(case)
+
+
+def test_requested_item_is_not_reported_before_the_agent_starts_acting() -> None:
+    """TB4 tb4f1: 86% of all findings were this notice raised against a fresh plan (#977)."""
+
+    obligation = _open_obligation(1, requested="item-1")
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    plan_only = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(obligation, 2)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(plan_only)
+
+
+def test_absent_requested_output_is_reported_even_when_an_action_names_it() -> None:
+    """atrx-vep-crispr: naming the report in attempted_items never wrote it (#977)."""
+
+    obligation = ObligationPublishedPayload(
+        obligation_id=obl(1),
+        description="Write the report",
+        evidence_expectation="The file",
+        status=ObligationStatus.OPEN,
+        requested_items=(RequestedItem(RequestedItemKind.FILE, "out/report.json"),),
+    )
+    named = ActionRecordedPayload(
+        action_id=act(1),
+        action_kind=ActionKind.OTHER,
+        description="Attempted the report",
+        obligation_refs=(obl(1),),
+        attempted_items=("out/report.json",),
+    )
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(obligation, 2)},
+        actions={act(1): record(named, 3)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(case)
+    assessments = work_integrity_findings(case, absent_outputs=frozenset({(obl(1), 0)}))
+    found = [
+        item
+        for item in assessments
+        if item.candidate.kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
+    ]
+    assert len(found) == 1
+    facts = {fact.fact_code for fact in found[0].basis.observed_facts}
+    assert REQUESTED_OUTPUT_ABSENT_FACT in facts
+    assert found[0].basis.required_but_missing_facts == ()
+    detail = found[0].candidate.detail
+    assert "best-effort artifact" in detail
+    assert "revise" not in found[0].candidate.detail.lower()
+
+
+def test_pre_work_check_reports_no_absent_requested_output() -> None:
+    """tb4n1 E4: the guided pre-work check found every requested output absent.
+
+    48 of 68 first findings were this variant, 42 of them before any edit: after the plan, before
+    work, the file obviously does not exist yet. A research action is still investigation, and an
+    action on another obligation is not work on this one.
+    """
+
+    report = ObligationPublishedPayload(
+        obligation_id=obl(1),
+        description="Write the report",
+        evidence_expectation="The file",
+        status=ObligationStatus.OPEN,
+        requested_items=(RequestedItem(RequestedItemKind.FILE, "out/report.json"),),
+    )
+    other = ObligationPublishedPayload(
+        obligation_id=obl(2),
+        description="Fix the parser",
+        evidence_expectation="Tests",
+        status=ObligationStatus.OPEN,
+    )
+    plan = PlanPublishedPayload(1, "Plan", (obl(1), obl(2)))
+    research = ActionRecordedPayload(
+        action_id=act(1),
+        action_kind=ActionKind.RESEARCH,
+        description="Read the task inputs",
+        obligation_refs=(obl(1),),
+        attempted_items=("out/report.json",),
+    )
+    parser_edit = ActionRecordedPayload(
+        action_id=act(2),
+        action_kind=ActionKind.EDIT,
+        description="Edited the parser",
+        obligation_refs=(obl(2),),
+    )
+    absent = frozenset({(obl(1), 0)})
+    obligations = {obl(1): obligation_record(report, 2), obl(2): obligation_record(other, 3)}
+
+    plan_only = make_case(plans={1: plan_record(plan, 1)}, obligations=obligations)
+    assert reportable_absent_outputs(plan_only, absent) == frozenset()
+    assert not work_integrity_findings(plan_only, absent_outputs=absent)
+
+    investigating = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations=obligations,
+        actions={act(1): record(research, 4), act(2): record(parser_edit, 5)},
+    )
+    assert reportable_absent_outputs(investigating, absent) == frozenset()
+    assert not any(
+        REQUESTED_OUTPUT_ABSENT_FACT in {fact.fact_code for fact in item.basis.observed_facts}
+        for item in work_integrity_findings(investigating, absent_outputs=absent)
+    )
+
+    # Work on the report obligation begins: the absent file is now a finding.
+    report_edit = ActionRecordedPayload(
+        action_id=act(3),
+        action_kind=ActionKind.EDIT,
+        description="Started the report",
+        obligation_refs=(obl(1),),
+    )
+    working = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations=obligations,
+        actions={
+            act(1): record(research, 4),
+            act(2): record(parser_edit, 5),
+            act(3): record(report_edit, 6),
+        },
+    )
+    assert reportable_absent_outputs(working, absent) == absent
+    assert any(
+        REQUESTED_OUTPUT_ABSENT_FACT in {fact.fact_code for fact in item.basis.observed_facts}
+        for item in work_integrity_findings(working, absent_outputs=absent)
+    )
+
+
+def test_blocked_obligation_raises_no_requested_item_finding() -> None:
+    obligation = _open_obligation(1, requested="item-1")
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    blocker = DecisionRecordedPayload(
+        statement="yoetz-blocker:credential",
+        rationale="The registry token is the operator's.",
+        authority=actor_id("agt_codex"),
+        affected_obligation_ids=(obl(1),),
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(obligation, 2)},
+        actions={act(9): record(_unrelated_action(9, 1), 3)},
+    )
+    case = replace(
+        case,
+        projection=replace(
+            case.projection,
+            decisions={evt(50): _decision_record(blocker)},
+        ),
+    )
+    # #985: the claimed blocker alone suppresses nothing; it is still the agent's work.
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in {
+        item.candidate.kind
+        for item in work_integrity_findings(case, absent_outputs=frozenset({(obl(1), 0)}))
+    }
+    # A confirmed blocker reaches the case as its task-fact marker, derived with the batches.
+    case = replace(
+        case,
+        gaps=(
+            CaseGap(
+                f"obligation_blocked_outside_agent_control:{obl(1)}",
+                "obligation_blocked_outside_agent_control",
+                (obl(1),),
+            ),
+        ),
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(case)
+    absent = work_integrity_findings(case, absent_outputs=frozenset({(obl(1), 0)}))
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in {
+        item.candidate.kind for item in absent
+    }
 
 
 def test_failed_work_omitted_and_exact_disclosure_nontrigger() -> None:

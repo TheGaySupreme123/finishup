@@ -47,14 +47,24 @@ from yoetz.protocol.models import (
     SemanticStatus,
     validate_semantic_outcome,
 )
+from yoetz.protocol.policy_packs import (
+    COORDINATION_POLICY_ID,
+    CURRENT_POLICY_VERSIONS,
+    RESEARCH_EVIDENCE_POLICY_ID,
+    WORK_INTEGRITY_POLICY_ID,
+    is_recorded_policy_identity,
+)
 
 __all__ = [
     "EXTERNAL_SEMANTIC_FINDING_KINDS",
     "FALLBACK_ORIGIN_REASONS",
     "FINDING_KIND_TRAITS",
+    "LIMITATION_REQUEST_NEXT_STEP",
+    "LIMITATION_REQUEST_REQUIREMENT_KINDS",
     "MAX_RECORDED_VERDICTS",
     "MAX_RELATED_FINDING_IDS",
     "PRIOR_FINDING_VERDICTS",
+    "DISPUTED_AFTER_REBUTTAL_VERDICT",
     "REVIEWER_NEXT_STEPS",
     "CandidateFinding",
     "CheckVerdict",
@@ -67,8 +77,11 @@ __all__ = [
     "PriorFindingVerdictRecord",
     "RankedFindings",
     "ResponseDisposition",
+    "RESPONSE_V1_1_DISPOSITIONS",
     "RUNTIME_FAILURE_STAGES",
     "RuntimeAttemptEvidence",
+    "SELF_VERIFIED_GUIDANCE",
+    "TERMINAL_RESPONSE_DISPOSITIONS",
     "RuntimeTokenUsage",
     "SamplingParams",
     "SemanticDispatchKind",
@@ -81,8 +94,11 @@ __all__ = [
     "finding_event_from_json",
     "finding_event_to_json",
     "finding_from_json",
+    "finding_demands_work",
     "finding_has_dialogue_fields",
+    "finding_policy_identity",
     "finding_to_json",
+    "is_limitation_request",
     "rank_key",
     "semantic_fallback_origin_to_json",
     "semantic_provenance_from_json",
@@ -182,9 +198,47 @@ class ResponseDisposition(str, Enum):  # noqa: UP042 - exact wire enum base
     # asks. Terminal: the item is never re-reviewed, never resolves, and never reads as clean.
     # Recorded only on ``response_recorded`` 1.1.0.
     ACKNOWLEDGED_NOT_DONE = "acknowledged_not_done"
+    # Issue #996 (ADR-034 amendment): the agent links this finding to an earlier finding that
+    # names the same issue and that it already answered or is answering. Requires
+    # ``duplicate_of_finding_id``; reason and evidence are optional, waiver fields are refused.
+    # Not terminal: while the link holds the to-do state is derived from the earlier finding, and
+    # a later check that raises this finding's issue again breaks the link
+    # (``kernel/finding_todo.py``). Recorded only on ``response_recorded`` 1.1.0.
+    DUPLICATE_OF = "duplicate_of"
     PROVENANCE_DISPUTED = "provenance_disputed"
     REJECTED = "rejected"
+    # Issue #984 (ADR-034): the agent repaired the finding, Yoetz cannot prove the repair because
+    # of its own limits (a "Yoetz limit"), and the agent verified it itself. Requires a reason
+    # (how it verified) and at least one recorded evidence or result id. Terminal: never resolved,
+    # never clean, never re-reviewed, and not agent work. Recorded only on
+    # ``response_recorded`` 1.1.0.
+    SELF_VERIFIED = "self_verified"
+    # Issue #1030 (tb4n3 RC-7, ADR-034/040 amendment): the agent takes back an
+    # ``acknowledged_not_done`` answer (it will do the work after all). The only edge that leaves
+    # that terminal state; the finding is ``open`` again and the agent's earlier position is
+    # retracted. Requires a reason. Recorded only on ``response_recorded`` 1.1.0.
+    REOPENED = "reopened"
     WAIVED = "waived"
+
+
+# The dispositions that make a finding's to-do state final when recorded (issues #905, #984).
+TERMINAL_RESPONSE_DISPOSITIONS: Final = frozenset(
+    {ResponseDisposition.ACKNOWLEDGED_NOT_DONE, ResponseDisposition.SELF_VERIFIED}
+)
+
+# The dispositions recorded only on ``response_recorded`` 1.1.0 (issues #905, #984, #996); every
+# other disposition keeps the released 1.0.0 bytes.
+RESPONSE_V1_1_DISPOSITIONS: Final = TERMINAL_RESPONSE_DISPOSITIONS | frozenset(
+    {ResponseDisposition.DUPLICATE_OF, ResponseDisposition.REOPENED}
+)
+
+# The one sentence every agent-facing text reuses when it tells the agent what to do with a
+# finding Yoetz cannot prove repaired (issue #984, COORD contract wording; tests pin it).
+SELF_VERIFIED_GUIDANCE: Final = (
+    "If you repaired this and Yoetz cannot prove it (a Yoetz limit), verify it yourself, record "
+    "that evidence, and respond `self_verified` with how you verified it and the evidence ids. "
+    "Do not reshape your work for Yoetz, and a Yoetz limit is never a `yoetz-blocker`."
+)
 
 
 class SemanticDispatchKind(str, Enum):  # noqa: UP042 - exact wire enum base
@@ -376,18 +430,31 @@ _WORK_INTEGRITY_KINDS: Final = frozenset(
         FindingKind.WEAK_OR_STALE_RESPONSE,
     }
 )
+# The pack that owns each kind and the current version new findings carry. A recorded finding may
+# carry any earlier version of the same pack (``yoetz.protocol.policy_packs``).
 _POLICY_IDENTITY_BY_KIND: Final[MappingProxyType[FindingKind, tuple[str, str]]] = MappingProxyType(
     {
         kind: (
-            ("work-integrity", "0.1.0")
-            if kind in _WORK_INTEGRITY_KINDS
-            else ("research-evidence", "0.1.0")
-            if kind is not FindingKind.COORDINATION_OVERLAP
-            else ("coordination", "0.1.0")
+            policy_id,
+            CURRENT_POLICY_VERSIONS[policy_id],
         )
         for kind in FindingKind
+        for policy_id in (
+            WORK_INTEGRITY_POLICY_ID
+            if kind in _WORK_INTEGRITY_KINDS
+            else RESEARCH_EVIDENCE_POLICY_ID
+            if kind is not FindingKind.COORDINATION_OVERLAP
+            else COORDINATION_POLICY_ID,
+        )
     }
 )
+
+
+def finding_policy_identity(kind: FindingKind) -> tuple[str, str]:
+    """The ``(policy_id, policy_version)`` a newly raised finding of ``kind`` carries."""
+
+    return _POLICY_IDENTITY_BY_KIND[kind]
+
 
 _TERMINAL_SEMANTIC_STATUSES: Final = frozenset(
     {
@@ -751,12 +818,11 @@ def _validate_finding_fields(
     _validate_bounded_text(detail)
     validated_refs = _validate_subject_refs(subject_refs)
 
-    expected_policy_id, expected_policy_version = _POLICY_IDENTITY_BY_KIND[validated_kind]
+    expected_policy_id, _ = _POLICY_IDENTITY_BY_KIND[validated_kind]
     if (
         type(policy_id) is not str
-        or type(policy_version) is not str
         or policy_id != expected_policy_id
-        or policy_version != expected_policy_version
+        or not is_recorded_policy_identity(policy_id, policy_version)
     ):
         raise ProtocolValueError("invalid_finding_policy_identity")
     if type(subject_frontier) is not Frontier:
@@ -784,6 +850,7 @@ REVIEWER_NEXT_STEPS: Final = frozenset(
         "revise_claim",
         "dispute_with_evidence",
         "state_unresolved_limitation",
+        "answer_question",
     }
 )
 # A challenge cites at most 16 refs, so it can name at most 16 earlier findings.
@@ -959,10 +1026,24 @@ class Finding:
 # The reviewer's closed per-finding rulings (issue #905). ``fixed`` proves nothing on its own:
 # post-validation admits it only with cited material recorded after the finding, and finding
 # resolution still applies the freshness and material-change rules.
+#
+# ``disputed_after_rebuttal`` (issue #1020, ADR-040) is recorded by Yoetz, never sent by the
+# reviewer: the reviewer kept an AI-powered finding open (``still_present``,
+# ``answered_not_fixed`` or ``unassessable``) after the agent rejected it with a reason, citing
+# no material recorded after that rejection. It latches the final, non-blocking to-do state
+# ``disputed_after_rebuttal``.
+DISPUTED_AFTER_REBUTTAL_VERDICT: Final = "disputed_after_rebuttal"
 PRIOR_FINDING_VERDICTS: Final = frozenset(
-    {"fixed", "still_present", "answered_not_fixed", "unassessable", "withdrawn"}
+    {
+        "fixed",
+        "still_present",
+        "answered_not_fixed",
+        "unassessable",
+        "withdrawn",
+        DISPUTED_AFTER_REBUTTAL_VERDICT,
+    }
 )
-MAX_RECORDED_VERDICTS: Final = 8
+MAX_RECORDED_VERDICTS: Final = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -1725,3 +1806,45 @@ def rank_key(finding: Finding) -> RankKey:
         origin_ordinal,
         finding.finding_id.encode("ascii"),
     )
+
+
+# tb4n3 RC-1 / RC-3 (issue #1026): the reviewer's recorded statement that a requirement
+# cannot be verified in this environment and asks the agent to say so. It is a challenge fact only:
+# nothing here reads the agent's own words, so an agent's "I could not find it" never qualifies.
+LIMITATION_REQUEST_NEXT_STEP: Final = "state_unresolved_limitation"
+# The requirement-family kinds a limitation request can legitimately attach to.
+LIMITATION_REQUEST_REQUIREMENT_KINDS: Final = frozenset(
+    {
+        FindingKind.TASK_REQUIREMENT_UNMET,
+        FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS,
+        FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED,
+        FindingKind.EVIDENCE_DOES_NOT_SUPPORT_CLAIM,
+        FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE,
+    }
+)
+
+
+def is_limitation_request(finding: Finding) -> bool:
+    """Whether the reviewer asked the agent to *state* a limitation instead of doing more work.
+
+    A pure function of the recorded finding (so ranking can use it at mint time). It does not
+    settle the finding by itself: the closure class stays ``agent_work`` / ``limitation_requested``
+    until the agent answers it (``kernel.closure_class``, owner decisions Q4 and 2026-10-12).
+    """
+
+    return (
+        finding.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+        and finding.challenge is not None
+        and finding.challenge.requested_next_step == LIMITATION_REQUEST_NEXT_STEP
+        and finding.kind in LIMITATION_REQUEST_REQUIREMENT_KINDS
+    )
+
+
+def finding_demands_work(finding: Finding) -> bool:
+    """Whether the finding asks the agent for work (repair, evidence or a rebuttal).
+
+    The kind trait says whether a kind can be work at all; a limitation request is the one
+    actionable kind that asks only for a disclosure, so it never demands work.
+    """
+
+    return FINDING_KIND_TRAITS[finding.kind][1] and not is_limitation_request(finding)

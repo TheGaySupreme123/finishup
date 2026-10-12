@@ -389,7 +389,12 @@ def test_results_view_names_tool_occurrence_commitment_and_exit_status() -> None
     assert run.tool_name == "exec_command"
     assert run.exit_status == 2
     assert run.command_commitment is not None
-    assert "omitted:" + run.command_commitment == command_identity_for("pytest -q tests/y.py")
+    # The action's command field also carries the segment and canonical commitments (ADR-045); the
+    # results view names only the whole-command commitment.
+    assert (
+        "omitted:" + run.command_commitment
+        == command_identity_for("pytest -q tests/y.py").split(" ", 1)[0]
+    )
     # A cooperative result carries no observed run, even when it republishes the commitment.
     assert by_id[cooperative].observed_run is None
     assert "observed_run" not in by_id[cooperative].model_dump(mode="json", exclude_unset=True)
@@ -483,3 +488,21 @@ def test_an_edit_never_retires_a_failure(outcome: ResultOutcome) -> None:
     ledger.claim()
     expected = (failed, edit) if outcome is ResultOutcome.PARTIAL else (failed,)
     assert omitted_results(ledger) == expected
+
+
+def test_a_stream_corrected_unknown_hook_result_is_not_a_claim_limitation() -> None:
+    """#1001: the unknown hook copy of a corrected Codex call never mints its own limitation."""
+
+    for outcome, exit_status, expected_limiting in (
+        (ResultOutcome.SUCCESS, 0, 0),
+        (ResultOutcome.FAILURE, 2, 1),
+    ):
+        ledger = ObservedLedger()
+        unknown = ledger.run("pytest -q tests/test_soc.py", ResultOutcome.UNKNOWN)
+        corrected = ledger.correct_outcome(unknown, outcome, exit_status=exit_status)
+        ledger.claim()
+        limiting = omitted_results(ledger)
+        assert unknown not in limiting
+        assert len(limiting) == expected_limiting
+        if expected_limiting:
+            assert limiting == (corrected,)

@@ -20,7 +20,7 @@ from yoetz.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
 from yoetz.adapters.sqlite.migrations import initialize_bundle
 from yoetz.adapters.sqlite.repository import SqliteLedger
 from yoetz.domain.events import (
-    SEMANTIC_EVENT_SCHEMA_VERSION,
+    REVIEW_CHECK_EVENT_SCHEMA_VERSION,
     CheckChangePartialFile,
     CheckChangeShownFiles,
     CheckRecordedPayload,
@@ -1332,7 +1332,15 @@ async def test_commit_check_if_current_contract() -> None:
             async for row in adapter.load_events(command.session_id)
             if row.schema.name == "check_recorded"
         ]
-        assert committed == [EventSchema("check_recorded", SEMANTIC_EVENT_SCHEMA_VERSION)]
+        # Every newly completed check carries frozen-work totals, so it commits as 1.4.0.
+        assert committed == [EventSchema("check_recorded", REVIEW_CHECK_EVENT_SCHEMA_VERSION)]
+        stored_check = [
+            row.payload
+            async for row in adapter.load_events(command.session_id)
+            if row.schema.name == "check_recorded"
+        ]
+        assert isinstance(stored_check[0], CheckRecordedPayload)
+        assert stored_check[0].totals is not None
     assert results[0] == results[1]
 
 
@@ -1587,7 +1595,7 @@ async def test_sqlite_reopen_replays_ranked_order_after_canonical_set_commit() -
 
 
 @pytest.mark.anyio
-async def test_named_missing_items_commit_as_check_recorded_1_3_and_replay_after_restart() -> None:
+async def test_named_missing_items_commit_as_check_recorded_1_4_and_replay_after_restart() -> None:
     """Issue #907: both ledgers record the structural items and a restart replays them."""
 
     items = (
@@ -1619,8 +1627,9 @@ async def test_named_missing_items_commit_as_check_recorded_1_3_and_replay_after
         )
         assert committed.missing_for_assessment == items
         events = [row async for row in adapter.load_events(command.session_id)]
+        # Totals now accompany every completed check, so the conclusion rides on 1.4.0.
         assert [row.schema.version for row in events if row.schema.name == "check_recorded"] == [
-            "1.3.0"
+            "1.4.0"
         ]
         stored = await adapter.load_projection(
             command.session_id, ProjectionView.CANDIDATE_FINDINGS
@@ -1831,7 +1840,7 @@ async def test_check_change_shown_files_replay_to_the_same_raise_facts_in_both_l
             async for row in adapter.load_events(command.session_id)
             if row.schema.name == "check_recorded"
         ]
-        assert [row.schema.version for row in checks] == ["1.3.0"]
+        assert [row.schema.version for row in checks] == ["1.4.0"]
         payload = checks[0].payload
         assert isinstance(payload, CheckRecordedPayload) and payload.check_change_files == files
         stored = await adapter.load_projection(

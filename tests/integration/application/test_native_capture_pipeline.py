@@ -3081,7 +3081,11 @@ async def test_codex_recorded_outcome_shapes_reach_the_ledger(tmp_path: Path) ->
         payload, gaps = recorded
         assert payload.outcome is ResultOutcome(cast(str, facts["outcome"])), variant
         assert payload.exit_status == facts["exit_status"], variant
-        assert (HOST_OUTCOME_UNAVAILABLE_GAP in gaps) is facts["host_outcome_unavailable"], variant
+        # #1001: the stream's corrected outcome for the running shell supersedes its unknown hook
+        # result, so the frozen case no longer carries that record's host_outcome_unavailable.
+        corrected = call_id == "call_910_shell_running"
+        expected_gap = bool(facts["host_outcome_unavailable"]) and not corrected
+        assert (HOST_OUTCOME_UNAVAILABLE_GAP in gaps) is expected_gap, variant
         if hook_inputs[variant]["provenance"] != "constructed_control":
             folded.update(gaps)
     # Every recorded shape states its outcome, so none of them carries the standing gap.
@@ -3099,7 +3103,8 @@ async def test_codex_recorded_outcome_shapes_reach_the_ledger(tmp_path: Path) ->
     assert running_record is not None
     running, running_gaps = running_record
     assert running.outcome is ResultOutcome.UNKNOWN  # the hook row is never rewritten
-    assert HOST_OUTCOME_UNAVAILABLE_GAP in running_gaps
+    # Superseded by the correction below for readers of the frozen case (#1001).
+    assert HOST_OUTCOME_UNAVAILABLE_GAP not in running_gaps
     corrections = [
         record.payload
         for record in results.values()
@@ -3110,3 +3115,125 @@ async def test_codex_recorded_outcome_shapes_reach_the_ledger(tmp_path: Path) ->
     assert [(item.outcome, item.exit_status) for item in corrections] == [
         (ResultOutcome.FAILURE, 2)
     ]
+
+
+@pytest.mark.anyio
+async def test_codex_image_result_reaches_the_ledger_as_digest_only_evidence(
+    tmp_path: Path,
+) -> None:
+    """#1013: an image tool result commits one digest-only evidence row with its result.
+
+    Review regression: the row's ``observation_captured`` provenance once failed the accepted
+    event's validation, which refused the whole post-event batch.
+    """
+
+    import base64
+    import hashlib
+    import struct
+    import zlib
+
+    from yoetz.application.observation_drain import ObservationOutboxSweeper
+    from yoetz.domain.events import (
+        EvidenceContentAvailability,
+        EvidenceDigestProvenance,
+        EvidenceRecordedPayload,
+    )
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
+
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 3, 2, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00" + b"\x00" * 9))
+        + chunk(b"IEND", b"")
+    )
+    raw_session = "codex-image"
+    (
+        project,
+        workspace,
+        _session_commitment,
+        local,
+        _task_observation,
+        ledger,
+        runtime,
+        coordinator,
+        _client,
+        connect,
+    ) = await _pipeline(tmp_path, codex_session_id=raw_session, profile=None)
+
+    def run_async(factory: Callable[[], Awaitable[object]]) -> object:
+        return asyncio.run(factory())
+
+    for event in ("PreToolUse", "PostToolUse"):
+        payload: dict[str, object] = {
+            "session_id": raw_session,
+            "cwd": str(project.resolve()),
+            "turn_id": "turn-1",
+            "hook_event_name": event,
+            "tool_name": "view_image",
+            "tool_input": {"path": "out/render.png"},
+            "tool_use_id": "call-image-1",
+        }
+        if event == "PostToolUse":
+            payload["tool_response"] = [
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64," + base64.b64encode(png).decode(),
+                }
+            ]
+        code = await asyncio.to_thread(
+            handle_observe,
+            event_name=event,
+            stdin_bytes=canonical_encode(cast(CanonicalJsonValue, payload)),
+            workspace=str(project),
+            _state=tmp_path / "state",
+            stdout=io.BytesIO(),
+            connect=cast(object, connect),  # type: ignore[arg-type]
+            run_async=run_async,
+            source=ObservationSource.CODEX_HOOK,
+        )
+        assert code == 0
+    sweeper = ObservationOutboxSweeper(
+        local, coordinator, capture_recovery=coordinator.recover_capture_inventory
+    )
+    try:
+        for _attempt in range(8):
+            if local.pending_outbox_count(workspace) == 0:
+                break
+            await sweeper.sweep()
+    finally:
+        sweeper.close()
+    assert local.pending_outbox_count(workspace) == 0
+    assert local.quarantined_count(workspace) == 0
+
+    frontier = await ledger.load_frontier()
+    frozen = await ledger.freeze_case(
+        runtime.session_id,
+        cast(str, runtime.writer_id),
+        frontier.sequence,
+        _ids(IdKind.REQUEST, 9),
+        _ZERO_DIGEST,
+    )
+    assert isinstance(frozen, FrozenCase)
+    images = [
+        record.payload
+        for record in frozen.case.projection.evidence.values()
+        if type(record.payload) is EvidenceRecordedPayload
+        and record.payload.digest_binding is not None
+        and record.payload.digest_binding.content_availability
+        is EvidenceContentAvailability.DIGEST_ONLY
+        and record.payload.digest_binding.provenance
+        is EvidenceDigestProvenance.OBSERVATION_CAPTURED
+    ]
+    assert len(images) == 1
+    (image,) = images
+    assert image.content_digest == "sha256:" + hashlib.sha256(png).hexdigest()
+    assert image.captured_object_id is None
+    linked = [
+        record.payload
+        for record in frozen.case.projection.results.values()
+        if record.payload is not None and image.evidence_id in record.payload.evidence_refs
+    ]
+    assert len(linked) == 1

@@ -26,6 +26,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -45,12 +46,17 @@ from yoetz.adapters.git_subject_state import (
 )
 from yoetz.ports.change_capture import (
     MAX_CHECK_CHANGE_TEXT_BYTES,
+    MAX_PROBED_FILE_SIZE,
     ChangeBaseKind,
     ChangeCaptureUnavailable,
+    ChangeLineCount,
+    ChangeLineCounts,
     ChangeMetadataEntry,
     CheckChangeCapture,
     CheckChangeMetadata,
+    RequestedPathProbe,
     TaskChangeBase,
+    metadata_path_representable,
 )
 from yoetz.ports.subject_state import LocalWorkspaceHandle
 
@@ -68,9 +74,12 @@ _WHOLE_DIFF_LIMIT: Final = 8 * 1024 * 1024
 _PER_FILE_DIFF_LIMIT: Final = 1024 * 1024
 _MAX_PER_FILE_DIFFS: Final = 400
 _MAX_UNTRACKED_FILES: Final = 500
-_MAX_UNTRACKED_FILE_BYTES: Final = 65_536
 _BINARY_PROBE_BYTES: Final = 8_000
 _HEADER_BUDGET: Final = 24_576
+# An untracked file is read up to the largest body the capture can carry at all (issue #983): a
+# single new source file of a few hundred KiB is the deliverable, so naming it only would hide it
+# from review. A larger file, or one the remaining body room cannot hold, is still left out whole.
+_MAX_UNTRACKED_FILE_BYTES: Final = MAX_CHECK_CHANGE_TEXT_BYTES - _HEADER_BUDGET
 _MAX_LISTED_FILES: Final = 100
 _MAX_LISTED_PATH_BYTES: Final = 200
 # Room kept for the header lines written after the file listing.
@@ -272,6 +281,177 @@ def _nul_fields(payload: bytes) -> list[bytes]:
     return payload[:-1].split(b"\0")
 
 
+_MAX_REQUESTED_PATH_PROBES: Final = 64
+# A requested directory "holds a file" when any non-directory entry lies beneath it (#1002). The
+# walk is metadata only and bounded so a huge tree never stalls a check; past the bound the answer
+# is unknown, which never reports the directory absent.
+_MAX_DIRECTORY_WALK_ENTRIES: Final = 4_096
+_MAX_DIRECTORY_WALK_OPEN: Final = 64
+_ROOT_RELATIVE: Final = b"."
+# The line-count read (ADR-035) opens each untracked file at most this large, and stops opening
+# files once this many bytes were read in one call; what it skips makes the result a lower bound.
+_MAX_LINE_COUNT_FILE_BYTES: Final = 8 * 1024 * 1024
+_MAX_LINE_COUNT_TOTAL_BYTES: Final = 64 * 1024 * 1024
+# The undeclared-reference read (tb4n2 R2, ADR-035 amendment) opens at most this many declared
+# deliverables per check and reads at most this many bytes from the start of each; it compares
+# one-line quoted string literals with at most this many created-file paths.
+_MAX_REFERENCE_DELIVERABLES: Final = 16
+_MAX_REFERENCE_FILE_BYTES: Final = 256 * 1024
+_MAX_REFERENCE_CANDIDATES: Final = 1_024
+# A basename shorter than this is too common (``a.py``, ``x``) to count as a reference by itself.
+_MIN_REFERENCE_BASENAME: Final = 5
+_SOURCE_SUFFIXES: Final = frozenset(
+    {
+        b".py",
+        b".sh",
+        b".bash",
+        b".js",
+        b".mjs",
+        b".cjs",
+        b".ts",
+        b".rb",
+        b".pl",
+        b".r",
+        b".R",
+        b".jl",
+        b".lua",
+        b".php",
+    }
+)
+_STRING_LITERAL: Final = re.compile(rb'"([^"\n]{1,1024})"|\'([^\'\n]{1,1024})\'|`([^`\n]{1,1024})`')
+
+
+def _requested_relative_path(root: Path, value: str) -> bytes | None:
+    """The root-relative form of one requested path, or ``None`` when it is not under the root.
+
+    Lexical only: ``.``/``..`` segments are resolved textually and a result that leaves the root
+    is outside. The root itself is ``.``. Links are never followed here; ``_path_identity``
+    refuses them on the way down.
+    """
+
+    if type(value) is not str or not value or "\x00" in value:
+        return None
+    candidate = Path(value)
+    if candidate.is_absolute():
+        try:
+            candidate = Path(os.path.normpath(candidate)).relative_to(root)
+        except ValueError:
+            return None
+    normalized = os.path.normpath(os.fspath(candidate))
+    encoded = os.fsencode(normalized)
+    if encoded == _ROOT_RELATIVE:
+        # The repository root itself (``/app`` for a checkout at ``/app``) is inside: it is the
+        # whole workspace, not a path beyond it (tb4n1 E7).
+        return _ROOT_RELATIVE
+    if encoded == b"" or not _safe_relative(encoded) or encoded.startswith(b".git/"):
+        return None
+    return encoded
+
+
+# A file whose rendered section is at most this large is ranked right after the declared
+# deliverables (tb4n2 R7, P1-11): a 12-byte ``requirements.txt`` costs the packet almost nothing,
+# so it is never clipped behind a large scratch file.
+_SMALL_SECTION_BYTES: Final = 4_096
+
+
+# How many untracked paths are stat-ed (metadata only) to rank small files ahead of the untracked
+# file limit; paths past this bound keep path order after the ranked ones.
+_MAX_UNTRACKED_ORDER_STATS: Final = 4_096
+
+
+def _priority_paths(root: Path, values: tuple[str, ...]) -> tuple[bytes, ...]:
+    """The root-relative forms of the declared deliverables under ``root``, in the given order.
+
+    The caller lists ``role: output`` items before role-less ones and that order is kept: an
+    earlier entry outranks a later one. Lexical, like ``_requested_relative_path``: nothing is
+    opened or stat-ed. The root itself is dropped (a declared whole workspace orders nothing), as
+    is any value outside the root; a duplicate keeps its first place.
+    """
+
+    if type(values) is not tuple:
+        return ()
+    located = (
+        relative
+        for value in values[:_MAX_REQUESTED_PATH_PROBES]
+        if (relative := _requested_relative_path(root, value)) is not None
+        and relative != _ROOT_RELATIVE
+    )
+    return tuple(dict.fromkeys(located))
+
+
+def _priority_tier(path: bytes, priority: tuple[bytes, ...]) -> int | None:
+    """The index of the first declared deliverable ``path`` is or lies under; else ``None``."""
+
+    bare = path.rstrip(b"/")
+    for index, item in enumerate(priority):
+        if bare == item or bare.startswith(item + b"/"):
+            return index
+    return None
+
+
+def _section_rank(section: _Section, priority: tuple[bytes, ...]) -> tuple[int, int, bytes]:
+    """Order of a section in the rendered change: deliverables, small files, then the rest."""
+
+    tier = _priority_tier(section.path, priority)
+    if tier is not None:
+        return (0, tier, section.path)
+    if section.text is not None and len(section.text) <= _SMALL_SECTION_BYTES:
+        return (1, 0, section.path)
+    return (2, 0, section.path)
+
+
+# A tracked file whose numstat line counts sum to at most this many is ranked as small before its
+# diff text exists (the per-file read fallback, tb4n2 R7).
+_SMALL_SECTION_LINES: Final = 64
+
+
+def _tracked_read_rank(section: _Section, priority: tuple[bytes, ...]) -> tuple[int, int, bytes]:
+    """Read order of a tracked file before its diff is loaded: deliverables, small, the rest."""
+
+    tier = _priority_tier(section.path, priority)
+    if tier is not None:
+        return (0, tier, section.path)
+    if (
+        section.added.isdigit()
+        and section.deleted.isdigit()
+        and int(section.added) + int(section.deleted) <= _SMALL_SECTION_LINES
+    ):
+        return (1, 0, section.path)
+    return (2, 0, section.path)
+
+
+def _untracked_order(
+    pinned: _Workspace, paths: list[bytes], priority: tuple[bytes, ...], deadline: float
+) -> list[bytes]:
+    """Untracked paths in read order: deliverables, then small files, then the rest (tb4n2 R7).
+
+    The untracked file limit keeps the head of this order, so a 12-byte ``requirements.txt`` is
+    never left unread behind hundreds of large scratch files. Sizes come from the link-free
+    metadata walk of at most ``_MAX_UNTRACKED_ORDER_STATS`` paths (in path order) before the
+    deadline; nothing is opened, and an unknown size ranks as large.
+    """
+
+    ordered = sorted(paths)
+    sizes: dict[bytes, int] = {}
+    for path in ordered[:_MAX_UNTRACKED_ORDER_STATS]:
+        if _expired(deadline):
+            break
+        if path.endswith(b"/") or not _safe_relative(path) or _credential_name(path):
+            continue
+        identity = _path_identity(pinned.descriptor, path)
+        if identity is not None and identity != _BLOCKED and stat.S_ISREG(identity[0]):
+            sizes[path] = identity[3]
+
+    def rank(path: bytes) -> tuple[int, int, bytes]:
+        tier = _priority_tier(path, priority)
+        if tier is not None:
+            return (0, tier, path)
+        size = sizes.get(path)
+        return (1 if size is not None and size <= _SMALL_SECTION_BYTES else 2, 0, path)
+
+    return sorted(ordered, key=rank)
+
+
 def _safe_relative(path: bytes) -> bool:
     return (
         bool(path)
@@ -415,7 +595,21 @@ class GitChangeCaptureAdapter:
         # is still part of its change when HEAD later gains commits.
         return TaskChangeBase(object_format, head or _EMPTY_TREES[object_format])
 
-    def capture(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeCapture:
+    def capture(
+        self,
+        workspace: str,
+        base: TaskChangeBase | None,
+        *,
+        priority_paths: tuple[str, ...] = (),
+    ) -> CheckChangeCapture:
+        """Render the change; ``priority_paths`` are the task's declared deliverables (tb4n2 R7).
+
+        A file at or under one of them is read, budgeted and rendered ahead of every other file,
+        then come small files, then the rest in path order, so a reviewer packet clipped for room
+        never drops a deliverable behind scratch files. The paths only order the change: they
+        never widen what is read, and a value outside the repository is ignored.
+        """
+
         # One deadline bounds the whole capture: every Git call gets at most what is left of it.
         # Assembly may use its first part; the rest is kept for the closing stability check.
         started = time.monotonic()
@@ -425,13 +619,298 @@ class GitChangeCaptureAdapter:
         self._refuse_unsafe_config(pinned, assembly)
         self._refuse_unsafe_object_store(pinned)
         object_format = self._object_format(pinned, assembly)
+        priority = _priority_paths(pinned.root, priority_paths)
         for _ in range(_CAPTURE_ATTEMPTS):
             try:
-                return self._capture_once(pinned, object_format, base, assembly, deadline)
+                return self._capture_once(pinned, object_format, base, assembly, deadline, priority)
             except _ChangedDuringCapture:
                 if _expired(assembly):
                     break
         raise ChangeCaptureUnavailable("changed_during_capture")
+
+    def probe_requested_paths(
+        self, workspace: str, values: tuple[str, ...]
+    ) -> tuple[RequestedPathProbe, ...]:
+        """Locate requested file paths under the root; report existence and Git ignore state.
+
+        Metadata only (#977): each path is reached from the validated root descriptor one
+        component at a time without following a link and only ``stat``-ed; no file or blob
+        content is read. A relative value is taken relative to the repository root, an absolute
+        one must lie under it. Ignore state is Git's own answer (``git check-ignore``), which
+        honours ``.gitignore``, ``.git/info/exclude``, a repository ``core.excludesFile`` and the
+        owner's global ignore file, and never reports a tracked file. Paths are only ever passed
+        as arguments after ``--`` to the hardened runner; none is returned or logged.
+        """
+
+        if len(values) > _MAX_REQUESTED_PATH_PROBES:
+            raise ChangeCaptureUnavailable("unsupported_repository")
+        deadline = time.monotonic() + self._deadline_seconds
+        pinned = self._open(workspace, deadline)
+        self._refuse_unsafe_config(pinned, deadline)
+        located: list[tuple[str, bytes | None]] = []
+        for value in values:
+            relative = _requested_relative_path(pinned.root, value)
+            located.append(("inside", relative) if relative is not None else ("outside", None))
+        inside = sorted({path for _, path in located if path is not None})
+        identities = {path: _path_identity(pinned.descriptor, path) for path in inside}
+        ignored: set[bytes] = set()
+        unknown: set[bytes] = set()
+        sources: dict[bytes, bytes] = {}
+        # The root is never ignored by Git, so it is not queried.
+        queried = [
+            path for path in inside if identities[path] != _BLOCKED and path != _ROOT_RELATIVE
+        ]
+        unknown.update(path for path in inside if identities[path] == _BLOCKED)
+        if queried:
+            excludes = self._repository_excludes_file(pinned, deadline)
+            if excludes is None:
+                excludes = _global_excludes_file(deadline)
+            config = ("-c", f"core.excludesFile={excludes}") if excludes is not None else ()
+            # One quiet query per path: its exit status is the whole answer (0 ignored, 1 not),
+            # so no path ever has to be parsed back out of Git's quoted output. A path Git
+            # refuses (beyond a link, say) stays unknown without failing the others.
+            for path in queried:
+                try:
+                    code, _ = self._git(
+                        pinned,
+                        (*config, "check-ignore", "-q", "--", os.fsdecode(path)),
+                        deadline=deadline,
+                        limit=1_024,
+                        accepted=frozenset({0, 1}),
+                    )
+                except ValueError, ChangeCaptureUnavailable:
+                    unknown.add(path)
+                    continue
+                if code != 0:
+                    continue
+                ignored.add(path)
+                # Which rule ignores it: a negated match also prints here, so this second call
+                # runs only for a path the quiet query already proved ignored.
+                try:
+                    _, verbose = self._git(
+                        pinned,
+                        (*config, "check-ignore", "-v", "--", os.fsdecode(path)),
+                        deadline=deadline,
+                        limit=8_192,
+                        accepted=frozenset({0, 1}),
+                    )
+                except ValueError, ChangeCaptureUnavailable:
+                    verbose = b""
+                sources[path] = verbose.split(b":", 1)[0] if b":" in verbose else b""
+        info_exclude = os.fsencode(pinned.root / ".git" / "info" / "exclude")
+        holds_file: dict[bytes, bool | None] = {}
+        probes: list[RequestedPathProbe] = []
+        for location, path in located:
+            if path is None:
+                probes.append(RequestedPathProbe(location))
+                continue
+            identity = identities[path]
+            source = sources.get(path)
+            if path not in holds_file:
+                holds_file[path] = (
+                    _directory_holds_file(pinned.descriptor, path)
+                    if identity is not None and identity != _BLOCKED and stat.S_ISDIR(identity[0])
+                    else None
+                )
+            probes.append(
+                RequestedPathProbe(
+                    location,
+                    os.fsdecode(path),
+                    None if identity == _BLOCKED else identity is not None,
+                    None if path in unknown else path in ignored,
+                    holds_file=holds_file[path],
+                    size_bytes=(
+                        identity[3]
+                        if identity is not None
+                        and identity != _BLOCKED
+                        and stat.S_ISREG(identity[0])
+                        and identity[3] <= MAX_PROBED_FILE_SIZE
+                        else None
+                    ),
+                    ignore_source=(
+                        None
+                        if source is None
+                        else "info_exclude"
+                        if source in {b".git/info/exclude", info_exclude}
+                        else "outside_repository"
+                        if source.startswith(b"/") or not source
+                        else "repository_file"
+                    ),
+                    ignore_file=(
+                        os.fsdecode(source)
+                        if source is not None and source and not source.startswith(b"/")
+                        else None
+                    ),
+                )
+            )
+        return tuple(probes)
+
+    def count_change_lines(
+        self, workspace: str, base_commit: str, base_paths: tuple[str, ...]
+    ) -> ChangeLineCounts:
+        """Count added and removed lines per changed file, and base lines of named paths.
+
+        The ADR-035 content-moved fact needs sizes the path/status metadata does not carry. This
+        read returns numbers only: Git's ``--numstat`` for tracked changes from ``base_commit``
+        (binary files count as unknown), and for each untracked file Git does not ignore its
+        newline count, read one component at a time without following a link, bounded per file
+        and per call, never for a credential-named file or a binary one. ``base_paths`` are
+        root-relative paths whose line counts in ``base_commit`` are returned in order, passed to
+        Git as literal pathspecs. No content or path leaves this process; nothing is stored.
+        The counts are a point-in-time read, not re-verified for stability: they feed a
+        non-blocking disclosure only.
+        """
+
+        if len(base_paths) > _MAX_REQUESTED_PATH_PROBES or any(
+            type(path) is not str or not _safe_relative(os.fsencode(path)) for path in base_paths
+        ):
+            raise ChangeCaptureUnavailable("unsupported_repository")
+        deadline = time.monotonic() + self._deadline_seconds
+        pinned = self._open(workspace, deadline)
+        self._refuse_unsafe_config(pinned, deadline)
+        self._refuse_unsafe_object_store(pinned)
+        object_format = self._object_format(pinned, deadline)
+        if (
+            type(base_commit) is not str
+            or not base_commit
+            or self._rev(pinned, base_commit + "^{tree}", deadline) is None
+        ):
+            raise ChangeCaptureUnavailable("unsupported_repository")
+        try:
+            _, numbers = self._git(
+                pinned,
+                ("diff", "--numstat", "-z", *_DIFF_OPTIONS, base_commit, "--"),
+                deadline=deadline,
+                limit=_LIST_LIMIT,
+            )
+        except ValueError:
+            raise ChangeCaptureUnavailable("unsupported_repository") from None
+        # A path Git allows but a line count cannot carry (CR or LF) is skipped, not fatal.
+        changed = [
+            ChangeLineCount(os.fsdecode(path), added, removed)
+            for path, added, removed in _numstat_rows(numbers)
+            if b"\r" not in path and b"\n" not in path
+        ]
+        excludes = self._repository_excludes_file(pinned, deadline)
+        if excludes is None:
+            excludes = _global_excludes_file(deadline)
+        config = ("-c", f"core.excludesFile={excludes}") if excludes is not None else ()
+        listing, truncated = self._untracked_listing(pinned, config, deadline)
+        paths = sorted(_nul_fields(listing))
+        budget = _MAX_LINE_COUNT_TOTAL_BYTES
+        for index, path in enumerate(paths):
+            if index >= _MAX_UNTRACKED_FILES or _expired(deadline):
+                truncated = True
+                break
+            if budget <= 0:
+                truncated = True
+                break
+            if path.endswith(b"/") or _credential_name(path) or b"\r" in path or b"\n" in path:
+                continue
+            if not _safe_relative(path):
+                raise ChangeCaptureUnavailable("unsafe_root")
+            lines: int | None = None
+            try:
+                outcome, content = _read_beneath(
+                    pinned.descriptor,
+                    path,
+                    min(_MAX_LINE_COUNT_FILE_BYTES, budget),
+                    _path_identity(pinned.descriptor, path),
+                )
+            except _ChangedDuringCapture:
+                outcome, content = "unreadable", None
+            if outcome in {"regular", "executable"} and content is not None:
+                budget -= len(content)
+                if b"\0" not in content[:_BINARY_PROBE_BYTES]:
+                    lines = content.count(b"\n") + (
+                        1 if content and not content.endswith(b"\n") else 0
+                    )
+            elif outcome == "too_large":
+                truncated = True
+            changed.append(
+                ChangeLineCount(
+                    os.fsdecode(path), lines, None if lines is None else 0, untracked=True
+                )
+            )
+        base_lines: list[int | None] = [None] * len(base_paths)
+        if base_paths:
+            try:
+                _, numbers = self._git(
+                    pinned,
+                    (
+                        "diff",
+                        "--numstat",
+                        "-z",
+                        *_DIFF_OPTIONS,
+                        _EMPTY_TREES[object_format],
+                        base_commit,
+                        "--",
+                        *(f":(literal){path}" for path in base_paths),
+                    ),
+                    deadline=deadline,
+                    limit=_LIST_LIMIT,
+                )
+            except ValueError:
+                raise ChangeCaptureUnavailable("unsupported_repository") from None
+            in_base = {os.fsdecode(path): added for path, added, _ in _numstat_rows(numbers)}
+            base_lines = [in_base.get(path) for path in base_paths]
+        return ChangeLineCounts(tuple(changed), tuple(base_lines), truncated)
+
+    def count_undeclared_references(
+        self, workspace: str, deliverables: tuple[str, ...], candidates: tuple[str, ...]
+    ) -> int:
+        """Count declared deliverables whose source names a created but undeclared file.
+
+        tb4n2 R2 (ADR-035 amendment): a delivered ``cracker.py`` loaded model files the agent
+        created and never declared, so the graded deliverable failed. ``deliverables`` and
+        ``candidates`` are root-relative paths. Each deliverable with a source-code suffix (or no
+        suffix and a ``#!`` first line) is read from the start, at most
+        ``_MAX_REFERENCE_FILE_BYTES``, one component at a time without following a link, never
+        when credential-named, multiply linked or binary. It counts when a one-line quoted string
+        literal equals a candidate path, ends with ``/`` and the candidate path, or equals a
+        candidate basename of at least ``_MIN_REFERENCE_BASENAME`` bytes. Only the count leaves
+        this method; no path or content is returned, logged or stored. A point-in-time read that
+        feeds a non-blocking disclosure only.
+        """
+
+        if (
+            type(deliverables) is not tuple
+            or type(candidates) is not tuple
+            or len(deliverables) > _MAX_REFERENCE_DELIVERABLES
+            or len(candidates) > _MAX_REFERENCE_CANDIDATES
+            or any(
+                type(path) is not str or not _safe_relative(os.fsencode(path))
+                for path in (*deliverables, *candidates)
+            )
+        ):
+            raise ChangeCaptureUnavailable("unsupported_repository")
+        if not deliverables or not candidates:
+            return 0
+        deadline = time.monotonic() + self._deadline_seconds
+        pinned = self._open(workspace, deadline)
+        paths = frozenset(os.fsencode(path) for path in candidates)
+        names = frozenset(
+            name
+            for path in paths
+            if len(name := path.rsplit(b"/", 1)[-1]) >= _MIN_REFERENCE_BASENAME
+        )
+        found = 0
+        for deliverable in deliverables:
+            if _expired(deadline):
+                break
+            path = os.fsencode(deliverable)
+            name = path.rsplit(b"/", 1)[-1]
+            suffix = os.path.splitext(name)[1]
+            if _credential_name(path) or (suffix and suffix not in _SOURCE_SUFFIXES):
+                continue
+            content = _read_prefix_beneath(pinned.descriptor, path, _MAX_REFERENCE_FILE_BYTES)
+            if content is None or b"\0" in content[:_BINARY_PROBE_BYTES]:
+                continue
+            if not suffix and not content.startswith(b"#!"):
+                continue
+            if _references_any(content, paths, names):
+                found += 1
+        return found
 
     def capture_metadata(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeMetadata:
         """Return changed-path facts without reading file or blob content.
@@ -479,7 +958,7 @@ class GitChangeCaptureAdapter:
         else:
             base_kind, base_id = "empty", _EMPTY_TREES[object_format]
 
-        tracked_raw, tracked_entries, tracked_identities, tracked_arguments = (
+        tracked_raw, tracked_entries, tracked_identities, tracked_arguments, tracked_skipped = (
             self._tracked_metadata(pinned, base_id, assembly)
         )
         index = _path_identity(pinned.descriptor, b".git/index")
@@ -496,29 +975,25 @@ class GitChangeCaptureAdapter:
             deadline,
         )
         metadata_paths = tuple(sorted(untracked.identities, key=bytes))
-        entries = tuple(
-            [
-                ChangeMetadataEntry(
-                    entry.status,
-                    entry.path,
-                    original_path=entry.original_path,
-                )
-                for entry in tracked_entries
-            ]
-            + [
-                ChangeMetadataEntry("A", os.fsdecode(path), untracked=True)
-                for path in metadata_paths
-            ]
-        )
-        omitted = untracked.total - len(metadata_paths)
+        # A CR or LF in a file name cannot be an entry. Skip and count each such path instead of
+        # failing the whole check-time read (issue #1019); the path itself is never kept.
+        untracked_entries = [
+            ChangeMetadataEntry("A", name, untracked=True)
+            for path in metadata_paths
+            if metadata_path_representable(name := os.fsdecode(path))
+        ]
+        unrepresentable = tracked_skipped + len(metadata_paths) - len(untracked_entries)
+        entries = tuple([*tracked_entries, *untracked_entries])
+        omitted = untracked.total - len(metadata_paths) + unrepresentable
         return CheckChangeMetadata(
             base=base_kind,
             entries=entries,
-            tracked_files=len(tracked_entries),
+            tracked_files=len(tracked_entries) + tracked_skipped,
             untracked_files=untracked.total,
             omitted_files=omitted,
             truncated=omitted > 0 or untracked.listing_truncated,
             base_commit=base_id,
+            unrepresentable_files=unrepresentable,
         )
 
     def _capture_once(
@@ -528,6 +1003,7 @@ class GitChangeCaptureAdapter:
         base: TaskChangeBase | None,
         assembly: float,
         deadline: float,
+        priority: tuple[bytes, ...] = (),
     ) -> CheckChangeCapture:
         packs = self._refuse_unsafe_object_store(pinned)
         head = self._rev(pinned, "HEAD^{commit}", assembly)
@@ -544,11 +1020,11 @@ class GitChangeCaptureAdapter:
             base_kind, base_id = "head", head
         else:
             base_kind, base_id = "empty", _EMPTY_TREES[object_format]
-        tracked = self._tracked_sections(pinned, object_format, base_id, assembly)
+        tracked = self._tracked_sections(pinned, object_format, base_id, assembly, priority)
         untracked = _UntrackedRead(0, [], True, None, (), {})
         if not _expired(assembly):
             try:
-                untracked = self._untracked_sections(pinned, assembly)
+                untracked = self._untracked_sections(pinned, assembly, priority)
             except ChangeCaptureUnavailable as exc:
                 if not _ran_out(exc, assembly):
                     raise
@@ -556,7 +1032,9 @@ class GitChangeCaptureAdapter:
         # count is a lower bound, and the tracked change above still stands.
         self._verify_stable(pinned, base_id, tracked, untracked, head, index, packs, deadline)
         sections = [*tracked.sections, *untracked.sections]
-        sections.sort(key=lambda item: item.path)
+        # Declared deliverables first, then small files, then the rest (tb4n2 R7, P1-11): the
+        # body budget and every later packet cut keep the head of this order.
+        sections.sort(key=lambda item: _section_rank(item, priority))
         return self._render(
             base_kind,
             base_id,
@@ -829,8 +1307,13 @@ class GitChangeCaptureAdapter:
         list[ChangeMetadataEntry],
         dict[bytes, _Identity | None],
         tuple[str, ...],
+        int,
     ]:
-        """Read name/status metadata without numstat, patch or blob reads."""
+        """Read name/status metadata without numstat, patch or blob reads.
+
+        The last value counts changed paths skipped because a CR or LF in a name cannot be an
+        entry (issue #1019); their identities still take part in the stability check.
+        """
 
         arguments = self._metadata_arguments(base_id)
         try:
@@ -840,6 +1323,7 @@ class GitChangeCaptureAdapter:
         fields = _nul_fields(raw)
         entries: list[ChangeMetadataEntry] = []
         paths: list[bytes] = []
+        skipped = 0
         index = 0
         while index < len(fields):
             status = fields[index].decode("ascii", errors="replace")
@@ -852,13 +1336,14 @@ class GitChangeCaptureAdapter:
                 if not _safe_relative(old) or not _safe_relative(new):
                     raise ChangeCaptureUnavailable("unsafe_root")
                 paths.extend((old, new))
-                entries.append(
-                    ChangeMetadataEntry(
-                        status[:1],
-                        os.fsdecode(new),
-                        original_path=os.fsdecode(old) if status.startswith("R") else None,
-                    )
-                )
+                new_name = os.fsdecode(new)
+                original = os.fsdecode(old) if status.startswith("R") else None
+                if not metadata_path_representable(new_name) or (
+                    original is not None and not metadata_path_representable(original)
+                ):
+                    skipped += 1
+                    continue
+                entries.append(ChangeMetadataEntry(status[:1], new_name, original_path=original))
                 continue
             if index >= len(fields):
                 raise ChangeCaptureUnavailable("git_failed")
@@ -867,9 +1352,13 @@ class GitChangeCaptureAdapter:
             if not _safe_relative(path):
                 raise ChangeCaptureUnavailable("unsafe_root")
             paths.append(path)
-            entries.append(ChangeMetadataEntry(status[:1], os.fsdecode(path)))
+            name = os.fsdecode(path)
+            if not metadata_path_representable(name):
+                skipped += 1
+                continue
+            entries.append(ChangeMetadataEntry(status[:1], name))
         identities = {path: _path_identity(pinned.descriptor, path) for path in paths}
-        return raw, entries, identities, arguments
+        return raw, entries, identities, arguments, skipped
 
     @staticmethod
     def _metadata_arguments(base_id: str) -> tuple[str, ...]:
@@ -908,6 +1397,7 @@ class GitChangeCaptureAdapter:
         object_format: Literal["sha1", "sha256"],
         base_id: str,
         deadline: float,
+        priority: tuple[bytes, ...] = (),
     ) -> _TrackedRead:
         try:
             _, raw = self._git(
@@ -1004,8 +1494,16 @@ class GitChangeCaptureAdapter:
                 if section.text is None and section.omitted is None:
                     section.omitted = "unreadable"
         else:
-            self._per_file_diffs(pinned, base_id, sections, deadline)
-        self._verify_section_objects(pinned, object_format, entries, sections, identities, deadline)
+            # Declared deliverables take the per-file read budget first (tb4n2 R7).
+            self._per_file_diffs(
+                pinned,
+                base_id,
+                sorted(sections, key=lambda item: _tracked_read_rank(item, priority)),
+                deadline,
+            )
+        self._verify_section_objects(
+            pinned, object_format, entries, sections, identities, deadline, priority
+        )
         return read
 
     def _rename_pairs(
@@ -1098,6 +1596,7 @@ class GitChangeCaptureAdapter:
         sections: list[_Section],
         identities: dict[bytes, _Identity | None],
         deadline: float,
+        priority: tuple[bytes, ...] = (),
     ) -> None:
         """Withhold every shown diff whose Git objects do not hash to their own names.
 
@@ -1110,7 +1609,12 @@ class GitChangeCaptureAdapter:
 
         verified: dict[str, _OmitReason | None] = {}
         budget = [_MAX_TOTAL_VERIFIED_OBJECT_BYTES]
-        for entry, section in zip(entries, sections, strict=True):
+        # Deliverables, then small files, take the verification budget first (tb4n2 R7): a
+        # budget spent on large scratch blobs never withholds a declared output.
+        for entry, section in sorted(
+            zip(entries, sections, strict=True),
+            key=lambda pair: _section_rank(pair[1], priority),
+        ):
             if section.text is None:
                 continue
             for oid, mode in ((entry.src_oid, entry.src_mode), (entry.dst_oid, entry.dst_mode)):
@@ -1221,15 +1725,21 @@ class GitChangeCaptureAdapter:
             raise ChangeCaptureUnavailable("unsupported_repository") from None
         return listing, False
 
-    def _untracked_sections(self, pinned: _Workspace, deadline: float) -> _UntrackedRead:
-        """Return the untracked total, their sections, and whether the listing was cut short."""
+    def _untracked_sections(
+        self, pinned: _Workspace, deadline: float, priority: tuple[bytes, ...] = ()
+    ) -> _UntrackedRead:
+        """Return the untracked total, their sections, and whether the listing was cut short.
+
+        Declared deliverables (``priority``) are read first, so the untracked file limit and the
+        deadline never skip one behind scratch files.
+        """
 
         excludes = self._repository_excludes_file(pinned, deadline)
         if excludes is None:
             excludes = _global_excludes_file(deadline)
         config = ("-c", f"core.excludesFile={excludes}") if excludes is not None else ()
         listing, listing_truncated = self._untracked_listing(pinned, config, deadline)
-        paths = sorted(path for path in _nul_fields(listing))
+        paths = _untracked_order(pinned, _nul_fields(listing), priority, deadline)
         sections: list[_Section] = []
         identities: dict[bytes, _Identity | None] = {}
         for index, path in enumerate(paths):
@@ -1500,6 +2010,26 @@ def _new_file_diff(path: bytes, content: bytes, executable: bool) -> tuple[bytes
     return _decode(rendered), str(len(lines))
 
 
+def _numstat_rows(numbers: bytes) -> list[tuple[bytes, int | None, int | None]]:
+    """``(path, added, removed)`` from ``git diff --numstat -z --no-renames``; ``-`` is ``None``."""
+
+    rows: list[tuple[bytes, int | None, int | None]] = []
+    for record in _nul_fields(numbers):
+        parts = record.split(b"\t", 2)
+        if len(parts) != 3 or not _safe_relative(parts[2]):
+            raise ChangeCaptureUnavailable("git_failed")
+        counts: list[int | None] = []
+        for part in parts[:2]:
+            if part == b"-":
+                counts.append(None)
+            elif part.isdigit() and len(part) <= 12:
+                counts.append(int(part))
+            else:
+                raise ChangeCaptureUnavailable("git_failed")
+        rows.append((parts[2], counts[0], counts[1]))
+    return rows
+
+
 def _read_beneath(
     root_descriptor: int, path: bytes, limit: int, expected: _Identity | None
 ) -> tuple[_OmitReason | Literal["regular", "executable"], bytes | None]:
@@ -1556,6 +2086,59 @@ def _read_beneath(
             os.close(descriptor)
 
 
+def _read_prefix_beneath(root_descriptor: int, path: bytes, limit: int) -> bytes | None:
+    """Read at most ``limit`` bytes from the start of ``path`` under the root, or ``None``.
+
+    Opened one component at a time from the validated root descriptor without following a link,
+    like ``_read_beneath``; only a singly linked regular file the current user owns is read.
+    """
+
+    parts = path.split(b"/")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    opened: list[int] = []
+    current = root_descriptor
+    try:
+        for part in parts[:-1]:
+            current = os.open(part, directory_flags, dir_fd=current)
+            opened.append(current)
+        descriptor = os.open(parts[-1], file_flags, dir_fd=current)
+        opened.append(descriptor)
+        facts = os.fstat(descriptor)
+        expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+        if not stat.S_ISREG(facts.st_mode) or facts.st_uid != expected_uid or facts.st_nlink != 1:
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while total < limit:
+            chunk = os.read(descriptor, min(_READ_CHUNK, limit - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
+
+
+def _references_any(content: bytes, paths: frozenset[bytes], names: frozenset[bytes]) -> bool:
+    """Whether a one-line quoted literal in ``content`` names one of ``paths`` (see caller)."""
+
+    for match in _STRING_LITERAL.finditer(content):
+        literal = match.group(1) or match.group(2) or match.group(3) or b""
+        if literal in paths or literal in names:
+            return True
+        start = literal.find(b"/")
+        while start != -1:
+            if literal[start + 1 :] in paths:
+                return True
+            start = literal.find(b"/", start + 1)
+    return False
+
+
 def _identity(facts: os.stat_result) -> _Identity:
     return (
         facts.st_mode,
@@ -1591,6 +2174,55 @@ def _path_identity(root_descriptor: int, path: bytes) -> _Identity | None:
         return _BLOCKED
     finally:
         for descriptor in reversed(opened):
+            os.close(descriptor)
+
+
+def _directory_holds_file(root_descriptor: int, path: bytes) -> bool | None:
+    """Whether any non-directory entry lies beneath the directory ``path`` under the root (#1002).
+
+    Metadata only: every directory is opened ``O_NOFOLLOW`` from its parent's descriptor and only
+    listed; no entry is ``stat``-ed through a link and no file is opened or read. A link, socket or
+    other non-directory entry counts as content, so only a directory that is empty or holds nothing
+    but empty directories answers ``False``. ``None`` when a component cannot be opened or the walk
+    exceeds its entry or open-descriptor bound.
+    """
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    pending: list[int] = []
+    current = root_descriptor
+    try:
+        for part in path.split(b"/"):
+            opened = os.open(part, directory_flags, dir_fd=current)
+            if current != root_descriptor:
+                os.close(current)
+            current = opened
+        pending.append(current)
+        current = root_descriptor
+        visited = 0
+        while pending:
+            directory = pending.pop()
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        visited += 1
+                        if visited > _MAX_DIRECTORY_WALK_ENTRIES:
+                            return None
+                        if not entry.is_dir(follow_symlinks=False):
+                            return True
+                        if len(pending) >= _MAX_DIRECTORY_WALK_OPEN:
+                            return None
+                        pending.append(
+                            os.open(os.fsencode(entry.name), directory_flags, dir_fd=directory)
+                        )
+            finally:
+                os.close(directory)
+        return False
+    except OSError:
+        return None
+    finally:
+        if current != root_descriptor:
+            os.close(current)
+        for descriptor in pending:
             os.close(descriptor)
 
 

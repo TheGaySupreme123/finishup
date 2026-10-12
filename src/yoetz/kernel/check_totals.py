@@ -11,7 +11,7 @@ from typing import cast
 
 from yoetz.domain.check_totals import CHECK_TOTAL_KEYS, validate_check_totals
 from yoetz.domain.events import ActionKind, ObligationStatus, ResultOutcome
-from yoetz.domain.findings import FINDING_KIND_TRAITS, Finding
+from yoetz.domain.findings import Finding, finding_demands_work
 from yoetz.domain.values import EvidenceId, JsonObject, ObligationId
 from yoetz.kernel.claims import (
     claim_discloses_result,
@@ -27,6 +27,7 @@ from yoetz.kernel.observed_failures import (
     observed_event_ids_from_coverage,
     observed_failure_states,
 )
+from yoetz.kernel.outcome_corrections import superseded_unknown_results
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.test_edit_visibility import PreExistingTestEdits
 
@@ -64,7 +65,12 @@ def build_check_totals(
         if payload is None:
             obligations["unreadable"] += 1
             continue
-        obligations["resolved" if payload.status is ObligationStatus.RESOLVED else "open"] += 1
+        if payload.status is ObligationStatus.RESOLVED:
+            obligations["resolved"] += 1
+        elif payload.status is not ObligationStatus.ACKNOWLEDGED_NOT_DONE:
+            # #997: an acknowledged obligation is neither open nor resolved; the rendering
+            # names the remainder of ``declared`` as acknowledged, so it is counted once.
+            obligations["open"] += 1
         attempted = attempted_items_for_obligation(state, obligation)
         for item in payload.requested_items:
             requested["attempted" if item.value in attempted else "unattempted"] += 1
@@ -93,9 +99,12 @@ def build_check_totals(
     observed = observed_event_ids_from_coverage(case.coverage_by_ref)
     failures = observed_failure_states(state, observed, through=case.frontier.sequence)
     commands = dict.fromkeys(CHECK_TOTAL_KEYS["commands"], 0)
+    # One host call is one command: a Codex hook result recorded as unknown and later enriched
+    # by the stream's corrected outcome for the same action counts once, with that outcome (#1001).
+    superseded = superseded_unknown_results(state.results, include=observed.__contains__)
     for result_id, result in state.results.items():
         payload = result.payload
-        if payload is None or result.source_event_id not in observed:
+        if payload is None or result.source_event_id not in observed or result_id in superseded:
             continue
         action = state.actions.get(payload.action_id)
         if (
@@ -136,7 +145,9 @@ def build_check_totals(
     for ref, record in state.evidence.items():
         if ref in case.allowed_ids and record.payload is not None:
             evidence[record.payload.strength.value] += 1
-    actionable = sum(FINDING_KIND_TRAITS[finding.kind][1] for finding in findings)
+    # ADR-046: a reviewer's limitation request asks for a disclosure, not work, so it counts as
+    # coverage-only here exactly as it does everywhere else.
+    actionable = sum(finding_demands_work(finding) for finding in findings)
     returned = {
         "returned": len(findings),
         "actionable_returned": actionable,

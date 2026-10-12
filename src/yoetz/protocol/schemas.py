@@ -59,7 +59,7 @@ __all__ = [
 SCHEMA_NAMESPACE: Final = "https://schemas.yoetz.dev/0.1/"
 SCHEMA_MANIFEST_SCHEMA: Final = "yoetz.schema-manifest/1.0.0"
 SCHEMA_MANIFEST_VERSION: Final = "1.0.0"
-SCHEMA_MEMBER_COUNT: Final = 226
+SCHEMA_MEMBER_COUNT: Final = 228
 
 _DRAFT_2020_12: Final = "https://json-schema.org/draft/2020-12/schema"
 _SCHEMA_MEDIA_TYPE: Final = "application/schema+json"
@@ -1051,11 +1051,14 @@ class SchemaInstanceInvalid(ProtocolValueError):
     failure: a closed token, a frozen schema-derived family name, that family's frozen schema
     version, and a bounded cardinality. ``condition_field`` and ``condition_value`` are populated
     only for a selected const-discriminated ``oneOf`` branch. No caller-supplied key or value is
-    admitted through any of them — ``family_version`` in particular is read from the catalogue
-    entry the failing schema's own ``$id`` names, never from the instance's ``schema.version``.
+    admitted through any of them — ``family_version`` is read from the catalogue entry the
+    failing schema's own ``$id`` names, or, for a value nested inside a draft payload, from the
+    catalogue entry whose name and version the draft's admitted ``schema`` byte-equals; an
+    uncatalogued pair travels as nothing.
     ``misplaced_field`` names one rejected key only when it byte-equals a payload property name
     some catalogued event family declares, so the token that travels is frozen schema vocabulary
-    and never a caller-invented key (issue #266).
+    and never a caller-invented key (issue #266). ``missing_fields`` names the members of a
+    failing ``required`` list the instance lacks; every name is read from that schema list.
     """
 
     __slots__ = (
@@ -1066,6 +1069,7 @@ class SchemaInstanceInvalid(ProtocolValueError):
         "family_version",
         "location_reasons",
         "misplaced_field",
+        "missing_fields",
         "reason",
         "unknown_count",
     )
@@ -1079,6 +1083,7 @@ class SchemaInstanceInvalid(ProtocolValueError):
     family_version: str | None
     unknown_count: int
     misplaced_field: str | None
+    missing_fields: tuple[str, ...]
 
     def __init__(
         self,
@@ -1090,6 +1095,7 @@ class SchemaInstanceInvalid(ProtocolValueError):
         family_version: str | None = None,
         unknown_count: int = 0,
         misplaced_field: str | None = None,
+        missing_fields: tuple[str, ...] = (),
         condition_field: str | None = None,
         condition_value: str | None = None,
     ) -> None:
@@ -1130,6 +1136,15 @@ class SchemaInstanceInvalid(ProtocolValueError):
             or EVENT_FAMILY_NAME_PATTERN.fullmatch(misplaced_field) is None
         ):
             raise TypeError("schema_instance_misplaced_field_invalid")
+        if (
+            type(missing_fields) is not tuple
+            or len(missing_fields) > _MAX_PROJECTED_OBJECT_LOCATIONS
+            or any(
+                type(name) is not str or EVENT_FAMILY_NAME_PATTERN.fullmatch(name) is None
+                for name in missing_fields
+            )
+        ):
+            raise TypeError("schema_instance_missing_fields_invalid")
         if (condition_field is None) != (condition_value is None):
             raise TypeError("schema_instance_condition_invalid")
         if condition_field is not None and (
@@ -1148,6 +1163,7 @@ class SchemaInstanceInvalid(ProtocolValueError):
         self.family_version = family_version
         self.unknown_count = unknown_count
         self.misplaced_field = misplaced_field
+        self.missing_fields = missing_fields
         super().__init__("schema_instance_invalid")
 
 
@@ -1194,7 +1210,20 @@ def validate_schema_instance(name: str, version: str, value: JsonValue) -> None:
         path = _path_items_from(best) or ()
         if path:
             reason = _instance_reason_for(best)
-            identity = _selected_family_for(best) if reason is not None else None
+            # A missing required payload key also names its frozen family, so the MCP hint can
+            # state that family's required and admitted keys instead of the generic envelope
+            # recital (benchmark full3: plan_revised drafts written with plan_published keys).
+            identity = (
+                _selected_family_for(best)
+                if reason is not None or best.validator == "required"
+                else None
+            )
+            if identity is None and reason is None:
+                # A nested value failure (an id pattern inside ``limitation_refs``) carries no
+                # ``$id`` of its own. The draft's admitted schema identity selected the branch
+                # that rejected it, so name that family and version: several families share a
+                # field name with different admitted shapes (tb4n1: result ``evidence_refs``).
+                identity = _draft_family_for_payload_path(instance, path)
             raise SchemaInstanceInvalid(
                 path,
                 reason=reason,
@@ -1202,15 +1231,133 @@ def validate_schema_instance(name: str, version: str, value: JsonValue) -> None:
                 family_version=identity[1] if identity is not None else None,
                 unknown_count=_unknown_property_count(best) if reason is not None else 0,
                 misplaced_field=_misplaced_known_field(best) if reason is not None else None,
+                missing_fields=_missing_required_fields(best),
             ) from None
         # Root-level object rules (dependentRequired, if/then anyOf required) report an empty
         # instance path. Project only schema-named fields so MCP can name the corrective pair.
         projected = _project_root_object_rule_locations(exc)
         if projected:
             raise SchemaInstanceInvalid((), projected) from None
+        # A conditional ``not required`` (status ``filter`` beside a view that admits none) also
+        # reports an empty path. Name the forbidden schema-declared field so the caller learns
+        # which key to drop instead of a bare template pointer (tb4n1: 3 status rejections).
+        forbidden = _root_conditionally_forbidden_field(exc)
+        if forbidden is not None:
+            raise SchemaInstanceInvalid(
+                (forbidden,), reason=_INSTANCE_REASON_EXTRA_FORBIDDEN
+            ) from None
         raise SchemaInstanceInvalid() from None
     except BaseException:
         raise SchemaInstanceInvalid() from None
+
+
+def _missing_required_fields(error: ValidationError) -> tuple[str, ...]:
+    """Name the schema-listed ``required`` members the instance lacks, in schema order.
+
+    Each name is read from the failing schema's own ``required`` list, so it is frozen schema
+    vocabulary: tb4n1 agents were told a family's whole required list when one key was absent.
+    """
+
+    if error.validator != "required":
+        return ()
+    names = error.validator_value
+    instance = error.instance
+    if not isinstance(names, list) or not isinstance(instance, Mapping):
+        return ()
+    missing: list[str] = []
+    for name in cast(list[object], names):
+        if (
+            type(name) is str
+            and EVENT_FAMILY_NAME_PATTERN.fullmatch(name) is not None
+            and name not in cast(Mapping[object, object], instance)
+            and name not in missing
+        ):
+            missing.append(name)
+        if len(missing) == _MAX_PROJECTED_OBJECT_LOCATIONS:
+            break
+    return tuple(missing)
+
+
+def _draft_family_for_payload_path(
+    instance: object, path: tuple[str | int, ...]
+) -> tuple[str, str] | None:
+    """Return the catalogued family and version of the draft whose payload holds ``path``.
+
+    Only a path strictly inside ``/event_drafts/<n>/payload`` qualifies. The draft's
+    ``schema.name`` and ``schema.version`` must byte-equal a catalogued event schema; the returned
+    pair is read from that catalogue entry, so nothing outside the frozen vocabulary travels.
+    """
+
+    try:
+        if (
+            len(path) < 4
+            or path[0] != "event_drafts"
+            or type(path[1]) is not int
+            or path[2] != "payload"
+            or not isinstance(instance, Mapping)
+        ):
+            return None
+        drafts = cast(Mapping[str, object], instance).get("event_drafts")
+        if not isinstance(drafts, list) or not 0 <= path[1] < len(cast(list[object], drafts)):
+            return None
+        draft = cast(list[object], drafts)[path[1]]
+        if not isinstance(draft, Mapping):
+            return None
+        identity = cast(Mapping[str, object], draft).get("schema")
+        if not isinstance(identity, Mapping):
+            return None
+        name = cast(Mapping[str, object], identity).get("name")
+        version = cast(Mapping[str, object], identity).get("version")
+        if type(name) is not str or type(version) is not str:
+            return None
+        catalog = _load_catalog_state().catalog
+        if name not in catalog.event_schema_versions:
+            return None
+        for document in catalog.by_id.values():
+            family = document.schema_name.replace("-", "_")
+            if family == name and document.schema_version == version:
+                if SCHEMA_VERSION_PATTERN.fullmatch(document.schema_version) is None:
+                    return None
+                return (family, document.schema_version)
+    except Exception:
+        return None
+    return None
+
+
+def _root_conditionally_forbidden_field(exc: ValidationError) -> str | None:
+    """Return the one field a root ``if``/``then`` ``not required`` rule forbids, or None.
+
+    The name is read from the schema's own ``not.required`` list (checked-in content), and is
+    returned only when the instance actually carries it, so the projection names the key to drop
+    and never a caller-invented one.
+    """
+
+    try:
+        candidates = [exc]
+        if exc.validator == "allOf":
+            candidates.extend(exc.context or ())
+        for error in candidates:
+            if error.validator != "not" or tuple(error.absolute_path) != ():
+                continue
+            if "then" not in tuple(error.absolute_schema_path):
+                continue
+            rule = error.validator_value
+            instance = error.instance
+            if not isinstance(rule, Mapping) or not isinstance(instance, Mapping):
+                continue
+            names = cast(Mapping[str, JsonValue], rule).get("required")
+            if not isinstance(names, list) or len(cast(list[object], names)) != 1:
+                continue
+            name = cast(list[object], names)[0]
+            if (
+                type(name) is str
+                and EVENT_FAMILY_NAME_PATTERN.fullmatch(name) is not None
+                and name in cast(Mapping[object, object], instance)
+            ):
+                return name
+    except Exception:
+        return None
+    return None
 
 
 def _path_items_from(error: ValidationError) -> tuple[str | int, ...] | None:

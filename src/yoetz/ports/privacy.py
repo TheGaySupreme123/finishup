@@ -18,6 +18,7 @@ from yoetz.domain.privacy import (
     AuthorizationScopeKind,
     CandidateContext,
     ClassifiedContext,
+    CredentialHeuristic,
     DisclosureProposal,
     DisclosureProvenance,
     EgressAuthorization,
@@ -40,6 +41,7 @@ from yoetz.ports.semantic import Deadline, SemanticResult
 from yoetz.protocol.canonical import canonical_encode, strict_json_parse
 from yoetz.protocol.ids import IdKind, validate_id, validate_opaque_item_id
 from yoetz.protocol.models import DataCategory
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 
 # The largest prepared disclosure the privacy port carries, whatever a channel ceiling allows.
 MAX_MINIMIZED_DISCLOSURE_BYTES: Final = 262_144
@@ -233,8 +235,20 @@ class RepositoryPrivacyAuthority:
     grant_generation: int | None = None
     grant_policy_digest: str | None = None
     grant_policy: PrivacyPolicy | None = None
+    # The installation policy and every frontier a pending migration could carry forward into
+    # the first grant (issue #982), so readers can state the outcome the first check will create.
+    # Empty unless ``migration_state`` is ``legacy_route_available`` or
+    # ``first_repository_available``.
+    machine_policy: PrivacyPolicy | None = None
+    migration_frontiers: tuple[PrivacyPolicy, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.machine_policy is not None and type(self.machine_policy) is not PrivacyPolicy:
+            raise _invalid()
+        if type(self.migration_frontiers) is not tuple or any(
+            type(item) is not PrivacyPolicy for item in self.migration_frontiers
+        ):
+            raise _invalid()
         if (
             type(self.scope) is not AuthorizationScope
             or self.scope.kind is AuthorizationScopeKind.MACHINE
@@ -492,8 +506,15 @@ class MinimizedDisclosure:
     # Number of low-confidence spans replaced in the prepared bytes.  The count is structural;
     # matched bytes and source prose never cross this boundary.
     redacted_span_count: int = 0
+    # PL2-1 (issue #982): per item, the catalogued ref and the 1-based lines whose credential-like
+    # values were replaced or whose item was withheld. Line numbers only, never values.
+    redacted_values: tuple[SemanticRedactedValue, ...] = ()
 
     def __post_init__(self) -> None:
+        try:
+            validate_semantic_redacted_values(self.redacted_values)
+        except ValueError as exc:
+            raise _invalid() from exc
         if (
             type(self.prepared_bytes) is not bytes
             or len(self.prepared_bytes) > MAX_MINIMIZED_DISCLOSURE_BYTES
@@ -1118,7 +1139,14 @@ class PrivacyClassifierPort(Protocol):
         self, classified: ClassifiedContext, decision: PrivacyDecision
     ) -> MinimizedDisclosure: ...
 
-    def scan_exact_bytes(self, data: bytes) -> tuple[ForbiddenDataKind, ...]: ...
+    def scan_exact_bytes(
+        self,
+        data: bytes,
+        *,
+        credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+    ) -> tuple[ForbiddenDataKind, ...]:
+        """Final exact-byte scan; ``DISABLED`` (owner opt-out, #982) reports high-confidence only."""
+        ...
 
 
 class HumanPrivacyControlPort(Protocol):

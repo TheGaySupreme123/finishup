@@ -52,6 +52,7 @@ from yoetz.protocol.models import (
     MAX_REVIEW_CHALLENGES,
     MAX_REVIEW_CHANGE_OBSERVATIONS,
     MAX_REVIEW_EXCERPTS,
+    MAX_REVIEW_OMISSION_TOTAL,
     MAX_REVIEW_OMISSIONS,
     MAX_REVIEW_TEXT_BYTES,
     MAX_REVIEW_TIMELINE_ITEMS,
@@ -75,6 +76,7 @@ if TYPE_CHECKING:
 __all__ = [
     "MAX_PRIOR_FINDING_ITEMS",
     "MAX_PRIOR_FINDING_REFS",
+    "MAX_REVIEW_INPUT_SECTION_ITEMS",
     "MAX_SEMANTIC_CASE_ITEMS",
     "MAX_SEMANTIC_ITEM_SUBJECT_REFS",
     "PRIOR_FINDING_VERDICT_KINDS",
@@ -176,12 +178,21 @@ type MissingForAssessmentKind = Literal[
     "task_statement",
     "verification_output",
 ]
+# Item-id prefix of the non-rulable rows that carry the agent's answer to a local finding.
+LOCAL_FINDING_ANSWER_ITEM_PREFIX: Final = "local-finding-answer-"
+# Item-id prefix of the non-rulable rows that carry a finding the agent settled
+# (``acknowledged_not_done`` or ``self_verified``): the reviewer may name it in ``restates``
+# (issue #980). Structural row ``settled-finding-<ref>``; prose rows
+# ``settled-finding-summary-<ref>`` and ``settled-finding-response-<ref>``.
+SETTLED_FINDING_ITEM_PREFIX: Final = "settled-finding-"
+SETTLED_FINDING_ITEM_SUFFIXES: Final = ("", "summary-", "response-")
 type ReviewerNextStep = Literal[
     "act",
     "provide_evidence",
     "revise_claim",
     "dispute_with_evidence",
     "state_unresolved_limitation",
+    "answer_question",
 ]
 type ReviewInputSectionName = Literal[
     "specification",
@@ -230,11 +241,15 @@ _MAX_INTERNAL_SUBJECT_REFS: Final = 64
 # they had when a packet carried at most 16 excerpts.
 _MAX_CASE_ITEMS: Final = 256 + MAX_REVIEW_EXCERPTS - 16
 MAX_SEMANTIC_CASE_ITEMS: Final = _MAX_CASE_ITEMS
-# The prior-findings section (issue #905): at most eight earlier AI-powered findings, each one
-# structural row plus up to six prose rows (summary, message, three challenge fields, response).
-MAX_PRIOR_FINDING_ITEMS: Final = 56
+# The prior-findings section (issue #905): at most sixteen earlier AI-powered findings (issue
+# #976), each one structural row plus up to six prose rows (summary, message, three challenge
+# fields, response).
+MAX_PRIOR_FINDING_ITEMS: Final = 112
 # The rulable list: one entry per carried earlier finding, never one per row (issue #905).
-MAX_PRIOR_FINDING_REFS: Final = 8
+MAX_PRIOR_FINDING_REFS: Final = 16
+# Item ids one review-input manifest section lists: the prior-findings section's rows, its local
+# answers and the pending missing-for-assessment row, rounded up (issue #976).
+MAX_REVIEW_INPUT_SECTION_ITEMS: Final = 128
 _OPAQUE_REF_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", re.ASCII)
 _IDENTITY_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]*$", re.ASCII)
 _MODEL_IDENTITY_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$", re.ASCII)
@@ -334,6 +349,7 @@ _NEXT_STEPS: Final = frozenset(
         "revise_claim",
         "dispute_with_evidence",
         "state_unresolved_limitation",
+        "answer_question",
     }
 )
 _FACT_CODES: Final = WORK_INTEGRITY_FACT_CODES | RESEARCH_EVIDENCE_FACT_CODES
@@ -1021,7 +1037,9 @@ class ReviewInputSection:
 
         object.__setattr__(self, "source_refs", opaque_refs(self.source_refs, maximum=16))
         object.__setattr__(
-            self, "selected_item_ids", opaque_refs(self.selected_item_ids, maximum=64)
+            self,
+            "selected_item_ids",
+            opaque_refs(self.selected_item_ids, maximum=MAX_REVIEW_INPUT_SECTION_ITEMS),
         )
         object.__setattr__(self, "omitted_refs", opaque_refs(self.omitted_refs, maximum=16))
         if type(self.omission_reasons) is not tuple or len(self.omission_reasons) > 8:
@@ -1113,10 +1131,18 @@ class ReviewInputManifest:
     missing_inputs: tuple[ReviewInputMissing, ...] = ()
     selected_item_count: int = 0
     selected_excerpt_bytes: int = 0
+    # The omission rows the packet lists, capped at ``MAX_REVIEW_OMISSIONS``.
     omitted_item_count: int = 0
+    # Issue #976: the review phase the packet's question set named; ``None`` on older manifests.
+    review_phase: Literal["routine", "final"] | None = None
+    # Every distinct omission before that cap (issue #976, tb4n1 D11); ``None`` on older
+    # manifests, which reported only the capped count.
+    omitted_item_total: int | None = None
 
     def __post_init__(self) -> None:
         if self.schema != "yoetz.review-input-manifest/1":
+            raise _invalid_case()
+        if self.review_phase not in {None, "routine", "final"}:
             raise _invalid_case()
         if self.phase not in {"composed", "provider_bound"}:
             raise _invalid_case()
@@ -1156,6 +1182,11 @@ class ReviewInputManifest:
         if (
             type(self.omitted_item_count) is not int
             or not 0 <= self.omitted_item_count <= MAX_REVIEW_OMISSIONS
+        ):
+            raise _invalid_case()
+        if self.omitted_item_total is not None and (
+            type(self.omitted_item_total) is not int
+            or not self.omitted_item_count <= self.omitted_item_total <= MAX_REVIEW_OMISSION_TOTAL
         ):
             raise _invalid_case()
 
@@ -1221,7 +1252,7 @@ class ReviewPacket:
     prior_finding_item_ids: tuple[str, ...] = ()
     # The rulable list: each carried earlier finding once, newest first. A finding contributes a
     # structural row and, under a prose profile, several prose rows; the reviewer rules once per
-    # entry here, never once per row, so the eight-ruling cap always covers every finding.
+    # entry here, never once per row, so the sixteen-ruling cap always covers every finding.
     prior_finding_refs: tuple[str, ...] = ()
     # At most one statement item: the task's current statement, never a plan (issue #908).
     task_statement_item_ids: tuple[str, ...] = ()
@@ -1457,8 +1488,19 @@ class SemanticCase:
             for item_id in packet.prior_finding_item_ids
             if (item := item_by_id[item_id]).item_id == f"prior-finding-{item.source_ref}"
         )
+        # Rows answering a local finding (issue #976) and rows carrying a finding the agent settled
+        # (issue #980) are non-rulable context of their own.
         if packet.prior_finding_refs != structural or any(
             item_by_id[item_id].source_ref not in structural
+            and item_id
+            not in {
+                LOCAL_FINDING_ANSWER_ITEM_PREFIX + item_by_id[item_id].source_ref,
+                LOCAL_FINDING_ANSWER_ITEM_PREFIX + "text-" + item_by_id[item_id].source_ref,
+                *(
+                    SETTLED_FINDING_ITEM_PREFIX + infix + item_by_id[item_id].source_ref
+                    for infix in SETTLED_FINDING_ITEM_SUFFIXES
+                ),
+            }
             for item_id in packet.prior_finding_item_ids
         ):
             raise _invalid_case()
@@ -1551,10 +1593,21 @@ class ReviewerChallenge:
     # keeps it separate from the structural challenge fields so older persisted findings can
     # still decode without one.
     snippet: str | None = None
+    # The earlier finding this challenge restates (issue #980): one ``fnd_`` id from the packet's
+    # prior findings. The check fences it like any citation; when it holds, the challenge is
+    # recorded on that finding instead of minting an unrelated new one.
+    restates: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.finding_kind) is not FindingKind:
             raise _invalid_judgment()
+        if self.restates is not None:
+            if type(self.restates) is not str or not self.restates.startswith("fnd_"):
+                raise _invalid_judgment()
+            try:
+                validate_id(IdKind.FINDING, self.restates)
+            except ValueError as exc:
+                raise _invalid_judgment() from exc
         for field_name in (
             "summary",
             "discrepancy",
@@ -1651,7 +1704,7 @@ type PriorFindingVerdictKind = Literal[
 PRIOR_FINDING_VERDICT_KINDS: Final = frozenset(
     {"fixed", "still_present", "answered_not_fixed", "unassessable", "withdrawn"}
 )
-_MAX_PRIOR_FINDING_VERDICTS: Final = 8
+_MAX_PRIOR_FINDING_VERDICTS: Final = MAX_PRIOR_FINDING_REFS
 
 
 @dataclass(frozen=True, slots=True)
@@ -1737,6 +1790,9 @@ class SemanticJudgment:
     # must supply this field; legacy local scripts retain the explicit bounded fallback text.
     review_summary: str = "No review summary recorded."
     verified: tuple[VerifiedReviewItem, ...] = ()
+    # Verified rows the normalizer dropped because their quote did not match their verdict
+    # (supported/not_supported without a quote). Disclosed through the snippet gap.
+    verified_dropped: int = 0
 
     def __post_init__(self) -> None:
         if type(self.conclusion) is not str or self.conclusion not in _CONCLUSIONS:
@@ -1782,6 +1838,9 @@ class SemanticJudgment:
             raise _invalid_judgment()
         dropped = self.prior_finding_verdicts_dropped
         if type(dropped) is not int or not 0 <= dropped <= _MAX_SAFE_INTEGER:
+            raise _invalid_judgment()
+        verified_dropped = self.verified_dropped
+        if type(verified_dropped) is not int or not 0 <= verified_dropped <= _MAX_SAFE_INTEGER:
             raise _invalid_judgment()
 
 

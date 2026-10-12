@@ -12,7 +12,7 @@ import stat
 import struct
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -42,6 +42,11 @@ from yoetz.adapters.keys.secret_memory import LocalSecretMemory
 from yoetz.adapters.keys.vault_passphrase import VaultRootEnvelope
 from yoetz.adapters.repository_identity import resolve_repository_privacy_context
 from yoetz.adapters.session_events import SessionEventMonitor
+from yoetz.application.observation_await import (
+    TaskPendingProbe,
+    await_observations_bound,
+    await_task_observations,
+)
 from yoetz.application.observation_drain import (
     ObservationDrainSummary,
 )
@@ -107,7 +112,11 @@ from yoetz.ports.control import (
 )
 from yoetz.ports.diagnostics import StartupCheckResult
 from yoetz.ports.keys import KeyStorePort, MacKeyPurpose
-from yoetz.ports.ledger import CheckAdmissionStage, check_admission_stage
+from yoetz.ports.ledger import (
+    CheckAdmissionStage,
+    CheckObservationsAwaited,
+    check_admission_stage,
+)
 from yoetz.ports.observation import ObservationStoreLockTimeout
 from yoetz.ports.secret_memory import (
     HumanAuthorizationProof,
@@ -206,6 +215,7 @@ from yoetz.service.lifecycle import (
 from yoetz.service.loop_health import ControlPlaneWatchdog
 from yoetz.service.ready_composition import build_ready_application_factory
 from yoetz.service.secret_ingress import SecretIngressService
+from yoetz.service.session_routes import SESSION_ROUTE_FILE_NAME, SessionRouteMemory
 from yoetz.service.unlock import UnlockCoordinator, UnlockThrottleRecord, UnlockThrottleStore
 from yoetz.service.vault import VaultError, VaultMode, VaultService
 
@@ -508,6 +518,20 @@ def _read_projection_incident_key(
     )
 
 
+def _structural_request_id(body: object) -> str | None:
+    """Return a call body's public ``req_`` id, or ``None``; never raises (tb4n2 NEW-8)."""
+
+    try:
+        value: object = (
+            cast(Mapping[str, object], body).get("request_id")
+            if isinstance(body, dict)
+            else cast(object, getattr(body, "request_id", None))
+        )
+        return validate_id(IdKind.REQUEST, value) if isinstance(value, str) else None
+    except Exception:
+        return None
+
+
 class _Listener(Protocol):
     async def accept(self) -> ControlStream: ...
 
@@ -680,6 +704,8 @@ class ServiceComposition:
     privacy_policy_app_relay: _PrivacyPolicyAppRelay | None = None
     auto_unlock_reason: str = "none"
     auto_unlock_bundle: Path | None = None
+    # Where the per-session MCP serving route is remembered (#985); ``None`` keeps it in memory.
+    session_route_path: Path | None = None
     maintenance_gate: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # Observation sweeps serialize one row at a time on this gate.  Keep it separate from the
     # installation-wide maintenance lease so a native capture can stage a content ticket while a
@@ -718,6 +744,8 @@ class ServiceDaemon:
         self._closed = False
         self._stopping = False
         self._state_reason = "none"
+        # The serving route each session's MCP bridge last named on a status or check (#985).
+        self._session_routes = SessionRouteMemory(_composition.session_route_path)
         # Composition is frozen; keep the live auto-unlock reason on the daemon so soft-lock
         # re-ready can update it without replacing the composition object.
         self._auto_unlock_reason = _composition.auto_unlock_reason
@@ -1135,25 +1163,53 @@ class ServiceDaemon:
             # Set before dispatch: a busy hook ingest can time out client-side, and the rows it
             # could not drain are exactly the ones the sweep should pick up promptly.
             self._observation_ingest_wake.set()
+        awaits_observations = (
+            request.method is ControlMethod.CHECK
+            and type(body) is CheckRequest
+            and body.await_observations is True
+        )
         try:
             if (
                 request.method is ControlMethod.CHECK
                 and type(body) is CheckRequest
                 and body.mode != "deterministic_only"
             ):
-                return await self._check_waits.run(
-                    (body.writer_id, body.request_id),
-                    hashlib.sha256(canonical_encode(body.model_dump(mode="json"))).hexdigest(),
-                    lambda: self._dispatch_ready_once(
+                check_body = body
+
+                async def detached() -> object:
+                    # The wait runs inside the detached operation, before either dispatch gate
+                    # is taken, so the sweeper can deliver rows while this check waits.
+                    awaited = (
+                        await self._await_check_observations(check_body, request.deadline_ms)
+                        if awaits_observations
+                        else None
+                    )
+                    return await self._dispatch_ready_once(
                         projection_context,
                         request,
                         repository_privacy_context,
                         detached_check=True,
-                    ),
+                        observations_awaited=awaited,
+                    )
+
+                # The pre-check wait is outside the operation identity, as in the ledger digest.
+                identity = body.model_dump(mode="json", exclude={"await_observations"})
+                return await self._check_waits.run(
+                    (body.writer_id, body.request_id),
+                    hashlib.sha256(canonical_encode(identity)).hexdigest(),
+                    detached,
                     request.deadline_ms,
                 )
+            awaited = (
+                await self._await_check_observations(cast(CheckRequest, body), request.deadline_ms)
+                if awaits_observations
+                else None
+            )
             return await self._dispatch_ready_once(
-                projection_context, request, repository_privacy_context
+                projection_context,
+                request,
+                repository_privacy_context,
+                observations_awaited=awaited,
             )
         except PublicOperationError as exc:
             if (
@@ -1165,6 +1221,25 @@ class ServiceDaemon:
                 self._observation_sweep_wake.set()
             raise
 
+    async def _await_check_observations(
+        self, body: CheckRequest, deadline_ms: int | None
+    ) -> CheckObservationsAwaited:
+        """Run the optional bounded wait for this task's pending hook rows (issue #1012).
+
+        Runs before the dispatch gates: the sweeper takes the observation gate per row, so a
+        wait under the gates could only ever time out. Never raises for the wait itself.
+        """
+
+        application = self._application
+        sweep = None if application is None else getattr(application, "observation_sweep", None)
+        probe = getattr(sweep, "task_pending_probe", None)
+        return await await_task_observations(
+            cast(TaskPendingProbe, probe) if callable(probe) else None,
+            body.session_id,
+            wake=self._observation_sweep_wake.set,
+            bound_seconds=await_observations_bound(deadline_ms),
+        )
+
     async def _dispatch_ready_once(
         self,
         projection_context: ClientProjectionContext,
@@ -1172,6 +1247,7 @@ class ServiceDaemon:
         repository_privacy_context: RepositoryPrivacyContext | None,
         *,
         detached_check: bool = False,
+        observations_awaited: CheckObservationsAwaited | None = None,
     ) -> object:
         # A recovery ceremony holds this same lock across an unbounded human wait, so an
         # unbounded acquire would hang every ordinary call for as long as someone stares at a
@@ -1214,6 +1290,7 @@ class ServiceDaemon:
                 request,
                 repository_privacy_context,
                 detached_check=detached_check,
+                observations_awaited=observations_awaited,
             )
         finally:
             try:
@@ -1296,6 +1373,7 @@ class ServiceDaemon:
         repository_privacy_context: RepositoryPrivacyContext | None,
         *,
         detached_check: bool = False,
+        observations_awaited: CheckObservationsAwaited | None = None,
     ) -> object:
         application = self._application
         if application is None:
@@ -1316,15 +1394,22 @@ class ServiceDaemon:
             handler = getattr(application, request.method.value, None)
             if not callable(handler):
                 raise ControlError("method_forbidden")
+            routed = self._with_session_route(request)
             try:
                 if request.deadline_ms is None or detached_check:
                     internal = await self._invoke_ready_handler(
-                        handler, request, repository_privacy_context
+                        handler,
+                        routed,
+                        repository_privacy_context,
+                        observations_awaited=observations_awaited,
                     )
                 else:
                     async with asyncio.timeout(request.deadline_ms / 1_000):
                         internal = await self._invoke_ready_handler(
-                            handler, request, repository_privacy_context
+                            handler,
+                            routed,
+                            repository_privacy_context,
+                            observations_awaited=observations_awaited,
                         )
             except TimeoutError as exc:
                 # Includes local observation-store contention inside the handler: the wire
@@ -1343,6 +1428,8 @@ class ServiceDaemon:
                 if _request_is_read_only(request):
                     raise self._read_projection_failure(request, exc, phase="handler") from exc
                 raise
+            # Only a call the handler completed teaches the session's route (#985).
+            self._remember_session_route(request)
             # The handler has returned, so a write may already be durable. Everything below only
             # shapes the response; an unexpected failure there must not be reported as a failed
             # operation.
@@ -1360,11 +1447,47 @@ class ServiceDaemon:
             if admission is not None:
                 await self._composition.lifecycle.release(admission)
 
+    def _with_session_route(self, request: ControlCallRequest) -> ControlCallRequest:
+        """Give a route-less ``status`` the route the session's own MCP bridge serves (#985).
+
+        The MCP bridge names its serving route (``policy`` or ``strict``) on every ``status`` and
+        ``check``; the Stop-hook closure gate and the CLI carry none, so they used to read the
+        policy route and could list ``semantic_review_not_requested`` as work the agent's strict
+        view never shows. ``SessionRouteMemory`` keeps the route the session's last successful
+        route-carrying call named (owner-only file in the service state directory, so it
+        survives a restart; last writer wins when two bridges serve one session), and a later
+        route-less ``status`` for the same session reads on it. A route-less ``check`` is never
+        changed: the route still decides what a check may dispatch. With nothing remembered the
+        read keeps the policy route.
+        """
+
+        if request.method is not ControlMethod.STATUS or request.route_profile is not None:
+            return request
+        session_id = getattr(request.body, "session_id", None)
+        if type(session_id) is not str:
+            return request
+        remembered = self._session_routes.get(session_id)
+        if remembered is None:
+            return request
+        return replace(request, route_profile=remembered)
+
+    def _remember_session_route(self, request: ControlCallRequest) -> None:
+        if request.route_profile is None or request.method not in {
+            ControlMethod.CHECK,
+            ControlMethod.STATUS,
+        }:
+            return
+        session_id = getattr(request.body, "session_id", None)
+        if type(session_id) is str:
+            self._session_routes.remember(session_id, request.route_profile)
+
     @staticmethod
     async def _invoke_ready_handler(
         handler: object,
         request: ControlCallRequest,
         repository_privacy_context: RepositoryPrivacyContext | None = None,
+        *,
+        observations_awaited: CheckObservationsAwaited | None = None,
     ) -> object:
         operation = cast(Callable[..., Awaitable[object]], handler)
         kwargs: dict[str, object] = {}
@@ -1373,6 +1496,9 @@ class ServiceDaemon:
                 kwargs["route_profile"] = request.route_profile
         if request.method is ControlMethod.CHECK and request.host_profile is not None:
             kwargs["host_profile"] = request.host_profile
+        if request.method is ControlMethod.CHECK and observations_awaited is not None:
+            # Only a request that set ``await_observations`` passes this (issue #1012).
+            kwargs["observations_awaited"] = observations_awaited
         if request.method in {
             ControlMethod.START,
             ControlMethod.PUBLISH_WORK,
@@ -1700,6 +1826,7 @@ class ServiceDaemon:
         request: ControlCallRequest,
         write_lock: asyncio.Lock,
     ) -> None:
+        call_started = time.monotonic()
         if session.repository_privacy_context is None:
             result = await self.dispatch(
                 session.client_kind,
@@ -1737,10 +1864,19 @@ class ServiceDaemon:
             # failure: record the bounded reason and end the call so the daemon reports neither
             # `frame_invalid` nor an unretrieved task exception (issue #678). The read side sees
             # the same dead stream and finalizes the connection.
+            # Bounded structural context makes an abandoned write attributable (tb4n2 NEW-8):
+            # the closed wire method, the handshake client kind, the call's elapsed time and its
+            # public `req_` id when it has one. Never the body, the peer or the rpc id.
             record_bounded_event_without_raising(
                 component="service.daemon",
                 operation="control_response_write",
                 reason=exc.reason,
+                request_id=_structural_request_id(request.body),
+                context={
+                    "control_method": request.method.value,
+                    "client_kind": session.client_kind.value,
+                    "duration_ms": max(0, int((time.monotonic() - call_started) * 1_000)),
+                },
             )
             return
         if request.method is ControlMethod.SERVICE_STOP and result.outcome == "ok":
@@ -4443,6 +4579,7 @@ async def _production_composition(
             privacy_policy_app_relay=privacy_relay,
             auto_unlock_reason=auto_unlock_reason,
             auto_unlock_bundle=paths.bundle,
+            session_route_path=paths.state / SESSION_ROUTE_FILE_NAME,
             observation_gate=observation_gate,
         )
     except BaseException:

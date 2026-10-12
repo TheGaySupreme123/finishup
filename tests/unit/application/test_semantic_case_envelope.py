@@ -61,7 +61,7 @@ def _findings_for(case: DeterministicCase) -> tuple[Finding, ...]:
     assessments, _ = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
     return allocate_findings(
         _Ids(),

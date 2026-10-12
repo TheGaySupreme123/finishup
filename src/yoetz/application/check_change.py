@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-from collections.abc import Awaitable, Callable
+import re
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import Final, cast
 
@@ -22,9 +23,14 @@ from yoetz.domain.events import (
     MAX_CHECK_CHANGE_SHOWN_FILES,
     CheckChangePartialFile,
     CheckChangeShownFiles,
+    RequestedItemKind,
+    RequestedItemRole,
 )
 from yoetz.domain.privacy import ReviewSelectionPolicy
 from yoetz.domain.receipts import CHECK_TIME_CHANGE_UNAVAILABLE_REASONS
+from yoetz.domain.values import ObligationId
+from yoetz.kernel.projections import ProjectionState
+from yoetz.kernel.task_facts import RequestedOutputState, effective_obligations
 from yoetz.observability.logging import (
     record_bounded_event_without_raising,
     record_unexpected_exception_without_raising,
@@ -36,9 +42,11 @@ from yoetz.ports.change_capture import (
     TASK_CHANGE_BASE_MEDIA_TYPE,
     ChangeCapturePort,
     ChangeCaptureUnavailable,
+    ChangeLineCounts,
     CheckChangeCapture,
     CheckChangeMetadata,
     CheckWorkspaceSource,
+    RequestedPathProbe,
     TaskChangeBase,
     decode_check_change,
     decode_task_change_base,
@@ -51,6 +59,7 @@ from yoetz.ports.runtime import TaskRuntime
 from yoetz.protocol.canonical import JsonValue
 
 __all__ = [
+    "declared_output_paths",
     "CheckChangeOutcome",
     "capture_structural_check_change",
     "capture_check_time_change",
@@ -122,8 +131,7 @@ class CheckChangeOutcome:
 async def check_change_shown_files(
     runtime: TaskRuntime,
     change: CheckTimeChange,
-    selection: ReviewSelectionPolicy,
-    admitted_parts: int,
+    shown_bytes: int,
 ) -> CheckChangeShownFiles:
     """Keyed commitments to the changed files one review packet carried (ADR-031).
 
@@ -136,7 +144,7 @@ async def check_change_shown_files(
     says it is incomplete. A recovered job derives the same commitments from its stored object.
     """
 
-    files = check_time_change_shown_files(change.capture, selection, admitted_parts)
+    files = check_time_change_shown_files(change.capture, shown_bytes)
     complete = len(files) <= MAX_CHECK_CHANGE_SHOWN_FILES
     base = change.capture.base_commit.encode("ascii")
     fully: set[str] = set()
@@ -309,9 +317,17 @@ def _redacted(capture: CheckChangeCapture) -> CheckChangeCapture:
 
 
 def _capture_redacted(
-    port: ChangeCapturePort, workspace: str, base: TaskChangeBase | None
+    port: ChangeCapturePort,
+    workspace: str,
+    base: TaskChangeBase | None,
+    priority_paths: tuple[str, ...] = (),
 ) -> CheckChangeCapture:
-    capture = port.capture(workspace, base)
+    # A port without deliverable ordering (an embedded or test port) keeps its own order.
+    capture = (
+        port.capture(workspace, base, priority_paths=priority_paths)
+        if priority_paths
+        else port.capture(workspace, base)
+    )
     if type(capture) is not CheckChangeCapture:
         raise TypeError("check_change_capture_invalid")
     return _redacted(capture)
@@ -325,8 +341,12 @@ async def capture_check_time_change(
     port: ChangeCapturePort,
     clock: ClockPort,
     request_id: str,
+    priority_paths: tuple[str, ...] = (),
 ) -> CheckChangeOutcome:
-    """Capture, redact and store one check's change; every failure is a disclosed absence."""
+    """Capture, redact and store one check's change; every failure is a disclosed absence.
+
+    ``priority_paths`` are the declared deliverables (``declared_output_paths``), rendered first.
+    """
 
     if type(source) is not CheckWorkspaceSource:
         raise TypeError("check_workspace_source_invalid")
@@ -348,7 +368,9 @@ async def capture_check_time_change(
     try:
         # Capture and every redaction pass run off the event loop: a parser-sized change needs
         # dozens of full scans, which would otherwise stall every other connection for seconds.
-        capture = await asyncio.to_thread(_capture_redacted, port, source.workspace, base)
+        capture = await asyncio.to_thread(
+            _capture_redacted, port, source.workspace, base, priority_paths
+        )
         ref = await _store(runtime, encode_check_change(capture), CHECK_CHANGE_MEDIA_TYPE, clock)
         return CheckChangeOutcome(CheckTimeChange(ref, capture))
     except ChangeCaptureUnavailable as exc:
@@ -497,3 +519,420 @@ async def record_task_change_base(
             request_id=request_id,
         )
     return False
+
+
+_MAX_REQUESTED_OUTPUT_PROBES: Final = 64
+_PROBED_KINDS: Final = frozenset({RequestedItemKind.FILE, RequestedItemKind.DIRECTORY})
+_NOT_A_PLAIN_PATH: Final = re.compile(r"[\s*?\[\]{}~$`]|://")
+
+
+def _plain_path(value: str) -> bool:
+    """Whether a requested file value is one literal path Yoetz can locate.
+
+    A value with whitespace (trailing prose), a glob or brace pattern, a home or variable
+    expansion, or a URL names no single path, so it is never reported absent; it is left out of
+    the read entirely rather than guessed at.
+    """
+
+    return bool(value) and _NOT_A_PLAIN_PATH.search(value) is None
+
+
+def declared_output_paths(projection: ProjectionState) -> tuple[str, ...]:
+    """The requested file and directory values the check-time change renders first (tb4n2 R7).
+
+    ``role: output`` items come first, then requested files with no role (an
+    ``obligation_published`` 1.0.0 item names a deliverable too); declared inputs never count.
+    Only plain literal paths are kept, deduplicated in obligation order and bounded like the
+    requested-output probe. The values only order the change; nothing here is stored.
+    """
+
+    declared: list[str] = []
+    unroled: list[str] = []
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for item in payload.requested_items:
+            if item.item_kind not in _PROBED_KINDS or not _plain_path(item.value):
+                continue
+            if item.role is RequestedItemRole.OUTPUT:
+                declared.append(item.value)
+            elif item.role is None:
+                unroled.append(item.value)
+    return tuple(dict.fromkeys((*declared, *unroled)))[:_MAX_REQUESTED_OUTPUT_PROBES]
+
+
+async def requested_output_states(
+    *,
+    projection: ProjectionState,
+    capture: CheckChangeMetadata | None,
+    source: CheckWorkspaceSource | None,
+    port: object | None,
+    request_id: str,
+) -> dict[tuple[ObligationId, int], RequestedOutputState]:
+    """Read where each requested file of an effective obligation stands at check time (#977).
+
+    Metadata only, through the same hardened Git seam as the structural change capture, and only
+    after that capture succeeded for this check's own repository (so the repository fence already
+    held). A requested file is ``changed`` when the check-time change lists it, ``deleted`` when
+    the change deletes it, and ``unverified`` when no read could be made. Nothing here is stored:
+    the result becomes closed gap codes and a finding fact, never a path.
+    """
+
+    items: list[tuple[ObligationId, int, str]] = []
+    directories: set[tuple[ObligationId, int]] = set()
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for index, item in enumerate(payload.requested_items):
+            # A declared input is never an output fact, so it is not read at all (#1002). A
+            # directory is located like a file; an existing one that holds no file is absent.
+            if (
+                item.item_kind in _PROBED_KINDS
+                and item.role is not RequestedItemRole.INPUT
+                and _plain_path(item.value)
+            ):
+                items.append((obligation, index, item.value))
+                if item.item_kind is RequestedItemKind.DIRECTORY:
+                    directories.add((obligation, index))
+    if not items:
+        return {}
+    unverified = {
+        (obligation, index): RequestedOutputState("unverified") for obligation, index, _ in items
+    }
+    probe = getattr(port, "probe_requested_paths", None)
+    if capture is None or source is None or not callable(probe):
+        return unverified
+    bounded = items[:_MAX_REQUESTED_OUTPUT_PROBES]
+    try:
+        raw_probes: object = await asyncio.to_thread(
+            cast(Callable[[str, tuple[str, ...]], object], probe),
+            source.workspace,
+            tuple(v for _, _, v in bounded),
+        )
+        if type(raw_probes) is not tuple:
+            raise TypeError("requested_path_probe_invalid")
+        probes = cast(tuple[object, ...], raw_probes)
+        if len(probes) != len(bounded):
+            raise TypeError("requested_path_probe_invalid")
+    except ChangeCaptureUnavailable:
+        return unverified
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component=_COMPONENT,
+            operation="requested_output_probe_failed",
+            request_id=request_id,
+        )
+        return unverified
+    changed = {entry.path for entry in capture.entries if not entry.status.startswith("D")}
+    deleted = {entry.path for entry in capture.entries if entry.status.startswith("D")}
+    deleted.update(
+        entry.original_path
+        for entry in capture.entries
+        if entry.original_path is not None and entry.status.startswith("R")
+    )
+    created = {
+        entry.path for entry in capture.entries if entry.untracked or entry.status.startswith("A")
+    }
+    states = dict(unverified)
+    relatives: dict[tuple[ObligationId, int], str] = {}
+    for (obligation, index, _value), result in zip(bounded, probes, strict=True):
+        if type(result) is not RequestedPathProbe:
+            continue
+        if result.location == "outside" or result.relative is None:
+            states[(obligation, index)] = RequestedOutputState("outside")
+            continue
+        relatives[(obligation, index)] = result.relative
+        listed = _changed_at_or_under(result.relative, changed)
+        exists = result.exists
+        if (obligation, index) in directories and exists and result.holds_file is False:
+            # An empty directory (or one holding only empty directories) delivers nothing; Git
+            # cannot even record it. Unknown (``None``) never makes it absent.
+            exists = False
+        states[(obligation, index)] = RequestedOutputState(
+            "inside",
+            exists=exists,
+            ignored=result.ignored,
+            # Local excludes are not delivered with the repository; a .gitignore the task's own
+            # change created is the work's. A pre-existing .gitignore the task merely edited is
+            # never attributed to it: the matching rule may be the repository's own.
+            ignored_by_task=result.ignore_source == "info_exclude"
+            or (
+                result.ignore_source == "repository_file"
+                and result.ignore_file is not None
+                and result.ignore_file in created
+            ),
+            # A truncated listing cannot prove a path unchanged.
+            changed=True if listed else (None if capture.truncated else False),
+            # A requested directory whose files the change deleted was deleted, not left absent.
+            deleted=result.relative != "." and _changed_at_or_under(result.relative, deleted),
+            size_bytes=result.size_bytes if exists is True else None,
+            relative=result.relative,
+        )
+    return await _with_declared_line_counts(
+        projection=projection,
+        capture=capture,
+        source=source,
+        port=port,
+        states=states,
+        relatives=relatives,
+        request_id=request_id,
+    )
+
+
+async def _with_declared_line_counts(
+    *,
+    projection: ProjectionState,
+    capture: CheckChangeMetadata,
+    source: CheckWorkspaceSource,
+    port: object,
+    states: dict[tuple[ObligationId, int], RequestedOutputState],
+    relatives: dict[tuple[ObligationId, int], str],
+    request_id: str,
+) -> dict[tuple[ObligationId, int], RequestedOutputState]:
+    """Add the ADR-035 / ADR-045 line counts to each existing declared delivered file.
+
+    Runs only when such a file exists, through the adapter's bounded, metadata-only line-count
+    read. ``lines`` is the file's current line count: a tracked file's base count adjusted by the
+    change, an untracked (new) file's own count, or the base count of an unchanged tracked file
+    (ADR-045: a deliverable created in the session has no base, and its history is what the
+    earlier checks recorded). ``base_lines`` and ``lines_lost`` stay what ADR-035 defined, for a
+    tracked file the change modified. ``undeclared_lines_added`` sums the net lines the change
+    added to files outside the declared delivered set (a declared ``directory`` covers the files
+    beneath it). A read that fails leaves the counts ``None``, so the dependent facts are simply
+    not raised.
+    """
+
+    from yoetz.kernel.delivered_set import declared_delivered_items
+
+    count = getattr(port, "count_change_lines", None)
+    probe = getattr(port, "probe_requested_paths", None)
+    if not callable(count) or not callable(probe) or not capture.base_commit:
+        return states
+    declared = declared_delivered_items(projection)
+    candidates = [
+        (obligation, index)
+        for obligation, index, kind, _value in declared
+        if kind == "file"
+        and (obligation, index) in relatives
+        and states[(obligation, index)].exists is True
+        and not states[(obligation, index)].deleted
+    ]
+    if not candidates:
+        return states
+    declared_files = {
+        relatives[(obligation, index)]
+        for obligation, index, _kind, _value in declared
+        if (obligation, index) in relatives
+    }
+    # Only a literal directory path below the root is declared; a malformed value or the root
+    # itself would mark every file as declared or fail the probe.
+    directory_values = tuple(
+        value
+        for _obligation, _index, kind, value in declared
+        if kind == "directory" and _plain_path(value) and value.strip("/.") != ""
+    )[:_MAX_REQUESTED_OUTPUT_PROBES]
+    base_paths = tuple(sorted({relatives[item] for item in candidates}))
+    try:
+        directories: tuple[str, ...] = ()
+        if directory_values:
+            raw_directories = await asyncio.to_thread(
+                cast(Callable[[str, tuple[str, ...]], object], probe),
+                source.workspace,
+                directory_values,
+            )
+            if type(raw_directories) is not tuple:
+                raise TypeError("requested_path_probe_invalid")
+            directories = tuple(
+                result.relative
+                for result in cast(tuple[object, ...], raw_directories)
+                if type(result) is RequestedPathProbe and result.relative is not None
+            )
+        raw_counts = await asyncio.to_thread(
+            cast(Callable[[str, str, tuple[str, ...]], object], count),
+            source.workspace,
+            capture.base_commit,
+            base_paths,
+        )
+        if type(raw_counts) is not ChangeLineCounts or len(raw_counts.base_lines) != len(
+            base_paths
+        ):
+            raise TypeError("change_line_counts_invalid")
+    except ChangeCaptureUnavailable:
+        return states
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component=_COMPONENT,
+            operation="declared_output_line_count_failed",
+            request_id=request_id,
+        )
+        return states
+
+    def is_declared(path: str) -> bool:
+        return path in declared_files or any(
+            path.startswith(directory + "/") for directory in directories
+        )
+
+    undeclared_added = 0
+    rows: dict[str, tuple[int | None, int | None, bool]] = {}
+    for row in raw_counts.changed:
+        if row.path in base_paths:
+            rows[row.path] = (row.added, row.removed, row.untracked)
+        elif not is_declared(row.path) and row.added is not None and row.removed is not None:
+            undeclared_added += max(0, row.added - row.removed)
+    base_by_path = dict(zip(base_paths, raw_counts.base_lines, strict=True))
+    modified = {entry.path for entry in capture.entries if entry.status == "M"}
+    annotated = dict(states)
+    for item in candidates:
+        path = relatives[item]
+        base = base_by_path.get(path)
+        added, removed, untracked = rows.get(path, (None, None, False))
+        lost: int | None = None
+        lines: int | None
+        if path not in rows:
+            # Tracked and unchanged since the task base (or a file the read could not list).
+            lines = base
+        elif untracked:
+            # A new file: its own newline count (``added``); it has no base.
+            lines = added
+        elif added is None or removed is None or base is None:
+            lines = None
+        else:
+            lines = max(0, base - removed + added)
+            lost = removed - added
+        annotated[item] = replace(
+            states[item],
+            lines=lines,
+            counts_truncated=raw_counts.truncated,
+            # ADR-035's fields keep their meaning: a tracked file the change modified.
+            base_lines=base,
+            lines_lost=lost if path in modified else None,
+            undeclared_lines_added=undeclared_added,
+        )
+    return annotated
+
+
+def _changed_at_or_under(relative: str, changed: set[str]) -> bool:
+    """Whether the change touches ``relative`` itself or any path beneath it.
+
+    The capture lists files, never directories (untracked entries come from ``git ls-files
+    --others``), so a requested directory such as ``src`` is changed when a file under it is
+    (tb4n1 E1: four new ``src/*.sv`` files left ``/app/src`` reported unchanged). The root
+    (``.``) is changed by any change.
+    """
+
+    if relative == ".":
+        return bool(changed)
+    if relative in changed:
+        return True
+    prefix = relative.rstrip("/") + "/"
+    return any(path.startswith(prefix) for path in changed)
+
+
+_MAX_REFERENCE_DELIVERABLES: Final = 16
+_MAX_REFERENCE_CANDIDATES: Final = 1_024
+
+
+async def count_undeclared_references(
+    *,
+    projection: ProjectionState,
+    capture: CheckChangeMetadata | None,
+    source: CheckWorkspaceSource | None,
+    port: object | None,
+    states: Mapping[tuple[ObligationId, int], RequestedOutputState],
+    blocked: Iterable[ObligationId] | None,
+    request_id: str,
+) -> int:
+    """How many declared deliverables name a file the change created but no item declares.
+
+    tb4n2 R2 (ADR-035 amendment, ``deliverable_references_undeclared_file``). The candidates are
+    the files the check-time change created (untracked, or added with status ``A``) minus every
+    declared ``file``/``directory`` value of any role (a declared directory covers the files
+    beneath it); pre-existing tracked files are never candidates. The adapter's bounded local
+    read of each declared source deliverable returns a count only. Any failure is ``0``: the
+    disclosure is simply not raised.
+    """
+
+    from yoetz.kernel.delivered_set import undeclared_reference_inputs
+
+    count = getattr(port, "count_undeclared_references", None)
+    probe = getattr(port, "probe_requested_paths", None)
+    if capture is None or source is None or not callable(count) or not callable(probe):
+        return 0
+    created = {
+        entry.path for entry in capture.entries if entry.untracked or entry.status.startswith("A")
+    }
+    if not created:
+        return 0
+    deliverables, declared = undeclared_reference_inputs(projection, states, blocked=blocked)
+    deliverables = tuple(value for value in deliverables if _plain_path(value))
+    if not deliverables:
+        return 0
+    values = tuple(
+        dict.fromkeys((*deliverables, *(value for value in declared if _plain_path(value))))
+    )
+    if len(values) > _MAX_REQUESTED_OUTPUT_PROBES:
+        # Codex review 3: an unprobed declaration could be reported as undeclared. A disclosure
+        # Yoetz cannot compute exactly is not raised.
+        return 0
+    try:
+        raw_probes = await asyncio.to_thread(
+            cast(Callable[[str, tuple[str, ...]], object], probe), source.workspace, values
+        )
+        if type(raw_probes) is not tuple or len(cast(tuple[object, ...], raw_probes)) != len(
+            values
+        ):
+            raise TypeError("requested_path_probe_invalid")
+        relatives: dict[str, str] = {}
+        for value, result in zip(values, cast(tuple[object, ...], raw_probes), strict=True):
+            if type(result) is RequestedPathProbe and result.relative is not None:
+                relatives[value] = result.relative
+        if "." in relatives.values():
+            # The root itself is declared: every created file is part of the delivery.
+            return 0
+        covered = set(relatives.values())
+
+        def is_declared(path: str) -> bool:
+            return path in covered or any(path.startswith(root + "/") for root in covered)
+
+        targets = tuple(
+            dict.fromkeys(relatives[value] for value in deliverables if value in relatives)
+        )[:_MAX_REFERENCE_DELIVERABLES]
+        candidates = tuple(
+            sorted(path for path in created if _plain_relative(path) and not is_declared(path))
+        )[:_MAX_REFERENCE_CANDIDATES]
+        if not targets or not candidates:
+            return 0
+        found: object = await asyncio.to_thread(
+            cast(Callable[[str, tuple[str, ...], tuple[str, ...]], object], count),
+            source.workspace,
+            targets,
+            candidates,
+        )
+        if type(found) is not int or found < 0:
+            raise TypeError("undeclared_reference_count_invalid")
+        return found
+    except ChangeCaptureUnavailable:
+        return 0
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component=_COMPONENT,
+            operation="undeclared_reference_read_failed",
+            request_id=request_id,
+        )
+        return 0
+
+
+def _plain_relative(path: str) -> bool:
+    """Whether a change entry path is a plain root-relative path the reference read accepts."""
+
+    return (
+        bool(path)
+        and not path.startswith("/")
+        and not any(char in path for char in "\x00\r\n")
+        and all(part not in {"", ".", ".."} for part in path.split("/"))
+    )

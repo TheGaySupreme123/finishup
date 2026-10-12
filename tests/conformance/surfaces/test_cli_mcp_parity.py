@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from yoetz.mcp.summaries import render_safe_compact_summary
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
 from yoetz.protocol.canonical import JsonValue
 
 
@@ -24,7 +24,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
         "head_digest: sha256:" + "0" * 64 + "."
     )
     assert secret not in summary
-    assert len(summary.encode("ascii")) <= 512
+    assert len(summary.encode("ascii")) <= MAX_SUMMARY_BYTES
 
     status: dict[str, JsonValue] = {
         "ok": True,
@@ -63,8 +63,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
         "Status view: compact; frontier: 9; freshness: stale_after_material_change; open "
         "obligations: 2; test edits available: 1 modified, 0 renamed, 0 deleted, 0 skipped, "
         "0 unjustified, 0 unknown; obligation IDs: obl_00000000-0000-4000-8000-000000000001; "
-        "unanswered findings: 4; receipt-blocking findings: 3; "
-        "reported gaps: 2."
+        "unanswered findings: 4; reported gaps: 2."
     )
     assert secret not in status_summary
 
@@ -82,8 +81,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
         "Status view: compact; frontier: 9; freshness: stale_after_material_change; open "
         "obligations: 2; test edits available: 1 modified, 0 renamed, 0 deleted, 0 skipped, "
         "0 unjustified, 0 unknown; obligation IDs: obl_00000000-0000-4000-8000-000000000001; "
-        "unanswered findings: 0; receipt-blocking findings: 3; "
-        "reported gaps: 2."
+        "unanswered findings: 0; reported gaps: 2."
     )
 
     status["view"] = "obligations"
@@ -100,7 +98,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
     assert render_safe_compact_summary(status) == (
         "Status view: obligations; frontier: 9; freshness: current; open obligations: 2; "
         "obligation IDs: obl_00000000-0000-4000-8000-000000000002; unanswered findings: 0; "
-        "receipt-blocking findings: 3; reported gaps: 2."
+        "reported gaps: 2."
     )
     assert secret not in render_safe_compact_summary(status)
 
@@ -114,7 +112,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
     }
     assert render_safe_compact_summary(status) == (
         "Status view: findings; frontier: 9; freshness: current; open obligations: 0; "
-        "unanswered findings: 0; receipt-blocking findings: 2; reported gaps: 2."
+        "unanswered findings: 0; reported gaps: 2."
     )
 
     # An evidence row's `freshness` describes that evidence, not the ledger, so it must never be
@@ -133,7 +131,7 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
     assert evidence_summary == (
         "Status view: evidence; frontier: 9; freshness: current; open obligations: 0; "
         "evidence rows: 2 (hook_observed 1, unrecorded 1); "
-        "unanswered findings: 0; receipt-blocking findings: 2; reported gaps: 2."
+        "unanswered findings: 0; reported gaps: 2."
     )
     assert secret not in evidence_summary
 
@@ -168,14 +166,15 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
 
 
 def test_text_only_closure_lists_remain_bounded_and_keep_both_receipt_classes() -> None:
-    obligation_ids = [f"obl_00000000-0000-4000-8000-{index:012x}" for index in range(1, 21)]
+    # More ids than one list is allowed to take of the 4,096-byte text (1,024 characters per list).
+    obligation_ids = [f"obl_00000000-0000-4000-8000-{index:012x}" for index in range(1, 61)]
     status: dict[str, JsonValue] = {
         "ok": True,
         "view": "obligations",
         "result_frontier": {"sequence": "12"},
         "page": {"items": [{"obligation_id": obligation_id} for obligation_id in obligation_ids]},
         "closure_readiness": {
-            "open_obligation_count": "20",
+            "open_obligation_count": "60",
             "unanswered_finding_count": "0",
             "receipt_blocking_finding_count": "0",
         },
@@ -185,7 +184,7 @@ def test_text_only_closure_lists_remain_bounded_and_keep_both_receipt_classes() 
     status_summary = render_safe_compact_summary(status)
     assert "obligation IDs: obl_00000000-0000-4000-8000-000000000001" in status_summary
     assert "more" in status_summary
-    assert len(status_summary.encode("ascii")) <= 512
+    assert len(status_summary.encode("ascii")) <= MAX_SUMMARY_BYTES
 
     receipt: dict[str, JsonValue] = {
         "ok": True,
@@ -208,4 +207,4 @@ def test_text_only_closure_lists_remain_bounded_and_keep_both_receipt_classes() 
     assert "open obligation IDs:" in receipt_summary
     assert "gap codes:" in receipt_summary
     assert "more" in receipt_summary
-    assert len(receipt_summary.encode("ascii")) <= 512
+    assert len(receipt_summary.encode("ascii")) <= MAX_SUMMARY_BYTES

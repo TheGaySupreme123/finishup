@@ -23,12 +23,12 @@ def test_policy_execution_accounting_is_stable_and_application_owned() -> None:
     left = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
     right = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
 
     assert left == right

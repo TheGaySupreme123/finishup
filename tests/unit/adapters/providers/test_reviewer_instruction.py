@@ -25,7 +25,11 @@ from yoetz.adapters.providers.openai_responses import (
     SEMANTIC_REVIEW_INSTRUCTION,
     owner_declared_data_use_profile,
 )
-from yoetz.application.semantic_case import OVER_CASE_ITEM_LIMIT_REASON, REVIEW_PHASE_QUESTIONS
+from yoetz.application.semantic_case import (
+    ACKNOWLEDGED_REVIEW_INSTRUCTION,
+    OVER_CASE_ITEM_LIMIT_REASON,
+    REVIEW_PHASE_QUESTIONS,
+)
 from yoetz.domain.findings import EXTERNAL_SEMANTIC_FINDING_KINDS, FindingKind
 from yoetz.domain.observation import ObservationGapCode
 from yoetz.domain.privacy import ApprovedOutboundCase, DataCategory, ProviderBinding
@@ -345,3 +349,170 @@ def test_account_codes_are_not_dismissed_as_packet_limits() -> None:
         "to when readable material shows it in the work or the claim." in _TEXT
     )
     assert "packet limit codes are not this" in FINDING_KIND_GLOSSARY["ledger_stale_or_incomplete"]
+
+
+def test_image_and_binary_content_is_not_assessable_never_missing() -> None:
+    """TB4 tb4n1 D6 (issue #983): cad, medical, freecad looped on content never carried."""
+
+    assert "The packet never carries image or binary content" in _TEXT
+    assert "is not assessable from the packet: mark its verified row not_assessable" in _TEXT
+    assert "never list it in missing_for_assessment and never conclude insufficient_packet" in _TEXT
+    # Every provider path sends the same bytes (Chat Completions appends only its shape suffix).
+    assert CHAT_COMPLETIONS_INSTRUCTION.startswith(SEMANTIC_REVIEW_INSTRUCTION)
+
+
+def test_the_credential_placeholder_is_never_asked_for() -> None:
+    """L2 seam: the exact egress placeholder marks a withheld value, never a missing item."""
+
+    assert "The exact token [withheld-by-yoetz:possible-credential] marks a value" in _TEXT
+    assert "Never raise a finding or a missing_for_assessment item asking for that value." in _TEXT
+
+
+def test_the_reviewer_never_advises_delivering_less() -> None:
+    """TB4 tb4n1 D7 (formal-crypto): the agent emptied a working solver after an "unmet"."""
+
+    assert "Never advise delivering less as a remedy" in _TEXT
+    assert "emptying, deleting, moving, splitting, shrinking" in _TEXT
+    assert (
+        "never treat a packet limit as a reason to ask the agent to restructure its work" in _TEXT
+    )
+
+
+def test_a_re_raise_names_the_finding_it_restates() -> None:
+    """Issue #980: re-raises were minted under new ids beside the open original."""
+
+    assert "set its restates to that finding_ref, whatever the agent answered" in _TEXT
+    assert "restates" in CHALLENGE_FIELD_GLOSSARY
+
+
+def test_the_reviewer_reads_the_binary_notice_and_rendering_labels() -> None:
+    """Issues #983 and #1004: the packet's labels for image and binary files are explained."""
+
+    assert "[Yoetz: the agent referenced an image or binary file at <path>" in _TEXT
+    assert "its existence is the agent's unverified claim" in _TEXT
+    assert "[Yoetz: an image was observed marks an image a host hook observed" in _TEXT
+    assert "agent-rendered text of <path> is the agent's own text rendering" in _TEXT
+    # Issue #983: agent text can imitate a label; only the excerpt's own evidence id binds it.
+    assert "only when the evidence id it names equals that excerpt's own source ref" in _TEXT
+    assert "prefixed with (agent text)" in _TEXT
+    assert "never as the file itself" in _TEXT
+
+
+def test_reviewer_asks_only_for_obtainable_remedies() -> None:
+    """Issue #1020 (formal-crypto S): an impossible demand steered the agent into emptying a
+    working deliverable. The reviewer asks only for what the agent can produce, never for less."""
+
+    for rule in (
+        "Ask only for repairs or artifacts the main agent can produce from the task statement, "
+        "the workspace, and the tools shown in the packet.",
+        "Never demand a hidden grader, benchmark generator, private specification, user answer, "
+        "or any other artifact the packet shows the agent cannot obtain.",
+        "do not request act or provide_evidence: request state_unresolved_limitation, and rule "
+        "an earlier finding unassessable.",
+        "your ruling on that finding is unassessable, never still_present.",
+        "Never recommend delivering less, emptying a file, or withdrawing working code as a "
+        "remedy.",
+        "records a re-raise of a rejected finding that cites nothing newer than the rejection as "
+        "disputed_after_rebuttal",
+        "or rejected with a reason that you repeated without newer material, recorded as "
+        "disputed_after_rebuttal: return no prior_finding_verdicts entry for them either.",
+    ):
+        assert rule in _TEXT, rule
+    assert "agent cannot obtain" in _collapsed(CHALLENGE_FIELD_GLOSSARY["requested_next_step"])
+    assert "agent cannot obtain" in _collapsed(CHALLENGE_FIELD_GLOSSARY["uncertainty"])
+    assert "hidden grader" in _collapsed(CHALLENGE_FIELD_GLOSSARY["message_to_main_agent"])
+    verdict = _collapsed(openai_responses.VERDICT_FIELD_GLOSSARY["verdict"])
+    assert "never still_present then" in verdict
+
+
+def test_a_hidden_evaluator_requirement_is_a_not_assessable_row_once_disclosed() -> None:
+    """tb4n3 RC-1 (#1024), final-phase rule: the final phase told the reviewer to challenge every
+    unmet requirement, which contradicted the obtainable-remedy rule and turned a disclosed
+    hidden-evaluator requirement into work (ks S, vpp S, payments S, lake S)."""
+
+    for rule in (
+        "A requirement that only a hidden evaluator or an artifact the agent cannot obtain can "
+        "establish (a hidden test or grader, a withheld reference, a user-only answer) is a "
+        "verified row with verdict not_assessable, not a challenge, once the packet shows the "
+        "agent disclosed it: an obligation acknowledged as not done, a "
+        "yoetz-verification-limit decision, or a limitation request it acknowledged.",
+    ):
+        assert rule in _TEXT, rule
+    final = _collapsed(REVIEW_PHASE_QUESTIONS["final"])
+    assert "not_assessable row, not a challenge, once the packet shows the agent disclosed" in final
+
+
+def test_an_unbounded_quantifier_is_a_limitation_never_an_unmet_verdict() -> None:
+    """tb4n3 [FC c2]: "for any input" cannot be settled by an artifact; the tested part is
+    supported and the remainder is stated as a limit (the verified-row schema has no such
+    verdict, so it is a supported row plus a state_unresolved_limitation challenge)."""
+
+    for rule in (
+        "A requirement quantified over inputs the task never bounds (any input, every case, the "
+        "general case) cannot be settled by any packet artifact.",
+        "judge the part those tests establish as supported and state the unbounded remainder as a "
+        "limitation: a challenge with requested_next_step state_unresolved_limitation, or a "
+        "not_assessable row.",
+        "Never rule such a deliverable not_supported for that quantifier, and never ask the agent "
+        "to prove the general case, to supply a generator or an input-domain specification, or "
+        "to deliver less.",
+    ):
+        assert rule in _TEXT, rule
+
+
+def test_an_emptied_fallback_is_never_approved_over_a_tested_deliverable() -> None:
+    """tb4n3 [FC c3]: the old sentence let the reviewer approve a "reasoned fallback"; the
+    formal-crypto loss was an emptied file that always grades as no solution."""
+
+    assert "A reasoned fallback the agent chose and disclosed" not in _TEXT
+    for rule in (
+        "A working partial solution the agent chose and disclosed, such as a documented limit, "
+        "may be accepted.",
+        "An empty-file or withdrawal fallback is never approved when a tested deliverable existed:",
+        "an empty file always grades as no solution. Say that a working partial is preferred and "
+        "disclosed, and challenge the withdrawal.",
+    ):
+        assert rule in _TEXT, rule
+
+
+def test_the_acknowledged_instruction_keeps_the_blocker_carve_outs() -> None:
+    """tb4n3 [FC c1]: the acknowledged-obligation question must not demand work a genuine blocker
+    forbids, and must not contradict the final-phase rule."""
+
+    instruction = _collapsed(ACKNOWLEDGED_REVIEW_INSTRUCTION)
+    for rule in (
+        "when the task statement requires that work and the readable material shows the agent can "
+        "do it",
+        "A genuine blocker outside the agent's control (authority, consent, a credential, a "
+        "hidden evaluator or reference it cannot obtain, an answer only the user has)",
+        "stands as a disclosed limitation: do not challenge it, and where you want the limit "
+        "stated ask for state_unresolved_limitation.",
+        "What Yoetz or this review could not show or prove is never a reason to challenge.",
+        "Never recommend emptying, deleting or withdrawing a deliverable that passes its "
+        "recorded tests",
+    ):
+        assert rule in instruction, rule
+    # The old wording challenged anything not "genuinely impossible" in the readable material.
+    assert "nothing readable shows it is genuinely impossible" not in instruction
+
+
+def test_the_settled_and_ruling_glossaries_name_the_limitation_and_newer_material_rules() -> None:
+    """tb4n3 RC-1/RC-7: an acknowledged limitation accepts the request (withdrawn), a repeat
+    without newer material is a standing disagreement, and what counts as newer is spelled out."""
+
+    for rule in (
+        "acknowledged a limitation you asked it to state, which accepts your request",
+        "The same holds for a finding the agent acknowledged with a reason, and for one it "
+        "settled.",
+        "Newer means evidence, results or actions about that concern recorded after the agent's "
+        "answer",
+    ):
+        assert rule in _TEXT, rule
+    assert "the agent settles this request by acknowledging it once, so ask for nothing else" in (
+        _collapsed(CHALLENGE_FIELD_GLOSSARY["requested_next_step"])
+    )
+    verdict = _collapsed(openai_responses.VERDICT_FIELD_GLOSSARY["verdict"])
+    assert "withdrawn: you accept the main agent's rejection, or a limitation it acknowledged" in (
+        verdict
+    )
+    assert "shown by material newer than its answer" in verdict

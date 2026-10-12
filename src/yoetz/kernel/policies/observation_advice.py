@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from yoetz.domain.advice_actions import STANDING_MACHINE_ACTIONS as STANDING_MACHINE_ACTIONS
 from yoetz.domain.events import ResultOutcome
 from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind
 from yoetz.domain.observation import ObservationEnvelope, ObservationGapCode, ObservationLifecycle
@@ -33,7 +34,7 @@ __all__ = [
 ]
 
 OBSERVATION_ADVICE_POLICY_ID: Final = "observation-advice"
-OBSERVATION_ADVICE_POLICY_VERSION: Final = "0.1.7"
+OBSERVATION_ADVICE_POLICY_VERSION: Final = "0.1.8"
 
 OBSERVATION_ADVICE_FACT_CODES: Final = frozenset(
     {
@@ -48,6 +49,11 @@ OBSERVATION_ADVICE_FACT_CODES: Final = frozenset(
         "semantic_sign_in_required",
         "semantic_provider_attention",
         "semantic_claim_without_attempt",
+        # Runtime facts the hook classified at the host boundary (#977). Advice only: they are
+        # recorded history the receipt discloses through the matching standing task-fact gap.
+        "install_into_yoetz_runtime",
+        "install_into_private_env",
+        "write_outside_workspace",
     }
 )
 
@@ -80,15 +86,6 @@ type AdviceNextAction = Literal[
     "attempt_semantic_dispatch",
     "reground_status",
 ]
-
-# Next-action tokens naming conditions of the machine/installation, not of the
-# work: the agent cannot discharge them, so evidence-sensitivity is the wrong
-# redelivery trigger and they get a bounded cadence instead (#241).
-# refresh_observation is deliberately excluded: it reflects live coverage
-# degradation the agent should hear about once per distinct occurrence.
-STANDING_MACHINE_ACTIONS: Final = frozenset(
-    {"connect_provider", "renew_provider_sign_in", "repair_semantic_provider", "update_yoetz"}
-)
 
 _EDIT_TOOLS: Final = frozenset(
     {
@@ -856,6 +853,38 @@ def _semantic_without_attempt(
     return []
 
 
+_RUNTIME_ADVICE_RULES: Final = (
+    ("install_target", "yoetz_runtime", "install_into_yoetz_runtime"),
+    ("install_target", "private_env", "install_into_private_env"),
+    ("write_scope", "outside_workspace", "write_outside_workspace"),
+)
+
+
+def _runtime_facts(envelopes: Sequence[ObservationEnvelope]) -> list[ObservationAdviceCandidate]:
+    """One advisory per runtime fact the hook classified (#977), named at its first occurrence.
+
+    The detail token is the rule itself, so each fact is delivered once per session condition;
+    the evidence references accumulate but never mint a new identity.
+    """
+
+    refs: dict[str, list[str]] = {}
+    for envelope in envelopes:
+        payload = envelope.structural_payload
+        for field, value, rule in _RUNTIME_ADVICE_RULES:
+            if payload.get(field) == value:
+                refs.setdefault(rule, []).append(_envelope_ref(envelope))
+    return [
+        _candidate(
+            FindingKind.MATERIAL_LIMITATION_OMITTED,
+            rule,
+            "disclose_limitation",
+            tuple(items[:16]),
+            f"runtime:{rule}",
+        )
+        for rule, items in sorted(refs.items())
+    ]
+
+
 def observation_advice_findings(
     context: ObservationAdviceContext,
 ) -> tuple[ObservationAdviceCandidate, ...]:
@@ -875,6 +904,7 @@ def observation_advice_findings(
     collected.extend(_provider_not_ready(context.composition))
     collected.extend(_semantic_attention(context.composition))
     collected.extend(_semantic_without_attempt(envelopes))
+    collected.extend(_runtime_facts(envelopes))
 
     # Deduplicate by rule_code + detail_token; keep first occurrence.
     seen: set[tuple[str, str]] = set()

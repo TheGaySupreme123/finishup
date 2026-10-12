@@ -143,9 +143,9 @@ def test_the_compact_body_says_when_to_call_start_and_never_to_claim_it_early() 
     assert "If the tool list shows only names, load the `start` schema first." in trigger
     assert "Read-only questions skip it." in trigger
     text = _collapsed(COMPACT_INITIALIZE_INSTRUCTIONS)
-    assert "Never claim Yoetz is active before `start` returns" in text
-    assert "never invent a ledger task, id, finding, verdict or receipt" in text
-    assert "If `start` fails, follow its typed continuation, then ask the user" in text
+    assert "Never claim active before `start`" in text
+    assert "never invent a task, id, finding, verdict or receipt" in text
+    assert "If `start` fails, follow its typed continuation, then ask" in text
     assert "do not work without a task" in text
 
 
@@ -161,18 +161,19 @@ def test_the_compact_body_names_every_guidance_document_and_how_to_read_it() -> 
     for resource in GUIDANCE_RESOURCES:
         assert f"`{resource.uri}`" in text, resource.uri
         assert read_resource(resource.uri), resource.uri
-    assert "`yoetz://guidance/publication-policy.md` before the first `publish_work`" in text
-    assert "`yoetz://guidance/coverage-and-receipts.md` before the first `check`" in text
+    assert "`yoetz://guidance/publication-policy.md` before `publish_work`" in text
+    assert "`yoetz://guidance/coverage-and-receipts.md` before `check`" in text
     assert "page and verify empty or clipped guidance" in text
 
 
 def test_the_compact_body_keeps_cadence_consent_and_honesty_rules() -> None:
     text = _collapsed(COMPACT_INITIALIZE_INSTRUCTIONS)
-    # Ceremony unchanged: every cadence step stays named.
-    assert (
-        "Cadence: `start` once, `publish_work` per material transition, `check` after the "
-        "completion claim and evidence, `respond` per finding, `receipt` last." in text
-    )
+    # Ceremony unchanged: every cadence step stays named, in order; the per-step frequency
+    # (`start` once, `publish_work` per material transition, `receipt` last) is in the mandatory
+    # core the body sends the agent to before `start` (#961).
+    assert "Cadence: `start`, `publish_work`, `check`, `respond`, `receipt`." in text
+    core = " ".join(read_resource(INITIALIZE_GUIDANCE_URIS[0]).decode("utf-8").split())
+    assert "Cadence: `start` once, `publish_work` per material transition; `receipt` last." in core
     assert "`respond`" in text
     assert "typed continuation" in text
     # Disclosure and consent boundaries.
@@ -206,12 +207,14 @@ def test_the_compact_surface_costs_a_fraction_of_the_generic_one() -> None:
         assert compact["instructions_encoded_bytes"] == len(
             server_instructions("policy", host_profile=host).encode("utf-8")
         )
-        # One copy per advertised tool of the 19.8 KB document becomes one compact copy per tool.
+        # One copy per advertised tool of the generic document becomes one compact copy per tool.
         saved = generic["replicated_encoded_bytes"] - compact["replicated_encoded_bytes"]
         assert saved == generic["tool_count"] * (
             generic["instructions_encoded_bytes"] - compact["instructions_encoded_bytes"]
         )
-        assert compact["instructions_encoded_bytes"] * 9 < generic["instructions_encoded_bytes"]
+        # The generic document is now the ~5 KB mandatory core (#961), not the 19.8 KB index, so
+        # the compact body is a fraction of it rather than a ninth.
+        assert compact["instructions_encoded_bytes"] * 2 < generic["instructions_encoded_bytes"]
 
 
 @pytest.mark.parametrize("host", COMPACT_HOSTS)

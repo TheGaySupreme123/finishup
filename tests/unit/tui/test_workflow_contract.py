@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -16,6 +17,7 @@ from yoetz.protocol.models import (
     CheckRequestModel,
     ReceiptRequestModel,
     StartRequestModel,
+    StatusClosureReadinessModel,
     StatusRequestModel,
     StatusResultModel,
     StatusSuccessModel,
@@ -243,7 +245,13 @@ async def test_lineage_view_reuses_cli_renderer_and_preserves_child_facts(
     assert status_request.cursor is None
 
 
-_FINDING_STATES = ("open", "verified_resolved", "acknowledged_not_done", "rejection_accepted")
+_FINDING_STATES = (
+    "open",
+    "verified_resolved",
+    "acknowledged_not_done",
+    "rejection_accepted",
+    "self_verified",
+)
 
 
 def _finding_row(number: int, todo_state: str) -> dict[str, object]:
@@ -251,6 +259,7 @@ def _finding_row(number: int, todo_state: str) -> dict[str, object]:
     responded = {
         "acknowledged_not_done": "acknowledged_not_done",
         "rejection_accepted": "rejected",
+        "self_verified": "self_verified",
     }.get(todo_state)
     return {
         "finding_id": f"fnd_52000000-0000-4000-8000-00000000002{number}",
@@ -278,8 +287,24 @@ def _finding_row(number: int, todo_state: str) -> dict[str, object]:
     }
 
 
-def _findings_status_result() -> StatusResultModel:
+def _lineage_status_wire() -> dict[str, Any]:
+    """The lineage status as wire JSON: optional non-null fields absent, never ``null`` (F3)."""
+
     wire = _lineage_status_result().model_dump(mode="json")
+    # An unset optional field dumps as null here; the public wire omits it (issue #982).
+    if wire.get("credential_heuristic") is None:
+        wire.pop("credential_heuristic", None)
+    readiness = wire.get("closure_readiness")
+    if isinstance(readiness, dict):
+        typed = cast(dict[str, object], readiness)
+        for key in [key for key, value in typed.items() if value is None]:
+            if key in StatusClosureReadinessModel.optional_non_null_fields:
+                del typed[key]
+    return wire
+
+
+def _findings_status_result() -> StatusResultModel:
+    wire = _lineage_status_wire()
     wire["view"] = "findings"
     wire["page"] = {
         "items": [_finding_row(index, state) for index, state in enumerate(_FINDING_STATES)],
@@ -287,6 +312,37 @@ def _findings_status_result() -> StatusResultModel:
         "attempt_budget": "5",
     }
     return StatusResultModel.model_validate(wire)
+
+
+async def test_findings_view_shows_a_linked_duplicate_through_the_cli_renderer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #996: the terminal interface names the earlier finding a duplicate is linked to."""
+
+    earlier = _finding_row(0, "open")
+    duplicate = {
+        **_finding_row(1, "open"),
+        "disposition": "duplicate_of",
+        "response_event_id": "evt_52000000-0000-4000-8000-000000000041",
+        "duplicate_of_finding_id": earlier["finding_id"],
+    }
+    wire = _lineage_status_wire()
+    wire["view"] = "findings"
+    wire["page"] = {"items": [earlier, duplicate], "next_cursor": None, "attempt_budget": "5"}
+    status = StatusResultModel.model_validate(wire)
+    client = _Client(status)
+
+    @asynccontextmanager
+    async def connect(_runtime: YoetzRuntime) -> AsyncGenerator[_Client]:
+        yield client
+
+    monkeypatch.setattr(YoetzRuntime, "_client", connect)
+    runtime = YoetzRuntime(cwd=tmp_path)
+    await runtime.open_task(_SESSION)
+
+    rendered = await runtime.task_status(_SESSION, "findings")
+    assert f"  duplicate of: {earlier['finding_id']}" in rendered.lines
+    assert f"[ ] F-2 {duplicate['finding_id']} open (2/5)" in rendered.lines
 
 
 async def test_findings_view_shows_each_items_final_state_through_the_cli_renderer(
@@ -314,6 +370,8 @@ async def test_findings_view_shows_each_items_final_state_through_the_cli_render
         f"[x] F-2 {rows[1]['finding_id']} verified_resolved",
         f"[~] F-3 {rows[2]['finding_id']} acknowledged_not_done",
         f"[-] F-4 {rows[3]['finding_id']} rejection_accepted",
+        # Issue #984: final, disclosed, never rendered as resolved.
+        f"[s] F-5 {rows[4]['finding_id']} self_verified",
     )
     for line in expected:
         assert line in rendered.lines
@@ -378,7 +436,7 @@ async def test_awaiting_human_replays_the_exact_request_even_if_picker_mode_chan
                             "protocol_version": "0.1",
                             "engine_version": "0.1.0",
                             "projection_version": "yoetz/0.1.0",
-                            "policy_packs": ["research-evidence/0.1.0", "work-integrity/0.1.0"],
+                            "policy_packs": ["research-evidence/0.2.0", "work-integrity/0.3.0"],
                         },
                     }
                 )

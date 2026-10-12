@@ -289,8 +289,10 @@ def _projection_receipt(
         scan = ReceiptSecretScan("observability-sensitive-content-v1", _DIGEST, 0, True)
         approved = ()
         blocked = ()
+    # Current writers mint 1.1.0, which carries the explicit scan stage; a stage-less 1.0.0 row
+    # deliberately reads back as ``legacy_unknown`` rather than a clean prepared scan.
     return LocalDisclosureReceipt(
-        "1.0.0",
+        "1.1.0",
         new_id(IdKind.EGRESS_RECEIPT),
         new_id(IdKind.REQUEST),
         new_id(IdKind.PRIVACY_PROPOSAL),

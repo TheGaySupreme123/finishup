@@ -314,6 +314,12 @@ async def test_same_request_replay_after_repository_grant_reaches_terminal_resul
                     "request_id": "req_00000000-0000-4000-8000-000000000101",
                     "mode": "create",
                     "task_title": "Replay a suspended check after the repository grant",
+                    # A required review needs the user's request, not just the title (#908);
+                    # without it the replay stops at the specification preflight instead.
+                    "task_statement": (
+                        "Replay the suspended required check after the repository grant and "
+                        "reach its terminal result under the same request identity."
+                    ),
                     "requested_view": "compact",
                 }
             ),
@@ -351,7 +357,7 @@ async def test_same_request_replay_after_repository_grant_reaches_terminal_resul
                 },
                 "mode": "semantic_required",
                 "max_findings": "3",
-                "policy_packs": ["work-integrity/0.1.0"],
+                "policy_packs": ["work-integrity/0.3.0"],
             }
         )
 

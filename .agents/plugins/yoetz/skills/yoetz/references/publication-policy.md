@@ -138,7 +138,9 @@ to 8,192 characters, so the field limit does not protect against excerpt truncat
 When the review recipe selects diff excerpts, Yoetz itself also reads the task's repository at
 check time and gives the reviewer that **check-time change** first: committed and uncommitted
 changes from the commit the task started on, plus untracked files Git does not ignore, including
-edits made by scripts or commits that no hook captured. Do not paste or digest the whole diff for the reviewer;
+edits made by scripts or commits that no hook captured. Yoetz redacts secret-shaped content in that
+check-time change, so no deliverable ever needs hiding: never git-ignore, exclude (including
+`.git/info/exclude`), stash, or move a requested output for privacy. Do not paste or digest the whole diff for the reviewer;
 use `description` for the problem-local hunk or test slice the claim depends on. The
 `check_time_change_unavailable`, `check_time_change_base_unavailable`,
 `check_time_change_truncated` and `check_time_change_redacted` coverage gaps name what that change
@@ -216,7 +218,7 @@ operations and does not add a composer or a new protocol field:
    repair, a response to another older finding, or any other material record follows the check,
    run another check before requesting a receipt.
 6. Request `receipt`, then publish `work_closed` when the work is complete. Read `closure_readiness.unanswered_finding_count` and
-   `closure_readiness.receipt_blocking_finding_count`, then report a scope-first summary of what was
+   `closure_readiness.receipt_blocking_finding_count` (findings to do plus acknowledged requirements), then report a scope-first summary of what was
    verified/not verified alongside the receipt's checked frontier, AI-powered review status/reason,
    and material coverage limits. Never lead with a bare zero-findings count. After
    one current-state recheck still fails to qualify, stop repeating an unchanged check, continue any
@@ -289,10 +291,23 @@ its refs and optional empty-scope reason become the complete effective declarati
 root or version gap makes the chain unreadable. Yoetz never infers obligations from prompts, source
 code, workspace state, or plan prose.
 
+You decompose the request; Yoetz checks the link. When a task statement is recorded and the
+effective plan declares obligations, at least one of them must name the statement event in
+`source_refs`, or every whole-task check returns the agent-actionable `task_requirement_unmet`
+finding (subject: the statement event) and readiness lists `instruction_requirement_unmapped`.
+Cite it from every obligation that maps a stated requirement. The rule checks presence of the
+link, not that every requirement is mapped: an obligation per stated requirement is your duty, and
+AI-powered review, when it runs, compares the plan with the statement.
+
 An empty-scope reason clears the `no_obligations_declared` readiness blocker, but it does not buy a
 clean completion check. A completion claim over zero declared obligations remains
 coverage-incomplete: `completion_scope_undeclared` without a reason or
-`completion_scope_declared_none` with one.
+`completion_scope_declared_none` with one. With a task statement recorded, that completion claim
+also returns `task_requirement_unmet` until you either publish statement-sourced obligations or
+record a `decision_recorded` whose statement holds the exact line
+`yoetz-no-material-work:<statement event id>` with a rationale. The decision counts only while the
+task records no edit action and the check sees no changed file in the workspace (shell writes
+count); a task that changed files must map the work to obligations.
 
 ## Obligation resolution
 
@@ -308,9 +323,11 @@ Resolving an obligation is a one-way `open → resolved` state transition, not a
 3. supplies the final bounded `resolution_evidence_refs` (one or more evidence or result ids).
 
 Only `status` and `resolution_evidence_refs` may differ. Changing meaning fields, republishing
-`status: open` for an existing id, mutating an already-resolved obligation, or reopening
-`resolved → open` is rejected with reason `obligation_resolution_mismatch` and invariant
-`meaning_fields_must_repeat` (or `open_to_resolved_only` for an invalid status transition). The
+`status: open` for an open id, or re-resolving an already-resolved obligation is rejected with
+reason `obligation_resolution_mismatch` and invariant `meaning_fields_must_repeat` (or
+`open_to_resolved_only` for an invalid status transition). A resolved obligation whose work no
+longer holds may be reopened (`status: open`) or acknowledged as not done
+(`acknowledged_not_done` with its reason, on `1.1.0`), repeating every meaning field. The
 public error names the mismatched schema field names only — never their values. A worked open +
 resolution pair lives in the `publish_work` tool input schema `examples` entry. Complete request
 bodies remain available at `yoetz://guidance/request-templates.md` if a host drops schema examples.

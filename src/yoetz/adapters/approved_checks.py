@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Final
 
 from yoetz.adapters.check_sandbox import default_check_sandbox
-from yoetz.observability.privacy import redact_sensitive_content
+from yoetz.observability.privacy import redact_high_confidence_content
 from yoetz.ports.check_sandbox import CheckSandboxPort, CheckSandboxStatus
 from yoetz.ports.subject_state import LocalWorkspaceHandle
 from yoetz.protocol.canonical import JsonValue, canonical_digest
@@ -619,7 +619,8 @@ class ApprovedCheckRunner:
             _drain_completed_check_group(process, process_group_id)
             duration_ms = int((time.monotonic() - started) * 1000)
             exit_status = int(process.returncode or 0)
-            safe_output, _redacted = redact_sensitive_content(bytes(stdout))
+            # Output goes to the encrypted store; heuristic-only matches are redacted at egress.
+            safe_output, _redacted = redact_high_confidence_content(bytes(stdout))
             captured_len = len(safe_output)
             output_digest = "sha256:" + hashlib.sha256(safe_output).hexdigest()
             if self._output_sink is not None:

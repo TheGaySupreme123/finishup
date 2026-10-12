@@ -326,8 +326,9 @@ class VerificationConfig(StrictConfigModel):
     semantic: Literal["disabled", "optional", "required"] = "required"
     max_findings: int = 10
     # Issue #905: review rounds an item may stay open before Yoetz asks for a repair with new
-    # evidence or an explicit ``acknowledged_not_done``. It never throttles ``check`` and never
-    # closes or acknowledges anything.
+    # evidence, a ``self_verified`` answer when only a Yoetz limit keeps the repair unproven
+    # (issue #984), or, as the last resort, an explicit ``acknowledged_not_done``. It never
+    # throttles ``check`` and never closes or acknowledges anything.
     finding_attempt_budget: int = Field(
         default=DEFAULT_FINDING_ATTEMPT_BUDGET, ge=1, le=MAX_FINDING_ATTEMPT_BUDGET
     )

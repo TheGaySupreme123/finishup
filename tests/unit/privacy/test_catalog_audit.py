@@ -1004,6 +1004,30 @@ def test_catalog_resume_rejects_replaced_active_route() -> None:
     asyncio.run(run())
 
 
+def test_catalog_proposal_persists_redacted_value_lines_for_resume() -> None:
+    """PL2-1 (issue #982): refs and lines survive the proposal round trip; absent stays absent."""
+
+    from yoetz.protocol.redacted_values import SemanticRedactedValue
+
+    db = _database()
+    _insert_task_route(db)
+    objects = _StoredObjects()
+    audit = CatalogPrivacyAudit(db, objects, _Key(), _Clock())  # type: ignore[arg-type]
+    values = (SemanticRedactedValue("item-1", "value_replaced", (2, 5), "evd_ref-1"),)
+
+    async def run() -> None:
+        request = _external_disclosure_request()
+        prepared = await audit.prepare_disclosure_proposal(
+            replace(request, minimized=replace(request.minimized, redacted_values=values))
+        )
+        assert prepared.proposal.redacted_values == values
+        loaded = await audit.load_disclosure_proposal(prepared.proposal.privacy_proposal_id)
+        assert loaded is not None
+        assert loaded.redacted_values == values
+
+    asyncio.run(run())
+
+
 def test_catalog_disclosure_attempt_rejects_tampered_lookup_identity() -> None:
     db = _database()
     _insert_task_route(db)
@@ -1883,3 +1907,27 @@ def test_a_cursor_this_store_minted_with_a_non_text_position_is_a_store_fault() 
         )
 
     assert raised.value.reason == "privacy_audit_page_invariant_violated"
+
+
+def test_sqlite_status_reports_the_grant_a_pending_carry_forward_will_create() -> None:
+    """Issue #982 review: the derivation matches what carry-forward then writes."""
+
+    from yoetz.application.privacy_policy import credential_heuristic_state
+    from yoetz.domain.privacy import CredentialHeuristic
+
+    db = _database()
+    store = CatalogPrivacyPolicyStore(db, _Clock())
+    machine = replace(minimal_external_policy(), credential_heuristic=CredentialHeuristic.DISABLED)
+    repository = AuthorizationScope(
+        AuthorizationScopeKind.WORKSPACE, _INSTALLATION, "hmac-sha256:" + "1" * 64
+    )
+
+    async def run() -> tuple[object, object]:
+        await store.seed_if_absent(machine)
+        before = credential_heuristic_state(await store.repository_authority(repository))
+        carried = await store.carry_forward_repository_authority(repository)
+        return before, credential_heuristic_state(carried)
+
+    before, after = asyncio.run(run())
+    assert (before.repository, before.machine_default) == ("disabled", "disabled")  # type: ignore[attr-defined]
+    assert after.repository == before.repository  # type: ignore[attr-defined]

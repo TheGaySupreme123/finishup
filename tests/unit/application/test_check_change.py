@@ -30,10 +30,14 @@ def _capture(text: bytes) -> CheckChangeCapture:
 
 
 def test_parser_source_with_more_matches_than_one_scan_reports_is_fully_redacted() -> None:
-    """Parser code (the meriyah shape) repeats ``token = ...`` far past one scan's finding cap."""
+    """A change can repeat credential-shaped ``token = ...`` lines far past one scan's cap.
+
+    The meriyah parser shape (``token = parser.getToken()``) is source code and no longer
+    matches (issue #982), so the repeated line is a quoted credential-shaped literal.
+    """
 
     lines = b"".join(
-        f"+  const token = parser.getToken{index}();\n".encode() for index in range(600)
+        f'+  const token = "a8F3kL9q{index:04d}Zx";\n'.encode() for index in range(600)
     )
     text = b"diff --git a/src/parser.ts b/src/parser.ts\n" + lines
 
@@ -102,3 +106,26 @@ async def test_structural_capture_does_not_fallback_to_legacy_content_port() -> 
     )
 
     assert result == (None, "metadata_unavailable")
+
+
+def test_declared_deliverables_reach_the_port_and_a_plain_port_keeps_working() -> None:
+    """tb4n2 R7: the ordering hint is passed only when there is one, so older ports still work."""
+
+    _capture_redacted = getattr(check_change_module, "_capture_redacted")
+    seen: list[tuple[str, ...]] = []
+
+    class OrderingPort:
+        def capture(
+            self, workspace: str, base: object, *, priority_paths: tuple[str, ...] = ()
+        ) -> CheckChangeCapture:
+            seen.append(priority_paths)
+            return _capture(b"diff --git a/a.py b/a.py\n+print('kept')\n")
+
+    class PlainPort:
+        def capture(self, workspace: str, base: object) -> CheckChangeCapture:
+            return _capture(b"diff --git a/a.py b/a.py\n+print('kept')\n")
+
+    _capture_redacted(OrderingPort(), "/repo", None, ("out.json",))
+    _capture_redacted(PlainPort(), "/repo", None)
+
+    assert seen == [("out.json",)]

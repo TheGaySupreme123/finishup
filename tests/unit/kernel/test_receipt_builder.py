@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -40,6 +41,7 @@ from yoetz.domain.receipts import (
     COMPLETION_CLAIM_OUTSIDE_PLAN_GAP,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
+    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     PolicyVersionEntry,
     ReceiptConclusion,
     ReceiptDocument,
@@ -107,6 +109,7 @@ from yoetz.protocol.models import (
     SemanticReason,
     SemanticStatus,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 _DIGEST = "sha256:" + "1" * 64
 _HEAD = "sha256:" + "2" * 64
@@ -157,6 +160,7 @@ def _check(
     review_input_manifest: dict[str, object] | None = None,
     semantic_withheld_item_ids: tuple[str, ...] = (),
     totals: JsonObject | None = None,
+    semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
 ) -> CheckRecordedPayload:
     return CheckRecordedPayload(
         mode=(
@@ -201,6 +205,7 @@ def _check(
         projection_version="yoetz/0.1.0",
         semantic_withheld_item_ids=semantic_withheld_item_ids,
         totals=totals,
+        semantic_redacted_values=semantic_redacted_values,
     )
 
 
@@ -683,13 +688,32 @@ def _earlier_frontier_limitations(check_suffix: CheckSuffixClass | None) -> tupl
         check_suffix=check_suffix,
     )
     receipt = _build(context)
-    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
     limitations = next(
         section.body
         for section in receipt.sections
         if section.key is ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
     )
     return limitations, receipt.conclusion.value
+
+
+@pytest.mark.parametrize(
+    ("check_suffix", "conclusion"),
+    [
+        # Issue #1021 (tb4n2 P1-4a): only answers to the check's own findings followed it, so the
+        # earlier-frontier note is a disclosure, not a coverage bound.
+        (CheckSuffixClass.RESPONSES_ONLY, ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS),
+        (CheckSuffixClass.OBSERVATIONS_ONLY, ReceiptConclusion.INSUFFICIENT_COVERAGE),
+        (CheckSuffixClass.MIXED, ReceiptConclusion.INSUFFICIENT_COVERAGE),
+        (None, ReceiptConclusion.INSUFFICIENT_COVERAGE),
+    ],
+)
+def test_a_responses_only_suffix_is_advisory_and_any_other_suffix_bounds(
+    check_suffix: CheckSuffixClass | None, conclusion: ReceiptConclusion
+) -> None:
+    limitations, value = _earlier_frontier_limitations(check_suffix)
+    assert value == conclusion.value
+    # Always disclosed, whatever the conclusion.
+    assert "Its verdict is current as of subject frontier 1, not frontier 2." in limitations
 
 
 def test_check_current_as_of_earlier_frontier_names_the_tested_frontier() -> None:
@@ -1460,6 +1484,82 @@ def test_receipt_carries_opaque_withheld_item_identity_and_reason() -> None:
     assert "never_send_heuristic" in rendered
 
 
+_REDACTED = (
+    SemanticRedactedValue(
+        "excerpt-a", "value_replaced", (3, 7), "evd_10000000-0000-4000-8000-000000000021"
+    ),
+    SemanticRedactedValue("excerpt-heuristic", "item_withheld", (2,)),
+)
+
+
+def test_check_event_round_trips_redacted_values_and_old_events_decode() -> None:
+    """PL2-1 (issue #982): optional 1.4.0 field; events without it decode unchanged."""
+
+    from yoetz.domain.events import (
+        REVIEW_CHECK_EVENT_SCHEMA_VERSION,
+        EventSchema,
+        decode_payload,
+        encode_payload,
+    )
+
+    gaps = ("semantic_review_item_withheld", "semantic_review_value_redacted")
+    check = _check(
+        CheckVerdict.NO_ISSUE_DETECTED,
+        _coverage(gaps=gaps),
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+        totals=_totals(),
+        semantic_redacted_values=_REDACTED,
+    )
+    schema = EventSchema("check_recorded", REVIEW_CHECK_EVENT_SCHEMA_VERSION)
+    wire = encode_payload(check)
+    assert isinstance(wire, Mapping)
+    entries = cast(tuple[Mapping[str, object], ...], wire["semantic_redacted_values"])
+    assert entries[0]["lines"] == (3, 7)
+    assert "abcdefgh" not in repr(wire)
+    assert decode_payload(schema, wire) == check
+    old = _check(
+        CheckVerdict.NO_ISSUE_DETECTED,
+        _coverage(gaps=gaps),
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+        totals=_totals(),
+    )
+    old_wire = encode_payload(old)
+    assert isinstance(old_wire, Mapping)
+    assert "semantic_redacted_values" not in old_wire
+    decoded_old = decode_payload(schema, old_wire)
+    assert isinstance(decoded_old, CheckRecordedPayload)
+    assert decoded_old.semantic_redacted_values == ()
+    with pytest.raises(ValueError):
+        # An item_withheld entry must name a withheld item.
+        _check(
+            CheckVerdict.NO_ISSUE_DETECTED,
+            _coverage(gaps=gaps),
+            totals=_totals(),
+            semantic_redacted_values=_REDACTED,
+        )
+
+
+def test_receipt_carries_redacted_value_lines_and_the_fixed_agent_line() -> None:
+    gaps = ("semantic_review_item_withheld", "semantic_review_value_redacted")
+    receipt = _build(
+        _context(
+            coverage=_coverage(gaps=gaps),
+            gaps=tuple(CaseGap(code, code, ()) for code in gaps),
+            check=_check(
+                CheckVerdict.NO_ISSUE_DETECTED,
+                _coverage(gaps=gaps),
+                semantic_withheld_item_ids=("excerpt-heuristic",),
+                semantic_redacted_values=_REDACTED,
+            ),
+        )
+    )
+    assert receipt.semantic_redacted_values == _REDACTED
+    for markdown in (True, False):
+        rendered = render_receipt_human(receipt, markdown=markdown)
+        assert rendered.count(SEMANTIC_REDACTED_VALUES_AGENT_LINE) == 1
+        assert "value replaced, lines 3, 7" in rendered
+
+
 def test_receipt_omits_absent_semantic_provenance_for_historical_bytes() -> None:
     receipt = _build(_context(check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage())))
     wire = receipt_document_to_json(receipt)
@@ -1867,3 +1967,631 @@ def test_check_time_change_unavailable_reason_is_a_plain_sentence_in_every_forma
     ):
         assert "The check-time change was unavailable: " in rendered
         assert phrase in rendered
+
+
+def _single_agent_check(
+    coverage: Coverage, *, research_reason: str = "completed"
+) -> CheckRecordedPayload:
+    """A deterministic-only check of a single-agent run: no coordination records exist."""
+
+    research_outcome = "run" if research_reason == "completed" else "skipped"
+    return replace(
+        _check(CheckVerdict.NO_ISSUE_DETECTED, coverage),
+        policies=(
+            PolicyVersion("coordination", "0.1.0"),
+            PolicyVersion("research-evidence", "0.1.0"),
+            PolicyVersion("work-integrity", "0.1.0"),
+        ),
+        policy_executions=(
+            CheckPolicyExecutionModel(
+                policy_id="coordination",
+                policy_version="0.1.0",
+                outcome="skipped",
+                reason="not_applicable",
+            ),
+            CheckPolicyExecutionModel(
+                policy_id="research-evidence",
+                policy_version="0.1.0",
+                outcome=research_outcome,  # pyright: ignore[reportArgumentType]
+                reason=research_reason,  # pyright: ignore[reportArgumentType]
+            ),
+            CheckPolicyExecutionModel(
+                policy_id="work-integrity",
+                policy_version="0.1.0",
+                outcome="run",
+                reason="completed",
+            ),
+        ),
+    )
+
+
+def test_single_agent_deterministic_run_with_standing_host_gaps_reaches_a_clean_receipt() -> None:
+    """#986 (E2): no tb4n1 deterministic receipt could read clean. The coordination pack is
+    always ``skipped/not_applicable`` on a single-agent run, and standing host-observation gaps
+    a local absence proof tolerates were missing from the receipt's advisory list."""
+
+    from yoetz.kernel.deterministic_scope import (
+        CLEAN_COMPATIBLE_GAPS,
+        DETERMINISTIC_SCOPED_STANDING_GAPS,
+    )
+
+    gaps = ("host_outcome_unavailable", "unpaired_event")
+    coverage = _coverage(gaps=gaps)
+    case_gaps = tuple(CaseGap(code, code, ()) for code in gaps)
+    receipt = _build(
+        _context(coverage=coverage, gaps=case_gaps, check=_single_agent_check(coverage))
+    )
+    assert receipt.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    # The gaps stay disclosed; they only no longer bound the conclusion.
+    assert {item.code for item in receipt.gaps} == set(gaps)
+
+    # One list: the receipt and the scoped local verdict read the same clean-compatible gaps.
+    assert set(gaps) <= CLEAN_COMPATIBLE_GAPS
+    assert DETERMINISTIC_SCOPED_STANDING_GAPS == CLEAN_COMPATIBLE_GAPS | {
+        "semantic_review_not_requested"
+    }
+
+
+def test_a_host_gap_the_applicable_check_never_carried_still_bounds_the_receipt() -> None:
+    """#986: a host-observation gap is advisory only where the check's counters guarded it."""
+
+    gaps = ("host_outcome_unavailable",)
+    receipt_coverage = _coverage(gaps=gaps)
+    unguarded = _build(
+        _context(
+            coverage=receipt_coverage,
+            gaps=(CaseGap(gaps[0], gaps[0], ()),),
+            check=_single_agent_check(_coverage()),
+        )
+    )
+    assert unguarded.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    guarded = _build(
+        _context(
+            coverage=receipt_coverage,
+            gaps=(CaseGap(gaps[0], gaps[0], ()),),
+            check=_single_agent_check(receipt_coverage),
+        )
+    )
+    assert guarded.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+
+
+def test_full_check_completeness_reads_the_same_clean_list() -> None:
+    """#986: a policy- or semantic-route check is ``complete`` under the same list, and a
+    host-observation gap counts only when the command counters show no unknown outcome."""
+
+    from yoetz.application.check import full_check_gaps_clean
+    from yoetz.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
+
+    clean = {"commands": {"unknown": "0", "live_failed": "0"}}
+    unknown = {"commands": {"unknown": "1", "live_failed": "0"}}
+    assert full_check_gaps_clean(("unpaired_event", "plan_unrefined_before_first_edit"), clean)
+    assert not full_check_gaps_clean(("host_outcome_unavailable",), unknown)
+    assert full_check_gaps_clean(("content_unselected",), unknown)
+    assert not full_check_gaps_clean(("observation_input_loss",), clean)
+    assert not full_check_gaps_clean(("semantic_review_not_requested",), clean)
+    assert all(full_check_gaps_clean((code,), clean) for code in sorted(CLEAN_COMPATIBLE_GAPS))
+
+
+@pytest.mark.parametrize("reason", ("scope_excluded", "material_unavailable"))
+def test_a_pack_that_left_roots_unexamined_keeps_the_receipt_bounded(reason: str) -> None:
+    """``not_applicable`` means nothing to judge; a scoped or unreadable pack is real loss."""
+
+    coverage = _coverage()
+    receipt = _build(
+        _context(coverage=coverage, check=_single_agent_check(coverage, research_reason=reason))
+    )
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+
+
+def test_a_standing_gap_a_local_proof_does_not_tolerate_still_bounds_the_receipt() -> None:
+    code = "observation_input_loss"
+    coverage = _coverage(gaps=(code,))
+    receipt = _build(
+        _context(
+            coverage=coverage,
+            gaps=(CaseGap(code, code, ()),),
+            check=_single_agent_check(coverage),
+        )
+    )
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+
+
+def test_child_self_verified_finding_reads_self_verified_on_the_parent_receipt() -> None:
+    """Issue #984 (ADR-034): a child's self-verified repair is not parent work and never clean."""
+
+    from yoetz.domain.coordination import (
+        LineageAcceptance,
+        LineageOrigin,
+        SessionHealth,
+        WorkState,
+    )
+    from yoetz.domain.receipts import CHILD_SELF_VERIFIED_NOTE
+    from yoetz.kernel.lineage import (
+        CHILD_SELF_VERIFIED_GAP,
+        ChildDependencySnapshot,
+        ChildFindingSnapshot,
+        LineageManifest,
+        evaluate_lineage,
+    )
+    from yoetz.protocol.canonical import JsonValue
+    from yoetz.protocol.errors import ProtocolValueError
+    from yoetz.protocol.schemas import validate_schema_instance
+
+    child_task = task_id("tsk_00000000-0000-4000-8000-000000000077")
+    child_finding = finding_id("fnd_00000000-0000-4000-8000-000000000077")
+    kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
+    snapshot = ChildDependencySnapshot(
+        child_task_id=child_task,
+        origin=LineageOrigin.PARENT_MINTED,
+        acceptance=LineageAcceptance.ACCEPTED,
+        work_state=WorkState.CLOSED,
+        session_health=SessionHealth.ENDED,
+        child_frontier=_FRONTIER,
+        child_check_id=_CHECK_EVENT_ID,
+        child_receipt_id=receipt_id("rcp_00000000-0000-4000-8000-000000000077"),
+        coverage=_coverage(),
+        findings=(
+            ChildFindingSnapshot(
+                finding_id=child_finding,
+                kind=kind,
+                origin=FindingOrigin.DETERMINISTIC,
+                priority=FINDING_KIND_TRAITS[kind][0],
+                resolved=False,
+                actionable=True,
+                self_verified=True,
+            ),
+        ),
+        lineage_authority_revision="rev-1",
+        child_check_subject_frontier=_FRONTIER,
+        manifest_event_id=_SOURCE_EVENT_ID,
+    )
+    lineage = evaluate_lineage(LineageManifest((snapshot,)), base_coverage=_coverage())
+    assert lineage.actionable_finding_ids == ()
+    check = _check(CheckVerdict.NO_ISSUE_DETECTED, lineage.coverage)
+    marker = f"lineage:{CHILD_SELF_VERIFIED_GAP}:{child_task}:{_SOURCE_EVENT_ID}"
+    context = replace(
+        _context(
+            check=check,
+            coverage=lineage.coverage,
+            gaps=(CaseGap(marker, CHILD_SELF_VERIFIED_GAP, (_SOURCE_EVENT_ID,)),),
+        ),
+        lineage=lineage,
+    )
+    versions = replace(
+        _versions(),
+        schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+    )
+    receipt = build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        versions,
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+    # Never clean and never "unresolved findings remain": the parent has nothing to do.
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    assert CHILD_SELF_VERIFIED_GAP in receipt.coverage.known_gaps
+    (child,) = receipt.children.children
+    assert child.outcome == "annotated"
+    (row,) = child.findings
+    assert (row.self_verified, row.resolved, row.actionable) == (True, False, True)
+
+    wire = receipt_document_to_json(receipt)
+    wire_row = cast(dict[str, Any], wire["children"])["children"][0]["findings"][0]
+    assert wire_row["self_verified"] is True
+    validate_schema_instance("receipt-document", "1.3.0", cast(JsonValue, wire))
+    assert receipt_document_from_json(wire) == receipt
+
+    note = f"{child_finding}: {CHILD_SELF_VERIFIED_NOTE}"
+    assert CHILD_SELF_VERIFIED_NOTE == "self-verified by the child agent; Yoetz could not prove it"
+    assert note in render_receipt_human(receipt, markdown=True)
+    assert note in render_receipt_human(receipt, markdown=False)
+    assert "1 child finding was self-verified by the child agent" in render_receipt_compact(receipt)
+
+    # An explicit false is not a recorded spelling.
+    wire_row["self_verified"] = False
+    with pytest.raises(ProtocolValueError):
+        receipt_document_from_json(wire)
+
+
+def test_a_linked_duplicate_is_disclosed_by_ids_and_never_reads_cleaner() -> None:
+    """Issue #996: the duplicate's flags are its earlier finding's; the link is ids only."""
+
+    finding = _finding()
+    earlier = finding_id("fnd_00000000-0000-4000-8000-000000000996")
+    base = _context(finding=finding, check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()))
+    context = replace(
+        base,
+        finding_states=(
+            ReceiptFindingState(
+                finding.finding_id, resolved=False, duplicate_of_finding_id=earlier
+            ),
+        ),
+    )
+    legacy = _build(context)
+    assert legacy.duplicate_finding_links == ()
+    current = build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        replace(
+            _versions(),
+            schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+        ),
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+    assert [
+        (item.finding_id, item.duplicate_of_finding_id) for item in current.duplicate_finding_links
+    ] == [(finding.finding_id, earlier)]
+    # The earlier finding is open, so the duplicate is too: never a clean conclusion.
+    assert current.conclusion is ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN
+    with pytest.raises(ValueError):
+        ReceiptFindingState(
+            finding.finding_id, resolved=False, duplicate_of_finding_id=finding.finding_id
+        )
+
+
+def test_acknowledged_obligation_is_disclosed_and_never_clean() -> None:
+    """Issue #997 (ADR-032 slice C): an obligation the agent will not do caps the conclusion."""
+
+    from yoetz.protocol.canonical import JsonValue
+    from yoetz.protocol.schemas import validate_schema_instance
+
+    obligation = ObligationPublishedPayload(
+        obligation_id("obl_00000000-0000-4000-8000-000000000020"),
+        "Run focused verification",
+        "Recorded successful result",
+        ObligationStatus.ACKNOWLEDGED_NOT_DONE,
+        acknowledged_not_done_reason="The deployment policy is the task owner's decision.",
+    )
+    plan = PlanPublishedPayload(1, "Verified task", (obligation.obligation_id,), ())
+    context = _context(
+        check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()), plan=plan, obligation=obligation
+    )
+    current = build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        replace(
+            _versions(),
+            schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+        ),
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+    assert current.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    assert current.acknowledged_not_done_obligation_ids == (obligation.obligation_id,)
+    wire = receipt_document_to_json(current)
+    validate_schema_instance("receipt-document", "1.3.0", cast(JsonValue, wire))
+    assert "Obligations acknowledged as not done" in render_receipt_human(current, markdown=True)
+    # Counted once (review item 2): not open in the outstanding-work section.
+    outstanding = next(
+        section for section in current.sections if section.key is ReceiptSectionKey.OUTSTANDING_WORK
+    )
+    assert "remains open" not in outstanding.body
+    assert "1 obligation is acknowledged as not done (not counted as open)." in outstanding.body
+    assert obligation.obligation_id not in outstanding.items
+    # The reason stays on the obligation; the receipt carries ids only.
+    assert "task owner's decision" not in str(wire.get("acknowledged_not_done_obligation_ids"))
+
+
+def _not_requested_receipt(route_required: bool | None) -> ReceiptDocument:
+    from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
+
+    coverage = _coverage(gaps=(SEMANTIC_REVIEW_NOT_REQUESTED_GAP,))
+    gap = CaseGap(
+        f"semantic_outcome:{SEMANTIC_REVIEW_NOT_REQUESTED_GAP}",
+        SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
+        (),
+    )
+    check = replace(
+        _check(CheckVerdict.NO_ISSUE_DETECTED, coverage, totals=_totals()),
+        semantic_route_required=route_required,
+    )
+    return _build(_context(coverage=coverage, gaps=(gap,), check=check))
+
+
+_ROUTE_SENTENCE = (
+    "The check's route did not require AI-powered review, so its absence is disclosed and does "
+    "not bound the conclusion."
+)
+
+
+def test_a_route_without_required_review_makes_not_requested_a_disclosure() -> None:
+    """Issue #986 (owner decision E2, "record route; don't block")."""
+
+    receipt = _not_requested_receipt(False)
+    assert receipt.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    # Disclosed, never dropped.
+    assert "semantic_review_not_requested" in receipt.coverage.known_gaps
+    assert "semantic_review_not_requested" in {item.code for item in receipt.gaps}
+    for markdown in (True, False):
+        rendered = render_receipt_human(receipt, markdown=markdown)
+        assert "AI-powered review was not requested (local-only check)." in rendered
+        assert _ROUTE_SENTENCE in rendered
+
+
+@pytest.mark.parametrize("route_required", (None, True))
+def test_a_requiring_or_unrecorded_route_keeps_not_requested_blocking(
+    route_required: bool | None,
+) -> None:
+    """Issue #986: an old check (no field) or a requiring route reads exactly as before."""
+
+    receipt = _not_requested_receipt(route_required)
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    for markdown in (True, False):
+        assert _ROUTE_SENTENCE not in render_receipt_human(receipt, markdown=markdown)
+
+
+def test_a_route_record_never_excuses_a_carried_review_attempt_gap() -> None:
+    """Issue #986: only the not-requested code is tolerated; a refused review still bounds."""
+
+    from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
+
+    gaps = ("semantic_relevance_review_not_run", SEMANTIC_REVIEW_NOT_REQUESTED_GAP)
+    coverage = _coverage(gaps=gaps)
+    check = replace(
+        _check(CheckVerdict.INSUFFICIENT_COVERAGE, coverage, totals=_totals()),
+        semantic_route_required=False,
+    )
+    receipt = _build(
+        _context(
+            coverage=coverage,
+            gaps=tuple(CaseGap(code, code, ()) for code in gaps),
+            check=check,
+        )
+    )
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+
+
+def test_check_event_route_record_round_trips_and_old_events_replay_unchanged() -> None:
+    """Issue #986: optional on check_recorded 1.4.0 only; events without it keep their bytes."""
+
+    from yoetz.domain.events import (
+        CHECK_EVENT_SCHEMA_VERSION,
+        REVIEW_CHECK_EVENT_SCHEMA_VERSION,
+        EventSchema,
+        decode_payload,
+        encode_payload,
+    )
+    from yoetz.protocol.canonical import canonical_encode
+
+    schema = EventSchema("check_recorded", REVIEW_CHECK_EVENT_SCHEMA_VERSION)
+    old = _check(
+        CheckVerdict.NO_ISSUE_DETECTED,
+        _coverage(gaps=("semantic_review_not_requested",)),
+        totals=_totals(),
+    )
+    old_wire = encode_payload(old)
+    assert isinstance(old_wire, Mapping)
+    assert "semantic_route_required" not in old_wire
+    decoded_old = decode_payload(schema, old_wire)
+    assert isinstance(decoded_old, CheckRecordedPayload)
+    assert decoded_old.semantic_route_required is None
+    # Replay re-encodes an old event to the identical bytes and the identical conclusion.
+    assert canonical_encode(encode_payload(decoded_old)) == canonical_encode(old_wire)
+    assert _not_requested_receipt(None) == _not_requested_receipt(None)
+
+    recorded = replace(old, semantic_route_required=False)
+    wire = encode_payload(recorded)
+    assert isinstance(wire, Mapping)
+    assert wire["semantic_route_required"] is False
+    assert decode_payload(schema, wire) == recorded
+    # Never on an older plain-check schema, and never a non-boolean.
+    plain = replace(recorded, totals=None)
+    with pytest.raises(ValueError):
+        decode_payload(
+            EventSchema("check_recorded", CHECK_EVENT_SCHEMA_VERSION), encode_payload(plain)
+        )
+    with pytest.raises(ValueError):
+        replace(old, semantic_route_required=cast(Any, 0))
+
+
+# Issue #1017 (owner decision, audit A-4): a gap an earlier check carried that a later check no
+# longer carries stays on the receipt as ``historical`` and never lowers the conclusion. Mirrors the
+# tb4n2 cargo-flight-dispatch receipt, where a retained finding's coverage carried
+# ``planned_verification_not_observed`` after the latest check had cleared it.
+_CLEARED_GAP = "planned_verification_not_observed"
+_CLEARED_AT = Frontier(1, _DIGEST)
+
+
+def _historical_receipt(*, historical: bool, schema_version: str = "1.3.0") -> ReceiptDocument:
+    check = _check(CheckVerdict.NO_ISSUE_DETECTED, _coverage())
+    context = _context(
+        check=check,
+        coverage=_coverage(gaps=(_CLEARED_GAP,)),
+        gaps=(CaseGap(f"retained_finding_coverage:{_CLEARED_GAP}", _CLEARED_GAP, ()),),
+    )
+    if historical:
+        context = replace(context, historical_gaps=((_CLEARED_GAP, _CLEARED_AT),))
+    versions = replace(
+        _versions(),
+        schema_versions=(SchemaVersionEntry("receipts/receipt-document", schema_version),),
+    )
+    return build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        versions,
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+
+
+def test_cleared_gap_is_historical_and_never_lowers_the_conclusion() -> None:
+    from yoetz.domain.receipts import (
+        HISTORICAL_GAPS_SECTION_TITLE,
+        ReceiptGapStatus,
+        historical_receipt_gaps,
+        live_receipt_gap_codes,
+    )
+    from yoetz.protocol.canonical import JsonValue
+    from yoetz.protocol.schemas import validate_schema_instance
+
+    receipt = _historical_receipt(historical=True)
+    # The conclusion equals a receipt that never carried the gap at all.
+    baseline = _build(_context(check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage())))
+    assert baseline.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    assert receipt.conclusion is baseline.conclusion
+    # The document keeps the full coverage union; the gap row says it is history.
+    assert receipt.coverage.known_gaps == (_CLEARED_GAP,)
+    (gap,) = receipt.gaps
+    assert (gap.code, gap.status, gap.cleared_at_frontier) == (
+        _CLEARED_GAP,
+        ReceiptGapStatus.HISTORICAL,
+        _CLEARED_AT,
+    )
+    assert historical_receipt_gaps(receipt) == (gap,)
+    assert live_receipt_gap_codes(receipt) == ()
+    # The limitations section lists no current limitation.
+    sections = {section.key: section for section in receipt.sections}
+    limitations = sections[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE]
+    assert limitations.items == ()
+    assert _CLEARED_GAP not in limitations.body
+
+    wire = receipt_document_to_json(receipt)
+    wire_gap = cast(dict[str, Any], wire["gaps"][0])  # pyright: ignore[reportIndexIssue]
+    assert wire_gap["status"] == "historical"
+    assert wire_gap["cleared_at_frontier"] == {"sequence": "1", "head_digest": _DIGEST}
+    validate_schema_instance("receipt-document", "1.3.0", cast(JsonValue, wire))
+    assert receipt_document_from_json(wire) == receipt
+
+    markdown = render_receipt_human(receipt, markdown=True)
+    text = render_receipt_human(receipt, markdown=False)
+    assert f"## {HISTORICAL_GAPS_SECTION_TITLE}" in markdown
+    assert f"- `{_CLEARED_GAP}`: cleared at frontier 1; no action needed." in markdown
+    assert f"\n{HISTORICAL_GAPS_SECTION_TITLE}\n" in text
+    assert f"- {_CLEARED_GAP}: cleared at frontier 1; no action needed." in text
+    # The live repair sentence is never repeated for a cleared gap (Codex review round 3).
+    assert "causal_parents" not in markdown.split(HISTORICAL_GAPS_SECTION_TITLE, 1)[1]
+    assert "not current limitations" in text
+    compact = render_receipt_compact(receipt)
+    assert "no unresolved local findings were recorded" in compact
+
+
+def test_gap_the_latest_check_still_carries_stays_live() -> None:
+    from yoetz.domain.receipts import HISTORICAL_GAPS_SECTION_TITLE, ReceiptGapStatus
+
+    receipt = _historical_receipt(historical=False)
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    (gap,) = receipt.gaps
+    assert (gap.status, gap.cleared_at_frontier) == (ReceiptGapStatus.LIVE, None)
+    wire_gap = cast(dict[str, Any], receipt_document_to_json(receipt)["gaps"][0])  # pyright: ignore[reportIndexIssue]
+    assert "status" not in wire_gap and "cleared_at_frontier" not in wire_gap
+    sections = {section.key: section for section in receipt.sections}
+    assert sections[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE].items == (_CLEARED_GAP,)
+    assert HISTORICAL_GAPS_SECTION_TITLE not in render_receipt_human(receipt, markdown=True)
+
+
+def test_earlier_receipt_artifact_keeps_every_gap_live() -> None:
+    from yoetz.domain.receipts import ReceiptGapStatus
+
+    receipt = _historical_receipt(historical=True, schema_version="1.0.0")
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    assert all(gap.status is ReceiptGapStatus.LIVE for gap in receipt.gaps)
+
+
+def test_historical_gap_context_must_name_a_known_gap() -> None:
+    context = _context(check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()))
+    with pytest.raises(ValueError, match="receipt_build_context_invalid"):
+        replace(context, historical_gaps=((_CLEARED_GAP, _CLEARED_AT),))
+
+
+def _check_record(sequence: int, gaps: tuple[str, ...]) -> Any:
+    payload = replace(
+        _check(CheckVerdict.NO_ISSUE_DETECTED, _coverage(gaps=gaps)),
+        subject_frontier=Frontier(sequence, _DIGEST),
+    )
+    return SimpleNamespace(payload=payload, ledger=SimpleNamespace(ingestion_sequence=sequence))
+
+
+def test_application_names_the_first_check_that_no_longer_carried_the_gap() -> None:
+    from yoetz.application.receipt import (
+        _historical_gaps,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    other = SimpleNamespace(payload=None, ledger=SimpleNamespace(ingestion_sequence=4))
+    first = _check_record(3, (_CLEARED_GAP, "unpaired_event"))
+    second = _check_record(5, (_CLEARED_GAP,))
+    clearing = _check_record(8, ())
+    latest = _check_record(11, ())
+    records = cast(Any, (first, other, second, clearing, latest))
+    # Cleared at the subject frontier of the first check after the last one that carried it.
+    assert _historical_gaps(records, latest, {_CLEARED_GAP}) == (
+        (_CLEARED_GAP, Frontier(8, _DIGEST)),
+    )
+    # A code the latest check still carries stays live; one no check ever carried stays live.
+    carrying = _check_record(11, (_CLEARED_GAP,))
+    assert _historical_gaps(cast(Any, (first, carrying)), carrying, {_CLEARED_GAP}) == ()
+    assert _historical_gaps(records, latest, {"cursor_stale"}) == ()
+    # Checks after the latest tested check never decide; no latest check, nothing historical.
+    assert _historical_gaps(cast(Any, (first, latest, clearing)), first, {_CLEARED_GAP}) == ()
+    assert _historical_gaps(records, None, {_CLEARED_GAP}) == ()
+    # Deterministic: replaying the same records gives the same answer in any input order.
+    assert _historical_gaps(cast(Any, tuple(reversed(records))), latest, {_CLEARED_GAP}) == (
+        (_CLEARED_GAP, Frontier(8, _DIGEST)),
+    )
+
+
+def test_result_coverage_and_every_surface_count_live_gaps_only() -> None:
+    from yoetz.application.receipt import (
+        _internal_result,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.cli.render import render_human_receipt
+    from yoetz.domain.receipts import historical_gaps_from_wire
+    from yoetz.mcp.summaries import summary_for_receipt
+    from yoetz.protocol.models import CoverageModel, ReceiptFormat, ReceiptSuccessModel
+
+    receipt = _historical_receipt(historical=True)
+    for output_format in (ReceiptFormat.JSON, ReceiptFormat.MARKDOWN, ReceiptFormat.TEXT):
+        request = SimpleNamespace(
+            format=output_format,
+            request_id="req_00000000-0000-4000-8000-000000000001",
+            redaction_profile=ReceiptRedactionProfile.FULL_LOCAL,
+            include=ReceiptInclude.FULL,
+        )
+        result = _internal_result(
+            cast(Any, request),
+            receipt,
+            cast(Any, SimpleNamespace(object_id="obj_00000000-0000-4000-8000-000000000001")),
+            "sha256:" + "3" * 64,
+            _FRONTIER,
+        )
+        # The result's coverage names no current limitation; the document keeps the union.
+        assert result.coverage.known_gaps == ()
+        assert receipt.coverage.known_gaps == (_CLEARED_GAP,)
+        envelope = result.as_json()
+        summary = summary_for_receipt(envelope)
+        assert "coverage limitations: 0;" in summary
+        assert f"gap codes: {_CLEARED_GAP}" not in summary
+        fields: dict[str, Any] = {
+            **envelope,
+            "coverage": CoverageModel.model_validate(envelope["coverage"]),
+        }
+        success = ReceiptSuccessModel.model_construct(**fields)
+        cli = render_human_receipt(success)
+        assert "Limitations: none declared" in cli
+        if output_format is ReceiptFormat.JSON:
+            assert historical_gaps_from_wire(envelope["document"]) == ((_CLEARED_GAP, "1"),)
+            assert f"cleared earlier (historical, not limitations): {_CLEARED_GAP} at 1;" in (
+                summary
+            )
+            assert (
+                f"Cleared earlier (historical, not a current limitation): {_CLEARED_GAP} "
+                "(cleared at frontier 1)"
+            ) in cli
+        else:
+            assert f"{_CLEARED_GAP}" in cast(str, result.human_text)
+            assert "Cleared earlier (historical)" in cli
+    # A malformed wire row is skipped, never echoed.
+    assert historical_gaps_from_wire({"gaps": [{"code": "x y", "status": "historical"}]}) == ()

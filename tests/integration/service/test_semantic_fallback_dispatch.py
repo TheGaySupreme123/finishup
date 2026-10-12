@@ -273,6 +273,9 @@ class _DisclosingPrivacy(_PairedPrivacy):
     disclosed = frozenset(
         {"evd_53000000-0000-4000-8000-000000000907", "clm_53000000-0000-4000-8000-000000000907"}
     )
+    # tb4n1 D1: refs the sent packet withheld for room, and the subset privacy withheld.
+    room = frozenset({"evd_53000000-0000-4000-8000-000000000908"})
+    privacy = frozenset({"evd_53000000-0000-4000-8000-000000000909"})
 
     async def evaluate_semantic(self, candidate: object, deadline: object) -> object:
         del deadline
@@ -291,7 +294,10 @@ class _DisclosingPrivacy(_PairedPrivacy):
             privacy_receipt_id="egr_53000000-0000-4000-8000-000000000907",
             request_commitment="hmac-sha256:" + "6" * 64,
             disclosure=ReviewPacketDisclosure(
-                carried=self.disclosed, withheld=frozenset(), payload_events=frozenset()
+                carried=self.disclosed,
+                withheld=self.room | self.privacy,
+                payload_events=frozenset(),
+                privacy_withheld=self.privacy,
             ),
             withheld_item_ids=("excerpt-heuristic",),
         )
@@ -329,6 +335,10 @@ async def test_the_selected_attempt_carries_what_its_sent_packet_included(
     assert getattr(privacy, "calls") == calls
     assert recovered.status is SemanticStatus.SUCCEEDED
     assert recovered.case_included_refs == _DisclosingPrivacy.disclosed
+    assert original.case_withheld_refs == _DisclosingPrivacy.room
+    assert original.case_privacy_withheld_refs == _DisclosingPrivacy.privacy
+    assert recovered.case_withheld_refs == _DisclosingPrivacy.room
+    assert recovered.case_privacy_withheld_refs == _DisclosingPrivacy.privacy
     assert recovered.semantic_withheld_item_ids == ("excerpt-heuristic",)
     assert recovered.provider_input_manifest is None
     assert (
@@ -787,7 +797,8 @@ async def test_budget_profile_is_frozen_with_the_job_and_scoped_to_every_attempt
     privacy = _BudgetRecordingFallback(runtime.task_id, clock)
     selected: list[str] = ["routine"]
 
-    def select(_projection: object) -> str:
+    def select(_projection: object, *, final_review: bool = False) -> str:
+        del final_review
         return selected[0]
 
     monkeypatch.setattr(ready_composition_module, "select_semantic_budget_profile", select)

@@ -49,7 +49,14 @@ from yoetz.application.observation_advice_semantic import (
     ObservationAdviceSemanticSupervisor,
     ObservationAdviceSemanticWorker,
 )
-from yoetz.application.observation_check_policy import load_observation_check_policy
+from yoetz.application.observation_check_policy import (
+    ObservationCheckPolicyAbsent,
+    load_observation_check_policy,
+)
+from yoetz.application.observation_committed import (
+    action_event_committed,
+    observation_already_committed,
+)
 from yoetz.application.observation_drain import ObservationCaptureRecoveryOutcome
 from yoetz.application.observation_materialize import (
     MATERIALIZATION_LEGACY_MAPPING_VERSIONS,
@@ -60,6 +67,8 @@ from yoetz.application.observation_materialize import (
     PairedActionLink,
     approved_check_author,
     canonical_logical_identity,
+    codex_stream_call_generation_links,
+    materialize_capture_handoff_retirement,
     materialize_observation_envelope,
     materialize_observation_inspection_snapshot,
     materialize_observation_outcome_correction,
@@ -68,6 +77,7 @@ from yoetz.application.observation_materialize import (
     observation_author,
     observation_claim_identity,
     observation_content_identity,
+    observation_event_ids_call_keyed,
     observation_operation_digest,
     observation_writer_id,
     paired_action_link,
@@ -203,6 +213,7 @@ from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_
 from yoetz.protocol.coverage import EvidenceImmutability, PublicationChannel, coverage_for_channel
 from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind, is_valid_id
+from yoetz.protocol.policy_packs import CURRENT_POLICY_VERSIONS
 
 _ADVICE_FINDING_KIND_BY_RULE: Final = MappingProxyType(
     {
@@ -218,6 +229,9 @@ _ADVICE_FINDING_KIND_BY_RULE: Final = MappingProxyType(
 )
 
 _LEGACY_UNPAIRED_REPLAY_PROFILE: Final = "legacy-paired-replay"
+# How many recent hook generations a post-compaction stream completion may search for its
+# hook call (#1019). Each Codex SessionStart (compact, resume, clear) is one generation.
+_CODEX_GENERATION_ALIAS_WINDOW: Final = 16
 _CAPTURED_CONTENT_MEDIA_TYPE: Final = "application/vnd.yoetz.observation-content+json"
 # This is the coordinator-side upper-bound guard for the central local-store
 # reservation. Keep it equal to the local capture fence: the reservation is
@@ -390,10 +404,11 @@ def build_inspection_excerpt_manifest(
 ) -> tuple[bytes | None, bool, bool, bool]:
     """Scan changed-file excerpts before base64 encoding.
 
-    Returns ``(canonical_bytes, capture_unavailable, redacted, truncated)``. Secret matches
-    persist only path/digest/finding-kind metadata. A scanner failure or canary match stores no
-    excerpt object. Redaction and truncation remain explicit coverage limitations without
-    requiring a later consumer to reopen captured bytes.
+    Returns ``(canonical_bytes, capture_unavailable, redacted, truncated)``. High-confidence
+    secret matches persist only path/digest/finding-kind metadata; heuristic-only matches are
+    kept in the encrypted excerpt and redacted at egress (issue #982). A scanner failure or
+    canary match stores no excerpt object. Redaction and truncation remain explicit coverage
+    limitations without requiring a later consumer to reopen captured bytes.
     """
 
     parts: list[JsonObject] = []
@@ -571,6 +586,20 @@ class _ActionLinkPlan:
         return self.link is not None and paired_action_linked_roles(
             resolved
         ) == paired_action_linked_roles(current)
+
+
+@dataclass(frozen=True, slots=True)
+class _AlreadyCommitted:
+    """An observation whose every event the task ledger already holds (#1027).
+
+    The append found no committed operation under any role-set shape it could reconstruct, but
+    each event id of the batch is already recorded, so appending would only be refused. The
+    delivery is a duplicate of an earlier one (a hook copy and a stream copy of one call, or a
+    content-bearing and a contentless copy): nothing is appended, and a stream copy's explicit
+    outcome is still applied to the recorded action.
+    """
+
+    event_ids: frozenset[str]
 
 
 def _load_logical_identity_claim(
@@ -1624,6 +1653,61 @@ class ObservationCoordinator:
             return False
         return True
 
+    async def _publish_capture_handoff_retirement(
+        self,
+        runtime: TaskRuntime,
+        ticket: ObservationCaptureTicket,
+        reason: CaptureHandoffRetirementReason,
+    ) -> bool:
+        """Put one retiring handoff on its own task's coverage (issue #1019, tb4n2 N-4).
+
+        Called after the local loss account and *before* the ticket is tombstoned: the ledger
+        marker is the durable disclosure, so it must exist before the ticket stops being listed
+        for reconciliation. Only the ticket's own task receives it, keyed by the ticket identity,
+        so a retry after an interrupted retirement appends nothing new. Returns ``False`` when the
+        marker is not durable yet but could become so (a retryable or unexpected failure); the
+        caller then leaves the ticket pending, and the next reconciliation pass (the READY sweep or
+        a CHECK preflight) publishes it again. A ledger that terminally refuses the marker (a
+        non-retryable typed refusal, an operation conflict, or no writer) can never hold it, so
+        the retirement proceeds rather than holding capture pressure forever; that refusal is
+        recorded in service diagnostics.
+        """
+
+        if ticket.task_id != runtime.task_id:
+            return False
+        try:
+            ticket_id = observation_capture_ticket_id(ticket)
+            batch = materialize_capture_handoff_retirement(
+                task_id=runtime.task_id,
+                ticket_id=ticket_id,
+                reason=reason.value,
+                observed_at=timestamp_from_datetime(self.clock.now_utc()),
+            )
+            digest = canonical_digest(
+                JsonObject(
+                    {
+                        "format": "yoetz.capture-handoff-retirement-report/1",
+                        "task_id": runtime.task_id,
+                        "ticket_id": ticket_id,
+                    }
+                )
+            )
+            if runtime.writer_id is None:
+                return True
+            await self._append_structural_batch(runtime, batch, digest)
+            return True
+        except Exception as exc:
+            terminal = (isinstance(exc, PublicOperationError) and not exc.retryable) or isinstance(
+                exc, ProtocolValueError | ValueError
+            )
+            if not isinstance(exc, PublicOperationError) or not exc.retryable:
+                record_unexpected_exception_without_raising(
+                    exc,
+                    component="application.observation_coordinator",
+                    operation="capture_handoff_retirement_publish_failed",
+                )
+            return terminal
+
     async def _retire_stranded_capture_handoff(
         self,
         workspace: str,
@@ -1668,6 +1752,10 @@ class ObservationCoordinator:
                 if not await self._record_capture_handoff_retirement(
                     workspace, ticket, stage=stage, reason=reason
                 ):
+                    return
+                if not await self._publish_capture_handoff_retirement(runtime, ticket, reason):
+                    # The disclosure is not durable yet: keep the ticket listed so a later
+                    # reconciliation pass retires it and publishes the marker.
                     return
                 await self._retire_capture_ticket(workspace, runtime, store, ticket)
         except Exception as exc:
@@ -1813,6 +1901,9 @@ class ObservationCoordinator:
                 reason=reason,
                 quarantine_reason=quarantine_reason,
             ):
+                continue
+            if not await self._publish_capture_handoff_retirement(runtime, ticket, reason):
+                # Not durable yet: the ticket stays listed and the next pass retries.
                 continue
             await self._retire_capture_ticket(current_workspace, runtime, store, ticket)
             retired += 1
@@ -2720,6 +2811,19 @@ class ObservationCoordinator:
                             request.envelope.cursor,
                         )
                 store.bind_session(workspace, request.envelope.session_commitment)
+                # A post-generation-bump stream completion names its hook call's generation.
+                # Resolve that before the captured-content lookup and the materialization, which
+                # both key on the call's generation-qualified identity (#1019, #1027). The
+                # ingested envelope keeps the stream's own cursor: the store dedupes on it.
+                stage = "generation_align"
+                capture_envelope = (
+                    request.envelope
+                    if request.capture_only
+                    else await self._align_codex_stream_generation(
+                        runtime, workspace, request.envelope
+                    )
+                )
+                stage = "store_prepare"
                 capture_lock_owned = request.capture_only
                 if not capture_lock_owned:
                     await self._capture_lock.acquire()
@@ -2778,7 +2882,7 @@ class ObservationCoordinator:
                             runtime,
                             store,
                             workspace=workspace,
-                            envelope=request.envelope,
+                            envelope=capture_envelope,
                             chunks=capture_chunks,
                             capture_fence=capture_fence,
                             expected_capture_parts=expected_capture_parts,
@@ -2958,7 +3062,22 @@ class ObservationCoordinator:
                         # admitted for this envelope; retryable coordination keeps it durable.
                         for ticket in (staged_ticket, capture_staging_ticket):
                             if ticket is not None and ticket.state in {"staging", "pending"}:
-                                await self._retire_capture_ticket(workspace, runtime, store, ticket)
+                                # Account and disclose before the tombstone (#1019): a ticket
+                                # whose marker is not durable yet stays listed, so a later
+                                # reconciliation pass retires it and publishes the marker.
+                                if await self._record_capture_handoff_retirement(
+                                    workspace,
+                                    ticket,
+                                    stage=CaptureHandoffRetirementStage.STRUCTURAL_REFUSED,
+                                    reason=CaptureHandoffRetirementReason.TERMINAL_REFUSAL,
+                                ) and await self._publish_capture_handoff_retirement(
+                                    runtime,
+                                    ticket,
+                                    CaptureHandoffRetirementReason.TERMINAL_REFUSAL,
+                                ):
+                                    await self._retire_capture_ticket(
+                                        workspace, runtime, store, ticket
+                                    )
                                 break
                         # A matched handoff this delivery never staged (content
                         # blocked or unauthorized) is stranded as well (#836).
@@ -3003,6 +3122,18 @@ class ObservationCoordinator:
                 # failed, so re-run the idempotent materialize/append to repair it.
                 # If any step raises, the broad guard below turns it into a
                 # retryable rejection so the outbox keeps the entry pending.
+                # A post-compaction stream completion materializes under its hook call's
+                # generation so the pair folds into one action (#1019). The ingested
+                # envelope is restored before verification and advice.
+                ingested_envelope = envelope
+                if capture_envelope.cursor.source_generation != envelope.cursor.source_generation:
+                    envelope = replace(
+                        envelope,
+                        cursor=replace(
+                            envelope.cursor,
+                            source_generation=capture_envelope.cursor.source_generation,
+                        ),
+                    )
                 batch = materialize_observation_envelope(
                     envelope,
                     task_id=runtime.task_id,
@@ -3169,6 +3300,27 @@ class ObservationCoordinator:
                             replay_claims=tuple(replay_claims),
                             replay_draft_role_sets=tuple(replay_role_sets),
                         )
+                    if isinstance(claim, _AlreadyCommitted):
+                        # Every event of this delivery is already recorded, under another
+                        # delivery's operation (#1027). Nothing is appended and no claim is
+                        # written; a stream completion's explicit outcome still reaches the
+                        # recorded action, exactly as on a replay.
+                        stage = "ledger_append"
+                        await self._correct_recorded_outcome(
+                            runtime,
+                            workspace,
+                            store,
+                            codex_session_id,
+                            envelope,
+                            batch,
+                            resolved_mapping_version=MATERIALIZATION_MAPPING_VERSION,
+                            append_result=None,
+                            already_committed=True,
+                            legacy_session_id=predecessor_session_id,
+                            legacy_writer_id=predecessor_writer_id,
+                            legacy_writer_routes=legacy_writer_routes,
+                        )
+                        claim = None
                     if claim is not None:
                         (
                             operation_id,
@@ -3221,178 +3373,22 @@ class ObservationCoordinator:
                                 codex_session_id,
                                 append_result,
                             )
-                        correction = materialize_observation_outcome_correction(
+                        await self._correct_recorded_outcome(
+                            runtime,
+                            workspace,
+                            store,
+                            codex_session_id,
                             envelope,
-                            task_id=runtime.task_id,
+                            batch,
+                            resolved_mapping_version=resolved_mapping_version,
+                            append_result=append_result,
+                            already_committed=False,
+                            legacy_session_id=predecessor_session_id,
+                            legacy_writer_id=predecessor_writer_id,
+                            legacy_writer_routes=legacy_writer_routes,
                         )
-                        if (
-                            append_result is not None
-                            and append_result.outcome == "replayed"
-                            and correction.skip_reason is None
-                            and correction.drafts
-                        ):
-                            projection = await runtime.ledger.load_projection(
-                                runtime.session_id,
-                                ProjectionView.CANDIDATE_FINDINGS,
-                            )
-                            if (
-                                projection is None
-                                or type(projection.state) is not ProjectionState
-                                or projection.lag != 0
-                                or projection.rebuild_required
-                            ):
-                                raise PublicOperationError(
-                                    PublicErrorCode.SERVICE_UNAVAILABLE,
-                                    "Observation outcome projection is unavailable.",
-                                    retryable=True,
-                                )
-                            if resolved_mapping_version == MATERIALIZATION_MAPPING_VERSION:
-                                core_result = next(
-                                    (
-                                        item.draft.payload
-                                        for item in batch.drafts
-                                        if type(item.draft.payload) is ResultRecordedPayload
-                                    ),
-                                    None,
-                                )
-                                if type(core_result) is not ResultRecordedPayload:
-                                    raise PublicOperationError(
-                                        PublicErrorCode.SERVICE_UNAVAILABLE,
-                                        "Observation outcome projection is unavailable.",
-                                        retryable=True,
-                                    )
-                                core_result_id = core_result.result_id
-                                existing_result = projection.state.results.get(core_result_id)
-                            else:
-                                # A replayed legacy-mapping operation committed
-                                # its graph under pre-upgrade record identities
-                                # that cannot be re-derived here, and it may be a
-                                # legacy hook operation whose result is UNKNOWN.
-                                # Its accepted event ids are the exact link to
-                                # the committed result, so consult that result
-                                # before deciding whether the explicit stream
-                                # outcome still needs a correction (#418).
-                                accepted_event_ids = {
-                                    item.event_id for item in append_result.accepted
-                                }
-                                committed_results = [
-                                    (candidate_id, record)
-                                    for candidate_id, record in (projection.state.results.items())
-                                    if record.source_event_id in accepted_event_ids
-                                ]
-                                if len(committed_results) != 1:
-                                    raise PublicOperationError(
-                                        PublicErrorCode.SERVICE_UNAVAILABLE,
-                                        "Observation outcome projection is unavailable.",
-                                        retryable=True,
-                                    )
-                                core_result_id, existing_result = committed_results[0]
-                            if existing_result is None or existing_result.payload is None:
-                                raise PublicOperationError(
-                                    PublicErrorCode.SERVICE_UNAVAILABLE,
-                                    "Observation outcome projection is unavailable.",
-                                    retryable=True,
-                                )
-                            existing_payload = existing_result.payload
-                            correction_payload = correction.drafts[0].draft.payload
-                            if type(correction_payload) is not ResultRecordedPayload:
-                                raise PublicOperationError(
-                                    PublicErrorCode.SERVICE_UNAVAILABLE,
-                                    "Observation outcome correction is unavailable.",
-                                    retryable=True,
-                                )
-                            incoming_fact = (
-                                correction_payload.outcome,
-                                correction_payload.exit_status,
-                            )
-                            existing_fact = (
-                                existing_payload.outcome,
-                                existing_payload.exit_status,
-                            )
-                            prior_corrections = tuple(
-                                record.payload
-                                for result_id, record in projection.state.results.items()
-                                if result_id != core_result_id
-                                and record.payload is not None
-                                and record.payload.action_id == existing_payload.action_id
-                            )
-                            conflict = (
-                                existing_payload.outcome is not ResultOutcome.UNKNOWN
-                                and existing_fact != incoming_fact
-                            ) or any(
-                                (item.outcome, item.exit_status) != incoming_fact
-                                for item in prior_corrections
-                            )
-                            should_correct = (
-                                existing_payload.outcome is ResultOutcome.UNKNOWN
-                                or existing_fact != incoming_fact
-                            )
-                            if should_correct:
-                                if resolved_mapping_version != MATERIALIZATION_MAPPING_VERSION:
-                                    # Bind the correction to the exact committed
-                                    # legacy action (and its committed event as
-                                    # causal parent when the projection still
-                                    # exposes it) instead of the current
-                                    # canonical action identities.
-                                    action_record = projection.state.actions.get(
-                                        existing_payload.action_id
-                                    )
-                                    correction = materialize_observation_outcome_correction(
-                                        envelope,
-                                        task_id=runtime.task_id,
-                                        conflict=conflict,
-                                        target_action_id=existing_payload.action_id,
-                                        target_action_event_id=(
-                                            action_record.source_event_id
-                                            if action_record is not None
-                                            else None
-                                        ),
-                                    )
-                                elif conflict:
-                                    correction = materialize_observation_outcome_correction(
-                                        envelope,
-                                        task_id=runtime.task_id,
-                                        conflict=True,
-                                    )
-                                corrected = await self._append_materialized(
-                                    runtime,
-                                    envelope,
-                                    correction,
-                                    legacy_session_id=predecessor_session_id,
-                                    legacy_writer_id=predecessor_writer_id,
-                                    legacy_writer_routes=legacy_writer_routes,
-                                )
-                                if corrected is not None:
-                                    (
-                                        correction_operation_id,
-                                        correction_digest,
-                                        correction_result,
-                                        correction_mapping_version,
-                                        correction_draft_roles,
-                                    ) = corrected
-                                    store.record_logical_identity_claim(
-                                        workspace=workspace,
-                                        logical_identity=observation_claim_identity(
-                                            envelope,
-                                            correction_draft_roles,
-                                            mapping_version=correction_mapping_version,
-                                        ),
-                                        materialization_digest=correction_digest,
-                                        operation_id=correction_operation_id,
-                                        source_mask=2,
-                                        mapping_version=correction_mapping_version,
-                                        materialized_at=timestamp_from_datetime(
-                                            self.clock.now_utc()
-                                        ),
-                                    )
-                                    if correction_result is not None:
-                                        await self._note_frontier_motion(
-                                            runtime,
-                                            workspace,
-                                            codex_session_id,
-                                            correction_result,
-                                        )
 
+                envelope = ingested_envelope
                 stage = "verification"
                 await self._enqueue_verification(
                     runtime,
@@ -4141,6 +4137,364 @@ class ObservationCoordinator:
             )
         )
 
+    async def _duplicate_agrees_with_ledger(
+        self,
+        runtime: TaskRuntime,
+        envelope: ObservationEnvelope,
+        batch: MaterializedObservationBatch,
+    ) -> bool:
+        """Whether a delivery whose events are all committed also states what the ledger holds.
+
+        Event ids say it is the same call, not that it says the same thing. A Codex stream copy may
+        differ from the committed result: the outcome correction then enriches an UNKNOWN or
+        records the disagreement as a ``dedup_conflict`` correction, so nothing is lost. Any other
+        source has no correction to carry a difference, so a copy stating an explicit outcome
+        counts as a duplicate only when the ledger states exactly that outcome and exit status for
+        the call (the original result and any correction linked to its action); anything else, or
+        a projection that cannot confirm it, keeps the ledger's own refusal and its quarantine
+        (fail closed, #560).
+        """
+
+        if envelope.source is ObservationSource.CODEX_SESSION_STREAM:
+            return True
+        stated = [
+            item.draft.payload
+            for item in batch.drafts
+            if type(item.draft.payload) is ResultRecordedPayload
+            and item.draft.payload.outcome is not ResultOutcome.UNKNOWN
+        ]
+        if not stated:
+            return True
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        if (
+            projection is None
+            or type(projection.state) is not ProjectionState
+            or projection.lag != 0
+            or projection.rebuild_required
+        ):
+            return False
+        for payload in stated:
+            committed = projection.state.results.get(payload.result_id)
+            if committed is None or committed.payload is None:
+                return False
+            # What the ledger states for the call is the original result plus any correction
+            # linked to its action (a stream copy's outcome is appended, never rewritten). The
+            # copy agrees only when that is exactly its own outcome and exit status.
+            recorded = {
+                (record.payload.outcome, record.payload.exit_status)
+                for record in projection.state.results.values()
+                if record.payload is not None
+                and record.payload.action_id == committed.payload.action_id
+                and record.payload.outcome is not ResultOutcome.UNKNOWN
+            }
+            if recorded != {(payload.outcome, payload.exit_status)}:
+                return False
+        return True
+
+    async def _correct_recorded_outcome(
+        self,
+        runtime: TaskRuntime,
+        workspace: str,
+        store: TaskObservationPort,
+        codex_session_id: str,
+        envelope: ObservationEnvelope,
+        batch: MaterializedObservationBatch,
+        *,
+        resolved_mapping_version: str,
+        append_result: AppendResult | None,
+        already_committed: bool,
+        legacy_session_id: str | None,
+        legacy_writer_id: str | None,
+        legacy_writer_routes: tuple[tuple[str, str], ...],
+    ) -> None:
+        """Apply a stream completion's explicit outcome to the call's recorded UNKNOWN one.
+
+        Runs when the completion's own batch was already recorded: as a replay of the
+        committed operation, or (#1027) because every event of the batch is already in the
+        ledger under another delivery shape. A freshly appended batch carries its explicit
+        outcome itself. Historical action/result rows are never rewritten: the correction is a
+        second, source-independent result linked to the same action, so retries are idempotent.
+        """
+
+        correction = materialize_observation_outcome_correction(
+            envelope,
+            task_id=runtime.task_id,
+        )
+        if correction.skip_reason is not None or not correction.drafts:
+            return
+        if not already_committed and (append_result is None or append_result.outcome != "replayed"):
+            return
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id,
+            ProjectionView.CANDIDATE_FINDINGS,
+        )
+        if (
+            projection is None
+            or type(projection.state) is not ProjectionState
+            or projection.lag != 0
+            or projection.rebuild_required
+        ):
+            raise PublicOperationError(
+                PublicErrorCode.SERVICE_UNAVAILABLE,
+                "Observation outcome projection is unavailable.",
+                retryable=True,
+            )
+        if resolved_mapping_version == MATERIALIZATION_MAPPING_VERSION:
+            core_result = next(
+                (
+                    item.draft.payload
+                    for item in batch.drafts
+                    if type(item.draft.payload) is ResultRecordedPayload
+                ),
+                None,
+            )
+            if type(core_result) is not ResultRecordedPayload:
+                if already_committed:
+                    # A duplicate whose batch carries no result of its own has no recorded
+                    # outcome to enrich; it must not hold the drain on a retry.
+                    return
+                raise PublicOperationError(
+                    PublicErrorCode.SERVICE_UNAVAILABLE,
+                    "Observation outcome projection is unavailable.",
+                    retryable=True,
+                )
+            core_result_id = core_result.result_id
+            existing_result = projection.state.results.get(core_result_id)
+        else:
+            # A replayed legacy-mapping operation committed
+            # its graph under pre-upgrade record identities
+            # that cannot be re-derived here, and it may be a
+            # legacy hook operation whose result is UNKNOWN.
+            # Its accepted event ids are the exact link to
+            # the committed result, so consult that result
+            # before deciding whether the explicit stream
+            # outcome still needs a correction (#418).
+            if append_result is None:
+                raise PublicOperationError(
+                    PublicErrorCode.SERVICE_UNAVAILABLE,
+                    "Observation outcome projection is unavailable.",
+                    retryable=True,
+                )
+            accepted_event_ids = {item.event_id for item in append_result.accepted}
+            committed_results = [
+                (candidate_id, record)
+                for candidate_id, record in (projection.state.results.items())
+                if record.source_event_id in accepted_event_ids
+            ]
+            if len(committed_results) != 1:
+                raise PublicOperationError(
+                    PublicErrorCode.SERVICE_UNAVAILABLE,
+                    "Observation outcome projection is unavailable.",
+                    retryable=True,
+                )
+            core_result_id, existing_result = committed_results[0]
+        if existing_result is None or existing_result.payload is None:
+            raise PublicOperationError(
+                PublicErrorCode.SERVICE_UNAVAILABLE,
+                "Observation outcome projection is unavailable.",
+                retryable=True,
+            )
+        existing_payload = existing_result.payload
+        correction_payload = correction.drafts[0].draft.payload
+        if type(correction_payload) is not ResultRecordedPayload:
+            raise PublicOperationError(
+                PublicErrorCode.SERVICE_UNAVAILABLE,
+                "Observation outcome correction is unavailable.",
+                retryable=True,
+            )
+        incoming_fact = (
+            correction_payload.outcome,
+            correction_payload.exit_status,
+        )
+        existing_fact = (
+            existing_payload.outcome,
+            existing_payload.exit_status,
+        )
+        prior_corrections = tuple(
+            record.payload
+            for result_id, record in projection.state.results.items()
+            if result_id != core_result_id
+            and record.payload is not None
+            and record.payload.action_id == existing_payload.action_id
+        )
+        conflict = (
+            existing_payload.outcome is not ResultOutcome.UNKNOWN and existing_fact != incoming_fact
+        ) or any((item.outcome, item.exit_status) != incoming_fact for item in prior_corrections)
+        should_correct = (
+            existing_payload.outcome is ResultOutcome.UNKNOWN or existing_fact != incoming_fact
+        )
+        if should_correct:
+            if resolved_mapping_version != MATERIALIZATION_MAPPING_VERSION:
+                # Bind the correction to the exact committed
+                # legacy action (and its committed event as
+                # causal parent when the projection still
+                # exposes it) instead of the current
+                # canonical action identities.
+                action_record = projection.state.actions.get(existing_payload.action_id)
+                correction = materialize_observation_outcome_correction(
+                    envelope,
+                    task_id=runtime.task_id,
+                    conflict=conflict,
+                    target_action_id=existing_payload.action_id,
+                    target_action_event_id=(
+                        action_record.source_event_id if action_record is not None else None
+                    ),
+                )
+            elif conflict:
+                correction = materialize_observation_outcome_correction(
+                    envelope,
+                    task_id=runtime.task_id,
+                    conflict=True,
+                )
+            corrected = await self._append_materialized(
+                runtime,
+                envelope,
+                correction,
+                legacy_session_id=legacy_session_id,
+                legacy_writer_id=legacy_writer_id,
+                legacy_writer_routes=legacy_writer_routes,
+            )
+            if corrected is not None and not isinstance(corrected, _AlreadyCommitted):
+                (
+                    correction_operation_id,
+                    correction_digest,
+                    correction_result,
+                    correction_mapping_version,
+                    correction_draft_roles,
+                ) = corrected
+                store.record_logical_identity_claim(
+                    workspace=workspace,
+                    logical_identity=observation_claim_identity(
+                        envelope,
+                        correction_draft_roles,
+                        mapping_version=correction_mapping_version,
+                    ),
+                    materialization_digest=correction_digest,
+                    operation_id=correction_operation_id,
+                    source_mask=2,
+                    mapping_version=correction_mapping_version,
+                    materialized_at=timestamp_from_datetime(self.clock.now_utc()),
+                )
+                if correction_result is not None:
+                    await self._note_frontier_motion(
+                        runtime,
+                        workspace,
+                        codex_session_id,
+                        correction_result,
+                    )
+
+    async def _align_codex_stream_generation(
+        self,
+        runtime: TaskRuntime,
+        workspace: str,
+        envelope: ObservationEnvelope,
+    ) -> ObservationEnvelope:
+        """Bind a post-compaction stream completion to its hook call's generation (#1019).
+
+        The hook generation advances at every Codex ``SessionStart`` (including the
+        ``compact`` start); the stream generation follows the rollout file. After a
+        compaction the two differ, so the completion would mint a second command action
+        beside the hook call's UNKNOWN one. Rebind only when every guard holds: the same
+        task ledger (the ids are task-scoped), the same workspace lane and host session,
+        the same host call id, exactly one other-generation hook action in this task, the
+        same keyed command identity on that action, and no explicit outcome on it except
+        one this completion itself recorded (an idempotent retry). Anything else keeps the
+        stream's own generation, which is the pre-fix behavior.
+
+        The binding belongs to the whole ingest, so it is resolved before the completion's
+        captured-content manifests are looked up (#1027): those are keyed by the call's
+        generation-qualified identity, and the hook post's committed role set includes the
+        captured-evidence roles they reconstruct. Resolved after the lookup, the completion
+        reconstructed a contentless role set, missed the hook post's committed operation and
+        was refused by the ledger for reusing its result event id.
+        """
+
+        own_generation = envelope.cursor.source_generation
+        own = codex_stream_call_generation_links(
+            envelope, task_id=runtime.task_id, generations=(own_generation,)
+        )
+        if len(own) != 1:
+            return envelope
+        ledger = getattr(runtime, "ledger", None)
+        current = getattr(self.local, "current_session_generation", None)
+        if not callable(getattr(ledger, "projected_action_event", None)) or not callable(current):
+            return envelope
+        if await action_event_committed(ledger, own[0].action_id, own[0].action_event_id):
+            return envelope
+        hook_generation = await self._local(
+            partial(
+                cast(Callable[[str, str], int], current),
+                workspace,
+                envelope.session_commitment,
+            )
+        )
+        if type(hook_generation) is not int or isinstance(hook_generation, bool):
+            return envelope
+        top = max(hook_generation, own_generation)
+        candidates = tuple(
+            generation
+            for generation in range(top, max(0, top - _CODEX_GENERATION_ALIAS_WINDOW), -1)
+            if generation != own_generation
+        )
+        matches = [
+            link
+            for link in codex_stream_call_generation_links(
+                envelope, task_id=runtime.task_id, generations=candidates
+            )
+            if await action_event_committed(ledger, link.action_id, link.action_event_id)
+        ]
+        if len(matches) != 1:
+            return envelope
+        match = matches[0]
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        if (
+            projection is None
+            or type(projection.state) is not ProjectionState
+            or projection.lag != 0
+            or projection.rebuild_required
+        ):
+            return envelope
+        action_record = projection.state.actions.get(action_id(match.action_id))
+        action_payload = action_record.payload if action_record is not None else None
+        if (
+            action_payload is None
+            or action_payload.action_kind is not ActionKind.COMMAND
+            or action_payload.command is None
+            or action_payload.command.split(" ", 1)[0] != match.command_identity
+        ):
+            return envelope
+        aligned = replace(
+            envelope, cursor=replace(envelope.cursor, source_generation=match.generation)
+        )
+        # Results this completion itself mints under the aligned identity: its core result
+        # (when it lands before the hook's post) and its outcome correction. A retry finds
+        # them already recorded; any other explicit outcome on the hook call fails closed.
+        own_results = {
+            str(item.draft.payload.result_id)
+            for item in materialize_observation_envelope(aligned, task_id=runtime.task_id).drafts
+            if type(item.draft.payload) is ResultRecordedPayload
+        } | {
+            str(item.draft.payload.result_id)
+            for item in materialize_observation_outcome_correction(
+                aligned, task_id=runtime.task_id
+            ).drafts
+            if type(item.draft.payload) is ResultRecordedPayload
+        }
+        for result_key, record in projection.state.results.items():
+            payload = record.payload
+            if (
+                payload is not None
+                and str(payload.action_id) == match.action_id
+                and payload.outcome is not ResultOutcome.UNKNOWN
+                and str(result_key) not in own_results
+            ):
+                return envelope
+        return aligned
+
     async def _plan_action_link(
         self,
         runtime: TaskRuntime,
@@ -4175,11 +4529,10 @@ class ObservationCoordinator:
         variants = tuple(dict.fromkeys((*own_role_sets, *linked_role_sets)))
         # Test doubles and older in-process ledgers may lack the read seam; without
         # it the action cannot be proven to exist, so this phase records it.
-        lookup = getattr(getattr(runtime, "ledger", None), "projected_action_event", None)
-        if not callable(lookup):
+        ledger = getattr(runtime, "ledger", None)
+        if not callable(getattr(ledger, "projected_action_event", None)):
             return _ActionLinkPlan(link, batch, False, variants)
-        committed = await cast(Callable[[str], Awaitable[str | None]], lookup)(link.action_id)
-        if committed != link.action_event_id:
+        if not await action_event_committed(ledger, link.action_id, link.action_event_id):
             return _ActionLinkPlan(link, batch, False, variants)
         return _ActionLinkPlan(link, link.linked, not link.linked.drafts, variants)
 
@@ -4196,7 +4549,7 @@ class ObservationCoordinator:
         replay_required: bool = False,
         replay_claims: tuple[tuple[ObservationLogicalIdentityClaim, tuple[str, ...]], ...] = (),
         replay_draft_role_sets: tuple[tuple[str, ...], ...] = (),
-    ) -> tuple[str, str, AppendResult | None, str, tuple[str, ...]] | None:
+    ) -> tuple[str, str, AppendResult | None, str, tuple[str, ...]] | _AlreadyCommitted | None:
         writer_id = runtime.writer_id
         if writer_id is None:
             return None
@@ -4343,6 +4696,23 @@ class ObservationCoordinator:
                                 candidate_roles,
                             )
 
+        # No operation was found under any role-set shape this delivery can reconstruct. A
+        # call-keyed delivery's event ids derive from the task, the call and the role, not from
+        # the delivery's shape, so a batch whose every event the ledger already holds is a
+        # duplicate of an earlier delivery of the same call (a hook copy and a stream copy, or a
+        # content-bearing and a contentless copy). Appending it would only be refused as
+        # EVENT_INVALID and quarantined as a content refusal, losing the explicit outcome a
+        # stream copy carries (#1027). An id derived from a source identity alone can be reused
+        # by another call, so that collision stays a conflict and fails closed (#560).
+        draft_event_ids = tuple(str(item.draft.event_id) for item in batch.drafts)
+        duplicate_by_events = observation_event_ids_call_keyed(envelope)
+        if (
+            duplicate_by_events
+            and await observation_already_committed(runtime.ledger, draft_event_ids)
+            and await self._duplicate_agrees_with_ledger(runtime, envelope, batch)
+        ):
+            return _AlreadyCommitted(frozenset(draft_event_ids))
+
         if replay_required:
             raise PublicOperationError(
                 PublicErrorCode.SESSION_NOT_FOUND,
@@ -4467,6 +4837,26 @@ class ObservationCoordinator:
                 request_id=operation_id,
             )
             raise
+        except PublicOperationError as exc:
+            # The ledger refused the batch for an event id it already holds. If every event of
+            # the batch is committed (a delivery that committed between the check above and this
+            # append), that refusal classifies the batch as a duplicate, never a content refusal
+            # to quarantine (#1027). Any other refusal, including a partial overlap, stands.
+            if (
+                not duplicate_by_events
+                or exc.code is not PublicErrorCode.EVENT_INVALID
+                or not await observation_already_committed(runtime.ledger, draft_event_ids)
+                or not await self._duplicate_agrees_with_ledger(runtime, envelope, batch)
+            ):
+                raise
+            await abandon_preappend_objects(
+                runtime.objects,
+                tuple(staged_objects),
+                component="application.observation_coordinator",
+                operation="observation_object_abandon_failed",
+                request_id=operation_id,
+            )
+            return _AlreadyCommitted(frozenset(draft_event_ids))
         return (
             operation_id,
             digest,
@@ -5603,6 +5993,9 @@ class ObservationCoordinator:
             locator = base64.b64decode(content_b64.encode("ascii"), validate=True).decode("utf-8")
             handle = open_local_workspace(Path(locator))
             policy, _raw_policy = load_observation_check_policy(Path(locator))
+        except ObservationCheckPolicyAbsent:
+            # No approved-check policy is the ordinary opt-in state, not lost content capture.
+            return None
         except Exception:
             await self._local(
                 partial(
@@ -6655,7 +7048,7 @@ class ObservationCoordinator:
                     item.detail,
                     subject_refs,
                     policy_id,
-                    "0.1.0",
+                    CURRENT_POLICY_VERSIONS[policy_id],
                     frontier,
                     item.coverage,
                     None,

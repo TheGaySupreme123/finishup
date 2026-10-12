@@ -378,11 +378,12 @@ case → single-use authorization → bounded gateway → bound sink/provider �
     lifecycle structure, and composition readiness. Reject hidden reasoning, system/developer/
     platform prompts, credentials, detected secret spans, unrelated files, and ambient logs before
     persistence. Secret-bearing spans — including selected changed-file excerpts and
-    approved-check output — are classified by the shared fail-closed scanner and redacted in
-    memory before encoding or authenticated encryption. Matches persist only redaction
-    metadata, never the original bytes. Scanner failure, finding-capacity exhaustion, or an
-    explicit canary match records `content_capture_unavailable` and stores no excerpt or output
-    object.
+    approved-check output — are classified by the shared fail-closed scanner; high-confidence
+    secret shapes are redacted in memory before encoding or authenticated encryption. Matches
+    persist only redaction metadata, never the original bytes. Scanner failure, high-confidence
+    finding-capacity exhaustion, or an explicit canary match records `content_capture_unavailable`
+    and stores no excerpt or output object. Heuristic-only assignment matches stay in the
+    encrypted local store and are redacted only at egress (amended 2026-10-07, issue #982).
     SQLite, observation envelopes, cursors, local outboxes, status, hook context, and logs contain
     only allowlisted structure, encrypted object identities/commitments, sizes, classifications,
     and relations. A locked vault, absent service, or failed encryption keeps the structural
@@ -753,5 +754,163 @@ such as `parser.token = Token.EOF`, a lower-case object property such as `token:
 Token.ConstKeyword`, or a lower-case Python `token = node.token` assignment inside a valid
 function. Bare dotted assignments such as `TOKEN=opaque.value` or `token=opaque.value`, call-shaped
 values such as `password=functionName()`, quoted lookalikes, mixed-language text, and malformed
-source remain heuristic matches. Capture-time redaction and the owner-controlled privacy policy are
-unchanged. The deferred heuristic opt-out remains out of scope.
+source remain heuristic matches. The owner-controlled privacy policy is unchanged. The deferred
+heuristic opt-out remains out of scope here; the 2026-10-07 credential-heuristic opt-out amendment
+below adds it.
+
+Amendment (2026-10-07, issue #982, owner decision): keep raw data for local and deterministic
+checks, redact only at egress, and narrow the heuristic. Capture and at-rest paths (hook content,
+changed-file excerpts, approved-check output, Codex rollout import) redact only high-confidence
+findings and still withhold on a canary, high-confidence saturation, or scanner failure;
+heuristic-only matches are kept in the encrypted local store and every egress path re-scans and
+replaces them. The assignment heuristics no longer match values that cannot be credential
+material (comparisons, next-line keys, unquoted source expressions, literals and type names,
+receiver attributes, documentation placeholders, and for `*token` names short, numeric,
+digit-free identifier or non-token-character values). Markup, bracket and placeholder shapes are
+judged for `*token` names only: a password, secret or API-key value skips the heuristic only for a
+real source shape (a call or subscript on a name, `|>`) or a digit-free documentation placeholder
+(`<your-api-key>`, `${MY_PASSWORD}`, `gw_...`), because human-chosen secrets take any punctuation
+(adversarial review, 2026-10-07). Typed declarations (`password: str = "..."`) and JSON-escaped
+keys (`\"password\": \"...\"`) are detected. Unquoted values stay greedy across encoded escapes so
+a secret containing a backslash is never shortened. The exact rules are in `docs/INTERFACES.md`. Check-time change capture (ADR-031) is egress-shaped and keeps redacting
+heuristic spans before storage.
+
+## Partial withholding and encoding-stable redaction amendment (2026-10-06, issue #976)
+
+TB4 run tb4f1 lost every implementation-stage review in two tasks to a Yoetz false positive: a
+heuristic span redacted to `[REDACTED]` re-matched the token-assignment detector once the item was
+JSON-encoded into the prepared case (`\n` became part of the "value"), and the prepared-bytes rescan
+blocked the whole packet with `never_send_detected`. Decisions:
+
+- The assignment detectors treat the JSON escapes `\n`, `\r` and `\t` as whitespace: an unquoted
+  value ends at one and the separator may span one. A JSON-escaped quoted value (`\"…\"`) is a
+  quoted value. The name/value separator is searched from the assignment name, so a JSON member's
+  `:` is never read as the separator. The exact-marker exemption accepts `[REDACTED]` in any of
+  these forms, so redaction is a fixed point across encoding. Real assignments in encoded text are
+  still detected and redacted.
+- At egress, a low-confidence (heuristic) match replaces only the value, in place, with the fixed
+  placeholder `[withheld-by-yoetz:possible-credential]` (`EGRESS_CREDENTIAL_PLACEHOLDER`); the rest
+  of the line, item and file is still sent, and the scanner exempts the placeholder like
+  `[REDACTED]` (issue #982, owner decision B2, 2026-10-07). The check reports the review-scoped gap
+  `semantic_review_value_redacted`.
+- When a low-confidence heuristic still survives into the prepared semantic-review bytes, local
+  minimization first re-applies that in-place replacement to the item's packet (JSON-string)
+  encoding, and withholds an item only when that cannot make it scan clean. It re-assembles the
+  case in at most three rounds. Withheld items join `semantic_withheld_item_ids` with the
+  review-scoped `semantic_review_item_withheld` gap (checks recorded before #982 carry
+  `content_redacted` instead and stay valid), so the check and receipt disclose what was withheld.
+  Egress redaction and withholding bound only the AI-powered review: they never add
+  `content_redacted` and never veto local (deterministic) proof. A high-confidence credential, scanner saturation, a heuristic in the structural
+  review-packet envelope, or one no single item explains still fails the whole case closed.
+- Owner-approved PL2-1 (issue #982, 2026-10-07): "show the agent the withheld item refs and line
+  numbers, never the values, plus the fixed agent line." Minimization records, per affected item,
+  `semantic_redacted_values` entries `{item_id, source_ref?, disposition, lines}`: the opaque case
+  item id, the item's catalogued ledger ref when that ref is itself an opaque token (never a path),
+  `value_replaced` or `item_withheld`, and up to 32 sorted 1-based line numbers in the item's own
+  text (at most 64 items). No value or byte offset is kept. The entries travel on the disclosure
+  proposal (resume and replay), the egress result, the check event (optional, 1.4.0), the check
+  result, `status view=operation`, and the receipt document. Every human and agent rendering adds,
+  once, the fixed line "Values marked [withheld-by-yoetz:possible-credential] were withheld from the
+  external reviewer only; local checks saw them. Do not change consent, rename, hide or reshape your
+  work to clear this. If a finding stays open only because of it, verify the repair yourself and
+  respond self_verified."; the bounded MCP summaries (4,096 bytes since ADR-043), which must keep the
+  frontier head digest, fall back to a shorter fixed form when the full line cannot fit.
+
+## Credential-heuristic opt-out amendment (2026-10-07, issue #982)
+
+Owner decision (2026-10-07, binding): "allow fully removing also externally as a flag the user can
+use (and we will for future tests)". Follow-up owner decisions the same day fixed its scope: the
+opt-out is part of the repository grant, re-enabling is per repository, it reaches the external
+reviewer only, and status shows it before any check. Decisions:
+
+- The privacy policy gains `credential_heuristic`, `enforced` (default) or `disabled`. It is part
+  of the durable, versioned owner policy, so it is set, reviewed, recorded and reversed like every
+  other policy dimension. A policy without the field means `enforced`. The field is written only
+  when `disabled`, so every policy approved before it existed keeps its exact bytes and digest;
+  privacy-policy wire 1.2.0 carries it, and 1.0.0/1.1.0 documents that name it are rejected.
+- **External reviewer only.** `disabled` affects only LLM-inference disclosure to an external
+  provider binding: low-confidence assignment matches (`password = ...`, `*_token = ...`) are
+  neither replaced, withheld nor counted by classification, minimization, the prepared and
+  rendered-body scans, or resume of that disclosure. Every local output — agent-context
+  projection, the local model sink, local and trusted human views — keeps the heuristic exactly as
+  when it is enabled. The high-confidence class is untouched everywhere and always blocks or
+  redacts: known credential shapes, private-key markers, URI passwords, canaries, and scanner
+  saturation. The applied setting travels explicitly from the effective policy through the
+  classified context and the approved case to the gateway; there is no global switch.
+- **Part of the repository grant.** Composition takes the setting from the current repository's
+  own grant: a repository is "off" only where its own grant says off. The installation-wide row
+  keeps a visible default that a new grant is drafted from; it is never a ceiling for this field,
+  and a repository-bound proposal never moves it. Any other composition (two installation rows,
+  or a narrower task or request row) keeps `enforced` unless both sides are `disabled`, so a
+  narrower row can turn the filter back on but never off. Status, provider status and the
+  terminal interface read one server-side derivation of the `repository`/`machine_default` pair;
+  a repository without a grant reads `enforced` unless a pending migration would carry forward a
+  disabled frontier, in which case it reports that outcome (or `unknown` when it depends on which
+  task checks first).
+- Turning it off is a widening (`global` / `credential_heuristic` in the policy diff) that applies
+  only through the separately reauthenticated trusted-terminal decision; no MCP tool, hook or
+  agent path can apply it. `yoetz privacy credential-heuristic disable` proposes it on the current
+  repository's grant; in a repository without a grant it walks the ordinary grant-creation
+  ceremony with the filter off and records the setting in the grant the owner approves. It never
+  creates a grant silently. `enable` is the symmetric reverse: a tightening of the current
+  repository's grant that applies at once and touches no other repository. `--machine-default`
+  changes the installation-wide default the same way (off needs the trusted decision, on applies
+  at once). Desired-state TOML and `privacy propose`/`tighten` carry the same field through the
+  same gates.
+- Visibility: the status result (status-result 1.4.0, additive) carries `credential_heuristic`
+  with the `repository` state and the `machine_default` (`enforced`, `disabled` or `unknown`),
+  shown by MCP `status` and `yoetz status` before any check runs; `yoetz privacy show`,
+  `yoetz provider status` and the terminal interface name it when it is off. Every external
+  disclosure receipt prepared under it records `secret_scan.credential_heuristic: disabled`
+  (egress-receipt 1.1.0; omitted when enforced). Every check whose external AI-powered review ran
+  under it carries the standing-limitation gap `semantic_review_credential_heuristic_disabled`. It
+  is an owner disclosure choice, never agent work, and it weakens neither proof class.
+- The behaviour is service-side and identical on Codex, Claude Code and Cursor.
+
+## Egress receipt origin amendment (2026-10-08, issue #1019, tb4n2 N-5)
+
+tb4n2 recorded recurring `blocked_by_policy` / `insufficient_approved_context` semantic-review
+receipts on one `bounded_structural_metadata` item with no way to name the operation behind them.
+
+- Every network egress receipt (egress-receipt 1.1.0, still unreleased, edited in place) may carry
+  `origin_operation`, a closed token: `semantic_check` (an AI-powered review of a `check`),
+  `observation_advice` (the background observation-advice supervisor, #619) or
+  `credential_probe` (the credential ceremony's probe). It is derived, never asserted by a caller:
+  from the purpose plus the reserved structural item id each producer puts in its case
+  (`review-packet`, `observation-advice-packet`). An unrecognized shape omits the field, and a
+  receipt stored before it keeps its exact bytes. `privacy receipts get/list` return it; 1.0.0
+  receipts cannot carry it.
+- The n2 receipts are `observation_advice`: its single advice packet is not a review-packet
+  envelope, so the semantic-review assembly fails closed to insufficient approved context on every
+  attempt. Suppressing those attempts, or admitting the advice packet, is a separate decision (a
+  disclosure-shape change), recorded on issue #1019 and not made here.
+
+## Declared outputs outside the workspace amendment (2026-10-08, issue #1016, tb4n2 R7)
+
+Owner decision (maintainer acknowledgement on #1016): a deliverable the task places outside the
+repository (cargo-flight-dispatch's `/output/flight_plan.json`) must reach the AI-powered reviewer,
+because the check-time change (ADR-031) only reads the repository and the reviewer otherwise cannot
+see the work it is asked to judge. This widens what reaches a packet in practice, so it is recorded
+here.
+
+- Scope: evidence already in the case that records an obligation's requested `role: output` file or
+  directory whose absolute path lies outside the session's workspace root: evidence whose own
+  reference names the output, evidence of a result whose action lists the output among its
+  attempted items, and per output the newest two content-bearing captures an effective claim on
+  the declaring obligation cites; at most three rows per output (newest first) and eight per case,
+  taken round-robin across outputs so one deliverable's repeats never crowd out another's. These
+  rows rank with the current
+  diff instead of competing with general tool output for excerpt room, and the content resolver
+  reads their captures first.
+- No new read path: Yoetz never opens the outside file itself. Only content a hook already captured
+  under the session's content-capture consent, or text the agent published, can be carried. A
+  declared input, a role-less item, a relative path and a task with no known workspace root select
+  nothing.
+- Same controls as every excerpt: only a recipe that includes targeted excerpts carries them; each
+  part passes capture authentication, the partial-withholding redaction, the credential heuristic
+  (unless the owner turned it off) and the non-overridable never-send scan. Opting out is the
+  existing path: a Structural profile or a custom recipe without targeted excerpts, or content
+  capture off for the host.
+- Disclosure: carried rows are listed in the review input manifest and the egress receipt like any
+  other excerpt; nothing new is hidden from the owner, and the behaviour is service-side and the
+  same on Codex, Claude Code and Cursor.

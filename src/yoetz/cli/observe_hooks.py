@@ -9,7 +9,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Awaitable, Callable, Generator, Mapping
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,9 +46,25 @@ from yoetz.adapters.integrations.observation_local import (
     observation_store_lock_scope,
     self_observation_deliverable,
 )
+from yoetz.adapters.integrations.observation_task_pending import task_pending_outbox_count
 from yoetz.adapters.workspace_binding import canonical_workspace_locator, resolve_workspace_locator
 from yoetz.cli import hook_io
+from yoetz.cli.closure_gate import (
+    ACCEPTANCE_RECHECK_ITEM,
+    BLOCKER_RECHECK_ITEM,
+    MAX_GATE_BLOCKS_PER_TURN,
+    ClosureGate,
+    closure_gate_already_delivered,
+    closure_gate_reasked_blockers,
+    closure_gate_turn_blocks,
+    read_closure_gate,
+    record_closure_gate_delivered,
+    reset_closure_gate_turn,
+    set_standing_advice_withheld,
+    standing_advice_withheld,
+)
 from yoetz.cli.hook_diagnostics import (
+    observe_exception_reason,
     record_hook_diagnostic,
     record_hook_timing,
     record_store_lock_event,
@@ -56,9 +72,13 @@ from yoetz.cli.hook_diagnostics import (
 from yoetz.cli.hook_io import (
     MAX_HOOK_SKIM_BYTES,
     MAX_HOOK_STDIN_BYTES,
+    OBSERVED_IMAGES_KEY,
     CursorOversizedPayloadError,
+    OversizedHookPayloadError,
     read_cursor_hook_ingress,
+    read_hook_ingress,
     read_hook_payload,
+    strip_hook_media,
 )
 from yoetz.cli.hook_io import (
     claude_context_output as _claude_context_output,
@@ -73,6 +93,14 @@ from yoetz.cli.hook_io import (
     stderr_line as _stderr_line,
 )
 from yoetz.cli.hook_timing import HookPassTiming, record_hook_pass_timing
+from yoetz.cli.runtime_facts import runtime_structural_facts
+from yoetz.domain.advice_actions import STANDING_MACHINE_ACTIONS as _STANDING_MACHINE_ACTIONS
+from yoetz.domain.command_segments import (
+    COMMAND_COMPOSITIONS,
+    MAX_COMMAND_COMMITMENTS,
+    command_segment_commitments,
+)
+from yoetz.domain.compaction_recap import RECAP_CONTEXT_LIMIT, RecapFacts
 from yoetz.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationContentChunk,
@@ -89,8 +117,14 @@ from yoetz.domain.observation import (
     observation_ingest_request_to_json,
     observation_ingest_result_from_json,
     observed_command_commitment,
+    validate_observed_images,
 )
-from yoetz.domain.observation_budget import ModeLimits, ObservationMode, mode_limits
+from yoetz.domain.observation_budget import (
+    AdmissionLossCause,
+    ModeLimits,
+    ObservationMode,
+    mode_limits,
+)
 from yoetz.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION,
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
@@ -119,6 +153,7 @@ from yoetz.domain.values import (
     JsonValue as DomainJsonValue,
 )
 from yoetz.ports.integrations import (
+    YOETZ_SUPPORT_TOOL_NAMES,
     YOETZ_WORKFLOW_TOOL_NAMES,
     observation_pairing_contract,
 )
@@ -165,24 +200,47 @@ SUPPORTED_HOOK_EVENTS: Final = frozenset(
         "SubagentStop",
     }
 )
-# Events that can deliver advice on a Codex-valid output contract. SessionEnd
-# is excluded: the host discards its stdout, so a peek/commit there would
-# consume advice the agent never sees (#222).
+# Events that have a Codex-valid model-visible output contract. SessionEnd is
+# excluded: the host discards its stdout, so a peek/commit there would consume
+# advice the agent never sees (#222). Stop stays listed because its handler is
+# synchronous and carries the closure gate, but ordinary advice is never
+# delivered at Stop (#985): see `delivery_eligible` in `handle_observe`.
 ADVICE_SAFE_EVENTS: Final = frozenset({"PostToolUse", "SessionStart", "Stop"})
 # Standing machine conditions (connect_provider and kin) reach the agent at
-# session boundaries only. PostToolUse is deliberately excluded: it is the
+# SessionStart. Ordinary PostToolUse is deliberately excluded: it is the
 # per-tool-call channel that produced 29 byte-identical injections in one
-# session (#241). Codex fires Stop per assistant turn, so the achievable bound
-# is once per turn and only when a different advice text intervened. SessionEnd
+# session (#241). Stop no longer delivers advice (#985); instead, a Stop that
+# finds standing advice pending marks it, and only the first PostToolUse after
+# that Stop may carry it, which keeps the old once-per-turn bound. SessionEnd
 # is teardown-only and cannot continue the agent.
-STANDING_ADVICE_CADENCE_EVENTS: Final = frozenset({"SessionStart", "Stop"})
+STANDING_ADVICE_CADENCE_EVENTS: Final = frozenset({"SessionStart"})
 _MAX_ADVICE_CONTEXT: Final = 1_200
 _MAX_CONTENT_CHUNK: Final = 256 * 1024
 # Ingest rejections that are recoverable: keep the outbox entry pending for a
 # later drain. Anything else is permanently invalid and gets quarantined so it
 # is never silently dropped as if committed.
+# The drain budget is spent on service delivery only: its clock starts after the
+# service connection is open (the connect has its own preflight bound below), so
+# loading local state and a cold handshake no longer consume it. tb4n1 measured
+# `drain_budget_exhausted` on 94% of hooks when the connect shared this clock.
 _HOOK_DRAIN_BUDGET_SECONDS: Final = 0.20
-_HOOK_DRAIN_ROW_LIMIT: Final = 4
+_HOOK_DRAIN_ROW_LIMIT: Final = 8
+# Stop is the turn boundary the closure gate decides at. The Stop pass drains the
+# outbox toward the current frontier with a larger bounded slice, so the gate reads
+# observed facts instead of "still draining". The slice is clamped so the gate's own
+# status read keeps its reserve inside the host's ten-second Stop window.
+_STOP_DRAIN_BUDGET_SECONDS: Final = 2.5
+_STOP_DRAIN_ROW_LIMIT: Final = 64
+_STOP_CLOSURE_GATE_RESERVE_SECONDS: Final = 5.0
+# Headroom between the Stop drain's deadline and the gate's reserve check, for the local commit
+# and store-lock wait that can follow the last ingest.
+_STOP_DRAIN_DEADLINE_MARGIN_SECONDS: Final = 0.75
+# While another owner holds the drain lease, the Stop pass waits for that owner's progress, but
+# gives up once the workspace outbox has not moved at all for this long.
+_STOP_DRAIN_STALL_SECONDS: Final = 0.75
+# Every host renders a ten-second Stop window; the pass's observability budget is that window
+# less a small allowance for interpreter start and the output write.
+_STOP_PASS_BUDGET_SECONDS: Final = 9.5
 # Native Claude/Cursor ordinary-profile content is transient by design: it cannot
 # be copied to the structural outbox. Give every ordinary-profile pass a bounded
 # chance to drain its structural RPC, and give content-bearing passes enough time
@@ -240,6 +298,10 @@ _HOOK_TOTAL_BUDGET_SECONDS: Final = (
 # is bounded, and the remainder is kept for the output write and interpreter
 # start. Individual acquisitions keep their own two-second cap (#689).
 _HOOK_STORE_LOCK_BUDGET_BY_WINDOW: Final = {3: 2.0, 5: 3.5, 10: 7.0}
+# The post-compaction recap's extra obligations reads may run only in the first four seconds of a
+# SessionStart pass (a 10 s host window), so they add nothing to the worst case that exists when the
+# status read itself is slow and the drain and the output write keep their room.
+_RECAP_READ_WINDOW_SECONDS: Final = 4.0
 
 
 def _hook_host_window_seconds(source: ObservationSource, event: str | None) -> int:
@@ -748,11 +810,28 @@ def command_commitment_for_payload(
     payload without a usable command argument yields ``None``.
     """
 
+    commitment = command_identity_fields_for_payload(payload, key_material).get(
+        "command_commitment"
+    )
+    return commitment if type(commitment) is str else None
+
+
+def command_identity_fields_for_payload(
+    payload: Mapping[str, JsonValue], key_material: bytes
+) -> dict[str, JsonValue]:
+    """The keyed command identity structural fields for one host command argument.
+
+    ``command_commitment`` commits to the whole normalized command; a compound, wrapped,
+    prefixed or redirected command also yields ``command_segment_commitments`` (sorted keyed
+    commitments to the simple commands it runs) and ``command_composition`` (#977), which match a
+    planned verification to one part of a composed run. Only keyed values leave this function.
+    """
+
     if not _is_command_tool(payload.get("tool_name")):
-        return None
+        return {}
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, Mapping):
-        return None
+        return {}
     nested = cast(Mapping[str, JsonValue], tool_input)
     for key in _COMMAND_ARGUMENT_KEYS:
         value = nested.get(key)
@@ -760,9 +839,35 @@ def command_commitment_for_payload(
             continue
         normalized = normalize_observed_command(value)
         if normalized is None:
-            return None
-        return observed_command_commitment(key_material, normalized)
-    return None
+            return {}
+        fields: dict[str, JsonValue] = {
+            "command_commitment": observed_command_commitment(key_material, normalized)
+        }
+        segments = command_segment_commitments(key_material, normalized)
+        if segments is not None:
+            fields["command_segment_commitments"] = list(segments[0])
+            fields["command_composition"] = segments[1]
+        return fields
+    return {}
+
+
+def _supplied_segment_fields(payload: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """Re-validate segment fields a host normalizer or the spool already computed (#977)."""
+
+    segments = payload.get("command_segment_commitments")
+    composition = payload.get("command_composition")
+    if not isinstance(segments, list | tuple) or composition not in COMMAND_COMPOSITIONS:
+        return {}
+    items = list(cast(list[JsonValue], segments))
+    if (
+        not 1 <= len(items) <= MAX_COMMAND_COMMITMENTS
+        or any(
+            type(item) is not str or not _COMMAND_COMMITMENT_RE.fullmatch(item) for item in items
+        )
+        or items != sorted(set(cast(list[str], items)))
+    ):
+        return {}
+    return {"command_segment_commitments": items, "command_composition": composition}
 
 
 def _attach_command_commitment(
@@ -781,13 +886,12 @@ def _attach_command_commitment(
     if not _is_command_tool(payload.get("tool_name")):
         return
     try:
-        commitment = command_commitment_for_payload(
+        fields = command_identity_fields_for_payload(
             payload, LocalObservationStore(_state=_state).key_material()
         )
     except Exception:
         return
-    if commitment is not None:
-        structural["command_commitment"] = commitment
+    structural.update(fields)
 
 
 def _extract_structural(
@@ -817,6 +921,7 @@ def _extract_structural(
     supplied_commitment = payload.get("command_commitment")
     if type(supplied_commitment) is str and _COMMAND_COMMITMENT_RE.fullmatch(supplied_commitment):
         fields["command_commitment"] = supplied_commitment
+        fields.update(_supplied_segment_fields(payload))
     for key in (
         "correlation_id",
         "parent_tool_call_id",
@@ -956,6 +1061,14 @@ def _extract_structural(
     decision = _token_or_none(payload.get("decision"))
     if decision is not None and "permission_decision" not in fields:
         fields["permission_decision"] = decision
+    if event_name == "PostToolUse" and OBSERVED_IMAGES_KEY in payload:
+        # Digest-only image facts the hook ingress computed before it dropped the bytes (P3-2,
+        # issue #1013). The ingress readers discard any host value under this reserved key, so
+        # only facts this process derived reach here; a malformed set is dropped, never repaired.
+        with contextlib.suppress(ProtocolValueError):
+            fields["observed_images"] = list(
+                validate_observed_images(payload.get(OBSERVED_IMAGES_KEY))
+            )
     return JsonObject(fields)
 
 
@@ -1428,9 +1541,9 @@ def map_hook_payload_to_envelope(
         gaps.add(ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value)
     if "event_ordinal" not in structural:
         structural = JsonObject({**structural, "event_ordinal": event_ordinal})
-    command_commitment = command_commitment_for_payload(payload, key_material)
-    if command_commitment is not None:
-        structural = JsonObject({**structural, "command_commitment": command_commitment})
+    command_fields = command_identity_fields_for_payload(payload, key_material)
+    if command_fields:
+        structural = JsonObject({**structural, **command_fields})
     identity = _source_identity(event_name, payload, structural, event_ordinal=event_ordinal)
     commitment = hook_source_commitment(key_material, identity)
     return ObservationEnvelope(
@@ -1831,6 +1944,63 @@ def _shell_edit_contents(
     return selected
 
 
+# Every host spelling of every Yoetz MCP tool, support tools included. The workflow-only
+# ``YOETZ_OWNED_TOOL_NAMES`` keeps governing self-observation delivery; this wider set decides
+# only that a tool's own content is never captured and that its oversized hook body is complete
+# as a structural row. The spellings are read off the workflow set so they cannot drift.
+_YOETZ_TOOL_SPELLINGS: Final = frozenset(
+    name[: -len("start")] for name in YOETZ_OWNED_TOOL_NAMES if name.endswith("start")
+)
+_YOETZ_MCP_OWNED_TOOL_NAMES: Final = YOETZ_OWNED_TOOL_NAMES | frozenset(
+    f"{prefix}{name}" for prefix in _YOETZ_TOOL_SPELLINGS for name in YOETZ_SUPPORT_TOOL_NAMES
+)
+
+
+def yoetz_mcp_tool(tool_name: object) -> bool:
+    """Whether a host tool name is one of Yoetz's own MCP tools, in any host spelling.
+
+    Codex code mode calls a nested MCP tool by the same ``mcp__yoetz__<tool>`` name, so the
+    nested call's own hook is covered by the same spellings.
+    """
+
+    return type(tool_name) is str and tool_name in _YOETZ_MCP_OWNED_TOOL_NAMES
+
+
+def _oversized_ingress_gap(
+    payload: Mapping[str, JsonValue],
+    *,
+    source: ObservationSource,
+    event: str,
+    _state: Path | None,
+) -> str | None:
+    """Name what an oversized hook body that kept only its identity view lost.
+
+    A Yoetz-owned tool lost nothing: its content is never captured, and its outcome and ids are
+    in the identity view. Every other oversized body keeps its structural row, pairs with its
+    pre-event, and records ``payload_content_omitted`` plus the per-host diagnostic instead of
+    vanishing (tb4n1 B5, issue #667).
+    """
+
+    if event in {"PreToolUse", "PostToolUse"} and yoetz_mcp_tool(payload.get("tool_name")):
+        return None
+    prefix = (
+        "claude"
+        if source is ObservationSource.CLAUDE_HOOK
+        else "cursor"
+        if source is ObservationSource.CURSOR_HOOK
+        else "codex"
+    )
+    degraded = "hook_cursor_observe_degraded" if prefix == "cursor" else "hook_observe_degraded"
+    with contextlib.suppress(BaseException):
+        _stderr_line(
+            f"{degraded}: payload_content_omitted; "
+            "structural identity retained; native content omitted; see observe status"
+        )
+    with contextlib.suppress(BaseException):
+        record_hook_diagnostic(f"{prefix}_payload_content_omitted", event, _state=_state)
+    return ObservationGapCode.PAYLOAD_CONTENT_OMITTED.value
+
+
 def _visible_content_chunks(
     event_name: str,
     payload: Mapping[str, JsonValue],
@@ -1839,25 +2009,34 @@ def _visible_content_chunks(
     workspace_locator: str | None,
     optional_limits: ModeLimits | None = None,
 ) -> tuple[tuple[ObservationContentChunk, ...], bool]:
-    """Extract only explicitly visible task content and redact it before transport.
+    """Extract only explicitly visible task content and redact secrets before transport.
+
+    Only high-confidence secret shapes are redacted here; heuristic-only matches stay in the
+    encrypted local store and are redacted at egress (issue #982). A chunk is marked
+    ``redacted`` only when its bytes were actually changed.
 
     Returns ``(chunks, truncated)``. Caps set ``truncated`` so callers attach
     ``truncated_payload`` without inventing success.
     """
 
-    from yoetz.observability.privacy import redact_sensitive_content
+    from yoetz.observability.privacy import redact_high_confidence_content
 
     selected: list[tuple[ObservationContentKind, str, bytes]] = []
-    if (
-        event_name in {"PreToolUse", "PostToolUse"}
-        and _token_or_none(payload.get("tool_name")) in YOETZ_OWNED_TOOL_NAMES
-    ):
+    if event_name in {"PreToolUse", "PostToolUse"} and yoetz_mcp_tool(payload.get("tool_name")):
         # Yoetz's own tool arguments and results are already durable in the
         # ledger the call wrote to or read from. Capturing them back as tool
         # input/output evidence re-encrypted every ``status`` projection the
         # agent read and was the heaviest part of the self-observation loop
-        # (#564). Nothing is omitted that the service does not hold.
+        # (#564). Nothing is omitted that the service does not hold. The
+        # read-only ``closure_prepare`` support tool is a projection of that
+        # same ledger and the largest reply Yoetz serves (tb4n1 B5).
         return (), False
+    if event_name == "PostToolUse":
+        # Image, audio, and video bytes are not reviewable text. A view of a
+        # screenshot is kept as its structure and text; the base64 is replaced
+        # by a fixed placeholder instead of filling the content budget and
+        # marking the event truncated (tb4n1 B5).
+        payload, _media_omitted = strip_hook_media(payload)
 
     def add(kind: ObservationContentKind, label: str, value: JsonValue) -> None:
         if type(value) is str and value:
@@ -1987,7 +2166,8 @@ def _visible_content_chunks(
     remaining = 680_000 if optional_limits is None else optional_limits.max_optional_bytes
     truncated = False
     for selected_index, (kind, label, raw) in enumerate(selected):
-        redacted, detected = redact_sensitive_content(raw)
+        # Capture keeps heuristic-only matches; egress redacts them (issue #982).
+        redacted, detected = redact_high_confidence_content(raw)
         if not redacted:
             continue
         part_limit = remaining
@@ -2054,6 +2234,10 @@ def _hook_total_budget_seconds(event: str, *, native_content: bool = False) -> f
     """
 
     total = _HOOK_TOTAL_BUDGET_SECONDS
+    if event == "Stop":
+        # The Stop pass drains toward the current frontier and then reads status for the
+        # closure gate, both inside the host's ten-second Stop window (#994).
+        return _STOP_PASS_BUDGET_SECONDS
     if native_content:
         total += _NATIVE_CONTENT_DRAIN_BUDGET_SECONDS - _HOOK_DRAIN_BUDGET_SECONDS
     if event == "SessionStart" or event in _AUTO_ATTACH_RETRY_EVENTS:
@@ -2233,8 +2417,12 @@ async def _drain_outbox(
     monotonic: Callable[[], float] = time.monotonic,
     session_lock_owned: bool = False,
     drain_lease_owned: bool = False,
-) -> None:
+    row_limit: int = _HOOK_DRAIN_ROW_LIMIT,
+    deadline: float | None = None,
+) -> bool:
     """Drain the workspace outbox under a nonblocking per-workspace lease.
+
+    Returns whether this pass held the lease (and so attempted delivery itself).
 
     Codex runs async hooks concurrently; without the lease every concurrent
     hook re-ingests the identical backlog for zero extra delivery. Losing the
@@ -2259,21 +2447,35 @@ async def _drain_outbox(
             priority_source_identity=priority_source_identity,
             monotonic=monotonic,
             session_lock_owned=session_lock_owned,
+            row_limit=row_limit,
+            deadline=deadline,
         )
-        return
+        return True
 
     with store.drain_lease(workspace_commitment) as owned:
         if not owned:
             if content_by_source_identity:
                 # Native content chunks are intentionally absent from the
-                # durable outbox. A concurrent drain therefore cannot replay
-                # this hook's bytes; make that loss visible even though the
-                # structural row continues through the other owner.
-                store.note_coverage_gap(
-                    workspace_commitment,
-                    ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
+                # durable outbox, so the concurrent owner cannot replay this
+                # hook's bytes. Stage them into the service's encrypted capture
+                # handoff anyway: capture_only never advances the cursor or the
+                # ledger, so it needs no drain lease, and the owner (or the
+                # sweeper) that later delivers the structural row consumes the
+                # durable ticket. Only bytes that could not be staged are
+                # reported as a content gap.
+                await _stage_content_without_lease(
+                    store,
+                    workspace_commitment=workspace_commitment,
+                    content_by_source_identity=content_by_source_identity,
+                    content_capture_profile=content_capture_profile,
+                    connect=connect,
+                    event_name=event_name,
+                    _state=_state,
+                    budget_seconds=budget_seconds,
+                    monotonic=monotonic,
+                    deadline=deadline,
                 )
-            return
+            return False
         await _drain_outbox_leased(
             store,
             workspace_commitment=workspace_commitment,
@@ -2287,7 +2489,172 @@ async def _drain_outbox(
             priority_source_identity=priority_source_identity,
             monotonic=monotonic,
             session_lock_owned=session_lock_owned,
+            row_limit=row_limit,
+            deadline=deadline,
         )
+        return True
+
+
+def _drain_connect_timeout(deadline: float | None, monotonic: Callable[[], float]) -> float:
+    """The connect preflight bound, clamped to an absolute pass deadline when one is set."""
+
+    timeout = _HOOK_CONNECT_PREFLIGHT_SECONDS
+    if deadline is not None:
+        timeout = min(timeout, deadline - monotonic())
+    return timeout
+
+
+async def _stage_native_content(
+    client: _HookDrainClient,
+    store: LocalObservationStore,
+    *,
+    workspace_commitment: str,
+    all_pending: Sequence[ObservationOutboxRow],
+    content_by_source_identity: Mapping[str, tuple[ObservationContentChunk, ...]],
+    content_capture_profile: str | None,
+    remaining: Callable[[], float],
+    _state: Path | None,
+) -> set[str] | None:
+    """Stage transient native content into the service's durable encrypted handoff.
+
+    Returns the source identities whose bytes are now durable (the service answered the
+    distinct capture-pending reason only after the encrypted manifests and the retry ticket
+    committed), or ``None`` when a control failure ended staging; the caller then closes the
+    connection and stops. ``capture_only`` never advances the ingest cursor or the ledger.
+    """
+
+    import asyncio
+
+    from yoetz.application.observation_drain import ObservationControlFailure
+
+    staged_content_sources: set[str] = set()
+    for source_identity, chunks in content_by_source_identity.items():
+        if not chunks:
+            continue
+        source_row = next(
+            (row for row in all_pending if row.envelope.source_identity == source_identity),
+            None,
+        )
+        if source_row is None:
+            continue
+        source = source_row.envelope.source
+        codex_profileless = (
+            source is ObservationSource.CODEX_HOOK and content_capture_profile is None
+        )
+        profiled_native = (
+            source
+            in {
+                ObservationSource.CLAUDE_HOOK,
+                ObservationSource.CURSOR_HOOK,
+            }
+            and content_capture_profile is not None
+            and content_capture_profile_matches_source(source.value, content_capture_profile)
+        )
+        if not codex_profileless and not profiled_native:
+            continue
+        left = remaining()
+        if left <= 0:
+            break
+        try:
+            staged = await asyncio.wait_for(
+                _try_service_ingest(
+                    client,
+                    source_row.codex_session_id,
+                    source_row.envelope,
+                    content_chunks=chunks,
+                    content_capture_profile=content_capture_profile,
+                    capture_only=True,
+                    deadline_ms=max(1, int(left * 1_000)),
+                ),
+                timeout=left,
+            )
+        except TimeoutError:
+            break
+        if isinstance(staged, ObservationControlFailure):
+            from yoetz.cli.hook_diagnostics import record_drain_failure
+
+            if not record_drain_failure(staged, source_row.envelope, "retry", _state=_state):
+                store.note_coverage_gap(workspace_commitment, "drain_diagnostic_unavailable")
+            store.note_coverage_gap(
+                workspace_commitment, ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value
+            )
+            return None
+        if staged.reason == OBSERVATION_CONTENT_CAPTURE_PENDING_REASON:
+            staged_content_sources.add(source_identity)
+    return staged_content_sources
+
+
+async def _stage_content_without_lease(
+    store: LocalObservationStore,
+    *,
+    workspace_commitment: str,
+    content_by_source_identity: Mapping[str, tuple[ObservationContentChunk, ...]],
+    content_capture_profile: str | None,
+    connect: HookDrainConnector | None,
+    event_name: str,
+    _state: Path | None,
+    budget_seconds: float,
+    monotonic: Callable[[], float],
+    deadline: float | None = None,
+) -> None:
+    """Make this hook's transient content durable while another owner drains (B4, tb4n1).
+
+    Never raises. Every source whose bytes were not staged keeps the explicit
+    ``content_capture_unavailable`` gap, exactly as before this path existed.
+    """
+
+    import asyncio
+
+    from yoetz.ports.control import ControlClientKind
+
+    staged: set[str] = set()
+    client: _HookDrainClient | None = None
+    # The stage that raised names the closed reason (tb4n2 N-3b): the local outbox read keeps
+    # `drain_preflight_failed`, the connect is `drain_connect_timeout` / `drain_connect_failed`
+    # and the content handoff is `native_content_stage_failed`.
+    failure_reason = "drain_preflight_failed"
+    try:
+        all_pending = store.list_pending_outbox_rows(workspace_commitment)
+        if all_pending:
+            connector = cast(HookDrainConnector, _connect_service()) if connect is None else connect
+            timeout = _drain_connect_timeout(deadline, monotonic)
+            if timeout > 0:
+                failure_reason = "drain_connect_failed"
+                try:
+                    client = await asyncio.wait_for(
+                        connector(ControlClientKind.CLI), timeout=timeout
+                    )
+                except TimeoutError:
+                    failure_reason = "drain_connect_timeout"
+                    raise
+                failure_reason = "native_content_stage_failed"
+                started = monotonic()
+                budget = budget_seconds
+                if deadline is not None:
+                    budget = min(budget, deadline - started)
+                result = await _stage_native_content(
+                    client,
+                    store,
+                    workspace_commitment=workspace_commitment,
+                    all_pending=all_pending,
+                    content_by_source_identity=content_by_source_identity,
+                    content_capture_profile=content_capture_profile,
+                    remaining=lambda: budget - (monotonic() - started),
+                    _state=_state,
+                )
+                staged = set() if result is None else result
+    except Exception:
+        record_hook_diagnostic(failure_reason, event_name, _state=_state)
+    finally:
+        if any(source not in staged for source in content_by_source_identity):
+            with contextlib.suppress(Exception):
+                store.note_coverage_gap(
+                    workspace_commitment,
+                    ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
+                )
+        if client is not None:
+            with contextlib.suppress(Exception):
+                await client.close()
 
 
 async def _drain_outbox_leased(
@@ -2304,6 +2671,8 @@ async def _drain_outbox_leased(
     priority_source_identity: str | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     session_lock_owned: bool = False,
+    row_limit: int = _HOOK_DRAIN_ROW_LIMIT,
+    deadline: float | None = None,
 ) -> None:
     """Drain all mapped-session work fairly; ack only after service commit.
 
@@ -2324,7 +2693,6 @@ async def _drain_outbox_leased(
     )
     from yoetz.ports.control import ControlClientKind
 
-    started = monotonic()
     all_pending = store.list_pending_outbox_rows(workspace_commitment)
     if not all_pending:
         if content_by_source_identity:
@@ -2336,7 +2704,10 @@ async def _drain_outbox_leased(
 
     connector = cast(HookDrainConnector, _connect_service()) if connect is None else connect
     client: _HookDrainClient
-    preflight_remaining = _HOOK_CONNECT_PREFLIGHT_SECONDS + budget_seconds - (monotonic() - started)
+    # The connect has its own preflight bound; the delivery budget starts only once the
+    # connection is open (tb4n1 B4). An absolute pass deadline (the Stop pass keeps the
+    # closure gate's reserve) clamps both.
+    preflight_remaining = _drain_connect_timeout(deadline, monotonic)
     if preflight_remaining <= 0:
         record_hook_diagnostic("drain_budget_exhausted", event_name, _state=_state)
         if content_by_source_identity:
@@ -2348,18 +2719,30 @@ async def _drain_outbox_leased(
     try:
         client = await asyncio.wait_for(
             connector(ControlClientKind.CLI),
-            timeout=min(_HOOK_CONNECT_PREFLIGHT_SECONDS, preflight_remaining),
+            timeout=preflight_remaining,
         )
-    except Exception:
-        record_hook_diagnostic("drain_preflight_failed", event_name, _state=_state)
+    except Exception as failure:
+        # A connect that ran out of its preflight bound is told apart from one the service
+        # refused or that failed outright (tb4n2 N-3b).
+        record_hook_diagnostic(
+            "drain_connect_timeout"
+            if isinstance(failure, TimeoutError)
+            else "drain_connect_failed",
+            event_name,
+            _state=_state,
+        )
         if content_by_source_identity:
             store.note_coverage_gap(
                 workspace_commitment,
                 ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
             )
         return
-    # One elapsed budget includes snapshot hydration, connection preflight,
-    # service calls and the local commit after each returned decision.
+    # The delivery clock starts here, after the connection opened: content staging, the
+    # lifecycle reconciliation, service calls and the local commit after each returned
+    # decision share it. Loading the local snapshot and the cold handshake do not.
+    started = monotonic()
+    if deadline is not None:
+        budget_seconds = min(budget_seconds, max(0.0, deadline - started))
 
     # Stage native content through the already-open service connection before
     # choosing a bounded FIFO prefix. The service returns the distinct pending
@@ -2367,61 +2750,32 @@ async def _drain_outbox_leased(
     # capture_only never advances the cursor or ledger.
     staged_content_sources: set[str] = set()
     if content_by_source_identity:
-        for source_identity, chunks in content_by_source_identity.items():
-            if not chunks:
-                continue
-            source_row = next(
-                (row for row in all_pending if row.envelope.source_identity == source_identity),
-                None,
+        try:
+            staged_result = await _stage_native_content(
+                client,
+                store,
+                workspace_commitment=workspace_commitment,
+                all_pending=all_pending,
+                content_by_source_identity=content_by_source_identity,
+                content_capture_profile=content_capture_profile,
+                remaining=lambda: budget_seconds - (monotonic() - started),
+                _state=_state,
             )
-            if source_row is None:
-                continue
-            source = source_row.envelope.source
-            codex_profileless = (
-                source is ObservationSource.CODEX_HOOK and content_capture_profile is None
-            )
-            profiled_native = (
-                source
-                in {
-                    ObservationSource.CLAUDE_HOOK,
-                    ObservationSource.CURSOR_HOOK,
-                }
-                and content_capture_profile is not None
-                and content_capture_profile_matches_source(source.value, content_capture_profile)
-            )
-            if not codex_profileless and not profiled_native:
-                continue
-            remaining = budget_seconds - (monotonic() - started)
-            if remaining <= 0:
-                break
-            try:
-                staged = await asyncio.wait_for(
-                    _try_service_ingest(
-                        client,
-                        source_row.codex_session_id,
-                        source_row.envelope,
-                        content_chunks=chunks,
-                        content_capture_profile=content_capture_profile,
-                        capture_only=True,
-                        deadline_ms=max(1, int(remaining * 1_000)),
-                    ),
-                    timeout=remaining,
-                )
-            except TimeoutError:
-                break
-            if isinstance(staged, ObservationControlFailure):
-                from yoetz.cli.hook_diagnostics import record_drain_failure
-
-                if not record_drain_failure(staged, source_row.envelope, "retry", _state=_state):
-                    store.note_coverage_gap(workspace_commitment, "drain_diagnostic_unavailable")
+        except Exception:
+            # The rows stay pending for the next owner; only this pass's transient content is
+            # lost, and it keeps the explicit gap (tb4n2 N-3b).
+            record_hook_diagnostic("native_content_stage_failed", event_name, _state=_state)
+            with contextlib.suppress(Exception):
                 store.note_coverage_gap(
-                    workspace_commitment, ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value
+                    workspace_commitment,
+                    ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
                 )
-                with contextlib.suppress(Exception):
-                    await client.close()
-                return
-            if staged.reason == OBSERVATION_CONTENT_CAPTURE_PENDING_REASON:
-                staged_content_sources.add(source_identity)
+            staged_result = None
+        if staged_result is None:
+            with contextlib.suppress(Exception):
+                await client.close()
+            return
+        staged_content_sources = staged_result
 
     grouped: dict[str, list[ObservationOutboxRow]] = {}
     for row in all_pending:
@@ -2431,7 +2785,7 @@ async def _drain_outbox_leased(
         session_order.remove(codex_session_id)
         session_order.insert(0, codex_session_id)
     pending: list[ObservationOutboxRow] = []
-    pending_limit = _HOOK_DRAIN_ROW_LIMIT
+    pending_limit = row_limit
     if priority_source_identity is not None:
         # Native content is not replayable, so make the current content row's
         # same-session prefix the first bounded work package. The prefix keeps
@@ -2458,7 +2812,8 @@ async def _drain_outbox_leased(
                 None,
             )
             if priority_index is not None:
-                prefix_count = min(priority_index + 1, _NATIVE_CONTENT_ROW_LIMIT)
+                pending_limit = max(row_limit, _NATIVE_CONTENT_ROW_LIMIT)
+                prefix_count = min(priority_index + 1, pending_limit)
                 pending.extend(priority_queue[:prefix_count])
                 remaining_priority = priority_queue[prefix_count:]
                 if remaining_priority:
@@ -2469,7 +2824,6 @@ async def _drain_outbox_leased(
                     session_order.remove(priority_row.codex_session_id)
                 if remaining_priority:
                     session_order.insert(0, priority_row.codex_session_id)
-                pending_limit = _NATIVE_CONTENT_ROW_LIMIT
     while grouped and len(pending) < pending_limit:
         for session_id in tuple(session_order):
             queue = grouped.get(session_id)
@@ -3532,9 +3886,10 @@ def note_payload_too_large(
     Usually the body was never parsed, so the only identity this pass can
     honestly claim is the host that ran it, the hook name that host named on
     its own command line, and the bound itself. Even the true size is unknown
-    by construction: the ingress reads at most cap-plus-one bytes and stops.
-    Cursor may parse a body up to its skim cap and still find no row to keep
-    (invalid, no session, or no resolvable workspace); that loss lands here too.
+    by construction: the ingress reads at most skim-cap-plus-one bytes and
+    stops. A body inside the skim cap normally keeps a structural row (tb4n1
+    B5); one that fails the skim's safety checks, or (Cursor) keeps no row
+    (invalid, no session, or no resolvable workspace), lands here too.
     Nothing is inferred from unread bytes, and no structural row is minted.
 
     Two records, because there are two audiences. The bounded owner-only
@@ -3544,13 +3899,18 @@ def note_payload_too_large(
     no evidence at all, so it can never read as captured work (issue #667).
     """
 
-    # Cursor reaches this after its 1 MiB skim cap or a parsed body that kept
-    # no row, so it does not name the shared 256 KiB bound.
+    # Every host reaches this past the shared trusted cap: over the skim cap,
+    # a complete oversized body that failed the skim's safety checks, or (Cursor)
+    # a skimmed body that kept no row. Both bounds are named; the true size is
+    # unknown by construction (tb4n1 B5).
+    bounds = (
+        f"host event over the {MAX_HOOK_STDIN_BYTES}-byte hook ingress cap and not "
+        f"recoverable within the {MAX_HOOK_SKIM_BYTES}-byte skim"
+    )
     detail = (
-        "hook_cursor_observe_degraded: payload_too_large; host event over the hook ingress cap"
+        f"hook_cursor_observe_degraded: payload_too_large; {bounds}"
         if source is ObservationSource.CURSOR_HOOK
-        else "hook_observe_degraded: payload_too_large; host event over the "
-        f"{MAX_HOOK_STDIN_BYTES}-byte hook ingress cap"
+        else f"hook_observe_degraded: payload_too_large; {bounds}"
     )
     with contextlib.suppress(BaseException):
         _stderr_line(f"{detail}; not observed; see observe status")
@@ -3591,6 +3951,8 @@ def _session_start_source(payload: Mapping[str, JsonValue]) -> str | None:
     if type(action) is str:
         if action == "claude_session_clear" or action == "cursor_session_clear":
             return "clear"
+        if action == "claude_session_compact" or action == "cursor_session_compact":
+            return "compact"
     return None
 
 
@@ -3601,6 +3963,682 @@ def _report_session_end_unrecorded(event: str, *, _state: Path | None) -> None:
         "hook_observe_degraded: session_end_unrecorded; session end not recorded; see observe status"
     )
     record_hook_diagnostic("session_end_unrecorded", event, _state=_state)
+
+
+def _task_pending_outbox_count(
+    store: LocalObservationStore,
+    *,
+    workspace_commitment: str,
+    codex_session_id: str,
+    yoetz_session_id: str,
+    _state: Path | None,
+) -> int:
+    """Count local outbox rows still pending that can still change this task's observed facts.
+
+    A row counts when it belongs to this host session or to another host session mapped to
+    the same Yoetz session (a delegated child lane). Rows of other tasks sharing the workspace,
+    and rows of unmapped sessions (which cannot reach any task ledger until mapped), do not
+    hold this task's Stop decision. The shared helper also backs the service's optional
+    pre-check wait (``check`` with ``await_observations``, issue #1012).
+    """
+
+    return task_pending_outbox_count(
+        store,
+        workspace_commitment=workspace_commitment,
+        yoetz_session_id=yoetz_session_id,
+        codex_session_id=codex_session_id,
+        _state=_state,
+    )
+
+
+async def _finish_stop_drain(
+    store: LocalObservationStore,
+    *,
+    workspace_commitment: str,
+    codex_session_id: str,
+    yoetz_session_id: str,
+    connect: HookDrainConnector | None,
+    _state: Path | None,
+    deadline: float,
+    monotonic: Callable[[], float],
+    session_lock_owned: bool,
+) -> int:
+    """Drain this task's rows to the current frontier inside the Stop window (tb4n1 B4/C6).
+
+    Returns the task's rows still pending. Bounded by ``deadline``, which keeps the closure
+    gate's status-read reserve. While another owner (a concurrent hook or the service
+    sweeper) holds the drain lease, the pass waits for that owner's progress instead of
+    giving up; when this pass held the lease and delivered nothing, the remaining rows are
+    blocked on a retryable service condition and are left to the sweeper.
+    """
+
+    import asyncio
+
+    from yoetz.adapters.integrations.observation_task_pending import task_pending_outbox_rows
+
+    def _snapshot() -> tuple[int, frozenset[tuple[str, int]]]:
+        """This task's pending count, and a fingerprint of the whole outbox's movement."""
+
+        task_left = len(
+            task_pending_outbox_rows(
+                store,
+                workspace_commitment=workspace_commitment,
+                yoetz_session_id=yoetz_session_id,
+                codex_session_id=codex_session_id,
+                _state=_state,
+            )
+        )
+        moving = frozenset(
+            (row.row_identity, row.attempts)
+            for row in store.list_pending_outbox_rows(workspace_commitment)
+        )
+        return task_left, moving
+
+    left, outbox = _snapshot()
+    last_progress = monotonic()
+    while left:
+        now = monotonic()
+        if now >= deadline or now - last_progress >= _STOP_DRAIN_STALL_SECONDS:
+            break
+        owned = await _drain_outbox(
+            store,
+            workspace_commitment=workspace_commitment,
+            codex_session_id=codex_session_id,
+            connect=connect,
+            event_name="Stop",
+            _state=_state,
+            budget_seconds=min(_STOP_DRAIN_BUDGET_SECONDS, deadline - now),
+            monotonic=monotonic,
+            session_lock_owned=session_lock_owned,
+            row_limit=_STOP_DRAIN_ROW_LIMIT,
+            deadline=deadline,
+        )
+        after, after_outbox = _snapshot()
+        # A pass that held the lease itself and delivered none of this task's rows is a blocked
+        # backlog (a retryable refusal), left to the sweeper. Behind another owner, any outbox
+        # movement is progress: it may deliver other tasks' rows, or retry, before reaching ours.
+        if owned and after >= left:
+            left = after
+            break
+        moved = owned or after_outbox != outbox
+        if moved:
+            last_progress = monotonic()
+        left, outbox = after, after_outbox
+        if left and not owned:
+            await asyncio.sleep(max(0.0, min(0.05, deadline - monotonic())))
+    return left
+
+
+def _decide_closure_gate(
+    mapping: LifecycleMapping,
+    *,
+    store: LocalObservationStore,
+    workspace_commitment: str,
+    codex_session_id: str,
+    workspace_locator: str | None,
+    payload: Mapping[str, JsonValue],
+    connect: ServiceConnector | None,
+    run: AsyncRunner,
+    harness_id: str,
+    remaining_seconds: float,
+    _state: Path | None,
+    active_stop: bool = False,
+) -> ClosureGate | None:
+    """Decide the Stop-time closure gate for one mapped session (#977). Never raises.
+
+    Reads the service's compact status for the mapped session; the gate fires at most once per
+    session and ledger frontier. Every outcome lands in the bounded hook diagnostics so an
+    operator (or a benchmark export of ``yoetz observe status``) can see what the gate decided.
+    On an ``active_stop`` (the host already continued this turn) only a re-check key not yet
+    asked (blocker, acknowledgement, acceptance re-read) or a withdrawn deliverable not yet
+    voiced may continue the agent, within the per-turn cap; the caller records the outcome
+    (#985, tb4n3 RC-8).
+    """
+
+    reason = "closure_gate_unavailable"
+    gate: ClosureGate | None = None
+    try:
+        if active_stop and (
+            closure_gate_turn_blocks(mapping.yoetz_session_id, _state=_state)
+            >= MAX_GATE_BLOCKS_PER_TURN
+        ):
+            return None
+        if remaining_seconds < _STOP_CLOSURE_GATE_RESERVE_SECONDS:
+            reason = "closure_gate_budget_exhausted"
+            return None
+        from yoetz.cli.hooks import bound_connector, resolve_session_workspace
+
+        locator = (
+            workspace_locator
+            if workspace_locator is not None
+            else resolve_session_workspace(None, payload).locator
+        )
+        connector = (
+            connect
+            if connect is not None
+            else bound_connector(
+                cast(Callable[..., Awaitable[object]], _connect_service()), locator
+            )
+        )
+        # Observed-run facts are used only when this task's hook rows have all reached the
+        # service: the Stop pass drained toward the current frontier just before this read.
+        # Rows of other tasks in the same workspace no longer suppress the facts (tb4n1 C6).
+        try:
+            pending = (
+                _task_pending_outbox_count(
+                    store,
+                    workspace_commitment=workspace_commitment,
+                    codex_session_id=codex_session_id,
+                    yoetz_session_id=mapping.yoetz_session_id,
+                    _state=_state,
+                )
+                > 0
+            )
+        except Exception:
+            pending = True
+        # Blockers this session was already re-asked about are honoured without asking again.
+        reasked = closure_gate_reasked_blockers(mapping.yoetz_session_id, _state=_state)
+
+        async def _read() -> ClosureGate | None:
+            return await read_closure_gate(
+                session_id=mapping.yoetz_session_id,
+                writer_id=mapping.yoetz_writer_id,
+                connect=cast(Callable[..., Awaitable[object]], connector),
+                actor_id=f"yoetz:{harness_id}-hooks",
+                observation_pending=pending,
+                reasked_blockers=reasked,
+                active_stop=active_stop,
+            )
+
+        decided = cast(ClosureGate | None, run(_read))
+        if decided is None:
+            reason = "closure_gate_not_required"
+            return None
+        if not active_stop and closure_gate_already_delivered(
+            mapping.yoetz_session_id, decided.identity, _state=_state
+        ):
+            reason = "closure_gate_repeat_suppressed"
+            return None
+        if active_stop and not record_closure_gate_delivered(
+            mapping.yoetz_session_id,
+            decided.identity,
+            blocker_keys=decided.blocker_keys,
+            active_stop=True,
+            _state=_state,
+        ):
+            # Nothing else bounds an active Stop: without durable once-per-key and per-turn
+            # memory the re-check is not emitted, so the agent may stop (fail open). Recording
+            # before the write can only under-ask, never loop.
+            return None
+        gate = decided
+        reason = ""
+        return gate
+    except Exception:
+        return None
+    finally:
+        # An active Stop that emits nothing is recorded once by the caller as the normal end of a
+        # continued turn (``closure_gate_turn_end_after_continue``).
+        if reason and not active_stop:
+            with contextlib.suppress(Exception):
+                record_hook_diagnostic(reason, "Stop", _state=_state)
+
+
+def _standing_advice_carry(
+    store: LocalObservationStore,
+    *,
+    event: str,
+    native_host: bool,
+    stop_note: bool,
+    delivery_eligible: bool,
+    workspace_commitment: str,
+    yoetz_session_id: str | None,
+    session_commitment: str,
+    _state: Path | None,
+) -> bool:
+    """Bridge standing advice a Stop withheld to the next PostToolUse (#985). Never raises.
+
+    At a Codex or Claude Code Stop that finds standing advice pending, mark the session; the
+    first later advice-eligible PostToolUse may then carry standing advice (returns True). The
+    caller clears the mark once that advice is delivered or nothing is pending. Cursor never
+    delivered advice at stop, so its cadence is unchanged.
+    """
+
+    if not native_host:
+        return False
+    try:
+        if event == "Stop" and stop_note:
+            pending = store.peek_advice_for_delivery(
+                workspace_commitment,
+                yoetz_session_id=yoetz_session_id,
+                allow_standing=True,
+                session_commitment=session_commitment,
+            )
+            if pending is not None:
+                set_standing_advice_withheld(session_commitment, True, _state=_state)
+            return False
+        if event == "PostToolUse" and delivery_eligible:
+            return standing_advice_withheld(session_commitment, _state=_state)
+    except Exception:
+        return False
+    return False
+
+
+def _record_closure_gate_emitted(
+    yoetz_session_id: str,
+    closure_gate: ClosureGate,
+    event: str,
+    *,
+    active_stop: bool,
+    _state: Path | None,
+) -> None:
+    """Record the diagnostics and memory of a closure gate the host received. Never raises."""
+
+    with contextlib.suppress(BaseException):
+        # An active-Stop re-check was remembered before it was written.
+        if not active_stop and not record_closure_gate_delivered(
+            yoetz_session_id,
+            closure_gate.identity,
+            blocker_keys=closure_gate.blocker_keys,
+            _state=_state,
+        ):
+            # Visible, never fatal: the host loop guard still bounds a repeat.
+            record_hook_diagnostic("closure_gate_memory_unwritten", event, _state=_state)
+        record_hook_diagnostic("closure_gate_continued", event, _state=_state)
+        if BLOCKER_RECHECK_ITEM in closure_gate.items:
+            record_hook_diagnostic("closure_gate_blocker_rechecked", event, _state=_state)
+        if ACCEPTANCE_RECHECK_ITEM in closure_gate.items:
+            record_hook_diagnostic("closure_gate_acceptance_rechecked", event, _state=_state)
+        if active_stop:
+            record_hook_diagnostic("closure_gate_active_stop_rechecked", event, _state=_state)
+
+
+def _session_start_context(
+    additional: str,
+    payload: Mapping[str, JsonValue],
+    *,
+    include_admission_notice: bool,
+    harness_id: str,
+    workspace_locator: str | None,
+    connect: ServiceConnector | None,
+    resolve_runner: Callable[[], AsyncRunner],
+    deadline: float,
+    skip_service: bool,
+    monotonic: Callable[[], float],
+    _state: Path | None,
+) -> str:
+    """Append the cached release recommendation and the admission notice at SessionStart.
+
+    Existing task/receipt advice keeps its place first on this shared context channel; the
+    recommendation follows it only when both fit the bound (#819).
+    """
+
+    with contextlib.suppress(Exception):
+        recommendation = _cached_recommendation_context(_state=_state)
+        if recommendation and not additional:
+            additional = recommendation
+        elif recommendation and len(additional) + 1 + len(recommendation) <= _MAX_ADVICE_CONTEXT:
+            additional = f"{additional} {recommendation}"
+    if include_admission_notice and _session_start_source(payload) != "clear":
+        from yoetz.cli.host_hold_advisory import PrivacyConnector
+        from yoetz.cli.host_startup_advisory import append_admission_notice
+
+        additional = append_admission_notice(
+            additional,
+            harness_id,
+            workspace_locator,
+            connect=None if connect is None else cast(PrivacyConnector, connect),
+            run_async=resolve_runner(),
+            deadline=deadline,
+            max_chars=_MAX_ADVICE_CONTEXT,
+            skip_service=skip_service,
+            monotonic=monotonic,
+        )
+    return additional
+
+
+def _commit_emitted_advice(
+    store: LocalObservationStore,
+    workspace_commitment: str,
+    pending_delivery: AdviceDelivery,
+    *,
+    yoetz_session_id: str | None,
+    session_commitment: str,
+    event: str,
+    standing_carry: bool,
+    _state: Path | None,
+) -> None:
+    """Commit advice the host received. Nothing here may raise past the emission."""
+
+    with contextlib.suppress(BaseException):
+        store.commit_advice_delivery(
+            workspace_commitment,
+            pending_delivery.delivery_identity,
+            yoetz_session_id=yoetz_session_id,
+            session_commitment=session_commitment,
+        )
+        if event == "SessionStart":
+            set_standing_advice_withheld(session_commitment, False, _state=_state)
+        elif (
+            standing_carry
+            and pending_delivery.item is not None
+            and pending_delivery.item.recommended_next_action in _STANDING_MACHINE_ACTIONS
+        ):
+            # Clear the carry only when the standing advice itself went out: when ordinary
+            # advice outranked it on this PostToolUse, the next one carries it (a single-turn
+            # Codex exec has no later SessionStart).
+            set_standing_advice_withheld(session_commitment, False, _state=_state)
+
+
+def _retry_auto_attach(
+    codex_session_id: str,
+    *,
+    store: LocalObservationStore,
+    workspace_commitment: str,
+    harness_id: Literal["claude", "codex", "cursor"],
+    workspace_locator: str | None,
+    connect: ServiceConnector | None,
+    resolve_runner: Callable[[], AsyncRunner],
+    event: str,
+    session_lock_owned: bool,
+    _state: Path | None,
+) -> LifecycleMapping | None:
+    """Re-attempt auto-attach for a session that started while the service was unreachable.
+
+    One missed SessionStart no longer costs the session's whole record (#275). Bounded; the
+    caller runs it before the drain so a fresh mapping delivers this session's backlog in the
+    same pass.
+    """
+
+    mapping: LifecycleMapping | None = None
+    retry_session_lock = (
+        contextlib.nullcontext(True)
+        if session_lock_owned
+        else acquire_session_lock(codex_session_id, _state=_state)
+    )
+    with retry_session_lock as owned:
+        if owned:
+            mapping = load_mapping(codex_session_id, _state=_state)
+            if mapping is None:
+
+                async def _attach_retry() -> AutoAttachOutcome:
+                    import asyncio
+
+                    attach = _try_workspace_auto_start(
+                        codex_session_id,
+                        store=store,
+                        workspace_commitment=workspace_commitment,
+                        _state=_state,
+                        harness_id=harness_id,
+                        workspace_locator=workspace_locator,
+                        connect=cast(HookStartConnector | None, connect),
+                        _session_lock_owned=True,
+                        service_start_timeout_seconds=(
+                            _AUTO_ATTACH_RETRY_SERVICE_START_BUDGET_SECONDS
+                        ),
+                    )
+                    return await asyncio.wait_for(
+                        attach,
+                        timeout=_AUTO_ATTACH_RETRY_BUDGET_SECONDS,
+                    )
+
+                try:
+                    outcome = cast(AutoAttachOutcome, resolve_runner()(_attach_retry))
+                except TimeoutError:
+                    outcome = AutoAttachOutcome(None, "timeout")
+                except Exception:
+                    outcome = AutoAttachOutcome(None, "service_unavailable")
+                mapping = _record_auto_attach(outcome, event, _state=_state)
+                if mapping is None:
+                    # The retry marker names the path; the typed reason above names the cause.
+                    record_hook_diagnostic("auto_attach_retry_failed", event, _state=_state)
+    return mapping
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionStartAttach:
+    """What the SessionStart attach/status step leaves for the rest of the pass."""
+
+    mapping: LifecycleMapping | None
+    pending_mapping_deferred: bool
+    additional: str
+    attach_advisory_only: bool
+    # The bounded post-compaction recap (ADR-044), kept apart from ``additional`` so the
+    # admission notice and release recommendation are composed against their own bound first.
+    recap: str = ""
+
+
+def _session_start_attach(
+    codex_session_id: str,
+    *,
+    store: LocalObservationStore,
+    workspace_commitment: str,
+    workspace_locator: str | None,
+    harness_id: Literal["claude", "codex", "cursor"],
+    payload: Mapping[str, JsonValue],
+    connect: ServiceConnector | None,
+    resolve_runner: Callable[[], AsyncRunner],
+    event: str,
+    mapping: LifecycleMapping | None,
+    pending_mapping_deferred: bool,
+    skip_service: bool,
+    skip_advice_loop: bool,
+    session_lock_owned: bool,
+    _state: Path | None,
+    recap: bool = False,
+    recap_time_left: Callable[[], float] | None = None,
+) -> _SessionStartAttach:
+    """Recover, auto-attach or status-read a non-clear SessionStart's mapping.
+
+    Under the session lifecycle lock: recover a pending start, auto-attach an unmapped
+    session, or read a mapped session's status, and compose the startup context.
+    """
+
+    # SessionStart-only status/attach helpers: they drag protocol.models
+    # and service.client, which no other event needs (#242).
+    from yoetz.cli.hooks import (
+        _LOCKED_CONTEXT,  # pyright: ignore[reportPrivateUsage]
+        _PRIVACY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
+        _RETRY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
+        _STARTUP_RECOVERY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
+        _STORAGE_CORRUPT_CONTEXT,  # pyright: ignore[reportPrivateUsage]
+        _STORAGE_UNSAFE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
+        _UNAVAILABLE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
+        _WORKSPACE_MISMATCH_CONTEXT,  # pyright: ignore[reportPrivateUsage]
+        _WORKSPACE_UNBOUND_CONTEXT,  # pyright: ignore[reportPrivateUsage]
+        SessionWorkspace,
+        StatusOutcome,
+        _active_context,  # pyright: ignore[reportPrivateUsage]
+        _read_status,  # pyright: ignore[reportPrivateUsage]
+        _stale_mapping_context,  # pyright: ignore[reportPrivateUsage]
+        bound_connector,
+        resolve_session_workspace,
+    )
+
+    additional = ""
+    recap_text = ""
+    attach_reason: str | None = None
+    attach_advisory_only = False
+    session_lifecycle_lock = (
+        contextlib.nullcontext(True)
+        if session_lock_owned
+        else acquire_session_lock(codex_session_id, _state=_state)
+    )
+    with session_lifecycle_lock as owned:
+        if owned:
+            from yoetz.cli.hooks import recover_pending_start_mapping
+
+            pending_mapping_deferred = (
+                pending_mapping_deferred
+                or recover_pending_start_mapping(
+                    codex_session_id,
+                    _state=_state,
+                    _session_lock_owned=True,
+                ).pending
+            )
+            mapping = load_mapping(codex_session_id, _state=_state)
+            if not pending_mapping_deferred and mapping is None and not skip_advice_loop:
+                if not skip_service:
+
+                    async def _attach() -> AutoAttachOutcome:
+                        return await _try_workspace_auto_start(
+                            codex_session_id,
+                            store=store,
+                            workspace_commitment=workspace_commitment,
+                            _state=_state,
+                            harness_id=harness_id,
+                            workspace_locator=workspace_locator,
+                            connect=cast(HookStartConnector | None, connect),
+                            prune_surplus=True,
+                            _session_lock_owned=True,
+                        )
+
+                    attach_outcome = cast(AutoAttachOutcome, resolve_runner()(_attach))
+                    attach_reason = attach_outcome.reason
+                    mapping = _record_auto_attach(
+                        attach_outcome,
+                        event,
+                        _state=_state,
+                    )
+                if mapping is None:
+                    # Static advisory for the unattached binding: it needs no
+                    # service, so local-only mode still emits it (issue #280).
+                    additional = (
+                        "Yoetz observation is consented for this workspace; "
+                        "no ledger task is mapped yet (observation-derived binding "
+                        "only). After guidance reads, tool/schema discovery, and "
+                        "necessary bootstrap clarification, call start to attach a task "
+                        "before substantive material work. " + _STARTUP_RECOVERY_CONTEXT
+                    )
+                    if attach_reason is not None:
+                        additional = _attachment_recovery_context(attach_reason) + additional
+                    attach_advisory_only = True
+                else:
+                    additional = _active_context(mapping, mapping.last_frontier)
+            elif mapping is not None and not skip_service and not pending_mapping_deferred:
+                active_mapping = mapping
+                # The consented locator when this hook named one. The legacy
+                # bound-session lane recovers a commitment by session id and
+                # leaves the locator unset, which probed the daemon bare and
+                # was refused as `repository_identity_required` (issue #659);
+                # derive the probe's locator from the host payload's cwd or the
+                # hook cwd instead. The daemon still fences it against the
+                # mapped task's route, so a wrong guess is a typed mismatch,
+                # never access to another repository.
+                selection = (
+                    SessionWorkspace(workspace_locator, "explicit")
+                    if workspace_locator is not None
+                    else resolve_session_workspace(None, payload)
+                )
+                status_locator = selection.locator
+
+                async def _status() -> StatusOutcome:
+                    # The read carries the consented locator exactly as the
+                    # auto-attach `start` does, so the daemon's repository
+                    # fence admits a live mapping (issue #578). The
+                    # module-level connector override stays honoured.
+                    connector = (
+                        connect
+                        if connect is not None
+                        else bound_connector(
+                            cast(Callable[..., Awaitable[object]], _connect_service()),
+                            status_locator,
+                        )
+                    )
+                    return await _read_status(
+                        active_mapping,
+                        connect=connector,
+                        actor_id=f"yoetz:{harness_id}-hooks",
+                        recap=recap,
+                        recap_time_left=recap_time_left,
+                    )
+
+                # The rows pending when the facts are read are the ones those facts cannot
+                # include, even if the sweeper acknowledges them before the output (ADR-044).
+                pending_before = (
+                    _pending_work_rows(store, workspace_commitment, codex_session_id)
+                    if recap
+                    else None
+                )
+                outcome = cast(StatusOutcome, resolve_runner()(_status))
+                kind, updated = outcome.kind, outcome.mapping
+                if kind == "active" and updated is not None:
+                    store_mapping(updated, _state=_state)
+                    mapping = updated
+                    additional = _active_context(updated, updated.last_frontier)
+                    if outcome.recap is not None:
+                        recap_text = _compaction_recap_text(outcome.recap, pending_before)
+                elif kind == "stale":
+                    # The service answered: only the stored mapping is stale
+                    # (re-started elsewhere). Repair flows through the agent's
+                    # own start via handle_post_tool_use; meanwhile the static
+                    # advisory must not starve pending advice (issue #308).
+                    additional = _stale_mapping_context(mapping, outcome.replacement)
+                    attach_advisory_only = True
+                    with contextlib.suppress(Exception):
+                        record_hook_diagnostic("mapping_stale", event, _state=_state)
+                elif kind in {"workspace_unbound", "workspace_mismatch"}:
+                    # The daemon refused to bind the read to a repository. The
+                    # mapping is live and kept; this is never `mapping_stale`
+                    # and never a re-attach instruction (issue #578).
+                    additional = (
+                        _WORKSPACE_UNBOUND_CONTEXT
+                        if kind == "workspace_unbound"
+                        else _WORKSPACE_MISMATCH_CONTEXT
+                    )
+                    attach_advisory_only = True
+                    with contextlib.suppress(Exception):
+                        record_hook_diagnostic(f"status_{kind}", event, _state=_state)
+                        record_hook_diagnostic(selection.diagnostic_reason, event, _state=_state)
+                elif kind == "locked":
+                    additional = _LOCKED_CONTEXT
+                elif kind == "retry":
+                    additional = _RETRY_CONTEXT
+                elif kind == "privacy":
+                    additional = _PRIVACY_CONTEXT
+                elif kind in {"storage_unsafe", "storage_corrupt"}:
+                    # Opposite retry advice, so never the shared
+                    # "unavailable" text (#338); the same token
+                    # lands in hook diagnostics for `observe status`.
+                    additional = (
+                        _STORAGE_UNSAFE_CONTEXT
+                        if kind == "storage_unsafe"
+                        else _STORAGE_CORRUPT_CONTEXT
+                    )
+                    with contextlib.suppress(Exception):
+                        record_hook_diagnostic(kind, event, _state=_state)
+                else:
+                    additional = _UNAVAILABLE_CONTEXT
+    return _SessionStartAttach(
+        mapping=mapping,
+        pending_mapping_deferred=pending_mapping_deferred,
+        additional=additional,
+        attach_advisory_only=attach_advisory_only,
+        recap=recap_text,
+    )
+
+
+def _pending_work_rows(
+    store: LocalObservationStore, workspace_commitment: str, codex_session_id: str
+) -> int | None:
+    """This session's undelivered local rows that would add ledger work, or ``None``."""
+
+    try:
+        from yoetz.cli.compaction_recap import pending_work_rows
+
+        return pending_work_rows(store, workspace_commitment, codex_session_id)
+    except Exception:
+        return None
+
+
+def _compaction_recap_text(facts: RecapFacts, pending_rows: int | None) -> str:
+    """Render the post-compaction recap (ADR-044); an unrenderable recap is no recap."""
+
+    try:
+        from yoetz.cli.compaction_recap import compact_recap_text
+
+        return compact_recap_text(facts, pending_rows=pending_rows)
+    except Exception:
+        return ""
 
 
 def handle_observe(
@@ -3625,6 +4663,7 @@ def handle_observe(
     _content_payload: Mapping[str, JsonValue] | None = None,
     _ingress_gap: str | None = None,
     _include_admission_notice: bool = True,
+    _include_recap: bool = True,
     _pass_timing: HookPassTiming | None = None,
     _derived_runner_class: RunnerClass | None = None,
 ) -> int:
@@ -3732,30 +4771,64 @@ def handle_observe(
                     sys.stdout.close()
             return emitted
 
-        def _render_context(additional_context: str) -> dict[str, JsonValue]:
+        # Assigned only by the Stop-time closure gate below (#977); every earlier render sees None.
+        closure_gate: ClosureGate | None = None
+
+        def _render_context(
+            additional_context: str, *, limit: int | None = None
+        ) -> dict[str, JsonValue]:
             """Render advice in the receiving host's own stdout contract.
 
             Cursor keeps its raw event name; Claude Code gets its documented
-            non-error Stop feedback instead of Codex's `decision: block`.
+            non-error Stop feedback instead of Codex's `decision: block`. ``limit`` is the larger
+            character bound only the post-compaction recap is designed against (ADR-044).
             """
 
             if source is ObservationSource.CURSOR_HOOK:
                 raw_cursor_event = _output_event_name
                 if raw_cursor_event is None:
                     return {}
+                if closure_gate is not None and raw_cursor_event == "stop":
+                    # The closure gate is the one Stop text Cursor may auto-submit (#977).
+                    return _cursor_context_output(
+                        raw_cursor_event, additional_context, allow_stop_followup=True
+                    )
+                if limit is not None:
+                    return _cursor_context_output(raw_cursor_event, additional_context, limit=limit)
                 return _cursor_context_output(raw_cursor_event, additional_context)
             if source is ObservationSource.CLAUDE_HOOK:
                 # Claude requires hookSpecificOutput.hookEventName to name the
                 # event that actually fired. PostToolUseFailure is normalized to
                 # PostToolUse for Yoetz's internal observation/advice cadence, so
                 # render with the preserved host event instead (#435).
+                if limit is not None:
+                    return _claude_context_output(
+                        _output_event_name or resolved_event, additional_context, limit=limit
+                    )
                 return _claude_context_output(
                     _output_event_name or resolved_event, additional_context
                 )
+            if limit is not None:
+                return _context_output(resolved_event, additional_context, limit=limit)
             return _context_output(resolved_event, additional_context)
 
+        content_omitted = False
         try:
-            payload = read_hook_payload(stdin_bytes)
+            if source is ObservationSource.CODEX_HOOK:
+                # Codex is the one host whose raw body reaches this reader; the
+                # Claude Code and Cursor adapters skim their own raw body and
+                # hand this pass an already-reduced structural object.
+                payload, content_omitted = read_hook_ingress(stdin_bytes)
+            else:
+                payload = read_hook_payload(stdin_bytes)
+        except OversizedHookPayloadError:
+            # A complete body inside the skim cap that failed its safety
+            # checks yields nothing to keep; it is the same size loss.
+            note_payload_too_large(
+                event_name or "observe", source=source, workspace=workspace, _state=_state
+            )
+            _stdout_json({}, stdout)
+            return 0
         except ProtocolValueError as exc:
             if exc.reason_code != "payload_too_large":
                 raise
@@ -3768,6 +4841,16 @@ def handle_observe(
             )
             _stdout_json({}, stdout)
             return 0
+        if content_omitted:
+            # Above the trusted cap the event keeps its structural row (and so
+            # its pairing) instead of being lost; only its content is gone
+            # (tb4n1 B5). The gap also keeps content capture off for this row.
+            oversized_event = (
+                event_name or _token_or_none(payload.get("hook_event_name")) or "observe"
+            )
+            _ingress_gap = _oversized_ingress_gap(
+                payload, source=source, event=oversized_event, _state=_state
+            )
         harness_id: Literal["claude", "codex", "cursor"] = (
             "claude"
             if source is ObservationSource.CLAUDE_HOOK
@@ -4195,7 +5278,10 @@ def handle_observe(
                 flush_ok = store.flush_selected_admission(
                     workspace_commitment,
                     summary_builder=build_routine_read_summary,
-                    force=material_boundary or resolved_event in {"SessionStart", "SessionEnd"},
+                    # Stop is a turn boundary: flush buffered routine accounts so the
+                    # Stop drain and the closure gate see this turn whole (tb4n1 B4/C6).
+                    force=material_boundary
+                    or resolved_event in {"SessionStart", "SessionEnd", "Stop"},
                     material_boundary=material_boundary,
                 )
             except ProtocolValueError:
@@ -4228,6 +5314,26 @@ def handle_observe(
                         {**envelope.structural_payload, "runner_class": _derived_runner_class}
                     ),
                 )
+            if resolved_event in {"PreToolUse", "PostToolUse"}:
+                # Closed runtime facts (#977): install target, write scope, effective user.
+                # Read from the host's own tool input in this process; only tokens persist.
+                with contextlib.suppress(Exception):
+                    tool_token = envelope.structural_payload.get("tool_name")
+                    runtime_facts = runtime_structural_facts(
+                        _content_payload if _content_payload is not None else payload,
+                        tool_name=tool_token if type(tool_token) is str else None,
+                        workspace_locator=workspace_locator,
+                        inside=lambda value: (
+                            workspace_relative_edit_path(value, workspace_locator) is not None
+                        ),
+                    )
+                    if runtime_facts:
+                        envelope = replace(
+                            envelope,
+                            structural_payload=JsonObject(
+                                {**envelope.structural_payload, **runtime_facts}
+                            ),
+                        )
             if not selected_focused and envelope.structural_payload.get("action") == "routine_read":
                 envelope = replace(
                     envelope,
@@ -4413,8 +5519,12 @@ def handle_observe(
                     )
                 )
             )
+            # Stop is never deferred: the closure gate decides there and must read the
+            # task's observed facts after this pass delivers them (tb4n1 B4/C6).
             defer_contentless_native_drain = (
-                native_profile_drain and content_map is None and resolved_event != "SessionStart"
+                native_profile_drain
+                and content_map is None
+                and resolved_event not in {"SessionStart", "Stop"}
             )
             native_content_drain_budget = (
                 _NATIVE_CONTENT_DRAIN_BUDGET_SECONDS
@@ -4456,17 +5566,33 @@ def handle_observe(
                 )
                 if not admitted:
                     if not flush_ok:
-                        store.record_admission_loss(workspace_commitment, envelope)
+                        store.record_admission_loss(
+                            workspace_commitment,
+                            envelope,
+                            cause=AdmissionLossCause.FLUSH_FAILED,
+                        )
                     if content_chunks:
                         store.note_coverage_gap(
                             workspace_commitment,
                             ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
                         )
                     if store.consume_admission_loss_notice(workspace_commitment):
+                        # The closed refusal dimension, never input content
+                        # (tb4n1 B3): `unknown` only if no range was recorded.
+                        loss_cause = (
+                            store.admission_loss_cause(workspace_commitment, envelope)
+                            or AdmissionLossCause.UNKNOWN
+                        )
                         _stderr_line(
-                            "hook_observe_degraded: outbox_overflow; loss accounted; see observe status"
+                            "hook_observe_degraded: outbox_overflow; loss accounted; "
+                            f"see observe status; cause={loss_cause.value}"
                         )
                         record_hook_diagnostic("outbox_overflow", resolved_event, _state=_state)
+                        record_hook_diagnostic(
+                            "admission_loss_" + loss_cause.value,
+                            resolved_event,
+                            _state=_state,
+                        )
                 elif read_protected and _is_post_event(resolved_event):
                     store.consume_read_protection(
                         workspace_commitment, session_commitment, envelope
@@ -4604,7 +5730,6 @@ def handle_observe(
         # skip_service so local-only callers (e.g. the setup readiness probe)
         # never create or attach real ledger tasks.
         additional = ""
-        attach_reason: str | None = None
         attach_advisory_only = False
         pending_mapping_deferred = mapping_lifecycle_deferred
         mapping: LifecycleMapping | None = load_mapping(codex_session_id, _state=_state)
@@ -4627,185 +5752,50 @@ def handle_observe(
                 )
             mapping = load_mapping(codex_session_id, _state=_state)
         drain_started = _monotonic()
+        # The Stop pass may spend more of its host window on delivery, up to the point that
+        # still leaves the closure gate its status-read reserve.
+        stop_drain_deadline: float | None = (
+            entry_started
+            + _hook_host_window_seconds(source, "Stop")
+            - _STOP_CLOSURE_GATE_RESERVE_SECONDS
+            - _STOP_DRAIN_DEADLINE_MARGIN_SECONDS
+            if resolved_event == "Stop"
+            else None
+        )
+        session_recap = ""
         if resolved_event == "SessionStart":
             session_source_value = _session_start_source(payload)
             if session_source_value != "clear":
-                # SessionStart-only status/attach helpers: they drag protocol.models
-                # and service.client, which no other event needs (#242).
-                from yoetz.cli.hooks import (
-                    _LOCKED_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-                    _PRIVACY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-                    _RETRY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-                    _STARTUP_RECOVERY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-                    _STORAGE_CORRUPT_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-                    _STORAGE_UNSAFE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-                    _UNAVAILABLE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-                    _WORKSPACE_MISMATCH_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-                    _WORKSPACE_UNBOUND_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-                    SessionWorkspace,
-                    StatusOutcome,
-                    _active_context,  # pyright: ignore[reportPrivateUsage]
-                    _read_status,  # pyright: ignore[reportPrivateUsage]
-                    _stale_mapping_context,  # pyright: ignore[reportPrivateUsage]
-                    bound_connector,
-                    resolve_session_workspace,
+                attach = _session_start_attach(
+                    codex_session_id,
+                    store=store,
+                    workspace_commitment=workspace_commitment,
+                    workspace_locator=workspace_locator,
+                    harness_id=harness_id,
+                    payload=payload,
+                    connect=connect,
+                    resolve_runner=_resolve_runner,
+                    event=resolved_event,
+                    mapping=mapping,
+                    pending_mapping_deferred=pending_mapping_deferred,
+                    skip_service=skip_service,
+                    skip_advice_loop=skip_advice_loop,
+                    session_lock_owned=_session_lock_owned,
+                    _state=_state,
+                    # Codex runs its re-ground hook and this pass concurrently on a compact
+                    # start; whichever holds the session lifecycle lock reads status and carries
+                    # the active context, so it must carry the recap too (the other emits at
+                    # most the admission notice). Claude Code and Cursor have this pass only.
+                    recap=session_source_value == "compact" and _include_recap,
+                    recap_time_left=lambda: (
+                        entry_started + _RECAP_READ_WINDOW_SECONDS - _monotonic()
+                    ),
                 )
-
-                session_lifecycle_lock = (
-                    contextlib.nullcontext(True)
-                    if _session_lock_owned
-                    else acquire_session_lock(codex_session_id, _state=_state)
-                )
-                with session_lifecycle_lock as owned:
-                    if owned:
-                        from yoetz.cli.hooks import recover_pending_start_mapping
-
-                        pending_mapping_deferred = (
-                            pending_mapping_deferred
-                            or recover_pending_start_mapping(
-                                codex_session_id,
-                                _state=_state,
-                                _session_lock_owned=True,
-                            ).pending
-                        )
-                        mapping = load_mapping(codex_session_id, _state=_state)
-                        if (
-                            not pending_mapping_deferred
-                            and mapping is None
-                            and not skip_advice_loop
-                        ):
-                            if not skip_service:
-
-                                async def _attach() -> AutoAttachOutcome:
-                                    return await _try_workspace_auto_start(
-                                        codex_session_id,
-                                        store=store,
-                                        workspace_commitment=workspace_commitment,
-                                        _state=_state,
-                                        harness_id=harness_id,
-                                        workspace_locator=workspace_locator,
-                                        connect=cast(HookStartConnector | None, connect),
-                                        prune_surplus=True,
-                                        _session_lock_owned=True,
-                                    )
-
-                                attach_outcome = cast(AutoAttachOutcome, _resolve_runner()(_attach))
-                                attach_reason = attach_outcome.reason
-                                mapping = _record_auto_attach(
-                                    attach_outcome,
-                                    resolved_event,
-                                    _state=_state,
-                                )
-                            if mapping is None:
-                                # Static advisory for the unattached binding: it needs no
-                                # service, so local-only mode still emits it (issue #280).
-                                additional = (
-                                    "Yoetz observation is consented for this workspace; "
-                                    "no ledger task is mapped yet (observation-derived binding "
-                                    "only). After guidance reads, tool/schema discovery, and "
-                                    "necessary bootstrap clarification, call start to attach a task "
-                                    "before substantive material work. " + _STARTUP_RECOVERY_CONTEXT
-                                )
-                                if attach_reason is not None:
-                                    additional = (
-                                        _attachment_recovery_context(attach_reason) + additional
-                                    )
-                                attach_advisory_only = True
-                            else:
-                                additional = _active_context(mapping, mapping.last_frontier)
-                        elif (
-                            mapping is not None
-                            and not skip_service
-                            and not pending_mapping_deferred
-                        ):
-                            active_mapping = mapping
-                            # The consented locator when this hook named one. The legacy
-                            # bound-session lane recovers a commitment by session id and
-                            # leaves the locator unset, which probed the daemon bare and
-                            # was refused as `repository_identity_required` (issue #659);
-                            # derive the probe's locator from the host payload's cwd or the
-                            # hook cwd instead. The daemon still fences it against the
-                            # mapped task's route, so a wrong guess is a typed mismatch,
-                            # never access to another repository.
-                            selection = (
-                                SessionWorkspace(workspace_locator, "explicit")
-                                if workspace_locator is not None
-                                else resolve_session_workspace(None, payload)
-                            )
-                            status_locator = selection.locator
-
-                            async def _status() -> StatusOutcome:
-                                # The read carries the consented locator exactly as the
-                                # auto-attach `start` does, so the daemon's repository
-                                # fence admits a live mapping (issue #578). The
-                                # module-level connector override stays honoured.
-                                connector = (
-                                    connect
-                                    if connect is not None
-                                    else bound_connector(
-                                        cast(Callable[..., Awaitable[object]], _connect_service()),
-                                        status_locator,
-                                    )
-                                )
-                                return await _read_status(
-                                    active_mapping,
-                                    connect=connector,
-                                    actor_id=f"yoetz:{harness_id}-hooks",
-                                )
-
-                            outcome = cast(StatusOutcome, _resolve_runner()(_status))
-                            kind, updated = outcome.kind, outcome.mapping
-                            if kind == "active" and updated is not None:
-                                store_mapping(updated, _state=_state)
-                                mapping = updated
-                                additional = _active_context(updated, updated.last_frontier)
-                            elif kind == "stale":
-                                # The service answered: only the stored mapping is stale
-                                # (re-started elsewhere). Repair flows through the agent's
-                                # own start via handle_post_tool_use; meanwhile the static
-                                # advisory must not starve pending advice (issue #308).
-                                additional = _stale_mapping_context(mapping, outcome.replacement)
-                                attach_advisory_only = True
-                                with contextlib.suppress(Exception):
-                                    record_hook_diagnostic(
-                                        "mapping_stale", resolved_event, _state=_state
-                                    )
-                            elif kind in {"workspace_unbound", "workspace_mismatch"}:
-                                # The daemon refused to bind the read to a repository. The
-                                # mapping is live and kept; this is never `mapping_stale`
-                                # and never a re-attach instruction (issue #578).
-                                additional = (
-                                    _WORKSPACE_UNBOUND_CONTEXT
-                                    if kind == "workspace_unbound"
-                                    else _WORKSPACE_MISMATCH_CONTEXT
-                                )
-                                attach_advisory_only = True
-                                with contextlib.suppress(Exception):
-                                    record_hook_diagnostic(
-                                        f"status_{kind}", resolved_event, _state=_state
-                                    )
-                                    record_hook_diagnostic(
-                                        selection.diagnostic_reason, resolved_event, _state=_state
-                                    )
-                            elif kind == "locked":
-                                additional = _LOCKED_CONTEXT
-                            elif kind == "retry":
-                                additional = _RETRY_CONTEXT
-                            elif kind == "privacy":
-                                additional = _PRIVACY_CONTEXT
-                            elif kind in {"storage_unsafe", "storage_corrupt"}:
-                                # Opposite retry advice, so never the shared
-                                # "unavailable" text (#338); the same token
-                                # lands in hook diagnostics for `observe status`.
-                                additional = (
-                                    _STORAGE_UNSAFE_CONTEXT
-                                    if kind == "storage_unsafe"
-                                    else _STORAGE_CORRUPT_CONTEXT
-                                )
-                                with contextlib.suppress(Exception):
-                                    record_hook_diagnostic(kind, resolved_event, _state=_state)
-                            else:
-                                additional = _UNAVAILABLE_CONTEXT
+                mapping = attach.mapping
+                pending_mapping_deferred = attach.pending_mapping_deferred
+                additional = attach.additional
+                attach_advisory_only = attach.attach_advisory_only
+                session_recap = attach.recap
             elif (
                 source is ObservationSource.CURSOR_HOOK
                 and mapping is None
@@ -4877,50 +5867,18 @@ def handle_observe(
             # unreachable, so one missed SessionStart no longer costs the session's whole
             # record (#275). Bounded, and placed before the drain below so a fresh mapping
             # delivers this session's backlog in the same pass.
-            retry_session_lock = (
-                contextlib.nullcontext(True)
-                if _session_lock_owned
-                else acquire_session_lock(codex_session_id, _state=_state)
+            mapping = _retry_auto_attach(
+                codex_session_id,
+                store=store,
+                workspace_commitment=workspace_commitment,
+                harness_id=harness_id,
+                workspace_locator=workspace_locator,
+                connect=connect,
+                resolve_runner=_resolve_runner,
+                event=resolved_event,
+                session_lock_owned=_session_lock_owned,
+                _state=_state,
             )
-            with retry_session_lock as owned:
-                if owned:
-                    mapping = load_mapping(codex_session_id, _state=_state)
-                    if mapping is None:
-
-                        async def _attach_retry() -> AutoAttachOutcome:
-                            import asyncio
-
-                            attach = _try_workspace_auto_start(
-                                codex_session_id,
-                                store=store,
-                                workspace_commitment=workspace_commitment,
-                                _state=_state,
-                                harness_id=harness_id,
-                                workspace_locator=workspace_locator,
-                                connect=cast(HookStartConnector | None, connect),
-                                _session_lock_owned=True,
-                                service_start_timeout_seconds=(
-                                    _AUTO_ATTACH_RETRY_SERVICE_START_BUDGET_SECONDS
-                                ),
-                            )
-                            return await asyncio.wait_for(
-                                attach,
-                                timeout=_AUTO_ATTACH_RETRY_BUDGET_SECONDS,
-                            )
-
-                        try:
-                            outcome = cast(AutoAttachOutcome, _resolve_runner()(_attach_retry))
-                        except TimeoutError:
-                            outcome = AutoAttachOutcome(None, "timeout")
-                        except Exception:
-                            outcome = AutoAttachOutcome(None, "service_unavailable")
-                        mapping = _record_auto_attach(outcome, resolved_event, _state=_state)
-                        if mapping is None:
-                            # The retry marker names the path; the typed reason
-                            # above names the cause.
-                            record_hook_diagnostic(
-                                "auto_attach_retry_failed", resolved_event, _state=_state
-                            )
 
         # A pending lifecycle operation is a local fence, not a service
         # mapping_missing result. Leave the captured rows pending until the
@@ -4951,17 +5909,50 @@ def handle_observe(
                     budget_seconds=(
                         _SESSION_END_DRAIN_BUDGET_SECONDS
                         if resolved_event == "SessionEnd"
+                        else _STOP_DRAIN_BUDGET_SECONDS
+                        if resolved_event == "Stop"
                         else native_content_drain_budget
                     ),
                     priority_source_identity=native_content_priority,
                     monotonic=_monotonic,
                     session_lock_owned=_session_lock_owned,
                     drain_lease_owned=native_drain_lease_owned,
+                    row_limit=(
+                        _STOP_DRAIN_ROW_LIMIT if resolved_event == "Stop" else _HOOK_DRAIN_ROW_LIMIT
+                    ),
+                    deadline=stop_drain_deadline,
                 )
 
             with contextlib.suppress(Exception):
                 _resolve_runner()(_drain_all)
             _release_native_drain_lease()
+            if resolved_event == "Stop" and stop_drain_deadline is not None and mapping is not None:
+                # Finish the drain at Stop: the closure gate below then decides on observed
+                # facts. The outcome is a bounded diagnostic either way (tb4n1 B4/C6).
+                stop_mapping = mapping
+
+                async def _finish() -> int:
+                    assert stop_drain_deadline is not None
+                    return await _finish_stop_drain(
+                        store,
+                        workspace_commitment=workspace_commitment,
+                        codex_session_id=codex_session_id,
+                        yoetz_session_id=stop_mapping.yoetz_session_id,
+                        connect=cast(HookDrainConnector | None, connect),
+                        _state=_state,
+                        deadline=stop_drain_deadline,
+                        monotonic=_monotonic,
+                        session_lock_owned=_session_lock_owned,
+                    )
+
+                stop_left = 1
+                with contextlib.suppress(Exception):
+                    stop_left = cast(int, _resolve_runner()(_finish))
+                record_hook_diagnostic(
+                    "stop_drain_complete" if stop_left == 0 else "stop_drain_incomplete",
+                    resolved_event,
+                    _state=_state,
+                )
 
         if content_chunks and skip_service:
             # Content is intentionally ephemeral. Without a ready mapped
@@ -4981,18 +5972,70 @@ def handle_observe(
         # Commit remains after emit, so a failed write never suppresses a later delivery.
         pending_delivery: AdviceDelivery | None = None
         delivery_session_id: str | None = None
-        # stop_hook_active is the host loop guard: a prior Stop already
-        # continued this turn. Blocking again would loop; leave advice for a
-        # later turn or SessionStart instead of consuming it here.
+        # stop_hook_active says a prior Stop already continued this turn. Ordinary items and
+        # advice never continue it again; only a re-check readiness announced since the last
+        # gate (a blocker, an acknowledgement, the acceptance re-read) or a withdrawn deliverable
+        # not yet voiced is asked once, within the per-turn cap (#985, tb4n3 RC-8), and anything
+        # else records the normal end of a continued turn.
         stop_already_active = payload.get("stop_hook_active") is True
+        if resolved_event == "Stop" and not stop_already_active and mapping is not None:
+            # A Stop the host did not continue starts a new turn for the gate's per-turn cap,
+            # whether or not the gate is evaluated below (#985). Never raises.
+            reset_closure_gate_turn(mapping.yoetz_session_id, _state=_state)
+        if (
+            resolved_event == "Stop"
+            and not child_attribution_gap
+            and not skip_service
+            and not pending_mapping_deferred
+            and mapping is not None
+        ):
+            closure_gate = _decide_closure_gate(
+                mapping,
+                store=store,
+                workspace_commitment=workspace_commitment,
+                codex_session_id=codex_session_id,
+                workspace_locator=workspace_locator,
+                payload=payload,
+                connect=connect,
+                run=_resolve_runner(),
+                harness_id=harness_id,
+                remaining_seconds=(
+                    _hook_host_window_seconds(source, resolved_event)
+                    - (_monotonic() - entry_started)
+                ),
+                _state=_state,
+                active_stop=stop_already_active,
+            )
+            if closure_gate is not None:
+                # The gate is the whole Stop message: it names what remains, and ordinary
+                # advice waits for a later event rather than diluting it.
+                additional = closure_gate.text
+        if (
+            resolved_event == "Stop"
+            and stop_already_active
+            and mapping is not None
+            and closure_gate is None
+        ):
+            # An already-continued Stop that emits nothing is the normal end of a continued turn
+            # (#985); it guards no loop, so the diagnostic says what happened (tb4n3 RC-8).
+            with contextlib.suppress(Exception):
+                record_hook_diagnostic(
+                    "closure_gate_turn_end_after_continue", resolved_event, _state=_state
+                )
         # Task/receipt context always wins this shared channel outright, with one exception:
         # the static attach advisory carries no advice of its own, so pending advice joins it
         # (the delivery text is appended below) instead of being silently starved at the very
         # SessionStart that bootstraps an unmapped session (issues #241, #280).
         delivery_eligible = (
             not child_attribution_gap
+            and closure_gate is None
             and (not additional or attach_advisory_only)
             and resolved_event in ADVICE_SAFE_EVENTS
+            # Ordinary advice never rides a Stop (#985): on every host the Stop channel continues
+            # the agent (Codex `decision: block`, Claude Stop feedback, Cursor follow-up), so it
+            # would spend the turn's continuation the closure gate needs. It stays pending for
+            # the next PostToolUse or SessionStart.
+            and resolved_event != "Stop"
             and not skip_advice_loop
             and not stop_already_active
             and (
@@ -5004,6 +6047,20 @@ def handle_observe(
                     == CURSOR_ORDINARY_OBSERVATION_PROFILE_ID
                 )
             )
+        )
+        # Codex and Claude Code: standing advice a Stop withheld rides the first later
+        # PostToolUse instead of waiting for the next SessionStart (#985). Cursor never
+        # delivered advice at stop, so its cadence is unchanged.
+        standing_carry = _standing_advice_carry(
+            store,
+            event=resolved_event,
+            native_host=source is not ObservationSource.CURSOR_HOOK,
+            stop_note=(not child_attribution_gap and closure_gate is None and not skip_advice_loop),
+            delivery_eligible=delivery_eligible,
+            workspace_commitment=workspace_commitment,
+            yoetz_session_id=None if mapping is None else mapping.yoetz_session_id,
+            session_commitment=session_commitment,
+            _state=_state,
         )
         delivery_gate = (
             store.advice_delivery_lease(workspace_commitment)
@@ -5022,9 +6079,13 @@ def handle_observe(
                 delivery = store.peek_advice_for_delivery(
                     workspace_commitment,
                     yoetz_session_id=delivery_session_id,
-                    allow_standing=resolved_event in STANDING_ADVICE_CADENCE_EVENTS,
+                    allow_standing=(
+                        resolved_event in STANDING_ADVICE_CADENCE_EVENTS or standing_carry
+                    ),
                     session_commitment=session_commitment,
                 )
+                if delivery is None and standing_carry:
+                    set_standing_advice_withheld(session_commitment, False, _state=_state)
                 if delivery is not None:
                     additional = " ".join(part for part in (additional, delivery.text) if part)[
                         :_MAX_ADVICE_CONTEXT
@@ -5042,55 +6103,55 @@ def handle_observe(
                     or _output_event_name == "sessionStart"
                 )
             ):
-                with contextlib.suppress(Exception):
-                    recommendation = _cached_recommendation_context(_state=_state)
-                    if recommendation and not additional:
-                        additional = recommendation
-                    elif (
-                        recommendation
-                        and len(additional) + 1 + len(recommendation) <= _MAX_ADVICE_CONTEXT
-                    ):
-                        additional = f"{additional} {recommendation}"
+                additional = _session_start_context(
+                    additional,
+                    payload,
+                    include_admission_notice=(
+                        _include_admission_notice
+                        and not pending_mapping_deferred
+                        and not mapping_lifecycle_deferred
+                    ),
+                    harness_id=harness_id,
+                    workspace_locator=workspace_locator,
+                    connect=connect,
+                    resolve_runner=_resolve_runner,
+                    deadline=entry_started + _HOOK_TOTAL_BUDGET_SECONDS - 0.1,
+                    skip_service=skip_service,
+                    monotonic=_monotonic,
+                    _state=_state,
+                )
 
-                if (
-                    _include_admission_notice
-                    and not pending_mapping_deferred
-                    and not mapping_lifecycle_deferred
-                    and _session_start_source(payload) != "clear"
-                ):
-                    from yoetz.cli.host_hold_advisory import PrivacyConnector
-                    from yoetz.cli.host_startup_advisory import append_admission_notice
-
-                    additional = append_admission_notice(
-                        additional,
-                        harness_id,
-                        workspace_locator,
-                        connect=None if connect is None else cast(PrivacyConnector, connect),
-                        run_async=_resolve_runner(),
-                        deadline=entry_started + _HOOK_TOTAL_BUDGET_SECONDS - 0.1,
-                        max_chars=_MAX_ADVICE_CONTEXT,
-                        skip_service=skip_service,
-                        monotonic=_monotonic,
-                    )
-
-            rendered_output = _render_context(additional) if additional else {}
+            context_limit: int | None = None
+            if session_recap and resolved_event == "SessionStart":
+                additional = f"{additional}\n{session_recap}".strip()
+                context_limit = RECAP_CONTEXT_LIMIT
+            rendered_output = _render_context(additional, limit=context_limit) if additional else {}
             host_consumable = bool(rendered_output)
             if additional:
                 emitted = _stdout_json(rendered_output, stdout)
             else:
                 emitted = _stdout_json({}, stdout)
+            if emitted and host_consumable and closure_gate is not None and mapping is not None:
+                _record_closure_gate_emitted(
+                    mapping.yoetz_session_id,
+                    closure_gate,
+                    resolved_event,
+                    active_stop=stop_already_active,
+                    _state=_state,
+                )
             if emitted and host_consumable and pending_delivery is not None:
                 # Strictly after the write: delivered-but-unrecorded costs one
                 # redelivery, recorded-but-undelivered would cost the advice.
-                # Nothing past the emission may raise — the outer handler would
-                # write a second JSON object onto a stream that already has one.
-                with contextlib.suppress(BaseException):
-                    store.commit_advice_delivery(
-                        workspace_commitment,
-                        pending_delivery.delivery_identity,
-                        yoetz_session_id=delivery_session_id,
-                        session_commitment=session_commitment,
-                    )
+                _commit_emitted_advice(
+                    store,
+                    workspace_commitment,
+                    pending_delivery,
+                    yoetz_session_id=delivery_session_id,
+                    session_commitment=session_commitment,
+                    event=resolved_event,
+                    standing_carry=standing_carry,
+                    _state=_state,
+                )
         # Advice selection, the lease, the stdout write itself and the delivery
         # commits sit past the 'drain' window; a blocked host pipe or a
         # contended commit was previously invisible (#310/#311).
@@ -5136,7 +6197,9 @@ def handle_observe(
             with contextlib.suppress(BaseException):
                 _stderr_line("hook_observe_degraded: observe; observation durability unknown")
             with contextlib.suppress(BaseException):
-                record_hook_diagnostic("observe", event_name or "observe", _state=_state)
+                record_hook_diagnostic(
+                    observe_exception_reason(failure), event_name or "observe", _state=_state
+                )
         if session_end_uncommitted:
             with contextlib.suppress(BaseException):
                 _report_session_end_unrecorded("SessionEnd", _state=_state)
@@ -5882,10 +6945,13 @@ def _handle_claude_observe(
         "fork": "claude_session_fork",
     }
     try:
+        content_omitted = False
         try:
-            payload = read_hook_payload(stdin_bytes)
-        except ProtocolValueError as exc:
-            if exc.reason_code != "payload_too_large":
+            payload, content_omitted = read_hook_ingress(stdin_bytes)
+        except (OversizedHookPayloadError, ProtocolValueError) as exc:
+            if exc.reason_code != "payload_too_large" and not isinstance(
+                exc, OversizedHookPayloadError
+            ):
                 raise
             # This host ingress swallowed every refusal into a bare `{}` with no
             # record at all, so an oversized Claude Code event left no trace of
@@ -6179,11 +7245,24 @@ def _handle_claude_observe(
                 # applies to a successful callback carrying child-only transcript metadata: a
                 # success bit does not authorize parent attribution.
                 child_attribution_gap = True
+        if event_map[raw_event] == "PostToolUse" and OBSERVED_IMAGES_KEY in payload:
+            # Digest-only image facts the ingress reader computed (P3-2, issue #1013).
+            structural[OBSERVED_IMAGES_KEY] = payload[OBSERVED_IMAGES_KEY]
         if ordinary_profile and raw_event in {"PreToolUse", "PostToolUse", "PostToolUseFailure"}:
             _attach_command_commitment(structural, payload, _state=_state)
         derived_runner_class = (
             command_runner_class(payload)
             if ordinary_profile and raw_event in {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
+            else None
+        )
+        claude_ingress_gap = (
+            _oversized_ingress_gap(
+                payload,
+                source=ObservationSource.CLAUDE_HOOK,
+                event=event_map[raw_event],
+                _state=_state,
+            )
+            if content_omitted
             else None
         )
         result = handle_observe(
@@ -6203,8 +7282,9 @@ def _handle_claude_observe(
             _content_capture_profile=(
                 CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID if ordinary_profile else None
             ),
-            _content_payload=payload if ordinary_profile else None,
+            _content_payload=payload if ordinary_profile and not content_omitted else None,
             _derived_runner_class=derived_runner_class,
+            _ingress_gap=claude_ingress_gap,
             _pass_timing=_pass_timing,
         )
         if denied_output is not None:
@@ -6545,6 +7625,13 @@ def _handle_cursor_observe(
             structural["capability_profile_id"] = capability_profile_id
         if ordinary_profile:
             structural["mapping_hint"] = CURSOR_ORDINARY_HOOK_MAPPING_VERSION
+        loop_count = payload.get("loop_count")
+        if raw_event == "stop" and type(loop_count) is int and loop_count > 0:
+            # Cursor's own loop guard: this stop follows an earlier follow-up message. It maps to
+            # stop_hook_active, so the closure gate treats it as an active Stop: only a new
+            # blocker key is re-asked, within the per-turn cap of 2, well under Cursor's own
+            # default loop_limit of 5 (#977, #985).
+            structural["stop_hook_active"] = True
         identity_fields = (
             (
                 ("cursor_version", "cursor_version"),
@@ -6616,6 +7703,9 @@ def _handle_cursor_observe(
                 structural["action"] = "routine_read"
         elif ordinary_profile and raw_event == "preToolUse":
             structural["action"] = "cursor_tool_pending"
+        if event_map[raw_event] == "PostToolUse" and OBSERVED_IMAGES_KEY in payload:
+            # Digest-only image facts the ingress reader computed (P3-2, issue #1013).
+            structural[OBSERVED_IMAGES_KEY] = payload[OBSERVED_IMAGES_KEY]
         if ordinary_profile and raw_event in {"preToolUse", "postToolUse", "postToolUseFailure"}:
             _attach_command_commitment(structural, payload, _state=_state)
         path_value = payload.get("file_path") if raw_event == "afterFileEdit" else None
@@ -6648,18 +7738,18 @@ def _handle_cursor_observe(
                     if effort is not None:
                         structural["model_effort"] = effort
                     break
-        if content_omitted:
-            with contextlib.suppress(BaseException):
-                _stderr_line(
-                    "hook_cursor_observe_degraded: payload_content_omitted; "
-                    "structural identity retained; native content omitted; see observe status"
-                )
-            with contextlib.suppress(BaseException):
-                record_hook_diagnostic(
-                    "cursor_payload_content_omitted",
-                    event_map[raw_event],
-                    _state=_state,
-                )
+        # A Yoetz-owned tool in a scoped spelling lost nothing; Cursor's generic
+        # ``MCP:<tool>`` spelling names no owner, so it keeps the gap (tb4n1 B5).
+        cursor_ingress_gap = (
+            _oversized_ingress_gap(
+                payload,
+                source=ObservationSource.CURSOR_HOOK,
+                event=event_map[raw_event],
+                _state=_state,
+            )
+            if content_omitted
+            else None
+        )
         derived_runner_class = (
             command_runner_class(payload)
             if ordinary_profile and raw_event in {"preToolUse", "postToolUse", "postToolUseFailure"}
@@ -6682,9 +7772,7 @@ def _handle_cursor_observe(
             ),
             _content_payload=None if content_omitted or not ordinary_profile else payload,
             _derived_runner_class=derived_runner_class,
-            _ingress_gap=(
-                ObservationGapCode.PAYLOAD_CONTENT_OMITTED.value if content_omitted else None
-            ),
+            _ingress_gap=cursor_ingress_gap,
             _pass_timing=_pass_timing,
         )
     except BaseException:
@@ -6719,8 +7807,23 @@ def handle_spool(
     event = event_name or "observe"
     timing = HookPassTiming("codex", event, "sync_fallback_spool", started)
     try:
-        raw = stdin_bytes if stdin_bytes is not None else sys.stdin.buffer.read(_MAX_CONTENT_CHUNK)
-        payload = read_hook_payload(raw)
+        raw = (
+            stdin_bytes
+            if stdin_bytes is not None
+            else sys.stdin.buffer.read(MAX_HOOK_SKIM_BYTES + 1)
+        )
+        try:
+            # The spool keeps only structural fields, so an oversized body's
+            # identity view loses nothing it would have kept (tb4n1 B5).
+            payload, _content_omitted = read_hook_ingress(raw)
+        except (OversizedHookPayloadError, ProtocolValueError) as exc:
+            if isinstance(exc, ProtocolValueError) and exc.reason_code != "payload_too_large":
+                raise
+            note_payload_too_large(
+                event, source=ObservationSource.CODEX_HOOK, workspace=workspace, _state=_state
+            )
+            timing.outcome = "failed"
+            return 0
         if workspace is not None and event_name in {
             "PreToolUse",
             "PermissionRequest",
@@ -6750,9 +7853,9 @@ def handle_spool(
                 payload=spool_payload,
             )
             timing.outcome = "ingested"
-    except Exception:
+    except Exception as failure:
         timing.outcome = "failed"
-        record_hook_diagnostic("observe", event, _state=_state)
+        record_hook_diagnostic(observe_exception_reason(failure), event, _state=_state)
     finally:
         with contextlib.suppress(Exception):
             hook_io.stdout_json({}, stdout)

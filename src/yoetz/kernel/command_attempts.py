@@ -2,14 +2,60 @@
 
 from __future__ import annotations
 
-from yoetz.domain.events import LedgerRecord, is_observation_authored
+import posixpath
+from collections.abc import Iterable
+from typing import TYPE_CHECKING
+
+from yoetz.domain.events import ActionKind, LedgerRecord, is_observation_authored
 from yoetz.domain.values import ActionId, EventId, ObligationId, ResultId
 from yoetz.kernel.projections import ProjectionState
 from yoetz.protocol.models import StatusCommandAttemptModel
 
+if TYPE_CHECKING:
+    from yoetz.kernel.task_facts import ObservedCommandRun
+
+
+def same_requested_path(requested: str, other: str) -> bool:
+    """Whether two spellings name the same requested file or directory (ADR-045).
+
+    ``attempted_items`` and a requested value used to match only byte for byte, so
+    ``out/build.log`` never matched ``/app/out/build.log`` and ``./solve.sage`` never matched
+    ``solve.sage`` (retro S: ``requested_item_never_attempted`` on files it had written). Both
+    are normalised lexically (``.`` and ``..`` folded, no filesystem access). Two absolute paths
+    match only when equal; otherwise the relative one matches when its components are the tail of
+    the other's. The tail rule trades a rare false match (two files of one name in different
+    directories) for the common true one (the agent's relative spelling of an absolute value).
+    """
+
+    if type(requested) is not str or type(other) is not str or not requested or not other:
+        return False
+    first = posixpath.normpath(requested.strip())
+    second = posixpath.normpath(other.strip())
+    if first == second:
+        return True
+    first_absolute, second_absolute = first.startswith("/"), second.startswith("/")
+    if first_absolute and second_absolute:
+        return False
+    first_parts = [part for part in first.split("/") if part not in {"", "."}]
+    second_parts = [part for part in second.split("/") if part not in {"", "."}]
+    if not first_parts or not second_parts or ".." in first_parts or ".." in second_parts:
+        return False
+    shorter, longer = sorted((first_parts, second_parts), key=len)
+    return longer[len(longer) - len(shorter) :] == shorter
+
+
+def value_in_attempted(value: str, attempted: Iterable[str]) -> bool:
+    """Whether *value* is among *attempted*, exactly or as the same file path (ADR-045)."""
+
+    items = tuple(attempted)
+    return value in items or any(same_requested_path(value, item) for item in items)
+
 
 def attempted_items_for_obligation(
-    state: ProjectionState, obligation_id: ObligationId
+    state: ProjectionState,
+    obligation_id: ObligationId,
+    *,
+    action_kind: ActionKind | None = None,
 ) -> frozenset[str]:
     """Return action assertions attributable to one obligation.
 
@@ -17,12 +63,14 @@ def attempted_items_for_obligation(
     cover every obligation.  Once an action names obligations, its attempted items
     belong only to those exact ids.  Keeping this rule in one helper makes the
     status projection and deterministic requested-item policy agree (#967).
+    ``action_kind`` keeps only actions of that kind (the requested-output facts read edits).
     """
 
     return frozenset(
         item
         for record in state.actions.values()
         if record.payload is not None
+        and (action_kind is None or record.payload.action_kind is action_kind)
         and (not record.payload.obligation_refs or obligation_id in record.payload.obligation_refs)
         for item in record.payload.attempted_items
     )
@@ -36,9 +84,17 @@ def command_attempts(
     A cooperative action may name an observed action event as a causal parent. An obligation's
     resolution result may name an observed action. Both are explicit relevance assertions, not
     temporal correlation. Service-stamped authorship supplies the independent observation fact.
-    Missing, omitted, ambiguous, or redacted command bytes stay unknown. Exact bytes are the only
-    matching rule: wrappers and formatting are not assumed equivalent.
+    Missing, ambiguous, or redacted command bytes stay unknown. A keyed observed command (the
+    hook's installation-keyed commitments, never text) is compared with the planned command by
+    the shared matcher of ``task_facts`` (ADR-045): the same command, the same command up to
+    wrappers, or a run that began with the planned arguments or carried its program and flags.
     """
+
+    from yoetz.kernel.task_facts import (  # lazy: task_facts imports this module
+        observed_run_from_command,
+        planned_match,
+        requested_planned_command,
+    )
 
     obligation = state.obligations[obligation_id].payload
     if obligation is None:
@@ -83,6 +139,7 @@ def command_attempts(
             and row.schema.name == "action_recorded"
         ]
         commands: set[str | None] = set()
+        keyed_runs: list[ObservedCommandRun] = []
         for row in observed:
             key = row.projection_locator.logical_key
             action = state.actions.get(ActionId(key)) if key is not None else None
@@ -90,6 +147,9 @@ def command_attempts(
                 commands.add(None)
             elif action.payload.action_kind.value == "command":
                 commands.add(action.payload.command)
+                run = observed_run_from_command(action.payload.command)
+                if run is not None:
+                    keyed_runs.append(run)
             else:
                 commands.add(None)
         unavailable = not commands or any(
@@ -102,6 +162,17 @@ def command_attempts(
                 if requested.value in commands
                 else "asserted_observed_mismatch"
             )
+        elif commands and len(keyed_runs) == len(commands) and None not in commands:
+            # ADR-045: every linked observed action carries a keyed command identity, so the
+            # planned command is compared with them by the shared matcher (exact, up to wrappers,
+            # or by leading arguments or flags) instead of byte for byte against nothing.
+            planned = requested_planned_command(requested.value)
+            if planned is not None:
+                relation = (
+                    "matching_observed_attempt"
+                    if any(planned_match(run, planned) is not None for run in keyed_runs)
+                    else "asserted_observed_mismatch"
+                )
         # Without an assertion this is evidence discovery, not an asserted/observed disagreement.
         if not assertions and relation == "asserted_observed_mismatch":
             relation = "unknown"

@@ -290,6 +290,65 @@ def test_a_terminal_check_still_validates_and_declares_complete() -> None:
     assert result.root.state == "complete"
 
 
+_REDACTED_WIRE: Final = [
+    {
+        "disposition": "value_replaced",
+        "item_id": "excerpt-a",
+        "lines": [3, 7],
+        "source_ref": "evd_10000000-0000-4000-8000-000000000021",
+    },
+    {"disposition": "item_withheld", "item_id": "excerpt-heuristic", "lines": [2]},
+]
+
+
+def test_check_result_and_operation_page_accept_redacted_value_refs_and_lines() -> None:
+    """PL2-1 (issue #982): bounded structural entries validate on both public shapes."""
+
+    from unit.protocol.test_models_and_schemas import (  # pyright: ignore[reportMissingImports]
+        _check_result_wire,
+    )
+
+    result = CheckResultModel.model_validate(
+        {**_check_result_wire(), "semantic_redacted_values": _REDACTED_WIRE}
+    )
+    assert type(result.root) is CheckSuccessModel
+    assert result.root.semantic_redacted_values[0].lines == (3, 7)
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "complete",
+            "operation_kind": "check",
+            "semantic_redacted_values": _REDACTED_WIRE,
+        }
+    )
+    assert page.semantic_redacted_values is not None
+    assert page.semantic_redacted_values[1].source_ref is None
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        {"disposition": "value_replaced", "item_id": "x", "lines": [3, 1]},
+        {"disposition": "value_replaced", "item_id": "x", "lines": [0]},
+        {"disposition": "value_replaced", "item_id": "x", "lines": [1], "value": "s3cr3t"},
+        {"disposition": "value_replaced", "item_id": "x", "lines": [1], "source_ref": "a/b"},
+        {"disposition": "other", "item_id": "x", "lines": [1]},
+    ),
+)
+def test_redacted_value_entries_reject_anything_but_bounded_structure(
+    entry: dict[str, Any],
+) -> None:
+    from unit.protocol.test_models_and_schemas import (  # pyright: ignore[reportMissingImports]
+        _check_result_wire,
+    )
+
+    with pytest.raises(ValidationError):
+        CheckResultModel.model_validate(
+            {**_check_result_wire(), "semantic_redacted_values": [entry]}
+        )
+
+
 def test_operation_status_returns_the_same_continuation_for_a_pending_check() -> None:
     page = StatusOperationPageModel.model_validate(
         {

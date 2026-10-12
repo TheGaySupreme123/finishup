@@ -13,9 +13,11 @@ from yoetz.domain.events import (
     CheckMode,
     CheckRecordedPayload,
     LedgerRecord,
+    _review_input_manifest_from_json,  # pyright: ignore[reportPrivateUsage]
     encode_payload,
 )
 from yoetz.domain.findings import SemanticDispatchKind, SemanticProvenance
+from yoetz.domain.values import JsonValue as DomainJsonValue
 from yoetz.domain.values import finding_id, obligation_id
 from yoetz.kernel.closure_readiness import (
     ClosureReadinessFacts,
@@ -184,9 +186,9 @@ def test_only_an_acknowledgement_moves_a_receipt_blocking_finding_off_the_agent_
 def test_an_obligation_acknowledgement_never_clears_an_open_obligation() -> None:
     """PR #937 review F2: the obligation seam may name an item but never reads it as done.
 
-    No recorded obligation form feeds ``acknowledged_obligation_ids`` yet (#913 slice C), so the
-    derived facts keep it empty. Whatever eventually does must also close the obligation: an
-    acknowledgement alone leaves ``obligations_open`` agent-actionable.
+    #997 (slice C) clears ``obligations_open`` only when the derived facts also say no readable
+    or unreadable open obligation remains; a fact set that does not say (as here) leaves
+    ``obligations_open`` agent-actionable.
     """
 
     split = derive_closure_readiness(
@@ -311,6 +313,7 @@ def test_semantic_currency_needs_a_completed_review_with_no_later_material_chang
             check.ledger.ingestion_sequence,
             payload.returned_finding_ids,
             limitation_finding_ids=limitations,
+            projection=replay(prefix),
         )
     )
     suffix = later[: material + 1]
@@ -353,3 +356,209 @@ def test_only_recorded_lineage_facts_can_be_disclosed_limitations() -> None:
     assert split.state == "action_required"
     assert split.agent_actionable == ("lineage_child_read_gap",)
     assert "lineage_child_read_gap" not in split.standing_limitations
+
+
+def _with_check_payload(
+    prefix: tuple[LedgerRecord, ...], **changes: object
+) -> tuple[LedgerRecord, ...]:
+    check = cast(AcceptedEvent, prefix[-1])
+    payload = replace(cast(CheckRecordedPayload, check.payload), **changes)  # type: ignore[arg-type]
+    rewritten = replace(
+        check,
+        payload=payload,
+        projection_locator=replace(
+            check.projection_locator,
+            canonical_payload_digest=canonical_digest(encode_payload(payload)),
+        ),
+    )
+    return (*prefix[:-1], rewritten)
+
+
+def _manifest(review_phase: str | None) -> dict[str, object]:
+    section: dict[str, object] = {
+        "content_bytes": 0,
+        "content_digest": None,
+        "item_ids": [],
+        "omission_reasons": [],
+        "omitted_refs": [],
+        "revision": None,
+        "source_refs": [],
+        "status": "missing",
+    }
+    manifest: dict[str, object] = {
+        "schema": "yoetz.review-input-manifest/1",
+        "specification": section,
+        "current_diff": section,
+        "caller_evidence": section,
+        "latest_verification": section,
+        "prior_finding_context": section,
+        "phase": "provider_bound",
+        "missing_inputs": [],
+        "selected_item_count": 0,
+        "selected_excerpt_bytes": 0,
+        "omitted_item_count": 0,
+    }
+    if review_phase is not None:
+        manifest["review_phase"] = review_phase
+    return manifest
+
+
+def _reviewed(
+    prefix: tuple[LedgerRecord, ...], review_phase: str | None
+) -> tuple[LedgerRecord, ...]:
+    payload = cast(CheckRecordedPayload, cast(AcceptedEvent, prefix[-1]).payload)
+    return _with_check_payload(
+        prefix,
+        mode=CheckMode.SEMANTIC_REQUIRED,
+        semantic_status=SemanticStatus.SUCCEEDED,
+        semantic_reason=SemanticReason.SEMANTIC_COMPLETED,
+        semantic_provenance=_provenance(),
+        review_input_manifest=_review_input_manifest_from_json(
+            cast(DomainJsonValue, _manifest(review_phase))
+        ),
+        coverage=replace(
+            payload.coverage,
+            check_types=(CheckType.DETERMINISTIC, CheckType.SEMANTIC_MODEL_DERIVED),
+        ),
+    )
+
+
+def test_a_routine_review_leaves_the_closing_review_actionable() -> None:
+    """TB4 tb4f1 (issue #976): the receipt is the last step, so the last review judges completion.
+
+    atrx-vep-crispr closed after two routine reviews; nothing asked for a completeness review.
+    """
+
+    prefix = _prefix_through_check()
+    routine = _reviewed(prefix, "routine")
+    facts = closure_readiness_facts(replay(routine), routine)
+    assert facts.semantic_review_used is True
+    assert facts.closing_review_current is False
+    split = derive_closure_readiness((), (), facts, semantic_review_required=False)
+    assert "closing_review_required" in split.agent_actionable
+    assert split.state == "action_required"
+
+    closing = _reviewed(prefix, "final")
+    closed = closure_readiness_facts(replay(closing), closing)
+    assert closed.closing_review_current is True
+    split = derive_closure_readiness((), (), closed, semantic_review_required=True)
+    assert "closing_review_required" not in split.agent_actionable
+
+
+def test_closing_review_goes_stale_after_a_material_change() -> None:
+    prefix = _prefix_through_check()
+    closing = _reviewed(prefix, "final")
+    check = cast(AcceptedEvent, closing[-1])
+    payload = cast(CheckRecordedPayload, check.payload)
+    records = tuple(replay_records("all-event-families"))
+    later = records[len(prefix) :]
+    limitations = observation_limitation_finding_ids(replay(prefix), (*closing, *later))
+    material = next(
+        position
+        for position, record in enumerate(later)
+        if invalidates_recorded_check(
+            record,
+            check.ledger.ingestion_sequence,
+            payload.returned_finding_ids,
+            limitation_finding_ids=limitations,
+            projection=replay(prefix),
+        )
+    )
+    stale = (*closing, *later[: material + 1])
+    assert closure_readiness_facts(replay(prefix), stale).closing_review_current is False
+
+
+def test_an_undeliverable_review_attempt_is_not_asked_for_again() -> None:
+    """A privacy- or provider-blocked attempt discloses its own limit; a recheck cannot remove it."""
+
+    prefix = _prefix_through_check()
+    blocked = _with_check_payload(
+        prefix,
+        mode=CheckMode.SEMANTIC_REQUIRED,
+        semantic_status=SemanticStatus.BLOCKED_FORBIDDEN_DATA,
+        semantic_reason=SemanticReason.NEVER_SEND_DETECTED,
+    )
+    facts = closure_readiness_facts(replay(blocked), blocked)
+    assert facts.closing_review_current is True
+    split = derive_closure_readiness((), (), facts, semantic_review_required=True)
+    assert "closing_review_required" not in split.agent_actionable
+
+
+def test_a_deterministic_only_route_never_asks_for_a_closing_review() -> None:
+    prefix = _prefix_through_check()
+    facts = closure_readiness_facts(replay(prefix), prefix)
+    assert facts.semantic_review_used is False
+    split = derive_closure_readiness((), (), facts, semantic_review_required=False)
+    assert "closing_review_required" not in split.agent_actionable
+    required = derive_closure_readiness((), (), facts, semantic_review_required=True)
+    assert "closing_review_required" in required.agent_actionable
+
+
+def _always(value: bool) -> object:
+    def stopped(records: object) -> bool:
+        del records
+        return value
+
+    return stopped
+
+
+def test_a_review_round_stopped_for_an_insufficient_packet_is_not_asked_for_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n1 D3: retro-console-soc ran 13 closing reviews, 12 of them ``insufficient_packet``.
+
+    Once the reviewer twice could not assess the same content, the check skips the review and
+    records ``semantic_review_skipped_insufficient_packet``; neither a current review nor a
+    closing review is demanded again, and the gap stays a standing limit.
+    """
+
+    prefix = _prefix_through_check()
+    payload = cast(CheckRecordedPayload, cast(AcceptedEvent, prefix[-1]).payload)
+    stopped = _with_check_payload(
+        prefix,
+        mode=CheckMode.SEMANTIC_REQUIRED,
+        semantic_status=SemanticStatus.NOT_REQUESTED,
+        semantic_reason=SemanticReason.DETERMINISTIC_MODE,
+        coverage=replace(
+            payload.coverage,
+            known_gaps=tuple(
+                sorted(
+                    {
+                        *payload.coverage.known_gaps,
+                        "semantic_review_not_requested",
+                        "semantic_review_skipped_insufficient_packet",
+                    }
+                )
+            ),
+        ),
+    )
+    import yoetz.kernel.closure_readiness as readiness
+
+    # The round is still stopped (two insufficient reviews, no edit since): see test_review_round.
+    monkeypatch.setattr(readiness, "review_round_stopped", _always(True))
+    facts = closure_readiness_facts(replay(stopped), stopped)
+    assert facts.closing_review_current is True
+    assert facts.semantic_review_current is True
+    split = derive_closure_readiness(
+        (),
+        ("semantic_review_not_requested", "semantic_review_skipped_insufficient_packet"),
+        facts,
+        semantic_review_required=True,
+    )
+    assert "closing_review_required" not in split.agent_actionable
+    assert "semantic_review_not_requested" not in split.agent_actionable
+    assert "semantic_review_skipped_insufficient_packet" in split.standing_limitations
+
+    # An edit since re-armed the round: the skipped check is no longer the current review.
+    monkeypatch.setattr(readiness, "review_round_stopped", _always(False))
+    rearmed = closure_readiness_facts(replay(stopped), stopped)
+    assert rearmed.closing_review_current is False
+    assert rearmed.semantic_review_current is False
+    # A plain deterministic-only check carries no such marker and does not stop the round.
+    plain = _with_check_payload(
+        prefix,
+        mode=CheckMode.SEMANTIC_REQUIRED,
+        semantic_status=SemanticStatus.NOT_REQUESTED,
+        semantic_reason=SemanticReason.DETERMINISTIC_MODE,
+    )
+    assert closure_readiness_facts(replay(plain), plain).closing_review_current is False

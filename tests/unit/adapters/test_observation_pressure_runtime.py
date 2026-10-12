@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -34,6 +35,8 @@ _NOW = Timestamp("2026-09-10T00:01:00.000Z")
 _OLD = Timestamp("2026-09-10T00:00:00.000Z")
 _WALL_SECONDS = datetime(2026, 9, 10, 0, 1, tzinfo=UTC).timestamp()
 _SESSION = "hmac-sha256:" + "1" * 64
+# A modification time no write can produce: 1970-01-01T00:00:01Z.
+_PINNED_NS = 1_000_000_000
 
 
 def _store(tmp_path: Path, monotonic: list[float]) -> tuple[LocalObservationStore, str]:
@@ -140,16 +143,29 @@ def test_runtime_status_does_not_advance_recovery_or_write(tmp_path: Path) -> No
     store.update_capture_backlog(workspace, 450, 0, _NOW, _NOW, route_id="capture-a")
     store.update_selection_pressure(workspace, _SESSION)
     state_path = store._workspace_path(workspace)  # pyright: ignore[reportPrivateUsage]
-    before = state_path.stat().st_mtime_ns
+
+    # Detect a write by what it does to a modification time pinned in the past. Comparing two
+    # real mtimes read back to back is a race against the filesystem clock: it ticks once per
+    # jiffy (1 ms on the CI-equivalent box, 4 to 10 ms elsewhere), so two writes inside one tick
+    # carry the same mtime and "was it written" cannot be told from "it was not".
+    def pin_mtime() -> None:
+        os.utime(state_path, ns=(_PINNED_NS, _PINNED_NS))
+
+    def written() -> bool:
+        return state_path.stat().st_mtime_ns != _PINNED_NS
 
     # A low read must not start the dwell timer or persist a snapshot.
+    pin_mtime()
     store.update_capture_backlog(workspace, 0, 0, None, _NOW, route_id="capture-a")
-    before_low_read = state_path.stat().st_mtime_ns
+    assert written(), "the low backlog read is itself recorded"
+    at_rest = state_path.read_bytes()
+
+    pin_mtime()
     status = store.selection_runtime_status(workspace, _SESSION)
     assert status["pressure_state"] == "high"
     assert status["effective_mode"] == "focused"
-    assert state_path.stat().st_mtime_ns == before_low_read
-    assert before_low_read != before
+    assert not written(), "a status read must not write the state file"
+    assert state_path.read_bytes() == at_rest
 
 
 def test_low_pressure_dwell_recovers_and_emits_one_transition(tmp_path: Path) -> None:

@@ -51,6 +51,9 @@ _RESEARCH_EVIDENCE_KINDS = frozenset(
         FindingKind.DIFF_DOES_NOT_MATCH_ACCOUNT,
         FindingKind.MATERIAL_LIMITATION_OMITTED,
         FindingKind.QUESTIONABLE_FINDING_REJECTION,
+        # The verifying-reviewer kinds (#906) are owned by the research-evidence pack identity.
+        FindingKind.CODE_DEFECT,
+        FindingKind.TASK_REQUIREMENT_UNMET,
     }
 )
 

@@ -144,7 +144,7 @@ def test_outbound_case_names_the_prior_findings_section_only_from_1_2_0() -> Non
     assert "prior_finding_refs" in after["$defs"]["review_packet"]["required"]
     refs = after["$defs"]["review_packet"]["properties"]["prior_finding_refs"]
     assert refs["items"] == {"$ref": "#/$defs/finding_id"}
-    assert refs["maxItems"] == 8
+    assert refs["maxItems"] == 16  # issue #976: sixteen findings (eight before)
     assert refs["uniqueItems"] is True
     # No new data category crosses egress with the section.
     assert before["$defs"]["data_category"] == after["$defs"]["data_category"]
@@ -208,6 +208,8 @@ def test_golden_responses_pin_acknowledged_not_done_on_1_1_0_only() -> None:
     assert [(item["schema_version"], item["payload"]["disposition"]) for item in responses] == [
         ("1.0.0", "rejected"),
         ("1.1.0", "acknowledged_not_done"),
+        ("1.1.0", "self_verified"),
+        ("1.1.0", "duplicate_of"),
     ]
     for vector in responses:
         version, wire = vector["schema_version"], vector["payload"]
@@ -216,9 +218,32 @@ def test_golden_responses_pin_acknowledged_not_done_on_1_1_0_only() -> None:
         encoded = encode_payload(payload)
         assert canonical_encode(encoded).hex() == vector["canonical_hex"]
         assert canonical_digest(encoded) == vector["digest"]
-    not_done = responses[1]["payload"]
+    for terminal in (responses[1]["payload"], responses[2]["payload"], responses[3]["payload"]):
+        with pytest.raises(SchemaInstanceInvalid):
+            validate_schema_instance("response-recorded", "1.0.0", terminal)
+    # Issue #984: a self-verification without evidence is not admitted even on 1.1.0.
     with pytest.raises(SchemaInstanceInvalid):
-        validate_schema_instance("response-recorded", "1.0.0", not_done)
+        validate_schema_instance(
+            "response-recorded", "1.1.0", {**responses[2]["payload"], "evidence_refs": []}
+        )
+    # Issue #996: the link target is required with duplicate_of and refused with anything else.
+    duplicate = responses[3]["payload"]
+    assert duplicate["duplicate_of_finding_id"] != duplicate["finding_id"]
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance(
+            "response-recorded",
+            "1.1.0",
+            {key: value for key, value in duplicate.items() if key != "duplicate_of_finding_id"},
+        )
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance(
+            "response-recorded",
+            "1.1.0",
+            {
+                **responses[0]["payload"],
+                "duplicate_of_finding_id": duplicate["duplicate_of_finding_id"],
+            },
+        )
     # The event pairing itself (acknowledged_not_done exactly on 1.1.0) is enforced where an
     # event is drafted or accepted; tests/unit/kernel/test_finding_todo.py locks it.
 
@@ -229,6 +254,8 @@ def test_golden_responses_pin_acknowledged_not_done_on_1_1_0_only() -> None:
     assert [(item["schema"], item["schema_version"]) for item in operations] == [
         ("respond-request", "1.1.0"),
         ("respond-result", "1.1.0"),
+        ("respond-request", "1.1.0"),
+        ("respond-request", "1.1.0"),
     ]
     for item in operations:
         validate_schema_instance(item["schema"], item["schema_version"], item["payload"])

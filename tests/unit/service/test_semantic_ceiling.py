@@ -245,7 +245,7 @@ def _prose_heavy_case(
         extra_refs=(*claims, *evidence),
     )
     assessments, _ = run_deterministic_policies(
-        case, CheckScope((), ()), ("research-evidence/0.1.0", "work-integrity/0.1.0")
+        case, CheckScope((), ()), ("research-evidence/0.2.0", "work-integrity/0.3.0")
     )
     base = allocate_findings(
         _Ids(), tuple(item.candidate for item in assessments), prior_finding_ids(case.projection)

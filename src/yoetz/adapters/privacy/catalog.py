@@ -20,11 +20,13 @@ from yoetz.domain.privacy import (
     AuthorizationScopeKind,
     ChannelPolicy,
     ConsentSource,
+    CredentialHeuristic,
     DataCategory,
     DataClass,
     DisclosureProposal,
     EgressAuthorization,
     EgressChannel,
+    EgressOriginOperation,
     EgressReceipt,
     ForbiddenDataKind,
     HumanPrivacyDecision,
@@ -93,6 +95,7 @@ from yoetz.protocol.canonical import (
     strict_json_parse,
 )
 from yoetz.protocol.ids import IdKind, new_id, validate_id
+from yoetz.protocol.redacted_values import semantic_redacted_values_from_wire
 
 __all__ = [
     "CatalogPrivacyAudit",
@@ -140,10 +143,30 @@ def _json(value: object) -> JsonValue:
     if type(value) is tuple:
         return [_json(item) for item in cast(tuple[object, ...], value)]
     if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _json(getattr(value, field.name)) for field in fields(value)}
+        return {
+            field.name: _json(getattr(value, field.name))
+            for field in fields(value)
+            # The credential-heuristic default is never written (issue #982): every policy,
+            # case and receipt from before the field existed keeps its exact canonical bytes.
+            if getattr(value, field.name) is not CredentialHeuristic.ENFORCED
+        }
     if type(value) is dict:
         return {str(key): _json(item) for key, item in cast(dict[object, object], value).items()}
     raise TypeError("privacy_catalog_canonical_value_invalid")
+
+
+def _credential_heuristic_from_json(
+    value: JsonValue | None, *, allow_enforced: bool = True
+) -> CredentialHeuristic:
+    """Absent means ``enforced``; only the closed values decode (issue #982)."""
+
+    if value is None:
+        return CredentialHeuristic.ENFORCED
+    if value == CredentialHeuristic.DISABLED.value:
+        return CredentialHeuristic.DISABLED
+    if allow_enforced and value == CredentialHeuristic.ENFORCED.value:
+        return CredentialHeuristic.ENFORCED
+    raise ValueError("privacy_audit_row_corrupt")
 
 
 def _scope_json(scope: AuthorizationScope) -> dict[str, JsonValue]:
@@ -177,6 +200,9 @@ def _receipt_bytes(receipt: LocalDisclosureReceipt | EgressReceipt) -> bytes:
             scan.pop("not_run_reason", None)
         encoded.pop("withheld_item_ids", None)
         encoded.pop("withheld_item_reason", None)
+    if encoded.get("origin_operation", "") is None:
+        # Absent unless named (tb4n2 N-5), so every row written before the field keeps its bytes.
+        encoded.pop("origin_operation")
     return canonical_encode(cast(JsonValue, encoded))
 
 
@@ -318,6 +344,7 @@ def _receipt_common_from_json(source: dict[str, JsonValue]) -> _ReceiptCommon:
                 if scan.get("not_run_reason") is None
                 else PrivacyReason(cast(str, scan["not_run_reason"]))
             ),
+            _credential_heuristic_from_json(scan.get("credential_heuristic"), allow_enforced=False),
         ),
         "withheld_item_ids": tuple(
             sorted(_strings(source.get("withheld_item_ids") or []), key=str.encode)
@@ -388,6 +415,11 @@ def _network_receipt_from_bytes(data: bytes) -> EgressReceipt:
         dispatch_id=cast(str | None, source.get("dispatch_id")),
         dispatch_started_at=None if started is None else parse_rfc3339_millis(started),
         request_commitment=request_commitment,
+        origin_operation=(
+            None
+            if source.get("origin_operation") is None
+            else EgressOriginOperation(cast(str, source["origin_operation"]))
+        ),
     )
 
 
@@ -607,7 +639,15 @@ def _policy_from_domain_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         tuple(DataClass(item) for item in _strings(source["trusted_human_control_data_classes"])),
         parse_rfc3339_millis(source["created_at"]),
         cast(str | None, source.get("supersedes_policy_digest")),
+        _policy_credential_heuristic(source),
     )
+
+
+def _policy_credential_heuristic(source: dict[str, JsonValue]) -> CredentialHeuristic:
+    try:
+        return _credential_heuristic_from_json(source.get("credential_heuristic"))
+    except ValueError:
+        raise ValueError("privacy_policy_row_corrupt") from None
 
 
 def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
@@ -622,6 +662,9 @@ def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
     if source.get("schema_version") == "1.0.0" and any(
         "fallback_provider_binding" in _mapping(channel) for channel in channels
     ):
+        raise ValueError("privacy_policy_row_corrupt")
+    if source.get("schema_version") in {"1.0.0", "1.1.0"} and "credential_heuristic" in source:
+        # The credential-heuristic opt-out exists from wire 1.2.0 on (issue #982).
         raise ValueError("privacy_policy_row_corrupt")
     review_selection = _review_from_json(source["review_selection"])
     if source.get("schema_version") in {"1.0.0", "1.1.0"} and (
@@ -659,6 +702,7 @@ def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         trusted_classes,
         parse_rfc3339_millis(source["created_at"]),
         cast(str | None, source.get("supersedes_policy_digest")),
+        _policy_credential_heuristic(source),
     )
 
 
@@ -687,7 +731,7 @@ def encode_privacy_policy_json(policy: PrivacyPolicy) -> dict[str, JsonValue]:
     if set(by_channel) != set(EgressChannel):
         raise ValueError("privacy_policy_channel_set_invalid")
     encoded: dict[str, JsonValue] = {
-        "schema_version": review_selection_policy_schema_version(policy.review_selection),
+        "schema_version": _privacy_policy_wire_version(policy),
         "policy_id": policy.policy_id,
         "version": str(policy.version),
         "policy_digest": policy.policy_digest,
@@ -722,7 +766,22 @@ def encode_privacy_policy_json(policy: PrivacyPolicy) -> dict[str, JsonValue]:
         encoded["local_model_binding"] = _json(policy.local_model_binding)
     if policy.supersedes_policy_digest is not None:
         encoded["supersedes_policy_digest"] = policy.supersedes_policy_digest
+    if not policy.credential_heuristic_enforced:
+        encoded["credential_heuristic"] = policy.credential_heuristic.value
     return cast(dict[str, JsonValue], _omit_json_nulls(encoded))
+
+
+def _privacy_policy_wire_version(policy: PrivacyPolicy) -> str:
+    """The oldest wire version that expresses ``policy`` exactly.
+
+    The credential-heuristic opt-out exists only from 1.2.0 on (issue #982); a policy that keeps
+    the default is still written at the version its review selection needs.
+    """
+
+    version = review_selection_policy_schema_version(policy.review_selection)
+    if not policy.credential_heuristic_enforced:
+        return "1.2.0"
+    return version
 
 
 def _omit_json_nulls(value: JsonValue) -> JsonValue:
@@ -1067,7 +1126,30 @@ class CatalogPrivacyPolicyStore:
             None if exact is None else exact[1],
             None if exact is None else exact[0].policy_digest,
             None if exact is None else exact[0],
+            machine_policy,
+            self._migration_frontiers(migration_state, migration_policy),
         )
+
+    def _migration_frontiers(
+        self, migration_state: str, first_repository_frontier: PrivacyPolicy
+    ) -> tuple[PrivacyPolicy, ...]:
+        """Every frontier the pending migration could carry into the first grant (#982)."""
+
+        if migration_state == "first_repository_available":
+            return (first_repository_frontier,)
+        if migration_state != "legacy_route_available":
+            return ()
+        rows = self._db.execute(
+            "SELECT migration_policy_canonical, migration_policy_digest "
+            "FROM privacy_legacy_route_entitlements WHERE entitlement_state = 'available'"
+        ).fetchall()
+        frontiers: list[PrivacyPolicy] = []
+        for canonical, digest in rows:
+            frontier = _policy_from_bytes(cast(bytes, canonical))
+            if frontier.policy_digest != digest:
+                raise ValueError("privacy_authority_state_corrupt")
+            frontiers.append(frontier)
+        return tuple(frontiers)
 
     async def carry_forward_repository_authority(
         self,
@@ -1961,6 +2043,17 @@ class CatalogPrivacyAudit:
             "scanner_registry_version": request.minimized.scanner_registry_version,
             "scanner_profile_digest": request.minimized.scanner_profile_digest,
             "route_identity_digest": route_identity,
+            # PL2-1: written only when present, so older proposals keep their exact bytes.
+            **(
+                {
+                    "redacted_values": [
+                        cast(JsonValue, entry.as_wire())
+                        for entry in request.minimized.redacted_values
+                    ]
+                }
+                if request.minimized.redacted_values
+                else {}
+            ),
         }
         proposal_bytes = canonical_encode(cast(JsonValue, proposal_value))
         proposal_commitment = _mac(self._key, _PROPOSAL_DOMAIN, proposal_bytes)
@@ -1997,6 +2090,7 @@ class CatalogPrivacyAudit:
             request.minimized.scanner_profile_digest,
             request.minimized.included_item_ids,
             route_identity,
+            request.minimized.redacted_values,
         )
         structural = canonical_encode(
             {
@@ -2437,6 +2531,7 @@ class CatalogPrivacyAudit:
                 ),
                 tuple(sorted(_strings(parsed.get("included_item_ids") or []), key=str.encode)),
                 stored_route,
+                semantic_redacted_values_from_wire(parsed.get("redacted_values") or []),
             )
         except Exception:
             return None

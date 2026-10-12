@@ -329,7 +329,7 @@ async def _check(scenario: _Scenario, task: StartInternalResult) -> CheckCommitR
                 "expected_frontier": dict(head.as_wire().items()),
                 "mode": "deterministic_only",
                 "max_findings": "10",
-                "policy_packs": ["work-integrity/0.1.0"],
+                "policy_packs": ["work-integrity/0.3.0"],
             }
         ),
         repository_privacy_context=_REPOSITORY,

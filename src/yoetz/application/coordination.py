@@ -83,6 +83,7 @@ from yoetz.ports.start_catalog import TaskRoute, TaskRouteState, TaskSourceProve
 from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
 from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
 from yoetz.protocol.ids import IdKind, validate_id
+from yoetz.protocol.policy_packs import COORDINATION_POLICY_ID, COORDINATION_POLICY_VERSION
 
 if TYPE_CHECKING:
     from yoetz.kernel.projections import ProjectionState
@@ -1378,7 +1379,8 @@ def _event_input_material(
     structured: list[Mapping[str, JsonValue]] = []
     obligations: set[str] = set()
     if isinstance(payload, ObligationPublishedPayload):
-        if payload.status is ObligationStatus.OPEN:
+        # acknowledged_not_done (#1002) is not resolved: treated like open here.
+        if payload.status is not ObligationStatus.RESOLVED:
             obligations.add(payload.obligation_id)
         for item in payload.requested_items:
             if item.item_kind not in {RequestedItemKind.FILE, RequestedItemKind.SOURCE}:
@@ -1594,7 +1596,8 @@ class LedgerCoordinationInputProvider:
                     latest_status = record.payload.status
         finally:
             await self.runtime.release(runtime)
-        return latest_status is ObligationStatus.OPEN
+        # acknowledged_not_done (#1002) is not resolved: treated like open here.
+        return latest_status is not None and latest_status is not ObligationStatus.RESOLVED
 
     async def input_for(
         self,
@@ -2188,7 +2191,8 @@ class CoordinationRuntime:
             if (
                 obligation_record is None
                 or obligation_record.payload is None
-                or obligation_record.payload.status is not ObligationStatus.OPEN
+                # acknowledged_not_done (#1002) is not resolved: treated like open here.
+                or obligation_record.payload.status is ObligationStatus.RESOLVED
             ):
                 continue
             if (
@@ -2278,8 +2282,8 @@ class CoordinationRuntime:
                 summary,
                 detail,
                 subject,
-                "coordination",
-                "0.1.0",
+                COORDINATION_POLICY_ID,
+                COORDINATION_POLICY_VERSION,
                 case.frontier,
                 coverage,
             )

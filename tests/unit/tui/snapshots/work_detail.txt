@@ -11,7 +11,7 @@ Claims
   Rate limiting rejects the 11th request in a minute
 
 Checks
-  work-integrity/0.1.0
+  work-integrity/0.3.0
 
 Coverage
   no AI-powered review

@@ -25,10 +25,10 @@ from typing import Any, Final, Literal, cast
 import httpx
 
 from yoetz.adapters.providers.openai_responses import (
-    JUDGMENT_JSON_SCHEMA,
     OPENAI_MAX_OUTPUT_TOKENS,
     OPENAI_MAX_RESPONSE_BODY_BYTES,
     SEMANTIC_REVIEW_INSTRUCTION,
+    STRICT_JUDGMENT_JSON_SCHEMA,
     OneAttemptCredentialTransport,
     normalize_judgment,
 )
@@ -104,14 +104,14 @@ CHAT_COMPLETIONS_INSTRUCTION: Final = (
 _SYSTEM_INSTRUCTION: Final = CHAT_COMPLETIONS_INSTRUCTION
 
 _PROMPT_DIGEST: Final = "sha256:" + hashlib.sha256(_SYSTEM_INSTRUCTION.encode("utf-8")).hexdigest()
-_SCHEMA_DIGEST: Final = canonical_digest(JUDGMENT_JSON_SCHEMA)
+_SCHEMA_DIGEST: Final = canonical_digest(STRICT_JUDGMENT_JSON_SCHEMA)
 
 _RESPONSE_FORMAT: Final[dict[str, JsonValue]] = {
     "type": "json_schema",
     "json_schema": {
         "name": "yoetz_semantic_judgment",
         "strict": True,
-        "schema": JUDGMENT_JSON_SCHEMA,
+        "schema": STRICT_JUDGMENT_JSON_SCHEMA,
     },
 }
 

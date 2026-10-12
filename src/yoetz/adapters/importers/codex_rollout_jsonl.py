@@ -21,7 +21,7 @@ from yoetz.adapters.importers.codex_jsonl import (
 )
 from yoetz.adapters.integrations.codex_capability_cells import CODEX_ROLLOUT_HISTORY_MODES
 from yoetz.domain.values import JsonObject, JsonValue, freeze_json
-from yoetz.observability.privacy import redact_sensitive_content
+from yoetz.observability.privacy import redact_high_confidence_content
 from yoetz.ports.importer import ImportLineStatus
 from yoetz.protocol.canonical import canonical_digest
 from yoetz.protocol.errors import ProtocolValueError
@@ -489,7 +489,9 @@ def _parse_json_line(content: bytes) -> dict[str, object]:
 
 
 def _redact_json_tree(value: dict[str, object]) -> dict[str, object]:
-    """Redact decoded JSON strings and drop unrepresentable numeric leaves.
+    """Redact high-confidence secrets in decoded JSON strings and drop unrepresentable numbers.
+
+    Heuristic-only assignment matches are kept (issue #982); egress redacts them.
 
     Tree shape stays intact: strings are redacted in place and a fractional number becomes
     ``null`` in the same position. The canonical value model has no float (``float_forbidden``),
@@ -506,7 +508,9 @@ def _redact_json_tree(value: dict[str, object]) -> dict[str, object]:
         if depth > _MAX_JSON_DEPTH:
             raise ValueError("nesting_too_deep")
         if type(item) is str:
-            redacted, _detected = redact_sensitive_content(item.encode("utf-8", errors="strict"))
+            redacted, _detected = redact_high_confidence_content(
+                item.encode("utf-8", errors="strict")
+            )
             return redacted.decode("utf-8", errors="strict")
         if type(item) is float:
             return None

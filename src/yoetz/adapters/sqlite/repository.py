@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -28,6 +28,7 @@ from yoetz.domain.events import (
     AcceptedEvent,
     CheckChangeShownFiles,
     CheckRecordedPayload,
+    DeliverableState,
     EventSchema,
     EvidenceDigestProvenance,
     FindingRecordedPayload,
@@ -130,6 +131,7 @@ from yoetz.protocol.models import (
     SemanticReason,
     SemanticStatus,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 __all__ = ["CheckpointReport", "SqliteLedger"]
 
@@ -1054,6 +1056,11 @@ class SqliteLedger:
                             missing_for_assessment=check_payload.missing_for_assessment,
                             review_input_manifest=check_payload.review_input_manifest,
                             totals=check_payload.totals,
+                            # Recovery rebuilds the same result the commit returned (#982).
+                            semantic_withheld_item_ids=check_payload.semantic_withheld_item_ids,
+                            semantic_redacted_values=check_payload.semantic_redacted_values,
+                            semantic_route_required=check_payload.semantic_route_required,
+                            deliverable_states=check_payload.deliverable_states,
                         )
                 else:
                     check_error = self._stored_check_error(cast(bytes, result_canonical))
@@ -2171,6 +2178,12 @@ class SqliteLedger:
         await self._ensure_recovered()
         return await self._oracle().projected_action_event(action)
 
+    async def committed_event_ids(self, event_ids: Iterable[str]) -> frozenset[str]:
+        """Return which of ``event_ids`` the task ledger already holds (#1027)."""
+
+        await self._ensure_recovered()
+        return await self._oracle().committed_event_ids(event_ids)
+
     async def lookup_task_operation(
         self, writer_id: str, operation_id: str
     ) -> OperationRecord | None:
@@ -2768,6 +2781,9 @@ class SqliteLedger:
         semantic_withheld_item_ids: tuple[str, ...] = (),
         review_input_manifest: JsonObject | None = None,
         totals: JsonObject | None = None,
+        semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
+        semantic_route_required: bool | None = None,
+        deliverable_states: tuple[DeliverableState, ...] = (),
     ) -> CheckCommitResult:
         await self._ensure_recovered()
         async with self._lock:
@@ -2803,6 +2819,9 @@ class SqliteLedger:
                     semantic_withheld_item_ids=semantic_withheld_item_ids,
                     review_input_manifest=review_input_manifest,
                     totals=totals,
+                    semantic_redacted_values=semantic_redacted_values,
+                    semantic_route_required=semantic_route_required,
+                    deliverable_states=deliverable_states,
                 )
             except PublicOperationError:
                 # The memory oracle terminalizes a frontier conflict before raising it. Preserve

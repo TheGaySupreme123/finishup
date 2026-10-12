@@ -115,6 +115,7 @@ from yoetz.protocol.coverage import EvidenceImmutability
 from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind
 from yoetz.protocol.models import CheckRequest, CheckScopeModel, SemanticReason, SemanticStatus
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 _TASK = "tsk_30000000-0000-4000-8000-000000000001"
 _SESSION = "ses_30000000-0000-4000-8000-000000000001"
@@ -190,6 +191,7 @@ class _Ledger:
         self.last_executions: tuple[CheckPolicyExecution, ...] | None = None
         self.last_missing: tuple[MissingForAssessmentItem, ...] = ()
         self.last_conclusion: str | None = None
+        self.last_review_summary: str | None = None
         self.last_verdicts: tuple[object, ...] = ()
         self.operation: OperationRecord | None = None
 
@@ -300,8 +302,11 @@ class _Ledger:
         semantic_included_refs: tuple[str, ...] | None = None,
         semantic_withheld_item_ids: tuple[str, ...] = (),
         review_input_manifest: object | None = None,
+        review_summary: str | None = None,
+        semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
     ) -> CheckCommitResult:
         assert frozen == self.frozen
+        self.last_review_summary = review_summary
         self.last_verdicts = prior_finding_verdicts
         self.last_missing = missing_for_assessment
         self.last_conclusion = semantic_conclusion
@@ -330,9 +335,11 @@ class _Ledger:
                 "0.1",
                 "0.1.0",
                 "0.1.0",
-                ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+                ("research-evidence/0.2.0", "work-integrity/0.3.0"),
             ),
             missing_for_assessment=missing_for_assessment,
+            semantic_withheld_item_ids=semantic_withheld_item_ids,
+            semantic_redacted_values=semantic_redacted_values,
         )
 
     async def fail_check_if_current(
@@ -586,6 +593,236 @@ async def test_post_admission_protocol_failure_is_internal_and_terminalizes_oper
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("mapped", (False, True))
+async def test_unmapped_task_statement_is_an_actionable_check_finding(mapped: bool) -> None:
+    """TB4 pilot: an unmapped request must reach the agent as a finding, not an advisory gap."""
+
+    from yoetz.domain.task_statement import RecordedTaskStatement
+
+    statement_event = evt(1)
+    obligation = ObligationPublishedPayload(
+        obl(1),
+        "Repair the planner",
+        "The planner output is correct",
+        ObligationStatus.OPEN,
+        source_refs=(statement_event,) if mapped else (),
+    )
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    base = make_case(
+        plans={1: plan_record(plan, 2)},
+        obligations={obl(1): obligation_record(obligation, 3)},
+        extra_refs=(statement_event,),
+    )
+    case = replace(
+        base,
+        task_statement=RecordedTaskStatement("Fix it.", statement_event, "session_opened", 1),
+    )
+    app = _App()
+    app.ledger.frozen = FrozenCase(case, app.ledger.frozen.lease)
+
+    checked = await execute_check_commit(app, _request(max_findings="4"))
+
+    unmet = [item for item in checked.findings if item.kind is FindingKind.TASK_REQUIREMENT_UNMET]
+    if mapped:
+        assert unmet == []
+    else:
+        assert checked.verdict.value == "action_required"
+        assert [item.subject_refs for item in unmet] == [(statement_event,)]
+        assert "source_refs [" + statement_event + "]" in unmet[0].detail
+
+
+def _unmapped_statement_case() -> DeterministicCase:
+    from yoetz.domain.task_statement import RecordedTaskStatement
+
+    statement_event = evt(1)
+    obligation = ObligationPublishedPayload(
+        obl(1), "Repair the planner", "The planner output is correct", ObligationStatus.OPEN
+    )
+    base = make_case(
+        plans={1: plan_record(PlanPublishedPayload(1, "Plan", (obl(1),)), 2)},
+        obligations={obl(1): obligation_record(obligation, 3)},
+        extra_refs=(statement_event,),
+    )
+    return replace(
+        base,
+        task_statement=RecordedTaskStatement("Fix it.", statement_event, "session_opened", 1),
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("research_selected", (True, False))
+async def test_requirement_findings_follow_the_research_pack_execution(
+    research_selected: bool,
+) -> None:
+    """Pilot blocker R4: emission and resolution share one condition.
+
+    The statement finding is recorded under research-evidence and only a check that completed
+    that pack can resolve it, so only such a check raises it. A recorded statement is a pack root,
+    so the pack runs on a plan-only case before any claim exists.
+    """
+
+    app = _App()
+    app.ledger.frozen = FrozenCase(_unmapped_statement_case(), app.ledger.frozen.lease)
+    request = _request(max_findings="4")
+    if not research_selected:
+        request = request.model_copy(update={"policy_packs": ("work-integrity/0.3.0",)})
+
+    checked = await execute_check_commit(app, request)
+
+    unmet = [item for item in checked.findings if item.kind is FindingKind.TASK_REQUIREMENT_UNMET]
+    research = [item for item in checked.policy_executions if item.policy_id == "research-evidence"]
+    if research_selected:
+        assert [(item.outcome, item.reason) for item in research] == [("run", "completed")]
+        assert len(unmet) == 1
+    else:
+        assert research == []
+        assert unmet == []
+
+
+@pytest.mark.anyio
+async def test_completion_on_an_empty_scope_with_a_statement_is_an_actionable_finding() -> None:
+    """Pilot blocker D3: a completion claim never stands on an undecomposed request."""
+
+    from yoetz.domain.events import ClaimKind, ClaimRecordedPayloadV1_1
+    from yoetz.domain.task_statement import (
+        TASK_STATEMENT_SCOPE_EMPTY_SUMMARY,
+        RecordedTaskStatement,
+    )
+
+    statement_event = evt(1)
+    plan = PlanPublishedPayload(1, "Plan", (), (), NoObligationsReason.SINGLE_ATOMIC_CHANGE)
+    claim = ClaimRecordedPayloadV1_1(
+        claim_id=clm(1),
+        claim_kind=ClaimKind.COMPLETION,
+        statement="Done.",
+        supporting_refs=(),
+        obligation_refs=(),
+        limitation_refs=(),
+        supersedes_claim_refs=(),
+    )
+    base = make_case(
+        plans={1: plan_record(plan, 2)},
+        claims={clm(1): claim_record(claim, 4)},
+        extra_refs=(statement_event,),
+    )
+    case = replace(
+        base,
+        task_statement=RecordedTaskStatement("Fix it.", statement_event, "session_opened", 1),
+    )
+    app = _App()
+    app.ledger.frozen = FrozenCase(case, app.ledger.frozen.lease)
+
+    checked = await execute_check_commit(app, _request(max_findings="8"))
+
+    unmet = [item for item in checked.findings if item.kind is FindingKind.TASK_REQUIREMENT_UNMET]
+    assert [item.summary for item in unmet] == [TASK_STATEMENT_SCOPE_EMPTY_SUMMARY]
+    assert unmet[0].subject_refs == (statement_event,)
+    assert "yoetz-no-material-work:" + statement_event in unmet[0].detail
+    assert checked.verdict.value == "action_required"
+
+
+class _MetadataOnlyCapturePort:
+    def __init__(self, entries: tuple[ChangeMetadataEntry, ...]) -> None:
+        self.entries = entries
+
+    def capture(self, workspace: str, base: object) -> CheckChangeCapture:
+        raise AssertionError("structural accounting must not call content capture")
+
+    def capture_metadata(self, workspace: str, base: object) -> CheckChangeMetadata:
+        return CheckChangeMetadata(
+            base="task_start",
+            entries=self.entries,
+            tracked_files=sum(1 for item in self.entries if not item.untracked),
+            untracked_files=sum(1 for item in self.entries if item.untracked),
+            omitted_files=0,
+            truncated=False,
+            base_commit="a" * 40,
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("workspace", ("shell_changed", "unchanged", "capture_unavailable"))
+async def test_no_material_work_decision_needs_a_capture_showing_no_changed_path(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace: str,
+) -> None:
+    """The escape is cancelled by any changed path, not only by an ``edit`` action.
+
+    Hosts record shell writes (``sed -i``, ``cat > file``) as command actions, so a task with no
+    edit action can still have changed files. Only a check-time capture that shows no changed path
+    honours the decision; a missing capture fails closed.
+    """
+
+    from yoetz.domain.events import (
+        ClaimKind,
+        ClaimRecordedPayloadV1_1,
+        DecisionRecordedPayload,
+        encode_payload,
+    )
+    from yoetz.domain.task_statement import (
+        TASK_STATEMENT_SCOPE_EMPTY_SUMMARY,
+        RecordedTaskStatement,
+    )
+    from yoetz.domain.values import actor_id
+    from yoetz.kernel.projections import DecisionProjectionRecord
+    from yoetz.protocol.canonical import canonical_digest
+
+    statement_event = evt(1)
+    plan = PlanPublishedPayload(1, "Plan", (), (), NoObligationsReason.NO_MATERIAL_CHANGE)
+    claim = ClaimRecordedPayloadV1_1(
+        claim_id=clm(1),
+        claim_kind=ClaimKind.COMPLETION,
+        statement="Answered.",
+        supporting_refs=(),
+        obligation_refs=(),
+        limitation_refs=(),
+        supersedes_claim_refs=(),
+    )
+    command = ActionRecordedPayload(
+        act(1), ActionKind.COMMAND, "Ran a shell command", command="sed -i s/a/b/ calc.py"
+    )
+    decision = DecisionRecordedPayload(
+        f"The request asks only for an explanation.\nyoetz-no-material-work:{statement_event}",
+        "The user asked a question; no file needs to change.",
+        actor_id("agent:1"),
+    )
+    base = make_case(
+        plans={1: plan_record(plan, 2)},
+        actions={act(1): record(command, 3)},
+        claims={clm(1): claim_record(claim, 4)},
+        extra_refs=(statement_event,),
+    )
+    row = DecisionProjectionRecord(
+        payload=decision,
+        payload_digest=canonical_digest(encode_payload(decision)),
+        redacted=False,
+        source_event_id=evt(5),
+        source_frontier=5,
+    )
+    case = replace(
+        replace(base, projection=replace(base.projection, decisions={evt(5): row})),
+        task_statement=RecordedTaskStatement("Explain it.", statement_event, "session_opened", 1),
+    )
+    app = _App()
+    app.ledger.frozen = FrozenCase(case, app.ledger.frozen.lease)
+    if workspace != "capture_unavailable":
+        entries = (ChangeMetadataEntry("M", "calc.py"),) if workspace == "shell_changed" else ()
+        app.change_capture = _MetadataOnlyCapturePort(entries)
+        app.start_catalog = _StructuralStartCatalog()
+        source = CheckWorkspaceSource("/workspace", "hmac-sha256:" + "a" * 64)
+        monkeypatch.setattr(check_module, "current_check_workspace_source", lambda: source)
+
+    checked = await execute_check_commit(app, _request(max_findings="8"))
+
+    unmet = [item for item in checked.findings if item.kind is FindingKind.TASK_REQUIREMENT_UNMET]
+    if workspace == "unchanged":
+        assert unmet == []
+    else:
+        assert [item.summary for item in unmet] == [TASK_STATEMENT_SCOPE_EMPTY_SUMMARY]
+        assert unmet[0].subject_refs == (statement_event,)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("mode", ("deterministic_only", "semantic_required"))
 @pytest.mark.parametrize(
     ("reason", "expected_gap"),
@@ -632,8 +869,8 @@ async def test_empty_completion_scope_gap_reaches_check_verdict(
     assert expected_gap in checked.coverage.known_gaps
     assert checked.policy_executions == (
         CheckPolicyExecution("coordination", "0.1.0", "skipped", "not_applicable"),
-        CheckPolicyExecution("research-evidence", "0.1.0", "run", "completed"),
-        CheckPolicyExecution("work-integrity", "0.1.0", "run", "completed"),
+        CheckPolicyExecution("research-evidence", "0.2.0", "run", "completed"),
+        CheckPolicyExecution("work-integrity", "0.3.0", "run", "completed"),
     )
 
 
@@ -1258,6 +1495,49 @@ async def test_succeeded_review_with_withheld_context_is_not_reported_as_full_co
     assert SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP not in clean.coverage.known_gaps
 
 
+@pytest.mark.anyio
+async def test_withheld_review_item_is_a_review_scoped_gap_not_content_redacted() -> None:
+    """Issue #982 (owner decision B2; regression from 860811ed, tb4n1 rs-archive S).
+
+    Withholding one item from the external reviewer used to stamp ``content_redacted`` on the
+    whole check, so local findings that never needed that item became unresolvable. The check now
+    records only the review-scoped ``semantic_review_item_withheld``.
+    """
+
+    from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
+
+    app = _App(semantic=True)
+    app.semantic_result = replace(
+        _succeeded(SemanticJudgment("no_material_discrepancy", ())),
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+    )
+    result = await execute_check_commit(app, _request("semantic_if_configured"))
+    assert SEMANTIC_REVIEW_ITEM_WITHHELD_GAP in result.coverage.known_gaps
+    assert "content_redacted" not in result.coverage.known_gaps
+
+
+@pytest.mark.anyio
+async def test_check_result_carries_redacted_value_refs_and_lines() -> None:
+    """PL2-1 (issue #982): the recorded check and its result name refs and lines, never values."""
+
+    values = (
+        SemanticRedactedValue(
+            "excerpt-a", "value_replaced", (3, 7), "evd_10000000-0000-4000-8000-000000000021"
+        ),
+        SemanticRedactedValue("excerpt-heuristic", "item_withheld", (2,)),
+    )
+    app = _App(semantic=True)
+    app.semantic_result = replace(
+        _succeeded(SemanticJudgment("no_material_discrepancy", ())),
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+        semantic_redacted_values=values,
+    )
+    result = await execute_check_commit(app, _request("semantic_if_configured"))
+    assert result.semantic_redacted_values == values
+    wire = check_internal_json(result)
+    assert wire["semantic_redacted_values"] == tuple(item.as_wire() for item in values)
+
+
 def _succeeded(judgment: SemanticJudgment) -> FinalSemanticEvaluation:
     digest = "sha256:" + "a" * 64
     return FinalSemanticEvaluation(
@@ -1459,6 +1739,94 @@ async def test_partial_rejection_keeps_accepted_challenges_and_declares_the_gap(
     )
     assert "Invented ref" not in raw
     assert "Accepted challenge" not in raw
+
+
+@pytest.mark.anyio
+async def test_challenge_citing_an_omitted_ref_is_kept_on_the_sent_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TB4 tb4v1 (issue #976): a cited ref without a sent row no longer discards the challenge.
+
+    The reviewer cites a carried claim and a claim whose row the packet omitted, and quotes the
+    carried claim in its own spelling. One AI-powered finding is minted on the carried claim with
+    the verbatim sent quote; the reduction is disclosed and no snippet loss is reported.
+    A second challenge citing only the omitted claim mints nothing but reaches the agent as an
+    advisory concern in the review summary, under its own rejection reason.
+    """
+
+    from yoetz.domain.receipts import (
+        SEMANTIC_CHALLENGES_REJECTED_GAP,
+        SEMANTIC_REVIEW_REFS_REDUCED_GAP,
+        SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
+    )
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    app = _App(semantic=True)
+    first = ClaimRecordedPayload(clm(1), ClaimKind.MATERIAL, "Annotated with a custom model", ())
+    second = ClaimRecordedPayload(clm(2), ClaimKind.MATERIAL, "Domain overlap holds", ())
+    app.ledger.frozen = replace(
+        app.ledger.frozen,
+        case=make_case(claims={clm(1): record(first, 1), clm(2): record(second, 2)}),
+    )
+    sent_row = json.dumps({"payload": {"statement": "The report\u2019s model\nis custom."}})
+    app.semantic_result = replace(
+        _succeeded(
+            SemanticJudgment(
+                "challenges_returned",
+                (
+                    replace(
+                        _reviewer_challenge(str(clm(1)), summary="Kept on the sent claim"),
+                        cited_refs=tuple(sorted((str(clm(1)), str(clm(2))))),
+                        snippet="The report's model is custom.",
+                    ),
+                    replace(
+                        _reviewer_challenge(str(clm(2)), summary="Only the omitted claim"),
+                        snippet="Domain overlap holds",
+                    ),
+                ),
+                review_summary="Reviewed the annotations.",
+            )
+        ),
+        case_citable_refs=frozenset({str(clm(1)), str(clm(2))}),
+        provider_input_text_by_ref={str(clm(1)): (sent_row,)},
+    )
+
+    result = await execute_check_commit(app, _request("semantic_required", max_findings="4"))
+
+    semantic_findings = [
+        finding for finding in result.findings if finding.origin.value == "semantic_model_derived"
+    ]
+    assert [finding.summary for finding in semantic_findings] == ["Kept on the sent claim"]
+    challenge = semantic_findings[0].challenge
+    assert challenge is not None
+    assert challenge.snippet == "The report\u2019s model\nis custom."
+    gaps = set(result.coverage.known_gaps)
+    assert SEMANTIC_REVIEW_REFS_REDUCED_GAP in gaps
+    assert SEMANTIC_CHALLENGES_REJECTED_GAP in gaps
+    assert SEMANTIC_REVIEW_SNIPPET_INVALID_GAP not in gaps
+    # The recorded review summary (check_recorded, the check result, status and receipts) carries
+    # the unanchored concern; its unproven quote never travels with it.
+    summary = app.ledger.last_review_summary
+    assert summary is not None
+    assert summary.startswith("Reviewed the annotations.")
+    assert "Only the omitted claim" in summary
+    assert "Domain overlap holds" not in summary
+
+    raw = diagnostics_module.diagnostic_log_path(root=tmp_path).read_text(encoding="ascii")
+    accounting = [
+        json.loads(line)
+        for line in raw.splitlines()
+        if line and json.loads(line)["operation"] == "semantic_review_accounting"
+    ]
+    assert len(accounting) == 1
+    record_json = accounting[0]
+    assert record_json["semantic_challenges_returned"] == 2
+    assert record_json["semantic_candidates_accepted"] == 1
+    assert record_json["semantic_challenges_rejected"] == 1
+    assert record_json["semantic_rejected_ref_not_carried"] == 1
+    assert record_json["semantic_review_refs_reduced"] == 1
+    assert record_json["semantic_review_snippets_rejected"] == 0
+    assert "Only the omitted claim" not in raw
 
 
 @pytest.mark.anyio
@@ -1923,3 +2291,141 @@ async def test_a_fresh_diff_answers_a_captured_edit_only_for_the_path_it_records
     else:
         assert [item.target_refs for item in checked.missing_for_assessment] == [(str(evd(1)),)]
         assert "semantic_missing_already_supplied" not in gaps
+
+
+def test_withheld_item_becomes_the_capture_baseline_of_raised_ai_findings() -> None:
+    """Issue #982 review: the item-withheld gap must reach the finding baseline in production.
+
+    Composition puts it in ``case_content_gaps`` (``_egress_case_content_gaps``); this is the
+    set the check stamps on every AI-powered finding the review raises.
+    """
+
+    from yoetz.application.check import semantic_capture_baseline_gaps
+    from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
+
+    result = replace(
+        _succeeded(SemanticJudgment("no_material_discrepancy", ())),
+        semantic_withheld_item_ids=("excerpt-heuristic",),
+        case_content_gaps=(SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,),
+    )
+    assert SEMANTIC_REVIEW_ITEM_WITHHELD_GAP in semantic_capture_baseline_gaps(result)
+
+
+# --- issue #1012: optional bounded wait for this task's hook observations ---------------------
+
+
+@pytest.mark.anyio
+async def test_await_observations_absent_keeps_digest_and_result_bytes() -> None:
+    from yoetz.application.check import _request_digest  # pyright: ignore[reportPrivateUsage]
+    from yoetz.ports.ledger import CheckObservationsAwaited
+    from yoetz.protocol.canonical import canonical_digest, canonical_encode
+
+    plain = _request()
+    flagged = CheckRequest.model_validate(
+        {**plain.model_dump(mode="json", exclude_none=True), "await_observations": True}
+    )
+    scope = check_module.normalize_check_scope(plain)
+    packs = check_module._selected_packs(plain)  # pyright: ignore[reportPrivateUsage]
+    digest = _request_digest(plain, scope, packs, route_profile="policy")
+    # The pre-field digest: the request dump with no await_observations member at all.
+    legacy: dict[str, Any] = plain.model_dump(mode="json", by_alias=True)
+    legacy.pop("await_observations")
+    legacy["scope"] = {"claim_ids": scope.claim_ids, "obligation_ids": scope.obligation_ids}
+    legacy["policy_packs"] = packs
+    legacy["route_profile"] = "policy"
+    assert digest == canonical_digest(legacy)
+    # The flag is outside the operation identity: a recovery may set or omit it.
+    assert _request_digest(flagged, scope, packs, route_profile="policy") == digest
+
+    result = await execute_check(_App(), plain)
+    body = check_internal_json(result)
+    assert "observations_awaited" not in body
+    assert result.observations_awaited is None
+
+    awaited = replace(result, observations_awaited=CheckObservationsAwaited("bounded_timeout", 2))
+    awaited_body = check_internal_json(awaited)
+    assert awaited_body["observations_awaited"] == {
+        "state": "bounded_timeout",
+        "pending_count": "2",
+    }
+    without = dict(awaited_body)
+    del without["observations_awaited"]
+    assert canonical_encode(without) == canonical_encode(body)
+
+
+@pytest.mark.anyio
+async def test_application_check_attaches_only_a_supplied_wait_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yoetz.application.service import Application
+    from yoetz.ports.ledger import CheckObservationsAwaited
+
+    canned = await execute_check(_App(), _request())
+
+    async def fake_execute_check(*_args: object, **_kwargs: object) -> CheckCommitResult:
+        return canned
+
+    async def noop(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(check_module, "execute_check", fake_execute_check)
+    host = SimpleNamespace(
+        _require_repository_route=noop,
+        _renew_activity_session=noop,
+        verification_policy=VerificationPolicy(),
+        change_capture=None,
+    )
+    plain = await Application.check(cast(Any, host), _request())
+    assert plain is canned
+    complete = CheckObservationsAwaited("complete", 0)
+    attached = await Application.check(cast(Any, host), _request(), observations_awaited=complete)
+    assert isinstance(attached, CheckCommitResult)
+    assert attached.observations_awaited == complete
+    assert replace(attached, observations_awaited=None) == canned
+
+
+class _UnrepresentablePathCapturePort(_MetadataOnlyCapturePort):
+    def capture_metadata(self, workspace: str, base: object) -> CheckChangeMetadata:
+        return CheckChangeMetadata(
+            base="task_start",
+            entries=self.entries,
+            tracked_files=0,
+            untracked_files=len(self.entries) + 1,
+            omitted_files=1,
+            truncated=True,
+            base_commit="a" * 40,
+            unrepresentable_files=1,
+        )
+
+
+@pytest.mark.anyio
+async def test_a_skipped_line_break_path_is_disclosed_by_code_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1019: the capture stays usable; the check names the skipped path's class, never it."""
+
+    from yoetz.domain.receipts import (
+        CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
+        CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
+        check_time_change_gap_sentence,
+    )
+    from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
+
+    app = _App()
+    app.change_capture = _UnrepresentablePathCapturePort(
+        (ChangeMetadataEntry("A", "out.txt", untracked=True),)
+    )
+    app.start_catalog = _StructuralStartCatalog()
+    source = CheckWorkspaceSource("/workspace", "hmac-sha256:" + "a" * 64)
+    monkeypatch.setattr(check_module, "current_check_workspace_source", lambda: source)
+
+    result = await execute_check_commit(app, _request(max_findings="4"))
+
+    assert CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP in result.coverage.known_gaps
+    assert CHECK_TIME_CHANGE_UNAVAILABLE_GAP not in result.coverage.known_gaps
+    assert (
+        GAP_CLASSIFICATION[CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP]
+        is GapClass.STANDING_LIMITATION
+    )
+    sentence = check_time_change_gap_sentence(CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP)
+    assert sentence is not None and "line break" in sentence

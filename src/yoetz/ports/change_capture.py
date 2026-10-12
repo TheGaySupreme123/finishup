@@ -30,12 +30,15 @@ __all__ = [
     "CHANGE_CAPTURE_UNAVAILABLE_REASONS",
     "CHECK_CHANGE_MEDIA_TYPE",
     "MAX_CHECK_CHANGE_TEXT_BYTES",
+    "MAX_PROBED_FILE_SIZE",
     "TASK_CHANGE_BASE_MEDIA_TYPE",
     "ChangeBaseKind",
     "ChangeCapturePort",
     "ChangeCaptureUnavailable",
     "CheckChangeCapture",
     "CheckChangeMetadata",
+    "ChangeLineCount",
+    "ChangeLineCounts",
     "ChangeMetadataEntry",
     "CheckWorkspaceSource",
     "TaskChangeBase",
@@ -46,6 +49,8 @@ __all__ = [
     "decode_task_change_base",
     "encode_check_change",
     "encode_task_change_base",
+    "metadata_path_representable",
+    "RequestedPathProbe",
 ]
 
 TASK_CHANGE_BASE_MEDIA_TYPE: Final = "application/vnd.yoetz.task-change-base+json"
@@ -171,6 +176,24 @@ class CheckChangeCapture:
             raise _invalid()
 
 
+_UNREPRESENTABLE_PATH_CHARACTERS: Final = "\x00\r\n"
+
+
+def metadata_path_representable(path: str) -> bool:
+    """Whether *path* can be a :class:`ChangeMetadataEntry` path.
+
+    Git allows a carriage return or line feed in a file name (NUL never reaches a ``-z`` field),
+    but structural accounting is line-oriented and refuses such a path.  The capture skips that
+    one entry and counts it instead of failing the whole check-time read (issue #1019).
+    """
+
+    return (
+        type(path) is str
+        and bool(path)
+        and not any(char in path for char in _UNREPRESENTABLE_PATH_CHARACTERS)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ChangeMetadataEntry:
     """One changed path used only for local structural accounting.
@@ -192,19 +215,11 @@ class ChangeMetadataEntry:
             or any(ord(char) < 0x20 or ord(char) > 0x7E for char in self.status)
         ):
             raise _invalid()
-        if (
-            type(self.path) is not str
-            or not self.path
-            or any(char in self.path for char in "\x00\r\n")
-        ):
+        if not metadata_path_representable(self.path):
             raise _invalid()
         if type(self.untracked) is not bool:
             raise _invalid()
-        if self.original_path is not None and (
-            type(self.original_path) is not str
-            or not self.original_path
-            or any(char in self.original_path for char in "\x00\r\n")
-        ):
+        if self.original_path is not None and not metadata_path_representable(self.original_path):
             raise _invalid()
         if self.original_path is not None and self.status != "R":
             raise _invalid()
@@ -228,6 +243,9 @@ class CheckChangeMetadata:
     truncated: bool
     content_available: bool = False
     base_commit: str = field(default="", repr=False)
+    # Changed paths skipped because a CR or LF in the name cannot be an entry (issue #1019).
+    # Each is also counted in ``omitted_files``, so the listing is truncated.
+    unrepresentable_files: int = 0
 
     def __post_init__(self) -> None:
         if self.base not in _BASE_KINDS:
@@ -249,6 +267,12 @@ class CheckChangeMetadata:
             raise _invalid()
         if self.omitted_files and not self.truncated:
             raise _invalid()
+        if (
+            type(self.unrepresentable_files) is not int
+            or isinstance(self.unrepresentable_files, bool)
+            or not 0 <= self.unrepresentable_files <= self.omitted_files
+        ):
+            raise _invalid()
         if type(self.base_commit) is not str or (
             self.base_commit
             and (len(self.base_commit) not in {40, 64} or _HEX.fullmatch(self.base_commit) is None)
@@ -263,13 +287,137 @@ class ChangeCapturePort(Protocol):
         """Return HEAD's commit, or the empty tree for a repository with no commit yet."""
         ...
 
-    def capture(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeCapture:
-        """Render the change from ``base`` (or HEAD when ``None``) to the working tree."""
+    def capture(
+        self,
+        workspace: str,
+        base: TaskChangeBase | None,
+        *,
+        priority_paths: tuple[str, ...] = (),
+    ) -> CheckChangeCapture:
+        """Render the change from ``base`` (or HEAD when ``None``) to the working tree.
+
+        ``priority_paths`` names the task's declared deliverables; their files are rendered ahead
+        of every other file (tb4n2 R7). They order the change only, never widen what is read.
+        """
         ...
 
     def capture_metadata(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeMetadata:
         """Return bounded changed-path facts without reading or returning file content."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class RequestedPathProbe:
+    """One requested file path located against the checked repository root (#977).
+
+    ``location`` is ``inside`` or ``outside``. For an inside path, ``relative`` is its
+    root-relative form (``.`` for the root itself; compared with the check-time change entries,
+    never stored), ``exists`` is
+    ``None`` when a link or non-directory blocked the walk, and ``ignored`` is Git's answer.
+    """
+
+    location: str
+    relative: str | None = field(default=None, repr=False)
+    exists: bool | None = None
+    ignored: bool | None = None
+    # For an ignored path, where the ignoring rule lives: ``info_exclude`` (``.git/info/exclude``),
+    # ``repository_file`` (a ``.gitignore`` in the tree, named root-relative by ``ignore_file``),
+    # or ``outside_repository`` (a configured or global excludes file).
+    ignore_source: str | None = None
+    ignore_file: str | None = field(default=None, repr=False)
+    # For an existing directory only (#1002): whether a bounded, link-free metadata walk found any
+    # entry that is not a directory beneath it. ``False`` means empty or only empty directories;
+    # ``None`` means not a directory, or the walk was blocked or exceeded its bound.
+    holds_file: bool | None = None
+    # For an existing regular file only (tb4n2 R2): its size in bytes from the same link-free
+    # ``stat``; no content is read. ``None`` for anything else or when the walk was blocked.
+    size_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.location not in {"inside", "outside"}:
+            raise _invalid()
+        if self.ignore_source not in {
+            None,
+            "info_exclude",
+            "repository_file",
+            "outside_repository",
+        }:
+            raise _invalid()
+        if (self.location == "inside") is (self.relative is None):
+            raise _invalid()
+        if self.holds_file is not None and self.exists is not True:
+            raise _invalid()
+        if self.size_bytes is not None and (
+            self.exists is not True
+            or type(self.size_bytes) is not int
+            or not 0 <= self.size_bytes <= MAX_PROBED_FILE_SIZE
+        ):
+            raise _invalid()
+
+
+_MAX_LINE_COUNT: Final = 1 << 40
+# The largest file size a probe reports (the JSON-safe integer range); a larger one is unknown.
+MAX_PROBED_FILE_SIZE: Final = (1 << 53) - 1
+
+
+def _line_count(value: object) -> bool:
+    return value is None or (type(value) is int and 0 <= value <= _MAX_LINE_COUNT)
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeLineCount:
+    """Line counts for one changed file in the check-time change (ADR-035).
+
+    ``added``/``removed`` are Git's numstat counts for a tracked file, or the line count of an
+    untracked file with ``removed=0``; ``None`` when the file is binary, too large, or could not be
+    read safely. ``path`` is root-relative, compared in process only and never stored.
+    """
+
+    path: str = field(repr=False)
+    added: int | None
+    removed: int | None
+    untracked: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.path) is not str
+            or not self.path
+            or any(char in self.path for char in "\x00\r\n")
+        ):
+            raise _invalid()
+        if not _line_count(self.added) or not _line_count(self.removed):
+            raise _invalid()
+        if type(self.untracked) is not bool:
+            raise _invalid()
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeLineCounts:
+    """A bounded, metadata-only line-count read of the check-time change (ADR-035).
+
+    ``changed`` holds counts for the changed files that fit the read; ``truncated`` is true when
+    some changed or untracked file was left out, so any total is a lower bound. ``base_lines``
+    holds, in the order the caller named them, the line count of each requested path in the base
+    (``None`` when absent from the base, binary, or unreadable). No content leaves the adapter.
+    """
+
+    changed: tuple[ChangeLineCount, ...]
+    base_lines: tuple[int | None, ...]
+    truncated: bool
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.changed) is not tuple
+            or len(self.changed) > _MAX_FILE_COUNT
+            or any(type(item) is not ChangeLineCount for item in self.changed)
+        ):
+            raise _invalid()
+        if type(self.base_lines) is not tuple or not all(
+            _line_count(item) for item in self.base_lines
+        ):
+            raise _invalid()
+        if type(self.truncated) is not bool:
+            raise _invalid()
 
 
 class TaskChangeBaseStorePort(Protocol):

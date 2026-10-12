@@ -82,6 +82,64 @@ independently authenticate, so the local ceremony remains the stronger path. Loo
 silent: every path shows the complete change before you decide. The machine row is an installation
 ceiling; external LLM work also needs an exact granted row for the current repository beneath it.
 
+Secret-shaped text that only looks like a credential (an assignment to a name such as `token`) is
+redacted in place when it would leave your machine: only the value is replaced, by
+`[withheld-by-yoetz:possible-credential]`, and the rest of the line and file is still reviewed. The
+check reports `semantic_review_value_redacted`. If a value cannot be replaced safely, Yoetz withholds
+only the item that carries it and reviews the rest; the check lists the withheld items and reports
+`semantic_review_item_withheld`. Checks, receipts and `status view=operation` name each affected
+item and the line numbers involved, counted within the captured excerpt rather than the whole file
+(`semantic_redacted_values`), never the value. Both limit only
+the AI-powered review; local checks still see your
+work in full, and you never need to change consent or your code to clear them. Only a concrete credential, a private key, or a scanner that cannot finish
+blocks the whole review. You never need to hide or git-ignore a requested output to keep it out of
+review.
+
+What Yoetz records on your machine follows the same split. A concrete credential shape (a known
+API-key or access-token format, a private-key header, or a password inside a URL) is replaced before
+anything is stored. Text that only looks like a credential is kept as captured in the encrypted
+local store, so local checks see your work as it is; it is replaced only when content would leave
+your machine.
+
+### Turning the possible-credential filter off
+
+The replacement of text that only *looks* like a credential is a filter you can turn off for the
+external AI reviewer, for example when it keeps hiding values your review needs and you know they
+are not secrets. The setting belongs to the current repository:
+
+```text
+yoetz privacy credential-heuristic disable   # this repository: stop replacing look-alike values
+yoetz privacy credential-heuristic enable    # this repository: turn the filter back on (default)
+yoetz privacy credential-heuristic disable --machine-default   # default for new repository grants
+yoetz privacy credential-heuristic enable --machine-default    # restore that default
+```
+
+Turning it off means values assigned to names such as `password`, `secret`, `api_key` or
+`*_token` are sent to the external AI reviewer as written, instead of as
+`[withheld-by-yoetz:possible-credential]`. Everything that stays on your machine keeps the
+filter: what Yoetz shows your agent and what a local model reviews are filtered exactly as before.
+It never affects the never-send set: a known credential shape, a private key, a password inside a
+URL, or a scanner that cannot finish still blocks or redacts exactly as before.
+
+Because more may leave your machine, turning it off is a loosening of this repository's privacy
+grant: it applies only after you approve it in the trusted approval on this terminal, which shows
+it as **Possible-credential filter: On → Off**. If the repository has no grant yet, the command
+walks you through the ordinary grant approval with the filter off, so the setting becomes part of
+the grant you approve; nothing is granted without you. No agent can turn it off for you. Turning
+it back on is a tightening of the same grant and applies at once, to this repository only. The
+installation-wide default (`--machine-default`) is what a new repository grant starts from;
+changing it does not change a repository that already has a grant.
+
+`yoetz status` and the agent's status show, before any check runs, whether the filter is on for
+this repository and what the installation default is; `yoetz provider status` and `/privacy`
+show the same pair, and `yoetz privacy show` names the installation default when it is off. A
+repository without a grant has nothing to turn back on; `enable` then tells you to use
+`--machine-default`. While it is off, every privacy receipt for an external review
+made under it records it, and every check whose external AI-powered review ran under it reports
+`semantic_review_credential_heuristic_disabled`. That code describes your choice, not a problem
+with the agent's work. The setting is part of your privacy policy, so
+`yoetz privacy export-desired` and `apply-desired` carry it too, through the same approval.
+
 ## Commands
 
 ```text
@@ -93,6 +151,7 @@ yoetz privacy propose           # propose a change for decision
 yoetz privacy decide-policy     # approve or deny one exact pending policy proposal on the terminal
 yoetz privacy export-desired    # effective nonsecret policy as desired-state TOML (never secrets)
 yoetz privacy apply-desired     # apply desired-state TOML; tighten may proceed, widen never silent
+yoetz privacy credential-heuristic disable|enable  # external reviewer's possible-credential filter, per repository
 yoetz privacy pending           # list disclosure decisions waiting for you
 yoetz privacy decide-disclosure # decide one exact pending disclosure by id (see below)
 yoetz privacy receipts          # inspect bounded structural egress receipts
@@ -215,8 +274,13 @@ started before this version, the commit at its first check) — committed and un
 tracked files, plus untracked files Git does not ignore — from the repository the check's own
 connection named (only when that directory is the repository's own working tree: a repository whose
 Git settings point its working tree elsewhere is not read), and shows it to the reviewer first, with
-a header naming every changed file. It covers edits made by scripts and commits that no hook
-captured. Because the starting point is a commit, uncommitted or untracked work that was already in
+a header naming every changed file. Files you declared as outputs come first, then small files,
+then the rest, so when the change is cut for room your deliverables are kept and scratch files go
+first. It covers edits made by scripts and commits that no hook captured. A declared output that
+lives outside the repository (for example `/output/result.json`) is never read by Yoetz itself; when
+the case already holds a capture of it (output a hook recorded, or evidence the agent published
+that names it), that capture is carried with the same priority as the change, under the same
+redaction and never-send checks, and listed in the review input like every other excerpt. Because the starting point is a commit, uncommitted or untracked work that was already in
 your working tree when the task started is included too. Git hooks, helpers, filters and network
 access are off while it is read, credential-like text is redacted, and each part still passes the
 never-send check. Files named like credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and
@@ -309,7 +373,10 @@ back to 16, choose Assisted in `yoetz --privacy`, or propose the earlier Expande
 
 Inside that confirmed policy, review is direct-to-agent. The reviewer returns a bounded challenge to
 the main agent, which can act, supply evidence, revise its claim, dispute with evidence, or state an
-unresolved limitation — then recheck. Routine checks and retries need no human prompt.
+unresolved limitation — then recheck. The reviewer can also ask the agent a question. The agent
+answers each review finding with a reason, and the next review sees that answer (and the agent's
+answers to Yoetz's own findings) and rules on it; a reply that names an earlier finding comes back as
+a new finding linked to it. Routine checks and retries need no human prompt.
 
 The reviewer works as a verifying reviewer: it checks the change against the task and the recorded
 verification against the change. It judges recorded test and command output itself instead of
@@ -317,7 +384,10 @@ asking the agent to run it again, reports every distinct problem it finds (up to
 and names the exact missing item when it needs more. It knows it is the review that was asked for,
 so it does not report its own review, Yoetz checks, findings, or limits on what its packet could
 carry as problems in the work, and it never asks the agent to install tools or change the
-environment. Work left open while completion is claimed is still reported, and so is a real
+environment. It does flag delivery risks it can see, such as an import the recorded environment
+lacks or files written outside the requested location, and it tests an "impossible" or
+"infeasible" conclusion against what the task asked for. A limitation outside the agent's control
+is acceptable when disclosed; one the agent could reduce is not support. Work left open while completion is claimed is still reported, and so is a real
 discrepancy in the agent's own record, such as a completion claim beyond the plan or a recorded
 command that differs from the one observed. Every provider — the Codex subscription, OpenAI, and
 OpenAI-compatible endpoints — gets the same instructions. Track a required review by choosing
@@ -325,6 +395,12 @@ OpenAI-compatible endpoints — gets the same instructions. Track a required rev
 
 AI-powered output is advisory, provenance-labeled, and deterministically fenced. It never silently
 becomes local-check truth, and it never upgrades a coverage claim.
+
+A reviewer concern is not thrown away because one of its citations or its quote cannot be checked.
+A quote is kept only when it matches text the reviewer was actually sent, and the result shows that
+sent text word for word; otherwise the quote is removed and the result says so. A concern that
+cites only material the review did not carry becomes no finding, but its wording is added to the
+review summary as an unverified concern, so the agent still sees it.
 
 If a fallback endpoint is approved and the primary could not serve — repeated timeouts,
 connection failures, or rate limits, a quota exhaustion, or a missing credential — the same
@@ -402,7 +478,8 @@ Checks started before this version show no progress.
 ### Routine checkpoints and final reviews
 
 A Codex subscription review uses one of two budget profiles. A check made after your task
-records a completion claim is a **final** review. It uses the configured final reasoning effort
+records a completion claim, or a check the agent asks to be the closing review (`final_review`), is
+a **final** review. It uses the configured final reasoning effort
 (`high` by default) and an output limit of 8192 tokens. Every earlier check is a **routine**
 checkpoint, which uses the routine effort (`medium` for new setups) and an output limit of 4096
 tokens.
@@ -418,8 +495,11 @@ tokens.
   and output limit used. A review whose visible answer exceeds its limit is stopped and reported
   as an invalid answer.
 - **What the reviewer judges.** On every provider, a routine checkpoint reports problems in the
-  work so far without judging whether it is complete; a final review judges whether the change and
-  its recorded verification support the completion claim.
+  work so far without judging whether it is complete; a final review judges completeness against
+  the task: each stated requirement and requested output, with or without a completion claim.
+- **The closing review.** The receipt is the last step, so the last review before it is a final
+  review. When a task uses AI-powered review, its closure checklist lists `closing_review_required`
+  until a final review is current after the last change; the check result names the review phase.
 
 ### Cancelled background review
 

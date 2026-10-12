@@ -124,7 +124,9 @@ def test_public_error_and_validation_summaries_are_sanitized() -> None:
         },
     }
     summary = render_safe_compact_summary(result)
-    assert summary == f"Error INVALID_REQUEST; retryable: no; correlation: {correlation_id}."
+    assert summary == (
+        f"Error INVALID_REQUEST; retryable: no; correlation: {correlation_id}. Field: /request_id."
+    )
     all_locations = (
         {"field": "/request_id", "reason": "missing"},
         {"field": "/client", "reason": "extra_forbidden"},
@@ -302,8 +304,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:7de117f8bc28b3970e8ef5ab2ab11074683e7adb59d156cea6a465f952342b33",
-        "strict": "sha256:3ef47b80d54b8313e2376575d671444d7952c8909e42ece7b84424616731ffaa",
+        "policy": "sha256:9576c84c3b7476c7c3d9520ba18dec6ef7d852a1d96c5a29b4bc2348eafbb05d",
+        "strict": "sha256:346964d57cf6c679a4b69d89c62172a1649d3d678922ae60a343dc85f4bca38f",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -351,7 +353,7 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert "unsorted_set_field" in description
     publish_descriptor = descriptor_for("publish_work")
     assert publish_descriptor.input_schema_ref.endswith("publish-work-request-1.2.0.schema.json")
-    assert publish_descriptor.output_schema_ref.endswith("publish-work-result-1.0.0.schema.json")
+    assert publish_descriptor.output_schema_ref.endswith("publish-work-result-1.1.0.schema.json")
     check_descriptor = descriptor_for("check")
     assert check_descriptor.output_schema_ref.endswith("check-result-1.4.0.schema.json")
     status_descriptor = descriptor_for("status")
@@ -601,7 +603,7 @@ def _subscription_check_result() -> dict[str, Any]:
             "protocol_version": "0.1",
             "engine_version": "0.1.0",
             "projection_version": "0.1.0",
-            "policy_packs": ["work-integrity/0.1.0"],
+            "policy_packs": ["work-integrity/0.3.0"],
         },
         "privacy_projection": _subscription_privacy_projection(),
     }
@@ -791,8 +793,11 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     assert admitted == (
         "acknowledged",
         "acknowledged_not_done",
+        "duplicate_of",
         "provenance_disputed",
         "rejected",
+        "reopened",
+        "self_verified",
         "waived",
     )
     assert "allOf" not in schema
@@ -803,6 +808,19 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     # The tool description is the first text a caller reads, and it is digest-pinned.
     assert "provenance dispute" in descriptor.description
     assert "provenance_disputed" in descriptor.description
+    # Issue #984: repair first, self-verify a Yoetz limit, acknowledge only as the last resort.
+    text = descriptor.description
+    assert text.index("repair it and check first") < text.index("respond self_verified")
+    assert text.index("respond self_verified") < text.index("acknowledged_not_done only if")
+    assert "never a yoetz-blocker" in text
+    # Issue #996: the link target is advertised with its rule, and the text says what it does.
+    target = cast(
+        dict[str, Any], cast(dict[str, Any], schema["properties"])["duplicate_of_finding_id"]
+    )
+    assert "earlier" in cast(str, target["description"])
+    assert "duplicate_of_finding_id" in rules
+    assert "respond duplicate_of" in text
+    assert "linking never resolves the new finding" in text
 
 
 def test_guidance_resources_are_exact_and_static() -> None:
@@ -1041,5 +1059,5 @@ def test_read_guidance_descriptor_is_read_only_and_names_a_guidance_uri() -> Non
     assert descriptor.annotations.destructive is False
     assert descriptor.annotations.open_world is False
     assert "yoetz://guidance/" in descriptor.description
-    assert "512-byte summary" in descriptor.description
+    assert "bounded 4096-byte summary" in descriptor.description
     assert "not a ledger operation" in descriptor.description

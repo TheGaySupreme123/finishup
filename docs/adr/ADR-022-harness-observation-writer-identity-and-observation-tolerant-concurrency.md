@@ -283,6 +283,46 @@ unsupported claims and unbounded duplicate findings.
     outbox row remains pending. It does not acknowledge the already-committed core append alone,
     because doing so could permanently lose the authoritative correction; a repaired or rebuilt
     projection lets the same row replay and finish idempotently.
+    Amendment (issue #1019, tb4n2): a Codex hook advances its session generation at every
+    `SessionStart`, including the `compact` start after a context compaction, while the session
+    stream's generation follows the rollout file, which compaction does not rotate. The call
+    identity includes the generation, so a completed stream command first looks for its hook
+    call in the other recent generations of the same host session and task (at most 16). It
+    materializes under that generation only when exactly one such hook action exists in the task
+    ledger, it carries the same keyed command identity, and it holds no explicit outcome except
+    one this completion itself recorded; otherwise the stream keeps its own generation. The
+    reverse order (a stream completion delivered before a post-compaction hook call) still
+    records two actions.
+    Amendment (issue #1027, tb4n3 N3-7): the binding is resolved before the completion's
+    captured-content manifests are looked up, because those manifests (and the role set they
+    reconstruct) are keyed by the call's generation-qualified identity. Resolved after the lookup,
+    a hook post that carried captured output committed a captured-evidence role the contentless
+    completion could not reconstruct, so the completion was appended as a new operation reusing the
+    hook post's result event id; the ledger refused it (`EVENT_INVALID`), the drain quarantined it
+    as `ledger_rejected`, and every later command of the compacted session kept its hook
+    `UNKNOWN` (183 outcomes in 7 of 7 compacted tb4n3 attempts). One shared predicate
+    (`application/observation_committed.py`) now answers "is this observation already in the task
+    ledger" for the alignment, the paired-call link and the replay lookup: when no committed
+    operation is found under any reconstructable role set but every event of a call-keyed batch
+    (event ids derived from the host call, never from a source identity alone) is already recorded,
+    the delivery is a duplicate. Nothing is appended and the stream's explicit outcome still
+    reaches the recorded action through the same append-only correction; an append the ledger
+    refuses as `EVENT_INVALID` is re-read the same way before it can quarantine. A partial overlap,
+    and a collision on source-identity-keyed ids (#560), stay content refusals.
+    Amendment (issue #1019, tb4n2 N-4): a retired native content handoff is disclosed on its own
+    task. Each retirement appends one marker, keyed by the ticket identity, to the ticket's task
+    ledger with the standing gap `capture_handoff_retired`; it never reaches another task and
+    names no path or content. Local proof and clean deterministic conclusions tolerate it, and
+    AI-powered findings treat it as a capture baseline. The marker is appended before the ticket is
+    tombstoned; a retryable or unexpected failure leaves the ticket pending for the next
+    reconciliation pass, so an interrupted publication is retried, not lost. Only a ledger that
+    terminally refuses the marker (or a route without a writer) lets the retirement proceed
+    without it, recorded in service diagnostics, so capture pressure is never held forever. The workspace-level
+    `content_capture_unavailable` flag in observation status stays a lifetime workspace flag:
+    the local store records it without a task (`note_coverage_gap` takes only the workspace, and
+    the status query names no task), so scoping it would need a task-keyed gap store and a
+    status query that resolves the current host session's task. The per-task marker is the
+    task-scoped signal instead.
 
 16. `obs-ledger/1.4.0` carries trusted observation-content manifests into ledger materialization.
     A manifest binds the encrypted object envelope plus the SHA-256 digest and byte count of its
@@ -837,3 +877,51 @@ reads, beside `Bash` and `shell`. A delivered stream `command_execution` row sta
 advice, so the advice never names one run twice. The shapes are
 pinned by the OUT-001 fixture, which is derived from recorded 0.157.1 rollouts; a raw hook stdin
 capture is still owed on #910.
+
+## Amendment (2026-10-07, issue #994): the drain clock, content under a contended lease, and the Stop drain
+
+tb4n1 measured `drain_budget_exhausted` on 94% of Codex hooks, `content_capture_unavailable` in
+every attempt, and a Stop gate that almost always read "observations were still draining". The
+owner decided: start the clock after connecting, spool durably, and finish the drain at Stop.
+
+1. **The delivery clock starts after the connection opens.** The connect keeps its own
+   preflight bound (one second, cold handshake included). Loading the local snapshot and the
+   handshake no longer spend the delivery budget, which now covers content staging, lifecycle
+   reconciliation, the ingest RPCs and the local commit after each. An optional absolute pass
+   deadline clamps both stages. The ordinary per-hook slice is 0.20 s and at most eight rows; a
+   content-bearing pass keeps 1.0 s and sixteen rows. Decision 13's rule is unchanged:
+   `drain_budget_exhausted` is recorded only when a pass moved nothing.
+2. **Transient content is staged even when another owner holds the drain lease.** A hook that
+   loses the nonblocking lease still opens its own connection and sends its content chunks as
+   `capture_only`. The service commits the encrypted manifests and the retry ticket before it
+   answers the capture-pending reason, so the bytes are durable in the vault; the owner or the
+   sweeper that later delivers the structural row consumes the ticket. `capture_only` never
+   advances the ingest cursor or the ledger, so it needs no lease, and a row the owner already
+   delivered is refused as before (#836). This service-side encrypted handoff is the durable
+   spool: plaintext is never written to the local outbox. Content that still could not be
+   staged keeps the explicit `content_capture_unavailable` gap.
+3. **Stop finishes the drain.** Stop is a turn boundary: it flushes buffered routine admission
+   accounts, then drains toward the current frontier with a larger slice (2.5 s, 64 rows),
+   clamped so the closure gate keeps its five-second status-read reserve inside the ten-second
+   Stop window on every host (the drain's deadline sits 0.75 s above that reserve for the local
+   commit after the last ingest). While another owner holds the lease the Stop pass waits for that
+   owner's progress, and gives up once this task's pending count has not moved for 0.75 s; when it
+   holds the lease itself and a retryable refusal delivers nothing,
+   it stops at once and leaves the rows to the sweeper. Only rows that can still change this
+   task's facts count: the host session's own rows and those of other host sessions mapped to
+   the same Yoetz session. Rows of other tasks in the workspace, and of unmapped sessions, do
+   not hold the decision. The outcome is a bounded diagnostic, `stop_drain_complete` or
+   `stop_drain_incomplete`, and the closure gate receives `observation_pending` only when this
+   task's rows remain (ADR-033 decision 5). Claude Code and Cursor ordinary profiles drain at
+   Stop too; they no longer defer a contentless Stop pass. SessionEnd keeps its 0.15 s teardown
+   slice under the three-second host clamp.
+
+4. **Drain and pass failures name their stage (tb4n2 N-3, issue #1019).** A drain preflight
+   records `drain_connect_timeout`, `drain_connect_failed` or `native_content_stage_failed`
+   instead of one `drain_preflight_failed` for both the connect and the content handoff; an
+   unexpected pass exception records `observe_<exception class>` from the service's reviewed
+   closed vocabulary instead of the bare `observe`. The old tokens stay admitted for older rows.
+
+Not changed: `check` does not wait for hook rows (a mid-session check can still be current as
+of an earlier frontier); local content cannot be spooled when the service is unreachable,
+because the hook holds no vault key.

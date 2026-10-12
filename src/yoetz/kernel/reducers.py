@@ -63,17 +63,23 @@ from yoetz.domain.values import (
     result_id,
     validate_sha256_digest,
 )
+from yoetz.kernel.claim_limitations import (
+    DISCLOSABLE_LIMITING_OUTCOMES,
+    required_limitation_result_ids,
+    result_is_relevant_to_claim_scope,
+)
 from yoetz.kernel.finding_resolution import (
     apply_check_resolution,
     apply_check_rulings,
+    next_standing_position,
     reopen_findings_resolved_by,
 )
-from yoetz.kernel.observed_failures import (
-    ObservedFailureState,
-    is_observed_run_record,
-    observed_action_is_exploratory,
-    observed_failure_states_from_records,
+from yoetz.kernel.later_material import (
+    LaterMaterialClass,
+    classify_later_material,
+    later_material_class,
 )
+from yoetz.kernel.observed_failures import is_observed_run_record
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import (
     ClaimProjectionRecord,
@@ -92,17 +98,20 @@ from yoetz.kernel.projections import (
     empty_projection_state,
     is_observation_limitation,
 )
+from yoetz.kernel.task_facts import disclosure_line_obligations
 from yoetz.protocol.canonical import canonical_digest
 from yoetz.protocol.coverage import LedgerFreshness
 
 __all__ = [
     "EvidenceObjectSource",
+    "LaterMaterialClass",
     "ReplayIndex",
     "build_replay_index",
     "empty_replay_index",
     "extend_replay_index",
     "invalidates_recorded_check",
     "is_material_event_family",
+    "later_material_class",
     "reduce_event",
     "replay_with_index",
     "replay_extension",
@@ -113,12 +122,14 @@ __all__ = [
 ]
 
 _MAX_SQLITE_SIGNED_INTEGER: Final = 2**63 - 1
-# A v1.1 completion claim must disclose every relevant typed non-success result. An `unknown`
-# outcome is not upgraded into a typed partial or failure (ADR-025 decision 3), so it is never
-# required -- but it is limiting to the local limitation policy, so `limitation_refs` also
-# accepts it as the disclosure channel a v1.1 claim would otherwise have none of.
-_TYPED_LIMITING_OUTCOMES: Final = frozenset({ResultOutcome.FAILURE, ResultOutcome.PARTIAL})
-_DISCLOSABLE_LIMITING_OUTCOMES: Final = _TYPED_LIMITING_OUTCOMES | {ResultOutcome.UNKNOWN}
+# Responses that dispute a finding and count as rebuttals (TB4 tb4n1 D7). ``self_verified`` is
+# compared by its wire value so this fold reads ledgers written before and after that
+# disposition exists.
+_REBUTTAL_DISPOSITION_VALUES: Final = frozenset(
+    {ResponseDisposition.REJECTED.value, "self_verified"}
+)
+# The v1.1 completion-claim limitation rule lives in ``yoetz.kernel.claim_limitations`` so a
+# surface can name the required ids before the claim (F3); the reducer reads the same rule.
 _MATERIAL_FAMILIES: Final = frozenset(
     {
         "action_recorded",
@@ -218,30 +229,42 @@ def invalidates_recorded_check(
     returned_finding_ids: tuple[FindingId, ...],
     *,
     limitation_finding_ids: frozenset[FindingId],
+    projection: ProjectionState,
 ) -> bool:
     """True when *record* supersedes the check recorded at *check_sequence*.
 
     ``limitation_finding_ids`` is ``projections.observation_limitation_finding_ids`` over the same
     projection and records, so every surface applies the reducer's issue #911 rule identically.
+    ``projection`` is the one the caller holds for the same prefix: an observed edit supersedes
+    the check by the shared ``later_material_class`` rule (tb4n3 RC-6), which reads the declared
+    outputs to decide which writes count and the action row a result answers.
     """
 
     if record.ledger.ingestion_sequence <= check_sequence:
         return False
-    return _record_supersedes_recorded_check(record, returned_finding_ids, limitation_finding_ids)
+    return _record_supersedes_recorded_check(
+        record, returned_finding_ids, limitation_finding_ids, projection
+    )
 
 
 def _record_supersedes_recorded_check(
     record: LedgerRecord,
     returned_finding_ids: tuple[FindingId, ...],
     limitation_finding_ids: frozenset[FindingId],
+    projection: ProjectionState,
 ) -> bool:
     """Apply the shared authorship-aware supersession rule to a later record."""
 
     if is_observation_authored(record):
         # Hook delivery reports what the harness observed; it does not publish new cooperative
         # work on the participant's behalf. Keep the check attributable across that motion unless
-        # the observation suffix materialized a finding that the older check could not cover.
-        return record.schema.name == "finding_recorded"
+        # the observation suffix materialized a finding that the older check could not cover, or
+        # an observed deliverable/workspace edit changed the state the check read (tb4n3 RC-6,
+        # C7). Yoetz's own calls, exploration and host bookkeeping never do.
+        return (
+            record.schema.name == "finding_recorded"
+            or classify_later_material(record, projection).supersedes
+        )
     return supersedes_recorded_check(
         record.schema.name, record.payload, returned_finding_ids, limitation_finding_ids
     )
@@ -673,6 +696,22 @@ def _locator_id[T](event: AcceptedEvent, constructor: Callable[[object], T]) -> 
         raise _corrupt() from exc
 
 
+_OBLIGATION_TRANSITIONS: Final = frozenset(
+    {
+        (ObligationStatus.OPEN, ObligationStatus.RESOLVED),
+        (ObligationStatus.OPEN, ObligationStatus.ACKNOWLEDGED_NOT_DONE),
+        (ObligationStatus.ACKNOWLEDGED_NOT_DONE, ObligationStatus.OPEN),
+        (ObligationStatus.ACKNOWLEDGED_NOT_DONE, ObligationStatus.RESOLVED),
+        # tb4n2 R2 (issue #1022, ADR-041): a resolution is no longer latched. When its
+        # deliverable no longer holds (an emptied output, an acceptance criterion its own output
+        # contradicts), the agent reopens it or acknowledges it as not done. Re-resolving a
+        # resolved obligation is still refused: a resolution is recorded once per transition.
+        (ObligationStatus.RESOLVED, ObligationStatus.OPEN),
+        (ObligationStatus.RESOLVED, ObligationStatus.ACKNOWLEDGED_NOT_DONE),
+    }
+)
+
+
 def _apply_obligation(
     obligations: dict[ObligationId, ObligationProjectionRecord],
     event: AcceptedEvent,
@@ -694,10 +733,13 @@ def _apply_obligation(
         # Resolution is open→resolved only. Meaning fields must repeat; only status and
         # resolution_evidence_refs may change. The comparison deliberately clears evidence
         # refs for meaning equality — that is not free mutation of resolved history.
+        # Issue #997 (ADR-032 slice C): an open obligation may be acknowledged as not done, and
+        # an acknowledged one reopened or resolved by a later publication (the reverse path).
         meaning_diffs = obligation_meaning_field_diffs(previous, payload)
-        valid_transition = (
-            previous.status is ObligationStatus.OPEN and payload.status is ObligationStatus.RESOLVED
-        )
+        # ``acknowledged_not_done`` (obligation_published 1.1.0, #997/#1002) is not resolved; the
+        # last effective status wins among open, acknowledged_not_done and resolved. A resolved
+        # obligation may be reopened or acknowledged (#1022), never re-resolved in place.
+        valid_transition = (previous.status, payload.status) in _OBLIGATION_TRANSITIONS
         if not valid_transition or meaning_diffs:
             if meaning_diffs:
                 raise ObligationResolutionMismatch(
@@ -709,6 +751,7 @@ def _apply_obligation(
                 ("status",),
                 invariant="open_to_resolved_only",
                 event_id=event.event_id,
+                prior_status="resolved" if previous.status is ObligationStatus.RESOLVED else "open",
             )
     obligations[key] = ObligationProjectionRecord(
         payload=payload,
@@ -720,6 +763,13 @@ def _apply_obligation(
         plan_change_reason=None if existing is None else existing.plan_change_reason,
         superseded_by_obligation_ids=(
             () if existing is None else existing.superseded_by_obligation_ids
+        ),
+        # A republication only changes status (the meaning fields must repeat), so the obligation
+        # keeps the sequence it was first published at (tb4n3 RC-7).
+        introduced_frontier=(
+            None
+            if existing is None or existing.payload is None
+            else (existing.introduced_frontier or existing.source_frontier)
         ),
     )
 
@@ -737,14 +787,12 @@ def _result_is_relevant_to_claim(
     *,
     claim_frontier: int,
 ) -> bool:
-    if result_record.payload is None or result_record.source_frontier > claim_frontier:
-        return False
-    action = actions.get(result_record.payload.action_id)
-    if action is None or action.payload is None:
-        return True
-    claim_scope = _claim_scope(payload)
-    action_scope = frozenset(action.payload.obligation_refs)
-    return not claim_scope or not action_scope or not claim_scope.isdisjoint(action_scope)
+    return result_is_relevant_to_claim_scope(
+        _claim_scope(payload),
+        result_record,
+        actions,
+        claim_frontier=claim_frontier,
+    )
 
 
 def _claim_effective_meaning(
@@ -793,6 +841,7 @@ def _apply_claim(
     results: Mapping[ResultId, ProjectionRecord[ResultRecordedPayload]],
     event: AcceptedEvent,
     observed_event_ids: frozenset[EventId] = frozenset(),
+    obligations: Mapping[ObligationId, ObligationProjectionRecord] | None = None,
 ) -> None:
     key = _locator_id(event, claim_id)
     # A v1.0 claim id may be re-published, and an unreadable payload tombstones the row in place.
@@ -837,58 +886,42 @@ def _apply_claim(
                 "supporting_refs_must_exclude_limitations",
                 event.event_id,
             )
-        # A hook-observed failure that a later run of the same command superseded is no longer
-        # required (#909). An edit alone changes the state under test without proving a covering
-        # rerun, so it remains live and nameable below.
-        observed_states = observed_failure_states_from_records(
+        # Superseded observed failures (#909) and observed explorations are not required; the
+        # rule is shared with the surfaces that list the required ids before a claim (F3).
+        required = required_limitation_result_ids(
             results,
             actions,
             observed_event_ids,
-            through=event.ledger.ingestion_sequence,
-        )
-        required = frozenset(
-            result_id_value
-            for result_id_value, record in results.items()
-            if record.payload is not None
-            and record.payload.outcome in _TYPED_LIMITING_OUTCOMES
-            and observed_states.get(result_id_value, ObservedFailureState.LIVE)
-            is ObservedFailureState.LIVE
-            and not (
-                (action := actions.get(record.payload.action_id)) is not None
-                and action.payload is not None
-                and action.source_event_id in observed_event_ids
-                and observed_action_is_exploratory(action.payload)
-            )
-            and _result_is_relevant_to_claim(
-                payload,
-                record,
-                actions,
-                claim_frontier=event.ledger.ingestion_sequence,
-            )
+            claim_scope=_claim_scope(payload),
+            claim_frontier=event.ledger.ingestion_sequence,
         )
         supplied = frozenset(payload.limitation_refs)
-        if any(
-            (record := results.get(result_ref)) is None
+        inadmissible = tuple(
+            result_ref
+            for result_ref in payload.limitation_refs
+            if (record := results.get(result_ref)) is None
             or record.payload is None
-            or record.payload.outcome not in _DISCLOSABLE_LIMITING_OUTCOMES
+            or record.payload.outcome not in DISCLOSABLE_LIMITING_OUTCOMES
             or not _limitation_scope_is_authorable(
                 payload,
                 record,
                 actions,
                 claim_frontier=event.ledger.ingestion_sequence,
             )
-            for result_ref in payload.limitation_refs
-        ):
+        )
+        if inadmissible:
             raise ClaimRevisionMismatch(
                 "limitation_refs",
                 "limitation_refs_must_be_relevant_non_success_results",
                 event.event_id,
+                offending_refs=inadmissible,
             )
         if payload.claim_kind is ClaimKind.COMPLETION and not required <= supplied:
             raise ClaimRevisionMismatch(
                 "limitation_refs",
                 "limitation_refs_complete",
                 event.event_id,
+                missing_refs=tuple(required - supplied),
             )
         if payload.supersedes_claim_refs:
             for target in payload.supersedes_claim_refs:
@@ -916,7 +949,19 @@ def _apply_claim(
                 # An accepted empty scope has no overlap to preserve. Explicit supersession
                 # repairs that authoring mistake without inferring scope from supporting_refs.
                 # Populated targets still require overlap, including in a mixed target batch.
-                if prior_scope and (not current_scope or prior_scope.isdisjoint(current_scope)):
+                # tb4n2 R2 (#1022): a completion claim whose every obligation is now acknowledged
+                # as not done claims nothing; its honest replacement may drop them all.
+                withdrawn = obligations is not None and all(
+                    (row := obligations.get(ref)) is not None
+                    and row.payload is not None
+                    and row.payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+                    for ref in prior_scope
+                )
+                if (
+                    prior_scope
+                    and not withdrawn
+                    and (not current_scope or prior_scope.isdisjoint(current_scope))
+                ):
                     raise ClaimRevisionMismatch(
                         "obligation_refs",
                         "scope_overlap_required",
@@ -1157,6 +1202,9 @@ def _recompute_missing_gaps(
         if record.payload is not None:
             for target in record.payload.affected_obligation_ids:
                 require(record.source_event_id, target)
+            # A disclosure line names its obligation in the statement (#995).
+            for _kind, target in disclosure_line_obligations(record.payload.statement):
+                require(record.source_event_id, target)
     for record in assignments.values():
         if record.payload is not None:
             for target in record.payload.obligation_ids:
@@ -1273,6 +1321,7 @@ def reduce_event(
             event,
             latest.returned_finding_ids,
             _answered_limitation_ids(state, accepted, replay_index),
+            state,
         ):
             stale = True
 
@@ -1350,7 +1399,14 @@ def reduce_event(
                 source_frontier=accepted.ledger.ingestion_sequence,
             )
         elif family == "claim_recorded":
-            _apply_claim(claims, actions, results, accepted, replay_index.observed_event_ids)
+            _apply_claim(
+                claims,
+                actions,
+                results,
+                accepted,
+                replay_index.observed_event_ids,
+                obligations,
+            )
         elif family == "finding_recorded":
             key = _locator_id(accepted, finding_id)
             findings[key] = _finding_record(
@@ -1363,6 +1419,29 @@ def reduce_event(
                 if payload is None
                 else _projection_record(accepted, cast(ResponseRecordedPayload, payload))
             )
+            rebutted = findings.get(key)
+            if (
+                payload is not None
+                and rebutted is not None
+                and cast(ResponseRecordedPayload, payload).disposition.value
+                in _REBUTTAL_DISPOSITION_VALUES
+            ):
+                # Every rebuttal is counted, not only the latest response (TB4 tb4n1 D7): the
+                # next review packet carries the count beside the reviewer's last verdict. A
+                # ``self_verified`` answer (the agent repaired the item and verified it itself,
+                # because Yoetz could not prove it) also disputes the reviewer's standing claim.
+                findings[key] = replace(rebutted, rebuttal_count=rebutted.rebuttal_count + 1)
+            if payload is not None and key in findings:
+                # tb4n3 RC-7: the agent's earliest unretracted reasoned position is a reducer
+                # fact, so a later answer of another kind never erases a rebuttal (D-2).
+                findings[key] = replace(
+                    findings[key],
+                    standing_position=next_standing_position(
+                        findings[key].standing_position,
+                        cast(ResponseRecordedPayload, payload),
+                        accepted.ledger.ingestion_sequence,
+                    ),
+                )
         elif family == "coordination_context_recorded":
             if accepted.event_id in coordination_contexts:
                 raise _corrupt()
@@ -1423,7 +1502,13 @@ def reduce_event(
                     proof_state=state,
                     first_task_statement_sequence=replay_index.first_task_statement_sequence,
                 )
-                apply_check_rulings(findings, responses, check, accepted.event_id)
+                apply_check_rulings(
+                    findings,
+                    responses,
+                    check,
+                    accepted.event_id,
+                    check_frontier=accepted.ledger.ingestion_sequence,
+                )
                 # Issue #907: the latest assessed review decides what is still named missing. A
                 # local-only or failed check leaves the prior request standing, and so does an
                 # ``insufficient_packet`` that recorded no item (a reply that named nothing, or

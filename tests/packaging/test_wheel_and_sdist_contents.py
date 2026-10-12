@@ -54,6 +54,19 @@ def _is_attestation_schema_member(name: str) -> bool:
     }
 
 
+def _is_test_edit_visibility_module(name: str) -> bool:
+    """The reviewed runtime module that classifies test-file edits is named for its subject."""
+
+    return name in {
+        "yoetz/kernel/test_edit_visibility.py",
+        "src/yoetz/kernel/test_edit_visibility.py",
+    }
+
+
+def _is_reviewed_name_exemption(name: str) -> bool:
+    return _is_attestation_schema_member(name) or _is_test_edit_visibility_module(name)
+
+
 def _load_pyproject() -> dict[str, object]:
     with (_REPO_ROOT / "pyproject.toml").open("rb") as handle:
         return tomllib.load(handle)
@@ -198,7 +211,7 @@ def test_wheel_member_inventory_matches_the_exact_allowlist(candidate: Candidate
 
     for member_name in members:
         lowered = member_name.lower()
-        if not _is_attestation_schema_member(lowered):
+        if not _is_reviewed_name_exemption(lowered):
             assert not any(marker in lowered for marker in _FORBIDDEN_NAME_MARKERS), member_name
         assert not lowered.endswith(_NATIVE_BINARY_SUFFIXES), member_name
 
@@ -389,7 +402,7 @@ def test_sdist_member_inventory_matches_the_exact_allowlist(candidate: Candidate
         assert member_name.startswith(prefix), member_name
         rest = member_name[len(prefix) :]
         lowered = rest.lower()
-        if not _is_attestation_schema_member(lowered):
+        if not _is_reviewed_name_exemption(lowered):
             assert not any(marker in lowered for marker in _FORBIDDEN_NAME_MARKERS), member_name
         assert not lowered.endswith(_NATIVE_BINARY_SUFFIXES), member_name
         if "/" not in rest:
@@ -533,3 +546,10 @@ def test_attestation_schema_exemption_is_exactly_archive_scoped() -> None:
     assert not _is_attestation_schema_member(
         "tests/fixtures/chat-user-attestation-1.0.0.schema.json"
     )
+
+
+def test_test_edit_visibility_exemption_is_exactly_archive_scoped() -> None:
+    assert _is_reviewed_name_exemption("yoetz/kernel/test_edit_visibility.py")
+    assert _is_reviewed_name_exemption("src/yoetz/kernel/test_edit_visibility.py")
+    assert not _is_reviewed_name_exemption("yoetz/kernel/test_edit_visibility_extra.py")
+    assert not _is_reviewed_name_exemption("tests/unit/kernel/test_edit_visibility.py")

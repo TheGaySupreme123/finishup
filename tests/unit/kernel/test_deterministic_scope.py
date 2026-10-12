@@ -69,11 +69,20 @@ def test_scope_allows_only_standing_gaps() -> None:
         totals=_totals(),
         findings=(),
     )
-    assert not deterministic_scope_is_clean(
-        coverage=_coverage("host_outcome_unavailable"),
+    # #986: standing host-observation gaps a local absence proof tolerates may accompany the
+    # scoped verdict; the command counters still keep an unknown outcome from reading clean.
+    assert deterministic_scope_is_clean(
+        coverage=_coverage("host_outcome_unavailable", "unpaired_event"),
         totals=_totals(),
         findings=(),
     )
+    # A standing gap a local proof does not tolerate, or an actionable one, still blocks it.
+    for gap in ("observation_input_loss", "check_not_recorded"):
+        assert not deterministic_scope_is_clean(
+            coverage=_coverage(gap),
+            totals=_totals(),
+            findings=(),
+        )
 
 
 def test_scope_rejects_recorded_work_that_still_needs_attention() -> None:

@@ -9,7 +9,7 @@ from mcp import types
 
 from yoetz.cli.render import render_human_error
 from yoetz.mcp.server import result_from_public_model
-from yoetz.mcp.summaries import summary_for_public_error
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_public_error
 from yoetz.protocol.errors import attach_reason_continuation
 from yoetz.protocol.models import StartResultModel
 from yoetz.protocol.start_recovery import start_recovery_guidance
@@ -48,7 +48,7 @@ def test_first_start_recovery_survives_all_text_surfaces(
     assert instruction in block.text
     assert reason in block.text
     assert "PRIVATE-MESSAGE" not in block.text
-    assert len(block.text.encode("ascii")) <= 512
+    assert len(block.text.encode("ascii")) <= MAX_SUMMARY_BYTES
     assert instruction in render_human_error(failure.root.error)
     cursor = result_from_public_model(failure, host_profile="cursor")
     cursor_block = cursor.content[0]

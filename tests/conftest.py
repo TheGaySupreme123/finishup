@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -39,6 +40,25 @@ def _isolated_diagnostic_log(  # pyright: ignore[reportUnusedFunction]
 
     root = tmp_path_factory.mktemp("diagnostics")
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: Path(root))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_command_identity_key() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """Undo a service composition's process-wide command-identity key after each test (#977).
+
+    The ready composition registers the installation key so planned-verification facts can be
+    computed; without this reset a later test in the same process would see those facts appear
+    in status and check output depending only on test order.
+    """
+
+    try:
+        import yoetz.kernel.task_facts as task_facts_module
+    except ImportError:
+        yield
+        return
+    saved = task_facts_module._COMMAND_IDENTITY_KEY[0]  # pyright: ignore[reportPrivateUsage]
+    yield
+    task_facts_module.register_command_identity_key(saved)
 
 
 @pytest.fixture(autouse=True)

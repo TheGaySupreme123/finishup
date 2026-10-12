@@ -289,6 +289,17 @@ class MemoryPrivacyPolicyStore:
             None if exact is None else exact.generation,
             None if exact is None else exact.policy.policy_digest,
             None if exact is None else exact.policy,
+            machine_policy,
+            (
+                tuple(self._state.legacy_route_entitlements.values())
+                if migration_state == "legacy_route_available"
+                else (
+                    (self._state.migration_frontier_policy,)
+                    if migration_state == "first_repository_available"
+                    and self._state.migration_frontier_policy is not None
+                    else ()
+                )
+            ),
         )
 
     async def carry_forward_repository_authority(
@@ -688,6 +699,17 @@ class MemoryPrivacyAudit:
             "scanner_registry_version": request.minimized.scanner_registry_version,
             "scanner_profile_digest": request.minimized.scanner_profile_digest,
             "route_identity_digest": route,
+            # PL2-1: written only when present, so older proposals keep their exact bytes.
+            **(
+                {
+                    "redacted_values": [
+                        cast(JsonValue, entry.as_wire())
+                        for entry in request.minimized.redacted_values
+                    ]
+                }
+                if request.minimized.redacted_values
+                else {}
+            ),
         }
         body = canonical_encode(value)
         commitment = _mac(self._key, _PROPOSAL_DOMAIN, body)
@@ -726,6 +748,7 @@ class MemoryPrivacyAudit:
             request.minimized.scanner_profile_digest,
             request.minimized.included_item_ids,
             route,
+            request.minimized.redacted_values,
         )
         lookup = _mac(self._key, _LOOKUP_DOMAIN, canonical_encode(_json(proposal)))
         reservation = PrivacyAuditReservation(

@@ -61,6 +61,11 @@ from yoetz.protocol.guidance_uris import (
     REGISTERED_GUIDANCE_URIS as _REGISTERED_GUIDANCE_URIS,
 )
 from yoetz.protocol.ids import IdKind, validate_actor_id, validate_id
+from yoetz.protocol.redacted_values import (
+    MAX_SEMANTIC_REDACTED_VALUE_ITEMS,
+    MAX_SEMANTIC_REDACTED_VALUE_LINE,
+    MAX_SEMANTIC_REDACTED_VALUE_LINES,
+)
 
 __all__ = [
     "GENESIS_PREDECESSOR_DIGEST",
@@ -78,6 +83,7 @@ __all__ = [
     "MAX_REVIEW_CHANGE_OBSERVATIONS",
     "MAX_REVIEW_EXCERPTS",
     "MAX_REVIEW_OMISSIONS",
+    "MAX_REVIEW_OMISSION_TOTAL",
     "MAX_REVIEW_TEXT_BYTES",
     "MAX_TASK_STATEMENT_BYTES",
     "MAX_REVIEW_TIMELINE_ITEMS",
@@ -227,6 +233,9 @@ MAX_REVIEW_CHANGE_OBSERVATIONS: Final = 32
 # (issue #907 Phase 1b).
 MAX_REVIEW_EXCERPTS: Final = 64
 MAX_REVIEW_OMISSIONS: Final = 64
+# The true count of distinct omissions behind a review input manifest's capped listed count
+# (issue #976): far above anything a bounded ledger case produces, so it never saturates.
+MAX_REVIEW_OMISSION_TOTAL: Final = 1_048_576
 MAX_REVIEW_CHALLENGES: Final = 3
 # JSON Schema ``maxLength`` counts Unicode code points, while the durable AI-powered review contract
 # bounds review prose by UTF-8 bytes. Four bytes is the largest UTF-8 encoding of one valid
@@ -251,7 +260,12 @@ MISSING_FOR_ASSESSMENT_KINDS: Final = frozenset(
     }
 )
 MISSING_ITEM_AVAILABILITIES: Final = frozenset(
-    {"agent_suppliable", "structurally_unavailable_on_this_host"}
+    {
+        "agent_suppliable",
+        "structurally_unavailable_on_this_host",
+        "yoetz_limit_packet_room",
+        "yoetz_limit_unsupported_data_type",
+    }
 )
 GENESIS_PREDECESSOR_DIGEST: Final = "genesis"
 MAX_PROJECTION_CONTENT_LEAVES: Final = 512
@@ -884,6 +898,28 @@ EvidenceImmutabilityWire = Annotated[
 ]
 LedgerFreshnessWire = Annotated[LedgerFreshness, BeforeValidator(_ledger_freshness_from_wire)]
 CheckTypeWire = Annotated[CheckType, BeforeValidator(_check_type_from_wire)]
+# Built-in policy-pack identities (``yoetz.protocol.policy_packs``). Requests select only current
+# packs; results and recorded rows also admit the earlier identities a ledger or an older 0.3
+# service may still carry.
+RecordedPolicyVersionWire = Literal["0.1.0", "0.2.0", "0.3.0"]
+CurrentPolicyPackWire = Literal[
+    "coordination/0.1.0", "research-evidence/0.2.0", "work-integrity/0.3.0"
+]
+RecordedPolicyPackWire = Literal[
+    "coordination/0.1.0",
+    "research-evidence/0.1.0",
+    "research-evidence/0.2.0",
+    "work-integrity/0.1.0",
+    "work-integrity/0.2.0",
+    "work-integrity/0.3.0",
+]
+RecordedVersionSlicePackWire = Literal[
+    "research-evidence/0.1.0",
+    "research-evidence/0.2.0",
+    "work-integrity/0.1.0",
+    "work-integrity/0.2.0",
+    "work-integrity/0.3.0",
+]
 DataCategoryWire = Annotated[DataCategory, BeforeValidator(_data_category_from_wire)]
 WorkStateWire = Annotated[WorkState, BeforeValidator(_work_state_from_wire)]
 SessionHealthWire = Annotated[SessionHealth, BeforeValidator(_session_health_from_wire)]
@@ -968,6 +1004,10 @@ SubjectIdWire = Annotated[
     ),
 ]
 CodeWire = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,127}$", max_length=128)]
+# A host tool name as materialization records it (a closed token; never a path or command text).
+ObservedToolWire = Annotated[
+    str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$", max_length=128)
+]
 # One closure-readiness checklist entry: a condition token, an actionable gap code, or the
 # conservative ``unclassified_gap:<code>`` form for a code the running build does not know.
 ReadinessItemWire = Annotated[
@@ -1309,7 +1349,7 @@ _CHILD_FINDING_TRAITS: Final[Mapping[str, tuple[int, bool]]] = MappingProxyType(
 
 
 class ChildFindingSnapshotModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"resolution_event_id"})
+    optional_non_null_fields = frozenset({"resolution_event_id", "self_verified"})
 
     finding_id: FindingIdWire
     kind: Literal[
@@ -1336,6 +1376,8 @@ class ChildFindingSnapshotModel(_ClosedModel):
     actionable: bool
     resolved: bool
     resolution_event_id: EventIdWire | None = None
+    # Issue #984: present (and true) only for a repair the child agent self-verified.
+    self_verified: Literal[True] | None = None
 
     @model_validator(mode="after")
     def _validate_child_finding_snapshot(self) -> ChildFindingSnapshotModel:
@@ -1345,6 +1387,8 @@ class ChildFindingSnapshotModel(_ClosedModel):
         if self.actionable != expected_actionable:
             raise ValueError("child_finding_actionable_mismatch")
         if self.resolved != (self.resolution_event_id is not None):
+            raise ValueError("child_finding_resolution_mismatch")
+        if self.self_verified and (self.resolved or not self.actionable):
             raise ValueError("child_finding_resolution_mismatch")
         return self
 
@@ -1555,6 +1599,9 @@ def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
                             # admits it only when it byte-equals a catalogued payload property
                             # name, so MCP can name the field's one legal owner (issue #266).
                             "misplaced_field": exc.misplaced_field,
+                            # Schema-listed required names the instance lacks (frozen schema
+                            # vocabulary), so the hint names the absent key, not the whole list.
+                            "missing_fields": exc.missing_fields or None,
                         },
                     }
                 ],
@@ -1629,7 +1676,9 @@ class PublishWorkRequestModel(PublicRequestModel):
 
 
 class CheckRequestModel(PublicRequestModel):
-    optional_non_null_fields = frozenset({"mode", "scope", "max_findings", "policy_packs"})
+    optional_non_null_fields = frozenset(
+        {"mode", "scope", "max_findings", "policy_packs", "final_review", "await_observations"}
+    )
 
     session_id: SessionIdWire
     writer_id: WriterIdWire
@@ -1638,10 +1687,13 @@ class CheckRequestModel(PublicRequestModel):
     mode: Literal["deterministic_only", "semantic_if_configured", "semantic_required"] | None = None
     scope: CheckScopeModel | None = None
     max_findings: Literal["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"] | None = None
-    policy_packs: (
-        tuple[Literal["coordination/0.1.0", "research-evidence/0.1.0", "work-integrity/0.1.0"], ...]
-        | None
-    ) = None
+    policy_packs: tuple[CurrentPolicyPackWire, ...] | None = None
+    # Issue #976: the closing review. True runs the final review phase with or without a
+    # completion claim; omitted keeps the claim-driven selection.
+    final_review: bool | None = None
+    # Issue #1012: wait, bounded, for this task's pending hook rows before the case freezes.
+    # Omitted keeps today's behaviour and request bytes.
+    await_observations: bool | None = None
 
     @model_validator(mode="after")
     def _validate_check_request(self) -> CheckRequestModel:
@@ -1651,7 +1703,7 @@ class CheckRequestModel(PublicRequestModel):
 
 class RespondRequestModel(PublicRequestModel):
     optional_non_null_fields = frozenset(
-        {"reason", "waiver_scope", "waiver_expiry", "evidence_refs"}
+        {"reason", "waiver_scope", "waiver_expiry", "evidence_refs", "duplicate_of_finding_id"}
     )
 
     session_id: SessionIdWire
@@ -1660,12 +1712,21 @@ class RespondRequestModel(PublicRequestModel):
     finding_id: FindingIdWire
     finding_frontier: FrontierModel
     disposition: Literal[
-        "acknowledged", "acknowledged_not_done", "provenance_disputed", "rejected", "waived"
+        "acknowledged",
+        "acknowledged_not_done",
+        "duplicate_of",
+        "provenance_disputed",
+        "rejected",
+        "reopened",
+        "self_verified",
+        "waived",
     ]
     reason: String1To4096 | None = None
     waiver_scope: Literal["finding_only"] | None = None
     waiver_expiry: TimestampWire | None = None
     evidence_refs: tuple[EvidenceOrResultIdWire, ...] | None = None
+    # Issue #996: the earlier finding a ``duplicate_of`` answer links to; only with it.
+    duplicate_of_finding_id: FindingIdWire | None = None
 
     @model_validator(mode="after")
     def _validate_respond_request(self) -> RespondRequestModel:
@@ -1716,9 +1777,12 @@ class StatusFindingsFilterModel(_ClosedModel):
         Literal[
             "acknowledged",
             "acknowledged_not_done",
+            "duplicate_of",
             "none",
             "provenance_disputed",
             "rejected",
+            "reopened",
+            "self_verified",
             "waived",
         ]
         | None
@@ -1827,8 +1891,8 @@ class StatusRequestModel(PublicRequestModel):
         )
         if len(selectors) > 1:
             raise ValueError("selector_conflict")
-        if self.view in {"lineage", "project"} and self.filter is not None:
-            raise ValueError("status_filter_not_supported_for_view")
+        # A filter beside a view that admits none (lineage, project, results, ...) is refused by
+        # the schema's own ``not required`` rule below, which names /filter for the caller.
         if self.project_id is not None and self.view != "project":
             raise ValueError("selector_conflict")
         if self.correlation_id is not None and self.view != "lineage":
@@ -2065,8 +2129,11 @@ class ClosureSelectionModel(_ClosedModel):
         Literal[
             "acknowledged",
             "acknowledged_not_done",
+            "duplicate_of",
             "provenance_disputed",
             "rejected",
+            "reopened",
+            "self_verified",
             "waived",
         ]
         | None
@@ -2156,6 +2223,7 @@ type ReviewerNextStepWire = Literal[
     "revise_claim",
     "dispute_with_evidence",
     "state_unresolved_limitation",
+    "answer_question",
 ]
 type VerifiedVerdictWire = Literal["supported", "not_supported", "not_assessable"]
 type MissingForAssessmentKindWire = Literal[
@@ -2168,7 +2236,10 @@ type MissingForAssessmentKindWire = Literal[
     "verification_output",
 ]
 type MissingItemAvailabilityWire = Literal[
-    "agent_suppliable", "structurally_unavailable_on_this_host"
+    "agent_suppliable",
+    "structurally_unavailable_on_this_host",
+    "yoetz_limit_packet_room",
+    "yoetz_limit_unsupported_data_type",
 ]
 
 ProviderReviewTextWire = Annotated[
@@ -2194,6 +2265,8 @@ class ProviderChallengeModel(_ClosedModel):
     # One verbatim quote supporting the challenge. The check fence validates that it is an
     # exact substring of a packet item linked to one of cited_refs (issue #906 Part 2).
     snippet: ProviderReviewTextWire | None = None
+    # The earlier finding this challenge restates (issue #980), from prior_finding_refs.
+    restates: ProviderFindingIdWire | None = None
 
     @model_validator(mode="after")
     def _validate_challenge_invariants(self) -> ProviderChallengeModel:
@@ -2236,7 +2309,7 @@ class ProviderVerifiedItemModel(_ClosedModel):
 
 # Issue #905: one ruling per earlier AI-powered finding the packet's prior-findings section
 # carries. ``withdrawn`` accepts the main agent's rejection; ``unassessable`` speaks only for its
-# own finding. The section carries at most eight findings.
+# own finding. The section carries at most sixteen findings (issue #976).
 type PriorFindingVerdictWire = Literal[
     "fixed",
     "still_present",
@@ -2244,7 +2317,7 @@ type PriorFindingVerdictWire = Literal[
     "unassessable",
     "withdrawn",
 ]
-MAX_PRIOR_FINDING_VERDICTS: Final = 8
+MAX_PRIOR_FINDING_VERDICTS: Final = 16
 ProviderFindingIdWire = Annotated[
     str,
     Field(pattern=r"^fnd_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
@@ -2382,7 +2455,7 @@ class StartVersionSliceModel(_ClosedModel):
     protocol_version: Literal["0.1"]
     engine_version: VersionWire
     projection_version: VersionWire
-    policy_packs: tuple[Literal["research-evidence/0.1.0", "work-integrity/0.1.0"], ...]
+    policy_packs: tuple[RecordedVersionSlicePackWire, ...]
 
     @model_validator(mode="after")
     def _validate_start_version_packs(self) -> StartVersionSliceModel:
@@ -2629,11 +2702,60 @@ class PublishWorkVersionSliceModel(_ClosedModel):
     protocol_version: Literal["0.1"]
     engine_version: VersionWire
     projection_version: VersionWire
-    policy_packs: tuple[Literal["research-evidence/0.1.0", "work-integrity/0.1.0"], ...]
+    policy_packs: tuple[RecordedVersionSlicePackWire, ...]
 
     @model_validator(mode="after")
     def _validate_publish_version_packs(self) -> PublishWorkVersionSliceModel:
         _require_unique(self.policy_packs, limit=2)
+        return self
+
+
+# Issue #985 (C2b/C3): fixed, closed publish-time texts for a ``yoetz-blocker`` line, selected by
+# the notice code. They carry no caller value; the obligation id and kind ride beside them.
+PUBLISH_BLOCKER_NOTICE_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "blocker_claimed": (
+            "Yoetz challenges this yoetz-blocker before it counts. Repair the obligation first if"
+            " any route remains. A Yoetz limit (something Yoetz cannot show or prove) is never a"
+            " blocker: verify that work yourself and respond self_verified on the finding. Data"
+            " or an outcome the task says is recoverable or achievable is not a blocker, and"
+            " neither is an inherent verification limit (a hidden verifier, a private trace) or"
+            " a best-effort choice: finish the work and disclose it with a decision line"
+            " yoetz-assumption:<obligation id> or yoetz-verification-limit:<obligation id>. Keep a"
+            " blocker only for an open obligation genuinely blocked outside your control"
+            " (authority, consent, a credential, a dependency you cannot obtain). Until then the"
+            " obligation stays your work (obligation_blocker_unconfirmed). If it is still genuine"
+            " after you re-read the task and tried the obvious prerequisite, confirm it: publish"
+            " the same yoetz-blocker line for it again in a later publish_work call."
+        ),
+        "blocker_confirmed": (
+            "This yoetz-blocker is confirmed: the obligation is disclosed as blocked outside your"
+            " control (obligation_blocked_outside_agent_control), not done. Yoetz did not verify"
+            " the claim; say so in your final answer, and supersede the decision if the"
+            " obligation becomes doable."
+        ),
+        "blocker_without_effect": (
+            "This yoetz-blocker has no effect: the obligation it names is not open, and a blocker"
+            " only applies to open obligations. If a finding stays unresolved because Yoetz cannot"
+            " prove your repair (a Yoetz limit), verify it yourself and respond self_verified;"
+            " respond acknowledged_not_done only as a last resort, for work you will not do."
+        ),
+    }
+)
+
+
+class PublishWorkBlockerNoticeModel(_ClosedModel):
+    """One publish-time notice for a ``yoetz-blocker`` line (#985): closed code and fixed text."""
+
+    obligation_id: ObligationIdWire
+    blocker_kind: Literal["authority", "consent", "credential", "dependency_unavailable"]
+    notice: Literal["blocker_claimed", "blocker_confirmed", "blocker_without_effect"]
+    text: str
+
+    @model_validator(mode="after")
+    def _validate_fixed_text(self) -> PublishWorkBlockerNoticeModel:
+        if self.text != PUBLISH_BLOCKER_NOTICE_TEXTS[self.notice]:
+            raise ValueError("publish_blocker_notice_text_mismatch")
         return self
 
 
@@ -2654,6 +2776,10 @@ class PublishWorkSuccessModel(_ClosedModel):
     gaps: tuple[CodeWire, ...]
     versions: PublishWorkVersionSliceModel
     privacy_projection: PrivacyProjectionModel
+    # Issue #985: present only when the batch carried a yoetz-blocker line Yoetz has a notice for.
+    blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
+
+    optional_non_null_fields = frozenset({"blocker_notices"})
 
     @model_validator(mode="after")
     def _validate_publish_success(self) -> PublishWorkSuccessModel:
@@ -2661,6 +2787,7 @@ class PublishWorkSuccessModel(_ClosedModel):
             raise ValueError("accepted_event_count_invalid")
         _require_unique(self.warning_codes, limit=1)
         _require_unique(self.gaps, limit=64)
+        _validate_blocker_notices(self.blocker_notices)
         _validate_model_against_schema(self, "publish-work-result")
         return self
 
@@ -2745,6 +2872,10 @@ class PublishWorkDryRunModel(_ClosedModel):
     would_accept: tuple[PublishWorkDryRunPreviewEventModel, ...]
     coverage: CoverageModel
     gaps: tuple[CodeWire, ...]
+    # Issue #985: the same publish-time blocker notices a real publish would return.
+    blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
+
+    optional_non_null_fields = frozenset({"blocker_notices"})
 
     @model_validator(mode="after")
     def _validate_publish_dry_run(self) -> PublishWorkDryRunModel:
@@ -2753,8 +2884,17 @@ class PublishWorkDryRunModel(_ClosedModel):
         if self.subject_frontier != self.result_frontier:
             raise ValueError("dry_run_frontier_moved")
         _require_unique(self.gaps, limit=64)
+        _validate_blocker_notices(self.blocker_notices)
         _validate_model_against_schema(self, "publish-work-result")
         return self
+
+
+def _validate_blocker_notices(notices: tuple[PublishWorkBlockerNoticeModel, ...] | None) -> None:
+    if notices is None:
+        return
+    if not 1 <= len(notices) <= 64:
+        raise ValueError("publish_blocker_notice_count_invalid")
+    _require_unique(tuple((item.obligation_id, item.blocker_kind) for item in notices), limit=64)
 
 
 def _publish_work_result_kind(value: object) -> str:
@@ -2852,7 +2992,7 @@ class PublishWorkResultModel(PublicResultModel[PublishWorkResultBranch]):
 
 class CheckPolicyExecutionModel(_ClosedModel):
     policy_id: Literal["coordination", "research-evidence", "work-integrity"]
-    policy_version: Literal["0.1.0"]
+    policy_version: RecordedPolicyVersionWire
     outcome: Literal["failed", "run", "skipped"]
     reason: Literal[
         "completed",
@@ -2928,7 +3068,7 @@ class CheckProjectedFindingModel(_ClosedModel):
     detail: String1To8192 | OmittedContentModel
     subject_refs: tuple[SubjectIdWire, ...]
     policy_id: Literal["coordination", "research-evidence", "work-integrity"]
-    policy_version: Literal["0.1.0"]
+    policy_version: RecordedPolicyVersionWire
     subject_frontier: FrontierModel
     coverage: CoverageModel
     provenance: JsonValue | None
@@ -3049,13 +3189,46 @@ class SemanticWithheldItemModel(_ClosedModel):
     reason: Literal["never_send_heuristic"]
 
 
+class SemanticRedactedValueModel(_ClosedModel):
+    """PL2-1 (issue #982): one case item whose external-review copy lost credential-like values.
+
+    Structural only: the opaque item id, its catalogued ledger ref when that ref is itself an
+    opaque token, the disposition, and 1-based line numbers in the item's own text. Never values.
+    """
+
+    optional_non_null_fields = frozenset({"source_ref"})
+
+    item_id: OpaqueItemId
+    disposition: Literal["item_withheld", "value_replaced"]
+    lines: tuple[Annotated[int, Field(strict=True, ge=1, le=MAX_SEMANTIC_REDACTED_VALUE_LINE)], ...]
+    source_ref: OpaqueItemId | None = None
+
+    @model_validator(mode="after")
+    def _validate_lines(self) -> SemanticRedactedValueModel:
+        if len(self.lines) > MAX_SEMANTIC_REDACTED_VALUE_LINES or self.lines != tuple(
+            sorted(set(self.lines))
+        ):
+            raise ValueError("semantic_redacted_value_lines_invalid")
+        return self
+
+
+def _validate_semantic_redacted_value_models(
+    values: tuple[SemanticRedactedValueModel, ...] | None,
+) -> None:
+    if values is None:
+        return
+    item_ids = tuple(item.item_id for item in values)
+    if len(values) > MAX_SEMANTIC_REDACTED_VALUE_ITEMS or item_ids != tuple(
+        sorted(set(item_ids), key=str.encode)
+    ):
+        raise ValueError("semantic_redacted_values_invalid")
+
+
 class CheckVersionSliceModel(_ClosedModel):
     protocol_version: Literal["0.1"]
     engine_version: VersionWire
     projection_version: VersionWire
-    policy_packs: tuple[
-        Literal["coordination/0.1.0", "research-evidence/0.1.0", "work-integrity/0.1.0"], ...
-    ]
+    policy_packs: tuple[RecordedPolicyPackWire, ...]
 
     @model_validator(mode="after")
     def _validate_check_version_packs(self) -> CheckVersionSliceModel:
@@ -3145,8 +3318,9 @@ class SpecificationPreflightModel(_ClosedModel):
     status: Literal["complete", "title_only", "missing", "withheld"]
     source: Literal["agent_transcribed", "host_captured_user_prompt", "task_title_only"] | None
     content_digest: Sha256Digest | None
-    content_bytes: CanonicalUInt64Wire
-    revision: CanonicalUInt64Wire | None
+    # The check-result schema types these as JSON integers (unlike counters elsewhere on the wire).
+    content_bytes: int = Field(ge=0, le=2**53 - 1, strict=True)
+    revision: int | None = Field(ge=0, le=2**53 - 1, strict=True)
     required: bool
     actionable: bool
     gap: Literal["task_statement_not_authorized", "task_statement_not_supplied"] | None = None
@@ -3164,7 +3338,8 @@ class ReviewInputSectionModel(_ClosedModel):
         "not_selected",
     ]
     source_refs: tuple[String1To256, ...] = Field(max_length=16)
-    item_ids: tuple[String1To256, ...] = Field(max_length=64)
+    # The prior-findings section lists up to sixteen findings' rows (issue #976).
+    item_ids: tuple[String1To256, ...] = Field(max_length=128)
     omitted_refs: tuple[String1To256, ...] = Field(max_length=16)
     omission_reasons: tuple[
         Literal[
@@ -3202,6 +3377,8 @@ class ReviewInputMissingModel(_ClosedModel):
 
 
 class ReviewInputManifestModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"review_phase", "omitted_item_total"})
+
     schema_: Literal["yoetz.review-input-manifest/1"] = Field(alias="schema")
     specification: ReviewInputSectionModel
     current_diff: ReviewInputSectionModel
@@ -3212,7 +3389,12 @@ class ReviewInputManifestModel(_ClosedModel):
     missing_inputs: tuple[ReviewInputMissingModel, ...] = Field(max_length=8)
     selected_item_count: int = Field(ge=0, le=304)
     selected_excerpt_bytes: int = Field(ge=0, le=MAX_SEMANTIC_CASE_BYTES)
+    # Omission rows the manifest's packet lists, capped at MAX_REVIEW_OMISSIONS.
     omitted_item_count: int = Field(ge=0, le=MAX_REVIEW_OMISSIONS)
+    # Issue #976 (tb4n1 D11), optional in place: every distinct omission before that cap.
+    omitted_item_total: int | None = Field(default=None, ge=0, le=MAX_REVIEW_OMISSION_TOTAL)
+    # Issue #976: the review phase the packet's question set named (closing review = final).
+    review_phase: Literal["routine", "final"] | None = None
 
 
 class CheckAwaitingHumanModel(_ClosedModel):
@@ -3264,18 +3446,142 @@ class CheckAwaitingHumanModel(_ClosedModel):
         return self
 
 
+# tb4n3 RC-3 (issue #1026, ADR-046): the one closure verdict. Closed vocabularies mirror
+# ``kernel.closure_class`` and ``kernel.receipt_prediction``; a conformance test asserts equality.
+FindingClosureClassLiteral = Literal[
+    "agent_work", "awaiting_ruling", "settled_unmet", "settled_disclosed", "resolved"
+]
+ObligationClosureClassLiteral = Literal[
+    "agent_work", "settled_unmet", "settled_disclosed", "resolved"
+]
+FindingClosureBasisLiteral = Literal[
+    "open_unanswered",
+    "open_answered",
+    "reopened",
+    "limitation_requested",
+    "rejected_awaiting_ruling",
+    "rejected_review_unavailable",
+    "acknowledged_not_done_requirement",
+    "acknowledged_not_done_bookkeeping",
+    "self_verified",
+    "disputed_after_rebuttal",
+    "rejection_accepted",
+    "limitation_disclosed",
+    "limitation_acknowledged_not_done",
+    "absence_proved",
+    "absence_proved_after_acknowledged_not_done",
+    "absence_proved_after_self_verified",
+]
+ObligationClosureBasisLiteral = Literal[
+    "open",
+    "blocker_claimed",
+    "resolved_deliverable_emptied",
+    "acknowledged_not_done",
+    "blocker_confirmed",
+    "externally_evaluated",
+    "resolved",
+]
+FindingNextActionLiteral = Literal[
+    "repair",
+    "recheck",
+    "reject",
+    "acknowledge",
+    "acknowledge_not_done",
+    "self_verify",
+    "reopen",
+    "none",
+]
+ReceiptConclusionLiteral = Literal[
+    "unresolved_findings_remain",
+    "insufficient_coverage",
+    "no_unresolved_deterministic_findings",
+]
+PredictionReasonCodeLiteral = Literal[
+    "completion_scope_gap",
+    "findings_to_do",
+    "findings_awaiting_ruling",
+    "findings_unmet",
+    "child_findings_actionable",
+    "limitations_to_disclose",
+    "findings_disclosed",
+    "obligations_open",
+    "obligations_acknowledged",
+    "obligations_disclosed",
+    "lineage_blocks",
+    "no_applicable_check",
+    "check_suppressed_findings",
+    "check_verdict_insufficient",
+    "policy_execution_incomplete",
+    "live_gap_bounds",
+]
+# A prediction reason cites at most three findings, obligations or gap codes.
+PredictionRefWire = Annotated[
+    str,
+    Field(
+        max_length=128,
+        pattern=(
+            r"^(?:(?:fnd|obl)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+            r"|[a-z][a-z0-9_]{0,127})$"
+        ),
+    ),
+]
+RecheckKeyWire = Annotated[
+    str, Field(max_length=160, pattern=r"^(?:accept|ack|blocker|premise):[A-Za-z0-9_.:?-]{1,140}$")
+]
+
+
 class CheckChecklistItemModel(_ClosedModel):
+    # ADR-046: who owes the next move and why. Optional on the unreleased 1.4.0 wire.
+    optional_non_null_fields = frozenset({"closure_class", "closure_basis"})
+
     finding_id: FindingIdWire
     todo_state: FindingTodoStateLiteral
     review_rounds: CanonicalUInt64Wire
+    closure_class: FindingClosureClassLiteral | None = None
+    closure_basis: FindingClosureBasisLiteral | None = None
+
+    @model_validator(mode="after")
+    def _validate_item_closure(self) -> CheckChecklistItemModel:
+        if (self.closure_class is None) != (self.closure_basis is None):
+            raise ValueError("checklist_item_closure_partial")
+        return self
 
 
 class CheckChecklistCountsModel(_ClosedModel):
+    # Issue #1020: present only when non-zero. ADR-046: the five closure counters are present
+    # together or not at all (an earlier build omits them); ``to_do`` includes ``awaiting_ruling``.
+    optional_non_null_fields = frozenset(
+        {
+            "disputed_after_rebuttal",
+            "to_do",
+            "awaiting_ruling",
+            "unmet",
+            "disclosed",
+            "to_disclose",
+        }
+    )
+
     acknowledged_not_done: CanonicalUInt64Wire
+    awaiting_ruling: CanonicalUInt64Wire | None = None
+    disclosed: CanonicalUInt64Wire | None = None
+    disputed_after_rebuttal: CanonicalUInt64Wire | None = None
+    to_disclose: CanonicalUInt64Wire | None = None
+    to_do: CanonicalUInt64Wire | None = None
+    unmet: CanonicalUInt64Wire | None = None
     open: CanonicalUInt64Wire
     open_at_budget: CanonicalUInt64Wire
     rejection_accepted: CanonicalUInt64Wire
+    self_verified: CanonicalUInt64Wire
     verified_resolved: CanonicalUInt64Wire
+
+    @model_validator(mode="after")
+    def _validate_closure_counts(self) -> CheckChecklistCountsModel:
+        group = (self.to_do, self.awaiting_ruling, self.unmet, self.disclosed, self.to_disclose)
+        if any(value is None for value in group) and any(value is not None for value in group):
+            raise ValueError("checklist_closure_counts_partial")
+        if self.to_do is not None and int(cast(str, self.awaiting_ruling)) > int(self.to_do):
+            raise ValueError("checklist_closure_counts_invalid")
+        return self
 
 
 class CheckFindingChecklistModel(_ClosedModel):
@@ -3284,7 +3590,13 @@ class CheckFindingChecklistModel(_ClosedModel):
     attempt_budget: CanonicalPositiveUInt64Wire
     counts: CheckChecklistCountsModel
     items: tuple[CheckChecklistItemModel, ...]
-    next: Literal["decide_at_budget", "request_receipt", "work_open_findings"]
+    next: Literal[
+        "decide_at_budget",
+        "disclose_limitations",
+        "request_receipt",
+        "request_ruling",
+        "work_open_findings",
+    ]
 
     @model_validator(mode="after")
     def _validate_checklist(self) -> CheckFindingChecklistModel:
@@ -3301,20 +3613,38 @@ class CheckOverallNextModel(_ClosedModel):
     action: Literal[
         "supply_missing_input",
         "work_open_findings",
+        "disclose_limitations",
+        "request_ruling",
         "review_recorded_work",
         "request_receipt",
     ]
     target_refs: tuple[SubjectIdWire, ...] = Field(max_length=64)
     acknowledged_incomplete_endpoint: Literal["receipt"] | None = None
+    # ADR-046: the receipt conclusion a request now would carry, from the receipt's own function.
+    predicted_conclusion: ReceiptConclusionLiteral | None = None
+
+    optional_non_null_fields = frozenset({"predicted_conclusion"})
 
     @model_validator(mode="after")
     def _validate_overall_next(self) -> CheckOverallNextModel:
         _require_unique(self.target_refs, limit=64)
-        if self.action in {"supply_missing_input", "work_open_findings", "review_recorded_work"}:
+        if self.action in {
+            "supply_missing_input",
+            "work_open_findings",
+            "disclose_limitations",
+            "request_ruling",
+            "review_recorded_work",
+        }:
             if self.status != "action_required":
                 raise ValueError("check_overall_next_action_invalid")
             if (
-                self.action in {"work_open_findings", "review_recorded_work"}
+                self.action
+                in {
+                    "work_open_findings",
+                    "disclose_limitations",
+                    "request_ruling",
+                    "review_recorded_work",
+                }
                 and not self.target_refs
             ):
                 raise ValueError("check_overall_next_targets_invalid")
@@ -3385,15 +3715,114 @@ class CheckTotalsModel(_ClosedModel):
     test_edits: CheckTestEditTotalsModel
 
 
+class FactLineageModel(_ClosedModel):
+    """Where one derived fact came from (ADR-045): rule, subject, observing check, prior state.
+
+    Closed tokens, counts and service-minted ids only: never a path, command text or prose. The
+    obligation item is named by id and index (``status view=obligations`` resolves it). Counts are
+    canonical decimal strings like every other count on the wire. A reader renders the same
+    sentence from it on every surface (``kernel.fact_lineage.lineage_text``). The literals below
+    repeat ``kernel.fact_lineage``'s closed sets; a test pins them equal.
+    """
+
+    optional_non_null_fields = frozenset(
+        {
+            "obligation_id",
+            "item_index",
+            "check_event_id",
+            "frontier",
+            "prior_event_id",
+            "prior_frontier",
+            "prior_size_bytes",
+            "prior_lines",
+            "now_size_bytes",
+            "now_lines",
+            "proof",
+            "basis",
+            "accepted_by",
+        }
+    )
+
+    code: CodeWire
+    rule: Literal[
+        "deliverable_path_history",
+        "deliverable_read",
+        "planned_command_match",
+        "planned_command_unmatched",
+        "edit_after_verification_run",
+    ]
+    state: Literal[
+        "emptied",
+        "truncated",
+        "removed",
+        "accepted",
+        "unreviewable",
+        "matched_exact",
+        "matched_normalized",
+        "matched_prefix",
+        "matched_flags",
+        "matched_agent_link",
+        "unmatched",
+        "failed",
+        "stale",
+        "edited_after",
+    ]
+    obligation_id: ObligationIdWire | None = None
+    item_index: Annotated[str, Field(pattern=r"^(?:[0-9]|[1-5][0-9]|6[0-3])$")] | None = None
+    check_event_id: EventIdWire | None = None
+    frontier: CanonicalUInt64Wire | None = None
+    prior_event_id: EventIdWire | None = None
+    prior_frontier: CanonicalUInt64Wire | None = None
+    prior_size_bytes: CanonicalUInt64Wire | None = None
+    prior_lines: CanonicalUInt64Wire | None = None
+    now_size_bytes: CanonicalUInt64Wire | None = None
+    now_lines: CanonicalUInt64Wire | None = None
+    proof: Literal["task_base", "earlier_check", "observed_run"] | None = None
+    basis: Literal["delivered", "verified", "present"] | None = None
+    source_event_ids: tuple[EventIdWire, ...] = ()
+    accepted_by: EventIdWire | None = None
+
+    @model_validator(mode="after")
+    def _validate_fact_lineage(self) -> FactLineageModel:
+        _require_unique(self.source_event_ids, limit=8)
+        if (self.item_index is None) != (
+            self.obligation_id is None
+        ) and self.item_index is not None:
+            raise ValueError("fact_lineage_subject_mismatch")
+        return self
+
+
+def _validate_fact_lineage_models(values: tuple[FactLineageModel, ...] | None) -> None:
+    if values is None:
+        return
+    if len(values) > 64:
+        raise ValueError("fact_lineage_count_invalid")
+    _require_unique(
+        tuple((item.code, item.rule, item.obligation_id, item.item_index) for item in values),
+        limit=64,
+    )
+
+
+class CheckObservationsAwaitedModel(_ClosedModel):
+    """Outcome of the optional pre-check wait for this task's hook rows (issue #1012)."""
+
+    state: Literal["bounded_timeout", "complete", "unavailable"]
+    pending_count: CanonicalUInt64Wire
+
+
 class CheckSuccessModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
+            "observations_awaited",
             "children",
             "advisory_notes",
             "missing_for_assessment",
             "finding_checklist",
             "overall_next",
             "semantic_withheld_items",
+            "semantic_redacted_values",
+            "semantic_route_required",
+            "fact_lineage",
             "review_input_manifest",
             "semantic_conclusion",
             "review_summary",
@@ -3435,8 +3864,17 @@ class CheckSuccessModel(_ClosedModel):
     finding_checklist: CheckFindingChecklistModel | None = None
     overall_next: CheckOverallNextModel | None = None
     semantic_withheld_items: tuple[SemanticWithheldItemModel, ...] = ()
+    # PL2-1: item refs and line numbers of values the external reviewer did not see.
+    semantic_redacted_values: tuple[SemanticRedactedValueModel, ...] = ()
     review_input_manifest: ReviewInputManifestModel | None = None
     totals: CheckTotalsModel | None = None
+    observations_awaited: CheckObservationsAwaitedModel | None = None
+    # Issue #986: ``false`` only when the check's route did not require AI-powered review; absent
+    # when it did or on results from older builds (the missing review then still blocks).
+    semantic_route_required: bool | None = None
+    # ADR-045: where each derived task fact this check carries came from (rule, obligation item,
+    # observing check frontier, prior state). Absent when the check carries no such fact.
+    fact_lineage: tuple[FactLineageModel, ...] = ()
     coverage: CoverageModel
     versions: CheckVersionSliceModel
     privacy_projection: PrivacyProjectionModel
@@ -3468,6 +3906,8 @@ class CheckSuccessModel(_ClosedModel):
             tuple(item.item_id for item in self.semantic_withheld_items),
             limit=64,
         )
+        _validate_semantic_redacted_value_models(self.semantic_redacted_values)
+        _validate_fact_lineage_models(self.fact_lineage)
         if not 1 <= len(self.policy_executions) <= 3 or len(set(self.policy_executions)) != len(
             self.policy_executions
         ):
@@ -3531,36 +3971,58 @@ class RespondEvidenceSummaryModel(_ClosedModel):
 
 
 class RespondResponseModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"reason", "waiver_scope", "waiver_expiry"})
+    optional_non_null_fields = frozenset(
+        {"reason", "waiver_scope", "waiver_expiry", "duplicate_of_finding_id"}
+    )
 
     response_event_id: EventIdWire
     finding_id: FindingIdWire
     finding_frontier: FrontierModel
     disposition: Literal[
-        "acknowledged", "acknowledged_not_done", "provenance_disputed", "rejected", "waived"
+        "acknowledged",
+        "acknowledged_not_done",
+        "duplicate_of",
+        "provenance_disputed",
+        "rejected",
+        "reopened",
+        "self_verified",
+        "waived",
     ]
     evidence: tuple[RespondEvidenceSummaryModel, ...]
     reason: String1To4096 | OmittedContentModel | None = None
     waiver_scope: Literal["finding_only"] | None = None
     waiver_expiry: TimestampWire | None = None
+    duplicate_of_finding_id: FindingIdWire | None = None
 
     @model_validator(mode="after")
     def _validate_response_fields(self) -> RespondResponseModel:
         if len(self.evidence) > 64:
             raise ValueError("response_evidence_limit")
+        # Issue #996: the link target is present exactly on a ``duplicate_of`` answer.
+        if (self.disposition == "duplicate_of") != (
+            self.duplicate_of_finding_id is not None
+        ) or self.duplicate_of_finding_id == self.finding_id:
+            raise ValueError("response_fields_invalid")
         if (
             isinstance(self.reason, OmittedContentModel)
             and self.reason.category is not DataCategory.FINDING_SUMMARY
         ):
             raise ValueError("reason_omission_category_invalid")
-        if self.disposition == "acknowledged":
+        if self.disposition in {"acknowledged", "duplicate_of"}:
             if self.waiver_scope is not None or self.waiver_expiry is not None:
                 raise ValueError("response_fields_invalid")
-        elif self.disposition in {"acknowledged_not_done", "provenance_disputed", "rejected"}:
+        elif self.disposition in {
+            "acknowledged_not_done",
+            "provenance_disputed",
+            "rejected",
+            "reopened",
+            "self_verified",
+        }:
             if (
                 self.reason is None
                 or self.waiver_scope is not None
                 or self.waiver_expiry is not None
+                or (self.disposition == "self_verified" and not self.evidence)
             ):
                 raise ValueError("response_fields_invalid")
         elif self.reason is None or self.waiver_scope != "finding_only":
@@ -3572,7 +4034,7 @@ class RespondVersionSliceModel(_ClosedModel):
     protocol_version: Literal["0.1"]
     engine_version: VersionWire
     projection_version: VersionWire
-    policy_packs: tuple[Literal["research-evidence/0.1.0", "work-integrity/0.1.0"], ...]
+    policy_packs: tuple[RecordedVersionSlicePackWire, ...]
 
     @model_validator(mode="after")
     def _validate_respond_version_packs(self) -> RespondVersionSliceModel:
@@ -3580,7 +4042,35 @@ class RespondVersionSliceModel(_ClosedModel):
         return self
 
 
+class RespondClosureAfterModel(_ClosedModel):
+    """Where the finding stands once this answer is recorded (tb4n3 RC-7, issue #1030).
+
+    ``todo_state`` is the finding's shared to-do state after the answer; ``limitation`` is set
+    only for a reviewer's limitation request (owner decision Q4): ``limitation_requested`` until
+    the agent answers it, ``limitation_disclosed`` once a reasoned acknowledgement did (the
+    requirement may be met but cannot be verified here), ``limitation_acknowledged_not_done`` once
+    it answered ``acknowledged_not_done`` (the requirement is NOT met; owner decision 2026-10-12).
+    """
+
+    optional_non_null_fields = frozenset({"limitation"})
+
+    todo_state: Literal[
+        "acknowledged_not_done",
+        "disputed_after_rebuttal",
+        "open",
+        "rejection_accepted",
+        "self_verified",
+        "verified_resolved",
+    ]
+    limitation: (
+        Literal["limitation_requested", "limitation_disclosed", "limitation_acknowledged_not_done"]
+        | None
+    ) = None
+
+
 class RespondSuccessModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"closure_after"})
+
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
     request_id: RequestIdWire
@@ -3596,6 +4086,7 @@ class RespondSuccessModel(_ClosedModel):
     warning_codes: tuple[Literal["waiver_expired_at_recording"], ...]
     versions: RespondVersionSliceModel
     privacy_projection: PrivacyProjectionModel
+    closure_after: RespondClosureAfterModel | None = None
 
     @model_validator(mode="after")
     def _validate_respond_success(self) -> RespondSuccessModel:
@@ -3669,7 +4160,7 @@ class StatusCandidateFindingItemModel(_ClosedModel):
     detail: String1To8192 | OmittedContentModel
     subject_refs: tuple[SubjectIdWire, ...]
     policy_id: Literal["coordination", "research-evidence", "work-integrity"]
-    policy_version: Literal["0.1.0"]
+    policy_version: RecordedPolicyVersionWire
     subject_frontier: FrontierModel
     coverage: CoverageModel
     basis: StatusFindingBasisModel
@@ -3764,8 +4255,24 @@ class StatusCompactObligationModel(_ClosedModel):
         return self
 
 
+class StatusLatestCheckModel(_ClosedModel):
+    """The latest recorded check the compact status names, and what it concluded (#1027).
+
+    Read off the recorded ``check_recorded`` event the projection's latest tested state points at:
+    the event id, the frontier the check examined and its closed verdict. It is a pointer for an
+    agent that lost its context (a post-compaction recap names it); it records nothing, is not a
+    readiness claim, and a check recorded later than ``checked_frontier`` is not reflected here.
+    """
+
+    check_event_id: EventIdWire
+    checked_frontier: FrontierModel
+    verdict: Literal[
+        "action_required", "incomplete_check", "insufficient_coverage", "no_issue_detected"
+    ]
+
+
 class StatusCompactItemModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"latest_check_test_edits"})
+    optional_non_null_fields = frozenset({"latest_check_test_edits", "latest_check"})
 
     task_id: TaskIdWire
     session_id: SessionIdWire
@@ -3789,6 +4296,7 @@ class StatusCompactItemModel(_ClosedModel):
     coverage: CoverageModel
     gaps: tuple[CodeWire, ...]
     latest_check_test_edits: StatusLatestCheckTestEditsModel | None = None
+    latest_check: StatusLatestCheckModel | None = None
 
     @model_validator(mode="after")
     def _validate_compact_item(self) -> StatusCompactItemModel:
@@ -3909,14 +4417,28 @@ class StatusEvidencePageModel(_ClosedModel):
 
 
 FindingTodoStateLiteral = Literal[
-    "acknowledged_not_done", "open", "rejection_accepted", "verified_resolved"
+    "acknowledged_not_done",
+    "disputed_after_rebuttal",
+    "open",
+    "rejection_accepted",
+    "self_verified",
+    "verified_resolved",
 ]
 
 
 class StatusFindingItemModel(_ClosedModel):
     # Issue #905 to-do facts: present on every current row, absent only on older recordings.
     optional_non_null_fields = frozenset(
-        {"challenge", "todo_state", "review_rounds", "finding_frontier"}
+        {
+            "challenge",
+            "todo_state",
+            "review_rounds",
+            "finding_frontier",
+            "duplicate_of_finding_id",
+            "closure_class",
+            "closure_basis",
+            "next_actions",
+        }
     )
 
     finding_id: FindingIdWire
@@ -3927,16 +4449,19 @@ class StatusFindingItemModel(_ClosedModel):
     detail: String1To8192 | OmittedContentModel
     subject_refs: tuple[SubjectIdWire, ...]
     policy_id: Literal["coordination", "research-evidence", "work-integrity"]
-    policy_version: Literal["0.1.0"]
+    policy_version: RecordedPolicyVersionWire
     subject_frontier: FrontierModel
     coverage: CoverageModel
     provenance: JsonValue | None
     disposition: Literal[
         "acknowledged",
         "acknowledged_not_done",
+        "duplicate_of",
         "none",
         "provenance_disputed",
         "rejected",
+        "reopened",
+        "self_verified",
         "waived",
     ]
     resolved: bool
@@ -3951,9 +4476,25 @@ class StatusFindingItemModel(_ClosedModel):
     # (sequence plus that event's head digest), for every origin. ``respond`` accepts it
     # as ``finding_frontier`` as-is, so no historical frontier has to be reconstructed.
     finding_frontier: FrontierModel | None = None
+    # Issue #996: the earlier finding this one is linked to, present exactly while its
+    # ``duplicate_of`` link holds; ``todo_state`` is then derived from that finding. A
+    # ``duplicate_of`` row without it is a link a later check broke: it needs its own answer.
+    duplicate_of_finding_id: FindingIdWire | None = None
+    # tb4n3 RC-3 (ADR-046): who owes the next move on this finding and why, the receipt effect it
+    # has, and the closed set of answers that would move it. Absent on non-work kinds and on an
+    # earlier 0.3 build. ``todo_state`` keeps its wire values.
+    closure_class: FindingClosureClassLiteral | None = None
+    closure_basis: FindingClosureBasisLiteral | None = None
+    next_actions: tuple[FindingNextActionLiteral, ...] | None = None
 
     @model_validator(mode="after")
     def _validate_finding_item(self) -> StatusFindingItemModel:
+        if (self.closure_class is None) != (self.closure_basis is None) or (
+            self.next_actions is not None and self.closure_class is None
+        ):
+            raise ValueError("finding_closure_partial")
+        if self.next_actions is not None:
+            _require_unique(self.next_actions, limit=8)
         if not self.subject_refs:
             raise ValueError("finding_subject_refs_empty")
         _require_unique(self.subject_refs, limit=64)
@@ -3970,13 +4511,29 @@ class StatusFindingItemModel(_ClosedModel):
             or self.waiver_expiry is not None
         ):
             raise ValueError("provenance_disputed_finding_state_invalid")
+        # tb4n3 RC-7 (#1030): ``acknowledged_not_done`` and ``self_verified`` are the agent's last
+        # word until a later qualifying check proves the issue absent, so such a row may read
+        # ``resolved``; ``reopened`` takes a not-done answer back.
         if self.disposition == "acknowledged_not_done" and (
-            self.reason is None
-            or self.resolved
-            or self.waiver_scope is not None
-            or self.waiver_expiry is not None
+            self.reason is None or self.waiver_scope is not None or self.waiver_expiry is not None
         ):
             raise ValueError("acknowledged_not_done_finding_state_invalid")
+        if self.disposition == "self_verified" and (
+            self.reason is None or self.waiver_scope is not None or self.waiver_expiry is not None
+        ):
+            raise ValueError("self_verified_finding_state_invalid")
+        if self.disposition == "reopened" and (
+            self.reason is None or self.waiver_scope is not None or self.waiver_expiry is not None
+        ):
+            raise ValueError("reopened_finding_state_invalid")
+        if self.duplicate_of_finding_id is not None and (
+            self.disposition != "duplicate_of" or self.duplicate_of_finding_id == self.finding_id
+        ):
+            raise ValueError("duplicate_of_finding_state_invalid")
+        if self.disposition == "duplicate_of" and (
+            self.waiver_scope is not None or self.waiver_expiry is not None
+        ):
+            raise ValueError("duplicate_of_finding_state_invalid")
         return self
 
 
@@ -4099,6 +4656,163 @@ class StatusImportStatusModel(_ClosedModel):
     source_identity_digest: Sha256Digest | None
 
 
+class StatusBlockedObligationModel(_ClosedModel):
+    """One open obligation a recorded ``yoetz-blocker`` decision names (issues #976, #977).
+
+    Only service-minted ids and the closed blocker kind: the decision's statement and rationale
+    stay in the ledger. The Stop-time closure gate names these when it re-asks a blocker once.
+    """
+
+    obligation_id: ObligationIdWire
+    blocker_kind: Literal["authority", "consent", "credential", "dependency_unavailable"]
+    decision_event_id: EventIdWire
+    # Issue #985. ``claimed``: only the first decision names it, so it is still agent work
+    # (``obligation_blocker_unconfirmed``); ``confirmed``: a later decision repeated the same
+    # blocker line (``confirmation_event_id``). Optional on the unreleased 1.4.0 wire: an earlier
+    # 0.3 build omits both, and absence never means confirmed.
+    confirmation: Literal["claimed", "confirmed"] | None = None
+    confirmation_event_id: EventIdWire | None = None
+
+    optional_non_null_fields = frozenset({"confirmation", "confirmation_event_id"})
+
+    @model_validator(mode="after")
+    def _validate_blocker_confirmation(self) -> StatusBlockedObligationModel:
+        if (self.confirmation == "confirmed") != (self.confirmation_event_id is not None):
+            raise ValueError("closure_readiness_blocker_confirmation_mismatch")
+        if self.confirmation_event_id == self.decision_event_id:
+            raise ValueError("closure_readiness_blocker_confirmation_mismatch")
+        return self
+
+
+class StatusCheckCauseModel(_ClosedModel):
+    """Why the latest check is not applicable, or why the earlier-frontier code bounds (RC-6).
+
+    The first record that followed the check and decided it: ``superseded`` names the record that
+    revoked the check (an observed deliverable or workspace edit, a cooperative material record,
+    an observation finding); ``bounds_conclusion`` names the first observation Yoetz could not
+    prove harmless. Service-minted ids, closed tokens and the recorded tool name only: the hook
+    records the tool and whether a write left the workspace, never the path (owner lineage rule,
+    issue #1029).
+    """
+
+    effect: Literal["superseded", "bounds_conclusion"]
+    event_id: EventIdWire
+    ledger_sequence: CanonicalUInt64Wire
+    check_event_id: EventIdWire
+    check_subject_frontier: CanonicalUInt64Wire
+    family: CodeWire
+    material_class: Literal[
+        "yoetz_own_call",
+        "response",
+        "exploration",
+        "no_tool_activity",
+        "non_counting_write",
+        "edit_or_write",
+        "other",
+    ]
+    rule: CodeWire
+    tool: ObservedToolWire | None = None
+
+    optional_non_null_fields = frozenset({"tool"})
+
+
+class StatusCredentialHeuristicModel(_ClosedModel):
+    """The possible-credential filter state for the external AI reviewer (issue #982)."""
+
+    repository: Literal["disabled", "enforced", "unknown"]
+    machine_default: Literal["disabled", "enforced", "unknown"]
+
+
+class StatusPredictedReasonModel(_ClosedModel):
+    """One rule that fired in the receipt prediction, with the lineage a reader needs."""
+
+    optional_non_null_fields = frozenset({"since_frontier"})
+
+    code: PredictionReasonCodeLiteral
+    rule: Literal["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"]
+    count: CanonicalPositiveUInt64Wire
+    refs: tuple[PredictionRefWire, ...]
+    since_frontier: CanonicalUInt64Wire | None = None
+
+    @model_validator(mode="after")
+    def _validate_reason(self) -> StatusPredictedReasonModel:
+        _require_unique(self.refs, limit=3)
+        return self
+
+
+class StatusPredictedReceiptModel(_ClosedModel):
+    """The conclusion a receipt requested at this frontier would carry, and why (ADR-046).
+
+    Computed by the receipt's own conclusion function over the receipt's own context, so it is
+    the label ``receipt`` returns for the same frontier (``provisional`` while a check is in flight
+    or a live dependency fact is not yet recorded).
+    """
+
+    conclusion: ReceiptConclusionLiteral
+    reasons: tuple[StatusPredictedReasonModel, ...]
+    reason_total: CanonicalUInt64Wire
+    basis_frontier: CanonicalUInt64Wire
+    provisional: bool
+
+    @model_validator(mode="after")
+    def _validate_prediction(self) -> StatusPredictedReceiptModel:
+        if len(self.reasons) > 8 or len(self.reasons) > int(self.reason_total):
+            raise ValueError("predicted_receipt_reasons_invalid")
+        if (self.conclusion == "no_unresolved_deterministic_findings") != (
+            int(self.reason_total) == 0
+        ):
+            raise ValueError("predicted_receipt_conclusion_mismatch")
+        return self
+
+
+class StatusFindingCountsModel(_ClosedModel):
+    """The finding counters every surface prints (ADR-046); ``to_do`` includes ``awaiting_ruling``."""
+
+    to_do: CanonicalUInt64Wire
+    awaiting_ruling: CanonicalUInt64Wire
+    unmet: CanonicalUInt64Wire
+    disclosed: CanonicalUInt64Wire
+    to_disclose: CanonicalUInt64Wire
+    self_verify_eligible: CanonicalUInt64Wire
+
+    @model_validator(mode="after")
+    def _validate_counts(self) -> StatusFindingCountsModel:
+        if int(self.awaiting_ruling) > int(self.to_do) or int(self.self_verify_eligible) > int(
+            self.to_do
+        ):
+            raise ValueError("finding_counts_invalid")
+        return self
+
+
+class StatusObligationCountsModel(_ClosedModel):
+    open: CanonicalUInt64Wire
+    acknowledged: CanonicalUInt64Wire
+    disclosed: CanonicalUInt64Wire
+
+
+class StatusRecheckModel(_ClosedModel):
+    """A once-per-frontier re-read the Stop gate may ask for (RC-8); delivery memory is the gate's."""
+
+    kind: Literal["acceptance", "acknowledgement", "blocker", "premise"]
+    key: RecheckKeyWire
+    subjects: tuple[SubjectIdWire, ...]
+    rule: CodeWire
+    since_frontier: CanonicalUInt64Wire
+
+    @model_validator(mode="after")
+    def _validate_recheck(self) -> StatusRecheckModel:
+        _require_unique(self.subjects, limit=8)
+        return self
+
+
+class StatusAwaitingRulingFindingModel(_ClosedModel):
+    """A finding the agent rejected with a reason that no reviewer ruling has answered yet."""
+
+    finding_id: FindingIdWire
+    # The frontier of the agent's standing rejection: the answer the ruling is owed to.
+    since_frontier: CanonicalUInt64Wire
+
+
 class StatusClosureReadinessModel(_ClosedModel):
     """What currently bounds a completion conclusion, before a check or receipt is spent.
 
@@ -4143,26 +4857,83 @@ class StatusClosureReadinessModel(_ClosedModel):
     # on the unreleased 1.4.0 wire so a result shaped by an earlier 0.3 build still validates; it
     # is then absent as a whole, never partially present and never null.
     state: Literal["action_required", "ready", "ready_with_limitations", "unknown"] | None = None
-    gap_classification_version: Literal["1"] | None = None
+    gap_classification_version: Literal["1", "2", "3", "4", "5", "6", "7"] | None = None
     agent_actionable: tuple[ReadinessItemWire, ...] | None = None
     standing_limitations: tuple[CodeWire, ...] | None = None
     acknowledged_not_done: tuple[AcknowledgedItemIdWire, ...] | None = None
     acknowledged_not_done_count: CanonicalUInt64Wire | None = None
+    # Open obligations a recorded blocker decision names (#977). Optional on the unreleased 1.4.0
+    # wire: an earlier 0.3 build omits it, and absence never means "nothing is blocked".
+    blocked_obligations: tuple[StatusBlockedObligationModel, ...] | None = None
+    # F3: result ids a whole-task completion claim recorded now must name in ``limitation_refs``
+    # (the reducer's rule; sorted, first 64) and their full count. Optional on the unreleased
+    # 1.4.0 wire, present together; absence never means "nothing is required".
+    limitation_refs_required: tuple[ResultIdWire, ...] | None = None
+    limitation_refs_required_count: CanonicalUInt64Wire | None = None
+    # #997: how many obligations are acknowledged as not done (not truncated, unlike
+    # ``acknowledged_not_done``). ``open_obligation_count`` never includes them. Optional on
+    # the unreleased 1.4.0 wire; absent from an earlier 0.3 build.
+    acknowledged_obligation_count: CanonicalUInt64Wire | None = None
+    # tb4n3 RC-6 (owner lineage rule): the record that decided ``check_not_applicable`` (listed as
+    # work) or the bounding standing ``check_current_as_of_earlier_frontier``. Optional on the
+    # unreleased 1.4.0 wire: absent when neither is listed, and from an earlier 0.3 build.
+    check_cause: StatusCheckCauseModel | None = None
+    # tb4n3 RC-3 (ADR-046): the receipt conclusion this frontier would carry and why, the finding
+    # and obligation counters, and the once-per-frontier re-reads. Optional on the unreleased 1.4.0
+    # wire: absent from an earlier 0.3 build and whenever the closure basis could not be read
+    # (never guessed); ``receipt_blocking_finding_count`` keeps its wire meaning (to do + unmet).
+    predicted_receipt: StatusPredictedReceiptModel | None = None
+    finding_counts: StatusFindingCountsModel | None = None
+    obligation_counts: StatusObligationCountsModel | None = None
+    rechecks: tuple[StatusRecheckModel, ...] | None = None
+    # The findings counted in ``finding_counts.awaiting_ruling`` (at most eight, ordered by id),
+    # so the Stop gate and the status text name them and the frontier of the rejection.
+    awaiting_ruling_findings: tuple[StatusAwaitingRulingFindingModel, ...] | None = None
+    # ADR-045: where each derived fact the checklist lists came from (rule, obligation item,
+    # observing check and frontier, prior state, observed runs). Optional on the unreleased 1.4.0
+    # wire: an earlier 0.3 build omits it, and absence never means the facts have no source.
+    fact_lineage: tuple[FactLineageModel, ...] | None = None
 
     optional_non_null_fields = frozenset(
         {
+            "check_cause",
+            "predicted_receipt",
+            "finding_counts",
+            "obligation_counts",
+            "rechecks",
+            "awaiting_ruling_findings",
+            "acknowledged_obligation_count",
+            "fact_lineage",
             "state",
             "gap_classification_version",
             "agent_actionable",
             "standing_limitations",
             "acknowledged_not_done",
             "acknowledged_not_done_count",
+            "blocked_obligations",
+            "limitation_refs_required",
+            "limitation_refs_required_count",
         }
     )
 
     @model_validator(mode="after")
     def _validate_closure_readiness(self) -> StatusClosureReadinessModel:
         _require_unique(self.blocking_conditions, limit=8)
+        if (self.limitation_refs_required is None) != (self.limitation_refs_required_count is None):
+            raise ValueError("closure_readiness_limitation_refs_partial")
+        if self.limitation_refs_required is not None:
+            _require_unique(self.limitation_refs_required, limit=64)
+            if len(self.limitation_refs_required) != min(
+                int(cast(str, self.limitation_refs_required_count)), 64
+            ) or self.limitation_refs_required != tuple(
+                sorted(self.limitation_refs_required, key=str.encode)
+            ):
+                raise ValueError("closure_readiness_limitation_refs_mismatch")
+        if self.blocked_obligations is not None:
+            _require_unique(
+                tuple(item.obligation_id for item in self.blocked_obligations), limit=64
+            )
+        _validate_fact_lineage_models(self.fact_lineage)
         self._validate_checklist()
         # Absent counts mean the compact singleton could not be read (an unreadable task title
         # omits it). Reporting zero there would assert "nothing is open" from missing data, so
@@ -4182,6 +4953,17 @@ class StatusClosureReadinessModel(_ClosedModel):
             raise ValueError("closure_readiness_unknown_reason")
         if unknown and set(self.blocking_conditions) != {"readiness_unknown"}:
             raise ValueError("closure_readiness_unknown_not_exclusive")
+        if unknown and any(
+            value is not None
+            for value in (
+                self.predicted_receipt,
+                self.finding_counts,
+                self.obligation_counts,
+                self.rechecks,
+                self.awaiting_ruling_findings,
+            )
+        ):
+            raise ValueError("closure_readiness_unknown_verdict")
         if not unknown:
             declared = int(cast(str, self.declared_obligation_count))
             opened = int(cast(str, self.open_obligation_count))
@@ -4221,6 +5003,8 @@ class StatusClosureReadinessModel(_ClosedModel):
             self.acknowledged_not_done_count,
         )
         if all(value is None for value in checklist):
+            if self.check_cause is not None:
+                raise ValueError("closure_readiness_check_cause_mismatch")
             return
         if any(value is None for value in checklist):
             raise ValueError("closure_readiness_checklist_partial")
@@ -4230,6 +5014,15 @@ class StatusClosureReadinessModel(_ClosedModel):
         acknowledged_ids = cast(tuple[str, ...], self.acknowledged_not_done)
         _require_unique(actionable, limit=128)
         _require_unique(standing, limit=128)
+        if self.check_cause is not None:
+            # A superseded check is listed as work; a bounding suffix is a standing disclosure.
+            listed = (
+                "check_not_applicable" in actionable
+                if self.check_cause.effect == "superseded"
+                else "check_current_as_of_earlier_frontier" in standing
+            )
+            if not listed:
+                raise ValueError("closure_readiness_check_cause_mismatch")
         _require_unique(acknowledged_ids, limit=64)
         acknowledged = int(cast(str, self.acknowledged_not_done_count))
         if len(acknowledged_ids) != min(acknowledged, 64):
@@ -4256,9 +5049,39 @@ class StatusClosureReadinessModel(_ClosedModel):
         )
         if state != expected:
             raise ValueError("closure_readiness_state_mismatch")
+        # Open obligations are the agent's to clear unless every one is named by a recorded
+        # blocker outside its control (#977): then readiness discloses them as a standing
+        # limitation instead.
+        blocked_rows = self.blocked_obligations
+        open_count = None if self.open_obligation_count is None else int(self.open_obligation_count)
+        if "obligations_open" in self.blocking_conditions and "obligations_open" not in actionable:
+            # Replaced by a confirmed blocker (standing) or a claimed one still to confirm (#985),
+            # or the open count includes obligations acknowledged as not done (#997).
+            # #997: the untruncated count when present; the id list (64, findings sort first)
+            # only as a fallback for an earlier 0.3 build.
+            acknowledged_obligations = (
+                int(self.acknowledged_obligation_count) > 0
+                if self.acknowledged_obligation_count is not None
+                else any(item.startswith("obl_") for item in acknowledged_ids)
+            )
+            if (
+                "obligation_blocked_outside_agent_control" not in standing
+                and "obligation_blocker_unconfirmed" not in actionable
+                and "verification_limit_disclosed" not in standing
+                and not acknowledged_obligations
+            ) or (
+                blocked_rows is not None
+                and open_count is not None
+                and not acknowledged_obligations
+                and len(blocked_rows) != min(open_count, 64)
+            ):
+                raise ValueError("closure_readiness_actionable_condition_mismatch")
+        elif ("obligations_open" in self.blocking_conditions) != ("obligations_open" in actionable):
+            raise ValueError("closure_readiness_actionable_condition_mismatch")
+        if blocked_rows is not None and open_count is not None and len(blocked_rows) > open_count:
+            raise ValueError("closure_readiness_blocked_count_mismatch")
         # These conditions are always the agent's to clear; none can be classified away.
         for condition in (
-            "obligations_open",
             "findings_unanswered",
             "no_plan_published",
             "no_obligations_declared",
@@ -4270,16 +5093,45 @@ class StatusClosureReadinessModel(_ClosedModel):
         if receipt_condition in actionable:
             if receipt_condition not in self.blocking_conditions:
                 raise ValueError("closure_readiness_actionable_condition_mismatch")
-        elif receipt_condition in self.blocking_conditions and not any(
-            item.startswith("fnd_") for item in acknowledged_ids
+        elif (
+            receipt_condition in self.blocking_conditions
+            and "finding_rejection_awaiting_ruling" not in actionable
+            and not any(item.startswith("fnd_") for item in acknowledged_ids)
         ):
-            # Only an acknowledgement moves a receipt-blocking finding off the agent's list.
+            # Only an acknowledgement moves a receipt-blocking finding off the agent's list, or
+            # a rejection that now awaits a reviewer ruling (its own token, ADR-046).
             raise ValueError("closure_readiness_receipt_acknowledgement_mismatch")
+        if self.finding_counts is not None:
+            counts = self.finding_counts
+            if self.receipt_blocking_finding_count is not None and int(counts.to_do) + int(
+                counts.unmet
+            ) != int(self.receipt_blocking_finding_count):
+                raise ValueError("closure_readiness_finding_counts_mismatch")
+            if (int(counts.awaiting_ruling) > 0) != (
+                "finding_rejection_awaiting_ruling" in actionable
+            ):
+                raise ValueError("closure_readiness_finding_counts_mismatch")
+        if self.rechecks is not None:
+            _require_unique(tuple(item.key for item in self.rechecks), limit=128)
+        if self.awaiting_ruling_findings is not None:
+            named = tuple(item.finding_id for item in self.awaiting_ruling_findings)
+            _require_unique(named, limit=8)
+            if named != tuple(sorted(named, key=str.encode)):
+                raise ValueError("closure_readiness_awaiting_ruling_findings_mismatch")
+            if self.finding_counts is None or len(named) != min(
+                int(self.finding_counts.awaiting_ruling), 8
+            ):
+                raise ValueError("closure_readiness_awaiting_ruling_findings_mismatch")
 
 
 class StatusRequestedItemModel(_ClosedModel):
-    item_kind: Literal["url", "file", "command", "change", "source"]
+    # ``directory`` and ``role`` come from obligation_published 1.1.0 (#1002) and appear only on
+    # status-result 1.4.0; ``role`` is absent, never null, when the obligation declared none.
+    optional_non_null_fields = frozenset({"role"})
+
+    item_kind: Literal["url", "file", "command", "change", "source", "directory"]
     value: String0To1024 | OmittedContentModel
+    role: Literal["input", "output"] | None = None
 
     @model_validator(mode="after")
     def _validate_requested_item(self) -> StatusRequestedItemModel:
@@ -4305,10 +5157,19 @@ class StatusCommandAttemptModel(_ClosedModel):
 
 
 class StatusObligationItemModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"acceptance_criteria"})
+    optional_non_null_fields = frozenset(
+        {
+            "acceptance_criteria",
+            "acknowledged_not_done_reason",
+            "in_current_plan",
+            "closure_class",
+            "closure_basis",
+        }
+    )
 
     obligation_id: ObligationIdWire
-    status: Literal["open", "resolved"]
+    # ``acknowledged_not_done`` (obligation_published 1.1.0, #1002) on status-result 1.4.0 only.
+    status: Literal["open", "resolved", "acknowledged_not_done"]
     description: String1To8192 | OmittedContentModel
     evidence_expectation: String1To8192 | OmittedContentModel
     source_refs: tuple[SubjectIdWire, ...]
@@ -4319,9 +5180,24 @@ class StatusObligationItemModel(_ClosedModel):
     unattempted_items: tuple[StatusRequestedItemModel, ...] = ()
     command_attempts: tuple[StatusCommandAttemptModel, ...] = ()
     acceptance_criteria: String1To8192 | OmittedContentModel | None = None
+    # The agent's own reason for ``acknowledged_not_done`` (#1002/#996), status-result 1.4.0 only,
+    # under the same obligation-text category as the description it explains.
+    acknowledged_not_done_reason: String1To8192 | OmittedContentModel | None = None
+    # Whether the obligation is part of the current plan's effective scope: published, not waived
+    # and not superseded by a later plan revision (``task_facts.effective_obligations``). The view
+    # lists every obligation ever published; this is how a reader tells the declared ones from the
+    # historical ones (#1027, the post-compaction recap's deliverables). Status-result 1.4.0
+    # only; absent when the plan scope cannot be read, and never a claim that it is open.
+    in_current_plan: bool | None = None
+    # tb4n3 RC-3 (ADR-046): the obligation's closure class and why. Absent when the plan scope
+    # cannot be read (the obligation is not effective) and on an earlier 0.3 build.
+    closure_class: ObligationClosureClassLiteral | None = None
+    closure_basis: ObligationClosureBasisLiteral | None = None
 
     @model_validator(mode="after")
     def _validate_obligation_item(self) -> StatusObligationItemModel:
+        if (self.closure_class is None) != (self.closure_basis is None):
+            raise ValueError("obligation_closure_partial")
         for values in (self.source_refs, self.assigned_actor_ids, self.evidence_refs):
             _require_unique(values, limit=64)
         if len(self.requested_items) > 64 or len(self.unattempted_items) > 64:
@@ -4332,7 +5208,14 @@ class StatusObligationItemModel(_ClosedModel):
         unattempted = tuple((item.item_kind, item.value) for item in self.unattempted_items)
         if any(item not in requested for item in unattempted):
             raise ValueError("obligation_unattempted_item_mismatch")
-        for value in (self.description, self.evidence_expectation, self.acceptance_criteria):
+        if (self.acknowledged_not_done_reason is None) == (self.status == "acknowledged_not_done"):
+            raise ValueError("obligation_acknowledgement_reason_mismatch")
+        for value in (
+            self.description,
+            self.evidence_expectation,
+            self.acceptance_criteria,
+            self.acknowledged_not_done_reason,
+        ):
             if (
                 isinstance(value, OmittedContentModel)
                 and value.category is not DataCategory.OBLIGATION_TEXT
@@ -4478,6 +5361,8 @@ class StatusAdvicePageModel(_ClosedModel):
 class StatusLineageChildModel(_ClosedModel):
     """One direct child in the bounded lineage projection."""
 
+    optional_non_null_fields = frozenset({"self_verified_finding_count"})
+
     task_id: TaskIdWire
     parent_task_id: TaskIdWire
     origin: LineageOriginWire
@@ -4487,6 +5372,9 @@ class StatusLineageChildModel(_ClosedModel):
     depth: CanonicalPositiveUInt64Wire
     rollup_state: LineageRollupStateWire
     blocking_conditions: tuple[CodeWire, ...]
+    # Issue #984 (S2): how many of an accepted child's findings its agent self-verified; present
+    # only when positive. The parent receipt is then at best insufficient_coverage.
+    self_verified_finding_count: CanonicalPositiveUInt64Wire | None = None
 
     @model_validator(mode="after")
     def _validate_lineage_child(self) -> StatusLineageChildModel:
@@ -4652,7 +5540,7 @@ class StatusVersionSliceModel(_ClosedModel):
     apsw_version: VersionWire
     sqlite_version: VersionWire
     sqlite_source_id: AsciiString1To160
-    policy_packs: tuple[Literal["research-evidence/0.1.0", "work-integrity/0.1.0"], ...]
+    policy_packs: tuple[RecordedVersionSlicePackWire, ...]
     provider_profiles: tuple[ProfileIdWire, ...]
     route_profile: Literal["policy", "strict"] | None = None
 
@@ -4761,7 +5649,7 @@ class StatusOperationPageModel(_ClosedModel):
     """One request-id-keyed operation recovery page within the authenticated task."""
 
     optional_non_null_fields = frozenset(
-        {"semantic_progress", "admission", "semantic_withheld_items"}
+        {"semantic_progress", "admission", "semantic_withheld_items", "semantic_redacted_values"}
     )
 
     operation_request_id: RequestIdWire
@@ -4782,6 +5670,9 @@ class StatusOperationPageModel(_ClosedModel):
     # A completed check may disclose the bounded opaque identities omitted by the never-send
     # heuristic. Old operation rows omit this field entirely.
     semantic_withheld_items: tuple[SemanticWithheldItemModel, ...] | None = None
+    # PL2-1: a completed check's item refs and line numbers of values the external reviewer did
+    # not see. Omitted when the check recorded none.
+    semantic_redacted_values: tuple[SemanticRedactedValueModel, ...] | None = None
     # Issue #838: pre-admission stage of a check request that has no operation record yet.
     # Omitted whenever the service knows of no reservation or refusal for the exact key.
     admission: StatusCheckAdmissionModel | None = None
@@ -4802,6 +5693,10 @@ class StatusOperationPageModel(_ClosedModel):
                 tuple(item.item_id for item in self.semantic_withheld_items),
                 limit=64,
             )
+        if self.semantic_redacted_values is not None:
+            if not (self.operation_kind == "check" and self.state == "complete"):
+                raise ValueError("status_operation_page_invalid")
+            _validate_semantic_redacted_value_models(self.semantic_redacted_values)
         if (
             self.continuation is not None
             and self.continuation.replay_request_id != self.operation_request_id
@@ -4926,6 +5821,9 @@ class StatusSuccessModel(_ClosedModel):
     import_status: StatusImportStatusModel
     closure_readiness: StatusClosureReadinessModel
     privacy_projection: PrivacyProjectionModel
+    # Owner opt-out state, visible before any check runs (issue #982). Absent when the service
+    # did not compose it (for example a direct in-process application without privacy support).
+    credential_heuristic: StatusCredentialHeuristicModel | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -5241,6 +6139,7 @@ _REVIEW_INPUT_MANIFEST_LEAVES: Final = (
     "missing_inputs/*/supplied_refs/*",
     "missing_inputs/*/target_refs/*",
     "omitted_item_count",
+    "omitted_item_total",
     "phase",
     "prior_finding_context/content_bytes",
     "prior_finding_context/content_digest",
@@ -5250,6 +6149,7 @@ _REVIEW_INPUT_MANIFEST_LEAVES: Final = (
     "prior_finding_context/revision",
     "prior_finding_context/source_refs/*",
     "prior_finding_context/status",
+    "review_phase",
     "schema",
     "selected_excerpt_bytes",
     "selected_item_count",
@@ -5472,6 +6372,32 @@ _PUBLISH_STRUCTURAL_POINTERS: Final = (
             "schema_version",
         ),
     )
+    # #985: service-minted ids, closed codes and fixed repository text only.
+    + _prefix_leaf_patterns(
+        "/blocker_notices/*",
+        ("blocker_kind", "notice", "obligation_id", "text"),
+    )
+)
+
+# ADR-045: closed tokens, counts and service-minted ids only (no path, command text or prose).
+_FACT_LINEAGE_LEAVES: Final = (
+    "accepted_by",
+    "basis",
+    "check_event_id",
+    "code",
+    "frontier",
+    "item_index",
+    "now_lines",
+    "now_size_bytes",
+    "obligation_id",
+    "prior_event_id",
+    "prior_frontier",
+    "prior_lines",
+    "prior_size_bytes",
+    "proof",
+    "rule",
+    "source_event_ids/*",
+    "state",
 )
 
 _CHECK_STRUCTURAL_POINTERS: Final = (
@@ -5480,6 +6406,8 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         "/semantic_conclusion",
         "/semantic_provenance",
         "/semantic_reason",
+        # Issue #986: a closed boolean the service writes from the route, never case content.
+        "/semantic_route_required",
         "/semantic_status",
         # Every continuation leaf is service-authored: an opaque proposal id, its expiry, the
         # fixed argv, the request id to replay, and fixed instruction prose. None of it carries
@@ -5505,7 +6433,12 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         "/semantic_withheld_items/*",
         ("item_id", "reason"),
     )
+    + _prefix_leaf_patterns(
+        "/semantic_redacted_values/*",
+        ("disposition", "item_id", "lines/*", "source_ref"),
+    )
     + _prefix_leaf_patterns("/review_input_manifest", _REVIEW_INPUT_MANIFEST_LEAVES)
+    + _prefix_leaf_patterns("/fact_lineage/*", _FACT_LINEAGE_LEAVES)
     + _prefix_leaf_patterns(
         "/specification_preflight",
         (
@@ -5522,18 +6455,29 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
     + (
         "/finding_checklist/attempt_budget",
         "/finding_checklist/counts/acknowledged_not_done",
+        "/finding_checklist/counts/disputed_after_rebuttal",
         "/finding_checklist/counts/open",
         "/finding_checklist/counts/open_at_budget",
         "/finding_checklist/counts/rejection_accepted",
+        "/finding_checklist/counts/self_verified",
         "/finding_checklist/counts/verified_resolved",
+        # ADR-046: the five closure counters travel together.
+        "/finding_checklist/counts/to_do",
+        "/finding_checklist/counts/awaiting_ruling",
+        "/finding_checklist/counts/unmet",
+        "/finding_checklist/counts/disclosed",
+        "/finding_checklist/counts/to_disclose",
         "/finding_checklist/items/*/finding_id",
         "/finding_checklist/items/*/review_rounds",
         "/finding_checklist/items/*/todo_state",
+        "/finding_checklist/items/*/closure_class",
+        "/finding_checklist/items/*/closure_basis",
         "/finding_checklist/next",
     )
     + (
         "/overall_next/action",
         "/overall_next/acknowledged_incomplete_endpoint",
+        "/overall_next/predicted_conclusion",
         "/overall_next/status",
         "/overall_next/target_refs/*",
     )
@@ -5634,6 +6578,8 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
             "test_edits/unknown",
         ),
     )
+    # Issue #1012: closed state and count of the optional pre-check hook-row wait.
+    + _prefix_leaf_patterns("/observations_awaited", ("pending_count", "state"))
 )
 
 _RESPOND_STRUCTURAL_POINTERS: Final = (
@@ -5650,9 +6596,18 @@ _RESPOND_STRUCTURAL_POINTERS: Final = (
     )
     + _prefix_leaf_patterns(
         "/response",
-        ("disposition", "finding_id", "response_event_id", "waiver_expiry", "waiver_scope"),
+        (
+            "disposition",
+            "duplicate_of_finding_id",
+            "finding_id",
+            "response_event_id",
+            "waiver_expiry",
+            "waiver_scope",
+        ),
     )
     + _prefix_leaf_patterns("/response/finding_frontier", FRONTIER_LEAVES)
+    # tb4n3 RC-7 (#1030): the finding's to-do state and limitation state after the answer.
+    + _prefix_leaf_patterns("/closure_after", ("limitation", "todo_state"))
     + _prefix_leaf_patterns("/response/evidence/*", ("reference_id",))
     + _prefix_leaf_patterns("/response/reason", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns(
@@ -5703,8 +6658,60 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "standing_limitations/*",
             "acknowledged_not_done/*",
             "acknowledged_not_done_count",
+            # Service-minted ids and the closed blocker kind only (#977).
+            "blocked_obligations/*/obligation_id",
+            "blocked_obligations/*/blocker_kind",
+            "blocked_obligations/*/decision_event_id",
+            "blocked_obligations/*/confirmation",
+            "blocked_obligations/*/confirmation_event_id",
+            # F3: service-minted result ids and their count only.
+            "limitation_refs_required/*",
+            "limitation_refs_required_count",
+            # #997: a count only.
+            "acknowledged_obligation_count",
+            # tb4n3 RC-6: service-minted ids, counters and closed tokens only (the recorded tool
+            # name is a closed token, never a path or command text).
+            "check_cause/effect",
+            "check_cause/event_id",
+            "check_cause/ledger_sequence",
+            "check_cause/check_event_id",
+            "check_cause/check_subject_frontier",
+            "check_cause/family",
+            "check_cause/material_class",
+            "check_cause/rule",
+            "check_cause/tool",
+            # ADR-046: closed tokens and counters only (the one closure verdict).
+            "finding_counts/to_do",
+            "finding_counts/awaiting_ruling",
+            "finding_counts/unmet",
+            "finding_counts/disclosed",
+            "finding_counts/to_disclose",
+            "finding_counts/self_verify_eligible",
+            "obligation_counts/open",
+            "obligation_counts/acknowledged",
+            "obligation_counts/disclosed",
+            "predicted_receipt/conclusion",
+            "predicted_receipt/reason_total",
+            "predicted_receipt/basis_frontier",
+            "predicted_receipt/provisional",
+            "predicted_receipt/reasons/*/code",
+            "predicted_receipt/reasons/*/rule",
+            "predicted_receipt/reasons/*/count",
+            "predicted_receipt/reasons/*/refs/*",
+            "predicted_receipt/reasons/*/since_frontier",
+            "rechecks/*/kind",
+            "rechecks/*/key",
+            "rechecks/*/subjects/*",
+            "rechecks/*/rule",
+            "rechecks/*/since_frontier",
+            "awaiting_ruling_findings/*/finding_id",
+            "awaiting_ruling_findings/*/since_frontier",
+            # ADR-045: closed tokens, counts and service-minted ids only.
+            *(f"fact_lineage/*/{leaf}" for leaf in _FACT_LINEAGE_LEAVES),
         ),
     )
+    # Closed state tokens only (issue #982).
+    + _prefix_leaf_patterns("/credential_heuristic", ("machine_default", "repository"))
 )
 
 _STATUS_ADVICE_STRUCTURAL_POINTERS: Final = (
@@ -5829,6 +6836,14 @@ _STATUS_COMPACT_STRUCTURAL_POINTERS: Final = (
         "/page/items/*/latest_check_test_edits/checked_frontier",
         FRONTIER_LEAVES,
     )
+    + _prefix_leaf_patterns(
+        "/page/items/*/latest_check",
+        ("check_event_id", "verdict"),
+    )
+    + _prefix_leaf_patterns(
+        "/page/items/*/latest_check/checked_frontier",
+        FRONTIER_LEAVES,
+    )
 )
 
 _STATUS_EVIDENCE_STRUCTURAL_POINTERS: Final = (
@@ -5860,6 +6875,7 @@ _STATUS_FINDINGS_STRUCTURAL_POINTERS: Final = (
         "/page/items/*",
         (
             "disposition",
+            "duplicate_of_finding_id",
             "finding_id",
             "kind",
             "origin",
@@ -5874,6 +6890,10 @@ _STATUS_FINDINGS_STRUCTURAL_POINTERS: Final = (
             "todo_state",
             "waiver_expiry",
             "waiver_scope",
+            # ADR-046: closed tokens only (who owes the next move, why, and the answers offered).
+            "closure_class",
+            "closure_basis",
+            "next_actions/*",
         ),
     )
     + _prefix_leaf_patterns("/page/items/*/coverage", _COVERAGE_LEAVES)
@@ -5923,9 +6943,14 @@ _STATUS_OBLIGATIONS_STRUCTURAL_POINTERS: Final = (
             "obligation_id",
             "revision_event_id",
             "requested_items/*/item_kind",
+            "requested_items/*/role",
             "source_refs/*",
+            "in_current_plan",
+            "closure_class",
+            "closure_basis",
             "status",
             "unattempted_items/*/item_kind",
+            "unattempted_items/*/role",
             "command_attempts/*/requested_item_index",
             "command_attempts/*/relation",
             "command_attempts/*/asserted_action_ids/*",
@@ -5933,6 +6958,7 @@ _STATUS_OBLIGATIONS_STRUCTURAL_POINTERS: Final = (
         ),
     )
     + _prefix_leaf_patterns("/page/items/*/acceptance_criteria", _OMITTED_CONTENT_LEAVES)
+    + _prefix_leaf_patterns("/page/items/*/acknowledged_not_done_reason", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/page/items/*/description", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/page/items/*/evidence_expectation", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/page/items/*/requested_items/*/value", _OMITTED_CONTENT_LEAVES)
@@ -6000,6 +7026,10 @@ _STATUS_OPERATION_STRUCTURAL_POINTERS: Final = (
         "/page/semantic_progress/terminal_reason",
         "/page/semantic_withheld_items/*/item_id",
         "/page/semantic_withheld_items/*/reason",
+        "/page/semantic_redacted_values/*/disposition",
+        "/page/semantic_redacted_values/*/item_id",
+        "/page/semantic_redacted_values/*/lines/*",
+        "/page/semantic_redacted_values/*/source_ref",
         "/page/state",
         "/page/subject_frontier",
     )
@@ -6034,6 +7064,7 @@ _STATUS_LINEAGE_STRUCTURAL_POINTERS: Final = (
     "/page/children/*/origin",
     "/page/children/*/parent_task_id",
     "/page/children/*/rollup_state",
+    "/page/children/*/self_verified_finding_count",
     "/page/children/*/session_health",
     "/page/children/*/task_id",
     "/page/children/*/work_state",
@@ -6101,6 +7132,7 @@ _STATUS_PROJECT_STRUCTURAL_POINTERS: Final = (
     "/page/lineage/children/*/origin",
     "/page/lineage/children/*/parent_task_id",
     "/page/lineage/children/*/rollup_state",
+    "/page/lineage/children/*/self_verified_finding_count",
     "/page/lineage/children/*/session_health",
     "/page/lineage/children/*/task_id",
     "/page/lineage/children/*/work_state",
@@ -6134,13 +7166,30 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
         "/document",
         (
             "acknowledged_not_done_finding_ids/*",
+            "acknowledged_not_done_obligation_ids/*",
             "claim_refs/*",
+            "premise_disputed_finding_ids/*",
             "conclusion",
+            "disclosed_assumptions/*/decision_event_id",
+            "disclosed_assumptions/*/kind",
+            "disclosed_assumptions/*/obligation_id",
+            "duplicate_finding_links/*/duplicate_of_finding_id",
+            "duplicate_finding_links/*/finding_id",
             "evidence_refs/*",
             "generated_at",
             "receipt_id",
             "rejection_accepted_finding_ids/*",
             "schema_version",
+            "self_verified_finding_ids/*",
+            "disputed_after_rebuttal_finding_ids/*",
+            # ADR-046: ids, closed codes and counters only.
+            "limitation_disclosed_finding_ids/*",
+            "conclusion_basis/reason_total",
+            "conclusion_basis/reasons/*/code",
+            "conclusion_basis/reasons/*/rule",
+            "conclusion_basis/reasons/*/count",
+            "conclusion_basis/reasons/*/refs/*",
+            "conclusion_basis/reasons/*/since_frontier",
             "session_id",
             "suppressed_finding_count",
             "task_id",
@@ -6173,6 +7222,10 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
         ("item_id", "reason"),
     )
     + _prefix_leaf_patterns(
+        "/document/semantic_redacted_values/*",
+        ("disposition", "item_id", "lines/*", "source_ref"),
+    )
+    + _prefix_leaf_patterns(
         "/document/obligations/*",
         ("obligation_id", "source_refs/*", "status"),
     )
@@ -6181,7 +7234,9 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
         ("disposition", "evidence_refs/*", "finding_id", "waiver_expiry", "waiver_scope"),
     )
     + _prefix_leaf_patterns("/document/responses/*/finding_frontier", FRONTIER_LEAVES)
-    + _prefix_leaf_patterns("/document/gaps/*", ("code", "subject_refs/*"))
+    + _prefix_leaf_patterns("/document/gaps/*", ("code", "effect", "status", "subject_refs/*"))
+    # Issue #1017: the frontier a later check cleared a historical gap at.
+    + _prefix_leaf_patterns("/document/gaps/*/cleared_at_frontier", FRONTIER_LEAVES)
     + _prefix_leaf_patterns("/document/redactions/*", ("category", "count", "reason"))
     + _prefix_leaf_patterns("/document/sections/*", ("key",))
     + (
@@ -6201,6 +7256,7 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
             "actionable",
             "resolved",
             "resolution_event_id",
+            "self_verified",
         ),
     )
 )
@@ -6263,6 +7319,7 @@ _STATUS_CONTENT_RULES: Final[tuple[tuple[str, str, DataCategory], ...]] = (
     ("findings", "/page/items/*/challenge/snippet", DataCategory.FINDING_SUMMARY),
     ("findings", "/page/items/*/challenge/uncertainty", DataCategory.FINDING_SUMMARY),
     ("obligations", "/page/items/*/acceptance_criteria", DataCategory.OBLIGATION_TEXT),
+    ("obligations", "/page/items/*/acknowledged_not_done_reason", DataCategory.OBLIGATION_TEXT),
     ("obligations", "/page/items/*/description", DataCategory.OBLIGATION_TEXT),
     ("obligations", "/page/items/*/evidence_expectation", DataCategory.OBLIGATION_TEXT),
     ("obligations", "/page/items/*/requested_items/*/value", DataCategory.OBLIGATION_TEXT),
@@ -6441,7 +7498,9 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
             and type(rule.classification) is not DataCategory
         ):
             raise RuntimeError("invalid_result_leaf_classification")
-    if len(result) != 1410:
+    if (
+        len(result) != 1564
+    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

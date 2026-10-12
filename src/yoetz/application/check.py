@@ -5,14 +5,22 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
-from typing import Any, Final, Literal, Protocol, cast
+from typing import Any, Final, Literal, NamedTuple, Protocol, TypedDict, cast
 
+from yoetz.application.closure_basis import (
+    ClosureBasisUnavailable,
+    LoadedClosureBasis,
+    load_closure_basis,
+)
 from yoetz.application.ledger_snapshot import projection_for_records, trusted_projection_at
 from yoetz.application.missing_for_assessment import (
     MissingItemsReview,
     review_missing_for_assessment,
+    unsupported_data_type,
 )
+from yoetz.application.review_concern import answer_bound, concern_material_after
 from yoetz.domain.coordination import CoordinationError, CoordinationErrorCode
 from yoetz.domain.events import (
     MAX_SEMANTIC_INCLUDED_REFS,
@@ -20,10 +28,11 @@ from yoetz.domain.events import (
     ActionKind,
     CheckChangeShownFiles,
     ClaimKind,
+    DeliverableState,
     LedgerRecord,
-    ObligationStatus,
 )
 from yoetz.domain.findings import (
+    DISPUTED_AFTER_REBUTTAL_VERDICT,
     FINDING_KIND_TRAITS,
     MAX_RECORDED_VERDICTS,
     CandidateFinding,
@@ -33,21 +42,25 @@ from yoetz.domain.findings import (
     FindingOrigin,
     PriorFindingVerdictRecord,
     RankedFindings,
-    ResponseDisposition,
     SemanticProvenance,
+    finding_demands_work,
     finding_from_json,
+    finding_policy_identity,
     finding_to_json,
+    is_limitation_request,
     semantic_provenance_to_json,
 )
 from yoetz.domain.receipts import (
     CHECK_TIME_CHANGE_GAPS,
+    CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
+    CHECK_TIME_CHANGE_REDACTED_GAP,
+    CHECK_TIME_CHANGE_TRUNCATED_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
     OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     PREEXISTING_TEST_BASELINE_UNKNOWN_GAP,
-    PREEXISTING_TEST_INFORMATIONAL_GAPS,
     SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
     SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
     SEMANTIC_CHALLENGES_REJECTED_GAP,
@@ -59,8 +72,13 @@ from yoetz.domain.receipts import (
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
     SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP,
     SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP,
+    SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP,
+    SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
+    SEMANTIC_REVIEW_REFS_REDUCED_GAP,
+    SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
+    SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
     check_time_change_unavailable_reason_gap,
     semantic_coverage_gap_code,
 )
@@ -90,29 +108,65 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
+from yoetz.kernel.closure_class import (
+    ObligationClosure,
+    ObligationClosureClass,
+    closure_counts,
+    finding_closures,
+    obligation_closures,
+)
+from yoetz.kernel.concern import (
+    ConcernKey,
+    concern_key,
+    equal_concern,
+    kinds_comparable,
+    same_concern,
+)
+from yoetz.kernel.delivered_set import (
+    DECLARED_OUTPUT_CONTENT_MOVED_GAP,
+    DECLARED_OUTPUT_EMPTIED_GAP,
+    DECLARED_OUTPUT_REMOVED_GAP,
+    DeliverableSnapshot,
+    assess_deliverables,
+    content_moved_declared_items,
+    declared_delivered_items,
+    deliverable_history,
+    deliverable_lineage,
+)
 from yoetz.kernel.deterministic_checks import (
     DETERMINISTIC_TEXT_CONTRACT_DIGEST,
+    REQUESTED_OUTPUT_ABSENT_FACT,
     DeterministicAssessment,
     DeterministicCase,
     FindingBasisRef,
+    build_task_statement_unmapped_assessment,
     build_test_edit_integrity_assessment,
     case_coverage,
     finding_basis_from_json,
     finding_basis_to_json,
     render_deterministic_finding_text,
 )
-from yoetz.kernel.deterministic_scope import deterministic_scope_is_clean
+from yoetz.kernel.deterministic_scope import (
+    deterministic_scope_is_clean,
+    gaps_are_clean,
+)
+from yoetz.kernel.fact_lineage import FactLineage, lineage_to_wire
 from yoetz.kernel.finding_resolution import (
+    AGENT_SETTLED_DISPOSITION_VALUES,
     SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
     SEMANTIC_REFERENCE_SCOPE_REDUCED_GAP,
+    finding_is_resolved,
+    rejection_stands,
 )
 from yoetz.kernel.finding_todo import (
     DEFAULT_FINDING_ATTEMPT_BUDGET,
     FindingTodoState,
+    duplicate_link_target,
     finding_todo,
     finding_todo_state,
     todo_counts,
 )
+from yoetz.kernel.limitation import limitation_standing
 from yoetz.kernel.lineage import LineageEvaluation, evaluate_recorded_lineage
 from yoetz.kernel.observed_failures import (
     ObservedFailureState,
@@ -120,23 +174,41 @@ from yoetz.kernel.observed_failures import (
     observed_event_ids_from_coverage,
     observed_failure_states,
 )
-from yoetz.kernel.plan_drift import PLAN_DRIFT_GAPS
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.policies.research_evidence import research_evidence_findings
 from yoetz.kernel.policies.response_support import (
     RESEARCH_REJECTION_PRESENT_FACT,
     WORK_RESPONSE_PRESENT_FACT,
 )
-from yoetz.kernel.policies.work_integrity import work_integrity_findings
+from yoetz.kernel.policies.work_integrity import (
+    reportable_absent_outputs,
+    work_integrity_findings,
+)
 from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
+from yoetz.kernel.receipt_prediction import predict_receipt_conclusion
+from yoetz.kernel.reducers import replay
+from yoetz.kernel.review_round import review_round_stopped
+from yoetz.kernel.task_facts import (
+    DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
+    DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
+    confirmed_blocked_obligation_ids,
+    cooperative_event_ids_from_coverage,
+    passing_verification_observed,
+    requested_output_facts,
+    task_fact_signals,
+)
 from yoetz.kernel.test_edit_visibility import PreExistingTestEdits, preexisting_test_edits
 from yoetz.observability.logging import (
     record_bounded_counts_without_raising,
     record_unexpected_exception_without_raising,
 )
-from yoetz.ports.change_capture import current_check_workspace_source
+from yoetz.ports.change_capture import (
+    CheckChangeMetadata,
+    CheckWorkspaceSource,
+    current_check_workspace_source,
+)
 from yoetz.ports.clock import ClockPort
 from yoetz.ports.control import McpHostProfile
 from yoetz.ports.diagnostics import RuntimeCapability
@@ -151,6 +223,7 @@ from yoetz.ports.ledger import (
     CheckChildrenPreview,
     CheckCommitResult,
     CheckFindingChecklist,
+    ChecklistClosureCounts,
     CheckOverallNext,
     CheckPhase,
     CheckPolicyExecution,
@@ -187,6 +260,7 @@ from yoetz.protocol.coverage import (
 from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind, validate_opaque_item_id
 from yoetz.protocol.models import (
+    MAX_REVIEW_TEXT_BYTES,
     MISSING_FOR_ASSESSMENT_KINDS,
     CheckRequest,
     CheckScopeModel,
@@ -195,11 +269,20 @@ from yoetz.protocol.models import (
     validate_semantic_outcome,
     validate_semantic_provenance_binding,
 )
+from yoetz.protocol.policy_packs import (
+    COORDINATION_POLICY_ID,
+    RESEARCH_EVIDENCE_POLICY_ID,
+    WORK_INTEGRITY_POLICY_ID,
+    current_policy_pack,
+)
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 from yoetz.version import ENGINE_VERSION
 
 __all__ = [
     "SEMANTIC_CASE_CONTENT_GAPS",
     "SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM",
+    "SEMANTIC_REJECTED_ROUTINE_COMPLETENESS",
+    "SEMANTIC_REJECTED_REF_NOT_CARRIED",
     "SEMANTIC_REJECTED_REF_OUTSIDE_CASE",
     "SEMANTIC_REJECTED_SNIPPET",
     "SEMANTIC_REJECTED_SUBJECTS_OVER_LIMIT",
@@ -224,9 +307,9 @@ __all__ = [
     "validate_semantic_judgment",
 ]
 
-_RESEARCH_PACK = "research-evidence/0.1.0"
-_WORK_PACK = "work-integrity/0.1.0"
-_COORDINATION_PACK = "coordination/0.1.0"
+_RESEARCH_PACK = current_policy_pack(RESEARCH_EVIDENCE_POLICY_ID)
+_WORK_PACK = current_policy_pack(WORK_INTEGRITY_POLICY_ID)
+_COORDINATION_PACK = current_policy_pack(COORDINATION_POLICY_ID)
 _CANONICAL_PACKS = (_RESEARCH_PACK, _WORK_PACK, _COORDINATION_PACK)
 _UNAVAILABLE_GAPS = frozenset(
     {
@@ -238,26 +321,17 @@ _UNAVAILABLE_GAPS = frozenset(
         "unknown_event",
     }
 )
-_WORK_KINDS = frozenset(
-    {
-        FindingKind.ACTION_WITHOUT_RESULT,
-        FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE,
-        FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS,
-        FindingKind.CONTRADICTORY_CLAIMS_UNRESOLVED,
-        FindingKind.FAILED_WORK_OMITTED,
-        FindingKind.LEDGER_STALE_OR_INCOMPLETE,
-        FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED,
-        FindingKind.RESULT_WITHOUT_ACTION,
-        FindingKind.STALE_EVIDENCE_FOR_CHANGED_STATE,
-        FindingKind.WEAK_OR_STALE_RESPONSE,
-    }
-)
-
-
 SEMANTIC_REJECTED_REF_OUTSIDE_CASE: Final = "ref_outside_case"
 SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM: Final = "hidden_source_claim"
 SEMANTIC_REJECTED_SNIPPET: Final = "snippet_invalid"
+# None of a challenge's cited refs is proven sent in the packet (issue #976). Distinct from a quote
+# problem: the concern itself is surfaced as advisory text, it just anchors to nothing.
+SEMANTIC_REJECTED_REF_NOT_CARRIED: Final = "ref_not_carried"
 SEMANTIC_REJECTED_SUBJECTS_OVER_LIMIT: Final = "subject_refs_over_limit"
+# Issue #1020 (tb4n2 P1-7): before any completion claim the work is still in progress, so an
+# AI-powered "requested item never attempted" says nothing about incomplete work yet. Dropped and
+# counted, never minted; the deterministic requested-item facts still apply.
+SEMANTIC_REJECTED_ROUTINE_COMPLETENESS: Final = "routine_completeness"
 # The closed packet content gaps a semantic evaluation may carry into check coverage. Each is
 # classified for finding resolution in ``kernel/finding_resolution.py`` (issue #904); adding one
 # here without deciding its resolution class is caught by that module's tests.
@@ -268,12 +342,15 @@ SEMANTIC_CASE_CONTENT_GAPS: Final = frozenset(
         "truncated_payload",
         "content_unselected",
         "content_redacted",
+        SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
+        SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
         SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
         "preexisting_test_baseline_unknown",
         "preexisting_test_modified",
         "preexisting_test_renamed",
         "preexisting_test_deleted",
         "preexisting_test_skipped",
+        "preexisting_test_skip_unknown",
         "preexisting_test_edit_unjustified",
     }
 )
@@ -283,6 +360,8 @@ SEMANTIC_CASE_CONTENT_GAPS: Final = frozenset(
 _SEMANTIC_EVALUATION_GAPS: Final = SEMANTIC_CASE_CONTENT_GAPS | frozenset(
     {SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP, *TASK_STATEMENT_GAPS, *CHECK_TIME_CHANGE_GAPS}
 )
+# Public name for composition: the case-content vocabulary a FinalSemanticEvaluation admits.
+SEMANTIC_EVALUATION_GAPS: Final = _SEMANTIC_EVALUATION_GAPS
 
 
 class SemanticJudgmentRejected(ValueError):
@@ -337,6 +416,8 @@ class SemanticJudgmentReview:
     review_summary: str = "No review summary recorded."
     verified: tuple[VerifiedReviewItem, ...] = ()
     snippets_rejected: int = 0
+    # Kept challenges and verified rows whose citations of unsent refs were removed (issue #976).
+    refs_reduced: int = 0
 
     def __post_init__(self) -> None:
         if (
@@ -360,6 +441,8 @@ class SemanticJudgmentReview:
             raise _invalid("semantic_judgment_review_invalid")
         if type(self.snippets_rejected) is not int or self.snippets_rejected < 0:
             raise _invalid("semantic_judgment_review_invalid")
+        if type(self.refs_reduced) is not int or self.refs_reduced < 0:
+            raise _invalid("semantic_judgment_review_invalid")
         if any(
             reason not in _SEMANTIC_REJECTION_REASONS or type(count) is not int or count < 1
             for reason, count in self.rejected_by_reason
@@ -382,7 +465,9 @@ class SemanticJudgmentReview:
 _SEMANTIC_REJECTION_REASONS: Final = frozenset(
     {
         SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM,
+        SEMANTIC_REJECTED_REF_NOT_CARRIED,
         SEMANTIC_REJECTED_REF_OUTSIDE_CASE,
+        SEMANTIC_REJECTED_ROUTINE_COMPLETENESS,
         SEMANTIC_REJECTED_SNIPPET,
         SEMANTIC_REJECTED_SUBJECTS_OVER_LIMIT,
     }
@@ -572,6 +657,28 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
                 )
             }
         ),
+        # PL2-1: item refs and line numbers only; written only when present.
+        **(
+            {}
+            if not getattr(result, "semantic_redacted_values", ())
+            else {
+                "semantic_redacted_values": tuple(
+                    cast(JsonValue, item.as_wire()) for item in result.semantic_redacted_values
+                )
+            }
+        ),
+        # ADR-045: where each derived fact came from; omitted when there is none.
+        **(
+            {}
+            if not (lineage := getattr(result, "fact_lineage", ()))
+            else {"fact_lineage": tuple(cast(JsonValue, lineage_to_wire(item)) for item in lineage)}
+        ),
+        # Issue #986: present (``false``) only when the check's route did not require review.
+        **(
+            {}
+            if (route_required := getattr(result, "semantic_route_required", None)) is None
+            else {"semantic_route_required": route_required}
+        ),
         "coverage": coverage_to_json(result.coverage),
         "versions": {
             "protocol_version": result.versions.protocol_version,
@@ -623,6 +730,17 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             else {"review_input_manifest": dict(result.review_input_manifest.items())}
         ),
         **({} if result.totals is None else {"totals": result.totals}),
+        # Issue #1012: present only when the request set ``await_observations``.
+        **(
+            {}
+            if result.observations_awaited is None
+            else {
+                "observations_awaited": {
+                    "state": result.observations_awaited.state,
+                    "pending_count": str(result.observations_awaited.pending_count),
+                }
+            }
+        ),
     }
 
 
@@ -635,13 +753,40 @@ def _checklist_json(checklist: CheckFindingChecklist) -> JsonValue:
             "open": str(counts.open),
             "open_at_budget": str(counts.budget_reached),
             "rejection_accepted": str(counts.rejection_accepted),
+            "self_verified": str(counts.self_verified),
             "verified_resolved": str(counts.verified_resolved),
+            # Issue #1020 and ADR-046: emitted only when non-zero, so earlier results keep their
+            # bytes.
+            **(
+                {"disputed_after_rebuttal": str(counts.disputed_after_rebuttal)}
+                if counts.disputed_after_rebuttal
+                else {}
+            ),
+            **(
+                {}
+                if checklist.closure_counts is None
+                else {
+                    "to_do": str(checklist.closure_counts.to_do),
+                    "awaiting_ruling": str(checklist.closure_counts.awaiting_ruling),
+                    "unmet": str(checklist.closure_counts.unmet),
+                    "disclosed": str(checklist.closure_counts.disclosed),
+                    "to_disclose": str(checklist.closure_counts.to_disclose),
+                }
+            ),
         },
         "items": tuple(
             {
                 "finding_id": item.finding_id,
                 "todo_state": item.todo_state,
                 "review_rounds": str(item.review_rounds),
+                **(
+                    {}
+                    if item.closure_class is None or item.closure_basis is None
+                    else {
+                        "closure_class": item.closure_class,
+                        "closure_basis": item.closure_basis,
+                    }
+                ),
             }
             for item in checklist.items
         ),
@@ -661,6 +806,11 @@ def _overall_next_json(next_step: CheckOverallNext) -> JsonObject:
                 else {
                     "acknowledged_incomplete_endpoint": (next_step.acknowledged_incomplete_endpoint)
                 }
+            ),
+            **(
+                {}
+                if next_step.predicted_conclusion is None
+                else {"predicted_conclusion": next_step.predicted_conclusion}
             ),
         }
     )
@@ -1165,16 +1315,22 @@ async def _current_project_advisory_notes(
 
 
 def build_finding_checklist(
-    projection: ProjectionState, *, attempt_budget: int
+    projection: ProjectionState,
+    *,
+    attempt_budget: int,
+    records: tuple[LedgerRecord, ...] = (),
 ) -> CheckFindingChecklist:
     """The current actionable findings as a to-do list, with whole-list counts (issue #905).
 
     Items are the newest row per issue, open items first and otherwise in rank order, at most
     100; the counts and ``next`` cover every current actionable item, so a long list can never
-    read as done. Coverage limitations
-    are not to-dos and never drive ``next``.
+    read as done. Coverage limitations are not to-dos and never drive ``next``. Each item names
+    its closure class and basis (ADR-046), and a rejection that awaits a reviewer ruling is told
+    to ``request_ruling`` instead of being listed as work (``records`` lets the classifier know
+    whether the route can still rule).
     """
 
+    closures = finding_closures(projection, records=records, with_self_verify=False)
     todos = tuple(
         finding_todo(projection, finding.finding_id, attempt_budget=attempt_budget)
         for finding in current_receipt_findings(projection)
@@ -1183,24 +1339,57 @@ def build_finding_checklist(
     counts = todo_counts(
         projection, (todo.finding_id for todo in todos), attempt_budget=attempt_budget
     )
-    next_step: Literal["decide_at_budget", "request_receipt", "work_open_findings"] = (
-        "decide_at_budget"
-        if counts.budget_reached
-        else "work_open_findings"
-        if counts.open
-        else "request_receipt"
-    )
+    counted = closure_counts(closures.values(), ())
+    # ADR-046: work is what the closure class says the agent owes (``agent_work``). A settled basis
+    # (a disclosed limitation, a rejection nobody can rule on) keeps an ``open`` to-do state but is
+    # never work. A limitation request the agent has not answered is agent work of its own kind:
+    # when it is the ONLY remaining work the continuation is ``disclose_limitations`` (owner
+    # decision 2026-10-12, #1024); mixed with real work it stays ``work_open_findings``.
+    awaiting = counted.findings_awaiting_ruling
+    real_work = counted.findings_to_do - awaiting
+    next_step: Literal[
+        "decide_at_budget",
+        "disclose_limitations",
+        "request_receipt",
+        "request_ruling",
+        "work_open_findings",
+    ]
+    if counts.budget_reached:
+        next_step = "decide_at_budget"
+    elif real_work > 0:
+        next_step = "work_open_findings"
+    elif counted.findings_to_disclose > 0:
+        next_step = "disclose_limitations"
+    elif awaiting > 0:
+        next_step = "request_ruling"
+    else:
+        next_step = "request_receipt"
     # Open items first (a stable sort keeps rank order inside each group), so a long history of
     # closed rows can never push the remaining work out of the listed hundred.
     listed = sorted(todos, key=lambda todo: todo.state is not FindingTodoState.OPEN)
     return CheckFindingChecklist(
         attempt_budget,
         tuple(
-            CheckChecklistItem(str(todo.finding_id), todo.state.value, todo.review_rounds)
+            CheckChecklistItem(
+                str(todo.finding_id),
+                todo.state.value,
+                todo.review_rounds,
+                None
+                if todo.finding_id not in closures
+                else closures[todo.finding_id].closure_class.value,
+                None if todo.finding_id not in closures else closures[todo.finding_id].basis,
+            )
             for todo in listed[:MAX_CHECKLIST_ITEMS]
         ),
         next_step,
         counts,
+        closure_counts=ChecklistClosureCounts(
+            to_do=counted.findings_to_do,
+            awaiting_ruling=counted.findings_awaiting_ruling,
+            unmet=counted.findings_unmet,
+            disclosed=counted.findings_disclosed,
+            to_disclose=counted.findings_to_disclose,
+        ),
     )
 
 
@@ -1209,8 +1398,17 @@ def build_overall_next(
     checklist: CheckFindingChecklist | None,
     projection: ProjectionState | None = None,
     coverage_by_ref: Mapping[FindingBasisRef, Coverage] | None = None,
+    *,
+    obligations: tuple[ObligationClosure, ...] | None = None,
+    predicted_conclusion: str | None = None,
 ) -> CheckOverallNext | None:
-    """Derive the task continuation without letting the finding list speak for the task (#963)."""
+    """Derive the task continuation without letting the finding list speak for the task (#963).
+
+    ADR-046: every branch reads the closure classes. Findings the agent owes a move on are work;
+    a rejection that awaits a reviewer ruling is ``request_ruling``; an obligation the agent
+    acknowledged as not done, or disclosed, is not work (the receipt discloses it), so the check
+    no longer disagrees with status about whether anything is left to do.
+    """
 
     if checklist is None:
         # Without the projection that supplies finding counts, claiming readiness would be
@@ -1229,32 +1427,156 @@ def build_overall_next(
             target_refs=_bounded_overall_refs(
                 ref for item in actionable_missing for ref in item.target_refs
             ),
+            predicted_conclusion=predicted_conclusion,
         )
-    open_refs = _bounded_overall_refs(
-        item.finding_id for item in checklist.items if item.todo_state == "open"
+    # A limitation request nobody answered yet is agent work that asks for a disclosure, not a
+    # repair: alone it is ``disclose_limitations``; beside real work it rides in the same
+    # ``work_open_findings`` target list (the text names both).
+    agent_items = tuple(
+        item
+        for item in checklist.items
+        if item.closure_class == "agent_work"
+        or (item.closure_class is None and item.todo_state == "open")
     )
+    open_refs = _bounded_overall_refs(item.finding_id for item in agent_items)
     if open_refs:
+        counted = checklist.closure_counts
+        only_requests = all(
+            item.closure_class == "agent_work" and item.closure_basis == "limitation_requested"
+            for item in agent_items
+        ) and (counted is None or counted.to_do - counted.awaiting_ruling == 0)
         return CheckOverallNext(
             status="action_required",
-            action="work_open_findings",
+            action="disclose_limitations" if only_requests else "work_open_findings",
             target_refs=open_refs,
+            predicted_conclusion=predicted_conclusion,
+        )
+    awaiting_refs = _bounded_overall_refs(
+        item.finding_id for item in checklist.items if item.closure_class == "awaiting_ruling"
+    )
+    if awaiting_refs:
+        return CheckOverallNext(
+            status="action_required",
+            action="request_ruling",
+            target_refs=awaiting_refs,
+            predicted_conclusion=predicted_conclusion,
         )
     recorded_work_refs, disclosed_live_failure = _recorded_work_refs(
-        result, projection, coverage_by_ref
+        result, projection, coverage_by_ref, obligations
     )
     if recorded_work_refs:
         return CheckOverallNext(
             status="action_required",
             action="review_recorded_work",
             target_refs=recorded_work_refs,
+            predicted_conclusion=predicted_conclusion,
         )
-    if disclosed_live_failure or result.missing_for_assessment or result.coverage.known_gaps:
+    counted_closures = checklist.closure_counts
+    settled = bool(
+        (
+            counted_closures is not None
+            and (
+                counted_closures.unmet or counted_closures.disclosed or counted_closures.to_disclose
+            )
+        )
+        or checklist.counts.acknowledged_not_done
+        or checklist.counts.self_verified
+        or checklist.counts.disputed_after_rebuttal
+    )
+    settled_obligations = any(
+        item.closure_class is not ObligationClosureClass.RESOLVED for item in obligations or ()
+    )
+    if (
+        disclosed_live_failure
+        or result.missing_for_assessment
+        or result.coverage.known_gaps
+        or settled
+        or settled_obligations
+        or predicted_conclusion not in {None, "no_unresolved_deterministic_findings"}
+    ):
         return CheckOverallNext(
             status="ready_with_limitations",
             action="request_receipt",
             acknowledged_incomplete_endpoint="receipt",
+            predicted_conclusion=predicted_conclusion,
         )
-    return CheckOverallNext(status="ready", action="request_receipt")
+    return CheckOverallNext(
+        status="ready", action="request_receipt", predicted_conclusion=predicted_conclusion
+    )
+
+
+class _PacketLimits(TypedDict):
+    packet_limited_refs: frozenset[str]
+    privacy_withheld_refs: frozenset[str]
+    change_clipped: bool
+
+
+def _packet_limits(
+    semantic_result: FinalSemanticEvaluation, deterministic: tuple[Finding, ...]
+) -> _PacketLimits:
+    """What the sent packet could not show, for classifying named missing items (tb4n1 D1).
+
+    ``packet_limited_refs`` are refs an omission row of the exact sent packet withheld for room
+    or selection; a ``not_recorded`` omission (nothing more was ever recorded) never counts, and
+    this check's own local findings are never packet content. Unknown when the sent packet was
+    not read. ``privacy_withheld_refs`` are the refs an owner privacy rule withheld (a privacy
+    limit, classified structurally unavailable). ``change_clipped`` says the check-time change
+    was clipped for room or redacted.
+    """
+
+    withheld = semantic_result.case_withheld_refs
+    local = {str(item.finding_id) for item in deterministic}
+    return {
+        "packet_limited_refs": (frozenset() if withheld is None else frozenset(withheld - local)),
+        "privacy_withheld_refs": frozenset(semantic_result.case_privacy_withheld_refs - local),
+        "change_clipped": bool(
+            {CHECK_TIME_CHANGE_TRUNCATED_GAP, CHECK_TIME_CHANGE_REDACTED_GAP}
+            & set(semantic_result.case_content_gaps)
+        ),
+    }
+
+
+async def _review_round_stopped_at(
+    runtime: TaskRuntime, request: CheckRequest, frozen: FrozenCase
+) -> bool:
+    """``review_round_stopped`` over the ledger prefix the check froze; fails open to a review.
+
+    A caller-chosen local-only check never asks, so it never carries the skip disclosure; a
+    ``semantic_required`` check always runs the review it requires (its route reports an
+    incomplete check rather than a skipped one).
+    """
+
+    if request.mode in {"deterministic_only", "semantic_required"}:
+        return False
+    try:
+        records = tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, through=frozen.case.frontier.sequence
+                )
+            ]
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc, component="check", operation="review_round_read", request_id=request.request_id
+        )
+        return False
+    return review_round_stopped(records)
+
+
+def _semantic_wait(request: CheckRequest, runtime: TaskRuntime, *, round_stopped: bool) -> bool:
+    return (
+        request.mode != "deterministic_only"
+        and not round_stopped
+        and RuntimeCapability.SEMANTIC in runtime.capabilities
+    )
+
+
+def _round_stopped_gaps(*, round_stopped: bool) -> set[str]:
+    """Disclose a review this check skipped after the one insufficient-packet retry (tb4n1 D3)."""
+
+    return {SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP} if round_stopped else set()
 
 
 def _bounded_overall_refs(values: Iterable[object]) -> tuple[str, ...]:
@@ -1302,6 +1624,7 @@ def _recorded_work_refs(
     result: CheckCommitResult,
     projection: ProjectionState | None,
     coverage_by_ref: Mapping[FindingBasisRef, Coverage] | None = None,
+    obligations: tuple[ObligationClosure, ...] | None = None,
 ) -> tuple[tuple[str, ...], bool]:
     """Find open effective work that a coverage-limited result still requires.
 
@@ -1316,12 +1639,17 @@ def _recorded_work_refs(
         return (), False
     refs: set[str] = set()
     scope = current_plan_scope(projection.plans, projection.coverage_gaps)
-    if scope.readable and scope.effective_obligation_refs is not None:
-        for obligation_ref in scope.effective_obligation_refs:
-            record = projection.obligations.get(obligation_ref)
-            if record is not None and record.payload is not None:
-                if record.payload.status is ObligationStatus.OPEN:
-                    refs.add(str(obligation_ref))
+    # ADR-046: only an obligation the agent can still act on is work here. One it acknowledged as
+    # not done, or disclosed (a confirmed blocker, an externally evaluated requirement), is
+    # settled: status and the receipt say so, so the next step must not call it open work.
+    classes = (
+        tuple(obligation_closures(projection).values()) if obligations is None else obligations
+    )
+    refs.update(
+        str(item.obligation_id)
+        for item in classes
+        if item.closure_class is ObligationClosureClass.AGENT_WORK
+    )
 
     if _overall_total_count(result, "commands", "live_failed") <= 0:
         return _bounded_overall_refs(refs), False
@@ -1394,8 +1722,33 @@ async def _attach_finding_checklist(
         )
         if projection is None:
             return result
-        checklist = build_finding_checklist(projection, attempt_budget=budget)
-        overall_next = build_overall_next(result, checklist, projection, coverage_by_ref)
+        # ADR-046: the receipt's own context at the result frontier gives the predicted
+        # conclusion and the records the classes need. A read that fails omits the prediction
+        # (never guesses one) and leaves a bounded diagnostic.
+        loaded: LoadedClosureBasis | None = None
+        try:
+            loaded = await load_closure_basis(runtime, result.result_frontier)
+        except (ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError) as exc:
+            record_unexpected_exception_without_raising(
+                exc, component="check", operation="closure_basis_read"
+            )
+        if loaded is None:
+            # The closure classes need the ledger prefix (can a reviewer still rule, which
+            # obligations are emptied or blocked). Without it any class would be a guess that
+            # status, reading the real basis, could contradict; the check is returned without the
+            # list, like every other failed read here (the diagnostic above is the trace).
+            return result
+        checklist = build_finding_checklist(
+            projection, attempt_budget=budget, records=loaded.records
+        )
+        overall_next = build_overall_next(
+            result,
+            checklist,
+            projection,
+            coverage_by_ref,
+            obligations=loaded.basis.obligations,
+            predicted_conclusion=predict_receipt_conclusion(loaded.basis).conclusion.value,
+        )
         return replace(
             result,
             finding_checklist=checklist,
@@ -1472,6 +1825,9 @@ class FinalSemanticEvaluation:
     # Categories the review profile selected that the inference channel did not permit. A review
     # can succeed while structurally unable to answer its own question; coverage must say so.
     withheld_review_categories: tuple[str, ...] = ()
+    # True when the owner policy the review ran under had the low-confidence credential heuristic
+    # turned off (issue #982 owner opt-out). Coverage discloses it on every such review.
+    credential_heuristic_disabled: bool = False
     # True when composing the case had to shorten or replace recorded text that the publish-side
     # prose bound had already accepted. The reviewer judged a fragment; coverage must say so
     # rather than let the shortening pass as material the author chose not to send.
@@ -1481,10 +1837,19 @@ class FinalSemanticEvaluation:
     # envelope bounding and privacy minimization (issue #904); None when no packet was sent or it
     # could not be read. The check records them only for a completed reduced review.
     case_included_refs: frozenset[str] | None = None
+    # tb4n1 D1: the frontier references an omission row of the exact sent packet withheld for a
+    # reason other than ``not_recorded`` (room, selection or policy). A reviewer request for one of
+    # them is Yoetz's limit, never agent work. ``None`` when the packet was not read.
+    case_withheld_refs: frozenset[str] | None = None
+    # The subset an owner privacy rule withheld; a request for it is a privacy limit.
+    case_privacy_withheld_refs: frozenset[str] = frozenset()
     # Opaque case item identities omitted by the low-confidence never-send heuristic. The
     # public check result names these identities and the closed remediation reason, never bytes
     # or source prose.
     semantic_withheld_item_ids: tuple[str, ...] = ()
+    # PL2-1 (issue #982): per item, the catalogued ref and the 1-based lines where the external
+    # reviewer's copy had a credential-like value replaced, or the item withheld. Never values.
+    semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
     case_content_gaps: tuple[str, ...] = ()
     # Missing-item kinds the effective review selection or channel can never carry (issue #907).
     # Computed where the case is composed, so the check can classify what a reviewer names.
@@ -1493,6 +1858,8 @@ class FinalSemanticEvaluation:
     # section carried and its citable refs. ``None`` when the evaluator did not report them.
     case_prior_finding_refs: frozenset[str] | None = None
     case_citable_refs: frozenset[str] | None = None
+    # Findings the agent settled that the packet carried as nameable, non-rulable rows (#980).
+    case_settled_finding_refs: frozenset[str] | None = None
     # Issue #907: workspace-relative paths each hook-captured edit in the case records, keyed by
     # evidence ref. In process only, to bind a fresh diff to a repeated missing-item request;
     # never recorded, logged or sent. ``None`` when the evaluator did not resolve captures.
@@ -1500,6 +1867,11 @@ class FinalSemanticEvaluation:
     # Issue #907: the absolute workspace root the session opened with, anchoring absolute paths
     # an agent names; in process only, never recorded. ``None`` when it was not resolved.
     case_workspace_root: str | None = None
+    # tb4n2 A11: repository-relative paths the check-time change marks binary, so a suffix-less
+    # binary a reviewer names is Yoetz's unsupported-data-type limit. In process only.
+    case_binary_paths: frozenset[str] = frozenset()
+    # ADR-045: the paths the same change lists as text; Git's NUL sniff overrules a suffix.
+    case_text_paths: frozenset[str] = frozenset()
     # ADR-031: keyed commitments to the check-time change files the review packet carried.
     check_change_files: CheckChangeShownFiles | None = None
     # Set only on the nonterminal awaiting_human branch: what the caller must do to resume this
@@ -1543,6 +1915,10 @@ class FinalSemanticEvaluation:
             )
         ):
             raise _invalid("semantic_judgment_invalid")
+        try:
+            validate_semantic_redacted_values(self.semantic_redacted_values)
+        except ValueError as exc:
+            raise _invalid("semantic_judgment_invalid") from exc
         if (
             type(self.unsuppliable_missing_kinds) is not tuple
             or self.unsuppliable_missing_kinds
@@ -1966,7 +2342,12 @@ def _pack_roots(case: DeterministicCase, pack: str) -> frozenset[str]:
             case.projection.coordination_declarations,
             case.projection.coordination_dispositions,
         )
-    return frozenset(str(value) for collection in collections for value in collection)
+    roots = frozenset(str(value) for collection in collections for value in collection)
+    if pack == _RESEARCH_PACK and case.task_statement is not None:
+        # The research-evidence pack owns the statement finding, so a recorded statement is one of
+        # its roots: the pack runs (and can resolve that finding) before the first claim exists.
+        roots = roots | {str(case.task_statement.source_event_id)}
+    return roots
 
 
 def _scope_execution(
@@ -2069,6 +2450,369 @@ def _collapse_failed_work_overlap(
         for item in assessments
         if item.candidate.kind is not FindingKind.MATERIAL_LIMITATION_OMITTED
         or _fact_refs(item, "material_limitation_present") not in omitted
+    )
+
+
+def _task_statement_assessments(
+    case: DeterministicCase,
+    scope: CheckScope,
+    workspace_changed: bool | None,
+) -> tuple[DeterministicAssessment, ...]:
+    """The unmapped-task-statement finding for a whole-case check (TB4 pilot).
+
+    The statement bounds the whole task, so a claim- or obligation-scoped check neither raises nor
+    resolves it. Like the test-edit integrity finding it runs in every check mode: the agent must
+    decompose the request into statement-sourced obligations before completion can read clean.
+    ``workspace_changed`` is the check-time change capture's answer (``None`` when unavailable);
+    a no-material-work decision answers the empty-scope form only when it is ``False``.
+    """
+
+    if not scope.whole_case:
+        return ()
+    assessment = build_task_statement_unmapped_assessment(case, workspace_changed=workspace_changed)
+    return () if assessment is None else (assessment,)
+
+
+def _research_pack_completed(executions: tuple[CheckPolicyExecution, ...]) -> bool:
+    policy_id, version = _pack_identity(_RESEARCH_PACK)
+    return any(
+        execution.policy_id == policy_id
+        and execution.policy_version == version
+        and execution.outcome == "run"
+        and execution.reason == "completed"
+        for execution in executions
+    )
+
+
+def _requirement_assessments(
+    case: DeterministicCase,
+    scope: CheckScope,
+    executions: tuple[CheckPolicyExecution, ...],
+    test_edit_support_refs: tuple[EventId, ...],
+    workspace_changed: bool | None = None,
+) -> tuple[DeterministicAssessment, ...]:
+    """The research-evidence ``task_requirement_unmet`` findings computed beside the pack run.
+
+    Both the unjustified test edit and the undecomposed task statement are recorded under the
+    research-evidence pack, and only a check that ran that pack to completion can resolve them.
+    Emission follows the same rule (TB4 pilot): a check that did not complete the pack neither
+    raises nor resolves them, so a finding is never raised that its own repair cannot clear. A
+    recorded statement makes the pack applicable (``_pack_roots``), so ordinary checks still raise
+    the statement finding before the first claim.
+    """
+
+    if not _research_pack_completed(executions):
+        return ()
+    output: list[DeterministicAssessment] = []
+    if test_edit_support_refs and completion_claim_present(case.projection):
+        output.append(
+            build_test_edit_integrity_assessment(
+                case, test_edit_support_refs, test_edit_support_refs
+            )
+        )
+    output.extend(_task_statement_assessments(case, scope, workspace_changed))
+    return tuple(output)
+
+
+def _with_structural_capture_gaps(
+    gaps: tuple[str, ...], capture: CheckChangeMetadata
+) -> tuple[str, ...]:
+    """Add the structural read's own disclosures to the test-edit accounting gaps.
+
+    A changed path whose name holds a CR or LF was skipped and counted (issue #1019): the read
+    stays usable and is marked truncated, and the check names the skip by code only.
+    """
+
+    if not capture.unrepresentable_files:
+        return gaps
+    return tuple(sorted({*gaps, CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP}, key=str.encode))
+
+
+class _OutputInputs(NamedTuple):
+    """What the check-time read of the declared outputs contributes to one check."""
+
+    evaluator: _PolicyEvaluator
+    gaps: tuple[str, ...]
+    absent: bool
+    # ADR-045: the deliverable states this check records (history for the next check, lineage
+    # for every surface). Empty when the check read no declared output file.
+    states: tuple[DeliverableState, ...] = ()
+    # In process only: the root-relative path of each existing declared output file, so the
+    # commit can tell which ones the review packet could not carry.
+    files: tuple[tuple[ObligationId, int, str], ...] = ()
+
+
+def _mark_unreviewable(
+    states: tuple[DeliverableState, ...],
+    files: tuple[tuple[ObligationId, int, str], ...],
+    binary_paths: frozenset[str],
+    text_paths: frozenset[str],
+) -> tuple[tuple[DeliverableState, ...], bool]:
+    """Mark each recorded deliverable state whose file the review packet could not carry.
+
+    Git's NUL sniff of the check-time change decides first (``binary_paths`` / ``text_paths``);
+    the suffix decides only for a file the change did not list (ADR-045).
+    """
+
+    names = {(obligation, index): relative for obligation, index, relative in files}
+    marked: list[DeliverableState] = []
+    found = False
+    for state in states:
+        relative = names.get((state.obligation_id, state.item_index))
+        unreviewable = relative is not None and (
+            relative in binary_paths
+            or (relative not in text_paths and unsupported_data_type(relative))
+        )
+        found = found or unreviewable
+        marked.append(replace(state, unreviewable=True) if unreviewable else state)
+    return tuple(marked), found
+
+
+def _initial_declared_gaps(
+    semantic_gap: str | None,
+    gap_groups: tuple[Iterable[str], ...],
+    semantic_result: FinalSemanticEvaluation,
+    states: tuple[DeliverableState, ...],
+    files: tuple[tuple[ObligationId, int, str], ...],
+) -> tuple[set[str], tuple[DeliverableState, ...]]:
+    """The check's declared gap set so far, and the deliverable states to record (ADR-045).
+
+    ``gap_groups`` are the deterministic test-edit and declared-output gaps. A review that ran
+    makes a declared deliverable of a type its packet never carries a present but unreviewed one:
+    the recorded state says so and the set gains ``declared_output_not_reviewable``.
+    """
+
+    gaps: set[str] = set() if semantic_gap is None else {semantic_gap}
+    for group in gap_groups:
+        gaps.update(group)
+    if semantic_result.status is not SemanticStatus.SUCCEEDED:
+        return gaps, states
+    marked, not_reviewable = _mark_unreviewable(
+        states,
+        files,
+        semantic_result.case_binary_paths,
+        semantic_result.case_text_paths,
+    )
+    if not_reviewable:
+        gaps.add(DECLARED_OUTPUT_NOT_REVIEWABLE_GAP)
+    return gaps, marked
+
+
+def _with_fact_lineage(
+    result: CheckCommitResult, case: DeterministicCase, records: tuple[LedgerRecord, ...]
+) -> CheckCommitResult:
+    """*result* with where each derived fact it carries came from (ADR-045)."""
+
+    return replace(
+        result,
+        fact_lineage=_check_fact_lineage(
+            case.projection, records, case.frontier.sequence, result.deliverable_states
+        ),
+    )
+
+
+async def _attach_replayed_fact_lineage(
+    runtime: TaskRuntime, result: CheckCommitResult
+) -> CheckCommitResult:
+    """A same-request replay with the lineage its first answer carried.
+
+    The lineage is derived, never stored: the recorded deliverable states plus the task facts
+    of the exact ledger prefix the check froze, so a retry reads the same story (ADR-045).
+    """
+
+    if result.fact_lineage:
+        return result
+    try:
+        records = tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, through=result.subject_frontier.sequence
+                )
+            ]
+        )
+        if not records:
+            return result
+        lineage = _check_fact_lineage(
+            replay(records),
+            records,
+            result.subject_frontier.sequence,
+            result.deliverable_states,
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component="check",
+            operation="replayed_fact_lineage_read",
+            request_id=None,
+        )
+        return result
+    return replace(result, fact_lineage=lineage)
+
+
+async def _read_declared_outputs(
+    runtime: TaskRuntime,
+    request: CheckRequest,
+    frozen: FrozenCase,
+    capture: CheckChangeMetadata | None,
+    source: CheckWorkspaceSource | None,
+    port: object | None,
+) -> tuple[
+    _PolicyEvaluator,
+    tuple[str, ...],
+    bool,
+    tuple[DeliverableState, ...],
+    tuple[tuple[ObligationId, int, str], ...],
+    tuple[LedgerRecord, ...],
+]:
+    """Read the declared outputs against their recorded history (ADR-045).
+
+    Returns the work evaluator, the task-fact gaps, whether an output is absent, the deliverable
+    states to record, the in-process file names the commit classifies by type, and the frozen
+    prefix's records (for the lineage the result carries).
+    """
+
+    records = await _frozen_prefix_records(runtime, request, frozen)
+    outputs = await _requested_output_inputs(
+        frozen.case, capture, source, port, request.request_id, deliverable_history(records)
+    )
+    return outputs.evaluator, outputs.gaps, outputs.absent, outputs.states, outputs.files, records
+
+
+async def _frozen_prefix_records(
+    runtime: TaskRuntime, request: CheckRequest, frozen: FrozenCase
+) -> tuple[LedgerRecord, ...]:
+    """The accepted records of the prefix the check froze (ADR-045), or none on a failed read.
+
+    Fails open to no records: the deliverable history then offers no proof of earlier content, so
+    the path-history rule cannot fire on a guess, and no ledger-derived lineage is attached.
+    """
+
+    try:
+        return tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, through=frozen.case.frontier.sequence
+                )
+            ]
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component="check",
+            operation="deliverable_history_read",
+            request_id=request.request_id,
+        )
+        return ()
+
+
+def _check_fact_lineage(
+    projection: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    subject_frontier: int,
+    states: tuple[DeliverableState, ...],
+) -> tuple[FactLineage, ...]:
+    """Where the derived facts this check carries came from (ADR-045).
+
+    The deliverable facts come from the states the check just recorded; the planned-verification
+    and edit-after-verification facts from the ledger over the frozen prefix. The same lineage
+    ``current_fact_lineage`` derives later for status, so every surface tells the same story.
+    """
+
+    items = list(deliverable_lineage(None, subject_frontier, states))
+    if records and len(records) == projection.frontier:
+        items.extend(task_fact_signals(projection, records).lineage)
+    return tuple(sorted(dict.fromkeys(items), key=lambda item: item.sort_key)[:64])
+
+
+async def _requested_output_inputs(
+    case: DeterministicCase,
+    capture: CheckChangeMetadata | None,
+    source: CheckWorkspaceSource | None,
+    port: object | None,
+    request_id: str,
+    history: tuple[DeliverableSnapshot, ...] = (),
+) -> _OutputInputs:
+
+    from yoetz.application.check_change import (
+        count_undeclared_references,
+        requested_output_states,
+    )
+
+    states = await requested_output_states(
+        projection=case.projection,
+        capture=capture,
+        source=source,
+        port=port,
+        request_id=request_id,
+    )
+    confirmed = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
+    found, markers = requested_output_facts(case.projection, states, blocked=confirmed)
+    codes = {code for code, _obligation in markers}
+    observed = observed_event_ids_from_coverage(case.coverage_by_ref)
+    assessment = assess_deliverables(
+        case.projection,
+        states,
+        blocked=confirmed,
+        history=history,
+        verified=passing_verification_observed(
+            case.projection, observed, cooperative_event_ids_from_coverage(case.coverage_by_ref)
+        ),
+    )
+    removed = set(assessment.removed)
+    if removed:
+        # One fact per item: a removed deliverable is not also reported as an absent output.
+        codes.add(DECLARED_OUTPUT_REMOVED_GAP)
+        found = [item for item in found if item not in removed]
+    if assessment.emptied:
+        # tb4n2 R2 / tb4n3 RC-5 (ADR-045): a declared file that held content is now empty or
+        # truncated, keyed on the path, so its obligation's recorded ``resolved`` no longer
+        # counts as delivered (agent work, Stop-gate token). Never raised for a file created
+        # empty or one a ``yoetz-assumption`` decision names.
+        codes.add(DECLARED_OUTPUT_EMPTIED_GAP)
+    if content_moved_declared_items(case.projection, states, blocked=confirmed, history=history):
+        # A non-blocking disclosure (ADR-035): never a Stop-gate token, never a finding.
+        codes.add(DECLARED_OUTPUT_CONTENT_MOVED_GAP)
+    if (
+        await count_undeclared_references(
+            projection=case.projection,
+            capture=capture,
+            source=source,
+            port=port,
+            states=states,
+            blocked=confirmed,
+            request_id=request_id,
+        )
+        > 0
+    ):
+        # tb4n2 R2: a declared deliverable names a file the change created but never declared,
+        # so the delivery may not carry what it needs. Standing disclosure (ADR-035 amendment).
+        codes.add(DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP)
+    # E4 (#989): an absent output is reported only once work on its obligation began.
+    absent = reportable_absent_outputs(case, frozenset(found))
+    gaps = tuple(sorted(codes, key=str.encode))
+    files = tuple(
+        (obligation, index, state.relative)
+        for (obligation, index), state in sorted(
+            states.items(), key=lambda item: (item[0][0].encode(), item[0][1])
+        )
+        if state.location == "inside"
+        and state.exists is True
+        and state.relative is not None
+        and state.relative != "."
+        and any(
+            (obligation, index) == (row[0], row[1])
+            for row in declared_delivered_items(case.projection, blocked=confirmed)
+            if row[2] == "file"
+        )
+    )
+    return _OutputInputs(
+        partial(work_integrity_findings, absent_outputs=absent),
+        gaps,
+        bool(absent),
+        assessment.states,
+        files,
     )
 
 
@@ -2230,6 +2974,11 @@ def prior_finding_ids(projection: ProjectionState) -> dict[FindingIdentity, Find
     An AI-powered finding with the same kind, policy and subject is a different issue; letting a
     local re-derivation take its ID would rewrite that row's origin and leave the real local row
     unreturned, and so look resolved (issue #884).
+
+    A ``self_verified`` row (issue #984) is not offered either: the agent answered it because Yoetz
+    could not prove the repair. If the rule fires again, Yoetz positively sees the issue, so the
+    re-derivation is a new finding the agent must answer instead of landing silently on the
+    terminal row.
     """
 
     prior: dict[FindingIdentity, FindingId] = {}
@@ -2238,6 +2987,7 @@ def prior_finding_ids(projection: ProjectionState) -> dict[FindingIdentity, Find
             record.payload is None
             or record.resolved_by_check_event_id is not None
             or record.payload.origin is not FindingOrigin.DETERMINISTIC
+            or finding_todo_state(projection, key) is FindingTodoState.SELF_VERIFIED
         ):
             continue
         prior[(record.payload.kind, record.payload.policy_id, record.payload.subject_refs)] = key
@@ -2378,16 +3128,7 @@ async def _publish_deterministic_result(
 
 
 def _policy_identity(kind: FindingKind) -> tuple[str, str]:
-    return (
-        ("work-integrity", "0.1.0")
-        if kind in _WORK_KINDS
-        else ("coordination", "0.1.0")
-        if kind is FindingKind.COORDINATION_OVERLAP
-        else (
-            "research-evidence",
-            "0.1.0",
-        )
-    )
+    return finding_policy_identity(kind)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2481,93 +3222,298 @@ def _packet_text_for_refs(
     return tuple(text for ref in refs for text in provider_input_text_by_ref.get(ref, ()))
 
 
+@dataclass(frozen=True, slots=True)
+class _ReviewerQuoteFence:
+    """What the provider-bound fence kept of one judgment, and what it removed (issue #976)."""
+
+    judgment: SemanticJudgment
+    # Challenges no cited ref of which is proven sent. They mint no finding; their text is
+    # surfaced as an advisory concern and their drop is counted and disclosed.
+    not_carried: tuple[ReviewerChallenge, ...] = ()
+    # Challenges whose citations were all outside the advertised citable set.
+    outside: int = 0
+    # Kept challenges that lost citations of unsent refs, plus verified rows dropped for one.
+    refs_reduced: int = 0
+    # Unproven quotes removed from kept challenges plus verified rows dropped for their quote.
+    snippet_losses: int = 0
+
+
 def _validate_reviewer_snippets(
     judgment: SemanticJudgment,
     *,
     citable_refs: frozenset[str] | None,
     provider_input_text_by_ref: Mapping[str, tuple[str, ...]] | None,
-) -> tuple[SemanticJudgment, int]:
-    """Drop reviewer quotes that are not exact packet substrings.
+) -> _ReviewerQuoteFence:
+    """Fence reviewer citations and quotes to what the provider was actually sent.
 
-    The provider may still provide useful challenges/judgements beside one malformed quote. A
-    bad quote therefore loses only that entry and leaves a bounded diagnostic for the check/receipt
-    coverage path (issue #906 Part 2).
+    ``citable_refs`` is the set the packet advertised (not yet narrowed to the text index). A ref
+    is proven sent when the provider-bound text index carries text for it: a content row's source
+    or linked subject, or one of this check's local findings whose assessment row survived.
+
+    A challenge is a concern the reviewer raised; it is never discarded because one of its
+    citations or its quote cannot be proved (TB4 tb4v1, issue #976):
+
+    * Cited refs that were not sent are removed; the challenge stands on the refs that were sent,
+      and the reduction is disclosed.
+    * A challenge with no sent ref (or any quote-bearing challenge when the text index is
+      unavailable, so nothing is proven sent) mints no finding, but its text is surfaced to the
+      agent as an advisory concern and its drop is counted under its own reason.
+    * A quote is kept only as the exact sent span it matches (``review_quotes.prove_quote``); an
+      unproven quote is removed, never shown, and disclosed through the snippet gap.
+
+    A verified row reads as support, so it keeps the stricter rule: it is dropped when any cited
+    ref was not sent or its required quote cannot be proved.
     """
 
+    from yoetz.application.review_quotes import prove_quote
+
     # A recovered response from before the exact provider-bound text index existed has no proof
-    # for a newly added quote. Keep legacy judgments without snippets readable, but drop any
-    # snippet-bearing item because a source ref alone cannot prove provider delivery.
+    # for a newly added quote. Keep legacy judgments without snippets readable.
     if (
         provider_input_text_by_ref is None
         and not any(challenge.snippet is not None for challenge in judgment.challenges)
         and not any(item.snippet is not None for item in judgment.verified)
     ):
-        return judgment, 0
+        return _ReviewerQuoteFence(judgment)
 
-    if citable_refs is not None:
-        # A snippet-bearing judgement must name refs that survived the exact provider-bound
-        # packet. The citable list is the composed-case fence; intersecting it with the ephemeral
-        # text index prevents one sent row from laundering a second, omitted ref in the same cite.
-        allowed = (
-            citable_refs
-            if provider_input_text_by_ref is None
-            else citable_refs & frozenset(provider_input_text_by_ref)
-        )
-    elif provider_input_text_by_ref is None:
-        allowed = frozenset[str]()
-    else:
-        allowed = frozenset(provider_input_text_by_ref)
-    rejected = 0
+    # Without the text index nothing is proven sent.
+    sent = frozenset(() if provider_input_text_by_ref is None else provider_input_text_by_ref)
+    carried = sent if citable_refs is None else citable_refs & sent
+
+    not_carried: list[ReviewerChallenge] = []
+    outside = 0
+    refs_reduced = 0
+    snippet_losses = 0
     challenges: list[ReviewerChallenge] = []
     for challenge in judgment.challenges:
-        cited = tuple(ref for ref in challenge.cited_refs if ref in allowed)
-        if len(cited) != len(challenge.cited_refs) or (
-            challenge.snippet is not None
-            and not any(
-                challenge.snippet in text
-                for text in _packet_text_for_refs(cited, provider_input_text_by_ref)
-            )
-        ):
-            rejected += 1
+        kept_refs = tuple(ref for ref in challenge.cited_refs if ref in carried)
+        if not kept_refs:
+            if citable_refs is not None and not any(
+                ref in citable_refs for ref in challenge.cited_refs
+            ):
+                outside += 1
+            else:
+                not_carried.append(challenge)
             continue
+        if len(kept_refs) != len(challenge.cited_refs):
+            refs_reduced += 1
+            challenge = replace(challenge, cited_refs=kept_refs)
+        if challenge.snippet is not None:
+            proven = prove_quote(
+                challenge.snippet, _packet_text_for_refs(kept_refs, provider_input_text_by_ref)
+            )
+            if proven is None:
+                # The quote is removed, never shown as one, and its loss is disclosed.
+                snippet_losses += 1
+                challenge = replace(challenge, snippet=None)
+            elif proven != challenge.snippet:
+                # Record the verbatim sent span, never the reviewer's spelling of it.
+                challenge = replace(challenge, snippet=proven)
         challenges.append(challenge)
 
     verified: list[VerifiedReviewItem] = []
     for item in judgment.verified:
-        cited = tuple(ref for ref in item.cited_refs if ref in allowed)
-        valid = len(cited) == len(item.cited_refs)
-        if valid and item.snippet is not None:
-            valid = any(
-                item.snippet in text
-                for text in _packet_text_for_refs(cited, provider_input_text_by_ref)
-            )
-        if not valid:
-            rejected += 1
+        if any(ref not in carried for ref in item.cited_refs):
+            refs_reduced += 1
             continue
+        if item.snippet is not None:
+            proven = prove_quote(
+                item.snippet, _packet_text_for_refs(item.cited_refs, provider_input_text_by_ref)
+            )
+            if proven is None:
+                snippet_losses += 1
+                continue
+            if proven != item.snippet:
+                item = replace(item, snippet=proven)
         verified.append(item)
 
     if (
-        rejected == 0
+        not not_carried
+        and outside == 0
+        and refs_reduced == 0
+        and snippet_losses == 0
         and tuple(challenges) == judgment.challenges
         and tuple(verified) == judgment.verified
     ):
-        return judgment, 0
+        return _ReviewerQuoteFence(judgment)
     if judgment.conclusion == "challenges_returned" and not challenges:
-        # The domain coupling requires at least one challenge for that conclusion. Preserve the
-        # response as a bounded "no admitted challenge" review so one malformed quote does not
-        # turn the whole provider response into an invalid check; the caller records the snippet
-        # gap from ``rejected`` and retains the provider's original conclusion separately.
-        return replace(
+        # The domain coupling requires at least one challenge for that conclusion. The check keeps
+        # the provider's original conclusion separately; the dropped concerns are counted, and an
+        # unanchored concern is surfaced as advisory text by the caller.
+        fenced = replace(
             judgment,
             conclusion="no_material_discrepancy",
             challenges=(),
             verified=tuple(verified),
-        ), rejected
-    return replace(
-        judgment,
-        challenges=tuple(challenges),
-        verified=tuple(verified),
-    ), rejected
+        )
+    else:
+        fenced = replace(judgment, challenges=tuple(challenges), verified=tuple(verified))
+    return _ReviewerQuoteFence(fenced, tuple(not_carried), outside, refs_reduced, snippet_losses)
+
+
+_UNANCHORED_CONCERNS_HEADER: Final = (
+    "Reviewer concerns not recorded as findings (no record they cite was in the sent packet; "
+    "advisory and unverified, answer them in your next published work):"
+)
+
+
+_RE_RAISED_HEADER: Final = (
+    "Reviewer re-raised earlier findings (recorded on that finding, which stays open; answer it "
+    "there):"
+)
+# tb4n3 RC-7: a re-raise of a finding the agent already settled (acknowledged_not_done,
+# self_verified or a disclosed limitation) is recorded on it. No new finding exists and respond
+# refuses most answers on it, so the header must not say "answer it there".
+_SETTLED_HEADER: Final = (
+    "Reviewer repeated findings you already settled, citing nothing newer (recorded on that "
+    "finding as a standing re-raise; no new finding was opened and no answer is needed. To take "
+    "an acknowledged_not_done answer back and do the work, respond reopened with a reason; never "
+    "empty or withdraw a working deliverable over it):"
+)
+# Issue #1020: a repeat over the agent's reasoned rejection with nothing newer.
+_DISPUTED_HEADER: Final = (
+    "Reviewer repeated findings you rejected with a reason, citing nothing newer (recorded as "
+    "disputed_after_rebuttal: final and disclosed on the receipt; no answer is needed, and never "
+    "withdraw working deliverables over them):"
+)
+
+
+def _bounded_review_text(text: str) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= MAX_REVIEW_TEXT_BYTES:
+        return text
+    marker = " [truncated]"
+    budget = MAX_REVIEW_TEXT_BYTES - len(marker.encode("utf-8"))
+    return encoded[:budget].decode("utf-8", errors="ignore") + marker
+
+
+def _summary_with_re_raised(
+    summary: str,
+    re_raised: tuple[tuple[FindingId, ReviewerChallenge], ...],
+    disputed: frozenset[FindingId] = frozenset(),
+    settled: frozenset[FindingId] = frozenset(),
+) -> str:
+    """Append the reviewer's words on each restated finding to the review summary (issue #980).
+
+    A challenge that names the earlier finding it restates is recorded on that finding as a
+    ruling, so no new finding carries its text; the summary does, under a header naming the item.
+    A repeat recorded as ``disputed_after_rebuttal`` (issue #1020) is final and needs no answer,
+    so it goes under its own header that says so instead of asking for one. So does a repeat of a
+    finding the agent already settled (``acknowledged_not_done``, ``self_verified`` or a disclosed
+    limitation; tb4n3 RC-7): ``respond`` refuses most answers on it, so it never says "answer it
+    there".
+    """
+
+    if not re_raised:
+        return summary
+    lines = [summary]
+    final_items = [item for item in re_raised if item[0] in disputed]
+    settled_items = [item for item in re_raised if item[0] in settled and item[0] not in disputed]
+    open_items = [item for item in re_raised if item[0] not in disputed and item[0] not in settled]
+    for header, items in (
+        (_RE_RAISED_HEADER, open_items),
+        (_SETTLED_HEADER, settled_items),
+        (_DISPUTED_HEADER, final_items),
+    ):
+        if items:
+            lines.extend(("", header))
+            for restated, challenge in items:
+                lines.append(f"- {restated}: {challenge.summary} {challenge.message_to_main_agent}")
+    return _bounded_review_text("\n".join(lines))
+
+
+# How a challenge's ``restates`` target is treated (issue #980, TB4 tb4n1 D5).
+_RESTATES_OPEN: Final = "open"  # a carried, open AI-powered finding: rulable
+_RESTATES_SETTLED: Final = "settled"  # a carried finding the agent settled: nameable only
+_RESTATES_LINKED: Final = "linked"  # any other readable recorded finding: linked, never folded
+
+
+def _restates_target(
+    case: DeterministicCase,
+    challenge: ReviewerChallenge,
+    prior_finding_refs: frozenset[str] | None,
+    settled_finding_refs: frozenset[str] | None,
+) -> tuple[str, FindingId] | None:
+    """Classify the earlier finding a challenge's ``restates`` names (issue #980).
+
+    ``open``: one of the packet's rulable prior findings (``prior_finding_refs``, when the
+    composing evaluator reported the packet), readable, unresolved and open. ``settled``: a
+    readable AI-powered finding the agent answered ``acknowledged_not_done`` (or
+    ``self_verified``) that the packet carried as a nameable, non-rulable row
+    (``settled_finding_refs``). ``linked``: any other readable finding inside the frozen fence (a
+    resolved or final item, or one the packet did not carry): done stays done, so the challenge
+    is minted as a new item that relates to it. ``None``: no target, or one outside the fence;
+    the challenge stands on its own and nothing is counted, because a citation of an earlier
+    finding is not a ref the challenge rests on.
+    """
+
+    target = challenge.restates
+    if target is None or target not in case.allowed_ids:
+        return None
+    key = finding_id(target)
+    record = case.projection.findings.get(key)
+    if record is None or record.payload is None or record.redacted:
+        return None
+    semantic = record.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+    unresolved = not finding_is_resolved(case.projection, key)
+    state = finding_todo_state(case.projection, key)
+    # tb4n3 RC-1: a limitation request the agent disclosed is settled, so a re-raise of it is
+    # recorded on it exactly like a re-raise of an acknowledged_not_done answer.
+    settled_answer = _latest_response_value(case, key) in AGENT_SETTLED_DISPOSITION_VALUES or (
+        _limitation_disclosed(case, key)
+    )
+    if (
+        semantic
+        and unresolved
+        and state is FindingTodoState.OPEN
+        and (prior_finding_refs is None or target in prior_finding_refs)
+        and not settled_answer
+    ):
+        return _RESTATES_OPEN, key
+    if (
+        semantic
+        and unresolved
+        and settled_answer
+        and (settled_finding_refs is None or target in settled_finding_refs)
+    ):
+        return _RESTATES_SETTLED, key
+    return _RESTATES_LINKED, key
+
+
+def _limitation_disclosed(case: DeterministicCase, key: FindingId) -> bool:
+    """Whether *key* is a reviewer limitation request the agent already disclosed (Q4)."""
+
+    standing = limitation_standing(case.projection, key)
+    return standing is not None and standing.disclosed
+
+
+def _latest_response_value(case: DeterministicCase, key: FindingId) -> str | None:
+    response = case.projection.responses.get(key)
+    if response is None or response.payload is None or response.redacted:
+        return None
+    return response.payload.disposition.value
+
+
+def _summary_with_unanchored_concerns(summary: str, concerns: tuple[ReviewerChallenge, ...]) -> str:
+    """Append concerns that could not be anchored to the review summary, within its byte bound.
+
+    The reviewer's words travel only inside the fenced review-summary field, never as a finding;
+    the header says they are unverified. Text that does not fit is cut at a character boundary
+    and marked, so a clipped concern is never presented as whole.
+    """
+
+    if not concerns:
+        return summary
+    lines = [summary, "", _UNANCHORED_CONCERNS_HEADER]
+    for position, concern in enumerate(concerns, start=1):
+        lines.append(f"{position}. {concern.summary} {concern.message_to_main_agent}")
+    text = "\n".join(lines)
+    encoded = text.encode("utf-8")
+    if len(encoded) <= MAX_REVIEW_TEXT_BYTES:
+        return text
+    marker = " [truncated]"
+    budget = MAX_REVIEW_TEXT_BYTES - len(marker.encode("utf-8"))
+    return encoded[:budget].decode("utf-8", errors="ignore") + marker
 
 
 # A finding names at most 64 subjects. Several cited findings can union past that; such a
@@ -2638,13 +3584,70 @@ def _ruling_supported(
     if kind in {"still_present", "answered_not_fixed"}:
         return bool(cited)
     if kind == "withdrawn":
-        response = projection.responses.get(finding)
-        return (
-            response is not None
-            and response.payload is not None
-            and response.payload.disposition is ResponseDisposition.REJECTED
-        )
+        # tb4n3 RC-7: the reviewer accepts a rejection that still stands, even when a later
+        # acknowledgement was recorded after it; ``reopened`` retracts it.
+        return rejection_stands(projection.findings.get(finding), projection.responses.get(finding))
     return True
+
+
+# The reviewer rulings that keep an answered finding open (issue #1020).
+_HELD_OPEN_RULINGS: Final = frozenset({"still_present", "answered_not_fixed", "unassessable"})
+
+
+def _finding_concern(case: DeterministicCase, key: FindingId) -> ConcernKey:
+    """The concern identity of a recorded finding's subjects (tb4n3 RC-7)."""
+
+    record = case.projection.findings.get(key)
+    subjects = () if record is None or record.payload is None else record.payload.subject_refs
+    return concern_key(case.projection, (str(ref) for ref in subjects))
+
+
+def _cites_concern_material_after(
+    case: DeterministicCase,
+    finding: FindingId,
+    refs: Iterable[str],
+    frontier: int,
+    *,
+    also: ConcernKey | None = None,
+) -> bool:
+    """Whether *refs* hold concern-relevant material recorded after *frontier* (tb4n3 RC-7).
+
+    Only evidence, results and actions linked to the concern count (``review_concern``): never a
+    finding, claim, obligation, response, decision or other bookkeeping, and never the agent's
+    own acknowledgement evidence. The earlier ``_cites_material_after`` counted any newer ref,
+    including another finding's response event and the latest test run every agent re-runs.
+    """
+
+    concern = _finding_concern(case, finding)
+    if also is not None:
+        concern = ConcernKey(
+            concern.obligations | also.obligations,
+            concern.refs | also.refs,
+            concern.named_obligations or also.named_obligations,
+        )
+    return concern_material_after(case, concern, refs, frontier)
+
+
+def _disputed_after_rebuttal(
+    case: DeterministicCase, finding: FindingId, ruling: str, cited: Iterable[str]
+) -> bool:
+    """Whether a ruling keeping *finding* open repeats it over the agent's position (#1020, #1030).
+
+    True when the agent holds a standing reasoned position on the finding (a ``rejected``, or an
+    ``acknowledged`` with a reason: the earliest one not retracted, ``standing_answer_frontier``)
+    and the ruling (``still_present``, ``answered_not_fixed`` or ``unassessable``) cites no
+    concern-relevant material recorded after the later of that position and the reviewer's last
+    ruling. The prompt already asks the reviewer to cite newer material before raising an answered
+    finding again; this enforces it in code, so a repeated demand can never turn into pressure on
+    the agent (TB4 tb4n2 formal-crypto: three repeats, then a working deliverable was emptied).
+    Reading only the latest answer made it unreachable: agents answer ``acknowledged`` (21 of 23
+    answers in tb4n3), and a later acknowledgement erased an earlier rebuttal.
+    """
+
+    if ruling not in _HELD_OPEN_RULINGS:
+        return False
+    bound = answer_bound(case.projection, finding)
+    return bound is not None and not _cites_concern_material_after(case, finding, cited, bound)
 
 
 def _admit_prior_verdicts(
@@ -2659,7 +3662,8 @@ def _admit_prior_verdicts(
     Returns the admitted rulings, the count of unsupported ones (malformed, unknown or outside
     the fence, unshown, trimmed, reduced or repeated; disclosed as
     ``semantic_prior_verdicts_unsupported``), and the count set aside because their target is
-    already final (``verified_resolved``, ``acknowledged_not_done``, ``rejection_accepted``).
+    already final (``verified_resolved``, ``acknowledged_not_done``, ``rejection_accepted``,
+    ``self_verified``).
     A final item is never re-reviewed, so a ruling on it says nothing about the review's other
     findings and must not raise the gap that blocks every unruled open finding; it is only
     counted as a diagnostic.
@@ -2675,6 +3679,12 @@ def _admit_prior_verdicts(
     or fails its claim is kept as ``unassessable`` for that finding alone, so a bad ruling can
     never leave its finding to close by silence; two different rulings on one finding become
     ``unassessable``. Every dropped, trimmed, reduced or repeated ruling is counted.
+
+    Issue #1020 (ADR-040): a shown finding the agent rejected with a reason that the reviewer
+    keeps open (``still_present``, ``answered_not_fixed`` or ``unassessable``) without citing
+    anything recorded after that rejection is recorded as ``disputed_after_rebuttal``
+    (``_disputed_after_rebuttal``): a final, non-blocking standing disagreement, never a new
+    review round. Material newer than the rejection keeps the ruling as the reviewer gave it.
     """
 
     admitted: dict[str, PriorFindingVerdictRecord] = {}
@@ -2689,14 +3699,27 @@ def _admit_prior_verdicts(
             or record is None
             or record.payload is None
             or record.redacted
-            or record.payload.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
         ):
             unsupported += 1
             continue
+        if record.payload.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED:
+            # A local finding's answer is carried as non-rulable context (issue #976); a ruling
+            # on it says nothing about the review's own findings and is only counted.
+            set_aside += 1
+            continue
         if (
-            record.resolved_by_check_event_id is not None
-            or finding_todo_state(projection, record.payload.finding_id)
-            is not FindingTodoState.OPEN
+            finding_is_resolved(projection, record.payload.finding_id)
+            or (
+                finding_todo_state(projection, record.payload.finding_id)
+                is not FindingTodoState.OPEN
+                # Issue #996: a linked duplicate only inherits a final state; the reviewer can
+                # still rule on it, and a still_present ruling breaks the link.
+                and duplicate_link_target(projection, record.payload.finding_id) is None
+            )
+            # tb4n3 RC-1: a disclosed limitation request is settled; the reviewer accepting the
+            # disclosure (``withdrawn``) or repeating itself says nothing about the review's
+            # other findings, so it is only counted, like a ruling on any final item.
+            or _limitation_disclosed(case, record.payload.finding_id)
         ):
             # A terminal item is never re-reviewed, so no ruling on it is admitted.
             set_aside += 1
@@ -2711,15 +3734,33 @@ def _admit_prior_verdicts(
         # dropped by envelope bounding) was not shown to the reviewer: its ruling cannot stand,
         # but an explicit ruling must not fall back to silence either, so it is unassessable.
         shown = prior_finding_refs is None or key in prior_finding_refs
-        if (
-            not shown
-            or len(cited) != len(verdict.cited_refs)
-            or not _ruling_supported(
-                kind, cited, record.source_frontier, record.payload.finding_id, projection
-            )
-        ):
+        lost_cite = len(cited) != len(verdict.cited_refs)
+        supported = _ruling_supported(
+            kind, cited, record.source_frontier, record.payload.finding_id, projection
+        )
+        if shown and _disputed_after_rebuttal(case, record.payload.finding_id, kind, cited):
+            # Issue #1020 (ADR-040): the reviewer saw the agent's reasoned position and kept the
+            # item open without citing anything newer. Recorded as a standing disagreement.
+            unsupported += lost_cite
+            kind = DISPUTED_AFTER_REBUTTAL_VERDICT
+        elif not shown or not supported or (lost_cite and kind not in {"withdrawn", "fixed"}):
             unsupported += 1
-            kind = "unassessable"
+            if (
+                shown
+                and kind != "withdrawn"
+                and _disputed_after_rebuttal(case, record.payload.finding_id, "unassessable", cited)
+            ):
+                # tb4n3 RC-7 (D-6): a ruling that cannot stand over a standing position and cites
+                # nothing newer is the standing disagreement, not an open review round.
+                kind = DISPUTED_AFTER_REBUTTAL_VERDICT
+            else:
+                kind = "unassessable"
+        elif lost_cite and kind == "fixed":
+            # A trimmed citation is disclosed, but a ``fixed`` the remaining cites still support
+            # (it keeps one recorded newer result) stays ``fixed`` (D-6). ``withdrawn`` needs no
+            # citation at all; ``still_present`` and ``answered_not_fixed`` that lose a citation
+            # are ``unassessable`` as before.
+            unsupported += 1
         earlier = admitted.get(key)
         if earlier is not None:
             unsupported += 1
@@ -2779,12 +3820,14 @@ def validate_semantic_judgment(
     prior_finding_refs: frozenset[str] | None = None,
     citable_refs: frozenset[str] | None = None,
     provider_input_text_by_ref: Mapping[str, tuple[str, ...]] | None = None,
+    settled_finding_refs: frozenset[str] | None = None,
 ) -> SemanticJudgmentReview:
     """Fence AI-powered challenges to the exact frozen refs, coverage, and final provenance.
 
     ``prior_finding_refs`` and ``citable_refs`` describe the packet the reviewer was actually
     shown (its prior-findings rows and its ``citable_refs``); per-finding rulings are fenced to
-    them (issue #905). ``None`` means the composing evaluator did not report the packet, and the
+    them (issue #905). ``settled_finding_refs`` are the findings the agent settled that the packet
+    carried as nameable, non-rulable rows: a challenge's ``restates`` may name them (issue #980). ``None`` means the composing evaluator did not report the packet, and the
     frozen fence bounds them instead.
 
     ``capture_baseline_gaps`` are the closed native capture limits under which this review ran
@@ -2813,6 +3856,9 @@ def validate_semantic_judgment(
         or provenance.reason is not SemanticReason.SEMANTIC_COMPLETED
     ):
         raise _rejected("semantic_judgment_invalid")
+    # The advertised set, before it is narrowed to the text index for rulings below: challenge
+    # citations are fenced against it together with what was actually sent (issue #976).
+    advertised_refs = citable_refs
     if provider_input_text_by_ref is not None:
         # The composed case can advertise refs whose rows were later withheld by privacy or
         # minimization. Once the exact provider-bound text index is available, prior rulings and
@@ -2823,29 +3869,40 @@ def validate_semantic_judgment(
             citable_refs &= provider_refs
         if prior_finding_refs is not None:
             prior_finding_refs &= provider_refs
+        if settled_finding_refs is not None:
+            settled_finding_refs &= provider_refs
     returned_challenges = len(judgment.challenges)
-    judgment, snippets_rejected = _validate_reviewer_snippets(
+    fence = _validate_reviewer_snippets(
         judgment,
-        citable_refs=citable_refs,
+        citable_refs=advertised_refs,
         provider_input_text_by_ref=provider_input_text_by_ref,
     )
+    judgment = fence.judgment
+    # Every dropped quote is disclosed through the snippet gap (including verified rows the
+    # normalizer already dropped as inconsistent with their verdict); only dropped challenges
+    # count toward the returned == accepted + rejected + suppressed challenge accounting.
+    snippets_rejected = fence.snippet_losses + judgment.verified_dropped
+    review_summary = _summary_with_unanchored_concerns(judgment.review_summary, fence.not_carried)
+    rejections: dict[str, int] = {}
+    if fence.not_carried:
+        rejections[SEMANTIC_REJECTED_REF_NOT_CARRIED] = len(fence.not_carried)
+    if fence.outside:
+        rejections[SEMANTIC_REJECTED_REF_OUTSIDE_CASE] = fence.outside
     admitted, verdicts_unsupported, verdicts_set_aside = _admit_prior_verdicts(
         case, judgment, prior_finding_refs=prior_finding_refs, citable_refs=citable_refs
     )
     if judgment.conclusion != "challenges_returned":
-        rejected_by_reason = (
-            ((SEMANTIC_REJECTED_SNIPPET, snippets_rejected),) if snippets_rejected else ()
-        )
-        return SemanticJudgmentReview(
+        return _judgment_review(
             (),
             returned_challenges,
-            rejected_by_reason,
+            tuple(sorted(rejections.items(), key=lambda item: item[0].encode("ascii"))),
             _sorted_verdicts(admitted),
             verdicts_unsupported,
             verdicts_set_aside=verdicts_set_aside,
-            review_summary=judgment.review_summary,
+            review_summary=review_summary,
             verified=judgment.verified,
             snippets_rejected=snippets_rejected,
+            refs_reduced=fence.refs_reduced,
         )
     coverage = case_coverage(case, semantic=True)
     if not capture_baseline_gaps <= SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS:
@@ -2863,10 +3920,9 @@ def validate_semantic_judgment(
             known_gaps=tuple(sorted(set(coverage.known_gaps) | stamped, key=str.encode)),
         )
     candidates: list[CandidateFinding] = []
-    rejections: dict[str, int] = {}
-    if snippets_rejected:
-        rejections[SEMANTIC_REJECTED_SNIPPET] = snippets_rejected
     restatements = 0
+    re_raised: list[tuple[FindingId, ReviewerChallenge]] = []
+    work_claimed = completion_claim_present(case.projection)
     for challenge in judgment.challenges:
         resolution = _resolve_challenge_refs(case, deterministic, challenge)
         if resolution is None:
@@ -2885,9 +3941,101 @@ def validate_semantic_judgment(
                 rejections.get(SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM, 0) + 1
             )
             continue
-        restated = _restated_finding(case, challenge.finding_kind, refs)
+        if (
+            challenge.finding_kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
+            and not work_claimed
+        ):
+            # Issue #1020 (tb4n2 P1-7): before any completion claim nothing is "never attempted"
+            # yet; the work is in progress. Counted, never minted.
+            rejections[SEMANTIC_REJECTED_ROUTINE_COMPLETENESS] = (
+                rejections.get(SEMANTIC_REJECTED_ROUTINE_COMPLETENESS, 0) + 1
+            )
+            continue
+        target = _restates_target(case, challenge, prior_finding_refs, settled_finding_refs)
+        named: FindingId | None = None
+        linked: FindingId | None = None
+        if target is not None:
+            treatment, target_id = target
+            target_kind = _finding_kind_of(case, target_id)
+            # tb4n3 RC-7: the requirement-family kinds name one concern across kinds (a limitation
+            # request raised as ``task_requirement_unmet`` after ``completion_with_open_obligations``
+            # is the same concern); every other kind folds only onto its own.
+            # An open item folds only the same kind; a settled one (the agent's final word, or a
+            # disclosed limitation) also folds a comparable kind, because the re-raise cannot
+            # change what the agent settled. Folding a different kind into an open item would
+            # hide a requirement demand behind a bookkeeping finding (cargo S).
+            same_kind = target_kind is not None and (
+                target_kind is challenge.finding_kind
+                or (
+                    treatment == _RESTATES_SETTLED
+                    and kinds_comparable(
+                        target_kind,
+                        challenge.finding_kind,
+                        obligation_concern=(
+                            _finding_concern(case, target_id).named_obligations
+                            and concern_key(case.projection, refs).named_obligations
+                        ),
+                    )
+                )
+            )
+            if treatment == _RESTATES_OPEN and same_kind:
+                named = target_id
+            elif treatment == _RESTATES_SETTLED and same_kind:
+                # The reviewer raised again a concern the agent settled (issue #980, D7): the
+                # re-raise is recorded on that item as a standing dispute, never a new finding,
+                # so the give-up cannot loop into fresh ids.
+                if _record_settled_reraise(admitted, target_id, refs):
+                    restatements += 1
+                    re_raised.append((target_id, challenge))
+                    continue
+                linked = target_id
+            elif (
+                same_kind
+                and finding_todo_state(case.projection, target_id)
+                is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+                and not _cites_concern_material_after(
+                    case,
+                    target_id,
+                    (*refs, *challenge.cited_refs),
+                    answer_bound(case.projection, target_id) or 0,
+                )
+            ):
+                # Issue #1020: the reviewer named a standing disagreement again with nothing
+                # recorded after the agent's rebuttal. Folded and disclosed, never a new finding.
+                restatements += 1
+                re_raised.append((target_id, challenge))
+                continue
+            else:
+                # A different concern about the named item, or an item that is done or was not
+                # carried: a new finding that relates to it, never folded into it, and never a
+                # ruling on the named item (the reviewer's own ruling on it stands).
+                linked = target_id
+        restated = (
+            named
+            if named is not None
+            else None
+            if target is not None and target[0] != _RESTATES_LINKED
+            else _restated_finding(
+                case,
+                challenge.finding_kind,
+                refs,
+                replies_to=resolution.related_finding_ids,
+                cited=challenge.cited_refs,
+            )
+        )
         if restated is not None:
-            suppressed, reduced = _record_restatement(case, admitted, restated, refs)
+            suppressed, reduced = _record_restatement(
+                case,
+                admitted,
+                restated,
+                refs,
+                verdict=(
+                    "answered_not_fixed"
+                    if named is not None and _answered(case.projection, restated)
+                    else "still_present"
+                ),
+                cited=challenge.cited_refs,
+            )
             # A ruling the same review's restatement contradicts is recorded as unassessable on
             # that item; it is not an unsupported ruling about the review's other findings.
             verdicts_set_aside += reduced
@@ -2896,6 +4044,10 @@ def validate_semantic_judgment(
                 # problem and its state; a second row would only restart it. Disclosed on the
                 # check, and recorded on the open item so it can never close by silence.
                 restatements += 1
+                # The reviewer's renewed words reach the agent in the review summary, named by
+                # the item they were recorded on (issue #980). tb4n3 RC-7: also when the reviewer
+                # did not name it (``restates`` is optional), so a fold never hides the repeat.
+                re_raised.append((named if named is not None else restated, challenge))
                 continue
         policy_id, policy_version = _policy_identity(challenge.finding_kind)
         priority, _actionable = FINDING_KIND_TRAITS[challenge.finding_kind]
@@ -2928,7 +4080,19 @@ def validate_semantic_judgment(
                     uncertainty=challenge.uncertainty,
                     snippet=challenge.snippet,
                 ),
-                resolution.related_finding_ids,
+                (
+                    tuple(
+                        sorted(
+                            {
+                                *resolution.related_finding_ids,
+                                *(ref for ref in (named, linked) if ref is not None),
+                            },
+                            key=str.encode,
+                        )
+                    )
+                    if named is not None or linked is not None
+                    else resolution.related_finding_ids
+                ),
             )
         )
     # A ruling of ``fixed`` on a finding an admitted challenge of the same review re-raises
@@ -2938,7 +4102,7 @@ def validate_semantic_judgment(
         if admitted[key].verdict == "fixed":
             admitted[key] = PriorFindingVerdictRecord(finding_id(key), "unassessable", ())
             verdicts_unsupported += 1
-    return SemanticJudgmentReview(
+    return _judgment_review(
         tuple(candidates),
         returned_challenges,
         tuple(sorted(rejections.items(), key=lambda item: item[0].encode("ascii"))),
@@ -2946,43 +4110,69 @@ def validate_semantic_judgment(
         verdicts_unsupported,
         restatements,
         verdicts_set_aside,
-        judgment.review_summary,
+        _summary_with_re_raised(
+            review_summary,
+            tuple(re_raised),
+            frozenset(
+                restated
+                for restated, _challenge in re_raised
+                if (
+                    (ruling := admitted.get(str(restated))) is not None
+                    and ruling.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT
+                )
+                or finding_todo_state(case.projection, restated)
+                is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+            ),
+            frozenset(
+                restated
+                for restated, _challenge in re_raised
+                if finding_todo_state(case.projection, restated)
+                in {FindingTodoState.ACKNOWLEDGED_NOT_DONE, FindingTodoState.SELF_VERIFIED}
+                or _limitation_disclosed(case, restated)
+            ),
+        ),
         judgment.verified,
         snippets_rejected,
+        fence.refs_reduced,
     )
 
 
-def _ref_sequence(case: DeterministicCase, ref: str) -> int | None:
-    """The ledger sequence that last recorded ``ref`` in the frozen case, when it is known."""
+def _review_fence_gaps(review: SemanticJudgmentReview) -> frozenset[str]:
+    """The coverage gaps that disclose what the post-validation fence removed from a review."""
 
-    projection = case.projection
-    sources: tuple[Mapping[object, object], ...]
-    if ref.startswith("obl_"):
-        sources = (cast(Mapping[object, object], projection.obligations),)
-    elif ref.startswith("clm_"):
-        sources = (cast(Mapping[object, object], projection.claims),)
-    elif ref.startswith("evd_"):
-        sources = (cast(Mapping[object, object], projection.evidence),)
-    elif ref.startswith("res_"):
-        sources = (cast(Mapping[object, object], projection.results),)
-    elif ref.startswith("act_"):
-        sources = (cast(Mapping[object, object], projection.actions),)
-    elif ref.startswith("evt_"):
-        for event in case.history:
-            if str(event.event_id) == ref:
-                return event.ingestion_sequence
-        sources = (
-            cast(Mapping[object, object], projection.decisions),
-            cast(Mapping[object, object], projection.assignments),
-        )
-    else:
-        return None
-    for rows in sources:
-        for key, row in rows.items():
-            sequence = getattr(row, "source_frontier", None)
-            if str(key) == ref and type(sequence) is int:
-                return sequence
-    return None
+    gaps: set[str] = set()
+    # A challenge the fence dropped is material the reviewer raised and the check does not
+    # carry. Saying so is what keeps a dropped challenge from reading as one never made.
+    if review.challenges_rejected:
+        gaps.add(SEMANTIC_CHALLENGES_REJECTED_GAP)
+    # A per-finding ruling the fence dropped or reduced: disclosed, never read as agreement.
+    if review.verdicts_unsupported:
+        gaps.add(SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP)
+    if review.snippets_rejected:
+        gaps.add(SEMANTIC_REVIEW_SNIPPET_INVALID_GAP)
+    # Citations of unsent refs removed from kept items (issue #976).
+    if review.refs_reduced:
+        gaps.add(SEMANTIC_REVIEW_REFS_REDUCED_GAP)
+    # A restated finding was suppressed rather than minted twice: disclosed, never silent.
+    if review.restatements_suppressed:
+        gaps.add(SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP)
+    return frozenset(gaps)
+
+
+def _judgment_review(*args: object, **kwargs: object) -> SemanticJudgmentReview:
+    """Build the review, turning an accounting-invariant failure into a rejected judgment.
+
+    The invariant still fails loudly (a diagnostic and ``semantic_judgment_rejected``), but the
+    check commits its local findings and terminates instead of failing as a non-retryable internal
+    error that a same-request replay re-raises forever.
+    """
+
+    try:
+        return SemanticJudgmentReview(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+    except SemanticJudgmentRejected:
+        raise
+    except ValueError as exc:
+        raise _rejected("semantic_judgment_review_invalid") from exc
 
 
 _MAX_RULING_CITED_REFS: Final = 16
@@ -2993,86 +4183,375 @@ def _record_restatement(
     admitted: dict[str, PriorFindingVerdictRecord],
     restated: FindingId,
     refs: tuple[str, ...],
+    *,
+    verdict: Literal["still_present", "answered_not_fixed"] = "still_present",
+    cited: tuple[str, ...] = (),
 ) -> tuple[bool, bool]:
     """Carry a suppressed restatement onto the earlier item it restates (issue #905).
 
     Returns whether the restatement is suppressed and whether an explicit ruling was reduced.
 
     Suppression must never read as absence: a restatement of an open item records that the
-    reviewer still finds it (``still_present``, citing what the challenge cited), so the check
-    cannot resolve it by silence. A restatement contradicts an explicit ``fixed`` or
-    ``withdrawn`` ruling on the same item, which becomes ``unassessable``. An
-    ``acknowledged_not_done`` or ``rejection_accepted`` item is final, stays disclosed on the
-    receipt, and needs nothing recorded. (A ``verified_resolved`` item is never a restatement
-    target: see ``_restated_finding``.) When no ruling can be recorded (the check's ruling bound
-    is full) the restatement is not suppressed and is minted as before.
+    reviewer still finds it (``still_present``, citing what the challenge cited; a challenge that
+    names an answered item in ``restates`` records ``answered_not_fixed``, issue #980), so the
+    check cannot resolve it by silence and the item's review round advances once per concern. A
+    restatement contradicts an explicit ``fixed`` or ``withdrawn`` ruling on the same item, which
+    becomes ``unassessable``. A settled item (``acknowledged_not_done``, ``self_verified`` or a
+    disclosed limitation) is final: the re-raise is recorded on it as a standing re-raise
+    (``_record_settled_reraise``, #980) and it is never reopened or duplicated. tb4n3 RC-7
+    (#1030) applies that to ``self_verified`` too: a reviewer that raises the same concern again
+    over the agent's own verification, citing nothing concern-relevant newer, is not a new
+    sighting (the old rule minted a fresh finding, which is how vpp S got three ids). A
+    ``rejection_accepted`` or ``disputed_after_rebuttal`` item is final, stays disclosed on the
+    receipt, and needs nothing recorded. An open item the agent holds a reasoned position on
+    (a rejection, or an acknowledgement with a reason), restated with nothing newer than that
+    position, is ruled ``disputed_after_rebuttal`` (#1020, #1030). (A ``verified_resolved`` item is
+    never a restatement target: see ``_restated_finding``.) When no ruling can be recorded (the
+    check's ruling bound is full) the restatement is not suppressed and is minted as before.
     """
 
-    if finding_todo_state(case.projection, restated) in {
+    todo = finding_todo_state(case.projection, restated)
+    if duplicate_link_target(case.projection, restated) is not None:
+        # Issue #996: a linked duplicate's final state is only inherited; a restatement of it is
+        # a still_present ruling that breaks the link, never a silent suppression.
+        todo = FindingTodoState.OPEN
+    if todo in {
         FindingTodoState.ACKNOWLEDGED_NOT_DONE,
-        FindingTodoState.REJECTION_ACCEPTED,
-    }:
+        FindingTodoState.SELF_VERIFIED,
+    } or (todo is FindingTodoState.OPEN and _limitation_disclosed(case, restated)):
+        # The agent settled it; the re-raise is recorded on it as a standing dispute (#980).
+        return _record_settled_reraise(admitted, restated, refs), False
+    if todo in {FindingTodoState.REJECTION_ACCEPTED, FindingTodoState.DISPUTED_AFTER_REBUTTAL}:
+        # Final, disclosed on the receipt: a repeat needs nothing recorded (issue #1020: a
+        # standing disagreement is not reopened by the same concern raised again).
         return True, False
     key = str(restated)
     earlier = admitted.get(key)
     if earlier is None:
         if len(admitted) >= MAX_RECORDED_VERDICTS:
             return False, False
-        cited = tuple(sorted(refs, key=str.encode))[:_MAX_RULING_CITED_REFS]
-        admitted[key] = PriorFindingVerdictRecord(restated, "still_present", cited)
+        kept = tuple(sorted(refs, key=str.encode))[:_MAX_RULING_CITED_REFS]
+        recorded: str = verdict
+        if _disputed_after_rebuttal(case, restated, verdict, (*refs, *cited)):
+            # Issue #1020: the same concern raised again over the agent's reasoned position,
+            # with nothing newer, is the standing disagreement, not another round.
+            recorded = DISPUTED_AFTER_REBUTTAL_VERDICT
+        admitted[key] = PriorFindingVerdictRecord(restated, recorded, kept)
         return True, False
     if earlier.verdict in {"fixed", "withdrawn"}:
-        admitted[key] = PriorFindingVerdictRecord(restated, "unassessable", ())
+        # A contradicted explicit ruling; when the restatement itself only repeats the concern
+        # over the agent's reasoned position, the item is the standing disagreement (#1020).
+        contradicted = (
+            DISPUTED_AFTER_REBUTTAL_VERDICT
+            if _disputed_after_rebuttal(case, restated, verdict, (*refs, *cited))
+            else "unassessable"
+        )
+        admitted[key] = PriorFindingVerdictRecord(restated, contradicted, ())
         return True, True
+    if (
+        earlier.verdict in _HELD_OPEN_RULINGS
+        and earlier.verdict != DISPUTED_AFTER_REBUTTAL_VERDICT
+        and _disputed_after_rebuttal(case, restated, verdict, (*refs, *cited, *earlier.cited_refs))
+    ):
+        # Issue #1020: the explicit ruling was reduced (or kept open) without anything newer, and
+        # the restatement repeats the concern over the position: the standing disagreement.
+        admitted[key] = PriorFindingVerdictRecord(
+            restated, DISPUTED_AFTER_REBUTTAL_VERDICT, earlier.cited_refs
+        )
+        return True, False
+    if earlier.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT and not _disputed_after_rebuttal(
+        case, restated, verdict, (*refs, *cited)
+    ):
+        # Issue #1020: the same review also restated it with material newer than the position;
+        # that newer sighting outranks the stale ruling, so the item stays open.
+        kept = tuple(sorted(refs, key=str.encode))[:_MAX_RULING_CITED_REFS]
+        admitted[key] = PriorFindingVerdictRecord(restated, verdict, kept)
     return True, False
 
 
-def _restated_finding(
-    case: DeterministicCase, kind: FindingKind, refs: tuple[str, ...]
-) -> FindingId | None:
-    """The recorded AI-powered finding a challenge restates, if any (issue #905).
+def _record_settled_reraise(
+    admitted: dict[str, PriorFindingVerdictRecord],
+    settled: FindingId,
+    refs: tuple[str, ...],
+) -> bool:
+    """Record a re-raise of a finding the agent settled as the reviewer's ruling on it (#980).
 
-    The stable key is the finding kind and its exact subject set, the same key the receipt uses
-    for an issue; the evidence fingerprint is what the challenge rests on. A restatement has the
-    same kind, exactly the recorded finding's subjects, and nothing among them recorded after that
-    finding. A narrower or wider challenge is a distinct issue: suppressing it would lose its
-    discrepancy and requested next step, which a ``still_present`` ruling cannot carry. A
-    challenge with newer material is a new, linked item, never a restatement. The newest match
-    wins.
+    The item stays final: the ``still_present`` ruling never reopens it or counts a review round.
+    The reducer records it as a re-raise after the agent's terminal answer
+    (``settled_reraise_count``), which is what a standing premise dispute reads (TB4 tb4n1 D7a).
+    Returns ``False`` only when the check's ruling bound is full, so the challenge is minted as a
+    linked item instead of being lost.
+    """
+
+    key = str(settled)
+    if key in admitted:
+        return True
+    if len(admitted) >= MAX_RECORDED_VERDICTS:
+        return False
+    cited = tuple(sorted(refs, key=str.encode))[:_MAX_RULING_CITED_REFS]
+    admitted[key] = PriorFindingVerdictRecord(settled, "still_present", cited)
+    return True
+
+
+def _finding_kind_of(case: DeterministicCase, key: FindingId) -> FindingKind | None:
+    record = case.projection.findings.get(key)
+    return None if record is None or record.payload is None else record.payload.kind
+
+
+def _restated_finding(
+    case: DeterministicCase,
+    kind: FindingKind,
+    refs: tuple[str, ...],
+    *,
+    replies_to: tuple[FindingId, ...] = (),
+    cited: tuple[str, ...] = (),
+) -> FindingId | None:
+    """The recorded AI-powered finding a challenge restates, if any (issues #905, #1020, #1030).
+
+    A restatement is a challenge about the same *concern* as a recorded finding of a comparable
+    kind (``kernel.concern``): the same obligations, or one subject set containing the other, with
+    the requirement-family kinds folding across kinds and claim churn normalised. The earlier rule
+    keyed the concern on the kind and an exact or asymmetric subject set (an obligation set on
+    one side, a raw event set on the other), so a re-raise under another kind, over a
+    ``self_verified`` answer, or after the agent republished its own obligation was minted as a
+    new finding: vpp S three ids, payments S four, formal-crypto S four for one concern.
+
+    The challenge must also bring nothing concern-relevant newer than the dialogue so far
+    (``review_concern.concern_material_after``): evidence, results and actions linked to the
+    concern's obligations, recorded after the agent's standing position and the reviewer's last
+    ruling, and not evidence the agent itself cited when it answered. Responses, decisions,
+    claims, obligations and other bookkeeping are never material, so the agent's own republish
+    cannot defeat the fold. A challenge with newer material is a new, linked item, never a
+    restatement. An exact subject match outranks a concern match; then the newest finding wins.
 
     A ``verified_resolved`` row is never a target: done stays done, and the reviewer finding the
     problem again after that proof is a #458 successor, minted and blocking. Suppressing it would
     hide a real re-raise behind a closed row.
+
+    A challenge that cites an open item the main agent has already answered without a reasoned
+    position (``replies_to``, the earlier ``fnd_`` ids the challenge names) is the reviewer's reply
+    to that answer, as the reviewer instruction asks: it is minted as a new item linked to the
+    earlier one, so the agent receives it as a finding instead of a ruling it never sees (TB4
+    tb4f1, issue #976). A reply over a reasoned position (a rejection or a reasoned
+    acknowledgement) that brings nothing newer is the same demand repeated over the position
+    (issue #1020), so it folds onto the item, where ``_record_restatement`` records the standing
+    disagreement.
     """
 
     wanted = frozenset(refs)
     if not wanted:
         return None
-    best: tuple[int, FindingId] | None = None
+    wanted_key = concern_key(case.projection, refs)
+    best: tuple[int, int, FindingId] | None = None
     for key, record in case.projection.findings.items():
         payload = record.payload
         if (
             payload is None
             or record.redacted
             or payload.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
-            or payload.kind is not kind
-            or wanted != frozenset(str(ref) for ref in payload.subject_refs)
             or finding_todo_state(case.projection, key) is FindingTodoState.VERIFIED_RESOLVED
         ):
             continue
-        if all(
-            (sequence := _ref_sequence(case, ref)) is not None
-            and sequence <= record.source_frontier
-            for ref in wanted
-        ) and (best is None or record.source_frontier > best[0]):
-            best = (record.source_frontier, key)
-    return None if best is None else best[1]
+        subjects = tuple(str(ref) for ref in payload.subject_refs)
+        exact = wanted == frozenset(subjects)
+        target_state = finding_todo_state(case.projection, key)
+        # A settled item's concern is widened by the re-raises recorded on it (bounded).
+        target_key = concern_key(case.projection, (*subjects, *record.absorbed_refs))
+        # An open item folds only a challenge about the very same concern: a narrower or wider
+        # one is a distinct issue whose discrepancy a ruling cannot carry (Greptile P1 on #943).
+        # A settled item (the agent's final word, or a disclosed limitation) folds any overlap,
+        # because the re-raise cannot change what the agent already settled (tb4n3 RC-7).
+        settled_target = target_state is not FindingTodoState.OPEN or _limitation_disclosed(
+            case, key
+        )
+        if payload.kind is not kind and not (
+            settled_target
+            and kinds_comparable(
+                payload.kind,
+                kind,
+                obligation_concern=wanted_key.named_obligations and target_key.named_obligations,
+            )
+        ):
+            continue
+        if not exact and not (
+            same_concern(wanted_key, target_key)
+            if settled_target
+            else equal_concern(wanted_key, target_key)
+        ):
+            continue
+        bound = answer_bound(case.projection, key)
+        if (
+            key in replies_to
+            and target_state is FindingTodoState.OPEN
+            and _answered(case.projection, key)
+            and not rejection_stands(record, case.projection.responses.get(key))
+        ):
+            # The reviewer's reply to an answer reaches the agent as a finding (issue #976); only
+            # a reply to a standing rejection that brings nothing newer folds (issue #1020).
+            continue
+        if bound is None:
+            bound = max(record.source_frontier, record.last_ruling_frontier or 0)
+        merged = ConcernKey(
+            wanted_key.obligations | target_key.obligations,
+            wanted_key.refs | target_key.refs,
+            wanted_key.named_obligations or target_key.named_obligations,
+        )
+        if concern_material_after(case, merged, (*refs, *cited), bound):
+            continue
+        # An exact match outranks a concern match; then the newest finding wins.
+        rank = (int(exact), record.source_frontier, key)
+        if best is None or rank[:2] > best[:2]:
+            best = rank
+    return None if best is None else best[2]
+
+
+def _answered(projection: ProjectionState, finding: FindingId) -> bool:
+    response = projection.responses.get(finding)
+    return response is not None and response.payload is not None and not response.redacted
 
 
 def _sorted_verdicts(
     admitted: Mapping[str, PriorFindingVerdictRecord],
 ) -> tuple[PriorFindingVerdictRecord, ...]:
     return tuple(admitted[key] for key in sorted(admitted, key=str.encode))
+
+
+def semantic_route_required(
+    mode: str | None,
+    policy_semantic: Literal["disabled", "optional", "required"],
+    *,
+    route_profile: Literal["policy", "strict"] = "policy",
+    route_drift: bool = False,
+) -> bool:
+    """Whether a check's route required AI-powered review (issue #986, owner decision E2).
+
+    True when the check asked for it (``semantic_required``), whatever route served the call.
+    Otherwise an explicitly deterministic-only route (the owner registered the strict MCP route,
+    which can never dispatch AI-powered review) did not require one, whatever the verification
+    policy says (issue #1021, owner decision tb4n2 P0-8): that owner chose local checks for this
+    host. A strict process serving a host whose applied route is ``policy``
+    (``route_drift``, issue #537) is stale, not an owner choice, so the policy still decides.
+    On the policy route, a ``required`` verification policy requires review. Only a check on a
+    route that did not require review records ``semantic_route_required: false``; there
+    ``semantic_review_not_requested`` is a disclosure that does not bound the receipt.
+    """
+
+    if mode == "semantic_required":
+        return True
+    if route_profile == "strict" and not route_drift:
+        return False
+    return policy_semantic == "required"
+
+
+def _recorded_route_required(
+    mode: str | None,
+    policy_semantic: Literal["disabled", "optional", "required"],
+    *,
+    route_profile: Literal["policy", "strict"],
+    host_profile: McpHostProfile,
+    _state: Path | None,
+) -> Literal[False] | None:
+    """The recorded ``semantic_route_required`` value: ``False`` or omitted (issue #986).
+
+    Only a route that did not require review is written; a requiring route keeps today's bytes.
+    """
+
+    drift = route_profile == "strict" and _strict_ceiling_route_drift(
+        host_profile=host_profile, _state=_state
+    )
+    required = semantic_route_required(
+        mode, policy_semantic, route_profile=route_profile, route_drift=drift
+    )
+    return None if required else False
+
+
+def _route_and_insufficiency(
+    mode: str | None,
+    policy_semantic: Literal["disabled", "optional", "required"],
+    *,
+    route_profile: Literal["policy", "strict"],
+    host_profile: McpHostProfile,
+    state: Path | None,
+    known_gaps: Iterable[str],
+) -> tuple[bool, bool]:
+    """``(route requires review, reviewer reported insufficiency)`` for one check (ADR-046).
+
+    The route is the value this check records (``semantic_route_required``); the insufficiency is
+    whether the same check's coverage carries a reviewer-reported "could not assess" gap, which is
+    what keeps a Yoetz review-packet budget a bound instead of a disclosure.
+    """
+
+    required = (
+        _recorded_route_required(
+            mode,
+            policy_semantic,
+            route_profile=route_profile,
+            host_profile=host_profile,
+            _state=state,
+        )
+        is None
+    )
+    codes = tuple(known_gaps)
+    insufficient = any(
+        code in {"semantic_packet_insufficient", SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP}
+        or code.startswith("semantic_missing_")
+        for code in codes
+    )
+    return required, insufficient
+
+
+def _full_check_is_complete(
+    known_gaps: Iterable[str],
+    totals: Mapping[str, object],
+    findings: Iterable[Finding],
+    *,
+    route_requires_review: bool,
+    review_succeeded: bool,
+    reviewer_reported_insufficiency: bool,
+) -> bool:
+    """Whether a full check may read ``complete``: clean gaps and no returned limit finding.
+
+    A returned finding that asks for no work is a coverage limit (a stale or incomplete ledger), so
+    the check can never read complete beside it (ADR-046). A reviewer's limitation request is the
+    exception only in how it is judged: the ranking verdict reads it as ``insufficient_coverage``
+    itself, so it does not make the completeness incomplete here.
+    """
+
+    return full_check_gaps_clean(
+        known_gaps,
+        totals,
+        route_requires_review=route_requires_review,
+        review_succeeded=review_succeeded,
+        reviewer_reported_insufficiency=reviewer_reported_insufficiency,
+    ) and all(
+        finding_demands_work(finding) or is_limitation_request(finding) for finding in findings
+    )
+
+
+def full_check_gaps_clean(
+    known_gaps: Iterable[str],
+    totals: Mapping[str, object],
+    *,
+    route_requires_review: bool = True,
+    review_succeeded: bool = False,
+    reviewer_reported_insufficiency: bool = False,
+) -> bool:
+    """Whether a full check's gaps allow ``complete`` (#986): the receipt's own judgment.
+
+    ADR-046: the same table and the same context the receipt uses (``kernel.gap_effect``), so the
+    check's verdict and the receipt's conclusion cannot disagree about a gap. The route is the one
+    this check records; a host-observation member counts only when the case's command counters
+    show no unknown or live failed outcome; a Yoetz review-packet budget is disclosed only when the
+    review succeeded and the reviewer reported no insufficiency.
+    """
+
+    return gaps_are_clean(
+        known_gaps,
+        totals,
+        route_requires_review=route_requires_review,
+        review_succeeded=review_succeeded,
+        reviewer_reported_insufficiency=reviewer_reported_insufficiency,
+    )
 
 
 def _request_digest(
@@ -3083,6 +4562,10 @@ def _request_digest(
     route_profile: Literal["policy", "strict"],
 ) -> str:
     source = cast(dict[str, JsonValue], request.model_dump(mode="json", by_alias=True))
+    # Issue #1012: the optional pre-check wait shapes only the call that asked for it and records
+    # nothing, so it stays outside the operation identity. Requests without it keep their digest,
+    # and a same-request recovery may set or omit it.
+    source.pop("await_observations", None)
     source["scope"] = {"claim_ids": scope.claim_ids, "obligation_ids": scope.obligation_ids}
     source["policy_packs"] = packs
     source["route_profile"] = route_profile
@@ -3099,8 +4582,12 @@ async def _semantic_evaluation(
     route_profile: Literal["policy", "strict"],
     lineage_evaluation: LineageEvaluation | None = None,
     require_complete_specification: bool = False,
+    task_fact_gaps: tuple[str, ...] = (),
+    round_stopped: bool = False,
 ) -> FinalSemanticEvaluation:
-    if request.mode == "deterministic_only":
+    if request.mode == "deterministic_only" or round_stopped:
+        # tb4n1 D3: after two insufficient-packet reviews in a row with no edit since, the round
+        # stops; the check runs its local checks only and discloses why (see the commit path).
         return FinalSemanticEvaluation(
             SemanticStatus.NOT_REQUESTED,
             SemanticReason.DETERMINISTIC_MODE,
@@ -3122,6 +4609,26 @@ async def _semantic_evaluation(
             kwargs: dict[str, bool] = {}
             if accepts_full_spec:
                 kwargs["require_complete_specification"] = require_complete_specification
+            # The closing review (issue #976) reaches only an evaluator that declares it.
+            if request.final_review and _semantic_evaluator_accepts_keyword(app, "final_review"):
+                kwargs["final_review"] = True
+            # Requested-output facts (#977) are read at check time, after the case is frozen;
+            # the reviewer sees their closed codes in the packet's coverage.
+            if task_fact_gaps and _semantic_evaluator_accepts_keyword(app, "task_fact_gaps"):
+                # The seam declares the keyword (checked above); the port protocol keeps it
+                # optional so older application doubles stay assignable.
+                evaluate = cast(
+                    Callable[..., Awaitable[FinalSemanticEvaluation]],
+                    app.evaluate_semantic_check,
+                )
+                return await evaluate(
+                    frozen,
+                    deterministic,
+                    runtime,
+                    lineage_evaluation,
+                    task_fact_gaps=task_fact_gaps,
+                    **kwargs,
+                )
             return await app.evaluate_semantic_check(
                 frozen,
                 deterministic,
@@ -3188,6 +4695,19 @@ def _semantic_evaluator_accepts_lineage(app: Application) -> bool:
     ) >= 4 or any(parameter.kind is inspect.Parameter.VAR_POSITIONAL for parameter in parameters)
 
 
+def _semantic_evaluator_accepts_keyword(app: Application, name: str) -> bool:
+    """Whether the application's evaluator seam declares keyword ``name`` (or ``**kwargs``)."""
+
+    try:
+        parameters = tuple(inspect.signature(app.evaluate_semantic_check).parameters.values())
+    except TypeError, ValueError:
+        return False
+    return any(
+        parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
 def _semantic_evaluator_accepts_complete_specification(app: Application) -> bool:
     """Detect the optional full-specification admission keyword on legacy evaluator doubles."""
 
@@ -3243,8 +4763,15 @@ def _record_semantic_review_accounting(
             "semantic_challenges_returned": review.challenges_returned,
             "semantic_candidates_accepted": len(review.candidates),
             "semantic_challenges_rejected": review.challenges_rejected,
+            # Per-reason split so a run can be attributed without guessing (issue #976).
+            **{f"semantic_rejected_{reason}": count for reason, count in review.rejected_by_reason},
+            "semantic_review_refs_reduced": review.refs_reduced,
+            "semantic_review_snippets_rejected": review.snippets_rejected,
             "semantic_restatements_suppressed": review.restatements_suppressed,
             "semantic_prior_rulings_set_aside": review.verdicts_set_aside,
+            "semantic_rulings_disputed_after_rebuttal": sum(
+                1 for item in review.verdicts if item.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT
+            ),
             "semantic_findings_selected": selected,
             "semantic_findings_suppressed": len(semantic) - selected,
         },
@@ -3282,13 +4809,30 @@ def _judgment_rejected_evaluation(
         attempt_accounting=result.attempt_accounting,
         operation_lease=result.operation_lease,
         withheld_review_categories=result.withheld_review_categories,
+        credential_heuristic_disabled=result.credential_heuristic_disabled,
         # The rejection restates the outcome, not the case: a truncated case stays truncated.
         case_content_over_item_limit=result.case_content_over_item_limit,
         case_reference_scope_reduced=result.case_reference_scope_reduced,
         case_included_refs=result.case_included_refs,
         semantic_withheld_item_ids=result.semantic_withheld_item_ids,
+        semantic_redacted_values=result.semantic_redacted_values,
         case_content_gaps=result.case_content_gaps,
     )
+
+
+def _credential_heuristic_gaps(semantic_result: FinalSemanticEvaluation) -> frozenset[str]:
+    """Disclose the owner's credential-heuristic opt-out on a review that ran (issue #982).
+
+    The reviewer may have seen values that only look like passwords or tokens. It is an owner
+    disclosure choice, recorded on every review that ran under it, never agent work.
+    """
+
+    if semantic_result.credential_heuristic_disabled and (
+        semantic_result.status is SemanticStatus.SUCCEEDED
+        or semantic_result.provider_input_manifest is not None
+    ):
+        return frozenset({SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP})
+    return frozenset()
 
 
 async def execute_check_commit(
@@ -3419,6 +4963,7 @@ async def execute_check_commit(
             )
         if isinstance(frozen_or_replay, CheckCommitResult):
             replayed = await _attach_replayed_lineage_preview(runtime, frozen_or_replay)
+            replayed = await _attach_replayed_fact_lineage(runtime, replayed)
             replayed = await _attach_finding_checklist(app, runtime, replayed)
             # The ledger replay is frozen; only the additive project-advice projection is current.
             return await _attach_current_project_advisory_notes(app, runtime.task_id, replayed)
@@ -3437,6 +4982,13 @@ async def execute_check_commit(
         deterministic_test_edit_gaps: tuple[str, ...] = ()
         deterministic_test_edit_support_refs: tuple[EventId, ...] = ()
         deterministic_test_edit_facts: PreExistingTestEdits | None = None
+        # Whether the check-time change capture shows any changed path; ``None`` when no capture
+        # ran. A no-material-work decision counts only on an observed ``False`` (fail closed):
+        # hosts record shell writes as command actions, so edit actions alone cannot prove it.
+        workspace_changed: bool | None = None
+        # Requested-file facts (#977) read beside the structural capture, through the same fence.
+        structural_capture: CheckChangeMetadata | None = None
+        structural_source: CheckWorkspaceSource | None = None
         change_capture = getattr(app, "change_capture", None)
         start_catalog = getattr(app, "start_catalog", None)
         recorded_edit = any(
@@ -3472,11 +5024,26 @@ async def execute_check_commit(
                     request_id=request.request_id,
                 )
                 if capture is not None:
-                    test_edit_facts = preexisting_test_edits(capture, frozen.case.projection)
+                    structural_capture = capture
+                    structural_source = source
+                    workspace_changed = bool(
+                        capture.entries or capture.tracked_files or capture.untracked_files
+                    )
+                    test_edit_facts = preexisting_test_edits(
+                        capture,
+                        frozen.case.projection,
+                        task_statement_event_id=(
+                            None
+                            if frozen.case.task_statement is None
+                            else frozen.case.task_statement.equivalent_event_ids
+                        ),
+                    )
                     deterministic_test_edit_facts = (
                         test_edit_facts if test_edit_facts.baseline_known else None
                     )
-                    deterministic_test_edit_gaps = test_edit_facts.gaps
+                    deterministic_test_edit_gaps = _with_structural_capture_gaps(
+                        test_edit_facts.gaps, capture
+                    )
                     deterministic_test_edit_support_refs = (
                         test_edit_facts.unjustified_action_event_ids
                     )
@@ -3529,8 +5096,20 @@ async def execute_check_commit(
                 PREEXISTING_TEST_BASELINE_UNKNOWN_GAP,
                 CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
             )
+        (
+            work_evaluator,
+            deterministic_output_gaps,
+            output_absent,
+            output_states,
+            output_files,
+            prefix_records,
+        ) = await _read_declared_outputs(
+            runtime, request, frozen, structural_capture, structural_source, change_capture
+        )
         if frozen.lease.phase is CheckPhase.RESERVED:
-            assessments, executions = run_deterministic_policies(frozen.case, scope, packs)
+            assessments, executions = run_deterministic_policies(
+                frozen.case, scope, packs, evaluators={_WORK_PACK: work_evaluator}
+            )
             assessments = assessments + await _coordination_assessments_for_frozen_case(
                 app,
                 runtime,
@@ -3538,16 +5117,13 @@ async def execute_check_commit(
                 scope,
                 packs,
             )
-            if deterministic_test_edit_support_refs and completion_claim_present(
-                frozen.case.projection
-            ):
-                assessments = assessments + (
-                    build_test_edit_integrity_assessment(
-                        frozen.case,
-                        deterministic_test_edit_support_refs,
-                        deterministic_test_edit_support_refs,
-                    ),
-                )
+            assessments = assessments + _requirement_assessments(
+                frozen.case,
+                scope,
+                executions,
+                deterministic_test_edit_support_refs,
+                workspace_changed,
+            )
             deterministic = allocate_findings(
                 app.ids,
                 tuple(item.candidate for item in assessments),
@@ -3584,7 +5160,9 @@ async def execute_check_commit(
                     request_id=request.request_id,
                     counts={"superseded_checkpoints": 1},
                 )
-                assessments, executions = run_deterministic_policies(frozen.case, scope, packs)
+                assessments, executions = run_deterministic_policies(
+                    frozen.case, scope, packs, evaluators={_WORK_PACK: work_evaluator}
+                )
                 assessments = assessments + await _coordination_assessments_for_frozen_case(
                     app,
                     runtime,
@@ -3592,16 +5170,13 @@ async def execute_check_commit(
                     scope,
                     packs,
                 )
-                if deterministic_test_edit_support_refs and completion_claim_present(
-                    frozen.case.projection
-                ):
-                    assessments = assessments + (
-                        build_test_edit_integrity_assessment(
-                            frozen.case,
-                            deterministic_test_edit_support_refs,
-                            deterministic_test_edit_support_refs,
-                        ),
-                    )
+                assessments = assessments + _requirement_assessments(
+                    frozen.case,
+                    scope,
+                    executions,
+                    deterministic_test_edit_support_refs,
+                    workspace_changed,
+                )
                 deterministic = allocate_findings(
                     app.ids,
                     tuple(item.candidate for item in assessments),
@@ -3610,10 +5185,10 @@ async def execute_check_commit(
             else:
                 deterministic = checkpoint.findings
                 executions = checkpoint.executions
-        semantic_wait = (
-            request.mode != "deterministic_only"
-            and RuntimeCapability.SEMANTIC in runtime.capabilities
-        )
+        # tb4n1 D3: the reviewer twice in a row could not assess the packet and no edit followed,
+        # so this check skips the AI-powered review rather than loop on the same packet.
+        round_stopped = await _review_round_stopped_at(runtime, request, frozen)
+        semantic_wait = _semantic_wait(request, runtime, round_stopped=round_stopped)
         if semantic_wait and frozen.lease.phase is CheckPhase.LOCAL_READY:
             lease = await runtime.ledger.advance_check_phase(
                 frozen.lease,
@@ -3630,6 +5205,16 @@ async def execute_check_commit(
             route_profile=route_profile,
             lineage_evaluation=lineage_evaluation,
             require_complete_specification=request.mode == "semantic_required",
+            round_stopped=round_stopped,
+            task_fact_gaps=tuple(
+                sorted(
+                    {
+                        *deterministic_output_gaps,
+                        *((REQUESTED_OUTPUT_ABSENT_FACT,) if output_absent else ()),
+                    },
+                    key=str.encode,
+                )
+            ),
         )
         # Durable AI-powered review attempts may renew the check lease (TTL 60s vs timeout up to 300s).
         if semantic_result.operation_lease is not None:
@@ -3703,6 +5288,7 @@ async def execute_check_commit(
                     prior_finding_refs=semantic_result.case_prior_finding_refs,
                     citable_refs=semantic_result.case_citable_refs,
                     provider_input_text_by_ref=semantic_result.provider_input_text_by_ref,
+                    settled_finding_refs=semantic_result.case_settled_finding_refs,
                 )
             except SemanticJudgmentRejected as exc:
                 # The reviewer's answer is unusable, so the check has no AI-powered review result — but the
@@ -3726,8 +5312,13 @@ async def execute_check_commit(
             SemanticStatus.SUCCEEDED,
         }
         semantic_gap = semantic_coverage_gap_code(semantic_result.status, semantic_result.reason)
-        declared_gaps: set[str] = set() if semantic_gap is None else {semantic_gap}
-        declared_gaps.update(deterministic_test_edit_gaps)
+        declared_gaps, recorded_deliverables = _initial_declared_gaps(
+            semantic_gap,
+            (deterministic_test_edit_gaps, deterministic_output_gaps),
+            semantic_result,
+            output_states,
+            output_files,
+        )
         missing = _EMPTY_MISSING_ITEMS
         if (
             semantic_result.status is SemanticStatus.SUCCEEDED
@@ -3745,6 +5336,9 @@ async def execute_check_commit(
                 citable_refs=semantic_result.case_citable_refs,
                 captured_edit_paths=semantic_result.case_captured_edit_paths,
                 workspace_root=semantic_result.case_workspace_root,
+                binary_paths=semantic_result.case_binary_paths,
+                text_paths=semantic_result.case_text_paths,
+                **_packet_limits(semantic_result, deterministic),
             )
             declared_gaps |= missing.gaps
         if (
@@ -3758,7 +5352,9 @@ async def execute_check_commit(
             # serving strict — and the receipt names the recovery; a genuinely applied
             # strict route keeps today's terminal wording exactly.
             declared_gaps.add(OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP)
-        declared_gaps |= carried_semantic_attempt_gaps(frozen.case, semantic_result.status)
+        declared_gaps |= carried_semantic_attempt_gaps(
+            frozen.case, semantic_result.status
+        ) | _round_stopped_gaps(round_stopped=round_stopped)
         # A review that ran without material its own profile selected is not full coverage, even
         # though it reports succeeded. Saying so here is what stops a hollow review from reading
         # as a clean one in the check result and the receipt derived from it.
@@ -3767,11 +5363,12 @@ async def execute_check_commit(
             and semantic_result.withheld_review_categories
         ):
             declared_gaps.add(SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP)
+        declared_gaps |= _credential_heuristic_gaps(semantic_result)
         if semantic_result.semantic_withheld_item_ids:
-            # Item-level omission is a useful review outcome, but it is still a material
-            # content loss. Keep the established content_redacted gap visible on every public
-            # result so CLI, MCP, hooks, and receipts share one coverage vocabulary.
-            declared_gaps.add("content_redacted")
+            # Item-level withholding is an egress decision about what the external model may see.
+            # It bounds only this AI-powered review (issue #982, owner decision B2), so it is the
+            # review-scoped code and never ``content_redacted``, which would also veto local proof.
+            declared_gaps.add(SEMANTIC_REVIEW_ITEM_WITHHELD_GAP)
         if (
             semantic_result.status is SemanticStatus.SUCCEEDED
             and semantic_result.provider_input_manifest is None
@@ -3783,18 +5380,7 @@ async def execute_check_commit(
                 semantic_result.provider_input_manifest_failure
                 or SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP
             )
-        # A challenge the fence dropped is material the reviewer raised and the check does not
-        # carry. Saying so is what keeps a dropped challenge from reading as one never made.
-        if review.challenges_rejected:
-            declared_gaps.add(SEMANTIC_CHALLENGES_REJECTED_GAP)
-        # A per-finding ruling the fence dropped or reduced: disclosed, never read as agreement.
-        if review.verdicts_unsupported:
-            declared_gaps.add(SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP)
-        if review.snippets_rejected:
-            declared_gaps.add(SEMANTIC_REVIEW_SNIPPET_INVALID_GAP)
-        # A restated finding was suppressed rather than minted twice: disclosed, never silent.
-        if review.restatements_suppressed:
-            declared_gaps.add(SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP)
+        declared_gaps.update(_review_fence_gaps(review))
         # Recorded prose the case could not carry whole. The reviewer answered on a fragment, and
         # the author has no other signal that the text they published never arrived (issue #177).
         declared_gaps.update(semantic_result.case_content_gaps)
@@ -3825,6 +5411,16 @@ async def execute_check_commit(
         # finding cap.  This keeps suppressed actionable findings, unattempted requested items,
         # open obligations and relevant live failures from being hidden by a short result list.
         candidate_findings = deterministic + semantic
+        # The route this check records decides whether a missing review and the review's own
+        # bounds are limits or only disclosures: the same value the receipt reads back.
+        route_requires_review, reviewer_reported_insufficiency = _route_and_insufficiency(
+            request.mode,
+            app.verification_policy.semantic,
+            route_profile=route_profile,
+            host_profile=host_profile,
+            state=_state,
+            known_gaps=coverage.known_gaps,
+        )
         scoped_local_clean = (
             request.mode == "deterministic_only"
             and not policy_failed
@@ -3836,6 +5432,7 @@ async def execute_check_commit(
                     test_edits=deterministic_test_edit_facts,
                 ),
                 findings=candidate_findings,
+                route_requires_review=route_requires_review,
             )
         )
         completion_scope_incomplete = bool(
@@ -3851,10 +5448,22 @@ async def execute_check_commit(
             completeness = CheckCompleteness.REQUIRED_INCOMPLETE
         elif scoped_local_clean:
             completeness = CheckCompleteness.SCOPED_COMPLETE
-        elif (
-            set(coverage.known_gaps) - PLAN_DRIFT_GAPS - PREEXISTING_TEST_INFORMATIONAL_GAPS
-        ) or semantic_failed:
-            completeness = CheckCompleteness.COVERAGE_INCOMPLETE
+        elif semantic_failed or not _full_check_is_complete(
+            coverage.known_gaps,
+            build_check_totals(
+                frozen.case, candidate_findings, test_edits=deterministic_test_edit_facts
+            ),
+            candidate_findings,
+            route_requires_review=route_requires_review,
+            review_succeeded=semantic_result.status is SemanticStatus.SUCCEEDED,
+            reviewer_reported_insufficiency=reviewer_reported_insufficiency,
+        ):
+            completeness = (
+                CheckCompleteness.COVERAGE_INCOMPLETE
+                if coverage.known_gaps
+                # A returned coverage-only finding is itself the disclosed reason; no gap names it.
+                else CheckCompleteness.SCOPED_COMPLETE
+            )
         else:
             completeness = CheckCompleteness.COMPLETE
         maximum = (
@@ -3935,6 +5544,19 @@ async def execute_check_commit(
             "missing_for_assessment": missing.items,
             "semantic_included_refs": semantic_included_refs(semantic_result),
             "semantic_withheld_item_ids": semantic_result.semantic_withheld_item_ids,
+            "semantic_redacted_values": semantic_result.semantic_redacted_values,
+            # Issue #986: record the route, never block on it here. Only a route that did not
+            # require review is written (``False``); a requiring route keeps today's bytes.
+            "semantic_route_required": _recorded_route_required(
+                request.mode,
+                app.verification_policy.semantic,
+                route_profile=route_profile,
+                host_profile=host_profile,
+                _state=_state,
+            ),
+            # ADR-045: how each declared output file stood at this check and what was concluded
+            # from it and from the earlier checks of the same path; empty when none was read.
+            "deliverable_states": recorded_deliverables,
             "review_input_manifest": recorded_manifest,
             "totals": build_check_totals(
                 frozen.case,
@@ -3967,6 +5589,7 @@ async def execute_check_commit(
         )
         preview = _lineage_preview(lineage_evaluation, frozen.case.frontier)
         projected = committed if preview is None else replace(committed, children=preview)
+        projected = _with_fact_lineage(projected, frozen.case, prefix_records)
         projected = await _attach_finding_checklist(
             app,
             runtime,
@@ -4001,8 +5624,12 @@ async def execute_check_commit(
         )
         failure = PublicOperationError(
             PublicErrorCode.INTERNAL_ERROR,
-            "The check failed internally.",
+            "The check hit an internal failure (stage: check pipeline) and may not have produced "
+            "a verdict. Replay the same request_id once: a check that committed returns its "
+            "stored verdict. If the replay fails the same way, run check again under a new "
+            "request_id. The correlation_id resolves the failure in the service diagnostics.",
             False,
+            safe_details={"reason_code": "check_pipeline_failed"},
         )
         if frozen is not None:
             try:

@@ -62,7 +62,7 @@ pytestmark = pytest.mark.anyio
 
 _DIGEST = "sha256:" + "7" * 64
 _WORKSPACE = "hmac-sha256:" + "8" * 64
-_POLICY_PACKS = ("research-evidence/0.1.0", "work-integrity/0.1.0")
+_POLICY_PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 
 
 class _IdleImporter:

@@ -50,9 +50,11 @@ from yoetz.domain.privacy import (
     ApprovedProviderCase,
     AuthorizationScope,
     ConsentSource,
+    CredentialHeuristic,
     EgressAuthorization,
     EgressChannel,
     EgressReceipt,
+    ForbiddenDataKind,
     LocalDisclosureSink,
     PrivacyOutcome,
     PrivacyPolicy,
@@ -65,6 +67,7 @@ from yoetz.domain.privacy import (
     ReceiptSecretScanStage,
     ReceiptTransformations,
     RequestCommitment,
+    egress_origin_operation,
 )
 from yoetz.domain.values import validate_commitment, validate_sha256_digest
 from yoetz.observability.logging import (
@@ -111,6 +114,20 @@ __all__ = [
 
 _ZERO_DIGEST = "sha256:" + "0" * 64
 _SCAN = SecretScanRuleset()
+
+
+def _final_scan(
+    classifier: PrivacyClassifierPort, data: bytes, credential_heuristic: CredentialHeuristic
+) -> tuple[ForbiddenDataKind, ...]:
+    """Run the final exact-byte scan under the setting the case was prepared with (#982).
+
+    The default keeps the historical call shape; only an owner opt-out names the setting.
+    """
+
+    if credential_heuristic is CredentialHeuristic.ENFORCED:
+        return classifier.scan_exact_bytes(data)
+    return classifier.scan_exact_bytes(data, credential_heuristic=credential_heuristic)
+
 
 _NO_AUTHORIZATION_ID_OUTCOMES = frozenset(
     {
@@ -652,7 +669,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 case, authorization, PrivacyReason.PROVIDER_UNAVAILABLE
             )
 
-        final_findings = self._classifier.scan_exact_bytes(body)
+        final_findings = _final_scan(self._classifier, body, case.credential_heuristic)
         if final_findings:
             return await self._preconsume_failure(
                 case,
@@ -943,11 +960,13 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 scan_stage is not ReceiptSecretScanStage.NOT_RUN and scan_match_count == 0,
                 scan_stage,
                 reason if scan_stage is ReceiptSecretScanStage.NOT_RUN else None,
+                case.credential_heuristic,
             ),
             reason,
             1,
             authorization_id=authorization_id,
             withheld_item_ids=case.withheld_item_ids,
+            origin_operation=egress_origin_operation(case.purpose, case.included_item_ids),
         )
         # Every pre-dispatch refusal returns the same public shape (`unavailable`, no receipt id,
         # so the composition reports `receipt_persistence_unknown`). The exact closed reason is
@@ -1068,6 +1087,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 0,
                 True,
                 ReceiptSecretScanStage.RENDERED_BODY,
+                credential_heuristic=case.credential_heuristic,
             ),
             reason,
             1,
@@ -1076,6 +1096,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
             dispatch_started_at=dispatch_started_at,
             request_commitment=RequestCommitment(PRIVACY_REQUEST_COMMITMENT_ALGORITHM, commitment),
             withheld_item_ids=case.withheld_item_ids,
+            origin_operation=egress_origin_operation(case.purpose, case.included_item_ids),
         )
 
     # -- local dispatch -------------------------------------------------------------------------
@@ -1097,7 +1118,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
         binding, evaluator = registry.local_model
         if case.binding != binding or case.policy_digest != registry.policy_digest:
             return _local_unavailable_result(case)
-        if self._classifier.scan_exact_bytes(case.payload):
+        if _final_scan(self._classifier, case.payload, case.credential_heuristic):
             return _local_unavailable_result(
                 case, failure_class=SemanticFailureClass.RESPONSE_CONTENT
             )

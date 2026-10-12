@@ -27,6 +27,7 @@ from yoetz.domain.events import (
     ClaimRecordedPayloadV1_1,
     ClaimRevisionMismatch,
     DecisionRecordedPayload,
+    DeliverableState,
     EventDraft,
     EventPayload,
     EventSchema,
@@ -90,7 +91,14 @@ from yoetz.domain.values import (
     timestamp_from_datetime,
     writer_id,
 )
+from yoetz.kernel.check_standing import check_standing
 from yoetz.kernel.check_totals import build_check_totals
+from yoetz.kernel.closure_class import (
+    finding_closure,
+    finding_closures,
+    obligation_closures,
+    review_can_rule,
+)
 from yoetz.kernel.closure_readiness import ClosureReadinessFacts, closure_readiness_facts
 from yoetz.kernel.command_attempts import attempted_items_for_obligation, command_attempts
 from yoetz.kernel.completion_scope import completion_scope_codes, with_completion_scope_coverage
@@ -107,7 +115,7 @@ from yoetz.kernel.finding_resolution import (
     finding_is_resolved,
     finding_resolution_explanation,
 )
-from yoetz.kernel.finding_todo import finding_todo_state
+from yoetz.kernel.finding_todo import duplicate_link_target, finding_todo_state
 from yoetz.kernel.observed_failures import (
     observed_event_ids_from_records,
     observed_run_facts,
@@ -119,7 +127,6 @@ from yoetz.kernel.projections import (
     EvidenceProjectionRecord,
     ProjectionState,
     empty_projection_state,
-    observation_limitation_finding_ids,
     projection_digest,
     unanswered_finding_ids,
 )
@@ -129,13 +136,12 @@ from yoetz.kernel.receipt_capacity import (
     receipt_blocking_finding_count,
 )
 from yoetz.kernel.reducers import (
-    invalidates_recorded_check,
-    is_material_event_family,
     replay,
     replay_extension,
     replay_extension_with_index,
     replay_with_index,
 )
+from yoetz.kernel.task_facts import effective_obligations, task_fact_signals
 from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.change_capture import TASK_CHANGE_BASE_MEDIA_TYPE
 from yoetz.ports.clock import ClockPort
@@ -219,6 +225,7 @@ from yoetz.protocol.models import (
     CoverageModel,
     FreshnessWire,
     FrontierModel,
+    RecordedPolicyVersionWire,
     ReviewInputManifestModel,
     SemanticProgressPhase,
     SemanticReason,
@@ -231,6 +238,7 @@ from yoetz.protocol.models import (
     StatusFindingItemModel,
     StatusHistoryItemModel,
     StatusHistoryItemV14Model,
+    StatusLatestCheckModel,
     StatusLatestCheckTestEditsModel,
     StatusObligationItemModel,
     StatusObservedRunModel,
@@ -238,6 +246,7 @@ from yoetz.protocol.models import (
     StatusStructuralSubjectStateModel,
     StatusVersionSliceModel,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 from yoetz.version import build_status_version_slice_facts
 
 __all__ = ["MemoryLedgerAdapter", "MemoryLedgerState", "compact_status_coverage"]
@@ -1126,32 +1135,14 @@ def compact_status_coverage(
     """
 
     baseline = with_completion_scope_coverage(records[-1].coverage, projection)
-    latest = projection.latest_tested_state
-    if latest is None:
-        return baseline
-    check_record = next(
-        (record for record in records if record.event_id == latest.source_check_event_id),
-        None,
-    )
+    standing = check_standing(projection, records)
+    check_record = standing.check_record
     if check_record is None or type(check_record.payload) is not CheckRecordedPayload:
         return baseline
-    limitations = observation_limitation_finding_ids(projection, records)
-    if any(
-        invalidates_recorded_check(
-            record,
-            check_record.ledger.ingestion_sequence,
-            latest.returned_finding_ids,
-            limitation_finding_ids=limitations,
-        )
-        for record in records
-    ):
+    if standing.superseded:
         return baseline
     coverage = weakest(baseline, check_record.payload.coverage)
-    if any(
-        is_material_event_family(record.schema.name)
-        and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
-        for record in records
-    ):
+    if standing.counted:
         # The same attributable suffix that the receipt builder discloses still leaves the check
         # useful, but only as of its tested subject frontier. Keep the current observation
         # records visible in status and add the bounded qualification instead of manufacturing
@@ -1167,6 +1158,30 @@ def compact_status_coverage(
             freshness = LedgerFreshness.PARTIAL
         coverage = replace(coverage, ledger_freshness=freshness, known_gaps=gaps)
     return coverage
+
+
+def _latest_check(
+    records: tuple[LedgerRecord, ...], projection: ProjectionState
+) -> StatusLatestCheckModel | None:
+    """Name the recorded check the latest tested state points at, with its closed verdict (#1027)."""
+
+    latest = projection.latest_tested_state
+    if latest is None:
+        return None
+    check_record = next(
+        (record for record in records if record.event_id == latest.source_check_event_id),
+        None,
+    )
+    if check_record is None or type(check_record.payload) is not CheckRecordedPayload:
+        return None
+    return StatusLatestCheckModel(
+        check_event_id=str(check_record.event_id),
+        checked_frontier=FrontierModel(
+            sequence=str(latest.subject_frontier.sequence),
+            head_digest=latest.subject_frontier.head_digest,
+        ),
+        verdict=check_record.payload.verdict.value,
+    )
 
 
 def _latest_check_test_edits(
@@ -1221,6 +1236,7 @@ def _obligation_item(
     record: object,
     assigned_actor_ids: tuple[str, ...],
     attempted_items: frozenset[str],
+    in_current_plan: bool | None = None,
 ) -> StatusObligationItemModel:
     from yoetz.kernel.projections import ObligationProjectionRecord
 
@@ -1228,13 +1244,17 @@ def _obligation_item(
     assert typed.payload is not None
     requested_items = tuple(
         {"item_kind": item.item_kind.value, "value": item.value}
+        if item.role is None
+        else {"item_kind": item.item_kind.value, "value": item.value, "role": item.role.value}
         for item in typed.payload.requested_items
     )
     unattempted_items = tuple(
         item for item in requested_items if item["value"] not in attempted_items
     )
-    values = dict(
+    values: dict[str, object] = dict(
         obligation_id=obligation,
+        # Issue #997/#1002: the row is the not-done marker: ``acknowledged_not_done`` with the
+        # agent's reason (status-result 1.4.0). Closure readiness counts it once, as not done.
         status=typed.payload.status.value,
         description=typed.payload.description,
         evidence_expectation=typed.payload.evidence_expectation,
@@ -1247,6 +1267,10 @@ def _obligation_item(
     )
     if typed.payload.acceptance_criteria is not None:
         values["acceptance_criteria"] = typed.payload.acceptance_criteria
+    if typed.payload.acknowledged_not_done_reason is not None:
+        values["acknowledged_not_done_reason"] = typed.payload.acknowledged_not_done_reason
+    if in_current_plan is not None:
+        values["in_current_plan"] = in_current_plan
     return StatusObligationItemModel.model_validate(values)
 
 
@@ -1572,14 +1596,33 @@ def _projection_items(
                 continue
             for obligation in assignment.payload.obligation_ids:
                 actors.setdefault(obligation, set()).add(assignment.payload.assignee_actor_id)
+        # Membership in the current plan's effective scope; unknown when the scope is unreadable.
+        plan_scope = current_plan_scope(projection.plans, projection.coverage_gaps)
+        effective_refs = (
+            None
+            if plan_scope.effective_obligation_refs is None
+            else frozenset(effective_obligations(projection))
+        )
+        obligation_classes = obligation_closures(projection, records=records)
         return tuple(
             _obligation_item(
                 obligation,
                 record,
                 tuple(sorted(actors.get(obligation, ()), key=str.encode)),
                 attempted_items_for_obligation(projection, obligation),
+                None if effective_refs is None else obligation in effective_refs,
             ).model_copy(
-                update={"command_attempts": command_attempts(projection, records, obligation)}
+                update={
+                    "command_attempts": command_attempts(projection, records, obligation),
+                    **(
+                        {
+                            "closure_class": obligation_classes[obligation].closure_class.value,
+                            "closure_basis": obligation_classes[obligation].basis,
+                        }
+                        if obligation in obligation_classes
+                        else {}
+                    ),
+                }
             )
             for obligation, record in sorted(
                 projection.obligations.items(), key=lambda item: item[0].encode()
@@ -1635,6 +1678,10 @@ def _projection_items(
             ),
             key=rank_key,
         )
+        # ADR-046: each row says who owes the next move and why, from the one classifier status,
+        # the check and the receipt all read.
+        can_rule = review_can_rule(projection, records)
+        row_closures = finding_closures(projection, records=records, review_can_rule_=can_rule)
         for finding in ordered:
             response_record = projection.responses.get(finding.finding_id)
             response = None if response_record is None else response_record.payload
@@ -1658,7 +1705,7 @@ def _projection_items(
                 "policy_id": cast(
                     Literal["research-evidence", "work-integrity"], finding.policy_id
                 ),
-                "policy_version": cast(Literal["0.1.0"], finding.policy_version),
+                "policy_version": cast(RecordedPolicyVersionWire, finding.policy_version),
                 "subject_frontier": FrontierModel.model_validate(
                     dict(finding.subject_frontier.as_wire())
                 ),
@@ -1692,6 +1739,17 @@ def _projection_items(
                     else FrontierModel.model_validate(dict(finding_frontier.as_wire()))
                 ),
             }
+            closure = row_closures.get(finding.finding_id) or finding_closure(
+                projection, finding.finding_id, records=records, review_can_rule_=can_rule
+            )
+            if closure is not None:
+                finding_fields["closure_class"] = closure.closure_class.value
+                finding_fields["closure_basis"] = closure.basis
+                finding_fields["next_actions"] = closure.next_actions
+            # Issue #996: present exactly while a ``duplicate_of`` link holds.
+            duplicate_of = duplicate_link_target(projection, finding.finding_id)
+            if duplicate_of is not None:
+                finding_fields["duplicate_of_finding_id"] = duplicate_of
             if finding.challenge is not None:
                 finding_fields["challenge"] = {
                     "alternative_interpretation": finding.challenge.alternative_interpretation,
@@ -1727,6 +1785,7 @@ def _projection_items(
                 for key in scope_refs
                 if (record := projection.obligations.get(key)) is not None
                 and record.payload is not None
+                # acknowledged_not_done (#997) is listed by closure readiness, never as open.
                 and record.payload.status.value == "open"
             )
         )
@@ -1761,7 +1820,7 @@ def _projection_items(
             )
         )
         unanswered_count = len(unanswered_ids)
-        receipt_blocking_count = receipt_blocking_finding_count(projection)
+        receipt_blocking_count = receipt_blocking_finding_count(projection, records)
         declared_count = (
             None
             if scope_refs is None
@@ -1773,6 +1832,7 @@ def _projection_items(
             else sum(
                 (record := projection.obligations.get(obligation)) is None
                 or record.payload is None
+                # acknowledged_not_done (#997) is counted once, as not done, never as open.
                 or record.payload.status.value == "open"
                 for obligation in scope_refs
             )
@@ -1819,6 +1879,9 @@ def _projection_items(
         latest_check_test_edits = _latest_check_test_edits(records, projection)
         if latest_check_test_edits is not None:
             compact_item_fields["latest_check_test_edits"] = latest_check_test_edits
+        latest_check = _latest_check(records, projection)
+        if latest_check is not None:
+            compact_item_fields["latest_check"] = latest_check
         return (StatusCompactItemModel.model_validate(compact_item_fields),)
     if view is ProjectionView.VERSIONS:
         facts = build_status_version_slice_facts()
@@ -2608,8 +2671,13 @@ class MemoryLedgerAdapter:
                 assigned = item.assigned_actor_ids
                 keep = (
                     (query.filter.actor_id is None or query.filter.actor_id in assigned)
-                    and (query.filter.include_resolved is True or item.status == "open")
-                    and (query.filter.status is None or item.status == query.filter.status)
+                    # acknowledged_not_done (#1002) is not resolved: it is listed, and matches
+                    # the ``open`` filter, like an open obligation; its row shows its status.
+                    and (query.filter.include_resolved is True or item.status != "resolved")
+                    and (
+                        query.filter.status is None
+                        or (item.status == "resolved") == (query.filter.status == "resolved")
+                    )
                 )
             elif type(query.filter) is FindingsProjectionFilter:
                 assert type(item) is StatusFindingItemModel
@@ -2716,7 +2784,9 @@ class MemoryLedgerAdapter:
         )
         status_gaps = tuple(
             sorted(
-                set(status_gaps) | set(plan_drift_signals(effective_projection, prefix).codes),
+                set(status_gaps)
+                | set(plan_drift_signals(effective_projection, prefix).codes)
+                | set(task_fact_signals(effective_projection, prefix).codes),
                 key=str.encode,
             )
         )
@@ -2779,6 +2849,21 @@ class MemoryLedgerAdapter:
         async with self._lock:
             record = self._state.projection.actions.get(key)
         return None if record is None else str(record.source_event_id)
+
+    async def committed_event_ids(self, event_ids: Iterable[str]) -> frozenset[str]:
+        """Return which of ``event_ids`` the task ledger already holds (#1027).
+
+        Task-wide and read-only. The observation coordinator uses it to tell a batch whose
+        every event is already committed (a duplicate of an earlier delivery, however that
+        delivery was shaped) from one the ledger would refuse as a content conflict.
+        """
+
+        wanted = frozenset(str(item) for item in event_ids)
+        if not wanted:
+            return frozenset()
+        async with self._lock:
+            records = self._state.records
+        return frozenset(str(record.event_id) for record in records if record.event_id in wanted)
 
     async def lookup_task_operation(
         self, writer_id: str, operation_id: str
@@ -3862,6 +3947,9 @@ class MemoryLedgerAdapter:
         semantic_withheld_item_ids: tuple[str, ...] = (),
         review_input_manifest: JsonObject | None = None,
         totals: JsonObject | None = None,
+        semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
+        semantic_route_required: bool | None = None,
+        deliverable_states: tuple[DeliverableState, ...] = (),
     ) -> CheckCommitResult:
         key = (frozen.lease.writer_id, frozen.lease.operation_id)
         async with self._lock:
@@ -3977,6 +4065,9 @@ class MemoryLedgerAdapter:
             check_change_files=check_change_files,
             semantic_included_refs=semantic_included_refs,
             semantic_withheld_item_ids=semantic_withheld_item_ids,
+            semantic_redacted_values=semantic_redacted_values,
+            semantic_route_required=semantic_route_required,
+            deliverable_states=deliverable_states,
             review_input_manifest=review_input_manifest,
             totals=(
                 build_check_totals(frozen.case, findings.findings, findings.suppressed_count)
@@ -4114,6 +4205,9 @@ class MemoryLedgerAdapter:
             semantic_withheld_item_ids=check_payload.semantic_withheld_item_ids,
             review_input_manifest=check_payload.review_input_manifest,
             totals=check_payload.totals,
+            semantic_redacted_values=check_payload.semantic_redacted_values,
+            semantic_route_required=check_payload.semantic_route_required,
+            deliverable_states=check_payload.deliverable_states,
         )
         canonical = canonical_encode(
             {

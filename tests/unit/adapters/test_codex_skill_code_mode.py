@@ -159,7 +159,7 @@ def test_the_packaged_skill_carries_the_same_section() -> None:
 @needs_node
 @pytest.mark.parametrize("runtime", sorted(_RUNTIMES))
 def test_the_uuid_helper_mints_schema_valid_unique_ids(runtime: str, tmp_path: Path) -> None:
-    snippet = _block_containing("const uuid4 =")
+    snippet = _block_containing("const uuid4=")
     name, driver = _driver(runtime, snippet, _GENERATE)
     minted = cast(dict[str, list[str]], json.loads(_run_node(tmp_path, name, driver)))
     request_pattern = _defs_pattern("publish-work-request", "1.2.0", "request_id")
@@ -192,7 +192,7 @@ def test_the_uuid_helper_sets_the_version_and_variant_bits(
     fill: int, expected: str, tmp_path: Path
 ) -> None:
     # A getRandomValues that fills every byte with the same value pins the bit masks exactly.
-    snippet = _block_containing("const uuid4 =")
+    snippet = _block_containing("const uuid4=")
     context = f"{{ crypto: {{ getRandomValues: (b) => {{ b.fill({fill}); return b; }} }} }}"
     body = _POISON_MATH_RANDOM + snippet + "JSON.stringify([uuid4(), newId('req')]);\n"
     printed = cast(
@@ -203,7 +203,7 @@ def test_the_uuid_helper_sets_the_version_and_variant_bits(
 
 @needs_node
 def test_the_uuid_helper_prefers_random_uuid_and_lowercases_it(tmp_path: Path) -> None:
-    snippet = _block_containing("const uuid4 =")
+    snippet = _block_containing("const uuid4=")
     context = (
         '{ crypto: { randomUUID: () => "0A1B2C3D-4E5F-4A6B-8C7D-8E9FA0B1C2D3", '
         f"getRandomValues: {_POISON_GET_RANDOM_VALUES} }} }}"
@@ -214,7 +214,7 @@ def test_the_uuid_helper_prefers_random_uuid_and_lowercases_it(tmp_path: Path) -
 
 
 def test_the_uuid_helper_labels_its_non_cryptographic_fallback() -> None:
-    snippet = _block_containing("const uuid4 =")
+    snippet = _block_containing("const uuid4=")
     assert snippet.index("randomUUID") < snippet.index("getRandomValues")
     assert snippet.index("getRandomValues") < snippet.index("Math.random")
     fallback = next(line for line in snippet.splitlines() if "Math.random" in line)
@@ -272,21 +272,24 @@ def test_every_code_mode_snippet_is_valid_javascript(tmp_path: Path) -> None:
 
 def test_guidance_is_read_from_the_structured_text() -> None:
     snippet = _block_containing("mcp__yoetz__read_guidance")
-    assert "structuredContent.text" in snippet
-    assert "structuredContent.text" in " ".join(_section().split())
+    # The page body is the structured result's `text`, never the pointer-only `content`.
+    assert "const p=g.structuredContent;" in snippet
+    assert 'typeof p.text!=="string"' in snippet
+    assert ".content" not in snippet
+    assert "structured result" in " ".join(_section().split())
 
 
 def test_the_yield_guidance_matches_the_bridge_call_deadlines() -> None:
     deadlines = dict(bridge._DEFAULT_RPC_DEADLINES_MS)  # pyright: ignore[reportPrivateUsage]
     section = " ".join(_section().split())
     assert f"`check` {deadlines['check']}" in section
-    assert f"`respond` {deadlines['respond']}" in section
-    assert f"`receipt` {deadlines['receipt']}" in section
+    assert deadlines["respond"] == deadlines["receipt"]
+    assert f"`respond` and `receipt` {deadlines['receipt']}" in section
     assert deadlines["start"] == deadlines["publish_work"] == deadlines["status"]
     assert f"`start`, `publish_work` and `status` {deadlines['status']} each" in section
-    assert "`yield_time_ms` at or above the call's deadline" in section
+    assert "Set `yield_time_ms` at or above the call deadline" in section
     # Scoped to Yoetz calls: a big yield must not stall builds or tests.
-    assert "Keep builds, tests and other non-Yoetz work in their own cells" in section
+    assert "keep builds, tests and other non-Yoetz work in separate cells" in section
     assert "not a series of short waits" in section
     example = _block_containing("mcp__yoetz__check")
     pragma = re.match(r'// @exec: \{"yield_time_ms": (\d+)\}\n', example)

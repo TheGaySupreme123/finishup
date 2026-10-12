@@ -6,14 +6,23 @@ from collections.abc import Iterable
 from typing import Final, cast
 
 from yoetz.domain.events import (
+    ActionKind,
     ClaimKind,
+    ClaimRecordedPayload,
+    ClaimRecordedPayloadV1_1,
+    EvidenceKind,
     ObligationChangeKind,
     ObligationStatus,
+    RequestedItem,
+    RequestedItemKind,
+    RequestedItemRole,
     ResponseDisposition,
     ResultOutcome,
 )
 from yoetz.domain.findings import FindingKind, FindingOrigin
+from yoetz.domain.observation_selection import command_runner_class
 from yoetz.domain.values import (
+    EventId,
     EvidenceId,
     ObligationId,
     ResultId,
@@ -27,10 +36,13 @@ from yoetz.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
-from yoetz.kernel.command_attempts import attempted_items_for_obligation
+from yoetz.kernel.command_attempts import attempted_items_for_obligation, value_in_attempted
 from yoetz.kernel.deterministic_checks import (
     CALLER_DIGEST_PROVENANCE_GAPS,
     OBSERVED_FAILURE_LIVE_FACT,
+    OBSERVED_VERIFICATION_ABSENT_FACT,
+    OBSERVED_VERIFICATION_UNCITED_FACT,
+    REQUESTED_OUTPUT_ABSENT_FACT,
     DeterministicAssessment,
     DeterministicCase,
     FindingBasisRef,
@@ -44,8 +56,11 @@ from yoetz.kernel.deterministic_checks import (
 from yoetz.kernel.observed_failures import (
     ObservedFailureState,
     observed_action_is_exploratory,
+    observed_action_runner_class,
+    observed_edit_counts,
     observed_event_ids_from_coverage,
     observed_failure_states,
+    observed_shell_write_counts,
 )
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.policies.response_support import (
@@ -53,17 +68,25 @@ from yoetz.kernel.policies.response_support import (
     WORK_RESPONSE_PRESENT_FACT,
     response_support_admissible,
 )
+from yoetz.kernel.task_facts import (
+    STANDING_TASK_FACT_GAPS,
+    acting_started,
+    confirmed_blocked_obligation_ids,
+    cooperative_event_ids_from_coverage,
+    non_counting_edits_exempt,
+    observed_planned_commands,
+)
+from yoetz.protocol.policy_packs import WORK_INTEGRITY_POLICY_ID, WORK_INTEGRITY_POLICY_VERSION
 
 __all__ = [
     "WORK_INTEGRITY_FACT_CODES",
     "WORK_INTEGRITY_POLICY_ID",
     "WORK_INTEGRITY_POLICY_PACK",
     "WORK_INTEGRITY_POLICY_VERSION",
+    "reportable_absent_outputs",
     "work_integrity_findings",
 ]
 
-WORK_INTEGRITY_POLICY_ID: Final = "work-integrity"
-WORK_INTEGRITY_POLICY_VERSION: Final = "0.1.0"
 WORK_INTEGRITY_POLICY_PACK: Final = PolicyPack(
     WORK_INTEGRITY_POLICY_ID,
     WORK_INTEGRITY_POLICY_VERSION,
@@ -96,8 +119,15 @@ WORK_INTEGRITY_FACT_CODES: Final = frozenset(
         "finding_response_present",
         "response_basis_insufficient",
         "response_state_stale",
+        OBSERVED_VERIFICATION_UNCITED_FACT,
+        OBSERVED_VERIFICATION_ABSENT_FACT,
+        REQUESTED_OUTPUT_ABSENT_FACT,
     }
 )
+_COMMAND_ATTEMPT_UNCORROBORATED_GAP: Final = "command_attempt_uncorroborated"
+# Hook-derived runner classes that read or inspect rather than verify (closed tokens; no
+# command text is parsed here).
+_NON_VERIFICATION_RUNNERS: Final = frozenset({"exploration", "vcs"})
 
 _RULE_ORDER: Final = (
     FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS,
@@ -230,7 +260,8 @@ def _completion_findings(case: DeterministicCase) -> list[DeterministicAssessmen
             if obligation_record is None or obligation_record.payload is None:
                 continue
             if (
-                obligation_record.payload.status is not ObligationStatus.OPEN
+                # acknowledged_not_done (#1002) is not resolved: treated like open here.
+                obligation_record.payload.status is ObligationStatus.RESOLVED
                 or obligation_record.plan_change is ObligationChangeKind.WAIVED
             ):
                 continue
@@ -251,27 +282,192 @@ def _completion_findings(case: DeterministicCase) -> list[DeterministicAssessmen
     return output
 
 
-def _requested_item_findings(case: DeterministicCase) -> list[DeterministicAssessment]:
+def _requested_item_findings(
+    case: DeterministicCase,
+    absent_outputs: frozenset[tuple[ObligationId, int]] = frozenset(),
+) -> list[DeterministicAssessment]:
+    """Requested items with no attempt once work began, or requested files that do not exist.
+
+    Before the agent has started acting (an edit, a published action, or an observed command
+    other than exploration or version control) an unattempted item is the plan, not an omission,
+    so it raises nothing (#977, TB4: 86% of all findings were this plan-stage notice).
+    ``absent_outputs`` comes from the check-time workspace read: a requested file that does not
+    exist is reported whatever was published about it, because naming a file in
+    ``attempted_items`` does not create it, but only once acting on that obligation has started
+    (an edit, command or other non-research action linked to it) or a completion claim stands
+    (tb4n1 E4). Each check re-reads the workspace, so the fact clears as soon as the file exists,
+    whatever the observation coverage. Obligations a *confirmed* blocker names are disclosed
+    through their blocker gap instead; a blocker the agent only claimed suppresses nothing until
+    a later decision confirms it (#985).
+    """
+
     output: list[DeterministicAssessment] = []
+    started = acting_started(
+        case.projection,
+        observed_event_ids_from_coverage(case.coverage_by_ref),
+        cooperative_event_ids_from_coverage(case.coverage_by_ref),
+    )
+    # The case's task-fact markers carry the confirmation rule (it needs the publish batches).
+    blocked = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
+    matched_commands: frozenset[str] | None = None
     for obligation_ref in sorted(_active_requested_obligations(case), key=_ascii):
         record = case.projection.obligations[obligation_ref]
         payload = record.payload
-        attempted = attempted_items_for_obligation(case.projection, obligation_ref)
-        if payload is None or not any(
-            item.value not in attempted for item in payload.requested_items
+        if (
+            payload is None
+            or obligation_ref in blocked
+            # #997: the agent acknowledged it as not done; the receipt discloses that instead.
+            or payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
         ):
             continue
+        attempted = attempted_items_for_obligation(case.projection, obligation_ref)
+        if matched_commands is None:
+            # ADR-045: a hook-observed run of a planned command is an attempt, however the agent
+            # published (or did not publish) it; computed once per case.
+            matched_commands = observed_planned_commands(
+                case.projection,
+                observed_event_ids_from_coverage(case.coverage_by_ref),
+                cooperative_event_ids_from_coverage(case.coverage_by_ref),
+                {
+                    item.value
+                    for other in _active_requested_obligations(case)
+                    if (other_payload := case.projection.obligations[other].payload) is not None
+                    for item in other_payload.requested_items
+                    if item.item_kind is RequestedItemKind.COMMAND
+                },
+            )
+        # tb4n1 E4: the pre-work check the guidance asks for found every requested output absent
+        # (48 of 68 first findings), because the file obviously does not exist yet. An absent
+        # output is reported once acting on that obligation has started, or once a completion
+        # claim stands; before then it is the plan, exactly like an unattempted item.
+        reportable = _completion_claim_covers(case, obligation_ref) or (
+            started and _obligation_acted_on(case, obligation_ref)
+        )
+        # tb4n2 E4 (P1-7): an item the obligation only reads (``role: input``) is never "not
+        # attempted", and "never attempted" waits for work on *this* obligation (or a completion
+        # claim naming it), never for any action anywhere in the task.
+        unattempted = reportable and any(
+            not _item_attempted(item, attempted, matched_commands)
+            for item in payload.requested_items
+            if getattr(item, "role", None) is not RequestedItemRole.INPUT
+        )
+        absent = reportable and any(
+            (obligation_ref, index) in absent_outputs
+            for index in range(len(payload.requested_items))
+        )
+        if not unattempted and not absent:
+            continue
+        observed = [_fact("requested_item_present", obligation_ref)]
+        if absent:
+            observed.append(_fact(REQUESTED_OUTPUT_ABSENT_FACT, obligation_ref))
         output.append(
             build_policy_assessment(
                 case,
                 WORK_INTEGRITY_POLICY_PACK,
                 FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED,
                 (obligation_ref,),
-                (_fact("requested_item_present", obligation_ref),),
-                (_fact("linked_attempt_absent", obligation_ref),),
+                tuple(observed),
+                (_fact("linked_attempt_absent", obligation_ref),) if unattempted else (),
             )
         )
     return output
+
+
+_NON_PRODUCING_ACTIONS: Final = frozenset({ActionKind.RESEARCH, ActionKind.REVIEW})
+
+
+def _item_attempted(
+    item: RequestedItem, attempted: frozenset[str], matched_commands: frozenset[str]
+) -> bool:
+    """Whether one requested item was attempted (ADR-045): named, spelled alike, or observed run.
+
+    A value named in ``attempted_items`` counts exactly as before. A file or directory counts when
+    the agent named the same path in another spelling (``out/x.log`` for ``/app/out/x.log``), and
+    a command counts when a hook-observed run matched it (exactly, up to wrappers, or by its
+    leading arguments or flags): the agent ran it, whether or not it said so.
+    """
+
+    if item.value in attempted:
+        return True
+    if item.item_kind is RequestedItemKind.COMMAND:
+        return item.value in matched_commands
+    if item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}:
+        return value_in_attempted(item.value, attempted)
+    return False
+
+
+def reportable_absent_outputs(
+    case: DeterministicCase,
+    absent_outputs: frozenset[tuple[ObligationId, int]],
+) -> frozenset[tuple[ObligationId, int]]:
+    """The absent requested outputs this case reports: those whose obligation work has begun.
+
+    The same rule ``requested_item_never_attempted`` applies (tb4n1 E4), shared so the AI-powered
+    review packet's ``requested_output_absent`` task fact never runs ahead of the finding: a
+    completion claim covering the obligation, or acting started and a cooperative action works on
+    that obligation.
+    """
+
+    if not absent_outputs:
+        return absent_outputs
+    started = acting_started(
+        case.projection,
+        observed_event_ids_from_coverage(case.coverage_by_ref),
+        cooperative_event_ids_from_coverage(case.coverage_by_ref),
+    )
+    return frozenset(
+        pair
+        for pair in absent_outputs
+        if _completion_claim_covers(case, pair[0])
+        or (started and _obligation_acted_on(case, pair[0]))
+    )
+
+
+def _completion_claim_covers(case: DeterministicCase, obligation_ref: ObligationId) -> bool:
+    """Whether an effective completion claim names this obligation, or claims the whole task."""
+
+    return any(
+        record.payload is not None
+        and record.payload.claim_kind is ClaimKind.COMPLETION
+        and (not record.payload.obligation_refs or obligation_ref in record.payload.obligation_refs)
+        for _, record in effective_claim_items(case.projection)
+    )
+
+
+def _obligation_acted_on(case: DeterministicCase, obligation_ref: ObligationId) -> bool:
+    """Whether a recorded action works on this obligation, not merely investigates it.
+
+    Only the agent's own (cooperative) actions count; hook-observed actions name no obligation.
+    Attribution follows ``attempted_items_for_obligation``: an action with no ``obligation_refs``
+    is global and covers every obligation; one that names obligations covers only those. Only an
+    ``edit``, ``command`` or ``other`` action counts. Research and review actions read; they never
+    create a requested file.
+    """
+
+    cooperative = cooperative_event_ids_from_coverage(case.coverage_by_ref)
+    payload = case.projection.obligations[obligation_ref].payload
+    for record in case.projection.actions.values():
+        action = record.payload
+        if (
+            action is None
+            or action.action_kind in _NON_PRODUCING_ACTIONS
+            or record.source_event_id not in cooperative
+        ):
+            # A hook-observed action carries no obligation_refs, so it would read as global and
+            # mark every obligation acted on after any `ls` (adversarial review of E4).
+            continue
+        if obligation_ref in action.obligation_refs:
+            return True
+        if not action.obligation_refs and payload is not None:
+            # ADR-045 (tb4n3 lake S): a global action works on the obligations whose items it
+            # names, not on every obligation: one untargeted command published while the real
+            # run was still going made every absent output reportable mid-work.
+            if any(
+                value_in_attempted(item.value, action.attempted_items)
+                for item in payload.requested_items
+            ):
+                return True
+    return False
 
 
 def _failed_work_findings(case: DeterministicCase) -> list[DeterministicAssessment]:
@@ -361,7 +557,188 @@ def _unsupported_claim_findings(case: DeterministicCase) -> list[DeterministicAs
                 source_availability=availability,
             )
         )
+    reported = {assessment.candidate.subject_refs for assessment in output}
+    output.extend(
+        assessment
+        for assessment in _uncorroborated_completion_findings(case)
+        if assessment.candidate.subject_refs not in reported
+    )
     return output
+
+
+def _observed_verification_facts(
+    case: DeterministicCase,
+) -> tuple[int | None, bool, dict[str, int]]:
+    """Return the latest observed edit frontier, whether a verification ran, and its refs.
+
+    Only service-stamped hook observations count (ADR-022): a cooperative edit or result never
+    stands in for an observed one. A verification run is a hook-observed command result whose
+    host-derived runner class is not ``exploration`` or ``vcs``; an unclassified command counts,
+    so the rule never fires merely because a host omitted the class.
+
+    Corroboration is verification-class only (TB4 pilot): the run's own result, or captured
+    output that result links, at the run's frontier. Captured output of an edit, of an
+    exploration or VCS command, or a standalone capture no run links never corroborates. A run
+    whose host stated no outcome (a long Codex run that outlived its yield) still corroborates
+    that it ran after the edit, but only a run with a recorded outcome makes the rule apply.
+    """
+
+    observed = observed_event_ids_from_coverage(case.coverage_by_ref)
+    exempt = non_counting_edits_exempt(case.projection)
+    latest_edit: int | None = None
+    for action in case.projection.actions.values():
+        payload = action.payload
+        if (
+            payload is not None
+            and action.source_event_id in observed
+            # A scratch or Yoetz-owned write (a saved receipt) changes nothing a claim's
+            # verification covered (ADR-042, tb4n2 R4: cad S, lake D). A shell write counts
+            # as an edit under the same rule task_facts uses (ADR-045).
+            and (
+                (
+                    payload.action_kind is ActionKind.EDIT
+                    and observed_edit_counts(payload.description, exempt)
+                )
+                or (
+                    payload.action_kind is ActionKind.COMMAND
+                    and observed_shell_write_counts(payload.description, exempt)
+                )
+            )
+        ):
+            latest_edit = max(latest_edit or 0, action.source_frontier)
+    runs: dict[str, int] = {}
+    verification_observed = False
+    for result_ref, result in case.projection.results.items():
+        payload = result.payload
+        if payload is None or result.source_event_id not in observed:
+            continue
+        action = case.projection.actions.get(payload.action_id)
+        if (
+            action is None
+            or action.payload is None
+            or action.source_event_id not in observed
+            or action.payload.action_kind is not ActionKind.COMMAND
+            or observed_action_runner_class(action.payload.description) in _NON_VERIFICATION_RUNNERS
+        ):
+            continue
+        runs[str(result_ref)] = result.source_frontier
+        # Only an observed edit or a verification run with a recorded outcome makes the rule
+        # apply; an outcome-less run corroborates but never triggers the rule on its own.
+        verification_observed = (
+            verification_observed or payload.outcome is not ResultOutcome.UNKNOWN
+        )
+        for evidence_ref in payload.evidence_refs:
+            runs[str(evidence_ref)] = max(runs.get(str(evidence_ref), 0), result.source_frontier)
+    return latest_edit, verification_observed, runs
+
+
+def _uncorroborated_completion_findings(case: DeterministicCase) -> list[DeterministicAssessment]:
+    """A completion claim must cite a verification made after the latest observed edit.
+
+    Applies only when hook observation recorded an edit or a verification run in this task, so a
+    host without hooks keeps its ordinary coverage disclosure instead of an unanswerable finding.
+    The support chain is the claim's ``supporting_refs`` and ``limitation_refs`` plus the
+    resolution evidence of the resolved obligations it names: an honestly disclosed failing run is
+    corroboration too. Self-generated evidence stays admissible (#977 item 5, ADR-033; tb4n1 E7):
+    a hook-observed verification run, or the agent's own admissible verification record (a
+    ``command`` result or ``test_result``/``command_output`` evidence) published after the latest
+    observed edit, satisfies the rule. Only a chain whose every verification predates that edit,
+    or that cites none, is reported. A rerun of the check changes none of these relations.
+    """
+
+    latest_edit, verification_observed, runs = _observed_verification_facts(case)
+    if latest_edit is None and not verification_observed:
+        return []
+    observed = observed_event_ids_from_coverage(case.coverage_by_ref)
+    after = latest_edit or 0
+    output: list[DeterministicAssessment] = []
+    for claim_id, record in effective_claim_items(case.projection):
+        claim = record.payload
+        if claim is None or claim.claim_kind is not ClaimKind.COMPLETION:
+            continue
+        chain: set[str] = {*claim.supporting_refs}
+        if type(claim) is ClaimRecordedPayloadV1_1:
+            chain.update(claim.limitation_refs)
+        for obligation_ref in claim.obligation_refs:
+            obligation = case.projection.obligations.get(obligation_ref)
+            if obligation is not None and obligation.payload is not None:
+                chain.update(obligation.payload.resolution_evidence_refs)
+        if any(runs.get(ref, -1) > after for ref in chain):
+            continue
+        if any(
+            _self_published_verification_after(case, claim, ref, after, observed) for ref in chain
+        ):
+            continue
+        output.append(
+            build_policy_assessment(
+                case,
+                WORK_INTEGRITY_POLICY_PACK,
+                FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE,
+                (claim_id,),
+                (_fact(OBSERVED_VERIFICATION_UNCITED_FACT, claim_id),),
+                (_fact(OBSERVED_VERIFICATION_ABSENT_FACT, claim_id),),
+            )
+        )
+    return output
+
+
+_SELF_VERIFICATION_EVIDENCE: Final = frozenset(
+    {EvidenceKind.TEST_RESULT, EvidenceKind.COMMAND_OUTPUT}
+)
+
+
+def _self_published_verification_after(
+    case: DeterministicCase,
+    claim: ClaimRecordedPayload,
+    ref: str,
+    after: int,
+    observed: frozenset[EventId],
+) -> bool:
+    """Whether ``ref`` is the agent's own verification record published after frontier ``after``.
+
+    Hook-observed records keep their verification-class rule in ``_observed_verification_facts``;
+    this admits only cooperative records: a ``command`` action's result (a disclosed failing one
+    included) or ``test_result``/``command_output`` evidence, admissible for the claim.
+    """
+
+    support = cast(FindingBasisRef, ref)
+    admissible = _claim_support_is_admissible(case, claim.claim_kind, claim.subject_state, support)
+    if ref.startswith("evd_"):
+        evidence = case.projection.evidence.get(EvidenceId(ref))
+        return (
+            admissible
+            and evidence is not None
+            and evidence.payload is not None
+            and evidence.source_event_id not in observed
+            and evidence.payload.evidence_kind in _SELF_VERIFICATION_EVIDENCE
+            and evidence.source_frontier > after
+        )
+    if ref.startswith("res_"):
+        result = case.projection.results.get(ResultId(ref))
+        if (
+            result is None
+            or result.payload is None
+            or result.source_event_id in observed
+            or result.source_frontier <= after
+            or not (admissible or _is_limitation(claim, ref))
+        ):
+            return False
+        action = case.projection.actions.get(result.payload.action_id)
+        if action is None or action.payload is None:
+            return False
+        command = action.payload.command
+        # The same verification-class rule as for observed runs: a published exploration or VCS
+        # command (`ls`, `git status`) verifies nothing (adversarial review of E7).
+        return (
+            action.payload.action_kind is ActionKind.COMMAND
+            and command is not None
+            and command_runner_class({"command": command}) not in _NON_VERIFICATION_RUNNERS
+        )
+    return False
+
+
+def _is_limitation(claim: ClaimRecordedPayload, ref: str) -> bool:
+    return type(claim) is ClaimRecordedPayloadV1_1 and ref in claim.limitation_refs
 
 
 def _orphan_result_findings(case: DeterministicCase) -> list[DeterministicAssessment]:
@@ -552,6 +929,21 @@ def _ledger_finding(case: DeterministicCase) -> list[DeterministicAssessment]:
             # with a count, but no agent action can change it, so it never becomes a finding
             # subject whose growth would mint a new issue on every publication (issue #912).
             continue
+        if gap.code in STANDING_TASK_FACT_GAPS:
+            # A standing task fact (#977): an obligation a recorded blocker names, or a planned
+            # verification whose outcome is unknown or unobservable. It is a disclosure classified
+            # in GAP_CLASSIFICATION, not a stale ledger. As this informational finding it also
+            # contradicted the check's own completeness (standing facts do not make a check
+            # coverage-incomplete) and failed the check internally (invalid_ranked_findings).
+            # Task-wide standing facts carry no subject and never reached a finding here.
+            continue
+        if gap.code == _COMMAND_ATTEMPT_UNCORROBORATED_GAP:
+            # Same principle (TB4 pilot): a hook records a keyed commitment instead of command
+            # text, so a requested command item can never be byte-compared with the observed run.
+            # Nothing the agent publishes changes that; the gap stays in case coverage and on the
+            # receipt as a standing limitation, never a finding an honest agent cannot clear.
+            # ``command_attempt_mismatch`` is actionable and keeps its finding.
+            continue
         if gap.code == "unknown_event":
             fact_code = "unknown_event_present"
         elif gap.code in {
@@ -656,14 +1048,20 @@ def _response_findings(case: DeterministicCase) -> list[DeterministicAssessment]
 
 def work_integrity_findings(
     case: DeterministicCase,
+    *,
+    absent_outputs: frozenset[tuple[ObligationId, int]] = frozenset(),
 ) -> tuple[DeterministicAssessment, ...]:
-    """Evaluate the closed work-integrity rule table without I/O."""
+    """Evaluate the closed work-integrity rule table without I/O.
+
+    ``absent_outputs`` is the one check-time input that is not in the case: the requested files
+    the application's metadata-only workspace read found absent (#977). The default reads none.
+    """
 
     if type(case) is not DeterministicCase:
         raise ValueError("policy_wiring_invalid")
     by_rule = (
         _completion_findings(case),
-        _requested_item_findings(case),
+        _requested_item_findings(case, absent_outputs),
         _failed_work_findings(case),
         _unsupported_claim_findings(case),
         _orphan_result_findings(case),

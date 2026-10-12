@@ -43,8 +43,12 @@ __all__ = [
     "TASK_STATEMENT_NOT_SUPPLIED_GAP",
     "TASK_STATEMENT_UNAVAILABLE_GAP",
     "TASK_STATEMENT_SECTION",
+    "NO_MATERIAL_WORK_MARKER",
     "RecordedTaskStatement",
     "SpecificationPreflight",
+    "TASK_STATEMENT_FINDING_SUMMARIES",
+    "TASK_STATEMENT_SCOPE_EMPTY_SUMMARY",
+    "TASK_STATEMENT_UNMAPPED_SUMMARY",
     "TaskStatementSource",
     "current_task_statement",
     "may_carry_task_statement",
@@ -93,6 +97,26 @@ _GAP_DETAILS: Final = {
 }
 
 
+# Fixed summaries of the two local findings whose basis is the task statement itself (TB4 pilot).
+# Finding resolution reads the summary to tell these statement-based ``task_requirement_unmet``
+# findings from the test-edit one, whose basis is structural test-edit accounting; any other
+# summary is treated as the stricter test-edit basis, so a wording change can only fail closed.
+TASK_STATEMENT_UNMAPPED_SUMMARY: Final = (
+    "No obligation in the current plan cites the recorded task statement."
+)
+TASK_STATEMENT_SCOPE_EMPTY_SUMMARY: Final = (
+    "A completion claim was recorded while the plan declares no obligation for the recorded"
+    " task statement."
+)
+TASK_STATEMENT_FINDING_SUMMARIES: Final = frozenset(
+    {TASK_STATEMENT_UNMAPPED_SUMMARY, TASK_STATEMENT_SCOPE_EMPTY_SUMMARY}
+)
+# A ``decision_recorded`` statement line ``yoetz-no-material-work:<statement event id>`` is the
+# agent's recorded, justified decision that the user's request asks for no material work. It is
+# read only as that exact line; it counts only while the task records no edit action.
+NO_MATERIAL_WORK_MARKER: Final = "yoetz-no-material-work"
+
+
 class TaskStatementSource(str, Enum):  # noqa: UP042 - exact wire enum base
     AGENT_TRANSCRIBED = "agent_transcribed"
     HOST_CAPTURED_USER_PROMPT = "host_captured_user_prompt"
@@ -138,17 +162,34 @@ def task_statement_gap_detail(code: str) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class RecordedTaskStatement:
-    """The newest agent-supplied statement at one frozen frontier."""
+    """The newest agent-supplied statement at one frozen frontier.
+
+    ``equivalent_event_ids`` names every readable statement-carrying event in the prefix whose
+    statement content is byte-identical to this one (its own event included). A re-attach or a
+    plan event that repeats an unchanged statement does not amend it, so an obligation citing any
+    of these events still maps the current request; a genuinely amended statement has a different
+    digest and none of the earlier events.
+    """
 
     text: str
     source_event_id: EventId
     source_family: str
     ingestion_sequence: int
+    equivalent_event_ids: tuple[EventId, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.text) is not str or not self.text:
             raise ValueError("task_statement_invalid")
         object.__setattr__(self, "source_event_id", event_id(self.source_event_id))
+        if type(self.equivalent_event_ids) is not tuple:
+            raise ValueError("task_statement_invalid")
+        equivalent = tuple(
+            sorted(
+                {event_id(value) for value in self.equivalent_event_ids} | {self.source_event_id},
+                key=str.encode,
+            )
+        )
+        object.__setattr__(self, "equivalent_event_ids", equivalent)
         if self.source_family not in {
             "session_opened",
             "session_resumed",
@@ -158,6 +199,10 @@ class RecordedTaskStatement:
             raise ValueError("task_statement_invalid")
         if type(self.ingestion_sequence) is not int or self.ingestion_sequence < 1:
             raise ValueError("task_statement_invalid")
+
+    @property
+    def content_digest(self) -> str:
+        return "sha256:" + hashlib.sha256(self.text.encode("utf-8")).hexdigest()
 
     @property
     def source(self) -> TaskStatementSource:
@@ -278,10 +323,14 @@ def current_task_statement(records: Iterable[LedgerRecord]) -> RecordedTaskState
     """Return the newest readable statement in ``records``, oldest-first ledger order.
 
     A redacted or unreadable event carries nothing: its statement is skipped, never
-    reconstructed, and the earlier statements remain what the ledger still holds.
+    reconstructed, and the earlier statements remain what the ledger still holds. A later event
+    that repeats the current statement byte for byte does not amend it: the earlier event stays
+    the current statement event. The result names every readable event that carried the same
+    statement content (``equivalent_event_ids``), so an obligation citing any of them maps it.
     """
 
     current: RecordedTaskStatement | None = None
+    by_text: dict[str, list[EventId]] = {}
     for record in records:
         if type(record) is not AcceptedEvent or record.redaction is not RedactionState.PRESENT:
             continue
@@ -296,13 +345,21 @@ def current_task_statement(records: Iterable[LedgerRecord]) -> RecordedTaskState
         statement = getattr(payload, "task_statement", None)
         if type(statement) is not str:
             continue
+        by_text.setdefault(statement, []).append(record.event_id)
+        if current is not None and current.text == statement:
+            # Repeating the unchanged statement (a re-attach, or a plan event that restates it)
+            # is not an amendment: the event that recorded it stays current, so the finding
+            # subject, the review packet's source ref and every obligation citing it stay put.
+            continue
         current = RecordedTaskStatement(
             text=statement,
             source_event_id=record.event_id,
             source_family=record.schema.name,
             ingestion_sequence=record.ledger.ingestion_sequence,
         )
-    return current
+    if current is None:
+        return None
+    return replace(current, equivalent_event_ids=tuple(by_text[current.text]))
 
 
 # Event versions minted to carry a task statement. Nothing older can, so a review whose frozen

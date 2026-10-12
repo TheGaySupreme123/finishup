@@ -13,7 +13,9 @@ from collections.abc import Mapping, Sequence
 from typing import Final, cast
 
 __all__ = [
+    "YOETZ_LIMIT_MISSING_TEXT",
     "has_agent_suppliable_missing",
+    "has_yoetz_limit_missing",
     "render_missing_for_assessment_lines",
     "render_missing_for_assessment_next",
     "render_review_input_manifest_compat_line",
@@ -59,7 +61,12 @@ _MISSING_KINDS: Final = frozenset(
     }
 )
 _MISSING_AVAILABILITIES: Final = frozenset(
-    {"agent_suppliable", "structurally_unavailable_on_this_host"}
+    {
+        "agent_suppliable",
+        "structurally_unavailable_on_this_host",
+        "yoetz_limit_packet_room",
+        "yoetz_limit_unsupported_data_type",
+    }
 )
 _MISSING_STATUSES: Final = frozenset({"pending", "supplied", "unavailable", "repeated"})
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$", re.ASCII)
@@ -153,9 +160,20 @@ def render_review_input_manifest_lines(value: object) -> tuple[str, ...]:
     omitted = _count(source.get("omitted_item_count"), 64)
     if phase is None or selected is None or excerpt_bytes is None or omitted is None:
         return ()
+    # Issue #976 (tb4n1 D11): the true omission total; the listed count saturates at 64. An
+    # older manifest without it keeps its listed count.
+    total = _count(source.get("omitted_item_total"), 1_048_576)
+    omitted_clause = (
+        f"omitted items {omitted}"
+        if total is None or total <= omitted
+        else f"omitted items {total} ({omitted} listed)"
+    )
+    # Issue #976: the review phase is shown when recorded; "final" is the closing review.
+    review_phase = _token(source.get("review_phase"), frozenset({"routine", "final"}))
+    phase_clause = "" if review_phase is None else f"review phase {review_phase}; "
     lines = [
-        f"Review input manifest: {phase}; selected items {selected}; "
-        f"selected excerpt bytes {excerpt_bytes}; omitted items {omitted}."
+        f"Review input manifest: {phase}; {phase_clause}selected items {selected}; "
+        f"selected excerpt bytes {excerpt_bytes}; {omitted_clause}."
     ]
     for name in _SECTION_NAMES:
         line = _section_line(name, source.get(name))
@@ -261,9 +279,29 @@ def render_missing_for_assessment_next(items: object) -> str:
     if not has_agent_suppliable_missing(items):
         return ""
     return (
-        "Overall next: supply or repair the named agent-suppliable review input "
-        "before requesting an ordinary receipt."
+        "Overall next: supply the named agent-suppliable review input as new records tied to "
+        "the named ref before requesting an ordinary receipt. Never change your work to fit "
+        "the reviewer."
     )
+
+
+def has_yoetz_limit_missing(items: object) -> bool:
+    """Whether the reviewer named content Yoetz's own packet could not show (tb4n1 D1, #983)."""
+
+    return any(
+        availability.startswith("yoetz_limit_") for _, availability, _ in _missing_rows(items)
+    )
+
+
+# One fixed sentence for every Yoetz-limit item. It names the limit as Yoetz's, says it is not a
+# blocker, and forbids reshaping the deliverable for the reviewer (tb4n1 D1/F2, #983).
+YOETZ_LIMIT_MISSING_TEXT: Final = (
+    "Yoetz limit: the review packet cannot show the yoetz_limit_* items (an unsupported data "
+    "type such as an image or binary file, or content clipped for packet room). This is not "
+    "work for you and never a blocker: verify that content "
+    "yourself and record how you verified it; the receipt discloses the limit. Never split, "
+    "move, shrink, stash, delete, git-add or git-ignore your work to fit the reviewer."
+)
 
 
 def render_missing_for_assessment_lines(
@@ -286,6 +324,8 @@ def render_missing_for_assessment_lines(
             else (f"{len(refs)} target refs" if refs else "no packet ref")
         )
         lines.append(f"- {kind} ({target}): {availability}")
+    if has_yoetz_limit_missing(items):
+        lines.append(YOETZ_LIMIT_MISSING_TEXT)
     next_step = render_missing_for_assessment_next(items)
     if next_step:
         lines.append(next_step)

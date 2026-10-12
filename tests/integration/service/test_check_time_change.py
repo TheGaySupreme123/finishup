@@ -70,7 +70,6 @@ from yoetz.domain.privacy import (
     PrivacyReason,
     ProviderBinding,
     ReviewContextProfile,
-    ReviewSelectionPolicy,
 )
 from yoetz.domain.receipts import (
     CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP,
@@ -367,16 +366,6 @@ async def test_task_without_a_recorded_base_pins_its_first_check_and_discloses_i
     assert await getattr(runtime.ledger, "load_task_change_base")() is not None
 
 
-def _all_parts(capture: CheckChangeCapture) -> int:
-    from yoetz.application import semantic_case as module
-
-    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
-    chunks = getattr(module, "_check_time_change_chunks")(
-        capture.text, getattr(module, "_check_time_change_part_limit")(selection)
-    )
-    return len(cast(tuple[bytes, ...], chunks))
-
-
 @pytest.mark.anyio
 async def test_legacy_task_keeps_its_pinned_base_across_a_repair_commit(tmp_path: Path) -> None:
     """ADR-031: a task with no start base must not re-base on HEAD at every check."""
@@ -385,7 +374,6 @@ async def test_legacy_task_keeps_its_pinned_base_across_a_repair_commit(tmp_path
     _, runtime = await _durable_semantic_case(memory_adapter(append_command()))
     port = GitChangeCaptureAdapter()
     source = CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)
-    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
 
     async def check(suffix: str) -> tuple[CheckChangeCapture, CheckChangeShownFiles]:
         outcome = await capture_check_time_change(
@@ -398,9 +386,7 @@ async def test_legacy_task_keeps_its_pinned_base_across_a_repair_commit(tmp_path
         )
         assert outcome.change is not None
         capture = outcome.change.capture
-        files = await check_change_shown_files(
-            runtime, outcome.change, selection, _all_parts(capture)
-        )
+        files = await check_change_shown_files(runtime, outcome.change, len(capture.text))
         return capture, files
 
     _python_rewrite(repository, "String(key)", "`${typeof key}:${String(key)}`")
@@ -555,7 +541,6 @@ async def test_shown_file_commitments_are_keyed_to_the_task_and_bound_to_the_bas
             datetime(2026, 9, 29, tzinfo=UTC),
         ),
     )
-    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
 
     async def commitments(base_commit: str) -> tuple[str, ...]:
         capture = CheckChangeCapture(
@@ -567,9 +552,7 @@ async def test_shown_file_commitments_are_keyed_to_the_task_and_bound_to_the_bas
             truncated=False,
             base_commit=base_commit,
         )
-        files = await check_change_shown_files(
-            runtime, CheckTimeChange(stored, capture), selection, 1
-        )
+        files = await check_change_shown_files(runtime, CheckTimeChange(stored, capture), len(text))
         assert files.complete and not files.partially_shown
         return files.fully_shown
 
@@ -615,8 +598,7 @@ async def _files_for(runtime: TaskRuntime, repository: Path, suffix: str) -> Che
     return await check_change_shown_files(
         runtime,
         outcome.change,
-        ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
-        _all_parts(outcome.change.capture),
+        len(outcome.change.capture.text),
     )
 
 

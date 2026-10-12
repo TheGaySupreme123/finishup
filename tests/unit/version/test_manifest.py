@@ -37,8 +37,8 @@ def test_development_manifest_is_truthful_and_complete() -> None:
         request_result_schema_versions(load_schema_catalog())
     )
     assert len(manifest.event_schema_versions) == 29
-    assert dict(manifest.event_schema_versions)["check_recorded"] == "1.3.0"
-    assert dict(manifest.event_schema_versions)["finding_recorded"] == "1.3.0"
+    assert dict(manifest.event_schema_versions)["check_recorded"] == "1.4.0"
+    assert dict(manifest.event_schema_versions)["finding_recorded"] == "1.4.0"
     counts = dict(manifest.resource_counts)
     assert len(manifest.resources) == REVIEWED_RESOURCE_COUNT == int(counts["total"])
     assert set(counts) == {

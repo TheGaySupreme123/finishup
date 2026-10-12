@@ -47,7 +47,7 @@ since issue #720 the dependency is named once instead of per run:
 
 | Surface | Field / line |
 |---|---|
-| `yoetz observe checks status --json` | `sandbox: {status, mechanism, reason, remediation}` |
+| `yoetz observe checks status --json` | `sandbox: {status, mechanism, reason, remediation}` (also when `state: not_configured`) |
 | `yoetz setup status --json` | `platform.check_sandbox` (same shape) |
 | `/doctor` | Approved-check sandbox: ok / not configured, with the remediation |
 

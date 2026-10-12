@@ -40,6 +40,7 @@ from yoetz.application.semantic_case import (
     CapturedSemanticContent,
     bounded_case_envelope,
     build_semantic_case,
+    review_packet_disclosure_result,
     review_question_set,
     review_selection_digest,
     semantic_case_to_candidate_context,
@@ -142,7 +143,7 @@ def _findings_for(case: DeterministicCase) -> tuple[Finding, ...]:
     assessments, _ = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
     return allocate_findings(
         _Ids(),
@@ -1426,10 +1427,10 @@ def test_structural_assessments_have_no_finding_prose_items() -> None:
 def test_prepared_payload_names_the_refs_post_validation_will_accept() -> None:
     """The reviewer gets one list of citable ids, matching the fence exactly.
 
-    Every ``cited_refs`` value is fenced against ``frontier_refs | local_check_refs``, but the
-    packet only ever carried them as two separate arrays, while the ids most visible in the
-    document — ``items[].item_id``, e.g. ``goal-3`` — are not citable at all. Citing wrong costs
-    the challenge, so the accept set is stated explicitly instead of left to be inferred.
+    The ids most visible in the document — ``items[].item_id``, e.g. ``goal-3`` — are not citable
+    at all, so the accept set is stated explicitly instead of left to be inferred. It names only
+    refs whose content the packet carries (TB4 tb4v1, issue #976): advertising every frontier ref,
+    including ones whose rows were omitted, invited citations post-validation had to remove.
     """
 
     case = _case_with_material(with_evidence=True)
@@ -1443,20 +1444,56 @@ def test_prepared_payload_names_the_refs_post_validation_will_accept() -> None:
     assert isinstance(raw_citable, list)
     citable = [ref for ref in cast(list[object], raw_citable) if type(ref) is str]
     assert len(citable) == len(raw_citable)
-    assert set(citable) == semantic.frontier_refs | semantic.local_check_refs
     assert citable == sorted(citable)
     assert citable
 
     raw_items = document.get("items")
     assert isinstance(raw_items, list)
     item_ids: set[str] = set()
+    carried: set[str] = set()
     for row in cast(list[object], raw_items):
         if isinstance(row, dict):
-            item_id = cast(dict[str, object], row).get("item_id")
+            typed = cast(dict[str, object], row)
+            item_id = typed.get("item_id")
             if type(item_id) is str:
                 item_ids.add(item_id)
+            source = typed.get("source_ref")
+            if type(source) is str:
+                carried.add(source)
+            linked = typed.get("linked_subject_refs")
+            if isinstance(linked, list):
+                carried.update(ref for ref in cast(list[object], linked) if type(ref) is str)
+    raw_assessments = cast(dict[str, object], document["review_packet"]).get(
+        "deterministic_assessments"
+    )
+    assert isinstance(raw_assessments, list)
+    for row in cast(list[object], raw_assessments):
+        if isinstance(row, dict):
+            ref = cast(dict[str, object], row).get("finding_ref")
+            if type(ref) is str:
+                carried.add(ref)
+    fence = semantic.frontier_refs | semantic.local_check_refs
+    assert set(citable) == carried & fence
+    # A frontier ref with no carried row is not advertised.
+    assert fence - set(citable)
     # The two vocabularies are disjoint: an item_id is never a citable ref.
     assert not item_ids & set(citable)
+
+    # The advertised set is exactly what post-validation can prove was sent: the provider-bound
+    # text index read back from the same bytes, including local findings' assessment rows.
+    prepared = semantic_case_to_prepared_payload(semantic, included)
+    disclosure = review_packet_disclosure_result(prepared).disclosure
+    assert disclosure is not None
+    assert set(citable) == set(disclosure.provider_input_text_by_ref) & fence
+    assert semantic.local_check_refs & set(citable)
+    for ref in semantic.local_check_refs & set(citable):
+        assert any(
+            '"finding_ref":"' + ref + '"' in text
+            for text in disclosure.provider_input_text_by_ref[ref]
+        )
+        # The indexed assessment text is a verbatim slice of the sent bytes, not a re-encoding.
+        for text in disclosure.provider_input_text_by_ref[ref]:
+            assert text.encode("utf-8") in prepared
 
 
 def _case_with_long_evidence(description: str) -> DeterministicCase:

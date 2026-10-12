@@ -238,8 +238,8 @@ _COMMON_MODEL_SPECS: tuple[tuple[str, str, str | None], ...] = (
 _REQUEST_MODEL_SPECS: tuple[tuple[str, str], ...] = (
     ("StartRequestModel", "operations/start-request-1.1.0.schema.json"),
     ("PublishWorkRequestModel", "operations/publish-work-request-1.1.0.schema.json"),
-    ("CheckRequestModel", "operations/check-request-1.0.0.schema.json"),
-    ("RespondRequestModel", "operations/respond-request-1.0.0.schema.json"),
+    ("CheckRequestModel", "operations/check-request-1.1.0.schema.json"),
+    ("RespondRequestModel", "operations/respond-request-1.1.0.schema.json"),
     ("StatusRequestModel", "operations/status-request-1.2.0.schema.json"),
     ("ReceiptRequestModel", "operations/receipt-request-1.0.0.schema.json"),
 )
@@ -309,23 +309,29 @@ _STATUS_PAGE_DEF_BY_VIEW_FOR_TEST: tuple[tuple[str, str], ...] = (
     ("versions", "versions_page"),
 )
 _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
-    ("check", None): 296,
-    ("publish_work", None): 57,
-    ("receipt", None): 276,
-    ("respond", None): 53,
+    (
+        "check",
+        None,
+    ): 399,  # tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8 closure verdict; tb4n3 LF +17 fact_lineage
+    ("publish_work", None): 61,
+    ("receipt", None): 301,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
+    ("respond", None): 56,  # +2 tb4n3 W2-B: closure_after
     ("start", None): 72,
-    ("status", None): 53,
+    (
+        "status",
+        None,
+    ): 114,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage
     ("status", "advice"): 25,
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,
-    ("status", "compact"): 57,
+    ("status", "compact"): 61,  # #1027: latest_check +4
     ("status", "evidence"): 19,
-    ("status", "findings"): 108,
-    ("status", "history"): 61,
-    ("status", "lineage"): 16,
-    ("status", "obligations"): 33,
-    ("status", "operation"): 44,
-    ("status", "project"): 67,
+    ("status", "findings"): 129,  # W2-A +3: closure_class/basis/next_actions
+    ("status", "history"): 63,
+    ("status", "lineage"): 17,
+    ("status", "obligations"): 42,  # #1027: in_current_plan +1; W2-A +2 closure_class/basis
+    ("status", "operation"): 48,
+    ("status", "project"): 68,
     ("status", "results"): 11,
     ("status", "versions"): 13,
 }
@@ -334,10 +340,17 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
     ("StartSuccessModel", "operations/start-result-1.1.0.schema.json", "success"),
     ("StartCompactViewModel", "operations/start-result-1.0.0.schema.json", "compact_view"),
     ("StartVersionSliceModel", "operations/start-result-1.0.0.schema.json", "version_slice"),
+    # 1.1.0 (unreleased) adds the optional yoetz-blocker notices (#985).
     (
         "PublishWorkSuccessModel",
-        "operations/publish-work-result-1.0.0.schema.json",
+        "operations/publish-work-result-1.1.0.schema.json",
         "success",
+    ),
+    ("PublishWorkDryRunModel", "operations/publish-work-result-1.1.0.schema.json", "dry_run"),
+    (
+        "PublishWorkBlockerNoticeModel",
+        "operations/publish-work-result-1.1.0.schema.json",
+        "blocker_notice",
     ),
     (
         "PublishWorkAcceptedEventModel",
@@ -359,7 +372,7 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "operations/publish-work-result-1.0.0.schema.json",
         "version_slice",
     ),
-    ("CheckSuccessModel", "operations/check-result-1.3.0.schema.json", "success"),
+    ("CheckSuccessModel", "operations/check-result-1.4.0.schema.json", "success"),
     (
         "CheckPolicyExecutionModel",
         "operations/check-result-1.0.0.schema.json",
@@ -367,11 +380,12 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "CheckProjectedFindingModel",
-        "operations/check-result-1.0.0.schema.json",
+        "operations/check-result-1.4.0.schema.json",
         "projected_finding",
     ),
     ("CheckVersionSliceModel", "operations/check-result-1.0.0.schema.json", "version_slice"),
-    ("RespondSuccessModel", "operations/respond-result-1.0.0.schema.json", "success"),
+    # 1.1.0 (unreleased) adds closure_after (tb4n3 RC-7).
+    ("RespondSuccessModel", "operations/respond-result-1.1.0.schema.json", "success"),
     (
         "RespondAcceptedEventModel",
         "operations/respond-result-1.0.0.schema.json",
@@ -382,9 +396,10 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "operations/respond-result-1.0.0.schema.json",
         "evidence_summary",
     ),
-    ("RespondResponseModel", "operations/respond-result-1.0.0.schema.json", "response"),
+    ("RespondResponseModel", "operations/respond-result-1.1.0.schema.json", "response"),
+    ("RespondClosureAfterModel", "operations/respond-result-1.1.0.schema.json", "closure_after"),
     ("RespondVersionSliceModel", "operations/respond-result-1.0.0.schema.json", "version_slice"),
-    ("StatusSuccessModel", "operations/status-result-1.1.0.schema.json", "success"),
+    ("StatusSuccessModel", "operations/status-result-1.4.0.schema.json", "success"),
     (
         "StatusAdviceItemModel",
         "operations/status-result-1.4.0.schema.json",
@@ -416,7 +431,7 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "candidate_findings_page",
     ),
     ("StatusCompactFindingModel", "operations/status-result-1.1.0.schema.json", "compact_finding"),
-    ("StatusCompactItemModel", "operations/status-result-1.1.0.schema.json", "compact_item"),
+    ("StatusCompactItemModel", "operations/status-result-1.4.0.schema.json", "compact_item"),
     (
         "StatusLatestCheckTestEditsModel",
         "operations/status-result-1.4.0.schema.json",
@@ -441,10 +456,12 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "operations/status-result-1.4.0.schema.json",
         "closure_readiness",
     ),
-    ("StatusObligationItemModel", "operations/status-result-1.1.0.schema.json", "obligation_item"),
+    # The unreleased 1.4.0 obligations row shows the acknowledgement reason (#1002).
+    ("StatusObligationItemModel", "operations/status-result-1.4.0.schema.json", "obligation_item"),
+    # The unreleased 1.4.0 obligations view shows directory items and their role (#1002).
     (
         "StatusRequestedItemModel",
-        "operations/status-result-1.1.0.schema.json",
+        "operations/status-result-1.4.0.schema.json",
         "status_requested_item",
     ),
     (
@@ -836,7 +853,8 @@ def test_human_status_renders_operation_continuation_and_exact_trusted_command()
     assert type(parsed.root) is models.StatusSuccessModel
     rendered = render_human_status(parsed.root)
     assert "Unanswered findings: 0" in rendered
-    assert "Receipt-blocking findings: 0" in rendered
+    # ADR-046: no human surface prints "receipt-blocking" any more; the counters are the verdict.
+    assert "Receipt-blocking" not in rendered
     assert "Continuation: repository_privacy_setup" in rendered
     assert "Trusted command: yoetz --privacy" in rendered
     assert f"Replay request ID: {operation_request_id}" in rendered
@@ -957,7 +975,42 @@ def test_human_status_reports_unknown_readiness_counts_as_unavailable() -> None:
     assert "None" not in rendered
     assert "Open obligations: unavailable" in rendered
     assert "Unanswered findings: unavailable" in rendered
-    assert "Receipt-blocking findings: unavailable" in rendered
+    assert "Receipt-blocking" not in rendered
+
+
+def test_human_status_counts_acknowledged_obligations_apart() -> None:
+    """#997 review item 2: an acknowledged obligation is shown once, never as open."""
+
+    from yoetz.cli.render import render_human_status
+    from yoetz.mcp.summaries import summary_for_status
+
+    models = _models_module()
+    result = _status_result_wire()
+    readiness = with_checklist(
+        {
+            "declared_obligation_count": "2",
+            "no_obligations_reason": None,
+            "open_obligation_count": "0",
+            "unanswered_finding_count": "0",
+            "receipt_blocking_finding_count": "0",
+            "blocking_conditions": [],
+        }
+    )
+    obligation = "obl_00000000-0000-4000-8000-000000000001"
+    readiness.update(
+        state="ready_with_limitations",
+        acknowledged_not_done=[obligation],
+        acknowledged_not_done_count="1",
+        acknowledged_obligation_count="1",
+    )
+    result["closure_readiness"] = readiness
+    parsed = models.StatusResultModel.model_validate(result)
+    assert type(parsed.root) is models.StatusSuccessModel
+    rendered = render_human_status(parsed.root)
+    assert "Open obligations: 0" in rendered
+    assert "Obligations acknowledged as not done: 1" in rendered
+    summary = summary_for_status(parsed.root.model_dump(mode="json"))
+    assert "open obligations: 0; acknowledged not done (not open): 1;" in summary
 
 
 def _respond_result_wire() -> dict[str, JsonValue]:
@@ -1274,7 +1327,8 @@ def test_protocol_models_public_exports_are_closed() -> None:
         MAX_PROJECTION_POINTER_BYTES MAX_REASON_BYTES MAX_SEMANTIC_ITEM_BYTES
         MAX_SEMANTIC_CASE_BYTES MAX_REVIEW_TEXT_BYTES MAX_REVIEW_TIMELINE_ITEMS
         MAX_REVIEW_ASSESSMENTS MAX_REVIEW_CHANGE_OBSERVATIONS MAX_REVIEW_EXCERPTS
-        MAX_REVIEW_OMISSIONS MAX_REVIEW_CHALLENGES MAX_TASK_STATEMENT_BYTES PROTOCOL_VERSION
+        MAX_REVIEW_OMISSIONS MAX_REVIEW_OMISSION_TOTAL MAX_REVIEW_CHALLENGES
+        MAX_TASK_STATEMENT_BYTES PROTOCOL_VERSION
         ActorAssertionModel
         ActorType CheckRequest CheckRequestModel CheckResult CheckResultModel CheckScopeModel
         ClientInfoModel ClientKind CoverageModel DataCategory FrontierModel IntegrationKind
@@ -1287,7 +1341,8 @@ def test_protocol_models_public_exports_are_closed() -> None:
         GrantState LineageRollupState LineageReadGapReason LineageProvenanceRestriction
         AttachHandleModel ChildFindingSnapshotModel ChildDependencySnapshotModel
         ChildDependenciesModel CheckChildPreviewItemModel CheckChildrenPreviewModel
-        CheckAdvisoryNoteModel StatusLineageChildModel StatusLineageAnnotationModel
+        CheckAdvisoryNoteModel CheckFindingChallengeModel CheckVerifiedItemModel
+        ProviderVerifiedItemModel StatusLineageChildModel StatusLineageAnnotationModel
         StatusLineagePageModel ProjectTextRefModel StatusProjectMemberModel
         StatusProjectCoverageModel StatusProjectDetectionModel StatusProjectReceiptModel
         StatusProjectPageModel
@@ -2482,7 +2537,9 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     rules = cast(tuple[Any, ...], getattr(models, "_RESULT_LEAF_RULES"))
 
     derived_patterns = _derived_result_success_patterns(catalog)
-    assert len(derived_patterns) == 1288
+    assert (
+        len(derived_patterns) == 1537
+    )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2491,7 +2548,9 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert derived_counts == _EXPECTED_RESULT_PATTERN_COUNTS
 
     assert type(rules) is tuple
-    assert len(rules) == 1313
+    assert (
+        len(rules) == 1564
+    )  # #1027 +5, LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage, W2-B +2
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {
@@ -2500,7 +2559,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1288
+    assert len(registry_patterns) == 1537  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)
@@ -2512,7 +2571,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
         for rule in rules
         if rule.method == "publish_work" and rule.segments == publish_summary_segments
     )
-    assert len(publish_summary_rules) == 26
+    assert len(publish_summary_rules) == 28
     assert all(rule.status_view is None for rule in publish_summary_rules)
 
     expected_publish = _expected_publish_summary_rules(models)
@@ -2869,6 +2928,14 @@ def _expected_nonpublish_content_rules(
     rows: tuple[tuple[str, str | None, str, object], ...] = (
         ("check", None, "/findings/*/detail", finding_summary),
         ("check", None, "/findings/*/summary", finding_summary),
+        # Reviewer-authored challenge prose, summary, and verified items (issue #961).
+        ("check", None, "/findings/*/challenge/alternative_interpretation", finding_summary),
+        ("check", None, "/findings/*/challenge/discrepancy", finding_summary),
+        ("check", None, "/findings/*/challenge/snippet", finding_summary),
+        ("check", None, "/findings/*/challenge/uncertainty", finding_summary),
+        ("check", None, "/review_summary", finding_summary),
+        ("check", None, "/verified/*/requirement_or_claim", finding_summary),
+        ("check", None, "/verified/*/snippet", finding_summary),
         ("respond", None, "/response/evidence/*/description", evidence_excerpt),
         ("respond", None, "/response/reason", finding_summary),
         ("status", "advice", "/page/items/*/coordination_resource_paths/*", repository_excerpt),
@@ -2918,6 +2985,15 @@ def _expected_nonpublish_content_rules(
         ),
         ("status", "evidence", "/page/items/*/description", evidence_excerpt),
         ("status", "evidence", "/page/items/*/reference", evidence_excerpt),
+        (
+            "status",
+            "findings",
+            "/page/items/*/challenge/alternative_interpretation",
+            finding_summary,
+        ),
+        ("status", "findings", "/page/items/*/challenge/discrepancy", finding_summary),
+        ("status", "findings", "/page/items/*/challenge/snippet", finding_summary),
+        ("status", "findings", "/page/items/*/challenge/uncertainty", finding_summary),
         ("status", "findings", "/page/items/*/detail", finding_summary),
         ("status", "findings", "/page/items/*/reason", finding_summary),
         ("status", "findings", "/page/items/*/summary", finding_summary),
@@ -2925,6 +3001,12 @@ def _expected_nonpublish_content_rules(
             "status",
             "obligations",
             "/page/items/*/acceptance_criteria",
+            obligation_text,
+        ),
+        (
+            "status",
+            "obligations",
+            "/page/items/*/acknowledged_not_done_reason",
             obligation_text,
         ),
         (
@@ -2979,6 +3061,7 @@ def _expected_publish_summary_rules(models: Any) -> dict[object, object]:
         ("check_recorded", "1.1.0"): "public_structural",
         ("check_recorded", "1.2.0"): "public_structural",
         ("check_recorded", "1.3.0"): "public_structural",
+        ("check_recorded", "1.4.0"): "public_structural",
         ("coordination_context_recorded", "1.0.0"): "public_structural",
         ("coordination_obligation_declared", "1.0.0"): "public_structural",
         ("coordination_disposition_recorded", "1.0.0"): "public_structural",
@@ -2989,6 +3072,7 @@ def _expected_publish_summary_rules(models: Any) -> dict[object, object]:
         ("finding_recorded", "1.1.0"): models.DataCategory.FINDING_SUMMARY,
         ("finding_recorded", "1.2.0"): models.DataCategory.FINDING_SUMMARY,
         ("finding_recorded", "1.3.0"): models.DataCategory.FINDING_SUMMARY,
+        ("finding_recorded", "1.4.0"): models.DataCategory.FINDING_SUMMARY,
         ("obligation_published", "1.0.0"): models.DataCategory.TASK_DESCRIPTION,
         ("plan_published", "1.0.0"): models.DataCategory.TASK_DESCRIPTION,
         ("plan_revised", "1.0.0"): models.DataCategory.TASK_DESCRIPTION,
@@ -3088,7 +3172,7 @@ def test_schema_catalog_reports_complete_registry() -> None:
     assert SCHEMA_NAMESPACE == "https://schemas.yoetz.dev/0.1/"
     assert SCHEMA_MANIFEST_SCHEMA == "yoetz.schema-manifest/1.0.0"
     assert SCHEMA_MANIFEST_VERSION == "1.0.0"
-    assert SCHEMA_MEMBER_COUNT == 221
+    assert SCHEMA_MEMBER_COUNT == 228
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3172,7 +3256,9 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     root = resources.files("yoetz").joinpath("resources", "schemas")
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
-    assert sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_310
+    assert (
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_764
+    )  # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17, W2-B +1 closure_after
 
 
 def test_schema_name_derivation_and_version_maps_are_exact() -> None:
@@ -3195,17 +3281,19 @@ def test_schema_name_derivation_and_version_maps_are_exact() -> None:
         "7.0.0",
         "1.4.0",
     }
-    assert set(event_versions.values()) == {"1.0.0", "1.1.0", "1.2.0", "1.3.0"}
+    assert set(event_versions.values()) == {"1.0.0", "1.1.0", "1.2.0", "1.4.0"}
     assert event_versions["action_recorded"] == "1.0.0"
     assert event_versions["evidence_recorded"] == "1.2.0"
-    assert event_versions["check_recorded"] == "1.3.0"
+    assert event_versions["check_recorded"] == "1.4.0"
     assert event_versions["claim_recorded"] == "1.1.0"
-    assert event_versions["finding_recorded"] == "1.3.0"
+    assert event_versions["finding_recorded"] == "1.4.0"
     # The task-statement versions (issue #908).
     assert event_versions["session_opened"] == "1.2.0"
     assert event_versions["session_resumed"] == "1.2.0"
     assert event_versions["plan_published"] == "1.1.0"
     assert event_versions["plan_revised"] == "1.1.0"
+    # Role- and directory-bearing obligations (issue #1002).
+    assert event_versions["obligation_published"] == "1.1.0"
     assert "accepted_event" not in event_versions
     assert "event_draft" not in event_versions
     assert "opaque_unknown_event_draft" not in event_versions
@@ -3490,3 +3578,56 @@ def test_closure_checklist_is_absent_as_a_whole_or_complete() -> None:
     for mismatch in mismatches:
         with pytest.raises(ValidationError):
             models.StatusClosureReadinessModel.model_validate(mismatch)
+
+
+def test_status_obligations_row_shows_the_acknowledgement_reason_as_obligation_text() -> None:
+    """#1002/#996: the agent's own acknowledged_not_done reason, like the obligation text."""
+
+    models = _models_module()
+    status = _status_result_wire()
+    status["view"] = "obligations"
+    item: dict[str, JsonValue] = {
+        "obligation_id": _test_id("obl_"),
+        "status": "acknowledged_not_done",
+        "description": "Port the RTL to the new bus.",
+        "evidence_expectation": "Simulation passes.",
+        "source_refs": [],
+        "assigned_actor_ids": [],
+        "evidence_refs": [],
+        "revision_event_id": None,
+        "requested_items": [{"item_kind": "directory", "value": "/app/src", "role": "output"}],
+        "acknowledged_not_done_reason": "The vendor simulator licence is unavailable.",
+    }
+    status["page"] = {"items": [item], "next_cursor": None}
+    models.StatusResultModel.model_validate(status)
+    validate_schema_instance("status-result", "1.4.0", status)
+    wire = models.public_model_to_wire(models.StatusResultModel.model_validate(status))
+    assert (
+        models.classify_result_leaf("status", wire, "/page/items/0/acknowledged_not_done_reason")
+        is models.DataCategory.OBLIGATION_TEXT
+    )
+
+    # Omitted under the obligation-text category only.
+    item["acknowledged_not_done_reason"] = {
+        "omitted": True,
+        "category": "obligation_text",
+        "reason": "never_send_redacted",
+    }
+    models.StatusResultModel.model_validate(status)
+    item["acknowledged_not_done_reason"] = {
+        "omitted": True,
+        "category": "task_description",
+        "reason": "never_send_redacted",
+    }
+    with pytest.raises(ValidationError):
+        models.StatusResultModel.model_validate(status)
+
+    # Present exactly for that status.
+    del item["acknowledged_not_done_reason"]
+    with pytest.raises(ValidationError):
+        models.StatusResultModel.model_validate(status)
+    item["status"] = "open"
+    models.StatusResultModel.model_validate(status)
+    item["acknowledged_not_done_reason"] = "why"
+    with pytest.raises(ValidationError):
+        models.StatusResultModel.model_validate(status)

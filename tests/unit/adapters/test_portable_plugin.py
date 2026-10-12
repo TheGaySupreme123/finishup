@@ -263,9 +263,12 @@ def test_plugin_managed_mcp_variants_are_exact_and_offline_valid(
         mcp_route_profile=cast(Any, route_profile),
     )
     mcp_raw = rendered.members["mcp.json"]
-    skill = rendered.members["skills/yoetz/SKILL.md"].decode("utf-8")
-    assert "`plugin_managed` includes the selected `mcp.json` route" in skill
-    assert "this plugin is the sole owner" in skill
+    # The condensed skill defers setup to the carried consent topic, which states ownership.
+    consent = " ".join(
+        rendered.members["skills/yoetz/references/consent.md"].decode("utf-8").split()
+    )
+    assert "`plugin_managed` includes the selected `mcp.json` route" in consent
+    assert "this plugin is the sole owner" in consent
     mcp = strict_json_parse(mcp_raw)
     assert mcp == {
         "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",

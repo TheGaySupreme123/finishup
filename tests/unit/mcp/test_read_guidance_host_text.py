@@ -18,7 +18,7 @@ from mcp import types
 
 from yoetz.mcp import server as bridge
 from yoetz.mcp.resources import GUIDANCE_RESOURCES
-from yoetz.mcp.summaries import summary_for_read_guidance
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_read_guidance
 from yoetz.ports.control import McpHostProfile
 from yoetz.protocol.models import ReadGuidanceResult, public_model_to_wire
 
@@ -96,7 +96,7 @@ async def test_the_codex_host_receives_one_copy_and_a_bounded_pointer() -> None:
             f"Guidance {resource.uri}: {byte_count} bytes; full text in structuredContent.text."
         )
         assert block.text.isascii()
-        assert len(block.text.encode("ascii")) <= 512
+        assert len(block.text.encode("ascii")) <= MAX_SUMMARY_BYTES
         assert resource.text not in block.text
 
 

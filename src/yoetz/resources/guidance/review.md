@@ -30,3 +30,13 @@ grant. Keep the same request id and never create a fresh request to escape the d
 the live route before a new check; it never authorizes egress. Read the check result's coverage and
 review status as reported, not as proof that the underlying code is correct. Details and recovery
 limits remain in [`coverage-and-receipts.md`](coverage-and-receipts.md#check-mode-and-ai-powered-review-coverage).
+
+Before the receipt, run the closing review: `check` with `final_review: true`. It judges each stated
+requirement and requested output against the task, with or without a completion claim; closure
+readiness lists `closing_review_required` until one is current after the last material change.
+Answer every AI-powered finding with `respond` and a reason; `acknowledged` on a reviewer finding
+requires one. A finding whose `requested_next_step` is `answer_question` is a question: answer it
+in the reason (`rejected` when your answer shows the concern does not apply, `acknowledged` when it
+does, then act). The next check shows the reviewer your answer, and it rules on it. Limitations
+outside your control (authority, credentials, unavailable external resources) stay acceptable when
+disclosed; a limitation you could reduce is work, not support.

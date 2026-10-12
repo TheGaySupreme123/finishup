@@ -29,8 +29,8 @@ from urllib.parse import urlsplit
 
 from yoetz.adapters.providers.data_use_catalog import data_use_record_for_endpoint
 from yoetz.adapters.providers.openai_responses import (
-    JUDGMENT_JSON_SCHEMA,
     SEMANTIC_REVIEW_INSTRUCTION,
+    STRICT_JUDGMENT_JSON_SCHEMA,
     JudgmentValidationError,
     normalize_judgment,
 )
@@ -327,7 +327,7 @@ def _codex_output_schema(value: JsonValue) -> JsonValue:
 
 
 _CODEX_JUDGMENT_JSON_SCHEMA: Final = cast(
-    dict[str, JsonValue], _codex_output_schema(cast(JsonValue, JUDGMENT_JSON_SCHEMA))
+    dict[str, JsonValue], _codex_output_schema(cast(JsonValue, STRICT_JUDGMENT_JSON_SCHEMA))
 )
 _OUTPUT_SCHEMA_SHA256: Final = canonical_digest(_CODEX_JUDGMENT_JSON_SCHEMA)
 _MAX_MESSAGE_BYTES: Final = 1_048_576

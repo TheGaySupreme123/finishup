@@ -21,7 +21,13 @@ and AI-powered review/privacy capability and conformance tests.
    repository-privacy commitment beneath the machine ceiling. A missing or mismatched repository
    grant fails before provider construction, credential-handle minting, authorization, or dispatch.
 2. **First external adapter:** official `openai` Python SDK (pinned `2.46.0`), Responses API with
-   structured outputs (`responses.parse` + frozen `ProviderJudgmentModel` schema). A release names
+   structured outputs (`responses.parse` + frozen `ProviderJudgmentModel` schema). Every
+   constrained-output request (Responses, Chat Completions, and the Codex app-server
+   `outputSchema`) sends the strict wire form of that schema: `allOf`/`if`/`then`/`not`,
+   `default`, and `uniqueItems` are dropped and every optional property is sent as required and
+   nullable, because `strict: true` rejects the whole request before generation otherwise
+   (observed as a 400 on provider-judgment 1.2.0, surfaced by Codex only as a failed turn). The
+   decoder still enforces the dropped constraints, so the owning contract is unchanged. A release names
    an exact tested provider/model/endpoint-profile tuple. A generic or merely
    "OpenAI-compatible" URL is never trusted as an ambient override. One exact, versioned profile
    kind — `owner-declared-openai-responses` (ADR-014) — may bind an owner-supplied constrained
@@ -994,15 +1000,21 @@ a bounded scope. Its effect on resolution is now decided (interim step, by maint
   fallback, and it reopens a resolution that qualified only through that check's recorded scope
   (`resolution_raising_check_event_id`), exactly as redacting the proving check does.
 - **A limitation outside the baseline.** A finding raised under a gap outside the baseline set
-  (for example `completion_plan_not_claimed`, `content_redacted` or
+  (for example `completion_plan_not_claimed`, `redacted_object` or
   `command_attempt_uncorroborated`) gets a readable baseline on the first later check that carries
   none of those gaps. That check saw at least as much as the raising one. While such a gap is still
   present it keeps blocking. Unknown, stale or unexplained redacted original freshness stays
   unreadable.
 - **Selection versus capture failure.** Resolution classifies deliberate selection
   (`semantic_reference_scope_reduced`, `content_unselected`) apart from capture failure
-  (`content_redacted`, `truncated_payload`, unavailable or redacted event payloads, redacted
-  objects). Capture failures are never tolerated by either proof class and never join a baseline.
+  (`truncated_payload`, unavailable or redacted event payloads, redacted objects). Capture failures
+  are never tolerated by either proof class and never join a baseline. `content_redacted` (a
+  high-confidence secret shape redacted before storage) is not a capture failure since issue #982:
+  local packs never read the bytes it replaced, so it is a host-observation limit that never vetoes
+  local proof and is an AI-powered-proof baseline. The egress privacy codes
+  `semantic_review_value_redacted` (tolerated by both proof classes) and
+  `semantic_review_item_withheld` (semantic-only; an AI-powered-proof baseline) bound only the
+  review.
   Every tolerated set stays closed, so an unclassified code still blocks both proof classes.
 - **`truncated_payload` still blocks.** It waits for a test that settles which producer puts it on
   a check and whether evicted observations had already been delivered.
@@ -1154,6 +1166,16 @@ the packet shows was done, unless material newer than the response shows the pro
 re-raise then cites that material and the earlier finding's `fnd_` id. Every provider cell sends
 the same instruction text; the Chat Completions cell only appends its output-shape suffix.
 
+**Only obtainable remedies (2026-10-08, issue #1020).** The instruction and the challenge and
+ruling glossaries ask only for repairs or artifacts the main agent can produce from the task
+statement, the workspace and the tools shown in the packet. A concern that only an unobtainable
+artifact (a hidden grader, benchmark generator, private specification or user answer) would settle
+is requested as `state_unresolved_limitation`, and an earlier finding resting on one is ruled
+`unassessable`, never `still_present`. The reviewer never recommends delivering less, emptying a
+file or withdrawing working code, and may approve a reasoned, disclosed fallback. The instruction
+also tells the reviewer that a re-raise of a rejected finding citing nothing newer than the
+rejection is recorded as `disputed_after_rebuttal`, a standing, non-blocking disagreement.
+
 **Citable prior findings.** A cited `fnd_` resolves to that finding's subject refs when it is one
 of this check's local findings or a readable recorded finding inside the frozen fence. Dropping a
 challenge that follows the prompt was a fence mismatch, not a reviewer error; the fence is not
@@ -1178,14 +1200,14 @@ unresolved AI-powered findings in their own `prior_finding` section, outside the
 hook rows never crowd it out. Under egress-envelope pressure its rows yield first, oldest finding
 first, so it never displaces work content: a structural row with what was asked, the latest answer
 (disposition, cited refs) and the evidence and results recorded after the finding, plus the prose
-rows the profile's finding-prose selection already permits. It is bounded (8 findings, 48 KiB,
+rows the profile's finding-prose selection already permits. It is bounded (16 findings, 96 KiB since issue #976; 8 and 48 KiB before;
 leftover case capacity only); what does not fit is named as `not_selected` omissions and discloses
 `semantic_prior_findings_over_limit`, a gap that stays on the receipt but does not veto absence
 proof. Findings recorded without challenge fields degrade to summary and message with a `not_recorded`
 omission. No new data category leaves the machine. A carried finding contributes one structural
 row and, under a prose profile, up to six prose rows, so `review_packet.prior_finding_item_ids`
-(up to 56 rows) is row accounting, not the ruling unit. `review_packet.prior_finding_refs` is the
-ruling unit: each carried finding's `finding_ref` exactly once, newest first, at most 8, and only
+(up to 112 rows) is row accounting, not the ruling unit. `review_packet.prior_finding_refs` is the
+ruling unit: each carried finding's `finding_ref` exactly once, newest first, at most 16, and only
 while that finding's structural row is still carried after bounding.
 
 **Per-finding rulings.** `provider-judgment/1.1.0` adds a required `prior_finding_verdicts`
@@ -1349,6 +1371,94 @@ carries `prior_finding_verdicts` (#905) and `missing_for_assessment`, and the un
 `check_recorded` 1.3.0 carries either optional field, or both; a check with neither keeps its
 bytes.
 
+### Yoetz review limits are never agent work (2026-10-07, tb4n1 D1/D3/F2, issue #983)
+
+TB4 run tb4n1 showed the #907 classification turned Yoetz's own packet limits into agent work: 82
+of 238 semantic checks returned `supply_missing_input`, every item `agent_suppliable`, including PNG
+schematics, CAD drawings and diffs the packet clipped for room. Agents fed excerpts in loops and
+reshaped deliverables to fit the packet; interleaved-vigenere moved its data table out of the
+delivered `cracker.py` and failed. Decision (owner, 2026-10-07): content the packet cannot show is
+Yoetz's own limit, marked as such for the agent, never a blocker; the agent verifies it itself.
+
+- The missing-item `availability` vocabulary gains two Yoetz-limit classes, disclosed through the
+  new standing gap `semantic_missing_yoetz_limit` and never actionable:
+  `yoetz_limit_unsupported_data_type` (a target whose recorded file, a hook-observed image, or for
+  an `other` item a file the plan, task statement or obligation names, is an image, document,
+  archive, CAD or other binary format, matched lexically on its file name's last suffix or, for a
+  suffix-less binary such as a compiled `solver`, because the check-time change marks that
+  workspace path binary (Git's binary mark, read in process and never recorded; tb4n2 A11). An
+  ambiguous suffix that also names a text format is listed anyway: a false Yoetz limit only asks
+  the agent to verify the file itself, while false agent work steers it to reshape a deliverable)
+  and
+  `yoetz_limit_packet_room` (a target an omission row of the exact sent packet withheld for room,
+  selection or policy, never `not_recorded` and never this check's own local finding, or a diff
+  request while the check-time change was clipped or redacted). `evt_` targets resolve to the row
+  their event recorded. The enum is extended in place on the unreleased `check_recorded`
+  1.3.0/1.4.0 and `check-result` 1.3.0/1.4.0. An unanswered repeat stays `agent_suppliable` with
+  `semantic_missing_non_convergent`: a run never recorded is still owed.
+- One retry (`kernel/review_round.py`): when the newest completed review concluded
+  `insufficient_packet` and either the last two completed reviews both did (named items or not)
+  with no edit action recorded after the older one, or four such reviews were recorded since the task's last assessed review (a
+  host whose writes are shell commands records no edit action, and a trivial edit must not buy
+  endless reviews), the check skips the AI-powered review (`not_requested`/`deterministic_mode`) and discloses the
+  standing gap `semantic_review_skipped_insufficient_packet`; CLI, MCP summary and receipt say the
+  review was skipped, not that it was not requested. Such a check counts as the current and
+  closing review for closure readiness and never weakens local proof. Publishing evidence does not
+  re-arm it (feeding the reviewer is the loop this ends); a recorded edit does until the task
+  cap, and a completed review with another conclusion resets both counts. A `semantic_required`
+  check is never skipped. A packet row privacy withheld is `structurally_unavailable_on_this_host`,
+  never packet room. Accepted limits: a response object written before this change carries no
+  withheld refs, so a recovered pre-upgrade check classifies nothing as packet room; an unreadable
+  ledger prefix fails open to a review. Once stopped for the task cap, open AI-powered findings
+  stay open; the agent answers them through its own verification (the standing gap makes them
+  Yoetz-limited).
+- Agent-facing text on every surface (CLI, MCP summary, receipt coverage note, guidance) says a
+  Yoetz limit is not work and never a blocker, and that the agent must never split, move, shrink,
+  stash, delete, `git add` (including `-N`) or git-ignore its work to fit the reviewer. The diff
+  answer rule names path evidence first, because plain `git diff` omits untracked files.
+
+### Image and binary files: acknowledged, never sent; agent renderings labelled (2026-10-07, tb4n1 D6, issues #983, #1004)
+
+TB4 run tb4n1 cad-model, medical-claims, freecad-platform and cumulative-layout looped on
+`insufficient_packet` for PNG, CAD and PDF deliverables the packet never carries. Decision (owner,
+2026-10-07): acknowledge that such a file exists, never send its bytes or pixels (an image channel
+stays deferred); and let the agent supply a text rendering of a binary deliverable (PL5-2, #1004).
+
+- **Notice row.** An evidence row that records an image or binary file is carried as an excerpt that
+  begins `[Yoetz: the agent referenced an image or binary file at <path> (evidence <evd>); it was
+  not sent and its content is not assessable from this packet]`, followed by the row's recorded
+  description. The wording says "referenced" because the path is the agent's unverified claim;
+  Yoetz never opens it. A hook-observed image (the L3 digest-only `artifact_bytes` row,
+  `observation_captured`, description `Observed image ...`; no path) begins instead `[Yoetz: an
+  image was observed (evidence <evd>); it was not sent and its content is not assessable from this
+  packet]`. Notice rows are those or a row whose
+  `reference` names a file of the unsupported types the missing-item classifier uses (matched
+  lexically, never opened) and that records the file itself (an `artifact`, or an `artifact_bytes`
+  digest, or no text). The newest 16 notices are reserved excerpt room beside finding repair
+  evidence; further ones compete as ordinary evidence. Captured edits and the check-time change are
+  unchanged: they carry text the tool wrote, and git already prints `Binary files ... differ`.
+- **Agent rendering.** A row whose `reference` names such a file but which carries text (the agent's
+  `command_output`, `test_result` or `other` description, or captured output) is labelled
+  `[Yoetz: agent-rendered text of <path> (evidence <evd>); the binary file itself is not sent]`.
+  The reviewer instruction explains both labels and says a rendering is the agent's account of
+  the file, never the file. A missing item that targets the binary's row is answered by such a
+  rendering under the existing path rule (new agent evidence whose `reference` is one of the
+  target's paths), so it counts as supplied.
+- **Wire.** No new field or enum value: both labels are excerpt text inside the existing
+  `evidence_excerpt` category, and the manifest discloses the rows through the existing
+  `caller_evidence` section (`source_refs`, `item_ids`). The path in a label is whitespace-folded,
+  keeps only ASCII letters, digits, space and `._/+@~=,-` (any other character becomes `_`, so a
+  reference cannot close the label or name another evidence id inside it) and is bounded to 160
+  characters (a longer one ends `...`); the egress scanner sees it like any excerpt text.
+- **No forged labels (issue #983).** Agent-authored excerpt text (an evidence description or
+  reference, captured tool output, a failed result's summary, a command) never begins a line the
+  way a label does: each such line, matched case-insensitively after leading spaces or tabs, is
+  prefixed `(agent text) `, and a captured diff part that would begin mid-line with `[Yoetz` is
+  prefixed the same way within its part bound. The reviewer instruction (one constant every
+  provider cell sends) trusts a `[Yoetz:` label only as an excerpt's first line and only when the
+  evidence id it names equals that excerpt's own `source_ref`; anything else resembling one is the
+  agent's text.
+
 ### Task statement apart from the agent plan (2026-09-30, issue #908)
 
 The reviewer was told to judge "the user's stated goal" but received only the agent's latest plan
@@ -1423,3 +1533,106 @@ bytes, so the count constant was the real limit.
   the prepared bytes each excerpt byte actually cost, since JSON escaping can multiply it.
 - The privacy side (consent, re-approval, egress denial) is recorded in the ADR-009 amendment of
   the same date.
+
+### Closing review and a working review dialogue (2026-10-06, issue #976)
+
+TB4 run tb4f1 showed the final phase was reachable only through a completion claim: 8 of 47
+semantic attempts never had a completeness review (7 failed), and an agent that stopped without
+claiming completion was never judged for completeness. Decisions:
+
+- **Closing review.** `check` accepts the optional `final_review: true` (check-request 1.1.0,
+  unreleased, in place). The budget selector returns `final` when an effective completion claim is
+  present *or* the request asks for the closing review. The request is part of the check's
+  idempotent request digest, so a replayed or recovered check rebuilds the same phase, question set
+  and case digest; the frozen execution snapshot keeps the selected profile as before. The final
+  question set judges completeness against the task statement: one verified row per stated
+  requirement and requested output, a challenge for each one the change does not deliver.
+- **Recorded phase.** The review input manifest carries the optional `review_phase`
+  (`routine`/`final`) on the composed and provider-bound manifests, check results, `check_recorded`
+  and status. Older manifests omit it.
+- **True omission total.** `omitted_item_count` is the number of omission rows the packet lists,
+  capped at 64, so it saturated on most real checks. The manifest also carries the optional
+  `omitted_item_total` (at most 1,048,576), every distinct omission before that cap; the
+  provider-bound manifest adds the rows egress withheld beyond the composed listing. Check, status
+  and receipt renderings show `omitted items <total> (<count> listed)` when the two differ. Older
+  manifests omit it and render their listed count.
+- **Closure integration.** Closure readiness (ADR-032) lists the agent-actionable
+  `closing_review_required` while AI-powered review is required on the route or has completed on the
+  task, and no check since the last material change is a completed final-phase review. A review
+  attempt after the last material change that was blocked by policy or privacy, not configured,
+  classification-uncertain, or denied or expired at human approval satisfies it, because its own
+  gaps disclose the limit and a recheck cannot remove it; a timeout or a failed or unavailable
+  provider is transient and leaves the closing review actionable. The Stop-time closure gate reads the same readiness answer.
+- **Dialogue.** (a) A challenge whose cited refs were sent but whose quote is not an exact packet
+  substring is kept with the quote removed and disclosed through
+  `semantic_review_snippet_invalid`; before, the whole challenge was dropped and a lone challenge
+  turned the review into `no_material_discrepancy`. Without the provider-bound text index the quote
+  still fences the challenge out. (b) A challenge that names an open AI-powered finding the agent has
+  answered (its `fnd_` id among the challenge's cited refs) is the reviewer's reply to that answer,
+  not a restatement: it is minted as a returned finding linked to the earlier one. (c) The prior-findings section also
+  carries up to four answered local findings as non-rulable rows (`local-finding-answer-*`,
+  `yoetz.local-finding-answer/1`) inside the section's bounds; a ruling on one is set aside, never an
+  unsupported-ruling gap. (d) The reviewer may ask a question with
+  `requested_next_step: answer_question`; the agent answers in the `respond` reason (`rejected` when
+  the answer shows the concern does not apply, which the reviewer may rule `withdrawn`), and
+  `acknowledged` on any AI-powered finding requires a non-empty reason.
+- **Citation fence (TB4 tb4v1 amendment).** (a) above was not enough: in tb4v1, 6 of 7 returned
+  challenges were still dropped, mislabelled `snippet_invalid`, because a separate rule discarded a
+  challenge whenever any cited ref lacked a sent content row, while the packet advertised every
+  frontier ref (including about 64 omitted rows per review) as citable. Now the packet's
+  `citable_refs` lists only carried refs (content rows and surviving local assessment rows, the
+  same set the text index holds); a challenge keeps the cited refs that were sent (disclosed as
+  `semantic_review_refs_reduced`); a challenge with no sent ref — or any quote-bearing challenge
+  recovered without the text index — mints no finding but is counted as `ref_not_carried` and its
+  summary and message are appended to the recorded review summary as an advisory, unverified
+  concern. A verified row citing any unsent ref is still dropped. Quote proof tolerates transport
+  form (whitespace, JSON escapes, typographic punctuation, a placeholder for Yoetz's `[REDACTED]`
+  marker) but never folds letters or digits, and records the verbatim sent span, so no finding
+  cites unproven text. The accounting diagnostic carries per-reason counts.
+- **Reviewer cues.** The standing instruction asks the reviewer to raise delivery-environment risks
+  (imports absent from the recorded environment or installed into another interpreter, writes
+  outside the requested location, files another runtime user cannot read or write) while still never
+  requesting installs; to test impossible/infeasible conclusions against the task premise; and to
+  accept a disclosed limitation as support only when it lies outside the agent's control.
+- **TB4 tb4n1 reviewer cues (issues #976, #983).** The instruction also says the packet never
+  carries image or binary content (images, PDF, CAD, compiled data), so a requirement judged only
+  from such content is `not_assessable` and never a `missing_for_assessment` item or the reason for
+  `insufficient_packet`; that the exact token `[withheld-by-yoetz:possible-credential]` marks a
+  value Yoetz withheld at egress and is never asked for; and that the reviewer never advises
+  delivering less (emptying, deleting, moving, splitting or reshaping the deliverable) and never
+  treats a packet limit as a reason for the agent to restructure its work. An admitted `fixed`
+  ruling on a finding tolerates `semantic_review_refs_reduced` on that check; without one the gap
+  still blocks AI-powered absence proof.
+- **Re-raises link by finding id (issue #980).** A provider challenge carries an optional
+  `restates`: the `fnd_` id of an earlier finding from the packet's `prior_finding_refs` or from a
+  non-rulable `yoetz.settled-finding/1` row. The link folds only the same concern: the challenge's
+  `finding_kind` must equal the named finding's kind.
+  - Same kind, a carried readable open AI-powered finding: the challenge mints no finding; it is
+    recorded on that finding as `answered_not_fixed` when the agent had answered it, else
+    `still_present`, citing the challenge's refs, so the item stays open, its review round advances
+    once per concern, and the reviewer's summary and message are appended to the recorded review
+    summary under that id.
+  - Same kind, a carried finding the agent settled (`acknowledged_not_done`, or `self_verified`):
+    the challenge mints no finding; a `still_present` ruling is recorded on the item, which stays
+    final (no round, never reopened); the reducer counts it in `settled_reraise_count`, the
+    standing dispute D7a reads. The packet carries settled findings as nameable rows after the
+    open findings, inside the same 16-finding / 96 KiB section bounds; one that does not fit is not
+    a truncation of the rulable section, and its re-raise is minted linked as below.
+  - Otherwise (another kind, a resolved or final item, or a finding the packet did not carry): the
+    challenge is a new finding whose `relates_to` names the target, and no ruling is recorded on
+    the target (the reviewer's own ruling on it in the same response stands). The naming is never counted in
+    `semantic_review_refs_reduced` (it is not a ref the challenge rests on); an id outside the
+    frozen fence is ignored and the challenge stands on its own.
+  Without `restates` the earlier exact-subject restatement and answered-reply rules are unchanged,
+  except that an exact restatement of an `acknowledged_not_done` item records the same settled
+  re-raise.
+- **Standing premise disputes (TB4 tb4n1 D7a).** `kernel.finding_todo.premise_dispute_basis` is a
+  structural rule over recorded refs, never prose: an `acknowledged_not_done` AI-powered
+  `task_requirement_unmet` or `requested_item_never_attempted` finding that asked the agent to
+  `act` is a standing dispute when its subject refs cite a readable, unsuperseded
+  `yoetz-blocker:<kind>` decision or an obligation that decision blocks (`blocker_cited`), or when
+  a review re-raised it after the acknowledgement (`give_up_reraised`). An unanchored
+  acknowledgement is not flagged. Rebuttals (D7b) count every `rejected` and `self_verified`
+  response.
+- Out of scope, recorded for later: reviewer visibility (diff and test-output truncation, vendored
+  trees) and reviewer-run commands.

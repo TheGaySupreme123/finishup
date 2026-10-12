@@ -91,7 +91,8 @@ content-returning read needed its own decision. This is that decision, for exact
      `.gitignore`, `.git/info/exclude`, a repository-level `core.excludesFile` and the owner's
      global Git ignore file. They are opened one path component at a time beneath the validated
      root descriptor without following links; only regular files owned by the service user with a
-     single link, at most 64 KiB each and 500 in all, are read. A changed tracked file whose working
+     single link, at most 232 KiB each (the capture's 256 KiB bound less its header budget; 64 KiB
+     before issue #983) and 500 in all, are read. A changed tracked file whose working
      copy is a link, a special file, another user's, multiply linked, or reachable only through a
      linked directory is named with `not_regular_file`, and neither its diff nor its line counts
      are shown. Git reads tracked files itself, so it may still open such a file's target while it
@@ -154,15 +155,41 @@ content-returning read needed its own decision. This is that decision, for exact
    the change's first part. A part is never larger than the recipe's per-excerpt or total excerpt
    budget, so a captured change always reaches the packet ahead of every other excerpt unless that
    budget is too small for a readable part (256 bytes of change plus its marker), which is disclosed
-   as `check_time_change_unavailable`. Room it does not use stays with the other excerpts; parts
-   left over after all of them backfill whatever the recipe still has free. Each part begins `[Yoetz
+   as `check_time_change_unavailable`. Room it does not use stays with the other excerpts. A part
+   takes the recipe's per-excerpt bound (16 KiB under Expanded), not the 4 KiB structural prose
+   bound (issue #983). Parts left over take every slot and byte the reserved excerpt classes (the
+   newest captured edit per path, the latest verification runs, finding repair evidence) leave,
+   ahead of older edit hunks and general output, and any still left backfill whatever the recipe
+   has free after those. Because the case planner narrows the excerpt budget from the lowest rank
+   up, older hunks and general output are narrowed before the change. Each part begins `[Yoetz
    check-time change, part i of n]`, its item ids sort ahead of every other item, and it links to
-   the case's effective claims and obligations (else its latest plan).
-   `_check_time_change_reservation` is the single seam for this share.
+   the case's effective claims and obligations (else its latest plan). When a planned case leaves
+   less room than one whole part, the first part is cut to that room (on a line end where one lies
+   in its second half) and begins `[Yoetz check-time change, part 1 of n, cut to the packet's
+   room]`, so the change still precedes every recorded excerpt; nothing follows a cut part, and the
+   cut is disclosed as `check_time_change_truncated` (issue #983). The shown-file record counts the
+   change bytes the carried parts hold, never a part count, so it stays exact whatever part size a
+   narrowed selection chose. `_check_time_change_reservation` is the single seam for this share.
+   Inside the change, files are ordered by what the task delivers, not by path (tb4n2 R7, issue
+   #1016): files at or under a requested `role: output` item come first (then requested files with
+   no role, an `obligation_published` 1.0.0 deliverable), then files whose rendered section is at
+   most 4 KiB, then the rest, each group in path order. The same order decides which untracked
+   files the untracked-file limit reads (sized by a metadata-only stat of up to 4096 paths) and
+   which tracked files the object-verification budget covers first. Before a tracked file's diff
+   is read (the per-file fallback when the whole diff is too large), "small" means at most 64
+   changed lines by Git's numstat, since its byte size is not yet known. A cut change or a
+   narrowed packet therefore keeps the deliverables and drops scratch first. Declared outputs
+   outrank role-less requested files. The declared paths only order the change; they never widen
+   what is read.
 7. **Frozen with the job.** The object's pointer, or the fact that it was unavailable, is frozen
    into the job's semantic-case object. A recovered or resumed job reloads exactly that object and
    never re-reads a working tree that has since moved, so the case digest is unchanged. The object
-   is check-scoped and not a ledger root.
+   is check-scoped and not a ledger root. Known upgrade limitation (issue #983): a job frozen by a
+   build that split the change into 4 KiB parts, or before the first part could be cut to the room
+   a narrowed case leaves, rebuilds a different case after the upgrade. The
+   `semantic_execution_case_changed` guard then ends that one review as `failed` /
+   `coordinator_failure` and keeps its local-check result rather than sending bytes it did not
+   freeze; the next check composes a fresh review. Recovery does not re-compose the frozen job.
 8. **Disclosed limits.** `check_time_change_unavailable` (selected but nothing carried),
    `check_time_change_base_unavailable`, `check_time_change_truncated` (a file or part not shown)
    and `check_time_change_redacted` join the packet and check coverage. Beside
@@ -178,6 +205,12 @@ content-returning read needed its own decision. This is that decision, for exact
    review input only, so they never weaken local absence proof. A check whose connection named no
    workspace has nothing to read and reports no check-time code; its review is the review of the
    time before this decision.
+   Amendment (issue #1019, tb4n2): the local metadata-only read that structural accounting and
+   requested-output facts use skips any changed path whose name holds a carriage return or line
+   feed (Git allows both; a NUL never reaches a `-z` field) instead of failing the whole read. It
+   counts each skipped path in `omitted_files` (so the read is `truncated`) and in
+   `unrepresentable_files`, and the check records `check_time_change_path_unrepresentable`, a
+   standing limitation with its own fixed sentence. The path itself is never logged or recorded.
 9. **AI-powered finding resolution compares the files each review was shown.** A completed review
    whose packet carried the change records, on its `check_recorded` 1.3.0 event, keyed commitments
    to the changed files it carried. What it carried is counted from the bounded provider envelope,

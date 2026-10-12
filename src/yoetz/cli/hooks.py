@@ -42,6 +42,7 @@ from yoetz.cli.hook_io import (
     stdout_json as _stdout_json,
 )
 from yoetz.cli.render import render_hook_recovery_suffix
+from yoetz.domain.compaction_recap import RECAP_CONTEXT_LIMIT, RecapFacts
 from yoetz.ports.control import ControlClientKind, ControlError, WorkspaceLocator
 from yoetz.protocol.canonical import JsonValue, strict_json_parse
 from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode
@@ -110,6 +111,9 @@ class StatusOutcome:
     kind: str
     mapping: LifecycleMapping | None = None
     replacement: StaleReplacement | None = None
+    # Set only for an ``active`` read made for a post-compaction start (ADR-044): the facts the
+    # same status result carried, plus the declared deliverables when the second read answered.
+    recap: RecapFacts | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1255,10 +1259,50 @@ def _active_context(mapping: LifecycleMapping, frontier: str | None) -> str:
     )
 
 
+def _local_pending_rows(codex_session_id: str, *, _state: Path | None) -> int | None:
+    """This session's undelivered local rows that would add ledger work, or ``None``.
+
+    Sampled before the status read: the rows pending when the facts were read are the ones those
+    facts cannot include, even if the delegated observe pass drains them before the output.
+    """
+
+    try:
+        from yoetz.adapters.integrations.observation_local import LocalObservationStore
+        from yoetz.cli.compaction_recap import pending_work_rows
+
+        store = LocalObservationStore(_state=_state)
+        return pending_work_rows(
+            store, store.find_workspace_for_codex_session(codex_session_id), codex_session_id
+        )
+    except Exception:
+        return None
+
+
+def _with_compaction_recap(
+    context: str, facts: RecapFacts, *, pending_rows: int | None
+) -> tuple[str, int | None]:
+    """Append the bounded recap to a compaction start's context; never raises (ADR-044).
+
+    Returns the context and the larger character bound it was designed against, or the
+    unchanged context and ``None`` (the default bound) when the recap could not be composed.
+    """
+
+    try:
+        from yoetz.cli.compaction_recap import compact_recap_text
+
+        recap = compact_recap_text(facts, pending_rows=pending_rows)
+        return f"{context}\n{recap}".strip(), RECAP_CONTEXT_LIMIT
+    except Exception:
+        return context, None
+
+
 def _status_request(
     mapping: LifecycleMapping,
     *,
     actor_id: str = "yoetz:codex-hooks",
+    view: str = "compact",
+    limit: str = "1",
+    cursor: str | None = None,
 ) -> StatusRequest:
     return StatusRequest.model_validate(
         {
@@ -1276,10 +1320,10 @@ def _status_request(
             },
             "session_id": mapping.yoetz_session_id,
             "writer_id": mapping.yoetz_writer_id,
-            "view": "compact",
-            "limit": "1",
+            "view": view,
+            "limit": limit,
             "at_frontier": None,
-            "cursor": None,
+            "cursor": cursor,
         }
     )
 
@@ -1394,12 +1438,94 @@ def session_workspace_locator(workspace: str | None) -> str | None:
     return resolve_session_workspace(workspace).locator
 
 
+_RECAP_OBLIGATIONS_DEADLINE_MS: Final = 1_500
+# The recap's reads must end within the first four seconds of the hook, so they add nothing to the
+# worst case that already exists when the compact read itself is slow (the recap is then skipped)
+# and the delegated observe pass follows under the 15 s host timeout.
+_RECAP_WINDOW_SECONDS: Final = 4.0
+# Below this many milliseconds the hook skips the obligations read (deliverables are then named
+# unavailable) rather than risk the host window.
+_RECAP_OBLIGATIONS_MIN_MS: Final = 250
+_RECAP_OBLIGATIONS_LIMIT: Final = "100"
+# Pages of the obligations view the recap will read (300 obligations); beyond that it says the
+# view has more pages than were read.
+_RECAP_OBLIGATIONS_PAGES: Final = 3
+
+
+async def _read_recap_facts(
+    client: _StatusClient,
+    compact_branch: object,
+    mapping: LifecycleMapping,
+    *,
+    actor_id: str,
+    time_left: Callable[[], float] | None = None,
+) -> RecapFacts | None:
+    """Build the post-compaction recap facts from the compact result already in hand.
+
+    Up to three bounded ``obligations`` pages name the declared deliverables of the current plan;
+    if they fail, are slow, or the hook has no time left (``time_left`` reports the seconds the
+    host window still allows), the recap says they are unavailable or that pages remain unread.
+    Nothing here may raise into the hook.
+    """
+
+    from yoetz.cli.compaction_recap import recap_facts_from_status, recap_with_deliverables
+
+    try:
+        facts = recap_facts_from_status(
+            compact_branch,
+            task_id=mapping.yoetz_task_id,
+            session_id=mapping.yoetz_session_id,
+            writer_id=mapping.yoetz_writer_id,
+        )
+        if facts is None:
+            return None
+        pages: list[object] = []
+        cursor: str | None = None
+        more_pages = False
+        for _page in range(_RECAP_OBLIGATIONS_PAGES):
+            budget_ms = _RECAP_OBLIGATIONS_DEADLINE_MS
+            if time_left is not None:
+                budget_ms = min(budget_ms, int(time_left() * 1_000))
+            if budget_ms < _RECAP_OBLIGATIONS_MIN_MS:
+                # No room in the host window: whatever was read stands, the rest is unread.
+                more_pages = bool(pages) and cursor is not None
+                break
+            try:
+                result = await client.status(
+                    _status_request(
+                        mapping,
+                        actor_id=actor_id,
+                        view="obligations",
+                        limit=_RECAP_OBLIGATIONS_LIMIT,
+                        cursor=cursor,
+                    ),
+                    deadline_ms=budget_ms,
+                )
+                branch = getattr(result, "root", result)
+                if isinstance(branch, OperationFailureModel):
+                    break
+            except Exception:
+                break
+            pages.append(branch)
+            cursor = getattr(getattr(branch, "page", None), "next_cursor", None)
+            if type(cursor) is not str:
+                cursor = None
+                more_pages = False
+                break
+            more_pages = True
+        return recap_with_deliverables(facts, pages, more_pages=more_pages)
+    except Exception:
+        return None
+
+
 async def _read_status(
     mapping: LifecycleMapping,
     *,
     connect: ServiceConnector | None = None,
     actor_id: str = "yoetz:codex-hooks",
     workspace_locator: str | None = None,
+    recap: bool = False,
+    recap_time_left: Callable[[], float] | None = None,
 ) -> StatusOutcome:
     """Read the mapped session's status through a repository-bound connection.
 
@@ -1441,7 +1567,18 @@ async def _read_status(
             yoetz_writer_id=writer_id,
             last_frontier=frontier,
         )
-        return StatusOutcome("active", mapping=updated)
+        facts = (
+            await _read_recap_facts(
+                connected,
+                branch,
+                updated,
+                actor_id=actor_id,
+                time_left=recap_time_left,
+            )
+            if recap
+            else None
+        )
+        return StatusOutcome("active", mapping=updated, recap=facts)
     except ControlError as error:
         return StatusOutcome(_CONTROL_ERROR_CLASSES.get(error.reason, "unavailable"))
     except Exception:
@@ -1630,8 +1767,15 @@ def handle_session_start(
                     mapping,
                     connect=connect,
                     workspace_locator=selection.locator,
+                    recap=source == "compact",
+                    recap_time_left=lambda: entered + _RECAP_WINDOW_SECONDS - time.monotonic(),
                 )
 
+            pending_before = (
+                _local_pending_rows(codex_session_id, _state=_state)
+                if source == "compact"
+                else None
+            )
             outcome = cast(StatusOutcome, runner(_run))
             kind, updated = outcome.kind, outcome.mapping
             from yoetz.cli.observe_hooks import handle_observe
@@ -1646,6 +1790,9 @@ def handle_session_start(
                 run_async=run_async,
                 _session_lock_owned=True,
                 _include_admission_notice=False,
+                # This call only records the SessionStart; its output is discarded, so it must
+                # not read the recap's views a second time.
+                _include_recap=False,
             )
             if kind == "active" and updated is not None:
                 from yoetz.cli.host_hold_advisory import PrivacyConnector
@@ -1661,11 +1808,17 @@ def handle_session_start(
                     deadline=entered + 3.1,
                     max_chars=2_000,
                 )
+                context_limit = None
+                if outcome.recap is not None:
+                    # ADR-044: the compaction start also carries the receipt-style recap of
+                    # what Yoetz recorded, after the held-ids cue and the admission notice.
+                    context, context_limit = _with_compaction_recap(
+                        context, outcome.recap, pending_rows=pending_before
+                    )
                 _stdout_json(
-                    _context_output(
-                        "SessionStart",
-                        context,
-                    ),
+                    _context_output("SessionStart", context)
+                    if context_limit is None
+                    else _context_output("SessionStart", context, limit=context_limit),
                     stdout,
                 )
                 return 0

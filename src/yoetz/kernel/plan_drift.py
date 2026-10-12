@@ -1,43 +1,64 @@
-"""Advisory drift signals for plans that no longer describe the work.
+"""Drift signals for plans that no longer describe the work.
 
 The signals in this module are intentionally derived from recorded frontiers and explicit
 relations.  They never inspect plan prose, action descriptions, or the user's request looking
 for similar words.  A signal is therefore a bounded diagnostic: it says that the ledger lacks a
 relation needed to read the plan as current, not that the work is incomplete.
+
+``plan_unrefined_before_first_edit`` and ``obligation_evidence_stale_after_scope_edit`` stay
+advisory.  ``instruction_requirement_unmapped`` is agent-actionable (TB4 pilot, 2026-10-05):
+when a task statement is recorded and the effective plan declares obligations, none of which
+cites a statement event in ``source_refs``, or a completion claim stands on no plan or an
+explicit empty scope without a recorded no-material-work decision, the agent has not decomposed
+the user's request into the plan.  Yoetz checks only that structural link; the agent does the
+extraction.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, cast
 
 from yoetz.domain.events import (
     AcceptedEvent,
     ActionKind,
     ActionRecordedPayload,
+    DecisionRecordedPayload,
     LedgerRecord,
     ObligationStatus,
     PlanPublishedPayload,
     PlanRevisedPayload,
 )
-from yoetz.domain.task_statement import current_task_statement
-from yoetz.domain.values import EvidenceId, ObligationId, ResultId
+from yoetz.domain.task_statement import (
+    NO_MATERIAL_WORK_MARKER,
+    RecordedTaskStatement,
+    current_task_statement,
+)
+from yoetz.domain.values import EventId, EvidenceId, ObligationId, ResultId
+from yoetz.kernel.claims import completion_claim_present
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import PlanProjectionRecord, ProjectionState
 
 __all__ = [
     "INSTRUCTION_REQUIREMENT_UNMAPPED_GAP",
     "OBLIGATION_EVIDENCE_STALE_AFTER_SCOPE_EDIT_GAP",
+    "PLAN_DRIFT_ADVISORY_GAPS",
     "PLAN_DRIFT_GAPS",
     "PLAN_UNREFINED_BEFORE_FIRST_EDIT_GAP",
     "PlanDriftSignals",
+    "no_material_work_decided",
     "plan_drift_signals",
+    "stale_resolved_obligations",
+    "statement_mapped_by",
+    "task_statement_scope_empty_at_completion",
+    "task_statement_unmapped",
 ]
 
 
-# These are advisory coverage annotations.  Callers must keep them visible in status/check and
-# receipt text while excluding them from completion verdicts and closure blockers.
+# Every plan drift code stays visible in status/check and receipt text.  Only the advisory subset
+# below is excluded from completion verdicts and closure blockers; an unmapped task statement is
+# agent work (the work-integrity pack raises a finding for it) and bounds completion coverage.
 PLAN_UNREFINED_BEFORE_FIRST_EDIT_GAP: Final = "plan_unrefined_before_first_edit"
 OBLIGATION_EVIDENCE_STALE_AFTER_SCOPE_EDIT_GAP: Final = "obligation_evidence_stale_after_scope_edit"
 INSTRUCTION_REQUIREMENT_UNMAPPED_GAP: Final = "instruction_requirement_unmapped"
@@ -48,6 +69,7 @@ PLAN_DRIFT_GAPS: Final = frozenset(
         INSTRUCTION_REQUIREMENT_UNMAPPED_GAP,
     }
 )
+PLAN_DRIFT_ADVISORY_GAPS: Final = PLAN_DRIFT_GAPS - {INSTRUCTION_REQUIREMENT_UNMAPPED_GAP}
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,32 +167,50 @@ def _reference_frontier(
     return None if row is None or row.payload is None else row.source_frontier
 
 
+def _record_edits(
+    records: tuple[LedgerRecord, ...],
+) -> Iterable[tuple[int, ActionRecordedPayload]]:
+    for record in records:
+        if (
+            type(record) is AcceptedEvent
+            and type(record.payload) is ActionRecordedPayload
+            and record.payload.action_kind is ActionKind.EDIT
+        ):
+            yield record.ledger.ingestion_sequence, record.payload
+
+
+def _projection_edits(projection: ProjectionState) -> Iterable[tuple[int, ActionRecordedPayload]]:
+    for row in projection.actions.values():
+        if row.payload is not None and row.payload.action_kind is ActionKind.EDIT:
+            yield row.source_frontier, row.payload
+
+
+def stale_resolved_obligations(projection: ProjectionState) -> tuple[ObligationId, ...]:
+    """The resolved obligations whose every resolution reference predates a later edit.
+
+    Read from the projection alone (each action at its latest recorded frontier, which can only
+    make an obligation look staler), so a historical proof state can name exactly which
+    obligations ``obligation_evidence_stale_after_scope_edit`` is about.
+    """
+
+    return _stale_obligations(projection, _projection_edits(projection))
+
+
 def _stale_obligations(
     projection: ProjectionState,
-    records: tuple[LedgerRecord, ...],
+    edits: Iterable[tuple[int, ActionRecordedPayload]],
 ) -> tuple[ObligationId, ...]:
     scope = current_plan_scope(projection.plans, projection.coverage_gaps)
     if not scope.readable or scope.effective_obligation_refs is None:
         return ()
     edits_by_obligation: dict[ObligationId, int] = {}
     unscoped_edit_frontier: int | None = None
-    for record in records:
-        if (
-            type(record) is not AcceptedEvent
-            or type(record.payload) is not ActionRecordedPayload
-            or record.payload.action_kind is not ActionKind.EDIT
-        ):
+    for frontier, payload in edits:
+        if not payload.obligation_refs:
+            unscoped_edit_frontier = max(unscoped_edit_frontier or 0, frontier)
             continue
-        if not record.payload.obligation_refs:
-            unscoped_edit_frontier = max(
-                unscoped_edit_frontier or 0,
-                record.ledger.ingestion_sequence,
-            )
-            continue
-        for obligation in record.payload.obligation_refs:
-            edits_by_obligation[obligation] = max(
-                edits_by_obligation.get(obligation, 0), record.ledger.ingestion_sequence
-            )
+        for obligation in payload.obligation_refs:
+            edits_by_obligation[obligation] = max(edits_by_obligation.get(obligation, 0), frontier)
 
     stale: list[ObligationId] = []
     for obligation in scope.effective_obligation_refs:
@@ -208,19 +248,129 @@ def _stale_obligations(
     return tuple(sorted(set(stale), key=str.encode))
 
 
-def _instruction_unmapped(projection: ProjectionState, records: tuple[LedgerRecord, ...]) -> bool:
-    statement = current_task_statement(records)
+def _statement_events(
+    statement: RecordedTaskStatement | EventId | Iterable[EventId] | None,
+) -> frozenset[EventId]:
+    if statement is None:
+        return frozenset()
+    if type(statement) is RecordedTaskStatement:
+        return frozenset(statement.equivalent_event_ids)
+    if isinstance(statement, str):
+        return frozenset({EventId(statement)})
+    return frozenset(cast(Iterable[EventId], statement))
+
+
+def statement_mapped_by(
+    projection: ProjectionState,
+    statement: RecordedTaskStatement | EventId | Iterable[EventId] | None,
+) -> bool:
+    """Whether an effective obligation cites the statement (any digest-equivalent event)."""
+
+    events = _statement_events(statement)
     scope = current_plan_scope(projection.plans, projection.coverage_gaps)
-    if statement is None or not scope.readable or scope.effective_obligation_refs is None:
+    if not events or not scope.readable or not scope.effective_obligation_refs:
         return False
-    if not scope.effective_obligation_refs:
-        # An explicit empty-scope declaration is a plan decision, not evidence that a requirement
-        # was accidentally omitted from the plan.
-        return False
-    return not any(
-        row.payload is not None and statement.source_event_id in row.payload.source_refs
+    return any(
+        row.payload is not None and not events.isdisjoint(row.payload.source_refs)
         for obligation in scope.effective_obligation_refs
         if (row := projection.obligations.get(obligation)) is not None
+    )
+
+
+def task_statement_unmapped(
+    projection: ProjectionState,
+    statement: RecordedTaskStatement | EventId | Iterable[EventId] | None,
+) -> bool:
+    """True when a statement exists and no effective obligation cites it.
+
+    The relation is exact: an obligation maps the statement only when its ``source_refs`` names
+    an event that recorded the current statement content. A re-attach or plan event that repeats
+    the unchanged statement is the same request, so citing any of those events counts; an amended
+    statement has a different digest and must be mapped again. No statement, an unreadable or
+    absent plan, and an explicit empty-scope declaration never report this condition; the
+    completion-time rule below covers the last two.
+    """
+
+    events = _statement_events(statement)
+    scope = current_plan_scope(projection.plans, projection.coverage_gaps)
+    if not events or not scope.readable or scope.effective_obligation_refs is None:
+        return False
+    if not scope.effective_obligation_refs:
+        return False
+    return not statement_mapped_by(projection, events)
+
+
+def no_material_work_decided(
+    projection: ProjectionState,
+    statement: RecordedTaskStatement | EventId | Iterable[EventId] | None,
+    *,
+    workspace_changed: bool | None,
+) -> bool:
+    """Whether a readable decision records that the request asks for no material work.
+
+    The decision's statement must hold the exact line ``yoetz-no-material-work:<event>`` naming an
+    event that recorded the current statement content; its rationale is required by the schema.
+    The decision is contradicted, and therefore never counts, while the task records any edit
+    action or ``workspace_changed`` is not ``False``: hosts record shell writes as command actions,
+    so the check-time change capture is the structural witness that no file changed. ``True``
+    (the capture shows a changed path) and ``None`` (no capture was available) both fail closed.
+    """
+
+    events = _statement_events(statement)
+    if not events or workspace_changed is not False:
+        return False
+    if any(
+        row.payload is not None and row.payload.action_kind is ActionKind.EDIT
+        for row in projection.actions.values()
+    ):
+        return False
+    markers = {f"{NO_MATERIAL_WORK_MARKER}:{event}" for event in events}
+    for row in projection.decisions.values():
+        payload = getattr(row, "payload", None)
+        if (
+            type(payload) is not DecisionRecordedPayload
+            or getattr(row, "superseded_by_event_id", None) is not None
+        ):
+            # A superseded decision is no longer the agent's recorded position.
+            continue
+        if any(line.strip() in markers for line in payload.statement.splitlines()):
+            return True
+    return False
+
+
+def task_statement_scope_empty_at_completion(
+    projection: ProjectionState,
+    statement: RecordedTaskStatement | EventId | Iterable[EventId] | None,
+    *,
+    workspace_changed: bool | None,
+) -> bool:
+    """True when a completion claim stands on no plan or an explicit empty scope.
+
+    A recorded statement, an effective completion claim, and a readable plan chain that declares
+    no obligation (no plan at all, or an explicit empty-scope declaration) mean the agent is
+    claiming completion without decomposing the user's request. Mid-task checks before any
+    completion claim never report it. A recorded no-material-work decision answers it only when
+    ``workspace_changed`` is ``False`` (see ``no_material_work_decided``).
+    """
+
+    events = _statement_events(statement)
+    scope = current_plan_scope(projection.plans, projection.coverage_gaps)
+    if not events or not scope.readable:
+        return False
+    if scope.has_plan and scope.effective_obligation_refs:
+        return False
+    if not completion_claim_present(projection):
+        return False
+    return not no_material_work_decided(projection, events, workspace_changed=workspace_changed)
+
+
+def _instruction_unmapped(projection: ProjectionState, records: tuple[LedgerRecord, ...]) -> bool:
+    # This advisory drift code is derived from the ledger prefix alone, where no check-time change
+    # capture exists. It keeps the edit-action rule only (``workspace_changed=False``); the
+    # completion-gating finding in the check path consults the capture and fails closed.
+    statement = current_task_statement(records)
+    return task_statement_unmapped(projection, statement) or (
+        task_statement_scope_empty_at_completion(projection, statement, workspace_changed=False)
     )
 
 
@@ -228,7 +378,7 @@ def plan_drift_signals(
     projection: ProjectionState,
     records: Iterable[LedgerRecord],
 ) -> PlanDriftSignals:
-    """Derive advisory plan signals from exact ledger relations.
+    """Derive plan drift signals from exact ledger relations.
 
     A caller must pass the same accepted prefix that produced ``projection``.  The helper is
     deliberately total for a readable projection and ignores unknown/redacted payloads rather
@@ -243,7 +393,7 @@ def plan_drift_signals(
     plan_scope = current_plan_scope(projection.plans, projection.coverage_gaps)
     if plan_scope.readable and _plan_unrefined_before_edit(projection.plans, first_edit):
         codes.add(PLAN_UNREFINED_BEFORE_FIRST_EDIT_GAP)
-    stale = _stale_obligations(projection, ordered)
+    stale = _stale_obligations(projection, _record_edits(ordered))
     if stale:
         codes.add(OBLIGATION_EVIDENCE_STALE_AFTER_SCOPE_EDIT_GAP)
     if _instruction_unmapped(projection, ordered):

@@ -403,8 +403,10 @@ def test_canonical_source_activates_on_async_host_and_seeds_host_rendered_cache(
     cache_hooks = json.loads(
         (home / f"plugins/cache/yoetz/yoetz/{__version__}/hooks/hooks.json").read_bytes()
     )
-    handler = cache_hooks["hooks"]["PreToolUse"][0]["hooks"][0]
+    handler = cache_hooks["hooks"]["PermissionRequest"][0]["hooks"][0]
     assert handler.get("async") is True
+    # PreToolUse stays synchronous so its pairing identity commits before PostToolUse (#974).
+    assert "async" not in cache_hooks["hooks"]["PreToolUse"][0]["hooks"][0]
 
 
 def test_plugin_source_installed_accepts_either_current_renderer_variant(tmp_path: Path) -> None:
@@ -517,7 +519,7 @@ def test_same_version_cache_refresh_replaces_prior_managed_render(tmp_path: Path
     )
     assert result.state is ActivationState.ACTIVE
     refreshed = json.loads((cache / "hooks/hooks.json").read_bytes())
-    assert refreshed["hooks"]["PreToolUse"][0]["hooks"][0].get("async") is True
+    assert refreshed["hooks"]["PermissionRequest"][0]["hooks"][0].get("async") is True
 
 
 def test_cache_refresh_between_preview_and_apply_is_stale(tmp_path: Path) -> None:

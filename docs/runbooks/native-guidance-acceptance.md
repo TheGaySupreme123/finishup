@@ -141,7 +141,7 @@ records:
 - `pass`, `fail`, `unsupported`, `blocked`, or `not_run` per tested facet, with limitations and
   explicit non-claims. Unknown evidence remains unknown, never a zero count or a pass.
 
-Report the unanswered and receipt-blocking counts from the matching current `closure_readiness`
+Report the unanswered count and the finding counters (`finding_counts`, and `receipt_blocking_finding_count` = to do plus unmet) from the matching current `closure_readiness`
 projection; keep coverage-only gaps separate. A generated receipt, zero newly returned findings, and
 completed AI-powered review dispatch cannot replace recorded resolution proof. A signed-in profile
 or provider-ready status alone does not establish dispatch. Retain finalized provenance and privacy

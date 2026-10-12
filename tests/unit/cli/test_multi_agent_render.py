@@ -112,10 +112,11 @@ def test_check_lists_named_missing_items_as_a_limitation_not_a_finding() -> None
     assert "Missing for assessment (the reviewer could not assess the packet):" in rendered
     assert f"- verification_output ({claim}): agent_suppliable" in rendered
     assert "- command_identity (no packet ref): structurally_unavailable_on_this_host" in rendered
-    assert "Overall next: supply or repair the named agent-suppliable review input" in rendered
+    assert "Overall next: supply the named agent-suppliable review input" in rendered
     assert (
-        f"Overall next [action_required]: Supply or repair the named review input (targets: {claim})."
-        in rendered
+        "Overall next [action_required]: Supply the named review input as new records tied to the "
+        "named refs (never change your work to fit the reviewer) "
+        f"(targets: {claim})." in rendered
     )
 
 
@@ -133,6 +134,7 @@ def test_check_labels_finding_only_next_when_input_repair_is_required() -> None:
                 "open": "0",
                 "open_at_budget": "0",
                 "rejection_accepted": "0",
+                "self_verified": "0",
                 "verified_resolved": "0",
             },
             "next": "request_receipt",
@@ -165,7 +167,7 @@ def test_check_labels_finding_only_next_when_input_repair_is_required() -> None:
         "Finding checklist next: No open findings remain on the list; request the receipt."
         in rendered
     )
-    assert "Overall next: supply or repair the named agent-suppliable review input" in rendered
+    assert "Overall next: supply the named agent-suppliable review input" in rendered
 
 
 def test_check_labels_structural_limitations_as_disclosure_at_receipt() -> None:
@@ -238,6 +240,7 @@ def test_check_renders_the_finding_checklist_with_structural_tokens_only() -> No
                 "open": "1",
                 "open_at_budget": "1",
                 "rejection_accepted": "0",
+                "self_verified": "0",
                 "verified_resolved": "1",
             },
             "next": "decide_at_budget",
@@ -292,6 +295,7 @@ def test_check_checklist_says_how_many_items_the_list_leaves_out() -> None:
                 "open": "1",
                 "open_at_budget": "0",
                 "rejection_accepted": "0",
+                "self_verified": "0",
                 "verified_resolved": "101",
             },
             "next": "work_open_findings",
@@ -318,3 +322,102 @@ def test_check_checklist_says_how_many_items_the_list_leaves_out() -> None:
     rendered = render_human_check(result)
     assert "Counts: open 1, verified 101, not done 0, rejection accepted 0" in rendered
     assert "Not listed: 101" in rendered
+
+
+def _limit_checklist(next_step: str, bases: tuple[tuple[str, str], ...]) -> object:
+    from yoetz.protocol.models import CheckFindingChecklistModel
+
+    items = [
+        {
+            "finding_id": f"fnd_59000000-0000-4000-8000-{index:012d}",
+            "todo_state": "open",
+            "review_rounds": "0",
+            "closure_class": "agent_work",
+            "closure_basis": basis,
+        }
+        for index, (_name, basis) in enumerate(bases, start=1)
+    ]
+    to_disclose = sum(basis == "limitation_requested" for _name, basis in bases)
+    return CheckFindingChecklistModel.model_validate(
+        {
+            "attempt_budget": "5",
+            "counts": {
+                "acknowledged_not_done": "0",
+                "open": str(len(items)),
+                "open_at_budget": "0",
+                "rejection_accepted": "0",
+                "self_verified": "0",
+                "verified_resolved": "0",
+                "to_do": str(len(items) - to_disclose),
+                "awaiting_ruling": "0",
+                "unmet": "0",
+                "disclosed": "0",
+                "to_disclose": str(to_disclose),
+            },
+            "next": next_step,
+            "items": items,
+        }
+    )
+
+
+def _limit_result(next_step: str, action: str, bases: tuple[tuple[str, str], ...]) -> object:
+    checklist = _limit_checklist(next_step, bases)
+    return CheckSuccessModel.model_construct(
+        verdict="insufficient_coverage",
+        semantic_status="succeeded",
+        semantic_reason="semantic_completed",
+        findings=(),
+        suppressed_count="0",
+        coverage=CoverageModel.model_construct(known_gaps=()),
+        children=None,
+        advisory_notes=(),
+        finding_checklist=checklist,
+        overall_next=CheckOverallNextModel.model_validate(
+            {
+                "action": action,
+                "status": "action_required",
+                "target_refs": [
+                    f"fnd_59000000-0000-4000-8000-{index:012d}"
+                    for index in range(1, len(bases) + 1)
+                ],
+            }
+        ),
+    )
+
+
+def test_a_limitation_request_alone_is_worded_as_a_disclosure_on_both_continuations() -> None:
+    """Owner decision 2026-10-12: ``disclose_limitations`` says how the answer decides its meaning."""
+
+    rendered = render_human_check(
+        _limit_result(
+            "disclose_limitations",
+            "disclose_limitations",
+            (("a", "limitation_requested"),),
+        )  # type: ignore[arg-type]
+    )
+    assert rendered.count("Disclose the named limitation requests") == 2
+    assert "acknowledged_not_done only when you know it is not met" in rendered
+    assert "Repair" not in rendered
+
+
+def test_a_limitation_request_beside_real_work_names_both_in_the_work_continuation() -> None:
+    rendered = render_human_check(
+        _limit_result(
+            "work_open_findings",
+            "work_open_findings",
+            (("a", "limitation_requested"), ("b", "open_unanswered")),
+        )  # type: ignore[arg-type]
+    )
+    assert "Repair the open findings (or answer the reviewer's questions), then check again." in (
+        rendered
+    )
+    assert "For a reviewer's request to state a limit, respond acknowledged with the reason" in (
+        rendered
+    )
+    assert "Repair or answer the named open findings (a limitation request among them" in rendered
+    assert "Disclose the named limitation requests" not in rendered
+    # Without a limitation request the work continuation carries no such sentence.
+    plain = render_human_check(
+        _limit_result("work_open_findings", "work_open_findings", (("a", "open_unanswered"),))  # type: ignore[arg-type]
+    )
+    assert "state a limit" not in plain and "limitation request" not in plain

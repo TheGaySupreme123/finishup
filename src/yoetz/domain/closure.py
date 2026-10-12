@@ -6,7 +6,17 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import cast
 
+from pydantic import ValidationError
+
 from yoetz import __version__
+from yoetz.domain.events import (
+    OBLIGATION_SCHEMA_VERSION,
+    EventSchema,
+    ObligationPublishedPayload,
+    decode_payload,
+    obligation_schema_version,
+)
+from yoetz.domain.values import freeze_json
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.ids import IdKind, new_id
 from yoetz.protocol.models import (
@@ -19,17 +29,21 @@ from yoetz.protocol.models import (
     StatusSuccessModel,
     public_model_to_wire,
 )
+from yoetz.protocol.readiness_text import (
+    predicted_receipt_variants,
+    recheck_note,
+)
 
-__all__ = ["PREPARATION_REMEDIATIONS", "Selection", "prepare_closure"]
+__all__ = ["PREPARATION_REMEDIATIONS", "Selection", "prepare_closure", "recheck_note"]
 
 PREPARATION_REMEDIATIONS = {
     "closure_status_unavailable": "Read status for this session and writer before preparing again.",
     "closure_snapshot_unavailable": "A complete pinned snapshot was unavailable. Read status and restart inventory.",
     "closure_pagination_invalid": "The cursor repeated. Keep the original query identity and inspect status.",
     "closure_inventory_limit": "The bounded inventory is incomplete; use paginated status without assuming closure.",
-    "closure_result_too_large": "The complete preparation exceeds the MCP response bound; use the CLI closure-prepare --output path or read status pages directly, and do not claim closure from an incomplete response.",
+    "closure_result_too_large": "The complete inventory exceeds the MCP response bound. Select the ids you need from status pages and call closure_prepare with phase attempt, respond, resolve, claim or receipt (those responses carry only the selected rows), or use the CLI closure-prepare --output path; do not claim closure from an incomplete response.",
     "closure_obligation_unknown": "Select an obligation ID from the returned inventory.",
-    "closure_evidence_unavailable": "Select available, relevant evidence or retain the missing-evidence limitation.",
+    "closure_evidence_unavailable": "Select available evidence ids (evd_) from the inventory in evidence_refs; result ids (res_) go in result_ids. Otherwise retain the missing-evidence limitation.",
     "closure_result_unavailable": "The selected result payload is unavailable; inspect results and retain its limitation.",
     "closure_attempt_selection_required": "Select one obligation, exact requested-item indexes, and an explicit action description.",
     "closure_item_unknown": "Select requested-item indexes from the current obligation.",
@@ -42,6 +56,7 @@ PREPARATION_REMEDIATIONS = {
     "closure_unattempted_items": "Account for genuine attempts or revise the obligation; do not copy unchecked requested items.",
     "closure_obligation_content_unavailable": "The obligation's meaning fields are withheld; do not recreate them to resolve it.",
     "closure_claim_decision_required": "Supply the bounded completion assertion and explicitly select its obligations and support.",
+    "closure_draft_invalid": "The prepared draft did not validate; nothing was recorded. Publish the change yourself with publish_work (obligation_published/1.1.0 accepts every obligation) and report this preparation failure.",
     "closure_output_unwritable": "Nothing was saved. Choose a writable file path in an existing directory and prepare again.",
     "closure_output_not_durable": "The file was replaced, but its directory could not be flushed to disk, so a crash may lose it. Prepare again, saving to a local disk.",
 }
@@ -67,6 +82,48 @@ def _base(
     }
 
 
+def scope_inventory_to_selection(
+    inventory: dict[str, list[dict[str, JsonValue]]], selection: ClosureSelectionModel
+) -> dict[str, JsonValue]:
+    """Keep only the inventory rows a phase's selection names, and say what was left out.
+
+    A draft phase already validated its selection against the whole pinned inventory, so echoing
+    every row again only costs response bytes: at a long-run frontier (about 1,430 events) the
+    full echo exceeded the MCP frame bound and the agent lost the draft it had just earned
+    (tb4n3 formal-crypto S). ``scope`` records the per-view totals and how many rows are kept.
+    """
+
+    selected_findings: set[str] = set() if selection.finding_id is None else {selection.finding_id}
+    wanted: dict[str, tuple[str, set[str]]] = {
+        "obligations": ("obligation_id", set(selection.obligation_ids)),
+        "results": ("result_id", set(selection.result_ids)),
+        "evidence": ("evidence_id", set(selection.evidence_refs)),
+        "findings": ("finding_id", selected_findings),
+        "history": ("event_id", set(selection.observed_event_ids)),
+    }
+    scoped: dict[str, JsonValue] = {}
+    totals: dict[str, JsonValue] = {}
+    kept: dict[str, JsonValue] = {}
+    for view, rows in inventory.items():
+        key, ids = wanted[view]
+        chosen = [
+            row for row in rows if isinstance(row.get(key), str) and cast(str, row.get(key)) in ids
+        ]
+        scoped[view] = cast(JsonValue, chosen)
+        totals[view] = str(len(rows))
+        kept[view] = str(len(chosen))
+    scoped["scope"] = {
+        "mode": "selected_rows",
+        "totals": totals,
+        "kept": kept,
+        "note": (
+            "Only rows named by this selection are included. Read the status views, or prepare "
+            "phase inventory, for every row."
+        ),
+    }
+    return scoped
+
+
 async def prepare_closure(
     status: Callable[[StatusRequest], Awaitable[StatusResult]],
     session_id: str,
@@ -75,8 +132,14 @@ async def prepare_closure(
     *,
     client_kind: str = "yoetz_cli",
     integration: str = "local_cli",
+    scope_to_selection: bool = False,
 ) -> dict[str, JsonValue]:
-    """Pin and exhaust every input view, then produce at most one non-evidential request."""
+    """Pin and exhaust every input view, then produce at most one non-evidential request.
+
+    ``scope_to_selection`` limits a draft phase's echoed inventory to the selected rows (the MCP
+    path; the CLI keeps the complete inventory for its local ``--output`` file). Validation always
+    runs against the complete pinned inventory.
+    """
 
     base = _base(
         session_id,
@@ -151,6 +214,18 @@ async def prepare_closure(
             "GitHub workflow evidence uses the API run id, never run_number; this tool does not manufacture it.",
         ],
     }
+    announced = recheck_note(compact.closure_readiness)
+    if announced is not None:
+        cast(list[str], output["notes"]).append(announced)
+    # The same predicted receipt conclusion every surface prints (owner decision Q1), appended
+    # after the notes above and never edited into them.
+    readiness_state = getattr(compact.closure_readiness, "state", None)
+    predicted = predicted_receipt_variants(
+        getattr(compact.closure_readiness, "predicted_receipt", None),
+        state=readiness_state if type(readiness_state) is str else "ready",
+    )
+    if predicted:
+        cast(list[str], output["notes"]).append(predicted[0])
     if selection.phase == "inventory":
         return output
     obligations = {cast(str, item["obligation_id"]): item for item in inventory["obligations"]}
@@ -249,7 +324,8 @@ async def prepare_closure(
             raise ValueError("closure_resolution_decision_required")
         for key in selection.obligation_ids:
             row = obligations[key]
-            if row["status"] != "open":
+            # acknowledged_not_done (#1002) is not resolved and may still be resolved.
+            if row["status"] == "resolved":
                 raise ValueError("closure_obligation_not_open")
             if row["unattempted_items"]:
                 raise ValueError("closure_unattempted_items")
@@ -282,7 +358,9 @@ async def prepare_closure(
                     ),
                 }
             )
-            draft("obligation_published", payload)
+            # One version rule for every obligation draft (issue #1023): a role, directory item
+            # or acknowledgement needs 1.1.0; a plain obligation keeps its 1.0.0 bytes.
+            draft("obligation_published", payload, version=_obligation_draft_version(payload))
     elif selection.phase == "claim":
         if not selection.description or not selection.obligation_ids:
             raise ValueError("closure_claim_decision_required")
@@ -313,13 +391,18 @@ async def prepare_closure(
                 "redaction_profile": "default_local_export",
             }
         )
-    if operation == "publish_work":
-        request.update({"event_drafts": drafts, "dry_run": True})
-        validated = public_model_to_wire(PublishWorkRequest.model_validate(request))
-    elif operation == "respond":
-        validated = public_model_to_wire(RespondRequest.model_validate(request))
-    else:
-        validated = public_model_to_wire(ReceiptRequest.model_validate(request))
+    try:
+        if operation == "publish_work":
+            request.update({"event_drafts": drafts, "dry_run": True})
+            validated = public_model_to_wire(PublishWorkRequest.model_validate(request))
+        elif operation == "respond":
+            validated = public_model_to_wire(RespondRequest.model_validate(request))
+        else:
+            validated = public_model_to_wire(ReceiptRequest.model_validate(request))
+    except ValidationError as exc:
+        # A draft this composer built that its own request model refuses is a preparation
+        # defect, never an internal error the agent cannot act on (tb4n2 retro S, N2-2).
+        raise ValueError("closure_draft_invalid") from exc
     output["operation"] = operation
     output["request"] = validated
     recovery = StatusRequest.model_validate(
@@ -341,4 +424,25 @@ async def prepare_closure(
     output["recovery"] = (
         "After timeout, inspect this operation: absent permits replay; pending keeps the same request; committed uses its stored result. Never regenerate the request identity."
     )
+    if scope_to_selection:
+        output["inventory"] = scope_inventory_to_selection(inventory, selection)
     return output
+
+
+def _obligation_draft_version(payload: dict[str, object]) -> str:
+    """The ``obligation_published`` version for a resolve draft, by the shared rule.
+
+    The payload is read with the 1.1.0 codec (a superset), then ``obligation_schema_version``
+    picks 1.1.0 only for a payload that needs it. A payload the codec refuses is a draft defect.
+    """
+
+    try:
+        decoded = decode_payload(
+            EventSchema("obligation_published", OBLIGATION_SCHEMA_VERSION),
+            freeze_json(cast(JsonValue, payload)),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("closure_draft_invalid") from exc
+    if type(decoded) is not ObligationPublishedPayload:
+        raise ValueError("closure_draft_invalid")
+    return obligation_schema_version(decoded)

@@ -61,13 +61,18 @@ def test_the_claude_text_names_the_deferred_schema_load_step_and_the_catalog() -
     assert "plugin-prefixed name" in text
     assert "Read-only questions skip it." in text
     assert "Subagents whose assignment names no handle or parent session skip it." in text
-    # Everything that no longer fits is one read_guidance call away; both URIs stay named so the
-    # agent that only sees this block can still find the safety floor and the workflow.
-    assert "`read_guidance`" in text
-    assert "yoetz://guidance/agent-instructions.md" in text
-    assert "yoetz://guidance/workflow.md" in text
+    # Everything that no longer fits is one guidance read away (#961): the block names the
+    # mandatory core and defers the procedure topics until after `start`; the core names
+    # `read_guidance` and the workflow URI.
+    before_start, separator, after_start = text.partition("After `start`")
+    assert separator
+    assert "yoetz://guidance/agent-instructions.md" in before_start
+    assert "read workflow" in after_start
+    core = read_resource("yoetz://guidance/agent-instructions.md").decode("utf-8")
+    assert "`read_guidance`" in core
+    assert "yoetz://guidance/workflow.md" in core
     assert "Do not list resources." in text
-    assert "if guidance is empty or clipped, use paged reads and verify before continuing" in text
+    assert "if empty or clipped, page and verify." in text
     assert "Never claim active before `start`" in text
     assert "a clean check does not mean the work is correct" in text
 
@@ -168,8 +173,13 @@ def test_advertised_surface_metrics_charge_the_selected_host_body() -> None:
 def test_shared_guidance_retains_deferred_schema_and_late_start_recovery() -> None:
     instructions = read_resource("yoetz://guidance/agent-instructions.md").decode("utf-8")
     workflow = read_resource("yoetz://guidance/workflow.md").decode("utf-8")
-    assert "If the tool list shows only names, load the `start` schema first." in instructions
-    assert "If material work already began without a task, call `start` now" in instructions
+    # The mandatory core sends a new session to discover schemas before `start`; the exact
+    # deferred-schema and late-start procedures live in the workflow's start-and-resume topic.
+    assert "read guidance/discover schemas, then `start`" in instructions
+    flat_workflow = " ".join(workflow.split())
+    assert "lists only names, load the `start` schema by name first" in flat_workflow
+    assert "If material work already began before `start`" in flat_workflow
+    assert "call `start` now, publish the transitions so far as a bounded plan" in flat_workflow
     assert "ToolSearch\n`select:mcp__yoetz__start`" in workflow
     assert "| Material work began before `start` was called" in workflow
     assert "backdate `occurred_at` to imply coverage that was not published" in workflow

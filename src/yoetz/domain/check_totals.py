@@ -99,10 +99,15 @@ def render_check_totals(value: object) -> str:
         obligation_text = "obligations unavailable (current plan scope is unreadable); "
         requested_items_text = "requested items unavailable (current plan scope is unreadable); "
     else:
+        # #997: obligations acknowledged as not done are the remainder of ``declared``.
+        acknowledged = int(obligations["declared"]) - sum(
+            int(obligations[key]) for key in ("resolved", "open", "unreadable")
+        )
+        acknowledged_text = f"{acknowledged} acknowledged not done, " if acknowledged > 0 else ""
         obligation_text = (
             f"obligations {obligations['declared']} declared, {obligations['resolved']} resolved, "
-            f"{obligations['open']} open, {obligations['unreadable']} unreadable, "
-            f"{obligations['with_evidence']} with evidence; "
+            f"{obligations['open']} open, {acknowledged_text}{obligations['unreadable']} "
+            f"unreadable, {obligations['with_evidence']} with evidence; "
         )
         requested_items_text = (
             f"requested items {items['attempted']} attempted, {items['unattempted']} unattempted; "

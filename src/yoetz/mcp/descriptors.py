@@ -72,6 +72,7 @@ _TOOL_OUTPUT_SCHEMA_VERSIONS: Final = MappingProxyType(
         "start": "1.1.0",
         "check": "1.4.0",
         "respond": "1.1.0",
+        "publish_work": "1.1.0",
         "status": "1.4.0",
         "receipt": "1.3.0",
         "closure_prepare": "1.0.0",
@@ -160,15 +161,20 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_encoded_bytes": 5_000,
             }
         ),
+        # obligation_published 1.1.0 (#1002) adds one draft branch, its payload definition and the
+        # payload's evidence/result oneOf: +3 branches, +1 definition, and about 1.7 KB for that
+        # payload (directory kind, item role, acknowledged_not_done status and its reason). The
+        # branch cannot be shared with 1.0.0, which must keep refusing those additions.
         "publish-work-request": MappingProxyType(
             {
                 "max_oneof_nodes": 8,
-                "max_oneof_branches": 38,
+                "max_oneof_branches": 41,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 23,
+                "max_defs_count": 24,
                 "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 52_000,
+                # obligation_published 1.1.0 (#1002, #997) and blocker notices (#985).
+                "max_encoded_bytes": 55_000,
             }
         ),
         "check-request": MappingProxyType(
@@ -839,6 +845,36 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
                 "actor": dict(_EXAMPLE_ACTOR),
                 "client": dict(_EXAMPLE_CLIENT),
             },
+            # Issue #997 (ADR-032 slice C): the honest last resort for an obligation the agent
+            # will not do, after repair: repeat the meaning fields, status acknowledged_not_done
+            # with a reason, on obligation_published 1.1.0. A later open or resolved
+            # publication of the same obligation takes it back.
+            {
+                "protocol_version": "0.1",
+                "schema_version": "1.0.0",
+                "request_id": _example_id("request", 13),
+                "session_id": _example_id("session", 1),
+                "writer_id": _example_id("writer", 1),
+                "expected_frontier": {"sequence": "2", "head_digest": _EXAMPLE_HEAD_DIGEST},
+                "event_drafts": [
+                    _example_draft(
+                        13,
+                        "obligation_published",
+                        {
+                            "obligation_id": _example_id("obligation", 2),
+                            "description": "State the outcome this work owes.",
+                            "acceptance_criteria": "A focused test slice passes at the claimed state.",
+                            "evidence_expectation": "A named test run or reviewed diff.",
+                            "status": "acknowledged_not_done",
+                            "requested_items": [{"item_kind": "command", "value": "pytest -q"}],
+                            "acknowledged_not_done_reason": "Out of scope for this change; reported to the user.",
+                        },
+                        version="1.1.0",
+                    ),
+                ],
+                "actor": dict(_EXAMPLE_ACTOR),
+                "client": dict(_EXAMPLE_CLIENT),
+            },
             *(
                 _lifecycle_example(40 + index, family)
                 for index, family in enumerate(
@@ -1363,15 +1399,51 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
                 "Omit for the whole case, or send both claim_ids and obligation_ids. Two empty "
                 "arrays also mean the whole case."
             )
+        final_review = properties.get("final_review")
+        if isinstance(final_review, dict):
+            final_review["description"] = (
+                "Set true for the closing review, the last check before the receipt: the "
+                "reviewer judges each stated requirement and requested output against the task, "
+                "with or without a completion claim. Omit for in-progress checks."
+            )
+        await_observations = properties.get("await_observations")
+        if isinstance(await_observations, dict):
+            await_observations["description"] = (
+                "Set true to wait up to about 3 seconds for this task's hook observations still "
+                "being delivered before the check, instead of polling status. The result's "
+                "observations_awaited reports complete or bounded_timeout; the check never fails "
+                "because of the wait."
+            )
     elif name == "respond-request":
         disposition = properties.get("disposition")
         if isinstance(disposition, dict):
             disposition["description"] = (
-                "Acknowledged accepts no waiver fields. Acknowledged_not_done means you will "
-                "not do it and is final. Provenance_disputed contests the finding's authorship "
-                "or provenance premise rather than its conclusion. It, rejected and "
+                "Acknowledged accepts no waiver fields and, on an AI-powered review finding, "
+                "requires a reason the next review reads (for answer_question, the answer); on a "
+                "limitation request (requested_next_step state_unresolved_limitation) one "
+                "reasoned acknowledgement says the requirement may be met but cannot be confirmed "
+                "here and needs no repair attempt. "
+                "Self_verified means you repaired it, Yoetz's later check still cannot confirm it "
+                "because of a Yoetz limit, and you checked it yourself: reason says how, and "
+                "evidence_refs (at least one) cite your recorded evidence; it is final. "
+                "Acknowledged_not_done means you will not or cannot do it and is the last resort "
+                "(on a limitation request it says the requirement is NOT met); "
+                "reopened (reason required) takes it back so the finding is open again, and a "
+                "later check that finds the issue absent after your answer resolves it by "
+                "itself. Duplicate_of is only for a restatement of the SAME issue (same origin "
+                "and kind) as an earlier finding you answered: name it in duplicate_of_finding_id; "
+                "reason and evidence are optional and it is not final. Linking never resolves the "
+                "new finding (its own check must); a later check that raises its issue again "
+                "breaks the link. Provenance_disputed contests the finding's authorship "
+                "or provenance premise rather than its conclusion. It, rejected, reopened and "
                 "acknowledged_not_done require reason and accept no waiver fields. Waived "
                 "requires reason and waiver_scope."
+            )
+        duplicate_of = properties.get("duplicate_of_finding_id")
+        if isinstance(duplicate_of, dict):
+            duplicate_of["description"] = (
+                "Only with duplicate_of: an earlier, readable finding of this task with the same "
+                "origin and kind that names the same issue and is not itself linked."
             )
         finding_frontier = properties.get("finding_frontier")
         if isinstance(finding_frontier, dict):
@@ -1881,16 +1953,28 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
     _descriptor(
         "respond",
         "Respond to a finding",
-        "Records an acknowledgement, provenance dispute, or rejection for one finding at any "
-        "frontier at or after its record, such as the current status frontier, not its "
-        "subject_frontier. This appends one "
+        "Records an acknowledgement, self-verification, provenance dispute, or rejection for one "
+        "finding at any frontier at or after its record, such as the current status frontier, "
+        "not its subject_frontier. For an unresolved finding: repair it and check first. "
+        "If you repaired it and Yoetz still cannot confirm it (a Yoetz limit), verify it yourself, "
+        "record that evidence, and respond self_verified saying how you checked it, with the "
+        "evidence ids; it is refused (finding_not_rechecked, finding_not_proof_limited) while "
+        "no later check ran or Yoetz still sees the issue. A Yoetz limit is never a "
+        "yoetz-blocker. Use acknowledged_not_done only if you truly will not or cannot do it, "
+        "and reopened (with a reason) to take it back. A reviewer's limitation request "
+        "(state_unresolved_limitation) is not repair work: respond acknowledged with the reason "
+        "if the requirement may be met but cannot be confirmed here; acknowledged_not_done says it "
+        "is not met. Only if a new finding restates the SAME issue as an earlier one you answered, respond "
+        "duplicate_of with duplicate_of_finding_id; linking never resolves the new finding. "
+        "This appends one "
         "finding-response record to the local Yoetz ledger; it does not publish to GitHub or run an "
         "AI-powered evaluation. It does not resolve other findings or establish that underlying work "
         "changed. A provenance_disputed response contests the finding's authorship or provenance "
         "premise rather than its conclusion, requires a reason, and never resolves the finding. "
         "Bounded waiver is reserved for an authorized local-CLI human and is not an agent option. "
         "A readable response removes that finding from unanswered_finding_count without reducing "
-        "receipt_blocking_finding_count, erasing its historical record, or closing an independent "
+        "receipt_blocking_finding_count (except self_verified, which is disclosed and keeps the "
+        "receipt from reading clean), erasing its historical record, or closing an independent "
         "coverage gap; only a later qualifying check of the repaired record resolves a finding. "
         "Disposition older findings before the final check. Call once per finding: a readable "
         "response to a finding returned by that check, or acknowledging a non-actionable "
@@ -1926,7 +2010,8 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "needs repair or a limited receipt; only a later qualifying check resolves one, never a "
         "response. Answer findings_unanswered; repair and recheck receipt_findings_unresolved once, "
         "then disclose if unchanged state still limits coverage. At state ready_with_limitations "
-        "nothing is left to do: request the receipt. Call after resume, compaction, or "
+        "nothing is left to do: request the receipt; predicted_receipt names its conclusion. "
+        "Call after resume, compaction, or "
         "delegate handoff and before a completion claim. Guidance: "
         "yoetz://guidance/workflow.md.",
         read_only=True,
@@ -1952,7 +2037,9 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "Read guidance",
         "Reads one registered Yoetz guidance URI and returns its full markdown as tool text, or a "
         "bounded UTF-8-safe page when `page` or `page_size` is supplied. Catalogued heading topics "
-        "use the document URI plus a lowercase hyphen anchor and return one bounded procedure. "
+        "return one bounded procedure; use only an anchor guidance names verbatim, never one "
+        "derived from a heading, tool, or event name. An unknown anchor's rejection lists that "
+        "document's registered anchors; the whole-document URI always works. "
         "`page_size` is a canonical "
         "UTF-8 byte budget from 4 through 16384 inclusive; use 4096 by default. An invalid size "
         "returns a field-local page_size correction with the permitted range and retry shape. "
@@ -1961,7 +2048,7 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "continuation; consumers must reconstruct every page and verify the final digest before "
         "claiming guidance is loaded. A page marked complete means only that the service emitted "
         "the end page; delivery remains unconfirmed until the consumer reconstructs it. The text "
-        "channel uses a 512-byte summary, while paged reads carry one marked page. The legacy "
+        "channel uses a bounded 4096-byte summary, while paged reads carry one marked page. The legacy "
         "URI-only route remains "
         "available on demand. This is not a ledger operation and does not write the ledger. Extra "
         "keys and unknown URIs are rejected without echoing the value. Guidance: "
@@ -1978,9 +2065,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "dry_run=true; this helper never writes the ledger, judges work, or claims completion. "
         "Use the emitted recovery request and keep its request identity when a later write "
         "times out. Select only IDs and requested-item indexes returned by the same inventory; "
-        "a moving frontier or unavailable item is refused. The MCP response has a bounded frame; "
-        "an oversized inventory returns LIMIT_EXCEEDED without a partial success, so use the CLI "
-        "closure-prepare --output path for a larger local inventory. Guidance: "
+        "a moving frontier or unavailable item is refused. The MCP response has a bounded frame: "
+        "a draft phase echoes only the rows you selected, and an oversized inventory returns "
+        "LIMIT_EXCEEDED without a partial success, so select ids from the status pages or use the "
+        "CLI closure-prepare --output path for a larger local inventory. Guidance: "
         "yoetz://guidance/workflow.md.",
         read_only=True,
         idempotent=True,
@@ -2034,33 +2122,33 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "policy": MappingProxyType(
             {
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
-                "publish_work": "sha256:a8dd06954e2f2ff65d3fb269a143b13745342e973e270179dc8b952fde7df115",
+                "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:f4e91ea5ae6138ca381d3a990340067b6e28a545340eec9c0ca4737a18f06166",
-                "respond": "sha256:191f69e1592bd6bb23f7173725645dc339441b12eaa91c08cc3da4e9feaf0b85",
-                "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
+                "respond": "sha256:41dee68d3de5fa8d4d9d95a70f01660c1fab93bbf47c8a93ca0c7253abd11433",
+                "status": "sha256:fcc6116a60b0b0938bebc5b327663fafeee1f28c6dffcd4a6ccb628711531551",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
-                "read_guidance": "sha256:4502f6d3154d3e0c49283f9c9b81c0380b19f10918fc0080443a1c811b9102ff",
-                "closure_prepare": "sha256:9cbf97d6a668de25cd80bdf79a75c50dcbeef256ba4abf4b6abc86405a6627d5",
+                "read_guidance": "sha256:874876f601c5eb51d0b2059f71c4def9b59be842fbf4d59ac888146d6c8994b8",
+                "closure_prepare": "sha256:fa7fa2e1aa2c64eae1ace9069b905dbe5c82c89e92d696434d0058a343393007",
             }
         ),
         "strict": MappingProxyType(
             {
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
-                "publish_work": "sha256:a8dd06954e2f2ff65d3fb269a143b13745342e973e270179dc8b952fde7df115",
+                "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:3cd2326917a550c0a24f3e94c6141f41b1549107030154c3e5b29f46bfaef78b",
-                "respond": "sha256:191f69e1592bd6bb23f7173725645dc339441b12eaa91c08cc3da4e9feaf0b85",
-                "status": "sha256:7e77f753244eee59b711cb7ee77c8f09970ef1b61c91b548b6f4a821b3541969",
+                "respond": "sha256:41dee68d3de5fa8d4d9d95a70f01660c1fab93bbf47c8a93ca0c7253abd11433",
+                "status": "sha256:fcc6116a60b0b0938bebc5b327663fafeee1f28c6dffcd4a6ccb628711531551",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
-                "read_guidance": "sha256:4502f6d3154d3e0c49283f9c9b81c0380b19f10918fc0080443a1c811b9102ff",
-                "closure_prepare": "sha256:9cbf97d6a668de25cd80bdf79a75c50dcbeef256ba4abf4b6abc86405a6627d5",
+                "read_guidance": "sha256:874876f601c5eb51d0b2059f71c4def9b59be842fbf4d59ac888146d6c8994b8",
+                "closure_prepare": "sha256:fa7fa2e1aa2c64eae1ace9069b905dbe5c82c89e92d696434d0058a343393007",
             }
         ),
     }
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:7de117f8bc28b3970e8ef5ab2ab11074683e7adb59d156cea6a465f952342b33",
-        "strict": "sha256:3ef47b80d54b8313e2376575d671444d7952c8909e42ece7b84424616731ffaa",
+        "policy": "sha256:9576c84c3b7476c7c3d9520ba18dec6ef7d852a1d96c5a29b4bc2348eafbb05d",
+        "strict": "sha256:346964d57cf6c679a4b69d89c62172a1649d3d678922ae60a343dc85f4bca38f",
     }
 )
 

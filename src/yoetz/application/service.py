@@ -106,7 +106,12 @@ from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.host_lineage import HostLineageRegistryPort
 from yoetz.ports.ids import IdPort
 from yoetz.ports.importer import ImportAllocation
-from yoetz.ports.ledger import CheckAwaitingHuman, CheckCommitResult, FrozenCase
+from yoetz.ports.ledger import (
+    CheckAwaitingHuman,
+    CheckCommitResult,
+    CheckObservationsAwaited,
+    FrozenCase,
+)
 from yoetz.ports.publish_response_catalog import (
     PublishResponseCatalogPort,
     PublishResponseKey,
@@ -543,12 +548,26 @@ class _SemanticEvaluator(Protocol):
         require_complete_specification: bool = False,
     ) -> Awaitable[object]: ...
 
+    # ``final_review`` (issue #976) is optional on this port: ``evaluate_semantic_check`` passes
+    # it only to evaluators whose signature declares it, so older doubles stay assignable.
+
 
 type _ScopeResolver = Callable[
     [ControlProjectionBinding, Mapping[str, JsonValue]], AuthorizationScope
 ]
 type _ReceiptVersions = Callable[[TaskRuntime], ReceiptVersionSlice]
 type _SupportHandler = Callable[..., Awaitable[JsonObject]]
+
+
+def _accepts_keyword(function: object, name: str) -> bool:
+    try:
+        parameters = inspect.signature(cast(Callable[..., object], function)).parameters.values()
+    except TypeError, ValueError:
+        return False
+    return any(
+        parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 
 def _empty_support_handlers() -> Mapping[ControlMethod, _SupportHandler]:
@@ -2396,7 +2415,10 @@ class Application:
         route_profile: Literal["policy", "strict"] = "policy",
         host_profile: McpHostProfile = "generic",
         repository_privacy_context: RepositoryPrivacyContext | None = None,
+        observations_awaited: CheckObservationsAwaited | None = None,
     ) -> CheckCommitResult | CheckAwaitingHuman:
+        """Run one check; ``observations_awaited`` is the daemon's pre-gate wait (issue #1012)."""
+
         from yoetz.application.check import execute_check
 
         await self._require_repository_route(request, repository_privacy_context)
@@ -2419,12 +2441,16 @@ class Application:
             else CheckWorkspaceSource(locator.path, repository_privacy_context.commitment)
         )
         with check_workspace_source_scope(source):
-            return await execute_check(
+            result = await execute_check(
                 self,  # pyright: ignore[reportArgumentType]
                 request,
                 route_profile=route_profile,
                 host_profile=host_profile,
             )
+        if observations_awaited is not None and type(result) is CheckCommitResult:
+            # Describes this call's wait only; nothing about it is recorded in the ledger.
+            result = replace(result, observations_awaited=observations_awaited)
+        return result
 
     async def respond(
         self,
@@ -2445,11 +2471,68 @@ class Application:
     ) -> StatusInternalResult:
         await self._require_repository_route(request, repository_privacy_context)
         await self._renew_activity_session(request.session_id, request)
-        return await execute_status(
+        result = await execute_status(
             self,  # pyright: ignore[reportArgumentType]
             request,
             route_profile=route_profile,
         )
+        state = await self._credential_heuristic_state(repository_privacy_context)
+        return result if state is None else replace(result, credential_heuristic=state)
+
+    async def _credential_heuristic_state(
+        self, repository_privacy_context: RepositoryPrivacyContext | None
+    ) -> tuple[str, str] | None:
+        """The possible-credential filter state status shows before any check (issue #982).
+
+        ``repository`` follows the current repository's own grant (owner decision, 2026-10-07);
+        without a grant nothing reaches the external reviewer, so it reads ``enforced``.
+        ``machine_default`` is what a repository without a grant inherits. Read-only; any read
+        failure reports ``unknown`` rather than guessing. ``None`` when this application has no
+        privacy support at all.
+        """
+
+        if (
+            ControlMethod.PRIVACY_GET_SETUP not in self.support_handlers
+            or ControlMethod.PRIVACY_GET_EFFECTIVE not in self.support_handlers
+        ):
+            return None
+
+        def token(value: object) -> str:
+            if value == "enforced" or value == "disabled" or value == "unknown":
+                return cast(str, value)
+            return "unknown"
+
+        def state_of(policy: object) -> str:
+            if not isinstance(policy, Mapping):
+                return "unknown"
+            value = cast(Mapping[str, object], policy).get("credential_heuristic", "enforced")
+            if value == "enforced" or value == "disabled":
+                return cast(str, value)
+            return "unknown"
+
+        if repository_privacy_context is not None:
+            # The setup read carries the one derivation every surface shows (repository grant,
+            # pending migration outcome, installation default).
+            try:
+                setup = await self._support(
+                    ControlMethod.PRIVACY_GET_SETUP,
+                    JsonObject({"schema_version": "2.0.0"}),
+                    repository_privacy_context=repository_privacy_context,
+                )
+                pair = setup.get("credential_heuristic")
+                if isinstance(pair, Mapping):
+                    typed = cast(Mapping[str, object], pair)
+                    return token(typed.get("repository")), token(typed.get("machine_default"))
+            except Exception:  # noqa: BLE001 - status stays readable; the state is unknown
+                pass
+        try:
+            effective = await self._support(
+                ControlMethod.PRIVACY_GET_EFFECTIVE, JsonObject({"schema_version": "1.0.0"})
+            )
+            machine_default = state_of(effective.get("policy"))
+        except Exception:  # noqa: BLE001 - status stays readable; the state is unknown
+            machine_default = "unknown"
+        return "unknown", machine_default
 
     async def receipt(
         self,
@@ -2709,8 +2792,18 @@ class Application:
         runtime: object | None = None,
         lineage_evaluation: LineageEvaluation | None = None,
         require_complete_specification: bool = False,
+        final_review: bool = False,
+        task_fact_gaps: tuple[str, ...] = (),
     ) -> object:
         evaluator = self.semantic_evaluator
+        # The closing-review choice (issue #976) and the check-time task-fact codes (#977) reach
+        # only evaluators that declare them, so an older double keeps its exact call shape
+        # instead of failing into the fallbacks below.
+        extra: dict[str, object] = {}
+        if final_review and _accepts_keyword(evaluator, "final_review"):
+            extra["final_review"] = True
+        if task_fact_gaps and _accepts_keyword(evaluator, "task_fact_gaps"):
+            extra["task_fact_gaps"] = task_fact_gaps
         # Production evaluators accept the task runtime for durable job/attempt coordination.
         # Test doubles may still be binary callables.
         try:
@@ -2720,6 +2813,7 @@ class Application:
                 cast(TaskRuntime | None, runtime),
                 lineage_evaluation,
                 require_complete_specification=require_complete_specification,
+                **extra,
             )
         except TypeError:
             try:

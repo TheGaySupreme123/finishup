@@ -594,6 +594,12 @@ class HumanControlClient:
             )
             async with asyncio.timeout(self._timeout_seconds):
                 frame = await _read_human_frame(stream)
+            if type(frame) is ServerErrorEnvelope and frame.code in _PASS_THROUGH_SERVER_CODES:
+                # A service that refuses the ceremony at open (the production daemon's
+                # kind_forbidden for an idle-relock change, say) answered and declined; its
+                # bounded reason must reach the operator, not collapse to "service unavailable"
+                # (tb4n1 A8).
+                raise ConfidentialClientError(frame.code)
             if type(frame) is not ServerOpenedEnvelope:
                 raise ConfidentialClientError("protocol_error")
             if (

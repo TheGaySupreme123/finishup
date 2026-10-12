@@ -94,3 +94,22 @@ def test_execution_snapshot_freezes_the_budget_profile_and_reads_legacy_snapshot
     legacy["budget_profile"] = "checkpoint"
     with pytest.raises(ValueError, match="semantic_execution_invalid"):
         from_json(legacy)
+
+
+def test_a_closing_review_request_selects_final_without_a_completion_claim() -> None:
+    """TB4 tb4f1 (issue #976): an agent that never claims completion still gets the final phase.
+
+    atrx-vep-crispr ran two routine reviews ("this review does not assess completion") while the
+    requested report was never written, because only a completion claim selected ``final``.
+    """
+
+    empty = empty_projection_state()
+    assert select_semantic_budget_profile(empty, final_review=True) == "final"
+    material = make_case(claims={clm(1): record(_claim(ClaimKind.MATERIAL, 1), 1)})
+    assert select_semantic_budget_profile(material.projection, final_review=True) == "final"
+    # With a claim the request changes nothing; without either it stays routine.
+    claimed = make_case(claims={clm(2): record(_claim(ClaimKind.COMPLETION, 2), 2)})
+    assert select_semantic_budget_profile(claimed.projection, final_review=True) == "final"
+    assert select_semantic_budget_profile(material.projection, final_review=False) == "routine"
+    with pytest.raises(TypeError):
+        select_semantic_budget_profile(empty, final_review=1)  # type: ignore[arg-type]

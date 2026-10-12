@@ -88,6 +88,21 @@ Missing or clipped markers, a missing page, stale revision, mismatched digest, o
 is an explicit incomplete-guidance result. Retry the exact page, or restart at page zero after a
 revision mismatch; do not start work or claim guidance is loaded until the assembler succeeds.
 
+## Publication templates
+
+Exact topic URIs; use these anchors verbatim and never derive one:
+
+- `yoetz://guidance/request-templates.md#publish-work-plan-plus-obligation`: plan plus obligation
+- `yoetz://guidance/request-templates.md#publish-work-action`: action
+- `yoetz://guidance/request-templates.md#publish-work-result`: result
+- `yoetz://guidance/request-templates.md#publish-work-evidence`: evidence
+- `yoetz://guidance/request-templates.md#publish-work-claim`: claim
+- `yoetz://guidance/request-templates.md#publish-work-revised-plan`: revised plan
+- `yoetz://guidance/request-templates.md#publish-work-decision`: decision
+- `yoetz://guidance/request-templates.md#respond`: respond
+- `yoetz://guidance/request-templates.md#check-whole-case`: check
+- `yoetz://guidance/request-templates.md#receipt`: receipt
+
 ## `start`
 
 Use `create_or_attach` with a stable workspace/work-item pair when first opening or resuming the
@@ -101,10 +116,10 @@ Pass the user's request verbatim in `task_statement`: the whole request as the u
 a paraphrase and not your plan. It is recorded in the task ledger and labelled as your
 transcription (`agent_transcribed`). AI-powered review reads it as the specification, apart from
 your plan, only when the approved privacy policy lists the `task_statement` section; otherwise the
-check and receipt say `task_statement_not_authorized`. When the user amends the request, call
-`start` again with a fresh `request_id`, `mode=attach`, the `session_id` you hold, and the whole
-amended request in `task_statement` (a CLI publisher may instead carry it in a `plan_revised`
-1.1.0 payload). On a resume that does not change the request, omit `task_statement`; the recorded
+check and receipt say `task_statement_not_authorized`. When the user amends the request, or a check
+pauses for it, publish the whole request in a `plan_revised` `1.1.0` payload through the session and
+writer you hold (template below), then replay any paused check with its original `request_id`; a
+new `start` call does not resume a paused check. On a resume that does not change the request, omit `task_statement`; the recorded
 statement stays current. The newest statement is current and earlier ones stay in history. Never
 put the statement in a plan `summary`, and never infer it from commit messages or files.
 
@@ -133,22 +148,45 @@ put the statement in a plan `summary`, and never infer it from commit messages o
 
 ### `publish_work`: revise the task statement
 
-When a semantic-required check pauses because the complete request is missing, publish a
-statement-carrying `plan_published` or `plan_revised` event at version `1.1.0` through the same
-session and writer. Include the exact `expected_frontier` returned by the paused check, then replay
-the original check request. This preserves the check identity and lets the service recompute the
-deterministic assessment from the amended frontier.
+When a semantic-required check pauses with `state: "awaiting_input"` and
+`semantic_reason: "review_input_required"`, the review needs the user's complete request. Publish it
+through the same session and writer: a `plan_revised` event at version `1.1.0` carrying
+`task_statement` (or `plan_published` `1.1.0` when no plan exists yet). Carry every existing
+obligation forward, and use the paused check's `result_frontier` as `expected_frontier`. Then replay
+the original check request unchanged, with the same `request_id`; do not open a new check or a new
+task, and do not request a receipt before that check reaches a terminal result.
 
 ```json
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
   "request_id": "req_00000000-0000-4000-8000-000000000020",
-  "mode": "attach",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
-  "task_title": "Replace with the bounded task title",
-  "task_statement": "Replace with the whole amended request, verbatim",
-  "requested_view": "compact",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "expected_frontier": {
+    "sequence": "7",
+    "head_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "event_drafts": [
+    {
+      "event_id": "evt_00000000-0000-4000-8000-000000000020",
+      "schema": {"name": "plan_revised", "version": "1.1.0"},
+      "occurred_at": "2026-01-01T00:00:00.000Z",
+      "causal_parents": [],
+      "payload": {
+        "plan_version": 2,
+        "supersedes_plan_version": 1,
+        "reason": "Record the user's complete request for review.",
+        "summary": "Same plan; the task statement is now recorded.",
+        "obligation_changes": [
+          {"obligation_id": "obl_00000000-0000-4000-8000-000000000001", "change": "carried"}
+        ],
+        "task_statement": "Replace with the user's whole request, verbatim"
+      },
+      "artifact_refs": [],
+      "evidence_refs": []
+    }
+  ],
   "actor": {
     "actor_id": "harness:mcp-template",
     "actor_type": "harness"
@@ -166,6 +204,23 @@ deterministic assessment from the amended frontier.
 This is the first material publication. Name the requested outcome in `description` and
 `acceptance_criteria`, and its acceptance evidence in `evidence_expectation`; do not turn
 routine file mechanics into obligations. The requested outcome is not an `item_kind`.
+Publish one such obligation per requirement, symptom, constraint, or deliverable the user's
+request states. Replace the `source_refs` placeholder with the id of the event that recorded the
+task statement: the newest event that carried `task_statement` (`session_opened`,
+`session_resumed`, `plan_published` or `plan_revised`) whose statement differs from the one
+before it; `status view=history` lists it, and any event that carried the same statement counts. A plan whose obligations never cite that event returns an agent-actionable
+`task_requirement_unmet` finding that names the id. A `file` item for an existing test the request
+asks you to change also justifies that test edit. A `command` item is never byte-matched with a
+hook-observed run (hooks keep only a keyed commitment), so it stays a disclosed
+`command_attempt_uncorroborated` limitation; resolve the obligation citing the observed run.
+
+A criterion only a hidden evaluator, a private reference or an answer only the user has can
+establish is not its own obligation: it can never be resolved, so it would stay an unmet
+requirement forever. Put it in the `acceptance_criteria` of the deliverable obligation it judges,
+resolve that obligation with the evidence you can produce, and disclose the limit in a
+`publish_work` decision (below) whose `statement` holds the exact line
+`yoetz-verification-limit:<obligation id>` and whose `rationale` says what cannot be verified
+and why. Never empty or withdraw the deliverable because of it.
 
 ```json
 {
@@ -206,7 +261,8 @@ routine file mechanics into obligations. The requested outcome is not an `item_k
         "requested_items": [
           {"item_kind": "command", "value": "pytest -q"},
           {"item_kind": "change", "value": "Replace with the named change this obligation owes"}
-        ]
+        ],
+        "source_refs": ["evt_00000000-0000-4000-8000-000000000000"]
       },
       "artifact_refs": [],
       "evidence_refs": []
@@ -221,16 +277,76 @@ routine file mechanics into obligations. The requested outcome is not an `item_k
 }
 ```
 
-The two drafts above cover `plan_published` and `obligation_published`. The following requests
-show the other ordinary families, including separate lifecycle transitions below. Replace the frontier in each; the genesis values only keep
+The two drafts above cover `plan_published` and `obligation_published`. An obligation that
+names a file or directory the task must deliver (or only reads) uses `obligation_published`
+`1.1.0`, because only `1.1.0` carries a `role` or a `directory` item. Publish it in the same plan
+batch as its own draft, listed in the plan's `obligation_refs`; standalone, it reads:
+
+```json
+{
+  "protocol_version": "0.1",
+  "schema_version": "1.0.0",
+  "request_id": "req_00000000-0000-4000-8000-000000000012",
+  "session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "expected_frontier": {
+    "sequence": "0",
+    "head_digest": "genesis"
+  },
+  "event_drafts": [
+    {
+      "event_id": "evt_00000000-0000-4000-8000-000000000003",
+      "schema": {"name": "obligation_published", "version": "1.1.0"},
+      "occurred_at": "2026-01-01T00:00:00.000Z",
+      "causal_parents": [],
+      "payload": {
+        "obligation_id": "obl_00000000-0000-4000-8000-000000000002",
+        "description": "Replace with the deliverable this work owes",
+        "acceptance_criteria": "Replace with an observable acceptance criterion",
+        "evidence_expectation": "Replace with the named test, reviewed diff, or other evidence",
+        "status": "open",
+        "requested_items": [
+          {"item_kind": "file", "value": "tests/test_requested_regression.py", "role": "output"},
+          {"item_kind": "file", "value": "data/input_spec.json", "role": "input"}
+        ],
+        "source_refs": ["evt_00000000-0000-4000-8000-000000000000"]
+      },
+      "artifact_refs": [],
+      "evidence_refs": []
+    }
+  ],
+  "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
+  "client": {
+    "kind": "cooperative_agent",
+    "version": "0.1.0",
+    "integration": "cooperative_mcp"
+  }
+}
+```
+
+The following requests show the other ordinary families, including separate lifecycle transitions below. Replace the frontier in each; the genesis values only keep
 each standalone example schema-valid.
 
 `requested_items` declares the material items the obligation asks for; each entry is an object
 whose `item_kind` admits `change`, `command`, `file`, `source`, `url` and whose `value` is the
-exact item string. The requested outcome lives in `description` and `acceptance_criteria`;
+exact item string. `obligation_published` `1.1.0`, as above, also admits `item_kind`
+`directory`, an optional `role` on `file` and `directory` items — `input` (the task reads it) or
+`output` (the task must deliver it) — and the status `acknowledged_not_done` with a required,
+non-blank `acknowledged_not_done_reason`. `1.0.0` refuses all three, so a payload that carries
+one of them must use `1.1.0`; `1.1.0` also accepts a plain obligation, so `1.1.0` is always
+safe. A resolution or acknowledgement republish follows the same rule: keep `1.1.0` while the
+obligation has a role or a `directory` item. Mark every file or directory the task
+must deliver `role: output` and every one it only reads `role: input`. Yoetz checks a declared
+output at each `check` — absent, unchanged, outside the workspace, or ignored by Git — and never
+reports those facts for an input; an output directory that holds no file counts as absent.
+Without a `role`, a `file` item is reported unchanged or outside only after an `edit` action
+names it. The requested outcome lives in `description` and `acceptance_criteria`;
 `outcome` is not an admitted `item_kind`. When you later attempt an item, copy that exact `value`
 string into `attempted_items` on the `action_recorded` event that attempted it — see the action
-template below. Matching is exact: do not normalize, reorder words, or paraphrase.
+template below. Matching is exact: do not normalize, reorder words, or paraphrase. A `command`
+item is the concrete command you will run, never a template: a value with a `<placeholder>` such
+as `<output-dir>` is refused with `requested_command_placeholder`. When the exact command is not
+known yet, state the check in `acceptance_criteria` instead.
 
 ### Alternate `plan_published`: explicitly no obligations
 
@@ -367,6 +483,39 @@ The `attempted_items` entry above repeats the obligation template's
 `requested_items[0].value` byte for byte. Publish it on the action that attempted the item —
 including a failed attempt — so the receipt can account for every requested item.
 
+When a script or another command ran the planned command for you, the observed run does not
+match the requested value and `planned_verification_not_observed` stays. Link that run instead:
+an `action_recorded` of kind `command` whose `attempted_items` holds the planned command's exact
+value and whose `causal_parents` names the observed run's action event id (find it with `status`
+`view: "history"`; replace the example id below).
+Use this only when a script ran the planned command; the receipt shows the link as unverified
+equivalence.
+
+```json
+{
+  "protocol_version": "0.1", "schema_version": "1.0.0",
+  "request_id": "req_00000000-0000-4000-8000-000000000015",
+  "session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
+  "event_drafts": [{
+    "event_id": "evt_00000000-0000-4000-8000-000000000015",
+    "schema": {"name": "action_recorded", "version": "1.0.0"},
+    "occurred_at": "2026-01-01T00:00:00.000Z",
+    "causal_parents": ["evt_00000000-0000-4000-8000-000000000014"],
+    "payload": {
+      "action_id": "act_00000000-0000-4000-8000-000000000015",
+      "action_kind": "command", "command": "pytest -q",
+      "description": "Replace with how the observed run executed the planned command",
+      "attempted_items": ["pytest -q"]
+    },
+    "artifact_refs": [], "evidence_refs": []
+  }],
+  "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
+  "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
+}
+```
+
 ## `publish_work`: result
 
 ```json
@@ -429,7 +578,15 @@ including a failed attempt — so the receipt can account for every requested it
 
 Use `claim_recorded/1.1.0` for new claims. Its payload keeps admissible evidence, successful
 results, and resolved obligations in `supporting_refs`, while partial or failed results belong in
-`limitation_refs`. It also admits `claim_id`, `claim_kind`, `disputes_refs`, `obligation_refs`,
+`limitation_refs`. A completion claim must list every live failed, partial, or unknown result in
+its scope, including command runs host hooks recorded that you never published; a failure retires
+only when a later observed run of the same command passes before the claim. Before claiming, read
+`status` `closure_readiness.limitation_refs_required`: it lists the result ids a whole-task
+completion claim must name, as recorded before your claim. A scoped claim names only those whose
+action names a claimed obligation, or names none. A failed, partial or unknown result you publish
+in the same batch as the claim is not in that list yet: add it too. Do not copy every
+non-success id from `status view=results`: if one is missing, the rejection names the exact ids
+(and their count) to add, so add those and retry with a new `request_id`. It also admits `claim_id`, `claim_kind`, `disputes_refs`, `obligation_refs`,
 `statement`, `subject_state`, and `supersedes_claim_refs` — never `attempted_items`, which lives on
 `action_recorded`. The current descriptor selects `publish-work-request/1.2.0`, but the public
 request body's `schema_version` remains `1.0.0` as shown below.
@@ -614,6 +771,29 @@ the pre-admission case projection; the successful check result and its `check_re
 row expose the `provider_bound` manifest after privacy removal and bounded rendering. Use its
 section digests and byte counts when describing what the reviewer actually received.
 
+### `check`: closing review
+
+Before the receipt, add the optional boolean `final_review: true` to a whole-case check. It judges
+each stated requirement and requested output against the task, with or without a completion claim.
+The other fields are unchanged. Any check may also set `await_observations: true` instead of
+polling `status` for commands you just ran: Yoetz waits up to about 3 s for this task's hook
+observations still being delivered, and `observations_awaited` reports whether they all arrived.
+
+```json
+{
+  "protocol_version": "0.1",
+  "schema_version": "1.0.0",
+  "request_id": "req_00000000-0000-4000-8000-000000000014",
+  "session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
+  "final_review": true,
+  "max_findings": "10",
+  "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
+  "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
+}
+```
+
 ## `check`: scoped
 
 If `scope` is present, send both arrays. Either may be empty; two empty arrays mean whole case.
@@ -645,6 +825,18 @@ search is needed. Only a frontier before that record is rejected, including the 
 `subject_frontier`, which names the state the check tested. A response records a disposition; it
 never erases the finding. Observation-authored non-actionable findings need no response.
 
+A reviewer finding whose `requested_next_step` is `state_unresolved_limitation` asks you to state a
+limit, not to do work, and your answer decides what it means. If the requirement may be met but
+cannot be verified here, respond `acknowledged` with a `reason` that says what cannot be verified and
+why (or record the `yoetz-verification-limit:<obligation id>` decision line): it is settled as a
+disclosed verification limit and no recorded resolution attempt is needed. Respond
+`acknowledged_not_done` only when you know the requirement is not met: it is then an unmet
+requirement like any other you acknowledged as not done (the receipt keeps
+`unresolved_findings_remain` and does not list it under verification limits). If you answered
+`acknowledged_not_done` and then do the work, or find the requirement may be met after all, send
+`disposition: "reopened"` with a `reason`; a later check that tested the work after your answer and
+proves the issue absent resolves the finding by itself.
+
 ```json
 {
   "protocol_version": "0.1",
@@ -656,7 +848,7 @@ never erases the finding. Observation-authored non-actionable findings need no r
   "finding_id": "fnd_00000000-0000-4000-8000-000000000001",
   "finding_frontier": {"sequence": "11", "head_digest": "sha256:0b77cea7992de93fe83a6748fbd6b4557b53d965e3fe0d2d8a1f47023d5edb72"},
   "disposition": "acknowledged",
-  "reason": "Replace with the bounded disposition reason",
+  "reason": "Replace with the bounded answer or disposition reason; required for acknowledged on a reviewer finding",
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
 }
@@ -672,8 +864,14 @@ actionable finding is still current: repair the record and recheck if you can, b
 qualifying check resolves it, never another response. If the repaired record was rechecked and the
 issue still fires, or it did not re-fire but `status view=findings` with `filter.include_resolved:
 true` still reports `resolved=false`,
-do not recheck unchanged state again. Request the receipt and keep the final claim no stronger than
-its conclusion, coverage, freshness, receipt-blocking findings, and limitations. A local-check
+do not recheck unchanged state again. If you repaired it and Yoetz cannot prove it (a Yoetz limit),
+verify it yourself, record that evidence, and respond `self_verified` with how you verified it and
+the evidence ids; it then stops being your work and the receipt names it as self-verified. Respond
+`acknowledged_not_done` only if you truly will not or cannot do the work. A Yoetz limit is never a
+`yoetz-blocker`. Only if a new finding restates the SAME issue as an earlier one you answered (same
+origin and kind), respond `duplicate_of` with `duplicate_of_finding_id` set to the earlier finding;
+linking never resolves the new finding, its own check must. Request the receipt and keep the final claim no stronger than
+its conclusion, coverage, freshness, unresolved findings, and limitations. A local-check
 recheck can still qualify when only `captured_object_unavailable`, `content_unselected`,
 `host_outcome_unavailable`, or `unpaired_event` limits its case-wide host-observation coverage and
 the original finding coverage was readable; those gaps remain receipt limitations and the exception

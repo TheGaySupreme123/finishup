@@ -223,8 +223,11 @@ def test_nominal_public_enums_are_closed() -> None:
     assert {member.value for member in ResponseDisposition} == {
         "acknowledged",
         "acknowledged_not_done",
+        "duplicate_of",
         "provenance_disputed",
         "rejected",
+        "reopened",
+        "self_verified",
         "waived",
     }
     assert "pass" not in {member.value for member in CheckVerdict}

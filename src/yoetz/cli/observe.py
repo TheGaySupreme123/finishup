@@ -39,7 +39,10 @@ from yoetz.adapters.integrations.observation_local import (
     observation_store_lock_scope,
 )
 from yoetz.adapters.workspace_binding import canonical_workspace_locator
-from yoetz.application.observation_check_policy import load_observation_check_policy
+from yoetz.application.observation_check_policy import (
+    ObservationCheckPolicyAbsent,
+    load_observation_check_policy,
+)
 from yoetz.application.observation_drain import (
     EXPECTED_OBSERVATION_BACKPRESSURE_REASONS,
     WORKSPACE_GLOBAL_OBSERVATION_STOP_REASONS,
@@ -2322,14 +2325,47 @@ def _check_policy_context(workspace: str | None, *, _state: Path | None):
     return root, commitment, store, policy
 
 
+# Approved workspace checks are an optional owner feature. A workspace without
+# `.yoetz/checks.toml` is "not configured", never an invalid policy. Configuring or trusting a
+# policy is the owner's choice and no finding asks the agent for it, so a policy-route failure is
+# never a reason to stop or a `yoetz-blocker`; the continuation says so in fixed text, in the same
+# order as every other blocker text (#984): repair first, a Yoetz limit is self-verified and
+# answered `self_verified`, `acknowledged_not_done` is the last resort, and `yoetz-blocker` is only
+# for an open obligation genuinely blocked outside the agent's control.
+_CHECK_POLICY_NOT_CONFIGURED: Final = "not_configured"
+_CHECK_POLICY_CONTINUATION: Final = (
+    "Approved workspace checks are optional owner configuration (.yoetz/checks.toml); no "
+    "finding asks you to configure or trust them. This is a Yoetz limit, not a task blocker: "
+    "never record a yoetz-blocker for it. Finish and verify the task yourself; if a finding "
+    "stays unresolved only because Yoetz cannot prove your repair, record your evidence and "
+    "respond self_verified. The receipt discloses what Yoetz could not prove."
+)
+
+
+def _check_policy_failure(operation: str, error: BaseException) -> int:
+    if isinstance(error, ObservationCheckPolicyAbsent):
+        reason = "policy_not_configured"
+    elif (
+        isinstance(error, ProtocolValueError)
+        and error.reason_code == "invalid_approved_check_policy"
+    ):
+        reason = "invalid_policy"
+    else:
+        # Workspace, store, or other local faults are not policy faults; name them neutrally.
+        typer.echo(f"observation_checks_{operation}_failed:unavailable", err=True)
+        return 20
+    typer.echo(f"observation_checks_{operation}_failed:{reason}", err=True)
+    typer.echo(_CHECK_POLICY_CONTINUATION, err=True)
+    return 20
+
+
 def observe_checks_preview(
     *, workspace: str | None, json_output: bool, _state: Path | None = None
 ) -> int:
     try:
         _root, commitment, store, policy = _check_policy_context(workspace, _state=_state)
-    except Exception:
-        typer.echo("observation_checks_preview_failed:invalid_policy", err=True)
-        return 20
+    except Exception as error:
+        return _check_policy_failure("preview", error)
     checks = tuple(
         {
             "id": item.approval_id,
@@ -2360,9 +2396,8 @@ def observe_checks_trust(
 ) -> int:
     try:
         _root, commitment, store, policy = _check_policy_context(workspace, _state=_state)
-    except Exception:
-        typer.echo("observation_checks_trust_failed:invalid_policy", err=True)
-        return 20
+    except Exception as error:
+        return _check_policy_failure("trust", error)
     if policy_digest != policy.raw_digest:
         typer.echo("observation_checks_trust_failed:digest_mismatch", err=True)
         return 20
@@ -2375,10 +2410,32 @@ def observe_checks_status(
     *, workspace: str | None, json_output: bool, _state: Path | None = None
 ) -> int:
     try:
-        _root, commitment, store, policy = _check_policy_context(workspace, _state=_state)
-    except Exception:
-        typer.echo("observation_checks_status_failed:invalid_policy", err=True)
-        return 20
+        root = _resolve_workspace(workspace)
+        store = LocalObservationStore(_state=_state)
+        commitment = store.workspace_commitment(str(root))
+    except Exception as error:
+        return _check_policy_failure("status", error)
+    try:
+        policy, _raw = load_observation_check_policy(root)
+    except ObservationCheckPolicyAbsent:
+        policy = None
+    except Exception as error:
+        return _check_policy_failure("status", error)
+    if policy is None:
+        # Absence is the ordinary state of an opt-in feature: report it, do not fail.
+        _emit(
+            {
+                "workspace_commitment": commitment,
+                "policy_digest": None,
+                "state": _CHECK_POLICY_NOT_CONFIGURED,
+                "sandbox": probe_check_sandbox().as_json(),
+                "executable_checks": (),
+                "network_check_state": "not_requested",
+                "note": _CHECK_POLICY_CONTINUATION,
+            },
+            json_output=json_output,
+        )
+        return 0
     trusted = store.policy_digest_is_trusted(commitment, policy.raw_digest)
     _emit(
         {
@@ -2417,6 +2474,9 @@ def observe_checks_run(
 ) -> int:
     try:
         root, commitment, store, policy = _check_policy_context(workspace, _state=_state)
+    except Exception as error:
+        return _check_policy_failure("run", error)
+    try:
         if not store.policy_digest_is_trusted(commitment, policy.raw_digest):
             store.note_coverage_gap(commitment, ObservationGapCode.POLICY_UNTRUSTED.value)
             typer.echo("observation_checks_run_failed:policy_untrusted", err=True)

@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import os
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +38,7 @@ from yoetz.adapters.integrations.observation_local import (
     PendingRolloutItem,
     self_observation_deliverable,
 )
+from yoetz.domain.command_segments import command_segment_commitments
 from yoetz.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
@@ -56,7 +57,13 @@ from yoetz.domain.observation_selection import (
     command_runner_class,
     compound_verification_gap_required,
 )
+from yoetz.domain.shell_writes import shell_write_scope
 from yoetz.domain.values import JsonObject, JsonValue, Timestamp, timestamp_from_datetime
+from yoetz.domain.write_scope import (
+    NON_COUNTING_WRITE_SCOPES,
+    classify_write_path,
+    edit_write_scope,
+)
 from yoetz.ports.importer import ImportLineStatus
 from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
 from yoetz.protocol.errors import ProtocolValueError
@@ -637,6 +644,37 @@ def _normalize_tool_name(value: object) -> str | None:
     return token
 
 
+def _file_change_paths(changes: object) -> Iterator[str]:
+    """Paths one Codex ``FileChange`` names: rollout mapping form or ``exec --json`` list form."""
+
+    if isinstance(changes, Mapping):
+        for path, change in cast(Mapping[object, object], changes).items():
+            if type(path) is str:
+                yield path
+            if isinstance(change, Mapping):
+                moved = cast(Mapping[str, object], change).get("move_path")
+                if type(moved) is str:
+                    yield moved
+    elif isinstance(changes, list):
+        for change in cast(list[object], changes):
+            if isinstance(change, Mapping):
+                path = cast(Mapping[str, object], change).get("path")
+                if type(path) is str:
+                    yield path
+
+
+def _file_change_write_scope(changes: object) -> str | None:
+    """The ``write_scope`` of a ``FileChange`` only when every path is scratch or Yoetz-owned."""
+
+    paths = tuple(_file_change_paths(changes))
+    if not paths:
+        return None
+    scope = edit_write_scope(
+        classify_write_path(path, workspace=None, inside=None) for path in paths
+    )
+    return scope if scope in NON_COUNTING_WRITE_SCOPES else None
+
+
 def _completed_tool_item(record: CodexParsedRecord) -> bool:
     """True for an ``event_msg``/``item_completed`` record of a command, MCP or patch item."""
 
@@ -1158,6 +1196,13 @@ def structural_from_stream_record(
                 fields["exit_status"] = exit_code
             else:
                 gaps.add(ObservationGapCode.UNSUPPORTED_EVENT.value)
+        if item_type == "FileChange":
+            # Name a patch whose every path is scratch or Yoetz-owned (ADR-042, tb4n2 R4) so it
+            # never makes an earlier verification stale. The stream knows no workspace root, so it
+            # never claims ``outside_workspace``; only the closed class token crosses.
+            scope = _file_change_write_scope(body.get("changes"))
+            if scope is not None:
+                fields["write_scope"] = scope
         # ``SubAgentActivity.id`` identifies the rollout item itself, not the
         # parent tool call.  Keep it out of the parent correlation family; only
         # an explicit call alias may identify that parent.
@@ -1168,6 +1213,10 @@ def structural_from_stream_record(
             normalized = normalize_observed_command(body.get("command"))
             if normalized is not None:
                 fields["command_commitment"] = observed_command_commitment(key_material, normalized)
+                segments = command_segment_commitments(key_material, normalized)
+                if segments is not None:
+                    fields["command_segment_commitments"] = segments[0]
+                    fields["command_composition"] = segments[1]
         if item_type == "CommandExecution":
             command_payload = JsonObject(
                 {
@@ -1178,6 +1227,17 @@ def structural_from_stream_record(
             runner = command_runner_class(command_payload)
             if runner is not None:
                 fields["runner_class"] = runner
+            raw_command = body.get("command")
+            if type(raw_command) is str and "write_scope" not in fields:
+                # ADR-045: the stream knows no workspace root, so it claims only a relative write
+                # (a working directory makes it certain); an absolute path is left to the hook.
+                scope = shell_write_scope(
+                    raw_command, workspace=None, inside=lambda _path: False, relative_only=True
+                )
+                if scope is not None:
+                    # The closed token as the hook would send it (workspace, or the non-counting
+                    # notes / yoetz_owned scope a declared output of that kind overrides).
+                    fields["write_scope"] = scope
                 if compound_verification_gap_required(command_payload):
                     # Preserve the host's outer result. The bounded gap records that a
                     # masking-capable composition does not expose each nested outcome (#968).

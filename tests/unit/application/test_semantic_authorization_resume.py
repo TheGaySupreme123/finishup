@@ -158,8 +158,10 @@ class _Classifier:
     def scanner_identity(self) -> tuple[str, str]:
         return _SCANNER.version, _SCANNER.profile_digest
 
-    def scan_exact_bytes(self, data: bytes) -> tuple[ForbiddenDataKind, ...]:
-        del data
+    def scan_exact_bytes(
+        self, data: bytes, *, credential_heuristic: object = None
+    ) -> tuple[ForbiddenDataKind, ...]:
+        del data, credential_heuristic
         return self.findings
 
 

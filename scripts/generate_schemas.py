@@ -349,6 +349,9 @@ _TASK_STATEMENT_EVENT_PAIRS: Final[tuple[tuple[str, str], ...]] = (
     ("plan_published", "1.1.0"),
     ("plan_revised", "1.1.0"),
 )
+# Role- and directory-bearing obligations (issue #1002): a new version of a released family that
+# the unreleased event-draft 1.2.0 admits in place.
+_OBLIGATION_EVENT_PAIRS: Final[tuple[tuple[str, str], ...]] = (("obligation_published", "1.1.0"),)
 
 
 def _privacy_policy_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
@@ -407,6 +410,10 @@ def _privacy_policy_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         preset_sections.sort(key=lambda value: cast(str, value).encode("ascii"))
         if profile.get("const") == "expanded":
             preset["max_excerpts"] = MAX_REVIEW_EXCERPTS
+    # The owner opt-out for the low-confidence credential heuristic (issue #982). Optional, and
+    # written only when ``disabled``, so every policy without it keeps its bytes and digest; an
+    # absent field means ``enforced``. Older wire versions cannot carry it.
+    properties["credential_heuristic"] = {"enum": ["disabled", "enforced"], "type": "string"}
     return document
 
 
@@ -1754,6 +1761,9 @@ def _extend_receipt_schema_fields(
         scan_properties = cast(dict[str, JsonValue], scan["properties"])
         scan_properties["stage"] = {"enum": list(_RECEIPT_SCAN_STAGES), "type": "string"}
         scan_properties["not_run_reason"] = reason_schema
+        # Present only when the owner policy in force had the low-confidence credential heuristic
+        # turned off for this disclosure (issue #982); absent means it was enforced.
+        scan_properties["credential_heuristic"] = {"const": "disabled", "type": "string"}
         scan_all_of = scan.setdefault("allOf", [])
         if not isinstance(scan_all_of, list):
             raise SchemaGenerationError("receipt_secret_scan_schema_template_invalid")
@@ -1800,6 +1810,12 @@ def _egress_receipt_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     definitions = cast(dict[str, JsonValue], document["$defs"])
     reason_schema = cast(dict[str, JsonValue], definitions["privacy_reason"])
     _extend_receipt_schema_fields(document, reason_schema=reason_schema)
+    # The closed operation that asked for this network disclosure (tb4n2 N-5). Optional: rows
+    # written before it, and a disclosure whose producer is not recognized, omit it.
+    properties["origin_operation"] = {
+        "enum": ["credential_probe", "observation_advice", "semantic_check"],
+        "type": "string",
+    }
     document["title"] = "Yoetz egress receipt 1.1.0"
     return document
 
@@ -2052,6 +2068,74 @@ def _finding_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     return document
 
 
+def _policy_lineage(policy_id: str) -> list[JsonValue]:
+    from yoetz.protocol.policy_packs import CURRENT_POLICY_VERSIONS, LEGACY_POLICY_VERSIONS
+
+    return [*LEGACY_POLICY_VERSIONS[policy_id], CURRENT_POLICY_VERSIONS[policy_id]]
+
+
+def _admit_recorded_policy_identities(document: dict[str, JsonValue]) -> None:
+    """Admit every recorded version of each built-in pack the active contract names.
+
+    The unreleased 0.3 contracts first pinned every pack at ``0.1.0``. New checks run only the
+    current versions (``yoetz.protocol.policy_packs``), but a recorded check or finding, a check
+    result replayed from the ledger, and a result an earlier 0.3 service shaped keep the identity
+    they were written with, so the active result and event contracts admit both. A pack named by
+    a constant ``policy_id`` admits only its own lineage; a shared definition admits the union.
+    """
+
+    from yoetz.protocol.policy_packs import RECORDED_POLICY_PACKS, RECORDED_POLICY_VERSION_VALUES
+
+    def admit(node: JsonValue) -> None:
+        if isinstance(node, list):
+            for item in node:
+                admit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            version = properties.get("policy_version")
+            if isinstance(version, dict) and version.get("const") == "0.1.0":
+                policy = properties.get("policy_id")
+                values: list[JsonValue] = (
+                    _policy_lineage(cast(str, policy["const"]))
+                    if isinstance(policy, dict) and type(policy.get("const")) is str
+                    else list(RECORDED_POLICY_VERSION_VALUES)
+                )
+                version.pop("const")
+                if len(values) == 1:
+                    version["const"] = values[0]
+                else:
+                    version["enum"] = values
+            packs = properties.get("policy_packs")
+            if isinstance(packs, dict) and isinstance(items := packs.get("items"), dict):
+                listed = items.get("enum")
+                if isinstance(listed, list):
+                    policy_ids = {str(value).split("/", 1)[0] for value in listed}
+                    items["enum"] = [
+                        pack
+                        for pack in RECORDED_POLICY_PACKS
+                        if pack.split("/", 1)[0] in policy_ids
+                    ]
+        for value in node.values():
+            admit(value)
+
+    admit(document)
+
+
+def _select_current_policy_packs(document: dict[str, JsonValue]) -> None:
+    """A check request selects only the pack versions new checks run."""
+
+    from yoetz.protocol.policy_packs import CURRENT_POLICY_PACKS
+
+    properties = cast(dict[str, JsonValue], document["properties"])
+    policy_packs = cast(dict[str, JsonValue], properties["policy_packs"])
+    items = cast(dict[str, JsonValue], policy_packs["items"])
+    items["enum"] = list(CURRENT_POLICY_PACKS)
+    policy_packs["maxItems"] = len(CURRENT_POLICY_PACKS)
+
+
 def _check_totals_schema() -> dict[str, JsonValue]:
     """Closed structural counters; prose and caller-defined keys are never admitted."""
 
@@ -2150,23 +2234,27 @@ def _check_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "type": "array",
         "uniqueItems": True,
     }
+    _add_semantic_redacted_values(definitions, properties)
+    _add_semantic_route_required(properties)
+    _add_deliverable_states(definitions, properties)
+    _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz check recorded {entry.schema_version}"
     return document
 
 
 def _check_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
-    """Allow the dedicated coordination deterministic policy in the current check request."""
+    """Select the current built-in packs, including the dedicated coordination policy."""
 
     document = _load_versioned_template(entry, "operations/check-request-1.0.0.schema.json")
+    _select_current_policy_packs(document)
+    # Issue #976, unreleased in-place addition: request the closing review (final phase) with or
+    # without a completion claim. Absent requests keep their exact shape.
     properties = cast(dict[str, JsonValue], document["properties"])
-    policy_packs = cast(dict[str, JsonValue], properties["policy_packs"])
-    items = cast(dict[str, JsonValue], policy_packs["items"])
-    enum_values = cast(list[JsonValue], items["enum"])
-    if "coordination/0.1.0" not in enum_values:
-        enum_values.append("coordination/0.1.0")
-        enum_values.sort(key=lambda item: str(item).encode("ascii"))
-    policy_packs["maxItems"] = 3
+    properties["final_review"] = {"type": "boolean"}
+    # Issue #1012, unreleased in-place addition: wait, bounded, for the caller's pending hook
+    # observations before the case freezes. Absent requests keep their exact shape.
+    properties["await_observations"] = {"type": "boolean"}
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz check request {entry.schema_version}"
     return document
@@ -2262,6 +2350,17 @@ def _lineage_child_finding_schema() -> dict[str, JsonValue]:
                 "if": {"required": ["resolution_event_id"]},
                 "then": {"properties": {"resolved": {"const": True}}},
             },
+            # Issue #984: a child repair only the child agent verified stays unresolved and
+            # actionable by kind; the field is present only when true.
+            {
+                "if": {"required": ["self_verified"]},
+                "then": {
+                    "properties": {
+                        "actionable": {"const": True},
+                        "resolved": {"const": False},
+                    }
+                },
+            },
         ],
         "properties": {
             "actionable": {"type": "boolean"},
@@ -2289,6 +2388,7 @@ def _lineage_child_finding_schema() -> dict[str, JsonValue]:
             "priority": {"maximum": 3, "minimum": 1, "type": "integer"},
             "resolution_event_id": {"oneOf": [_lineage_id_schema("event_id"), {"type": "null"}]},
             "resolved": {"type": "boolean"},
+            "self_verified": {"const": True},
         },
         "required": [
             "actionable",
@@ -2907,6 +3007,7 @@ def _start_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "type": "object",
     }
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
+    _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz start result {entry.schema_version}"
     return document
 
@@ -2915,7 +3016,14 @@ def _todo_state_schema() -> dict[str, JsonValue]:
     """The closed finding to-do states of issue #905."""
 
     return {
-        "enum": ["acknowledged_not_done", "open", "rejection_accepted", "verified_resolved"],
+        "enum": [
+            "acknowledged_not_done",
+            "disputed_after_rebuttal",
+            "open",
+            "rejection_accepted",
+            "self_verified",
+            "verified_resolved",
+        ],
         "type": "string",
     }
 
@@ -3064,13 +3172,16 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "type": "array",
         "uniqueItems": True,
     }
+    from yoetz.protocol.models import MISSING_ITEM_AVAILABILITIES
+
     # Issue #907: what an insufficient_packet review named as missing, as a check limitation.
     # Additive and optional on this unreleased version, like advisory_notes above.
     definitions["missing_item"] = {
         "additionalProperties": False,
         "properties": {
             "availability": {
-                "enum": ["agent_suppliable", "structurally_unavailable_on_this_host"],
+                # tb4n1 D1 (#983): Yoetz-limit classes join the closed vocabulary.
+                "enum": sorted(MISSING_ITEM_AVAILABILITIES, key=str.encode),
                 "type": "string",
             },
             "kind": {
@@ -3144,9 +3255,12 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                     name: {"$ref": "#/$defs/canonical_uint"}
                     for name in (
                         "acknowledged_not_done",
+                        # Issue #1020: optional, emitted only when non-zero.
+                        "disputed_after_rebuttal",
                         "open",
                         "open_at_budget",
                         "rejection_accepted",
+                        "self_verified",
                         "verified_resolved",
                     )
                 },
@@ -3155,6 +3269,7 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                     "open",
                     "open_at_budget",
                     "rejection_accepted",
+                    "self_verified",
                     "verified_resolved",
                 ],
                 "type": "object",
@@ -3209,6 +3324,190 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _add_semantic_route_required(properties: dict[str, JsonValue]) -> None:
+    """Issue #986: whether the check's route required AI-powered review (unreleased 1.4.0).
+
+    Optional and additive. Writers emit only ``false`` (the route did not require review, so
+    ``semantic_review_not_requested`` is a disclosure); a requiring route and every older check
+    omit it, which keeps their bytes and the blocking default.
+    """
+
+    properties["semantic_route_required"] = {"type": "boolean"}
+
+
+def _fact_lineage_definition() -> dict[str, JsonValue]:
+    """ADR-045: where one derived fact came from. Closed tokens, counts and ids; never a path."""
+
+    uint: dict[str, JsonValue] = {"$ref": "#/$defs/canonical_uint"}
+    # Inline id patterns: the check result's ``$defs`` carry no ``event_id`` / ``obligation_id``.
+    event_ref: dict[str, JsonValue] = {
+        "pattern": r"^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "type": "string",
+    }
+    obligation_ref: dict[str, JsonValue] = {
+        "pattern": r"^obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "type": "string",
+    }
+    return {
+        "additionalProperties": False,
+        "properties": {
+            "accepted_by": event_ref,
+            "basis": {"enum": ["delivered", "present", "verified"], "type": "string"},
+            "check_event_id": event_ref,
+            "code": {"$ref": "#/$defs/code"},
+            "frontier": uint,
+            "item_index": {"pattern": r"^(?:[0-9]|[1-5][0-9]|6[0-3])$", "type": "string"},
+            "now_lines": uint,
+            "now_size_bytes": uint,
+            "obligation_id": obligation_ref,
+            "prior_event_id": event_ref,
+            "prior_frontier": uint,
+            "prior_lines": uint,
+            "prior_size_bytes": uint,
+            "proof": {"enum": ["earlier_check", "observed_run", "task_base"], "type": "string"},
+            "rule": {
+                "enum": [
+                    "deliverable_path_history",
+                    "deliverable_read",
+                    "edit_after_verification_run",
+                    "planned_command_match",
+                    "planned_command_unmatched",
+                ],
+                "type": "string",
+            },
+            "source_event_ids": {
+                "items": event_ref,
+                "maxItems": 8,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "state": {
+                "enum": [
+                    "accepted",
+                    "edited_after",
+                    "emptied",
+                    "failed",
+                    "matched_agent_link",
+                    "matched_exact",
+                    "matched_flags",
+                    "matched_normalized",
+                    "matched_prefix",
+                    "removed",
+                    "stale",
+                    "truncated",
+                    "unmatched",
+                    "unreviewable",
+                ],
+                "type": "string",
+            },
+        },
+        "required": ["code", "rule", "state"],
+        "type": "object",
+    }
+
+
+def _fact_lineage_array() -> dict[str, JsonValue]:
+    return {
+        "items": {"$ref": "#/$defs/fact_lineage"},
+        "maxItems": 64,
+        "type": "array",
+        "uniqueItems": True,
+    }
+
+
+def _add_deliverable_states(
+    definitions: dict[str, JsonValue], properties: dict[str, JsonValue]
+) -> None:
+    """ADR-045 (tb4n3 RC-5): how each declared output file stood at a check. Optional/additive.
+
+    Sizes, counts, closed tokens, ids and a keyed path commitment; never a path. Absent on a
+    check that read no declared output file, so those checks keep their bytes.
+    """
+
+    count: dict[str, JsonValue] = {"maximum": 9007199254740991, "minimum": 0, "type": "integer"}
+    event_ref: dict[str, JsonValue] = {
+        "pattern": r"^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "type": "string",
+    }
+    definitions["deliverable_state"] = {
+        "additionalProperties": False,
+        "properties": {
+            "accepted_by": dict(event_ref),
+            "base_lines": dict(count),
+            "basis": {"enum": ["delivered", "present", "verified"], "type": "string"},
+            "change": {
+                "enum": ["emptied", "removed", "truncated", "unchanged"],
+                "type": "string",
+            },
+            "item_index": {"maximum": 63, "minimum": 0, "type": "integer"},
+            "lines": dict(count),
+            "obligation_id": {
+                "pattern": (
+                    r"^obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                ),
+                "type": "string",
+            },
+            "path_key": {"pattern": r"^hmac-sha256:[0-9a-f]{64}$", "type": "string"},
+            "prior_event_id": dict(event_ref),
+            "prior_frontier": dict(count),
+            "prior_lines": dict(count),
+            "prior_size_bytes": dict(count),
+            "proof": {"enum": ["earlier_check", "task_base"], "type": "string"},
+            "size_bytes": dict(count),
+            "unreviewable": {"const": True},
+        },
+        "required": ["basis", "item_index", "obligation_id"],
+        "type": "object",
+    }
+    properties["deliverable_states"] = {
+        "items": {"$ref": "#/$defs/deliverable_state"},
+        "maxItems": 64,
+        "type": "array",
+        "uniqueItems": True,
+    }
+
+
+def _add_semantic_redacted_values(
+    definitions: dict[str, JsonValue],
+    properties: dict[str, JsonValue],
+    *,
+    min_items: int = 0,
+) -> None:
+    """PL2-1 (issue #982): item refs and 1-based line numbers, never values. Additive/optional."""
+
+    opaque: dict[str, JsonValue] = {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string",
+    }
+    definitions["semantic_redacted_value"] = {
+        "additionalProperties": False,
+        "properties": {
+            "disposition": {"enum": ["item_withheld", "value_replaced"], "type": "string"},
+            "item_id": opaque,
+            "lines": {
+                "items": {"maximum": 2147483647, "minimum": 1, "type": "integer"},
+                "maxItems": 32,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "source_ref": dict(opaque),
+        },
+        "required": ["disposition", "item_id", "lines"],
+        "type": "object",
+    }
+    array: dict[str, JsonValue] = {
+        "items": {"$ref": "#/$defs/semantic_redacted_value"},
+        "maxItems": 64,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    if min_items:
+        array["minItems"] = min_items
+    properties["semantic_redacted_values"] = array
+
+
 def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add the public Part 2 review fields to the new check-result version.
 
@@ -3231,6 +3530,7 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "requested_next_step": {
                 "enum": [
                     "act",
+                    "answer_question",
                     "dispute_with_evidence",
                     "provide_evidence",
                     "revise_claim",
@@ -3364,6 +3664,37 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "type": "object",
     }
     properties["overall_next"] = {"$ref": "#/$defs/overall_next"}
+    # Issue #1012: additive on the unreleased 1.4.0 contract, present only when the request set
+    # ``await_observations``. ``complete`` and ``unavailable`` carry a zero count.
+    definitions["observations_awaited"] = {
+        "additionalProperties": False,
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"state": {"enum": ["complete", "unavailable"]}},
+                    "required": ["state"],
+                },
+                "then": {"properties": {"pending_count": {"const": "0"}}},
+            },
+            {
+                "if": {
+                    "properties": {"state": {"const": "bounded_timeout"}},
+                    "required": ["state"],
+                },
+                "then": {"properties": {"pending_count": {"not": {"const": "0"}}}},
+            },
+        ],
+        "properties": {
+            "pending_count": {"$ref": "#/$defs/canonical_uint"},
+            "state": {
+                "enum": ["bounded_timeout", "complete", "unavailable"],
+                "type": "string",
+            },
+        },
+        "required": ["pending_count", "state"],
+        "type": "object",
+    }
+    properties["observations_awaited"] = {"$ref": "#/$defs/observations_awaited"}
     properties["verified"] = {
         "items": {"$ref": "#/$defs/verified_item"},
         "maxItems": 64,
@@ -3379,9 +3710,93 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         if value not in values:
             values.append(value)
     values.sort(key=lambda item: str(item).encode("ascii"))
+    _add_semantic_redacted_values(definitions, properties)
+    _add_semantic_route_required(properties)
+    _add_check_closure_verdict(definitions)
+    definitions["fact_lineage"] = _fact_lineage_definition()
+    properties["fact_lineage"] = _fact_lineage_array()
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
+    _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz check result {entry.schema_version}"
     return document
+
+
+def _add_check_closure_verdict(definitions: dict[str, JsonValue]) -> None:
+    """The one closure verdict on check-result 1.4.0 (tb4n3 RC-3, issue #1026, ADR-046).
+
+    Additive and optional on the unreleased wire: a rejected finding that awaits a reviewer
+    ruling has its own continuation (``request_ruling``), the checklist counts the rest of the
+    closure classes (emitted only when non-zero), each row names its class and basis, and
+    ``overall_next`` carries the receipt conclusion a request now would carry.
+    """
+
+    item = cast(dict[str, JsonValue], definitions["checklist_item"])
+    cast(dict[str, JsonValue], item["properties"]).update(
+        {
+            "closure_basis": {"enum": list(_FINDING_CLOSURE_BASES), "type": "string"},
+            "closure_class": {"enum": list(_FINDING_CLOSURE_CLASSES), "type": "string"},
+        }
+    )
+    cast(list[JsonValue], item.setdefault("allOf", [])).append(
+        {
+            "if": {"anyOf": [{"required": ["closure_class"]}, {"required": ["closure_basis"]}]},
+            "then": {"required": ["closure_basis", "closure_class"]},
+        }
+    )
+    checklist = cast(dict[str, JsonValue], definitions["finding_checklist"])
+    checklist_properties = cast(dict[str, JsonValue], checklist["properties"])
+    counts = cast(dict[str, JsonValue], checklist_properties["counts"])
+    closure_counter_names = ("awaiting_ruling", "disclosed", "to_disclose", "to_do", "unmet")
+    cast(dict[str, JsonValue], counts["properties"]).update(
+        {name: {"$ref": "#/$defs/canonical_uint"} for name in closure_counter_names}
+    )
+    # The five closure counters travel together (an earlier build omits all of them).
+    cast(list[JsonValue], counts.setdefault("allOf", [])).append(
+        {
+            "if": {"anyOf": [{"required": [name]} for name in closure_counter_names]},
+            "then": {"required": list(closure_counter_names)},
+        }
+    )
+    # ``disclose_limitations``: the only remaining agent work is a reviewer's limitation request
+    # the agent has not answered (owner decision 2026-10-12, #1024).
+    cast(dict[str, JsonValue], checklist_properties["next"])["enum"] = [
+        "decide_at_budget",
+        "disclose_limitations",
+        "request_receipt",
+        "request_ruling",
+        "work_open_findings",
+    ]
+    overall = cast(dict[str, JsonValue], definitions["overall_next"])
+    overall_properties = cast(dict[str, JsonValue], overall["properties"])
+    action = cast(dict[str, JsonValue], overall_properties["action"])
+    action["enum"] = [
+        "supply_missing_input",
+        "work_open_findings",
+        "disclose_limitations",
+        "request_ruling",
+        "review_recorded_work",
+        "request_receipt",
+    ]
+    overall_properties["predicted_conclusion"] = {
+        "enum": list(_RECEIPT_CONCLUSIONS),
+        "type": "string",
+    }
+    rules = cast(list[JsonValue], overall["allOf"])
+    for rule in rules:
+        condition = cast(dict[str, JsonValue], rule)["if"]
+        action_condition = cast(
+            dict[str, JsonValue],
+            cast(dict[str, JsonValue], cast(dict[str, JsonValue], condition)["properties"]).get(
+                "action", {}
+            ),
+        )
+        if action_condition.get("enum") == ["work_open_findings", "review_recorded_work"]:
+            action_condition["enum"] = [
+                "disclose_limitations",
+                "request_ruling",
+                "review_recorded_work",
+                "work_open_findings",
+            ]
 
 
 def _add_review_input_manifest_to_check_result(document: dict[str, JsonValue]) -> None:
@@ -3470,6 +3885,17 @@ def _add_review_input_manifest_to_check_result(document: dict[str, JsonValue]) -
         "type": "string",
     }
     awaiting_properties["specification_preflight"] = {"$ref": "#/$defs/specification_preflight"}
+    _add_review_input_continuation(definitions)
+
+
+def _add_review_input_continuation(definitions: dict[str, JsonValue]) -> None:
+    """Admit the same-request review-input continuation wherever a CHECK continuation projects.
+
+    CHECK returns it on the awaiting_input branch, and STATUS replays the same continuation on
+    the pending operation page; both result contracts must carry the branch or the projection
+    of a paused check fails validation.
+    """
+
     continuation = cast(dict[str, JsonValue], definitions["continuation"])
     continuation_one_of = cast(list[JsonValue], continuation["oneOf"])
     continuation_one_of.append(
@@ -3536,7 +3962,12 @@ def _status_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             values.append(value)
     findings_filter = cast(dict[str, JsonValue], definitions["findings_filter"])
     filter_properties = cast(dict[str, JsonValue], findings_filter["properties"])
-    _admit_acknowledged_not_done(cast(dict[str, JsonValue], filter_properties["disposition"]))
+    _admit_terminal_dispositions(cast(dict[str, JsonValue], filter_properties["disposition"]))
+    # Issue #996: select linked duplicates too.
+    filter_disposition = cast(dict[str, JsonValue], filter_properties["disposition"])
+    filter_values = cast(list[JsonValue], filter_disposition["enum"])
+    filter_values.append(_DUPLICATE_OF)
+    filter_values.sort(key=lambda item: str(item).encode("ascii"))
     rules = cast(list[JsonValue], document["allOf"])
     # The no-filter branch in v1.1 also contains the previously-added results view.  Keep the
     # selector views explicitly filter-free in this successor.
@@ -3616,6 +4047,29 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     cast(dict[str, JsonValue], compact_item["properties"])["latest_check_test_edits"] = {
         "$ref": "#/$defs/latest_check_test_edits"
     }
+    # #1027: which recorded check the latest tested state points at and its closed verdict, so a
+    # post-compaction recap can name it. Optional on the compact item, absent when no check exists.
+    definitions["latest_check"] = {
+        "additionalProperties": False,
+        "properties": {
+            "check_event_id": {"$ref": "#/$defs/event_id"},
+            "checked_frontier": {"$ref": SCHEMA_NAMESPACE + "common/frontier-1.0.0.schema.json"},
+            "verdict": {
+                "enum": [
+                    "action_required",
+                    "incomplete_check",
+                    "insufficient_coverage",
+                    "no_issue_detected",
+                ],
+                "type": "string",
+            },
+        },
+        "required": ["check_event_id", "checked_frontier", "verdict"],
+        "type": "object",
+    }
+    cast(dict[str, JsonValue], compact_item["properties"])["latest_check"] = {
+        "$ref": "#/$defs/latest_check"
+    }
     definitions.setdefault(
         "opaque_ref",
         {
@@ -3693,6 +4147,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "requested_next_step": {
                 "enum": [
                     "act",
+                    "answer_question",
                     "dispute_with_evidence",
                     "provide_evidence",
                     "revise_claim",
@@ -3723,7 +4178,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "type": "object",
     }
     finding_item_properties["challenge"] = {"$ref": "#/$defs/finding_challenge"}
-    _admit_acknowledged_not_done(cast(dict[str, JsonValue], finding_item_properties["disposition"]))
+    _admit_terminal_dispositions(cast(dict[str, JsonValue], finding_item_properties["disposition"]))
     # Issue #905 to-do facts on each row, and the budget they read against on the page.
     definitions["todo_state"] = _todo_state_schema()
     finding_item_properties["todo_state"] = {"$ref": "#/$defs/todo_state"}
@@ -3732,21 +4187,53 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     cast(dict[str, JsonValue], findings_page["properties"])["attempt_budget"] = (
         _attempt_budget_schema()
     )
-    cast(list[JsonValue], finding_item["allOf"]).append(
-        {
-            "if": {
-                "properties": {"disposition": {"const": _ACKNOWLEDGED_NOT_DONE}},
-                "required": ["disposition"],
+    # tb4n3 RC-7 (#1030): these answers are the agent's last word until a later qualifying check
+    # proves the issue absent, so the row may read ``resolved`` then (reverse edge); ``reopened``
+    # takes an ``acknowledged_not_done`` answer back and carries a reason too.
+    for terminal in (_ACKNOWLEDGED_NOT_DONE, _SELF_VERIFIED, _REOPENED):
+        cast(list[JsonValue], finding_item["allOf"]).append(
+            {
+                "if": {
+                    "properties": {"disposition": {"const": terminal}},
+                    "required": ["disposition"],
+                },
+                "then": {
+                    "properties": {
+                        "reason": {"not": {"type": "null"}},
+                        "waiver_expiry": {"type": "null"},
+                        "waiver_scope": {"type": "null"},
+                    }
+                },
+            }
+        )
+    # Issue #996: a ``duplicate_of`` row carries its earlier finding exactly while the link holds.
+    item_disposition = cast(dict[str, JsonValue], finding_item_properties["disposition"])
+    item_values = cast(list[JsonValue], item_disposition["enum"])
+    item_values.append(_DUPLICATE_OF)
+    item_values.sort(key=lambda item: str(item).encode("ascii"))
+    finding_item_properties[_DUPLICATE_OF_FIELD] = {"$ref": "#/$defs/finding_id"}
+    cast(list[JsonValue], finding_item["allOf"]).extend(
+        [
+            {
+                "if": {
+                    "properties": {"disposition": {"const": _DUPLICATE_OF}},
+                    "required": ["disposition"],
+                },
+                "then": {
+                    "properties": {
+                        "waiver_expiry": {"type": "null"},
+                        "waiver_scope": {"type": "null"},
+                    }
+                },
             },
-            "then": {
-                "properties": {
-                    "reason": {"not": {"type": "null"}},
-                    "resolved": {"const": False},
-                    "waiver_expiry": {"type": "null"},
-                    "waiver_scope": {"type": "null"},
-                }
+            {
+                "if": {"required": [_DUPLICATE_OF_FIELD]},
+                "then": {
+                    "properties": {"disposition": {"const": _DUPLICATE_OF}},
+                    "required": ["disposition"],
+                },
             },
-        }
+        ]
     )
     for definition_name in ("candidate_finding_item", "finding_item"):
         finding_definition = cast(dict[str, JsonValue], definitions[definition_name])
@@ -3812,6 +4299,8 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                 "enum": ["active", "contact_lost", "ended"],
                 "type": "string",
             },
+            # Issue #984 (S2): present only when the accepted child has self-verified findings.
+            "self_verified_finding_count": {"$ref": "#/$defs/positive_uint"},
             "task_id": {"$ref": "#/$defs/task_id"},
             "work_state": {
                 "enum": ["abandoned", "cancelled", "closed", "open", "written_off"],
@@ -4137,10 +4626,92 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_status_operation_admission(definitions)
     _add_status_observed_run(definitions)
     _add_status_closure_checklist(definitions)
+    _add_status_closure_verdict(definitions)
     _add_status_finding_frontier(definitions)
+    _add_review_input_continuation(definitions)
+    _add_status_credential_heuristic(definitions)
+    _add_status_requested_item_role(definitions)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
+    _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz status result {entry.schema_version}"
     return document
+
+
+def _credential_heuristic_pair_schema() -> dict[str, JsonValue]:
+    state: dict[str, JsonValue] = {"enum": ["disabled", "enforced", "unknown"], "type": "string"}
+    return {
+        "additionalProperties": False,
+        "properties": {"machine_default": dict(state), "repository": dict(state)},
+        "required": ["machine_default", "repository"],
+        "type": "object",
+    }
+
+
+def _add_setup_credential_heuristic(definitions: dict[str, JsonValue]) -> None:
+    """Carry the derived possible-credential filter pair on the repository setup read (#982).
+
+    Optional on the unreleased 2.9.0 control result, so every CLI surface shows the same
+    ``repository``/``machine_default`` pair as the status result.
+    """
+
+    body = cast(dict[str, JsonValue], definitions["privacy_get_setup_body"])
+    for branch in cast(list[JsonValue], body["oneOf"]):
+        properties = cast(dict[str, JsonValue], cast(dict[str, JsonValue], branch)["properties"])
+        if "grant_state" in properties:
+            properties["credential_heuristic"] = _credential_heuristic_pair_schema()
+
+
+def _add_status_credential_heuristic(definitions: dict[str, JsonValue]) -> None:
+    """Name the effective possible-credential filter state before any check runs (issue #982).
+
+    Optional and additive: ``repository`` is what the current repository's grant applies to the
+    external AI reviewer, ``machine_default`` what a repository without a grant inherits.
+    ``unknown`` when the service could not read the policy.
+    """
+
+    definitions["credential_heuristic_state"] = {
+        "enum": ["disabled", "enforced", "unknown"],
+        "type": "string",
+    }
+    success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["credential_heuristic"] = {
+        "additionalProperties": False,
+        "properties": {
+            "machine_default": {"$ref": "#/$defs/credential_heuristic_state"},
+            "repository": {"$ref": "#/$defs/credential_heuristic_state"},
+        },
+        "required": ["machine_default", "repository"],
+        "type": "object",
+    }
+
+
+def _add_status_requested_item_role(definitions: dict[str, JsonValue]) -> None:
+    """Show obligation_published 1.1.0 ``directory`` items and their optional ``role`` (#1002).
+
+    Unreleased in-place addition to status-result 1.4.0. Earlier status results are frozen and
+    never carry either.
+    """
+
+    item = cast(dict[str, JsonValue], definitions["status_requested_item"])
+    properties = cast(dict[str, JsonValue], item["properties"])
+    kinds = cast(list[JsonValue], cast(dict[str, JsonValue], properties["item_kind"])["enum"])
+    if "directory" not in kinds:
+        kinds.append("directory")
+    properties["role"] = {"enum": ["input", "output"], "type": "string"}
+    # The row shows an acknowledged_not_done obligation's status and the agent's own reason,
+    # under the same obligation-text omission as the description it explains.
+    obligation = cast(dict[str, JsonValue], definitions["obligation_item"])
+    obligation_properties = cast(dict[str, JsonValue], obligation["properties"])
+    status = cast(dict[str, JsonValue], obligation_properties["status"])
+    statuses = cast(list[JsonValue], status["enum"])
+    if "acknowledged_not_done" not in statuses:
+        statuses.append("acknowledged_not_done")
+    obligation_properties["acknowledged_not_done_reason"] = {
+        "oneOf": [{"$ref": "#/$defs/content_text"}, {"$ref": "#/$defs/obligation_omission"}]
+    }
+    # #1027: whether the obligation is in the current plan's effective scope (not waived or
+    # superseded); optional, absent when the plan scope cannot be read.
+    obligation_properties["in_current_plan"] = {"type": "boolean"}
 
 
 def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
@@ -4148,6 +4719,9 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
 
     readiness = cast(dict[str, JsonValue], definitions["closure_readiness"])
     properties = cast(dict[str, JsonValue], readiness["properties"])
+    # ADR-045: where each derived fact the checklist lists came from. Optional and independent.
+    definitions["fact_lineage"] = _fact_lineage_definition()
+    properties["fact_lineage"] = _fact_lineage_array()
     properties.update(
         {
             "acknowledged_not_done": {
@@ -4162,6 +4736,8 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
                 "uniqueItems": True,
             },
             "acknowledged_not_done_count": {"$ref": "#/$defs/canonical_uint"},
+            # #997: obligations acknowledged as not done, never in open_obligation_count.
+            "acknowledged_obligation_count": {"$ref": "#/$defs/canonical_uint"},
             "agent_actionable": {
                 "items": {
                     "maxLength": 145,
@@ -4172,7 +4748,18 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
                 "type": "array",
                 "uniqueItems": True,
             },
-            "gap_classification_version": {"const": "1", "type": "string"},
+            # "3" is the current table (#984 ``finding_self_verified``); "1" and "2" stay admitted
+            # for a result an earlier 0.3 build shaped.
+            # "5" adds ``finding_disputed_after_rebuttal`` (#1020); "6" adds
+            # ``declared_output_emptied`` and ``deliverable_references_undeclared_file`` (#1022);
+            # "7" is the table derived from ``kernel.gap_effect`` (#1026), with the
+            # ``finding_rejection_awaiting_ruling`` readiness token, and adds
+            # ``planned_verification_matched_by_prefix`` and ``declared_output_not_reviewable``
+            # (tb4n3 RC-5, ADR-045).
+            "gap_classification_version": {
+                "enum": ["1", "2", "3", "4", "5", "6", "7"],
+                "type": "string",
+            },
             "standing_limitations": {
                 "items": {"$ref": "#/$defs/code"},
                 "maxItems": 128,
@@ -4183,6 +4770,97 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
                 "enum": ["action_required", "ready", "ready_with_limitations", "unknown"],
                 "type": "string",
             },
+            # tb4n3 RC-6 (issue #1029): the record that decided check_not_applicable or the
+            # bounding check_current_as_of_earlier_frontier. Service-minted ids, a ledger
+            # sequence, closed tokens and the recorded tool name; never a path or command text.
+            "check_cause": {
+                "additionalProperties": False,
+                "properties": {
+                    "check_event_id": {"$ref": "#/$defs/event_id"},
+                    "check_subject_frontier": {"$ref": "#/$defs/canonical_uint"},
+                    "effect": {"enum": ["superseded", "bounds_conclusion"], "type": "string"},
+                    "event_id": {"$ref": "#/$defs/event_id"},
+                    "family": {"$ref": "#/$defs/code"},
+                    "ledger_sequence": {"$ref": "#/$defs/canonical_uint"},
+                    "material_class": {
+                        "enum": [
+                            "yoetz_own_call",
+                            "response",
+                            "exploration",
+                            "no_tool_activity",
+                            "non_counting_write",
+                            "edit_or_write",
+                            "other",
+                        ],
+                        "type": "string",
+                    },
+                    "rule": {"$ref": "#/$defs/code"},
+                    "tool": {
+                        "maxLength": 128,
+                        "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$",
+                        "type": "string",
+                    },
+                },
+                "required": [
+                    "check_event_id",
+                    "check_subject_frontier",
+                    "effect",
+                    "event_id",
+                    "family",
+                    "ledger_sequence",
+                    "material_class",
+                    "rule",
+                ],
+                "type": "object",
+            },
+            # Open obligations a recorded yoetz-blocker decision names (#977): ids and the closed
+            # kind only. Optional and independent of the checklist group.
+            "blocked_obligations": {
+                "items": {
+                    "additionalProperties": False,
+                    "properties": {
+                        "blocker_kind": {
+                            "enum": [
+                                "authority",
+                                "consent",
+                                "credential",
+                                "dependency_unavailable",
+                            ],
+                            "type": "string",
+                        },
+                        # #985: claimed until a later decision repeats the same blocker line.
+                        # Optional: an earlier 0.3 build omits both.
+                        "confirmation": {"enum": ["claimed", "confirmed"], "type": "string"},
+                        "confirmation_event_id": {"$ref": "#/$defs/event_id"},
+                        "decision_event_id": {"$ref": "#/$defs/event_id"},
+                        "obligation_id": {"$ref": "#/$defs/obligation_id"},
+                    },
+                    "required": ["blocker_kind", "decision_event_id", "obligation_id"],
+                    "allOf": [
+                        {
+                            "if": {
+                                "properties": {"confirmation": {"const": "confirmed"}},
+                                "required": ["confirmation"],
+                            },
+                            "then": {"required": ["confirmation_event_id"]},
+                            "else": {"not": {"required": ["confirmation_event_id"]}},
+                        }
+                    ],
+                    "type": "object",
+                },
+                "maxItems": 64,
+                "type": "array",
+            },
+            # F3: the result ids a whole-task completion claim recorded now must name in
+            # `limitation_refs` (the reducer's own rule), sorted and bounded, plus the full count.
+            # Ids only. Optional on the unreleased 1.4.0 wire; present together.
+            "limitation_refs_required": {
+                "items": {"$ref": "#/$defs/result_id"},
+                "maxItems": 64,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "limitation_refs_required_count": {"$ref": "#/$defs/canonical_uint"},
         }
     )
     # Optional on this unreleased version so a result shaped by an earlier 0.3 build still
@@ -4201,6 +4879,17 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
             {
                 "if": {"anyOf": [{"required": [name]} for name in checklist]},
                 "then": {"required": checklist},
+            },
+            {
+                "if": {
+                    "anyOf": [
+                        {"required": ["limitation_refs_required"]},
+                        {"required": ["limitation_refs_required_count"]},
+                    ]
+                },
+                "then": {
+                    "required": ["limitation_refs_required", "limitation_refs_required_count"]
+                },
             },
             {
                 "if": {
@@ -4228,6 +4917,253 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
                 },
             },
         ]
+    )
+
+
+_FINDING_CLOSURE_CLASSES: Final = (
+    "agent_work",
+    "awaiting_ruling",
+    "settled_disclosed",
+    "settled_unmet",
+    "resolved",
+)
+_OBLIGATION_CLOSURE_CLASSES: Final = (
+    "agent_work",
+    "resolved",
+    "settled_disclosed",
+    "settled_unmet",
+)
+_FINDING_CLOSURE_BASES: Final = (
+    "absence_proved",
+    "absence_proved_after_acknowledged_not_done",
+    "absence_proved_after_self_verified",
+    "acknowledged_not_done_bookkeeping",
+    "acknowledged_not_done_requirement",
+    "disputed_after_rebuttal",
+    "limitation_acknowledged_not_done",
+    "limitation_disclosed",
+    "limitation_requested",
+    "open_answered",
+    "open_unanswered",
+    "rejected_awaiting_ruling",
+    "rejected_review_unavailable",
+    "rejection_accepted",
+    "reopened",
+    "self_verified",
+)
+_OBLIGATION_CLOSURE_BASES: Final = (
+    "acknowledged_not_done",
+    "blocker_claimed",
+    "blocker_confirmed",
+    "externally_evaluated",
+    "open",
+    "resolved",
+    "resolved_deliverable_emptied",
+)
+_FINDING_NEXT_ACTIONS: Final = (
+    "acknowledge",
+    "acknowledge_not_done",
+    "none",
+    "recheck",
+    "reject",
+    "reopen",
+    "repair",
+    "self_verify",
+)
+_PREDICTION_REASON_CODES: Final = (
+    "check_suppressed_findings",
+    "check_verdict_insufficient",
+    "child_findings_actionable",
+    "completion_scope_gap",
+    "findings_awaiting_ruling",
+    "findings_disclosed",
+    "findings_to_do",
+    "findings_unmet",
+    "limitations_to_disclose",
+    "lineage_blocks",
+    "live_gap_bounds",
+    "no_applicable_check",
+    "obligations_acknowledged",
+    "obligations_disclosed",
+    "obligations_open",
+    "policy_execution_incomplete",
+)
+_RECEIPT_CONCLUSIONS: Final = (
+    "insufficient_coverage",
+    "no_unresolved_deterministic_findings",
+    "unresolved_findings_remain",
+)
+_UUID_ID: Final = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+
+
+def _predicted_receipt_schema() -> dict[str, JsonValue]:
+    """The receipt conclusion a request now would carry, and every rule behind it (ADR-046)."""
+
+    reason: dict[str, JsonValue] = {
+        "additionalProperties": False,
+        "properties": {
+            "code": {"enum": list(_PREDICTION_REASON_CODES), "type": "string"},
+            "count": {"$ref": "#/$defs/positive_uint"},
+            "refs": {
+                "items": {
+                    "maxLength": 128,
+                    "pattern": f"^(?:(?:fnd|obl)_{_UUID_ID}|[a-z][a-z0-9_]{{0,127}})$",
+                    "type": "string",
+                },
+                "maxItems": 3,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "rule": {
+                "enum": ["R1", "R10", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+                "type": "string",
+            },
+            "since_frontier": {"$ref": "#/$defs/canonical_uint"},
+        },
+        "required": ["code", "count", "refs", "rule"],
+        "type": "object",
+    }
+    return {
+        "additionalProperties": False,
+        "properties": {
+            "basis_frontier": {"$ref": "#/$defs/canonical_uint"},
+            "conclusion": {"enum": list(_RECEIPT_CONCLUSIONS), "type": "string"},
+            "provisional": {"type": "boolean"},
+            "reason_total": {"$ref": "#/$defs/canonical_uint"},
+            "reasons": {"items": reason, "maxItems": 8, "type": "array"},
+        },
+        "required": ["basis_frontier", "conclusion", "provisional", "reason_total", "reasons"],
+        "type": "object",
+    }
+
+
+def _add_status_closure_verdict(definitions: dict[str, JsonValue]) -> None:
+    """The one closure verdict on status-result 1.4.0 (tb4n3 RC-3, issue #1026, ADR-046).
+
+    Additive and optional, changed in place on the unreleased wire (ADR-040 precedent): the
+    predicted receipt conclusion, the finding and obligation counters, the once-per-frontier
+    re-reads, and each finding / obligation row's closure class, basis and next actions.
+    ``receipt_blocking_finding_count`` keeps its wire meaning (findings to do plus unmet).
+    """
+
+    readiness = cast(dict[str, JsonValue], definitions["closure_readiness"])
+    properties = cast(dict[str, JsonValue], readiness["properties"])
+    properties.update(
+        {
+            "finding_counts": {
+                "additionalProperties": False,
+                "properties": {
+                    name: {"$ref": "#/$defs/canonical_uint"}
+                    for name in (
+                        "awaiting_ruling",
+                        "disclosed",
+                        "self_verify_eligible",
+                        "to_disclose",
+                        "to_do",
+                        "unmet",
+                    )
+                },
+                "required": [
+                    "awaiting_ruling",
+                    "disclosed",
+                    "self_verify_eligible",
+                    "to_disclose",
+                    "to_do",
+                    "unmet",
+                ],
+                "type": "object",
+            },
+            "obligation_counts": {
+                "additionalProperties": False,
+                "properties": {
+                    name: {"$ref": "#/$defs/canonical_uint"}
+                    for name in ("acknowledged", "disclosed", "open")
+                },
+                "required": ["acknowledged", "disclosed", "open"],
+                "type": "object",
+            },
+            "predicted_receipt": _predicted_receipt_schema(),
+            "rechecks": {
+                "items": {
+                    "additionalProperties": False,
+                    "properties": {
+                        "key": {
+                            "maxLength": 160,
+                            "pattern": r"^(?:accept|ack|blocker|premise):[A-Za-z0-9_.:?-]{1,140}$",
+                            "type": "string",
+                        },
+                        "kind": {
+                            "enum": ["acceptance", "acknowledgement", "blocker", "premise"],
+                            "type": "string",
+                        },
+                        "rule": {"$ref": "#/$defs/code"},
+                        "since_frontier": {"$ref": "#/$defs/canonical_uint"},
+                        "subjects": {
+                            "items": {"$ref": "#/$defs/subject_id"},
+                            "maxItems": 8,
+                            "type": "array",
+                            "uniqueItems": True,
+                        },
+                    },
+                    "required": ["key", "kind", "rule", "since_frontier", "subjects"],
+                    "type": "object",
+                },
+                "maxItems": 128,
+                "type": "array",
+            },
+            "awaiting_ruling_findings": {
+                "items": {
+                    "additionalProperties": False,
+                    "properties": {
+                        "finding_id": {"$ref": "#/$defs/finding_id"},
+                        "since_frontier": {"$ref": "#/$defs/canonical_uint"},
+                    },
+                    "required": ["finding_id", "since_frontier"],
+                    "type": "object",
+                },
+                "maxItems": 8,
+                "type": "array",
+                "uniqueItems": True,
+            },
+        }
+    )
+    finding_item = cast(dict[str, JsonValue], definitions["finding_item"])
+    cast(dict[str, JsonValue], finding_item["properties"]).update(
+        {
+            "closure_basis": {"enum": list(_FINDING_CLOSURE_BASES), "type": "string"},
+            "closure_class": {"enum": list(_FINDING_CLOSURE_CLASSES), "type": "string"},
+            "next_actions": {
+                "items": {"enum": list(_FINDING_NEXT_ACTIONS), "type": "string"},
+                "maxItems": 8,
+                "type": "array",
+                "uniqueItems": True,
+            },
+        }
+    )
+    cast(list[JsonValue], finding_item.setdefault("allOf", [])).extend(
+        [
+            {
+                "if": {"anyOf": [{"required": ["closure_class"]}, {"required": ["closure_basis"]}]},
+                "then": {"required": ["closure_basis", "closure_class"]},
+            },
+            {
+                "if": {"required": ["next_actions"]},
+                "then": {"required": ["closure_class"]},
+            },
+        ]
+    )
+    obligation_item = cast(dict[str, JsonValue], definitions["obligation_item"])
+    cast(dict[str, JsonValue], obligation_item["properties"]).update(
+        {
+            "closure_basis": {"enum": list(_OBLIGATION_CLOSURE_BASES), "type": "string"},
+            "closure_class": {"enum": list(_OBLIGATION_CLOSURE_CLASSES), "type": "string"},
+        }
+    )
+    cast(list[JsonValue], obligation_item.setdefault("allOf", [])).append(
+        {
+            "if": {"anyOf": [{"required": ["closure_class"]}, {"required": ["closure_basis"]}]},
+            "then": {"required": ["closure_basis", "closure_class"]},
+        }
     )
 
 
@@ -4324,6 +5260,19 @@ def _add_status_semantic_progress(definitions: dict[str, JsonValue]) -> None:
                 "properties": {
                     "operation_kind": {"const": "check"},
                     "state": {"enum": ["pending", "complete"]},
+                },
+                "required": ["operation_kind", "state"],
+            },
+        }
+    )
+    _add_semantic_redacted_values(definitions, operation_properties)
+    operation_rules.append(
+        {
+            "if": {"required": ["semantic_redacted_values"]},
+            "then": {
+                "properties": {
+                    "operation_kind": {"const": "check"},
+                    "state": {"const": "complete"},
                 },
                 "required": ["operation_kind", "state"],
             },
@@ -4514,14 +5463,30 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     }
     receipt_response = cast(dict[str, JsonValue], definitions["receipt_response"])
     response_properties = cast(dict[str, JsonValue], receipt_response["properties"])
-    _admit_acknowledged_not_done(cast(dict[str, JsonValue], response_properties["disposition"]))
+    _admit_terminal_dispositions(cast(dict[str, JsonValue], response_properties["disposition"]))
     cast(list[JsonValue], receipt_response["allOf"]).insert(1, _acknowledged_not_done_condition())
+    _insert_before_waived(
+        cast(list[JsonValue], receipt_response["allOf"]), _self_verified_condition()
+    )
+    # Issue #996: the link itself is disclosed by ids in ``duplicate_finding_links``.
+    _admit_duplicate_of(
+        response_properties, cast(list[JsonValue], receipt_response["allOf"]), link_field=False
+    )
     properties = cast(dict[str, JsonValue], document["properties"])
     findings = cast(dict[str, JsonValue], properties["findings"])
     findings["items"] = {"$ref": SCHEMA_NAMESPACE + "findings/finding-1.4.0.schema.json"}
     properties["children"] = {"$ref": "#/$defs/receipt_children"}
     # Issue #905 terminal states, disclosed by id; present only when non-empty.
-    for name in ("acknowledged_not_done_finding_ids", "rejection_accepted_finding_ids"):
+    # Issue #984: self-verified items (the agent verified a repair Yoetz could not prove).
+    # Issue #1020: findings the reviewer repeated over the agent's reasoned rejection.
+    for name in (
+        "acknowledged_not_done_finding_ids",
+        "rejection_accepted_finding_ids",
+        "self_verified_finding_ids",
+        "disputed_after_rebuttal_finding_ids",
+        # tb4n3 RC-3 (ADR-046): a reviewer's limitation request the agent disclosed.
+        "limitation_disclosed_finding_ids",
+    ):
         properties[name] = {
             "items": {"$ref": "#/$defs/finding_id"},
             "maxItems": 100,
@@ -4529,6 +5494,89 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
             "type": "array",
             "uniqueItems": True,
         }
+    # Issue #995 (ADR-033): disclosed assumptions and verification limits, ids and a closed
+    # kind only (the rationale stays in the decision); present only when non-empty.
+    definitions["event_id"] = {
+        "pattern": "^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "type": "string",
+    }
+    definitions["receipt_disclosure"] = {
+        "additionalProperties": False,
+        "properties": {
+            "decision_event_id": {"$ref": "#/$defs/event_id"},
+            "kind": {"enum": ["assumption", "verification_limit"], "type": "string"},
+            "obligation_id": {"$ref": "#/$defs/obligation_id"},
+        },
+        "required": ["obligation_id", "kind", "decision_event_id"],
+        "type": "object",
+    }
+    # Issue #984 (D7a): acknowledged findings whose premise the review disputes, by id.
+    properties["premise_disputed_finding_ids"] = {
+        "items": {"$ref": "#/$defs/finding_id"},
+        "maxItems": 100,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    # Issue #997 (ADR-032 slice C): obligations acknowledged as not done, disclosed by id.
+    properties["acknowledged_not_done_obligation_ids"] = {
+        "items": {"$ref": "#/$defs/obligation_id"},
+        "maxItems": 100,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    cast(list[JsonValue], document.setdefault("allOf", [])).append(
+        {
+            "if": {"required": ["acknowledged_not_done_obligation_ids"]},
+            "then": {
+                "properties": {
+                    "conclusion": {"not": {"const": "no_unresolved_deterministic_findings"}}
+                }
+            },
+        }
+    )
+    properties["disclosed_assumptions"] = {
+        "items": {"$ref": "#/$defs/receipt_disclosure"},
+        "maxItems": 64,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    # Issue #996: holding ``duplicate_of`` links, ids only; present only when non-empty.
+    definitions["duplicate_finding_link"] = {
+        "additionalProperties": False,
+        "properties": {
+            "duplicate_of_finding_id": {"$ref": "#/$defs/finding_id"},
+            "finding_id": {"$ref": "#/$defs/finding_id"},
+        },
+        "required": ["duplicate_of_finding_id", "finding_id"],
+        "type": "object",
+    }
+    properties["duplicate_finding_links"] = {
+        "items": {"$ref": "#/$defs/duplicate_finding_link"},
+        "maxItems": 100,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    # A repair only the agent verified never reads as clean (issue #984, ADR-034), nor does a
+    # standing reviewer disagreement (issue #1020, ADR-040).
+    for name in (
+        "self_verified_finding_ids",
+        "disputed_after_rebuttal_finding_ids",
+        "limitation_disclosed_finding_ids",
+    ):
+        cast(list[JsonValue], document.setdefault("allOf", [])).append(
+            {
+                "if": {"required": [name]},
+                "then": {
+                    "properties": {
+                        "conclusion": {"not": {"const": "no_unresolved_deterministic_findings"}}
+                    }
+                },
+            }
+        )
     # Issue #920: preserve only bounded opaque identities and the fixed heuristic reason in
     # receipt JSON. Empty arrays are omitted by the domain codec for historical byte stability.
     definitions["semantic_withheld_item"] = {
@@ -4552,6 +5600,62 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
         "type": "array",
         "uniqueItems": True,
     }
+    _add_semantic_redacted_values(definitions, properties, min_items=1)
+    # Issue #1017: a gap a later check cleared stays on the record as ``historical`` with the
+    # subject frontier of the first check that no longer carried it. Both fields appear together
+    # and only on a historical gap; an absent status reads as live, so earlier bytes are kept.
+    receipt_gap = cast(dict[str, JsonValue], definitions["receipt_gap"])
+    gap_properties = cast(dict[str, JsonValue], receipt_gap["properties"])
+    gap_properties["status"] = {"const": "historical"}
+    gap_properties["cleared_at_frontier"] = _lineage_frontier_schema()
+    receipt_gap["dependentRequired"] = {
+        "cleared_at_frontier": ["status"],
+        "status": ["cleared_at_frontier"],
+    }
+    # ADR-046: a live gap says whether it bounds the conclusion or is only disclosed; a clean
+    # conclusion beside a bounding gap is a contradiction the schema refuses.
+    gap_properties["effect"] = {"enum": ["bounds", "disclosed"], "type": "string"}
+    cast(list[JsonValue], receipt_gap.setdefault("allOf", [])).append(
+        {"if": {"required": ["status"]}, "then": {"not": {"required": ["effect"]}}}
+    )
+    # ADR-046: every rule behind the conclusion (the one that selected it first).
+    definitions["conclusion_reason"] = {
+        "additionalProperties": False,
+        "properties": {
+            "code": {"enum": list(_PREDICTION_REASON_CODES), "type": "string"},
+            "count": {"maximum": 9007199254740991, "minimum": 1, "type": "integer"},
+            "refs": {
+                "items": {
+                    "maxLength": 128,
+                    "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+                    "type": "string",
+                },
+                "maxItems": 3,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "rule": {
+                "enum": ["R1", "R10", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+                "type": "string",
+            },
+            "since_frontier": {"maximum": 9007199254740991, "minimum": 0, "type": "integer"},
+        },
+        "required": ["code", "count", "refs", "rule"],
+        "type": "object",
+    }
+    properties["conclusion_basis"] = {
+        "additionalProperties": False,
+        "properties": {
+            "reason_total": {"maximum": 9007199254740991, "minimum": 0, "type": "integer"},
+            "reasons": {
+                "items": {"$ref": "#/$defs/conclusion_reason"},
+                "maxItems": 8,
+                "type": "array",
+            },
+        },
+        "required": ["reason_total", "reasons"],
+        "type": "object",
+    }
     required = cast(list[JsonValue], document["required"])
     if "children" not in required:
         required.append("children")
@@ -4574,6 +5678,56 @@ def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
         "operations/publish-work-request-1.1.0.schema.json",
         {"event-draft-1.1.0": "event-draft-1.2.0"},
     )
+
+
+def _obligation_published_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Add the ``directory`` item kind and the optional item ``role`` (issue #1002).
+
+    Derived from the released, frozen 1.0.0 bytes; every other field is unchanged, so a 1.0.0
+    payload is also a valid 1.1.0 payload.
+    """
+
+    document = _load_versioned_template(entry, "events/obligation-published-1.0.0.schema.json")
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    item = cast(dict[str, JsonValue], definitions["requested_item"])
+    properties = cast(dict[str, JsonValue], item["properties"])
+    kinds = cast(list[JsonValue], cast(dict[str, JsonValue], properties["item_kind"])["enum"])
+    if "directory" not in kinds:
+        kinds.append("directory")
+    properties["role"] = {"enum": ["input", "output"], "type": "string"}
+    # A role names whether a path is read or delivered, so only path kinds admit it.
+    item["allOf"] = [
+        {
+            "if": {"required": ["role"]},
+            "then": {"properties": {"item_kind": {"enum": ["file", "directory"]}}},
+        }
+    ]
+    # ``acknowledged_not_done`` (#1002/#996): the agent states it did not do the obligation and
+    # why. The reason is required exactly for that status, as resolution refs are for resolved.
+    payload_properties = cast(dict[str, JsonValue], document["properties"])
+    status = cast(dict[str, JsonValue], payload_properties["status"])
+    statuses = cast(list[JsonValue], status["enum"])
+    if "acknowledged_not_done" not in statuses:
+        statuses.append("acknowledged_not_done")
+    payload_properties["acknowledged_not_done_reason"] = {
+        "maxLength": 4096,
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string",
+    }
+    rules = cast(list[JsonValue], document["allOf"])
+    rules.append(
+        {
+            "else": {"not": {"required": ["acknowledged_not_done_reason"]}},
+            "if": {
+                "properties": {"status": {"const": "acknowledged_not_done"}},
+                "required": ["status"],
+            },
+            "then": {"required": ["acknowledged_not_done_reason"]},
+        }
+    )
+    document["title"] = f"Yoetz obligation published {entry.schema_version}"
+    return document
 
 
 def _event_draft_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
@@ -4666,6 +5820,8 @@ def _event_draft_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     add_branch("finding_recorded", "1.3.0")
     add_branch("response_recorded", "1.1.0")
     for family, version in _TASK_STATEMENT_EVENT_PAIRS:
+        add_branch(family, version)
+    for family, version in _OBLIGATION_EVENT_PAIRS:
         add_branch(family, version)
     for family in (
         "child_accepted",
@@ -4760,7 +5916,7 @@ def _opaque_unknown_event_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
             "type": "object",
         }
     )
-    for family, version in _TASK_STATEMENT_EVENT_PAIRS:
+    for family, version in (*_TASK_STATEMENT_EVENT_PAIRS, *_OBLIGATION_EVENT_PAIRS):
         values.append(
             {
                 "additionalProperties": False,
@@ -4907,7 +6063,18 @@ def _outbound_case_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 def _add_review_input_manifest_to_outbound_case(document: dict[str, JsonValue]) -> None:
     """Add the metadata-only composed/provider-bound input manifest (issues #951/#907)."""
 
+    from yoetz.ports.semantic import MAX_REVIEW_INPUT_SECTION_ITEMS, MAX_SEMANTIC_CASE_ITEMS
+
     definitions = cast(dict[str, JsonValue], document["$defs"])
+    # A section lists every selected item id. The prior-findings section alone can hold sixteen
+    # findings of up to seven rows each (issue #976), so the list is bounded above 64.
+    definitions["item_id_list_review_input_section"] = {
+        "items": {"$ref": "#/$defs/opaque_ref"},
+        "maxItems": MAX_REVIEW_INPUT_SECTION_ITEMS,
+        "minItems": 0,
+        "type": "array",
+        "uniqueItems": True,
+    }
     section_reasons = [
         "capture_unavailable",
         "content_unselected",
@@ -4925,7 +6092,7 @@ def _add_review_input_manifest_to_outbound_case(document: dict[str, JsonValue]) 
         "properties": {
             "content_bytes": {"maximum": 524288, "minimum": 0, "type": "integer"},
             "content_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
-            "item_ids": {"$ref": "#/$defs/item_id_list_64"},
+            "item_ids": {"$ref": "#/$defs/item_id_list_review_input_section"},
             "omission_reasons": {
                 "items": {"enum": section_reasons, "type": "string"},
                 "maxItems": 8,
@@ -5028,10 +6195,19 @@ def _add_review_input_manifest_to_outbound_case(document: dict[str, JsonValue]) 
                 "type": "array",
             },
             "omitted_item_count": {"maximum": 64, "minimum": 0, "type": "integer"},
+            # Issue #976 (tb4n1 D11), optional in place: every distinct omission before the
+            # listed rows were capped, so the count no longer saturates at 64.
+            "omitted_item_total": {"maximum": 1048576, "minimum": 0, "type": "integer"},
             "phase": {"enum": ["composed", "provider_bound"], "type": "string"},
+            # Issue #976, optional in place: the review phase the packet's question set named.
+            "review_phase": {"enum": ["routine", "final"], "type": "string"},
             "schema": {"const": "yoetz.review-input-manifest/1", "type": "string"},
             "selected_excerpt_bytes": {"maximum": 524288, "minimum": 0, "type": "integer"},
-            "selected_item_count": {"maximum": 256, "minimum": 0, "type": "integer"},
+            "selected_item_count": {
+                "maximum": MAX_SEMANTIC_CASE_ITEMS,
+                "minimum": 0,
+                "type": "integer",
+            },
         },
         "required": [
             "schema",
@@ -6016,12 +7192,15 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # 2.9.0 is unreleased on the 0.3 line: it also carries the respond 1.1.0 pair that admits the
     # terminal ``acknowledged_not_done`` disposition (#905).  Every earlier control version (the
     # released ones through 2.6.1 and the unreleased 2.7.0/2.8.0) keeps the frozen 1.0.0 pair, so
-    # an older service refuses the new disposition at its own schema boundary.
+    # an older service refuses the new disposition at its own schema boundary.  It likewise carries
+    # the publish-work 1.1.0 result whose version slice names the current policy-pack versions.
     respond_replacements = {
         SCHEMA_NAMESPACE + "operations/respond-request-1.0.0.schema.json": SCHEMA_NAMESPACE
         + "operations/respond-request-1.1.0.schema.json",
         SCHEMA_NAMESPACE + "operations/respond-result-1.0.0.schema.json": SCHEMA_NAMESPACE
         + "operations/respond-result-1.1.0.schema.json",
+        SCHEMA_NAMESPACE + "operations/publish-work-result-1.0.0.schema.json": SCHEMA_NAMESPACE
+        + "operations/publish-work-result-1.1.0.schema.json",
         SCHEMA_NAMESPACE + "privacy/egress-receipt-1.0.0.schema.json": SCHEMA_NAMESPACE
         + "privacy/egress-receipt-1.1.0.schema.json",
     }
@@ -6094,6 +7273,7 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             reason_schema=reason_schema,
             definitions=definitions,
         )
+        _add_setup_credential_heuristic(definitions)
     if entry.schema_name == "control-request":
         definitions = cast(dict[str, JsonValue], document["$defs"])
         envelope = _individual_observation_envelope(definitions)
@@ -6104,6 +7284,95 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "maxLength": 76,
             "minLength": 76,
             "pattern": _CONTROL_COMMITMENT_PATTERN,
+            "type": "string",
+        }
+        # Every tool observation carries the command runner class the domain serializer derives;
+        # without it the hook's ingest frame failed client validation and command observations
+        # reached the ledger only through the delayed in-process sweep.
+        fields["runner_class"] = {
+            "enum": [
+                "build",
+                "compound",
+                "exploration",
+                "lint",
+                "other",
+                "test",
+                "typecheck",
+                "vcs",
+            ],
+            "type": "string",
+        }
+        # Closed runtime facts the hook derives at the host boundary (#977): where a package
+        # install resolved its interpreter, an edit outside the workspace, the effective user.
+        # ``write_scope`` also names an edit whose every path is scratch or Yoetz-owned (ADR-042).
+        fields["install_target"] = {
+            "enum": ["private_env", "system", "unresolved", "workspace_env", "yoetz_runtime"],
+            "type": "string",
+        }
+        fields["write_scope"] = {
+            "enum": ["outside_workspace", "scratch", "yoetz_owned"],
+            "type": "string",
+        }
+        fields["effective_user"] = {"enum": ["non_root", "root"], "type": "string"}
+        # Digest-only facts for image tool results the hook saw (P3-2, issue #1013): the
+        # decoded image's SHA-256 and byte count, a sniffed media type, and header dimensions.
+        # No pixel crosses the wire; the domain envelope admits exactly this shape.
+        dimension: dict[str, JsonValue] = {
+            "maximum": 2_147_483_647,
+            "minimum": 1,
+            "type": "integer",
+        }
+        fields["observed_images"] = {
+            "items": {
+                "additionalProperties": False,
+                "properties": {
+                    "byte_count": {
+                        "maximum": 9_007_199_254_740_991,
+                        "minimum": 1,
+                        "type": "integer",
+                    },
+                    "content_digest": {
+                        "maxLength": 71,
+                        "minLength": 71,
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string",
+                    },
+                    "height": dimension,
+                    "media_type": {
+                        "enum": [
+                            "image/gif",
+                            "image/jpeg",
+                            "image/png",
+                            "image/unknown",
+                            "image/webp",
+                        ],
+                        "type": "string",
+                    },
+                    "width": dimension,
+                },
+                "required": ["byte_count", "content_digest", "media_type"],
+                "type": "object",
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array",
+        }
+        # Keyed commitments to the simple commands of a compound or wrapped command and what the
+        # whole outcome means for one of them (#977): planned-verification matching only.
+        fields["command_segment_commitments"] = {
+            "items": {
+                "maxLength": 76,
+                "minLength": 76,
+                "pattern": _CONTROL_COMMITMENT_PATTERN,
+                "type": "string",
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": True,
+        }
+        fields["command_composition"] = {
+            "enum": ["and_chain", "masked", "single"],
             "type": "string",
         }
     if entry.schema_name == "control-result":
@@ -6537,6 +7806,63 @@ def _publish_work_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         raise SchemaGenerationError(
             "publish_work_result_schema_template_invalid", entries=(entry.relative_path,)
         ) from exc
+
+
+def _publish_work_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Report the current built-in pack versions in the publish result's version slice.
+
+    The released 1.0.0 result pins both packs at ``0.1.0``; an older service keeps it.
+    """
+
+    document = _load_versioned_template(entry, "operations/publish-work-result-1.0.0.schema.json")
+    _admit_recorded_policy_identities(document)
+    _add_publish_blocker_notices(document)
+    return document
+
+
+def _add_publish_blocker_notices(document: dict[str, JsonValue]) -> None:
+    """Optional fixed publish-time notices for a ``yoetz-blocker`` line (issue #985)."""
+
+    from yoetz.protocol.models import PUBLISH_BLOCKER_NOTICE_TEXTS
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    definitions["obligation_id"] = {
+        "pattern": ("^obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
+        "type": "string",
+    }
+    definitions["blocker_notice"] = {
+        "additionalProperties": False,
+        "oneOf": [
+            {
+                "properties": {
+                    "notice": {"const": notice},
+                    "text": {"const": text},
+                }
+            }
+            for notice, text in sorted(PUBLISH_BLOCKER_NOTICE_TEXTS.items())
+        ],
+        "properties": {
+            "blocker_kind": {
+                "enum": ["authority", "consent", "credential", "dependency_unavailable"],
+                "type": "string",
+            },
+            "notice": {"enum": sorted(PUBLISH_BLOCKER_NOTICE_TEXTS), "type": "string"},
+            "obligation_id": {"$ref": "#/$defs/obligation_id"},
+            "text": {"type": "string"},
+        },
+        "required": ["blocker_kind", "notice", "obligation_id", "text"],
+        "type": "object",
+    }
+    for branch in ("success", "dry_run"):
+        properties = cast(
+            dict[str, JsonValue], cast(dict[str, JsonValue], definitions[branch])["properties"]
+        )
+        properties["blocker_notices"] = {
+            "items": {"$ref": "#/$defs/blocker_notice"},
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array",
+        }
 
 
 def _status_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
@@ -7010,13 +8336,112 @@ def _no_waiver_fields() -> dict[str, JsonValue]:
     return {"not": {"anyOf": [{"required": ["waiver_scope"]}, {"required": ["waiver_expiry"]}]}}
 
 
-def _admit_acknowledged_not_done(disposition: dict[str, JsonValue]) -> None:
-    """Add the terminal not-done disposition to one disposition enum (issue #905)."""
+_SELF_VERIFIED: Final = "self_verified"
+_REOPENED: Final = "reopened"
+
+
+def _admit_terminal_dispositions(disposition: dict[str, JsonValue]) -> None:
+    """Add the terminal not-done (#905), self-verified (#984) and reopened (#1030) dispositions."""
 
     values = cast(list[JsonValue], disposition["enum"])
-    if _ACKNOWLEDGED_NOT_DONE not in values:
-        values.append(_ACKNOWLEDGED_NOT_DONE)
-        values.sort(key=lambda item: str(item).encode("ascii"))
+    for value in (_ACKNOWLEDGED_NOT_DONE, _SELF_VERIFIED, _REOPENED):
+        if value not in values:
+            values.append(value)
+    values.sort(key=lambda item: str(item).encode("ascii"))
+
+
+_DUPLICATE_OF: Final = "duplicate_of"
+_DUPLICATE_OF_FIELD: Final = "duplicate_of_finding_id"
+
+
+def _admit_duplicate_of(
+    properties: dict[str, JsonValue],
+    rules: list[JsonValue],
+    *,
+    one_of: bool = False,
+    link_field: bool = True,
+) -> dict[str, JsonValue] | None:
+    """Admit the ``duplicate_of`` disposition (issue #996) on one response-shaped object.
+
+    It accepts no waiver fields; with ``link_field`` it requires ``duplicate_of_finding_id`` (the
+    same pattern as ``finding_id``) and returns the rule that keeps that field off every other
+    disposition, for the caller to place on the object.
+    """
+
+    disposition = cast(dict[str, JsonValue], properties["disposition"])
+    values = cast(list[JsonValue], disposition["enum"])
+    if _DUPLICATE_OF not in values:
+        values.append(_DUPLICATE_OF)
+    values.sort(key=lambda item: str(item).encode("ascii"))
+    required: list[JsonValue] = [_DUPLICATE_OF_FIELD] if link_field else []
+    if one_of:
+        rule: dict[str, JsonValue] = {
+            **_no_waiver_fields(),
+            "properties": {"disposition": {"const": _DUPLICATE_OF}},
+        }
+        if required:
+            rule["required"] = required
+    else:
+        then: dict[str, JsonValue] = dict(_no_waiver_fields())
+        if required:
+            then["required"] = required
+        rule = {
+            "if": {
+                "properties": {"disposition": {"const": _DUPLICATE_OF}},
+                "required": ["disposition"],
+            },
+            "then": then,
+        }
+    # Disposition order: right after ``acknowledged_not_done`` (or ``acknowledged``).
+    index = 0
+    for position, existing in enumerate(rules):
+        current = cast(dict[str, JsonValue], existing)
+        guard = cast(dict[str, JsonValue], current.get("if", current))
+        guard_properties = cast(dict[str, JsonValue], guard.get("properties", {}))
+        const = cast(dict[str, JsonValue], guard_properties.get("disposition", {})).get("const")
+        if const in {"acknowledged", _ACKNOWLEDGED_NOT_DONE}:
+            index = position + 1
+    rules.insert(index, rule)
+    if not link_field:
+        return None
+    properties[_DUPLICATE_OF_FIELD] = json.loads(json.dumps(properties["finding_id"]))
+    return {
+        "if": {"required": [_DUPLICATE_OF_FIELD]},
+        "then": {
+            "properties": {"disposition": {"const": _DUPLICATE_OF}},
+            "required": ["disposition"],
+        },
+    }
+
+
+def _insert_before_waived(rules: list[JsonValue], rule: dict[str, JsonValue]) -> None:
+    """Insert one per-disposition rule in disposition order, before the ``waived`` rule."""
+
+    for index, existing in enumerate(rules):
+        current = cast(dict[str, JsonValue], existing)
+        guard = cast(dict[str, JsonValue], current.get("if", current))
+        properties = cast(dict[str, JsonValue], guard.get("properties", {}))
+        disposition = cast(dict[str, JsonValue], properties.get("disposition", {}))
+        if disposition.get("const") == "waived":
+            rules.insert(index, rule)
+            return
+    rules.append(rule)
+
+
+def _self_verified_condition(evidence_field: str = "evidence_refs") -> dict[str, JsonValue]:
+    """``self_verified`` needs a reason and at least one evidence reference, never a waiver."""
+
+    return {
+        "if": {
+            "properties": {"disposition": {"const": _SELF_VERIFIED}},
+            "required": ["disposition"],
+        },
+        "then": {
+            **_no_waiver_fields(),
+            "properties": {evidence_field: {"minItems": 1}},
+            "required": ["reason", evidence_field],
+        },
+    }
 
 
 def _acknowledged_not_done_condition() -> dict[str, JsonValue]:
@@ -7025,6 +8450,18 @@ def _acknowledged_not_done_condition() -> dict[str, JsonValue]:
     return {
         "if": {
             "properties": {"disposition": {"const": _ACKNOWLEDGED_NOT_DONE}},
+            "required": ["disposition"],
+        },
+        "then": {**_no_waiver_fields(), "required": ["reason"]},
+    }
+
+
+def _reopened_condition() -> dict[str, JsonValue]:
+    """``reopened`` (tb4n3 RC-7, #1030) takes a not-done answer back: a reason, no waiver fields."""
+
+    return {
+        "if": {
+            "properties": {"disposition": {"const": _REOPENED}},
             "required": ["disposition"],
         },
         "then": {**_no_waiver_fields(), "required": ["reason"]},
@@ -7043,7 +8480,7 @@ def _response_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue
         raise SchemaGenerationError(
             "response_recorded_schema_template_invalid", entries=(entry.relative_path,)
         ) from exc
-    _admit_acknowledged_not_done(disposition)
+    _admit_terminal_dispositions(disposition)
     rules.insert(
         1,
         {
@@ -7052,6 +8489,28 @@ def _response_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue
             "required": ["reason"],
         },
     )
+    _insert_before_waived(
+        rules,
+        {
+            **_no_waiver_fields(),
+            "properties": {
+                "disposition": {"const": _SELF_VERIFIED},
+                "evidence_refs": {"minItems": 1},
+            },
+            "required": ["reason", "evidence_refs"],
+        },
+    )
+    _insert_before_waived(
+        rules,
+        {
+            **_no_waiver_fields(),
+            "properties": {"disposition": {"const": _REOPENED}},
+            "required": ["reason"],
+        },
+    )
+    link_rule = _admit_duplicate_of(properties, rules, one_of=True)
+    assert link_rule is not None
+    cast(list[JsonValue], document.setdefault("allOf", [])).append(link_rule)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     return document
 
@@ -7068,8 +8527,13 @@ def _respond_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         raise SchemaGenerationError(
             "respond_request_schema_template_invalid", entries=(entry.relative_path,)
         ) from exc
-    _admit_acknowledged_not_done(disposition)
+    _admit_terminal_dispositions(disposition)
     rules.insert(1, _acknowledged_not_done_condition())
+    _insert_before_waived(rules, _self_verified_condition())
+    _insert_before_waived(rules, _reopened_condition())
+    link_rule = _admit_duplicate_of(properties, rules)
+    assert link_rule is not None
+    rules.append(link_rule)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     if "title" in document:
         document["title"] = f"Yoetz respond request {entry.schema_version}"
@@ -7090,8 +8554,45 @@ def _respond_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         raise SchemaGenerationError(
             "respond_result_schema_template_invalid", entries=(entry.relative_path,)
         ) from exc
-    _admit_acknowledged_not_done(disposition)
+    _admit_terminal_dispositions(disposition)
     rules.insert(1, _acknowledged_not_done_condition())
+    _insert_before_waived(rules, _self_verified_condition("evidence"))
+    _insert_before_waived(rules, _reopened_condition())
+    link_rule = _admit_duplicate_of(properties, rules)
+    assert link_rule is not None
+    rules.append(link_rule)
+    # tb4n3 RC-7 (#1030): where the finding stands once the answer is recorded.
+    definitions["closure_after"] = {
+        "additionalProperties": False,
+        "properties": {
+            "limitation": {
+                "enum": [
+                    "limitation_acknowledged_not_done",
+                    "limitation_disclosed",
+                    "limitation_requested",
+                ],
+                "type": "string",
+            },
+            "todo_state": {
+                "enum": [
+                    "acknowledged_not_done",
+                    "disputed_after_rebuttal",
+                    "open",
+                    "rejection_accepted",
+                    "self_verified",
+                    "verified_resolved",
+                ],
+                "type": "string",
+            },
+        },
+        "required": ["todo_state"],
+        "type": "object",
+    }
+    success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["closure_after"] = {
+        "$ref": "#/$defs/closure_after"
+    }
+    _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     if "title" in document:
         document["title"] = f"Yoetz respond result {entry.schema_version}"
@@ -7933,6 +9434,18 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         ),
     ),
     _RegistryEntry(
+        "events/obligation-published-1.1.0.schema.json",
+        "obligation-published",
+        "1.1.0",
+        "event",
+        "event-payload",
+        lambda: (
+            __import__(
+                "yoetz.domain.events", fromlist=["ObligationPublishedPayload"]
+            ).ObligationPublishedPayload
+        ),
+    ),
+    _RegistryEntry(
         "events/opaque-unknown-event-draft-1.0.0.schema.json",
         "opaque-unknown-event-draft",
         "1.0.0",
@@ -8430,6 +9943,18 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "operations/publish-work-result-1.0.0.schema.json",
         "publish-work-result",
         "1.0.0",
+        "request_result",
+        "MCP output",
+        lambda: (
+            __import__(
+                "yoetz.protocol.models", fromlist=["PublishWorkResultModel"]
+            ).PublishWorkResultModel
+        ),
+    ),
+    _RegistryEntry(
+        "operations/publish-work-result-1.1.0.schema.json",
+        "publish-work-result",
+        "1.1.0",
         "request_result",
         "MCP output",
         lambda: (
@@ -9321,6 +10846,8 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
 # regenerating them would silently rewrite frozen history.
 _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
     {
+        # Role- and directory-bearing obligations (issue #1002).
+        "events/obligation-published-1.1.0.schema.json",
         # The task-statement contracts (issue #908).
         "events/plan-published-1.1.0.schema.json",
         "events/plan-revised-1.1.0.schema.json",
@@ -9368,6 +10895,7 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "operations/receipt-result-1.3.0.schema.json",
         "operations/respond-request-1.1.0.schema.json",
         "operations/respond-result-1.1.0.schema.json",
+        "operations/publish-work-result-1.1.0.schema.json",
         "operations/start-request-1.1.0.schema.json",
         "operations/start-result-1.1.0.schema.json",
         "operations/status-request-1.2.0.schema.json",
@@ -9771,6 +11299,8 @@ def build_schema_documents(
             normalized = _respond_request_v1_1_schema(entry)
         elif entry.relative_path == "operations/respond-result-1.1.0.schema.json":
             normalized = _respond_result_v1_1_schema(entry)
+        elif entry.relative_path == "operations/publish-work-result-1.1.0.schema.json":
+            normalized = _publish_work_result_v1_1_schema(entry)
         elif entry.relative_path in {
             "operations/status-request-1.0.0.schema.json",
             "operations/status-request-1.1.0.schema.json",
@@ -9830,6 +11360,11 @@ def build_schema_documents(
             normalized = _with_required_task_statement(
                 entry, "events/session-resumed-1.1.0.schema.json"
             )
+        elif entry.relative_path == "events/obligation-published-1.0.0.schema.json":
+            # Released: the domain model now also admits 1.1.0 items, so never re-derive it.
+            normalized = _frozen_schema(entry)
+        elif entry.relative_path == "events/obligation-published-1.1.0.schema.json":
+            normalized = _obligation_published_v1_1_schema(entry)
         elif entry.relative_path == "events/plan-published-1.1.0.schema.json":
             normalized = _with_required_task_statement(
                 entry, "events/plan-published-1.0.0.schema.json", title="Yoetz plan published"

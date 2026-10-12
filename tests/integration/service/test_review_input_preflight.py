@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,7 +28,7 @@ from builders.ledger_adapters import (
     ownership_fence,
     sqlite_adapter,
 )
-from builders.multi_agent import multi_agent_service
+from builders.multi_agent import MultiAgentService, multi_agent_service
 from builders.policy_cases import BASE_COVERAGE
 from builders.privacy_policies import minimal_external_policy
 from builders.start_application import MemoryStartRuntime, StartTestClock, start_composition
@@ -50,6 +50,7 @@ from yoetz.application.service import (
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectionRenderMode,
+    UnprojectedControlBody,
     VerificationPolicy,
 )
 from yoetz.application.start import execute_start
@@ -70,7 +71,12 @@ from yoetz.domain.task_statement import RecordedTaskStatement, specification_pre
 from yoetz.domain.values import JsonObject, event_id
 from yoetz.kernel.deterministic_checks import DeterministicAssessment, DeterministicCase
 from yoetz.kernel.lineage import LineageEvaluation
-from yoetz.ports.control import ControlClientKind, ControlMethod, WorkspaceLocator
+from yoetz.ports.control import (
+    ControlClientKind,
+    ControlMethod,
+    RepositoryPrivacyContext,
+    WorkspaceLocator,
+)
 from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.importer import ImporterPort
 from yoetz.ports.keys import MacKeyPurpose
@@ -92,6 +98,7 @@ from yoetz.protocol.canonical import JsonValue, canonical_encode
 from yoetz.protocol.ids import IdKind, new_id
 from yoetz.protocol.models import (
     CheckRequest,
+    CheckResultModel,
     PublishWorkRequest,
     SemanticReason,
     SemanticStatus,
@@ -543,7 +550,7 @@ async def test_durable_same_request_recovery_after_statement_event_refreshes_cas
             "expected_frontier": created.frontier.model_dump(mode="json"),
             "mode": "semantic_required",
             "max_findings": "3",
-            "policy_packs": ["work-integrity/0.1.0"],
+            "policy_packs": ["work-integrity/0.3.0"],
         }
     )
 
@@ -708,7 +715,7 @@ async def test_ready_same_request_recovery_after_statement_plan_amendment(
                 "expected_frontier": started.frontier.model_dump(mode="json"),
                 "mode": "semantic_required",
                 "max_findings": "3",
-                "policy_packs": ["work-integrity/0.1.0"],
+                "policy_packs": ["work-integrity/0.3.0"],
             }
         )
         first = await service.app.check(request, repository_privacy_context=repository)
@@ -905,3 +912,658 @@ async def test_ready_same_request_recovery_after_statement_plan_amendment(
         assert isinstance(projected_check, StatusHistoryItemV14Model)
         assert projected_check.review_input_manifest is not None
         assert projected_check.review_input_manifest.phase == "provider_bound"
+
+
+async def _project(
+    service: MultiAgentService,
+    method: ControlMethod,
+    wire: Mapping[str, JsonValue],
+    value: UnprojectedControlBody,
+) -> object:
+    facts = await service.app.projection_binding_facts(method, wire, value)
+    rpc_id = new_id(IdKind.CONTROL_RPC)
+    service_instance_id = new_id(IdKind.SERVICE_INSTANCE)
+    binding = ControlProjectionBinding(
+        rpc_id,
+        method,
+        service_instance_id,
+        1,
+        facts.original_request_id,
+        facts.route_identity_digest,
+        canonical_encode(
+            {
+                "rpc_id": rpc_id,
+                "method": method.value,
+                "service_instance_id": service_instance_id,
+                "service_generation": "1",
+            }
+        ),
+    )
+    return await service.app.project_result_for_client(
+        ClientProjectionContext(
+            ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
+        ),
+        binding,
+        value,
+    )
+
+
+async def _project_status_views(
+    service: MultiAgentService,
+    common: Mapping[str, JsonValue],
+    session_id: str,
+    writer_id: str,
+    repository: RepositoryPrivacyContext,
+    check_request_id: str,
+) -> None:
+    views: tuple[tuple[str, dict[str, JsonValue]], ...] = (
+        ("compact", {}),
+        ("operation", {"filter": {"operation_request_id": check_request_id}}),
+        ("history", {}),
+        ("findings", {}),
+        ("results", {}),
+    )
+    for view, extra in views:
+        wire: dict[str, JsonValue] = {
+            **common,
+            "request_id": new_id(IdKind.REQUEST),
+            "session_id": session_id,
+            "writer_id": writer_id,
+            "view": view,
+            "limit": "10",
+            **extra,
+        }
+        result = await service.app.status(
+            StatusRequest.model_validate(wire), repository_privacy_context=repository
+        )
+        projected = await _project(service, ControlMethod.STATUS, wire, result)
+        assert isinstance(projected, StatusResultModel), view
+
+
+async def test_paused_and_recovered_check_project_for_mcp_clients(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A review-input pause and its recovery project through the MCP client boundary.
+
+    Regression: the awaiting_input CHECK body and the STATUS operation page that replays its
+    continuation failed public-model validation (preflight integers typed as wire strings; no
+    review-input continuation branch in status-result 1.4.0), so agents saw INTERNAL_ERROR
+    instead of the instruction to supply a task statement and never reached a review.
+    """
+
+    workspace = (tmp_path / "review-input-workspace").resolve()
+    workspace.mkdir()
+    provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
+    config = YoetzConfig(
+        profile="local-openai",
+        provider=provider,
+    )
+    async with multi_agent_service(tmp_path / "state", config=config) as service:
+        deterministic_calls = 0
+        provider_calls = 0
+        original_deterministic = check_module.run_deterministic_policies
+
+        def tracked_deterministic(
+            case: DeterministicCase,
+            scope: check_module.CheckScope,
+            packs: tuple[str, ...],
+            *,
+            evaluators: dict[
+                str, Callable[[DeterministicCase], tuple[DeterministicAssessment, ...]]
+            ]
+            | None = None,
+        ) -> tuple[
+            tuple[DeterministicAssessment, ...],
+            tuple[CheckPolicyExecution, ...],
+        ]:
+            nonlocal deterministic_calls
+            deterministic_calls += 1
+            return original_deterministic(case, scope, packs, evaluators=evaluators)
+
+        monkeypatch.setattr(check_module, "run_deterministic_policies", tracked_deterministic)
+        policy_store = service.app.privacy.policy_application.policy_store  # type: ignore[union-attr]
+        widened = minimal_external_policy()
+        installation_id: str | None = None
+        original_effective_policy = policy_store.effective_policy
+
+        async def effective_policy(
+            _store: object, scope: AuthorizationScope
+        ) -> EffectivePrivacyPolicy:
+            nonlocal installation_id
+            installation_id = scope.installation_id
+            if scope.kind is AuthorizationScopeKind.TASK:
+                return EffectivePrivacyPolicy(widened, 2, widened.policy_digest)
+            return await original_effective_policy(scope)
+
+        monkeypatch.setattr(type(policy_store), "effective_policy", effective_policy)
+
+        def fake_build_evaluator(
+            _factory: OpenAIResponsesExternalFactory,
+            binding: ProviderBinding,
+            _credential: object,
+            _request_commitment: object,
+        ) -> object:
+            async def evaluate(_case: object, _deadline: object) -> SemanticResultSuccess:
+                nonlocal provider_calls
+                provider_calls += 1
+                provenance = ProviderAttemptProvenance(
+                    provider=binding.provider_id,
+                    endpoint_profile_id=binding.endpoint_profile_id,
+                    endpoint_profile_version=binding.endpoint_profile_version,
+                    model=binding.model_id,
+                    sdk_version="test-gateway-1.0.0",
+                    prompt_digest="sha256:" + "1" * 64,
+                    schema_digest="sha256:" + "2" * 64,
+                    policy_digest=widened.policy_digest,
+                    privacy_policy_digest=widened.policy_digest,
+                    sampling_params=SamplingParams(128),
+                    latency_ms=1,
+                    status=SemanticStatus.SUCCEEDED,
+                    provider_request_id="review-input-test-provider-request",
+                    request_commitment="hmac-sha256:" + "7" * 64,
+                )
+                return SemanticResultSuccess(
+                    SemanticJudgment("no_material_discrepancy", ()), provenance
+                )
+
+            return SimpleNamespace(evaluate=evaluate)
+
+        monkeypatch.setattr(OpenAIResponsesExternalFactory, "build_evaluator", fake_build_evaluator)
+        lookup = service.vault.installation_mac_handle(MacKeyPurpose.CATALOG_LOOKUP)
+        repository = await resolve_repository_privacy_context(
+            WorkspaceLocator(str(workspace)), lookup
+        )
+        observation = LocalObservationStore(_state=service.root / "state")
+        observation.grant_consent(observation.workspace_commitment(str(workspace)))
+        common = {
+            "protocol_version": "0.1",
+            "schema_version": "1.0.0",
+            "actor": {"actor_id": "harness:review-input-ready", "actor_type": "harness"},
+            "client": {
+                "kind": "cooperative_agent",
+                "version": "0.3.0",
+                "integration": "cooperative_mcp",
+            },
+        }
+        started = await service.app.start(
+            StartRequest.model_validate(
+                {
+                    **common,
+                    "request_id": new_id(IdKind.REQUEST),
+                    "mode": "create",
+                    "task_title": "READY review input recovery",
+                    "workspace_ref": str(workspace),
+                    "external_ref": "review-input-ready",
+                    "requested_view": "compact",
+                }
+            ),
+            repository_privacy_context=repository,
+        )
+        request = CheckRequest.model_validate(
+            {
+                **common,
+                "request_id": new_id(IdKind.REQUEST),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": started.frontier.model_dump(mode="json"),
+                "mode": "semantic_required",
+                "max_findings": "3",
+                "policy_packs": ["work-integrity/0.3.0"],
+            }
+        )
+        first = await service.app.check(request, repository_privacy_context=repository)
+        assert type(first).__name__ == "CheckAwaitingHuman"
+        assert getattr(first, "state") == "awaiting_input"
+        assert getattr(first, "continuation").kind == "review_input_required"
+
+        wire_request = request.model_dump(mode="json", by_alias=True)
+        paused = await _project(service, ControlMethod.CHECK, wire_request, first)
+        assert isinstance(paused, CheckResultModel)
+        await _project_status_views(
+            service,
+            common,
+            started.session_id,
+            started.writer_id,
+            repository,
+            request.request_id,
+        )
+
+        statement = "Review the complete requested behavior and verify the final implementation."
+        published = await service.app.publish_work(
+            PublishWorkRequest.model_validate(
+                {
+                    **common,
+                    "request_id": new_id(IdKind.REQUEST),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": started.frontier.model_dump(mode="json"),
+                    "event_drafts": [
+                        {
+                            "event_id": new_id(IdKind.EVENT),
+                            "schema": {"name": "plan_published", "version": "1.1.0"},
+                            "occurred_at": "2026-09-05T12:00:00.000Z",
+                            "causal_parents": [],
+                            "payload": {
+                                "plan_version": 1,
+                                "summary": "Supply the complete user request before review.",
+                                "obligation_refs": [],
+                                "task_statement": statement,
+                            },
+                            "artifact_refs": [],
+                            "evidence_refs": [],
+                        }
+                    ],
+                }
+            ),
+            repository_privacy_context=repository,
+        )
+        assert isinstance(published, PublishWorkInternalResult)
+
+        assert installation_id is not None
+        policy_app = service.app.privacy.policy_application
+        assert policy_app is not None
+        repository_scope = AuthorizationScope(
+            AuthorizationScopeKind.WORKSPACE,
+            installation_id,
+            repository.commitment,
+        )
+        authority = await policy_app.policy_store.repository_authority(repository_scope)
+        candidate_policy = replace(
+            widened,
+            effective_scope=repository_scope,
+            created_at=service.clock.now_utc(),
+        )
+        proposed = await privacy_propose_policy(
+            policy_app,
+            ProposePrivacyPolicyRequest(
+                authority.effective.effective_digest,
+                candidate_policy,
+                authority.authority_digest,
+                repository_scope,
+            ),
+        )
+        assert isinstance(proposed, PolicyDecisionRequired)
+        committed = await decide_privacy_policy(
+            policy_app,
+            DecidePrivacyPolicyRequest(
+                proposed.prepared,
+                HumanPolicyDecision(
+                    proposed.prepared.prepared_digest,
+                    True,
+                    service.clock.now_utc(),
+                    "hmac-sha256:" + "8" * 64,
+                ),
+                HumanAuthorityCapability(
+                    "established_passphrase",
+                    "sha256:" + "9" * 64,
+                    1,
+                    str(getattr(service.vault.mode, "value", service.vault.mode)),
+                    service.vault.generation,
+                    True,
+                ),
+            ),
+        )
+        assert committed.policy.effective_scope == repository_scope
+        assert committed.policy.profile is widened.profile
+        assert committed.policy.review_selection == widened.review_selection
+        credential_binding = provider_credential_profile_binding(
+            provider.provider_id,
+            provider.model,
+            provider.endpoint_profile_id,
+            provider.endpoint_profile_version,
+        )
+        credential = service.memory.capture(
+            SecretPurpose.PROVIDER_CREDENTIAL,
+            bytearray(b"review-input-test-provider-token"),
+        )
+        await service.vault.store_provider_credential(
+            "set",
+            credential_binding,
+            credential,
+            HumanAuthorizationProof(
+                "review-input-provider-credential",
+                "provider_credential_set",
+                credential_binding.target_digest("set"),
+                1,
+                service.vault.generation,
+                None,
+                1.0,
+                60.0,
+            ),
+            2.0,
+        )
+
+        second = await service.app.check(request, repository_privacy_context=repository)
+        assert type(second).__name__ == "CheckCommitResult"
+        assert getattr(second, "request_id") == request.request_id
+        terminal = await _project(service, ControlMethod.CHECK, wire_request, second)
+        assert isinstance(terminal, CheckResultModel)
+        await _project_status_views(
+            service,
+            common,
+            started.session_id,
+            started.writer_id,
+            repository,
+            request.request_id,
+        )
+
+
+async def test_review_after_statement_revision_with_carried_obligation_commits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A statement supplied by revising a plan that already has obligations still commits.
+
+    Regression: the carried obligations do not cite the new statement, so plan drift adds
+    ``instruction_requirement_unmapped`` to ledger coverage. That task-level gap leaked into the
+    evaluation's case-content gaps, which rejected it after a successful review, turning the
+    check into a coordinator failure that agents only saw as OPERATION_PENDING. The review must
+    commit and the gap must stay visible in the check coverage.
+    """
+
+    workspace = (tmp_path / "review-input-workspace").resolve()
+    workspace.mkdir()
+    provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
+    config = YoetzConfig(
+        profile="local-openai",
+        provider=provider,
+    )
+    async with multi_agent_service(tmp_path / "state", config=config) as service:
+        deterministic_calls = 0
+        provider_calls = 0
+        original_deterministic = check_module.run_deterministic_policies
+
+        def tracked_deterministic(
+            case: DeterministicCase,
+            scope: check_module.CheckScope,
+            packs: tuple[str, ...],
+            *,
+            evaluators: dict[
+                str, Callable[[DeterministicCase], tuple[DeterministicAssessment, ...]]
+            ]
+            | None = None,
+        ) -> tuple[
+            tuple[DeterministicAssessment, ...],
+            tuple[CheckPolicyExecution, ...],
+        ]:
+            nonlocal deterministic_calls
+            deterministic_calls += 1
+            return original_deterministic(case, scope, packs, evaluators=evaluators)
+
+        monkeypatch.setattr(check_module, "run_deterministic_policies", tracked_deterministic)
+        policy_store = service.app.privacy.policy_application.policy_store  # type: ignore[union-attr]
+        widened = minimal_external_policy()
+        installation_id: str | None = None
+        original_effective_policy = policy_store.effective_policy
+
+        async def effective_policy(
+            _store: object, scope: AuthorizationScope
+        ) -> EffectivePrivacyPolicy:
+            nonlocal installation_id
+            installation_id = scope.installation_id
+            if scope.kind is AuthorizationScopeKind.TASK:
+                return EffectivePrivacyPolicy(widened, 2, widened.policy_digest)
+            return await original_effective_policy(scope)
+
+        monkeypatch.setattr(type(policy_store), "effective_policy", effective_policy)
+
+        def fake_build_evaluator(
+            _factory: OpenAIResponsesExternalFactory,
+            binding: ProviderBinding,
+            _credential: object,
+            _request_commitment: object,
+        ) -> object:
+            async def evaluate(_case: object, _deadline: object) -> SemanticResultSuccess:
+                nonlocal provider_calls
+                provider_calls += 1
+                provenance = ProviderAttemptProvenance(
+                    provider=binding.provider_id,
+                    endpoint_profile_id=binding.endpoint_profile_id,
+                    endpoint_profile_version=binding.endpoint_profile_version,
+                    model=binding.model_id,
+                    sdk_version="test-gateway-1.0.0",
+                    prompt_digest="sha256:" + "1" * 64,
+                    schema_digest="sha256:" + "2" * 64,
+                    policy_digest=widened.policy_digest,
+                    privacy_policy_digest=widened.policy_digest,
+                    sampling_params=SamplingParams(128),
+                    latency_ms=1,
+                    status=SemanticStatus.SUCCEEDED,
+                    provider_request_id="review-input-test-provider-request",
+                    request_commitment="hmac-sha256:" + "7" * 64,
+                )
+                return SemanticResultSuccess(
+                    SemanticJudgment("no_material_discrepancy", ()), provenance
+                )
+
+            return SimpleNamespace(evaluate=evaluate)
+
+        monkeypatch.setattr(OpenAIResponsesExternalFactory, "build_evaluator", fake_build_evaluator)
+        lookup = service.vault.installation_mac_handle(MacKeyPurpose.CATALOG_LOOKUP)
+        repository = await resolve_repository_privacy_context(
+            WorkspaceLocator(str(workspace)), lookup
+        )
+        observation = LocalObservationStore(_state=service.root / "state")
+        observation.grant_consent(observation.workspace_commitment(str(workspace)))
+        common = {
+            "protocol_version": "0.1",
+            "schema_version": "1.0.0",
+            "actor": {"actor_id": "harness:review-input-ready", "actor_type": "harness"},
+            "client": {
+                "kind": "cooperative_agent",
+                "version": "0.3.0",
+                "integration": "cooperative_mcp",
+            },
+        }
+        started = await service.app.start(
+            StartRequest.model_validate(
+                {
+                    **common,
+                    "request_id": new_id(IdKind.REQUEST),
+                    "mode": "create",
+                    "task_title": "READY review input recovery",
+                    "workspace_ref": str(workspace),
+                    "external_ref": "review-input-ready",
+                    "requested_view": "compact",
+                }
+            ),
+            repository_privacy_context=repository,
+        )
+        obligation = new_id(IdKind.OBLIGATION)
+        planned = await service.app.publish_work(
+            PublishWorkRequest.model_validate(
+                {
+                    **common,
+                    "request_id": new_id(IdKind.REQUEST),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": started.frontier.model_dump(mode="json"),
+                    "event_drafts": [
+                        {
+                            "event_id": new_id(IdKind.EVENT),
+                            "schema": {"name": "obligation_published", "version": "1.0.0"},
+                            "occurred_at": "2026-09-05T11:59:00.000Z",
+                            "causal_parents": [],
+                            "payload": {
+                                "obligation_id": obligation,
+                                "description": "Implement the feature.",
+                                "evidence_expectation": "Tests pass.",
+                                "status": "open",
+                            },
+                            "artifact_refs": [],
+                            "evidence_refs": [],
+                        },
+                        {
+                            "event_id": new_id(IdKind.EVENT),
+                            "schema": {"name": "plan_published", "version": "1.0.0"},
+                            "occurred_at": "2026-09-05T11:59:01.000Z",
+                            "causal_parents": [],
+                            "payload": {
+                                "plan_version": 1,
+                                "summary": "Implement it.",
+                                "obligation_refs": [obligation],
+                            },
+                            "artifact_refs": [],
+                            "evidence_refs": [],
+                        },
+                    ],
+                }
+            ),
+            repository_privacy_context=repository,
+        )
+        assert isinstance(planned, PublishWorkInternalResult)
+        planned_frontier = dict(planned.result_frontier.as_wire().items())
+        request = CheckRequest.model_validate(
+            {
+                **common,
+                "request_id": new_id(IdKind.REQUEST),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": planned_frontier,
+                "mode": "semantic_required",
+                "max_findings": "3",
+                "policy_packs": ["work-integrity/0.3.0"],
+            }
+        )
+        first = await service.app.check(request, repository_privacy_context=repository)
+        assert type(first).__name__ == "CheckAwaitingHuman"
+        assert getattr(first, "state") == "awaiting_input"
+        assert getattr(first, "continuation").kind == "review_input_required"
+
+        wire_request = request.model_dump(mode="json", by_alias=True)
+        paused = await _project(service, ControlMethod.CHECK, wire_request, first)
+        assert isinstance(paused, CheckResultModel)
+        await _project_status_views(
+            service,
+            common,
+            started.session_id,
+            started.writer_id,
+            repository,
+            request.request_id,
+        )
+
+        statement = "Review the complete requested behavior and verify the final implementation."
+        published = await service.app.publish_work(
+            PublishWorkRequest.model_validate(
+                {
+                    **common,
+                    "request_id": new_id(IdKind.REQUEST),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": planned_frontier,
+                    "event_drafts": [
+                        {
+                            "event_id": new_id(IdKind.EVENT),
+                            "schema": {"name": "plan_revised", "version": "1.1.0"},
+                            "occurred_at": "2026-09-05T12:00:00.000Z",
+                            "causal_parents": [],
+                            "payload": {
+                                "plan_version": 2,
+                                "supersedes_plan_version": 1,
+                                "reason": "Record the user request.",
+                                "summary": "Supply the complete user request before review.",
+                                "obligation_changes": [
+                                    {"obligation_id": obligation, "change": "carried"}
+                                ],
+                                "task_statement": statement,
+                            },
+                            "artifact_refs": [],
+                            "evidence_refs": [],
+                        }
+                    ],
+                }
+            ),
+            repository_privacy_context=repository,
+        )
+        assert isinstance(published, PublishWorkInternalResult)
+
+        assert installation_id is not None
+        policy_app = service.app.privacy.policy_application
+        assert policy_app is not None
+        repository_scope = AuthorizationScope(
+            AuthorizationScopeKind.WORKSPACE,
+            installation_id,
+            repository.commitment,
+        )
+        authority = await policy_app.policy_store.repository_authority(repository_scope)
+        candidate_policy = replace(
+            widened,
+            effective_scope=repository_scope,
+            created_at=service.clock.now_utc(),
+        )
+        proposed = await privacy_propose_policy(
+            policy_app,
+            ProposePrivacyPolicyRequest(
+                authority.effective.effective_digest,
+                candidate_policy,
+                authority.authority_digest,
+                repository_scope,
+            ),
+        )
+        assert isinstance(proposed, PolicyDecisionRequired)
+        committed = await decide_privacy_policy(
+            policy_app,
+            DecidePrivacyPolicyRequest(
+                proposed.prepared,
+                HumanPolicyDecision(
+                    proposed.prepared.prepared_digest,
+                    True,
+                    service.clock.now_utc(),
+                    "hmac-sha256:" + "8" * 64,
+                ),
+                HumanAuthorityCapability(
+                    "established_passphrase",
+                    "sha256:" + "9" * 64,
+                    1,
+                    str(getattr(service.vault.mode, "value", service.vault.mode)),
+                    service.vault.generation,
+                    True,
+                ),
+            ),
+        )
+        assert committed.policy.effective_scope == repository_scope
+        assert committed.policy.profile is widened.profile
+        assert committed.policy.review_selection == widened.review_selection
+        credential_binding = provider_credential_profile_binding(
+            provider.provider_id,
+            provider.model,
+            provider.endpoint_profile_id,
+            provider.endpoint_profile_version,
+        )
+        credential = service.memory.capture(
+            SecretPurpose.PROVIDER_CREDENTIAL,
+            bytearray(b"review-input-test-provider-token"),
+        )
+        await service.vault.store_provider_credential(
+            "set",
+            credential_binding,
+            credential,
+            HumanAuthorizationProof(
+                "review-input-provider-credential",
+                "provider_credential_set",
+                credential_binding.target_digest("set"),
+                1,
+                service.vault.generation,
+                None,
+                1.0,
+                60.0,
+            ),
+            2.0,
+        )
+
+        second = await service.app.check(request, repository_privacy_context=repository)
+        assert type(second).__name__ == "CheckCommitResult"
+        assert getattr(second, "request_id") == request.request_id
+        assert getattr(second, "semantic_status") is SemanticStatus.SUCCEEDED
+        assert "instruction_requirement_unmapped" in getattr(second, "coverage").known_gaps
+        terminal = await _project(service, ControlMethod.CHECK, wire_request, second)
+        assert isinstance(terminal, CheckResultModel)
+        await _project_status_views(
+            service,
+            common,
+            started.session_id,
+            started.writer_id,
+            repository,
+            request.request_id,
+        )

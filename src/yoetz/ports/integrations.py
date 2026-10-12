@@ -10,6 +10,11 @@ from types import MappingProxyType
 from typing import Final, Literal, Protocol, cast
 
 from yoetz.domain.values import JsonObject, JsonValue, RequestId, request_id, validate_sha256_digest
+from yoetz.domain.yoetz_tools import (
+    YOETZ_MCP_TOOL_NAMES,
+    YOETZ_SUPPORT_TOOL_NAMES,
+    YOETZ_WORKFLOW_TOOL_NAMES,
+)
 from yoetz.protocol.canonical import canonical_encode
 from yoetz.protocol.errors import PROTOCOL_REASON_CODES, ProtocolValueError
 
@@ -95,25 +100,6 @@ def observation_pairing_contract(
         return _DEFAULT_HOOK_PAIRING
     return _LEGACY_HOST_PAIRING.get(harness_id, _DEFAULT_HOOK_PAIRING)
 
-
-# The one exact Yoetz workflow tool-name set, in registry order. Renderers that
-# scope host hook matchers to Yoetz tools and hook-ingress sanitizers that admit
-# observed tool names must both derive from this tuple so the two allowlists
-# cannot drift apart (the MCP descriptor registry lint pins the same order).
-YOETZ_WORKFLOW_TOOL_NAMES: Final = (
-    "start",
-    "publish_work",
-    "check",
-    "respond",
-    "status",
-    "receipt",
-    "read_guidance",
-)
-
-# Read-only support tools are advertised through MCP but do not enter the workflow hook
-# allowlist: they prepare or inspect an existing workflow request and never append ledger state.
-YOETZ_SUPPORT_TOOL_NAMES: Final = ("closure_prepare",)
-YOETZ_MCP_TOOL_NAMES: Final = (*YOETZ_WORKFLOW_TOOL_NAMES, *YOETZ_SUPPORT_TOOL_NAMES)
 
 _MAX_LOCATION_CHARS = 4_096
 _MAX_FILES = 64
@@ -616,7 +602,7 @@ class IntegrationResult:
 
 
 @dataclass(frozen=True, slots=True)
-class IntegrationError(Exception):
+class _IntegrationErrorFields(Exception):
     reason: IntegrationReason
     safe_details: Mapping[str, JsonValue]
 
@@ -635,6 +621,19 @@ class IntegrationError(Exception):
             raise _port_error("integration_error_invalid")
         object.__setattr__(self, "safe_details", details)
         Exception.__init__(self, self.reason.value)
+
+
+class IntegrationError(_IntegrationErrorFields):
+    """Typed integration failure with frozen ``reason`` and ``safe_details``.
+
+    The frozen dataclass ``__setattr__`` rejects every attribute assignment on its own exact
+    class, including the ``__traceback__`` assignment Python 3.14 ``contextlib`` performs when an
+    error propagates through a ``@contextmanager``, which masked the real error with
+    ``FrozenInstanceError``. Raising through this thin subclass keeps the fields frozen and value
+    equality while leaving interpreter-owned exception state assignable.
+    """
+
+    __slots__ = ()
 
 
 class IntegrationsPort(Protocol):

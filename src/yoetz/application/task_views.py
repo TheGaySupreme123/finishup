@@ -106,6 +106,7 @@ async def lineage_status_page(
         snapshot = snapshots.get(child_id)
         child_route = await catalog.task_route(child_id)
         blocking: tuple[str, ...] = ()
+        self_verified = 0
         state = "annotation"
         if child.acceptance is LineageAcceptance.ACCEPTED:
             if child_route is None or child_route.state is TaskRouteState.QUARANTINED:
@@ -125,6 +126,7 @@ async def lineage_status_page(
             else:
                 state = rollup.state.value
                 blocking = rollup.blockers
+                self_verified = len(rollup.self_verified_finding_ids)
         with status_stage(StatusFaultStage.MODEL):
             children.append(
                 StatusLineageChildModel.model_validate(
@@ -138,6 +140,13 @@ async def lineage_status_page(
                         "depth": str(child.depth),
                         "rollup_state": state,
                         "blocking_conditions": blocking,
+                        # Issue #984 (S2): present only when the child has self-verified
+                        # findings, so status agrees with the receipt's insufficient_coverage.
+                        **(
+                            {"self_verified_finding_count": str(self_verified)}
+                            if self_verified
+                            else {}
+                        ),
                     }
                 )
             )

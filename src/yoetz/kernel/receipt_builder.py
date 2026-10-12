@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
+from types import MappingProxyType
 from typing import Final, Literal, cast
 
+from yoetz.domain.bounded_text import clip_to_limit
 from yoetz.domain.check_totals import render_check_totals
 from yoetz.domain.events import (
+    AcceptedEvent,
     CheckRecordedPayload,
     ClaimKind,
     ClaimRecordedPayloadV1_1,
@@ -23,7 +27,6 @@ from yoetz.domain.events import (
 )
 from yoetz.domain.findings import (
     FINDING_KIND_TRAITS,
-    CheckVerdict,
     Finding,
     FindingOrigin,
     ResponseDisposition,
@@ -42,12 +45,19 @@ from yoetz.domain.receipts import (
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
+    SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
     ReceiptChildFinding,
     ReceiptChildOutcome,
     ReceiptChildren,
     ReceiptConclusion,
+    ReceiptConclusionBasis,
+    ReceiptConclusionReason,
+    ReceiptDisclosure,
     ReceiptDocument,
+    ReceiptDuplicateLink,
     ReceiptGap,
+    ReceiptGapEffect,
+    ReceiptGapStatus,
     ReceiptObligation,
     ReceiptObligationStatus,
     ReceiptRedaction,
@@ -88,43 +98,78 @@ from yoetz.domain.values import (
     Timestamp,
     finding_id,
 )
+from yoetz.kernel.check_standing import CheckStanding, LaterRecord
 from yoetz.kernel.claims import (
     claim_discloses_result,
     effective_claim_items,
     result_is_relevant_to_claim,
 )
+from yoetz.kernel.closure_class import (
+    BOOKKEEPING_KINDS,
+    FINDING_BASES,
+    FindingClosure,
+    FindingClosureClass,
+    ObligationClosure,
+    ObligationClosureClass,
+    ReceiptEffect,
+    closure_counts,
+    obligation_closures,
+)
+from yoetz.kernel.closure_readiness import premise_disputed_finding_ids
 from yoetz.kernel.command_attempts import command_attempts
 from yoetz.kernel.completion_scope import (
     SCOPE_REPAIR,
     completion_scope_differences,
 )
+from yoetz.kernel.delivered_set import deliverable_lineage
 from yoetz.kernel.deterministic_checks import (
     CALLER_DIGEST_PROVENANCE_GAPS,
     CaseAvailabilityFacts,
     CaseGap,
 )
+from yoetz.kernel.deterministic_scope import commands_complete
+from yoetz.kernel.fact_lineage import FactLineage, lineage_texts
 from yoetz.kernel.finding_resolution import (
     finding_resolution_explanation,
+    issue_key,
     unverified_resolution_finding_ids,
 )
+from yoetz.kernel.gap_effect import GapContext, gap_effect, judge_gaps
+from yoetz.kernel.later_material import LaterMaterialClass, counted_later_material
 from yoetz.kernel.lineage import LineageEvaluation, LineageRollupState
 from yoetz.kernel.observed_failures import (
     ObservedFailureState,
     observed_event_ids_from_records,
     observed_failure_states,
 )
-from yoetz.kernel.plan_drift import PLAN_DRIFT_GAPS
 from yoetz.kernel.plan_scope import CurrentPlanScope, current_plan_scope
 from yoetz.kernel.projections import ObligationProjectionRecord, ProjectionRecord, ProjectionState
+from yoetz.kernel.receipt_prediction import (
+    AppliedCheck,
+    ClosureBasis,
+    LineageBasis,
+    PredictionConclusion,
+    ReceiptPrediction,
+    predict_receipt_conclusion,
+)
 from yoetz.kernel.reducers import is_material_event_family
-from yoetz.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, weakest
+from yoetz.kernel.task_facts import (
+    acknowledged_obligation_ids,
+    disclosure_declarations,
+    task_fact_signals,
+)
+from yoetz.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, PublicationChannel, weakest
 from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile, SemanticStatus
+from yoetz.protocol.readiness_text import reason_phrases
 
 __all__ = [
     "CheckSuffixClass",
     "ReceiptBuildContext",
     "ReceiptFindingState",
     "build_receipt",
+    "closure_basis_from_context",
+    "predict_context_conclusion",
+    "route_did_not_require_review",
 ]
 
 _CONTEXT_INVALID: Final = "receipt_build_context_invalid"
@@ -177,38 +222,135 @@ def _sorted_unique[T: str](values: Iterable[T]) -> tuple[T, ...]:
     return tuple(sorted(set(values), key=_ascii_key))
 
 
+# The receipt document holds at most this many of each row kind, and a section at most this many
+# items. A task past them used to fail to build any receipt at all (INVALID_REQUEST "The receipt
+# request is invalid", or STORAGE_CORRUPT from the selection guards) -- the agent could never close
+# a long-lived task (tb4n3 RC-2, A6). The builder now keeps the rows that matter most, in a
+# stable order, and says how many it left out.
+_DOCUMENT_ROW_CAP: Final = 100
+_GAP_ROW_CAP: Final = 64
+_SECTION_ITEM_CAP: Final = 64
+_SECTION_BODY_CAP: Final = 32_768
+
+
+def _keep_by_rank[T](
+    values: tuple[T, ...],
+    cap: int,
+    rank: Callable[[T], int],
+    *,
+    cap_rank: int | None = None,
+) -> tuple[tuple[T, ...], int]:
+    """Keep the ``cap`` best-ranked values in their original order; return them and the rest.
+
+    With ``cap_rank`` the cap applies to the values of that rank alone and every other value is
+    kept (used to bound one kind of row without touching the rest).
+    """
+
+    if cap_rank is not None:
+        capped = [index for index, value in enumerate(values) if rank(value) == cap_rank]
+        if len(capped) <= cap:
+            return values, 0
+        dropped = frozenset(capped[cap:])
+        return (
+            tuple(value for index, value in enumerate(values) if index not in dropped),
+            len(dropped),
+        )
+    if len(values) <= cap:
+        return values, 0
+    best = frozenset(
+        sorted(range(len(values)), key=lambda index: (rank(values[index]), index))[:cap]
+    )
+    return tuple(value for index, value in enumerate(values) if index in best), len(values) - cap
+
+
+def _omitted_rows_sentence(omitted: Mapping[str, int]) -> str:
+    named = [
+        f"{count} {noun if count == 1 else noun + 's'}"
+        for noun, count in omitted.items()
+        if count > 0
+    ]
+    if not named:
+        return ""
+    return (
+        " Not listed in this receipt (the document holds at most "
+        f"{_DOCUMENT_ROW_CAP} rows of a kind, {_GAP_ROW_CAP} gaps): {', '.join(named)}. "
+        "Unresolved actionable findings and open obligations are listed first, and the coverage "
+        "list still names every limitation; status lists every row."
+    )
+
+
+def _finish_section(body: str, items: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
+    """Bound one section: at most the item cap, a visible count of the rest, a marked body cut."""
+
+    note = ""
+    if len(items) > _SECTION_ITEM_CAP:
+        note = (
+            f" {len(items) - _SECTION_ITEM_CAP} more item(s) are not listed here; "
+            "status lists every row."
+        )
+        items = items[:_SECTION_ITEM_CAP]
+    if len(body) + len(note) > _SECTION_BODY_CAP:
+        body = clip_to_limit(
+            body, _SECTION_BODY_CAP - len(note), marker=" [section text cut]", ascii_only=False
+        )
+    return body + note, items
+
+
 @dataclass(frozen=True, slots=True)
 class ReceiptFindingState:
     finding_id: FindingId
     resolved: bool
     # Issue #905 terminal states. ``acknowledged_not_done`` stays unresolved and blocking;
     # ``rejection_accepted`` stays unresolved but no longer blocks a clean conclusion. Both are
-    # disclosed by id in their own receipt sections.
+    # disclosed by id in their own receipt sections. ``self_verified`` (issue #984) stays
+    # unresolved, is not agent work, and caps the conclusion at ``insufficient_coverage``.
     acknowledged_not_done: bool = False
     rejection_accepted: bool = False
+    self_verified: bool = False
+    # Issue #1020 (ADR-040): the reviewer repeated it over the agent's reasoned rejection without
+    # newer material. Unresolved, not agent work; caps the conclusion like ``self_verified``.
+    disputed_after_rebuttal: bool = False
+    # Issue #996: the earlier finding a holding ``duplicate_of`` link names. The flags above are
+    # then the ones derived from it (``finding_todo``); the link is disclosed by ids.
+    duplicate_of_finding_id: FindingId | None = None
+    # tb4n3 RC-3 (ADR-046): the finding's closure class, basis and receipt effect, computed once by
+    # ``kernel.closure_class`` from the same projection. A hand-built state without it is read
+    # from the flags above (``closure_basis_from_context``).
+    closure: FindingClosure | None = None
 
     def __post_init__(self) -> None:
+        if self.closure is not None and (
+            type(self.closure) is not FindingClosure or self.closure.finding_id != self.finding_id
+        ):
+            raise ValueError(_CONTEXT_INVALID)
         try:
             object.__setattr__(self, "finding_id", finding_id(self.finding_id))
+            if self.duplicate_of_finding_id is not None:
+                object.__setattr__(
+                    self, "duplicate_of_finding_id", finding_id(self.duplicate_of_finding_id)
+                )
         except ValueError as exc:
             raise ValueError(_CONTEXT_INVALID) from exc
+        if self.duplicate_of_finding_id == self.finding_id:
+            raise ValueError(_CONTEXT_INVALID)
         if (
             type(self.resolved) is not bool
             or type(self.acknowledged_not_done) is not bool
             or type(self.rejection_accepted) is not bool
-            or self.resolved + self.acknowledged_not_done + self.rejection_accepted > 1
+            or type(self.self_verified) is not bool
+            or type(self.disputed_after_rebuttal) is not bool
+            or self.resolved
+            + self.acknowledged_not_done
+            + self.rejection_accepted
+            + self.self_verified
+            + self.disputed_after_rebuttal
+            > 1
         ):
             raise ValueError(_CONTEXT_INVALID)
 
 
 def _issue_key(finding: Finding) -> tuple[object, ...]:
-    return (
-        finding.origin,
-        finding.policy_id,
-        finding.policy_version,
-        finding.kind,
-        finding.subject_refs,
-    )
+    return issue_key(finding)
 
 
 def _projection_records(projection: ProjectionState) -> tuple[ProjectionRecord[object], ...]:
@@ -347,6 +489,14 @@ class ReceiptBuildContext:
     lineage: LineageEvaluation | None = None
     check_suffix: CheckSuffixClass | None = None
     records: tuple[LedgerRecord, ...] = ()
+    # tb4n3 RC-6: what followed the latest check and why it did or did not supersede it
+    # (``kernel.check_standing``): the superseding record, the records the earlier-frontier code
+    # counts, and the number of later records proved harmless by class. Render context only.
+    check_standing: CheckStanding | None = None
+    # Issue #1017: gap codes an earlier check carried and the latest check no longer carries,
+    # each with the subject frontier of the first check without it, sorted by code. They stay in
+    # ``coverage`` (retained findings still carry them) but never bound the conclusion.
+    historical_gaps: tuple[tuple[str, Frontier], ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -364,6 +514,7 @@ class ReceiptBuildContext:
             )
             or (self.lineage is not None and type(self.lineage) is not LineageEvaluation)
             or (self.check_suffix is not None and type(self.check_suffix) is not CheckSuffixClass)
+            or (self.check_standing is not None and type(self.check_standing) is not CheckStanding)
         ):
             raise ValueError(_CONTEXT_INVALID)
         # A suffix class describes records that followed an attributable check; without that
@@ -388,6 +539,28 @@ class ReceiptBuildContext:
         if self.gaps != ordered_gaps or len({gap.marker for gap in self.gaps}) != len(self.gaps):
             raise ValueError(_CONTEXT_INVALID)
         if set(self.coverage.known_gaps) != {gap.code for gap in self.gaps}:
+            raise ValueError(_CONTEXT_INVALID)
+        if (
+            type(self.historical_gaps) is not tuple
+            or any(
+                type(item) is not tuple
+                or len(item) != 2
+                or type(item[0]) is not str
+                or item[0] not in self.coverage.known_gaps
+                or type(item[1]) is not Frontier
+                or item[1].sequence > self.subject_frontier.sequence
+                for item in self.historical_gaps
+            )
+            or [item[0] for item in self.historical_gaps]
+            != sorted({item[0] for item in self.historical_gaps}, key=_ascii_key)
+            # Only a code that reached the receipt solely through retained-finding coverage can
+            # be history; a case, check or lineage gap with the same code is always live.
+            or any(
+                gap.marker != f"retained_finding_coverage:{gap.code}"
+                for gap in self.gaps
+                if gap.code in {item[0] for item in self.historical_gaps}
+            )
+        ):
             raise ValueError(_CONTEXT_INVALID)
         if (
             LEDGER_FRESHNESS_ORDER[self.coverage.ledger_freshness]
@@ -442,9 +615,6 @@ def _select_obligations(
         selected.update(
             cast(ObligationId, ref) for ref in finding.subject_refs if ref.startswith("obl_")
         )
-    if len(selected) > 100:
-        raise ValueError(_CONTEXT_INVALID)
-
     obligations: list[ReceiptObligation] = []
     for obligation_id_value in _sorted_unique(selected):
         record = context.projection.obligations.get(obligation_id_value)
@@ -487,8 +657,6 @@ def _select_claim_refs(
         refs.update(cast(ClaimId, ref) for ref in finding.subject_refs if ref.startswith("clm_"))
     for gap in context.gaps:
         refs.update(cast(ClaimId, ref) for ref in gap.subject_refs if ref.startswith("clm_"))
-    if len(refs) > 100:
-        raise ValueError(_CONTEXT_INVALID)
     return _sorted_unique(refs)
 
 
@@ -563,8 +731,6 @@ def _select_evidence_refs(
                 for evidence_id_value, record in context.projection.evidence.items()
                 if record.source_event_id == root
             )
-    if len(refs) > 100:
-        raise ValueError(_CONTEXT_INVALID)
     return _sorted_unique(refs)
 
 
@@ -589,19 +755,62 @@ def _select_responses(
                 waiver_expiry=payload.waiver_expiry,
             )
         )
-    if len(values) > 100:
-        raise ValueError(_CONTEXT_INVALID)
     return tuple(values)
 
 
 _UNVERIFIED_RESOLUTION_LISTED: Final = 16
 
 
+# One receipt asks for the lineage once per gap code per rendering; derive it once per context.
+_LINEAGE_MEMO: list[tuple[ReceiptBuildContext, tuple[FactLineage, ...]] | None] = [None]
+
+
+def _receipt_fact_lineage(context: ReceiptBuildContext) -> tuple[FactLineage, ...]:
+    """Where the derived facts this receipt reports came from (ADR-045).
+
+    The same list status shows (``current_fact_lineage``): the applicable check's recorded
+    deliverable states and the ledger-derived facts of the receipt's prefix. Nothing is claimed
+    for a check that no longer applies.
+    """
+
+    memo = _LINEAGE_MEMO[0]
+    if memo is not None and memo[0] is context:
+        return memo[1]
+    derived = _derive_receipt_fact_lineage(context)
+    _LINEAGE_MEMO[0] = (context, derived)
+    return derived
+
+
+def _derive_receipt_fact_lineage(context: ReceiptBuildContext) -> tuple[FactLineage, ...]:
+    items: list[FactLineage] = []
+    check = context.applicable_check
+    if check is not None:
+        event = next(
+            (record.event_id for record in context.records if record.payload is check), None
+        )
+        items.extend(
+            deliverable_lineage(event, check.subject_frontier.sequence, check.deliverable_states)
+        )
+    if context.records and len(context.records) == context.projection.frontier:
+        items.extend(task_fact_signals(context.projection, context.records).lineage)
+    return tuple(sorted(dict.fromkeys(items), key=lambda item: item.sort_key))
+
+
 def _check_change_gap_text(context: ReceiptBuildContext, code: str) -> str | None:
     """The fixed sentence for a check-time code; for the legacy-resolution disclosure (R945-02),
-    also the affected resolved findings, at most 16 by id and the rest as a count."""
+    also the affected resolved findings, at most 16 by id and the rest as a count. A task fact
+    that carries provenance (ADR-045) also says why it fired, from the same lineage status
+    shows."""
 
+    later = _later_material_text(context, code)
+    if later is not None:
+        return later
     sentence = check_time_change_gap_sentence(code)
+    if sentence is not None and code != CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP:
+        why = lineage_texts(_receipt_fact_lineage(context), code)
+        if why:
+            shown = " ".join(why[:3])
+            return f"{sentence} {shown}" + (f" (+{len(why) - 3} more.)" if len(why) > 3 else "")
     if sentence is None or code != CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP:
         return sentence
     affected = unverified_resolution_finding_ids(
@@ -617,7 +826,96 @@ def _check_change_gap_text(context: ReceiptBuildContext, code: str) -> str | Non
     return f"{sentence} {len(affected)} resolved AI-powered {noun} rely on it: {listed}{more}."
 
 
-def _select_gaps(context: ReceiptBuildContext) -> tuple[ReceiptGap, ...]:
+_LATER_CLASS_PHRASES: Final[Mapping[LaterMaterialClass, str]] = MappingProxyType(
+    {
+        LaterMaterialClass.YOETZ_OWN_CALL: "records of Yoetz's own tool calls",
+        LaterMaterialClass.EXPLORATION: "records of read-only reads",
+        LaterMaterialClass.NO_TOOL_ACTIVITY: "host bookkeeping records that name no tool call",
+        LaterMaterialClass.NON_COUNTING_WRITE: "records of scratch or Yoetz-owned writes",
+    }
+)
+
+
+def _later_record_phrase(record: LaterRecord) -> str:
+    """Name one later record in the reader's terms: what it is, its ledger position, its id."""
+
+    where = f"ledger record {record.ingestion_sequence}, {record.event_id}"
+    tool = "" if record.material.tool is None else f" via {record.material.tool}"
+    if record.material.material_class is LaterMaterialClass.EDIT_OR_WRITE:
+        return f"an observed edit{tool} ({where})"
+    if record.family == "finding_recorded" and record.observation_authored:
+        return f"a host-observation finding ({where})"
+    if record.observation_authored:
+        return f"an unclassified host observation, {record.family}{tool} ({where})"
+    return f"published {record.family} work ({where})"
+
+
+def _later_material_text(context: ReceiptBuildContext, code: str) -> str | None:
+    """Why the check no longer covers this frontier, or why the earlier-frontier code bounds.
+
+    Every fact the receipt adds says which record it rests on, the closed rule that classified it
+    and the check frontier it follows (tb4n3 RC-6; the owner's lineage rule). ``None`` for any
+    other code, or when the application passed no standing (a hand-built context).
+    """
+
+    standing = context.check_standing
+    latest = None if standing is None else standing.latest
+    if standing is None or latest is None:
+        return None
+    tested = f"subject frontier {latest.subject_frontier.sequence}"
+    if code == "check_not_applicable":
+        cause = standing.superseded_by
+        if cause is None:
+            return None
+        sentence = (
+            f"Why: {_later_record_phrase(cause)} was recorded after the check at {tested} "
+            f"(rule {cause.material.rule})."
+        )
+        if cause.material.material_class is LaterMaterialClass.EDIT_OR_WRITE:
+            sentence += (
+                " The host hook records the tool and whether the write left the workspace, not "
+                "the path; the next check reads the changed files."
+            )
+        return sentence
+    if code == CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP:
+        first = standing.bounding_first or standing.counted_first
+        if standing.superseded_by is not None or first is None:
+            return None
+        answers = sum(1 for record in standing.counted if not is_observation_authored(record))
+        unclassified = len(standing.counted) - answers
+        parts: list[str] = []
+        if unclassified:
+            parts.append(
+                f"{_count_phrase(unclassified, 'later record', 'later records')} could not be "
+                "classified as Yoetz's own calls, read-only reads, host bookkeeping or "
+                "scratch writes"
+            )
+        if answers:
+            parts.append(
+                f"{_count_phrase(answers, 'later response', 'later responses')} answered findings"
+            )
+        sentence = (
+            f"Why: after the check at {tested}, " + " and ".join(parts) + "; the first is "
+            f"{_later_record_phrase(first)} (rule {first.material.rule})."
+        )
+        if standing.ignored:
+            ignored = ", ".join(
+                f"{count} {_LATER_CLASS_PHRASES.get(kind, kind.value)}"
+                for kind, count in standing.ignored.items()
+            )
+            sentence += (
+                f" Not counted, because Yoetz classified them as not changing the work: {ignored}."
+            )
+        return sentence
+    return None
+
+
+def _select_gaps(
+    context: ReceiptBuildContext,
+    historical: Mapping[str, Frontier] | None = None,
+    effects: Mapping[str, ReceiptGapEffect] | None = None,
+) -> tuple[ReceiptGap, ...]:
+    cleared = historical or {}
     plan_scope = current_plan_scope(
         context.projection.plans,
         context.projection.coverage_gaps,
@@ -665,6 +963,9 @@ def _select_gaps(context: ReceiptBuildContext) -> tuple[ReceiptGap, ...]:
                 or task_statement_gap_detail(gap.code)
                 or _check_change_gap_text(context, gap.code)
             ),
+            status=(ReceiptGapStatus.HISTORICAL if gap.code in cleared else ReceiptGapStatus.LIVE),
+            cleared_at_frontier=cleared.get(gap.code),
+            effect=(None if effects is None or gap.code in cleared else effects.get(gap.code)),
         )
         for gap in sorted(
             context.gaps,
@@ -675,8 +976,6 @@ def _select_gaps(context: ReceiptBuildContext) -> tuple[ReceiptGap, ...]:
             ),
         )
     )
-    if len(values) > 64:
-        raise ValueError(_CONTEXT_INVALID)
     return values
 
 
@@ -801,7 +1100,11 @@ def _apply_profile(
         )
         transformed_responses: list[ReceiptResponse] = []
         for response in responses:
-            if response.disposition is ResponseDisposition.ACKNOWLEDGED:
+            # A ``duplicate_of`` answer (issue #996) has an optional reason like acknowledged.
+            if response.disposition in {
+                ResponseDisposition.ACKNOWLEDGED,
+                ResponseDisposition.DUPLICATE_OF,
+            }:
                 if response.reason is not None:
                     counts[
                         (
@@ -814,6 +1117,7 @@ def _apply_profile(
                 ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
                 ResponseDisposition.PROVENANCE_DISPUTED,
                 ResponseDisposition.REJECTED,
+                ResponseDisposition.SELF_VERIFIED,
                 ResponseDisposition.WAIVED,
             }:
                 counts[
@@ -841,11 +1145,33 @@ def _apply_profile(
     )
 
 
-def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
-    """Project the pure lineage evaluation into the receipt's bounded child section."""
+_CHILD_FINDING_CAP: Final = 64
+
+
+def _child_finding_rank(finding: ReceiptChildFinding) -> int:
+    """0 unresolved actionable work, 1 self-verified, 2 other unresolved, 3 resolved history.
+
+    A self-verified child finding is also actionable and unresolved, but it is not the parent's
+    work (ADR-034), so a finding that still needs work outranks it.
+    """
+
+    if finding.resolved:
+        return 3
+    if finding.self_verified:
+        return 1
+    return 0 if finding.actionable else 2
+
+
+def _receipt_children(evaluation: LineageEvaluation | None) -> tuple[ReceiptChildren, int]:
+    """Project the pure lineage evaluation into the receipt's bounded child section.
+
+    Lineage allows 100 findings per child while a receipt child outcome holds 64 (tb4n3 RC-2, A6):
+    a child past that used to fail the whole receipt. The rest are counted, not silently dropped.
+    """
 
     if evaluation is None:
-        return ReceiptChildren()
+        return ReceiptChildren(), 0
+    omitted_child_findings = 0
     snapshots = {snapshot.child_task_id: snapshot for snapshot in evaluation.snapshots}
     children: list[ReceiptChildOutcome] = []
     for rollup in evaluation.children:
@@ -865,9 +1191,12 @@ def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
                     actionable=bool(finding.actionable),
                     resolved=finding.resolved,
                     resolution_event_id=finding.resolution_event_id,
+                    self_verified=finding.self_verified,
                 )
                 for finding in snapshot.findings
             )
+            findings, omitted = _keep_by_rank(findings, _CHILD_FINDING_CAP, _child_finding_rank)
+            omitted_child_findings += omitted
         # ``blocked`` is the evaluator's internal state for unresolved actionable child findings;
         # receipts expose the bounded child outcome vocabulary, where that state is an open gap
         # accompanied by the actionable finding rows.
@@ -895,47 +1224,200 @@ def _receipt_children(evaluation: LineageEvaluation | None) -> ReceiptChildren:
                 findings=findings,
             )
         )
-    return ReceiptChildren(tuple(children))
+    return ReceiptChildren(tuple(children)), omitted_child_findings
 
 
-def _conclusion(
-    context: ReceiptBuildContext,
-    unresolved_actionable: tuple[Finding, ...],
-) -> ReceiptConclusion:
-    advisory_gaps = PLAN_DRIFT_GAPS | PREEXISTING_TEST_INFORMATIONAL_GAPS
-    if _COMPLETION_SCOPE_GAPS & set(context.coverage.known_gaps):
-        # These two closed gaps bound completion itself. Findings remain visible and actionable,
-        # but they cannot make an empty completion scope read as sufficiently covered.
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    if unresolved_actionable or (
-        context.lineage is not None and context.lineage.actionable_finding_ids
-    ):
-        return ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN
-    if context.lineage is not None and context.lineage.blocks_clean_completion:
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    check = context.applicable_check
-    if check is None:
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    if check.suppressed_count > 0:
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    if check.verdict in {
-        CheckVerdict.INSUFFICIENT_COVERAGE,
-        CheckVerdict.INCOMPLETE_CHECK,
+def route_did_not_require_review(check: CheckRecordedPayload | None) -> bool:
+    """True when ``check`` recorded a route that did not require AI-powered review (#986).
+
+    Only an explicit ``semantic_route_required: false`` on a local-only check (``not_requested``)
+    qualifies; an absent field is the safe default and keeps the missing review blocking.
+    """
+
+    return (
+        check is not None
+        and check.semantic_route_required is False
+        and check.semantic_status is SemanticStatus.NOT_REQUESTED
+        and SEMANTIC_REVIEW_NOT_REQUESTED_GAP in check.coverage.known_gaps
+    )
+
+
+def _flag_closure(
+    context: ReceiptBuildContext, state: ReceiptFindingState, *, terminal_sections: bool
+) -> FindingClosure | None:
+    """The closure of a state that carries only the per-state flags (a hand-built context).
+
+    The application always supplies ``closure`` from ``kernel.closure_class``; this mirrors its
+    bases for the flags a context can state, so a hand-built context reads the same rules.
+    """
+
+    record = context.projection.findings.get(state.finding_id)
+    if record is None or record.payload is None:
+        return None
+    finding = record.payload
+    if not FINDING_KIND_TRAITS[finding.kind][1]:
+        return None
+    if state.resolved:
+        basis = "absence_proved"
+    elif state.acknowledged_not_done:
+        basis = (
+            "acknowledged_not_done_bookkeeping"
+            if finding.kind in BOOKKEEPING_KINDS
+            else "acknowledged_not_done_requirement"
+        )
+    elif state.rejection_accepted:
+        basis = "rejection_accepted"
+    elif state.self_verified:
+        basis = "self_verified"
+    elif state.disputed_after_rebuttal:
+        basis = "disputed_after_rebuttal"
+    else:
+        basis = "open_answered"
+    if not terminal_sections and basis in {
+        "rejection_accepted",
+        "self_verified",
+        "disputed_after_rebuttal",
     }:
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    if check.verdict is CheckVerdict.ACTION_REQUIRED:
-        raise ValueError(_CONTEXT_INVALID)
-    executions_complete = all(
-        execution.outcome == "run" and execution.reason == "completed"
+        # An artifact older than the terminal sections cannot disclose these by id, so they still
+        # block there (issue #905): read them as open work.
+        basis = "open_answered"
+    klass, effect = FINDING_BASES[basis]
+    return FindingClosure(
+        state.finding_id,
+        klass,
+        basis,
+        effect,
+        ("none",),
+        None,
+        (),
+        state.duplicate_of_finding_id or state.finding_id,
+    )
+
+
+def _context_closures(
+    context: ReceiptBuildContext, *, terminal_sections: bool
+) -> tuple[FindingClosure, ...]:
+    closures: list[FindingClosure] = []
+    for state in context.finding_states:
+        closure = state.closure
+        if closure is None:
+            closure = _flag_closure(context, state, terminal_sections=terminal_sections)
+        elif not terminal_sections and closure.basis in {
+            "rejection_accepted",
+            "self_verified",
+            "disputed_after_rebuttal",
+        }:
+            closure = _flag_closure(context, state, terminal_sections=False)
+        if closure is not None:
+            closures.append(closure)
+    return tuple(closures)
+
+
+def _gap_context(context: ReceiptBuildContext, historical: frozenset[str]) -> GapContext:
+    """What the applicable check and the suffix say about each gap (one computation).
+
+    The route comes from the check's own record (only an explicit ``semantic_route_required:
+    false`` on a local-only check relaxes anything, issue #986); the host-observation guard from
+    the gaps that check carried; the earlier-frontier bound from the suffix that followed it.
+    """
+
+    check = context.applicable_check
+    carried: frozenset[str] = (
+        frozenset(check.coverage.known_gaps) if check is not None else frozenset[str]()
+    )
+    if context.check_suffix is not None:
+        bounds = context.check_suffix is not CheckSuffixClass.RESPONSES_ONLY
+    elif context.check_standing is not None:
+        bounds = context.check_standing.bounds_conclusion
+    else:
+        bounds = True
+    return GapContext(
+        route_requires_review=not route_did_not_require_review(check),
+        review_succeeded=check is not None and check.semantic_status is SemanticStatus.SUCCEEDED,
+        reviewer_reported_insufficiency=bool(
+            carried
+            & {
+                "semantic_packet_insufficient",
+                SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
+            }
+            or any(code.startswith("semantic_missing_") for code in carried)
+        ),
+        check_carried=carried,
+        commands_complete=(
+            True if check is None or check.totals is None else commands_complete(check.totals)
+        ),
+        earlier_frontier_bounds=bounds,
+        historical=historical,
+    )
+
+
+def _applied_check(check: CheckRecordedPayload | None) -> AppliedCheck | None:
+    if check is None:
+        return None
+    # A pack that ran to completion, or that had nothing to judge on the whole case
+    # (``skipped/not_applicable``: no root of its kind exists, e.g. the coordination pack on a
+    # single-agent run), leaves nothing unexamined (#986). ``scope_excluded`` (a scoped check
+    # left roots of the pack unexamined) and ``material_unavailable`` (its roots were
+    # unreadable) are real coverage loss and stay incomplete, as does ``failed``.
+    complete = all(
+        (execution.outcome == "run" and execution.reason == "completed")
+        or (execution.outcome == "skipped" and execution.reason == "not_applicable")
         for execution in check.policy_executions
     )
-    if (
-        not executions_complete
-        or any(gap.code not in advisory_gaps for gap in context.gaps)
-        or (set(context.coverage.known_gaps) - advisory_gaps)
-    ):
-        return ReceiptConclusion.INSUFFICIENT_COVERAGE
-    return ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    return AppliedCheck(check.verdict, check.suppressed_count, complete)
+
+
+def closure_basis_from_context(
+    context: ReceiptBuildContext,
+    *,
+    terminal_sections: bool = True,
+    obligations: tuple[ObligationClosure, ...] | None = None,
+) -> ClosureBasis:
+    """The basis the receipt conclusion reads, built from one frozen receipt context.
+
+    ``terminal_sections`` is false only for an artifact older than the terminal-state sections
+    (``receipt_document_carries_terminal_sections``), which cannot disclose a settled finding by
+    id and so keeps it blocking. Status builds the same context and calls the same function, so
+    the label it prints is the label the receipt carries.
+    """
+
+    historical: frozenset[str] = (
+        frozenset(code for code, _ in context.historical_gaps)
+        if terminal_sections
+        else frozenset[str]()
+    )
+    live_codes = tuple(sorted(set(context.coverage.known_gaps) - historical, key=_ascii_key))
+    gap_context = _gap_context(context, historical)
+    gaps = judge_gaps(live_codes, gap_context)
+    if context.applicable_check is None:
+        # No check covers the state, so the missing check is the reason; its own gap is a symptom.
+        gaps = tuple(gap for gap in gaps if gap.code not in _CHECK_ABSENCE_GAPS)
+    lineage = context.lineage
+    return ClosureBasis(
+        context.subject_frontier,
+        _context_closures(context, terminal_sections=terminal_sections),
+        tuple(obligation_closures(context.projection, records=context.records).values())
+        if obligations is None
+        else obligations,
+        gaps,
+        _applied_check(context.applicable_check),
+        None
+        if lineage is None
+        else LineageBasis(
+            tuple(str(item) for item in lineage.actionable_finding_ids),
+            lineage.blocks_clean_completion,
+        ),
+    )
+
+
+def predict_context_conclusion(
+    context: ReceiptBuildContext, *, terminal_sections: bool = True
+) -> ReceiptPrediction:
+    """The prediction (conclusion and every reason) for one receipt context."""
+
+    return predict_receipt_conclusion(
+        closure_basis_from_context(context, terminal_sections=terminal_sections)
+    )
 
 
 def _count_phrase(count: int, singular: str, plural: str) -> str:
@@ -1170,11 +1652,21 @@ def _suffix_record_kinds(context: ReceiptBuildContext) -> tuple[str | None, bool
     )
     if check_record is None:
         return None, False, False
-    later_material = tuple(
-        record
-        for record in context.records
-        if is_material_event_family(record.schema.name)
-        and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
+    # The same filter the application used to derive ``check_suffix`` (tb4n3 RC-6): records the
+    # shared ``later_material_class`` rule proves harmless are not part of the disclosed suffix.
+    later_material = (
+        context.check_standing.counted
+        if context.check_standing is not None
+        else counted_later_material(
+            (
+                record
+                for record in context.records
+                if is_material_event_family(record.schema.name)
+                and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
+            ),
+            context.projection,
+            all_records=context.records,
+        )
     )
     lineage_records = tuple(
         record for record in later_material if is_lineage_service_stamped(record)
@@ -1212,6 +1704,7 @@ def _check_coverage_sentence(
     engine_derived_suffix: str | None = None,
     host_observation_suffix: bool = False,
     limitation_response_suffix: bool = False,
+    superseded_by_observation: bool = False,
 ) -> str:
     """State what the recorded check does or does not cover here, in the reader's terms."""
 
@@ -1280,7 +1773,8 @@ def _check_coverage_sentence(
             else f"subject frontier {tested_subject_sequence}"
         )
         return (
-            f"A check is recorded at {tested}, but material work was published after it, so "
+            f"A check is recorded at {tested}, but material work was "
+            f"{'recorded' if superseded_by_observation else 'published'} after it, so "
             f"its verdict no longer covers frontier {frontier.sequence}. Re-run check at this "
             "frontier to restore coverage."
         )
@@ -1425,6 +1919,43 @@ def _semantic_usage_sentence(provenance: SemanticProvenance | None) -> str:
     )
 
 
+_INPUT_LOSS_CAUSE = re.compile(r"Refusal cause: ([a-z_]+(?:, [a-z_]+)*)\. ")
+
+
+def _input_loss_causes(context: ReceiptBuildContext) -> tuple[str, ...]:
+    """Closed refusal causes the service-authored loss-lane markers disclosed (#998).
+
+    Only ``hook_observed`` evidence written by the observation coordinator carries the fixed
+    marker sentence; every token is checked against the closed cause vocabulary.
+    """
+
+    from yoetz.domain.observation_budget import AdmissionLossCause
+
+    if "observation_input_loss" not in context.coverage.known_gaps:
+        return ()
+    allowed = {item.value for item in AdmissionLossCause}
+    hook_observed = {
+        record.event_id
+        for record in context.records
+        if isinstance(record, AcceptedEvent)
+        and PublicationChannel.HOOK_OBSERVED in record.coverage.publication_channels
+    }
+    causes: set[str] = set()
+    for record in context.projection.evidence.values():
+        if record.source_event_id not in hook_observed:
+            continue
+        payload = record.payload
+        description = None if payload is None else payload.description
+        if description is None or not description.startswith(
+            "At least one non-replayable observation was lost."
+        ):
+            continue
+        match = _INPUT_LOSS_CAUSE.search(description)
+        if match is not None:
+            causes.update(token for token in match.group(1).split(", ") if token in allowed)
+    return tuple(sorted(causes))
+
+
 def _sections(
     *,
     include: ReceiptInclude,
@@ -1450,39 +1981,74 @@ def _sections(
     check_suffix: CheckSuffixClass | None = None,
     engine_derived_suffix: str | None = None,
     host_observation_suffix: bool = False,
+    input_loss_causes: tuple[str, ...] = (),
     observed_failure_sentence: str = "",
     caller_digest_counts: _CallerDigestCounts = _NO_CALLER_DIGESTS,
     limitation_response_suffix: bool = False,
+    superseded_by_observation: bool = False,
     check_change_gap_texts: Mapping[str, str] | None = None,
     review_input_manifest: object | None = None,
     missing_for_assessment: object = (),
     check_totals_text: str = "",
+    acknowledged_obligations: frozenset[str] = frozenset(),
+    review_not_required: bool = False,
+    historical_gap_codes: frozenset[str] = frozenset(),
+    omitted_rows_sentence: str = "",
+    closure_summary: _ClosureSummary | None = None,
+    gap_effects: Mapping[str, ReceiptGapEffect] | None = None,
 ) -> tuple[ReceiptSection, ...]:
-    gap_codes = coverage.known_gaps
+    # Issue #1017: the limitations section lists live gaps only; the human renderings list the
+    # historical ones (a later check cleared them) in their own section from the gap rows.
+    gap_codes = tuple(code for code in coverage.known_gaps if code not in historical_gap_codes)
     gap_texts = check_change_gap_texts or {}
     bodies: dict[ReceiptSectionKey, str] = {}
     items: dict[ReceiptSectionKey, tuple[str, ...]] = {}
     resolved_sentence = _resolved_history_sentence(len(resolved_finding_ids))
 
-    if conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS:
-        bodies[ReceiptSectionKey.SUMMARY] = (
-            f"No unresolved local findings were recorded at frontier {frontier.sequence}."
-            + resolved_sentence
-        )
-    elif conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE:
-        bodies[ReceiptSectionKey.SUMMARY] = (
-            f"Coverage is insufficient at frontier {frontier.sequence}." + resolved_sentence
-        )
+    if closure_summary is not None:
+        # ADR-046: one set of counters, the reasons behind the label, and the latest check's own
+        # counts under their own name (never beside the cumulative ones as a second counter).
+        lead = {
+            ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS: (
+                f"No unresolved local findings were recorded at frontier {frontier.sequence}."
+            ),
+            ReceiptConclusion.INSUFFICIENT_COVERAGE: (
+                f"Coverage is insufficient at frontier {frontier.sequence}."
+            ),
+            ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN: (
+                f"Unresolved findings remain at frontier {frontier.sequence}."
+            ),
+        }[conclusion]
+        bodies[ReceiptSectionKey.SUMMARY] = lead + resolved_sentence + closure_summary.sentences
+        if check_totals_text:
+            tested = (
+                "" if tested_subject_sequence is None else f" (frontier {tested_subject_sequence})"
+            )
+            bodies[ReceiptSectionKey.SUMMARY] += (
+                f" Latest check{tested} "
+                + check_totals_text.removeprefix("Totals: ").removeprefix("Totals ")
+            )
     else:
-        phrase = _count_phrase(
-            unresolved_actionable_count, "actionable finding", "actionable findings"
-        )
-        bodies[ReceiptSectionKey.SUMMARY] = (
-            f"{phrase[:1].upper() + phrase[1:]} remain unresolved at frontier {frontier.sequence}."
-            + resolved_sentence
-        )
-    if check_totals_text:
-        bodies[ReceiptSectionKey.SUMMARY] += " " + check_totals_text
+        if conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS:
+            bodies[ReceiptSectionKey.SUMMARY] = (
+                f"No unresolved local findings were recorded at frontier {frontier.sequence}."
+                + resolved_sentence
+            )
+        elif conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE:
+            bodies[ReceiptSectionKey.SUMMARY] = (
+                f"Coverage is insufficient at frontier {frontier.sequence}." + resolved_sentence
+            )
+        else:
+            phrase = _count_phrase(
+                unresolved_actionable_count, "actionable finding", "actionable findings"
+            )
+            bodies[ReceiptSectionKey.SUMMARY] = (
+                f"{phrase[:1].upper() + phrase[1:]} remain unresolved at frontier "
+                f"{frontier.sequence}." + resolved_sentence
+            )
+        if check_totals_text:
+            bodies[ReceiptSectionKey.SUMMARY] += " " + check_totals_text
+    bodies[ReceiptSectionKey.SUMMARY] += omitted_rows_sentence
     # The summary's items are the resolved historical finding ids: the one place every include
     # level carries, so a renderer can always separate resolved rows from current ones.
     items[ReceiptSectionKey.SUMMARY] = resolved_finding_ids
@@ -1495,6 +2061,8 @@ def _sections(
         obligation
         for obligation in current_obligations
         if obligation.status is ReceiptObligationStatus.OPEN
+        # #997: an obligation acknowledged as not done is not open work; it is counted apart.
+        and obligation.obligation_id not in acknowledged_obligations
     )
     open_count = len(open_current)
     if not plan_scope.has_plan:
@@ -1545,11 +2113,21 @@ def _sections(
         bodies[ReceiptSectionKey.OUTSTANDING_WORK] = "One obligation remains open."
     else:
         bodies[ReceiptSectionKey.OUTSTANDING_WORK] = f"{open_count} obligations remain open."
+    acknowledged_current = sum(
+        obligation.obligation_id in acknowledged_obligations for obligation in current_obligations
+    )
+    if acknowledged_current and ReceiptSectionKey.OUTSTANDING_WORK in bodies:
+        noun = "obligation is" if acknowledged_current == 1 else "obligations are"
+        bodies[ReceiptSectionKey.OUTSTANDING_WORK] += (
+            f" {acknowledged_current} {noun} acknowledged as not done (not counted as open)."
+        )
     items[ReceiptSectionKey.OUTSTANDING_WORK] = tuple(
         obligation.obligation_id for obligation in open_current
     )
 
-    actionable_count = unresolved_actionable_count
+    actionable_count = (
+        unresolved_actionable_count if closure_summary is None else closure_summary.unresolved
+    )
     if actionable_count == 0 and conclusion is not ReceiptConclusion.INSUFFICIENT_COVERAGE:
         bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS] = (
             "No findings remain open." + resolved_sentence
@@ -1567,6 +2145,8 @@ def _sections(
         bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS] = (
             f"{actionable_count} actionable findings remain unresolved." + resolved_sentence
         )
+    if closure_summary is not None and closure_summary.findings_note:
+        bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS] += " " + closure_summary.findings_note
     if resolution_explanations:
         for explanation in resolution_explanations:
             current = bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS]
@@ -1593,6 +2173,7 @@ def _sections(
         bodies[ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS] += " " + " ".join(attempt_explanations)
 
     if gap_codes:
+        limited_by = _limited_by(gap_codes, gap_effects)
         not_requested = SEMANTIC_REVIEW_NOT_REQUESTED_GAP in gap_codes
         not_run = (
             SEMANTIC_REVIEW_NOT_CONFIGURED_GAP in gap_codes
@@ -1609,18 +2190,24 @@ def _sections(
             engine_derived_suffix=engine_derived_suffix,
             host_observation_suffix=host_observation_suffix,
             limitation_response_suffix=limitation_response_suffix,
+            superseded_by_observation=superseded_by_observation,
         )
         if check_sentence:
             gap_body = f"{check_sentence} Coverage is limited by: {', '.join(gap_codes)}."
+        elif not_requested and SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP in gap_codes:
+            gap_body = (
+                "AI-powered review was skipped: the reviewer twice in a row, or four times since "
+                "the last assessed review, could not assess the review packet (a Yoetz limit). "
+                f"Coverage is limited by: {limited_by}."
+            )
         elif not_requested:
             gap_body = (
                 "AI-powered review was not requested (local-only check). "
-                f"Coverage is limited by: {', '.join(gap_codes)}."
+                f"Coverage is limited by: {limited_by}."
             )
         elif not_run:
             gap_body = (
-                "AI-powered relevance review was not run. "
-                f"Coverage is limited by: {', '.join(gap_codes)}."
+                f"AI-powered relevance review was not run. Coverage is limited by: {limited_by}."
             )
         elif OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP in gap_codes:
             # The strict ceiling blocked this process while the last install applied the
@@ -1635,10 +2222,16 @@ def _sections(
                 "re-run `yoetz integrate codex mcp preview` and "
                 "`yoetz integrate codex mcp install --route-profile policy`, then start a "
                 "fresh Codex process. "
-                f"Coverage is limited by: {', '.join(gap_codes)}."
+                f"Coverage is limited by: {limited_by}."
             )
         else:
-            gap_body = f"Coverage is limited by: {', '.join(gap_codes)}."
+            gap_body = f"Coverage is limited by: {limited_by}."
+        if not_requested and review_not_required:
+            # Issue #986 (owner decision E2): the applicable check's route did not require it.
+            gap_body += (
+                " The check's route did not require AI-powered review, so its absence is "
+                "disclosed and does not bound the conclusion."
+            )
         if PREEXISTING_TEST_INFORMATIONAL_GAPS & set(gap_codes):
             gap_body += (
                 " Existing test-file edits are listed for review; their presence alone does not "
@@ -1673,6 +2266,8 @@ def _sections(
                 "loss remains a limitation after queue recovery; rerunning a read supplies "
                 "evidence for its new time and state only."
             )
+            if input_loss_causes:
+                gap_body += " Recorded refusal cause: " + ", ".join(input_loss_causes) + "."
         if CALLER_DIGEST_PROVENANCE_GAPS & set(gap_codes):
             gap_body += " " + _caller_digest_sentence(caller_digest_counts)
         # What the AI-powered reviewer knew of the user's request (issue #908), in fixed words.
@@ -1717,12 +2312,13 @@ def _sections(
     )
     items[ReceiptSectionKey.VERSION_AND_POLICY_IDENTITY] = ()
 
+    finished = {key: _finish_section(bodies[key], items[key]) for key in _SECTION_KEYS[include]}
     return tuple(
         ReceiptSection(
             key=key,
             title=_SECTION_TITLES[key],
-            body=bodies[key],
-            items=items[key],
+            body=finished[key][0],
+            items=finished[key][1],
             coverage_note=(
                 review_input_coverage_note
                 if key is ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
@@ -1731,6 +2327,132 @@ def _sections(
         )
         for key in _SECTION_KEYS[include]
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _ClosureSummary:
+    """The Summary and Findings sentences of one receipt, from the one set of counters."""
+
+    sentences: str
+    unresolved: int
+    findings_note: str
+
+
+_DISCLOSED_BASIS_LABELS: Final[Mapping[str, str]] = {
+    "self_verified": "self-verified",
+    "disputed_after_rebuttal": "disputed after rebuttal",
+    "limitation_disclosed": "verification limit",
+    "acknowledged_not_done_bookkeeping": "acknowledged bookkeeping",
+    "rejected_review_unavailable": "rejection no reviewer can rule on",
+    "rejection_accepted": "rejection accepted",
+}
+
+
+def _plural(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def _closure_summary(basis: ClosureBasis, prediction: ReceiptPrediction) -> _ClosureSummary:
+    """Build the receipt's counters sentence from ``ClosureCounts`` (one source, no second counter)."""
+
+    counts = closure_counts(basis.findings, basis.obligations)
+    resolved = sum(
+        item.closure_class is ObligationClosureClass.RESOLVED for item in basis.obligations
+    )
+    seen: dict[FindingId, FindingClosure] = {}
+    for closure in basis.findings:
+        if closure.counts_as not in seen or closure.finding_id == closure.counts_as:
+            seen[closure.counts_as] = closure
+    breakdown: Counter[str] = Counter(
+        _DISCLOSED_BASIS_LABELS.get(closure.basis, closure.basis)
+        for closure in seen.values()
+        if closure.closure_class is FindingClosureClass.SETTLED_DISCLOSED
+    )
+    findings = f" Findings: {counts.findings_to_do} to do"
+    if counts.findings_awaiting_ruling:
+        findings += f" ({counts.findings_awaiting_ruling} awaiting a reviewer ruling)"
+    findings += f", {counts.findings_unmet} unmet (acknowledged requirement)"
+    findings += f", {counts.findings_disclosed} disclosed"
+    if breakdown:
+        findings += " (" + ", ".join(f"{n} {label}" for label, n in sorted(breakdown.items())) + ")"
+    if counts.findings_to_disclose:
+        findings += f", {counts.findings_to_disclose} to disclose"
+    findings += "."
+    obligations = (
+        f" Obligations: {resolved} resolved, {counts.obligations_open} open, "
+        f"{counts.obligations_acknowledged} acknowledged not done, "
+        f"{counts.obligations_disclosed} disclosed."
+    )
+    why = ""
+    if prediction.conclusion is not PredictionConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS:
+        phrases = reason_phrases(prediction.reasons)
+        if phrases:
+            more = prediction.reason_total - len(prediction.reasons)
+            why = (
+                f" Why {prediction.conclusion.value}: {', '.join(phrases)}"
+                + (f" (+{more} more)" if more > 0 else "")
+                + "."
+            )
+    notes: list[str] = []
+    if counts.findings_awaiting_ruling:
+        notes.append(
+            f"{_plural(counts.findings_awaiting_ruling, 'rejected finding awaits', 'rejected findings await')}"
+            " a reviewer ruling; the agent disputes "
+            f"{'it' if counts.findings_awaiting_ruling == 1 else 'them'} and the reviewer has not ruled."
+        )
+    if counts.findings_to_disclose:
+        notes.append(
+            f"{_plural(counts.findings_to_disclose, 'limitation', 'limitations')} the reviewer "
+            "asked the agent to state "
+            f"{'has' if counts.findings_to_disclose == 1 else 'have'} not been disclosed."
+        )
+    return _ClosureSummary(
+        findings + obligations + why,
+        counts.findings_to_do + counts.findings_unmet,
+        " ".join(notes),
+    )
+
+
+def _limited_by(gap_codes: tuple[str, ...], effects: Mapping[str, ReceiptGapEffect] | None) -> str:
+    """List the live gaps, naming apart the ones that only disclose (ADR-046).
+
+    A receipt that bounds on one gap and merely discloses five others used to list all six as
+    "limited by", so a reader could not tell which gap decided the label. Without recorded effects
+    (an artifact older than the effect rows) the list is the flat one it always was.
+    """
+
+    if effects is None or not all(code in effects for code in gap_codes):
+        return ", ".join(gap_codes)
+    bounding = [code for code in gap_codes if effects[code] is ReceiptGapEffect.BOUNDS]
+    disclosed = [code for code in gap_codes if effects[code] is ReceiptGapEffect.DISCLOSED]
+    if bounding and disclosed:
+        return (
+            f"{', '.join(bounding)} (these bound the conclusion). Also disclosed, not bounding "
+            f"the conclusion: {', '.join(disclosed)}"
+        )
+    if disclosed:
+        return f"{', '.join(disclosed)} (disclosed; none of these bounds the conclusion)"
+    return f"{', '.join(bounding)} (these bound the conclusion)"
+
+
+def _finding_keep_rank(
+    finding: Finding,
+    states_by_id: Mapping[FindingId, ReceiptFindingState],
+    unresolved_actionable: frozenset[FindingId],
+) -> int:
+    """0 unresolved actionable, 1 a terminal state the document discloses, 2 other, 3 resolved."""
+
+    if finding.finding_id in unresolved_actionable:
+        return 0
+    state = states_by_id[finding.finding_id]
+    if (
+        state.acknowledged_not_done
+        or state.rejection_accepted
+        or state.self_verified
+        or state.disputed_after_rebuttal
+    ):
+        return 1
+    return 3 if state.resolved else 2
 
 
 def build_receipt(
@@ -1760,20 +2482,56 @@ def build_receipt(
     # A ``rejection_accepted`` row stops blocking only on an artifact that also discloses it in its
     # own section (issue #905); an older artifact has no such section, so there it still blocks.
     settles_rejections = receipt_document_carries_terminal_sections(versions)
+    # The closure classes (ADR-046) decide what is unresolved: a finding whose receipt effect is
+    # ``unresolved_findings_remain`` (open, awaiting a ruling, or an acknowledged requirement).
+    # ``self_verified``, disputed, disclosed-limitation and bookkeeping-acknowledged findings stay
+    # disclosed by id but are not agent work and cap the conclusion at ``insufficient_coverage``.
+    closures = _context_closures(context, terminal_sections=settles_rejections)
+    closure_by_id = {closure.finding_id: closure for closure in closures}
     unresolved_actionable = tuple(
         finding
         for finding in findings
-        if not states_by_id[finding.finding_id].resolved
-        and not (settles_rejections and states_by_id[finding.finding_id].rejection_accepted)
-        and FINDING_KIND_TRAITS[finding.kind][1]
+        if (closure := closure_by_id.get(finding.finding_id)) is not None
+        and closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
     )
-    conclusion = _conclusion(context, unresolved_actionable)
+    # Issue #997: obligations the agent acknowledged as not done (ADR-032 slice C).
+    acknowledged_obligations = tuple(
+        sorted(acknowledged_obligation_ids(context.projection), key=_ascii_key)
+    )[:100]
+    # Issue #1017: only the 1.3.0 artifact can mark a gap historical; earlier artifacts keep
+    # every gap live, exactly as they were issued.
+    historical = dict(context.historical_gaps) if settles_rejections else {}
+    obligation_classes = tuple(
+        obligation_closures(context.projection, records=context.records).values()
+    )
+    basis = closure_basis_from_context(
+        context, terminal_sections=settles_rejections, obligations=obligation_classes
+    )
+    prediction = predict_receipt_conclusion(basis)
+    conclusion = ReceiptConclusion(prediction.conclusion.value)
+    closure_summary = _closure_summary(basis, prediction) if settles_rejections else None
+    # The same judgment the conclusion used says, per live gap, whether it bounds or only
+    # discloses (ADR-046); an artifact older than the effect rows records none.
+    gap_context = _gap_context(context, frozenset(historical))
+    gap_effects: dict[str, ReceiptGapEffect] | None = (
+        {
+            gap.code: (
+                ReceiptGapEffect.BOUNDS
+                if gap_effect(gap.code, gap_context).kind.bounds
+                else ReceiptGapEffect.DISCLOSED
+            )
+            for gap in context.gaps
+            if gap.code not in historical
+        }
+        if settles_rejections
+        else None
+    )
     obligations = _select_obligations(context, findings)
     responses = _select_responses(context, frozenset(finding.finding_id for finding in findings))
     claim_refs = _select_claim_refs(context, findings)
     evidence_refs = _select_evidence_refs(context, claim_refs, obligations, responses)
-    gaps = _select_gaps(context)
-    children = _receipt_children(context.lineage)
+    gaps = _select_gaps(context, historical, gap_effects)
+    children, omitted_child_findings = _receipt_children(context.lineage)
     (
         retained_findings,
         retained_obligations,
@@ -1788,6 +2546,71 @@ def build_receipt(
         responses,
         gaps,
     )
+    # Past the document's row bounds the receipt keeps what matters most -- unresolved actionable
+    # findings, the terminal states the document discloses by id, open obligations, live gaps --
+    # and counts the rest in the summary (tb4n3 RC-2, A6).
+    # A finding the agent still owes a move on (including a limitation to disclose) is kept first.
+    unresolved_ids = frozenset(
+        closure.finding_id
+        for closure in closures
+        if closure.closure_class
+        in {
+            FindingClosureClass.AGENT_WORK,
+            FindingClosureClass.AWAITING_RULING,
+            FindingClosureClass.SETTLED_UNMET,
+        }
+    )
+    # The summary section's items name every resolved finding the document retains (the only
+    # resolution flag a receipt carries), and a section holds at most 64 items: keep no more
+    # resolved history than that, or a retained resolved row would read as unresolved.
+    retained_findings, omitted_resolved = _keep_by_rank(
+        retained_findings,
+        _SECTION_ITEM_CAP,
+        lambda finding: 1 if states_by_id[finding.finding_id].resolved else 0,
+        cap_rank=1,
+    )
+    retained_findings, omitted_findings = _keep_by_rank(
+        retained_findings,
+        _DOCUMENT_ROW_CAP,
+        lambda finding: _finding_keep_rank(finding, states_by_id, unresolved_ids),
+    )
+    omitted_findings += omitted_resolved
+    retained_obligations, omitted_obligations = _keep_by_rank(
+        retained_obligations,
+        _DOCUMENT_ROW_CAP,
+        lambda obligation: 0 if obligation.status is ReceiptObligationStatus.OPEN else 1,
+    )
+    kept_finding_ids = frozenset(finding.finding_id for finding in retained_findings)
+    retained_responses, omitted_responses = _keep_by_rank(
+        retained_responses,
+        _DOCUMENT_ROW_CAP,
+        lambda response: 0 if response.finding_id in kept_finding_ids else 1,
+    )
+    claim_refs, omitted_claims = (
+        claim_refs[:_DOCUMENT_ROW_CAP],
+        max(0, len(claim_refs) - _DOCUMENT_ROW_CAP),
+    )
+    evidence_refs, omitted_evidence = (
+        evidence_refs[:_DOCUMENT_ROW_CAP],
+        max(0, len(evidence_refs) - _DOCUMENT_ROW_CAP),
+    )
+    # A cleared (historical) gap row is the only thing that keeps its code from reading as a
+    # current limitation, while a live code stays in the coverage list and the limitations
+    # section whether or not its detail row is kept: cleared rows are kept first.
+    retained_gaps, omitted_gaps = _keep_by_rank(
+        retained_gaps,
+        _GAP_ROW_CAP,
+        lambda gap: 0 if gap.status is ReceiptGapStatus.HISTORICAL else 1,
+    )
+    omitted_rows = {
+        "finding": omitted_findings,
+        "obligation": omitted_obligations,
+        "response": omitted_responses,
+        "claim reference": omitted_claims,
+        "evidence reference": omitted_evidence,
+        "gap detail row": omitted_gaps,
+        "child finding": omitted_child_findings,
+    }
     engine_derived_suffix, host_observation_suffix, limitation_response_suffix = (
         _suffix_record_kinds(context)
     )
@@ -1809,7 +2632,8 @@ def build_receipt(
         check_change_gap_texts={
             code: text
             for code in context.coverage.known_gaps
-            if (text := _check_change_gap_text(context, code)) is not None
+            if code not in historical
+            and (text := _check_change_gap_text(context, code)) is not None
         },
         include=include,
         conclusion=conclusion,
@@ -1822,6 +2646,7 @@ def build_receipt(
         claim_refs=claim_refs,
         evidence_refs=evidence_refs,
         coverage=context.coverage,
+        historical_gap_codes=frozenset(historical),
         redactions=redactions,
         plan_scope=current_plan_scope(
             context.projection.plans,
@@ -1834,6 +2659,7 @@ def build_receipt(
         ),
         resolved_finding_ids=resolved_finding_ids,
         semantic_endpoint_sentence=_semantic_endpoint_sentence(context.applicable_check),
+        review_not_required=route_did_not_require_review(context.applicable_check),
         task_statement_source_sentence=_task_statement_source_sentence(
             context.applicable_check, context.records
         ),
@@ -1867,9 +2693,16 @@ def build_receipt(
         check_suffix=context.check_suffix,
         engine_derived_suffix=engine_derived_suffix,
         host_observation_suffix=host_observation_suffix,
+        input_loss_causes=_input_loss_causes(context),
         observed_failure_sentence=_observed_failure_history_sentence(context),
+        acknowledged_obligations=frozenset(acknowledged_obligation_ids(context.projection)),
         caller_digest_counts=_caller_digest_counts(context),
         limitation_response_suffix=limitation_response_suffix,
+        superseded_by_observation=(
+            context.check_standing is not None
+            and context.check_standing.superseded_by is not None
+            and context.check_standing.superseded_by.observation_authored
+        ),
         review_input_manifest=(
             None
             if context.applicable_check is None
@@ -1885,6 +2718,9 @@ def build_receipt(
             if context.applicable_check is None
             else render_check_totals(context.applicable_check.totals)
         ),
+        omitted_rows_sentence=_omitted_rows_sentence(omitted_rows),
+        closure_summary=closure_summary,
+        gap_effects=gap_effects,
     )
     suppressed_count = (
         0 if context.applicable_check is None else context.applicable_check.suppressed_count
@@ -1914,6 +2750,56 @@ def build_receipt(
         if terminal_sections
         else ()
     )
+    self_verified_ids = tuple(
+        sorted(
+            (
+                state.finding_id
+                for state in context.finding_states
+                if state.self_verified and state.finding_id in retained_ids
+            ),
+            key=_ascii_key,
+        )
+        if terminal_sections
+        else ()
+    )
+    disputed_ids = tuple(
+        sorted(
+            (
+                state.finding_id
+                for state in context.finding_states
+                if state.disputed_after_rebuttal and state.finding_id in retained_ids
+            ),
+            key=_ascii_key,
+        )
+        if terminal_sections
+        else ()
+    )
+    limitation_disclosed_ids = (
+        tuple(
+            sorted(
+                (
+                    closure.finding_id
+                    for closure in closures
+                    if closure.basis == "limitation_disclosed"
+                    and closure.finding_id in retained_ids
+                ),
+                key=_ascii_key,
+            )
+        )
+        if terminal_sections
+        else ()
+    )
+    duplicate_links = (
+        tuple(
+            ReceiptDuplicateLink(state.finding_id, state.duplicate_of_finding_id)
+            for state in sorted(
+                context.finding_states, key=lambda item: _ascii_key(item.finding_id)
+            )
+            if state.duplicate_of_finding_id is not None and state.finding_id in retained_ids
+        )[:100]
+        if terminal_sections
+        else ()
+    )
     return ReceiptDocument(
         receipt_id=receipt_id,
         task_id=task_id,
@@ -1940,6 +2826,46 @@ def build_receipt(
         ),
         acknowledged_not_done_finding_ids=acknowledged_not_done_ids,
         rejection_accepted_finding_ids=rejection_accepted_ids,
+        self_verified_finding_ids=self_verified_ids,
+        disputed_after_rebuttal_finding_ids=disputed_ids,
+        duplicate_finding_links=duplicate_links,
+        # Issue #984 (D7a): the acknowledged findings whose premise the reviewer disputes.
+        premise_disputed_finding_ids=tuple(
+            item
+            for item in premise_disputed_finding_ids(context.projection)
+            if item in acknowledged_not_done_ids
+        ),
+        limitation_disclosed_finding_ids=limitation_disclosed_ids,
+        conclusion_basis=(
+            None
+            if not settles_rejections
+            else ReceiptConclusionBasis(
+                tuple(
+                    ReceiptConclusionReason(
+                        reason.code,
+                        reason.rule,
+                        reason.count,
+                        reason.refs,
+                        reason.since_frontier,
+                    )
+                    for reason in prediction.reasons
+                ),
+                prediction.reason_total,
+            )
+        ),
+        acknowledged_not_done_obligation_ids=(
+            acknowledged_obligations if terminal_sections else ()
+        ),
+        # Issue #995: the agent's disclosed assumptions and verification limits, ids and kind
+        # only, on an artifact that carries the 1.3.0 sections. They never change the conclusion.
+        disclosed_assumptions=(
+            tuple(
+                ReceiptDisclosure(item.obligation_id, item.kind, item.decision_event_id)
+                for item in disclosure_declarations(context.projection)[:64]
+            )
+            if terminal_sections
+            else ()
+        ),
         semantic_withheld_items=tuple(
             ReceiptSemanticWithheldItem(item_id=item_id)
             for item_id in (
@@ -1947,5 +2873,10 @@ def build_receipt(
                 if context.applicable_check is None
                 else context.applicable_check.semantic_withheld_item_ids
             )
+        ),
+        semantic_redacted_values=(
+            ()
+            if context.applicable_check is None
+            else context.applicable_check.semantic_redacted_values
         ),
     )
