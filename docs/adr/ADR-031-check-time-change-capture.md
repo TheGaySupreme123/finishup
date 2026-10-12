@@ -335,8 +335,9 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    may miss commits made in it during the task. Its paths carry its directory (`a/api/server.py`), so
    the deliverable order, the 256 KiB bound, the packet split and the shown-file record treat its
    files as files of the change; the outer one-line entry for an untracked repository gives way to
-   them. A repository that cannot be read keeps that entry ("not shown: a nested Git repository
-   whose own change was not read"), counts as not shown (`check_time_change_truncated`), and the
+   them. A repository that cannot be read keeps its outer entry (that one-line entry, or a changed
+   gitlink's commit-id lines) marked "not shown: a nested Git repository whose own change was not
+   read", counts as not shown (`check_time_change_truncated`), and the
    header names why in one fixed sentence (`nested_limit`, the deadline, or the closed reason of
    decision 8); no Git output is recorded. A repository nested inside a nested one is not read. The
    structural metadata read (requested-output states, test-edit accounting) does not descend into

@@ -1412,6 +1412,56 @@ def test_nested_repository_that_fails_a_fence_is_named_and_not_read(tmp_path: Pa
     assert capture.truncated
 
 
+def _nested_commit(nested: Path, content: str, message: str) -> None:
+    (nested / "server.py").write_text(content, encoding="utf-8")
+    _git(
+        nested,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-am",
+        message,
+    )
+
+
+def test_changed_gitlink_whose_repository_is_not_read_counts_as_not_shown(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a submodule checkout (its ``.git`` is a file) is never opened, so its own
+    change is not shown; the gitlink's commit-id lines alone must not read as a complete change."""
+
+    repository = _repository(tmp_path)
+    nested = repository / "api"
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet", f"--separate-git-dir={tmp_path / 'api.git'}")
+    (nested / "server.py").write_text("def handler():\n    return 'v1'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _nested_commit(nested, "def handler():\n    return 'v1'\n", "nested baseline")
+    _git(repository, "add", "--", "api")
+    _commit(repository, "track api as a gitlink")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    _nested_commit(nested, "SUBMODULE_CANARY = 1\n", "work inside the submodule")
+
+    capture = adapter.capture(os.fspath(repository), base)
+
+    text = _text(capture)
+    assert "SUBMODULE_CANARY" not in text
+    assert "+Subproject commit" in text  # the outer gitlink lines still stand
+    assert (
+        "Nested repository api/: its own change is not shown (its Git configuration or layout is "
+        "not supported)." in text
+    )
+    assert "  M api (+1 -1) not shown: a nested Git repository whose own change was not read" in (
+        text
+    )
+    assert "Changed files: 1 tracked, 0 untracked. Not shown: 1." in text
+    assert capture.omitted_files == 1 and capture.truncated
+
+
 def test_task_input_files_the_statement_names_are_read_only_when_unchanged(
     tmp_path: Path,
 ) -> None:

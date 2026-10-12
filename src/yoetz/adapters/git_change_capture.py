@@ -1258,7 +1258,12 @@ class GitChangeCaptureAdapter:
         nested_truncated = False
         for read in nested:
             if read.sections is None:
-                # Its directory keeps its one-line entry; the header says why it was not read.
+                # Its directory keeps its one-line entry, and a changed gitlink its commit-id
+                # lines; either way the repository's own change is not shown and counts so. The
+                # header says why it was not read.
+                for section in tracked.sections:
+                    if section.path == read.path and section.omitted is None:
+                        section.omitted = "nested_repository"
                 continue
             placeholder = next(
                 (

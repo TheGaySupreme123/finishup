@@ -750,3 +750,34 @@ async def test_nested_repository_task_input_and_deliverables_reach_the_recorded_
     assert "task-input-01" in cast(list[str], caller["item_ids"])
     assert "declared-deliverables" in cast(list[str], packet["obligation_item_ids"])
     assert all(scan_exact_bytes(item.plaintext) == () for item in candidate.items)
+
+
+@pytest.mark.anyio
+async def test_changed_submodule_whose_own_change_is_not_read_is_disclosed_as_truncated(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a submodule checkout is never opened, so the check's coverage must say
+    its change was cut even though the gitlink's commit-id lines are shown."""
+
+    repository = _repository(tmp_path)
+    nested = repository / "api"
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet", f"--separate-git-dir={tmp_path / 'api.git'}")
+    (nested / "server.py").write_text("DATABASE = 'legacy'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _git(nested, "commit", "--quiet", "-m", "api baseline")
+    _git(repository, "add", "--", "api")
+    _git(repository, "commit", "--quiet", "-m", "track api")
+    frozen, runtime = await _kea_case(memory_adapter(append_command()), repository)
+    (nested / "server.py").write_text("DATABASE = 'SUBMODULE_CANARY'\n", encoding="utf-8")
+    _git(nested, "commit", "--quiet", "-am", "cut over")
+    privacy = _Privacy(task_id=runtime.task_id, profile=ReviewContextProfile.EXPANDED)
+
+    with check_workspace_source_scope(CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)):
+        waiting = await _evaluator(privacy, runtime)(frozen, (), runtime)
+
+    text = _change_text(privacy.candidates[0])
+    assert "SUBMODULE_CANARY" not in text
+    assert "Nested repository api/: its own change is not shown" in text
+    assert "Not shown: 1." in text
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in waiting.case_content_gaps
