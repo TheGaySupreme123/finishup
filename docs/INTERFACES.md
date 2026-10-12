@@ -9322,8 +9322,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   not clear it, and names the files from `closure_readiness.undeclared_references`: the one
   exception to closed tokens, counts and ids in the gate text; a path is never remembered).
   `closure_gate_from_readiness(readiness, frontier_sequence=, frontier_digest=,
-  observation_pending=, reasked_blockers=, active_stop=) -> ClosureGate(identity, text, items,
-  blocker_keys) | None` asks the **re-checks `closure_readiness.rechecks` announces** (tb4n3 RC-8,
+  observation_pending=, reasked_blockers=, active_stop=, acceptance_uncovered=) ->
+  ClosureGate(identity, text, items, blocker_keys) | None` asks the **re-checks
+  `closure_readiness.rechecks` announces** (tb4n3 RC-8,
   ADR-033 amendment): `Recheck {kind: acceptance | acknowledgement | blocker | premise, key,
   subjects, rule, since_frontier}` with the keys `accept:<h8 of sorted resolved obligation ids>`,
   `ack:<obligation id>`, `blocker:<obligation id>:<kind>`, `premise:<acknowledged count>`. Status,
@@ -9343,7 +9344,21 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `predicted_receipt` supplies the lowest-priority tail sentence (`predicted_receipt_variants`).
   When the gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the text
   carries one informational note; that code alone never fires the gate.
-  `read_closure_gate(...)` reads compact status and raises `ClosureGateUnavailable` when it cannot;
+  `acceptance_uncovered` (#1050, ADR-033 amendment) is `None` when the host gave no final message
+  (today's re-read for every resolved obligation), else the resolved obligations the final message
+  does not address: they are named, and `()` means the re-read is not asked.
+  `uncovered_acceptance(final_message, rows) -> tuple[obligation id, ...]` is the deterministic
+  rule over `(obligation id, acceptance_criteria or description or None)` rows: covered by the
+  obligation id in the first 65,536 characters, or by at least two thirds of the acceptance text's
+  terms (lowercase ASCII alphanumeric tokens of three or more characters, or two with a digit, minus
+  79 closed function words, first 64 distinct) among the message's tokens. Where the re-read rides
+  alone it ends with the sentence that a pure confirmation needs no new record, check or receipt.
+  `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status and raises
+  `ClosureGateUnavailable` when it cannot; when the gate would ask the acceptance re-read and a final
+  message is present it reads one `obligations` page (`status: resolved`, limit 100, 750 ms) and
+  trusts it only when its `resolved` rows hash to the announced `accept:<h8>` key. The Codex Stop
+  body's and the Claude Code Stop payload's `last_assistant_message` reach it in process only
+  (`handle_observe(..., _stop_final_message=)` for Claude Code); Cursor's `stop` carries none.
   `closure_gate_already_delivered` / `record_closure_gate_delivered(..., blocker_keys=)` keep the
   owner-only `observation/closure-gate.json` once-per-frontier memory, and
   `closure_gate_reasked_blockers(session_id)` reads the per-session asked keys in
@@ -9357,6 +9372,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `BLOCKER_UNCONFIRMED_TOKEN` (`obligation_blocker_unconfirmed`) is a gate item. Hook diagnostic
   reasons: `closure_gate_continued`, `closure_gate_blocker_rechecked`,
   `closure_gate_acceptance_rechecked` (the extra Stop turn the acceptance re-read costs),
+  `closure_gate_acceptance_covered` (the final message addressed every resolved obligation's
+  acceptance, so the re-read was not asked; #1050),
   `closure_gate_active_stop_rechecked`, `closure_gate_not_required`,
   `closure_gate_repeat_suppressed`, `closure_gate_turn_end_after_continue` (an already-continued
   Stop that emitted nothing: the normal end of a continued turn; this is the former

@@ -750,3 +750,68 @@ re-opened as defects.
 
 Hosts: the gate is one code path for Codex, Claude Code and Cursor (decision 10 above); nothing here is
 host- or OS-specific.
+
+## Amendment (tb4n4, issues #1044 and #1050): an undeclared dependency is a gate item; the acceptance re-read asks only what the final message left out
+
+Recorded from the maintainer's request of 2026-10-12 to fix #1044 and #1050 in the tb4n4
+remediation PR.
+
+1. **`deliverable_references_undeclared_file` is a `STOP_GATE_TOKENS` entry (#1044).** A delivered
+   source file that loads a file the agent created and no requested item declares continues the
+   agent on a Stop the host has not already continued. The item says a grader may receive only the
+   declared files and gives the three repairs (embed the content, rebuild it at run time, declare it
+   as a delivered output); disclosing the dependency does not clear it (ADR-035 amendment). The gate
+   names the files from `closure_readiness.undeclared_references`, each through
+   `bounded_text.quoted_path`: the one exception to "closed tokens, counts and service-minted ids" in
+   the gate text, because the agent must act on exactly that file. No path is put in a key, a
+   diagnostic or the gate memory. The acceptance invitation is not composed beside the token (an
+   acknowledgement is not its exit), like a withdrawn deliverable.
+2. **The acceptance re-read asks only what the final message did not address (#1050).** tb4n4: the
+   re-read fired in 60 of 60 deterministic attempts (61 of 65 continuations); 41 attempts then did
+   only Yoetz bookkeeping and none edited a deliverable (median cost 1.3 minutes, worst 12.9). Its
+   one real value was five honest downgrades of overstated claims. The re-read stays, keyed and
+   remembered as in the 2026-10-11 amendment, but where the host's Stop payload carries the agent's
+   final message it is asked only for the resolved obligations that message does not address, and
+   it names them.
+   - **The rule (deterministic, `closure_gate.uncovered_acceptance`).** For each resolved obligation
+     the acceptance text is its `acceptance_criteria`, or its description when it has none, or
+     nothing when a privacy policy withheld it. The obligation is covered when the first 65,536
+     characters of the final message contain its id, or when at least two thirds of the acceptance
+     text's terms occur among the message's tokens. A token is a lowercase ASCII run of letters and
+     digits (a decimal point between digits kept; anything else separates); a term is a token of at
+     least three characters, or two with a digit, that is not one of 79 closed English function
+     words; at most the first 64 distinct terms count. A text with no term, and a withheld text, is
+     covered only by its id. Conservative by design: a bare "Done." or "all tests pass" covers
+     nothing, and only a message that cites the obligation or restates most of its criterion does.
+   - **The read.** When the gate would ask the re-read and a final message is present, it reads one
+     `status view=obligations` page (filter `status: resolved`, limit 100, 750 ms) for the resolved
+     obligations' texts and trusts it only when the rows with closure basis `resolved` hash to
+     exactly the announced `accept:<h8>` key; a failed or slow read, a second page or a different set
+     keeps today's re-read. The message is read in the hook process only: never sent to the service,
+     stored, logged or put in a diagnostic.
+   - **Outcomes.** Some obligations uncovered: the re-read names them (at most three, then a count)
+     and is remembered as before. All covered: the re-read is not asked at this Stop, nothing is
+     remembered (a later Stop whose message drops them is asked), and the hook records
+     `closure_gate_acceptance_covered`. No final message (Cursor, an oversized Codex body, an older
+     Claude Code): today's re-read for every resolved obligation.
+   - **A confirmation is the end of it.** Where the re-read rides alone (no item in the same text asks
+     for a check), it ends with "If every criterion is met, say so in your final answer and stop:
+     that confirmation alone needs no new record, check or receipt." Nothing in the gate, readiness or
+     the receipt asks for another round after a pure confirmation (the same frontier is suppressed, and
+     an already-continued Stop asks only unasked keys); only a republish or a decision line is
+     material and makes the next Stop's items apply.
+   - **Unchanged.** The downgrade path: an unmet criterion is republished `acknowledged_not_done` and
+     left out of the claim, an acknowledgement published after the invite answers it and is not
+     challenged, and the verification-limit branch is the same sentence.
+3. **Hosts.** The gate is still one code path. Codex passes `last_assistant_message` in its Stop
+   body, read only when the body is within the trusted size; Claude Code's adapter passes its Stop
+   payload's `last_assistant_message` beside the structural envelope (never inside it); Cursor's
+   `stop` payload carries no final message (status and `loop_count` only), so Cursor keeps the
+   re-read for every resolved set. Registering Cursor's `afterAgentResponse` to obtain the text is a
+   host-integration change left to a follow-up, tracked on issue #1050. Each runbook records its
+   decision.
+
+Cost and risk: one extra bounded status read at a Stop that would ask the re-read with a message
+present. The five tb4n4 downgrades came after the re-read; a final message that already restated
+the overstated criterion would now skip it, which is the trade the issue accepted. The 60-export
+replay that would measure it is the maintainer's (the exports are not in the repository).

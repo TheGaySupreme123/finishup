@@ -282,15 +282,102 @@ _CLOSE_TEXT: Final = (
 # this environment (a hidden verifier, a withheld artifact), the honest answer is not a retreat to
 # `acknowledged_not_done` but a recorded verification limit on the resolved obligation. The branch
 # is for what cannot be verified here at all, never for work the agent could still do.
-_ACCEPTANCE_TEXT: Final = (
-    "Before you stop, read each resolved obligation's acceptance_criteria against your final"
-    " output. If the output does not meet it (for example it reports infeasible, skipped or"
+# The downgrade and verification-limit branches, shared by today's sentence and the named one.
+_ACCEPTANCE_TAIL: Final = (
+    "If the output does not meet it (for example it reports infeasible, skipped or"
     " partial), republish that obligation as `acknowledged_not_done` with the reason instead of"
     " resolved, and leave it out of the completion claim; the receipt discloses it. If the"
     " criteria can only be checked outside this environment (a hidden verifier, a withheld"
     " artifact) and you did the work, keep it resolved and record a decision with the line"
     " `yoetz-verification-limit:<obligation id>`; the receipt lists it as a verification limit."
 )
+_ACCEPTANCE_TEXT: Final = (
+    "Before you stop, read each resolved obligation's acceptance_criteria against your final"
+    " output. " + _ACCEPTANCE_TAIL
+)
+# tb4n4 (#1050): the re-read fired in 60 of 60 deterministic attempts and was followed by Yoetz
+# bookkeeping alone in 41. Where the host passes the agent's final message (Codex and Claude Code
+# ``last_assistant_message``), it is asked only for the resolved obligations whose acceptance that
+# message neither cites nor addresses, and names them; the rest of the sentence is unchanged.
+_ACCEPTANCE_NAMED_HEAD: Final = (
+    "Your final message does not address the acceptance criteria of resolved obligation(s) {ids}."
+    " Before you stop, read each one's acceptance_criteria against your final output."
+)
+# #1050 item 2: a pure "criteria confirmed" answer is the end of the re-read. Said only where the
+# re-read rides alone (no item asks for a check in the same text).
+_ACCEPTANCE_CONFIRMED_TEXT: Final = (
+    "If every criterion is met, say so in your final answer and stop: that confirmation alone needs"
+    " no new record, check or receipt."
+)
+_MAX_NAMED_ACCEPTANCE: Final = 3
+# The deterministic "addressed" rule (ADR-033 amendment, #1050). A term is a lowercase ASCII run of
+# letters and digits (a decimal point between digits kept), at least three characters, or two with
+# a digit, and not a stopword; at most the first 64 distinct terms of the acceptance text count.
+_ACCEPTANCE_TOKEN: Final = re.compile(r"[a-z0-9]+(?:\.[0-9]+)*", re.ASCII)
+_ACCEPTANCE_STOPWORDS: Final = frozenset(
+    (
+        "about after all also and any are been before being both but can could did does done each "
+        "either every for from had has have its into may might more most must nor not one only "
+        "other our out own per same shall should such than that the their them then there these "
+        "they this those two under upon use used using via was were what when where which while who "
+        "will with within without would yes you your"
+    ).split()
+)
+_MAX_ACCEPTANCE_TERMS: Final = 64
+_MAX_FINAL_MESSAGE_CHARS: Final = 65_536
+
+
+def _acceptance_terms(text: str) -> tuple[str, ...]:
+    terms: dict[str, None] = {}
+    for token in _ACCEPTANCE_TOKEN.findall(text.lower()):
+        if token in _ACCEPTANCE_STOPWORDS:
+            continue
+        if len(token) < 3 and not (len(token) == 2 and any(char.isdigit() for char in token)):
+            continue
+        terms.setdefault(token, None)
+        if len(terms) == _MAX_ACCEPTANCE_TERMS:
+            break
+    return tuple(terms)
+
+
+def uncovered_acceptance(
+    final_message: str, rows: tuple[tuple[str, str | None], ...]
+) -> tuple[str, ...]:
+    """The resolved obligations whose acceptance the final message neither cites nor addresses.
+
+    ``rows`` are ``(obligation id, acceptance text)``: the obligation's ``acceptance_criteria``, or
+    its description when it has none, ``None`` when a privacy policy withheld it. An obligation is
+    covered when the first 65,536 characters of the message contain its id, or when at least two
+    thirds of the acceptance text's terms (``_acceptance_terms``) occur among the message's own
+    tokens. Deterministic and conservative: an unreadable or withheld text, or one with no term, is
+    covered only by its id (#1050, ADR-033 amendment).
+    """
+
+    message = final_message[:_MAX_FINAL_MESSAGE_CHARS]
+    tokens = frozenset(_ACCEPTANCE_TOKEN.findall(message.lower()))
+    uncovered: list[str] = []
+    for obligation, text in rows:
+        if obligation in message:
+            continue
+        terms = _acceptance_terms(text) if text else ()
+        hits = sum(1 for term in terms if term in tokens)
+        if not terms or 3 * hits < 2 * len(terms):
+            uncovered.append(obligation)
+    return tuple(uncovered)
+
+
+def _acceptance_sentence(uncovered: tuple[str, ...] | None) -> str:
+    """Today's acceptance sentence, or (#1050) the one that names the uncovered obligations."""
+
+    if uncovered is None:
+        return _ACCEPTANCE_TEXT
+    hidden = len(uncovered) - _MAX_NAMED_ACCEPTANCE
+    ids = ", ".join(uncovered[:_MAX_NAMED_ACCEPTANCE]) + (
+        f" and {hidden} more" if hidden > 0 else ""
+    )
+    return _ACCEPTANCE_NAMED_HEAD.format(ids=ids) + " " + _ACCEPTANCE_TAIL
+
+
 _BLOCKER_OFFER_TEXT: Final = (
     "Leave an open obligation undone only for a blocker outside your control (authority,"
     " consent, credentials, a dependency you cannot obtain): publish decision_recorded with"
@@ -845,8 +932,14 @@ def closure_gate_from_readiness(
     observation_pending: bool,
     reasked_blockers: frozenset[str] = frozenset(),
     active_stop: bool = False,
+    acceptance_uncovered: tuple[str, ...] | None = None,
 ) -> ClosureGate | None:
     """Decide the gate from one ``closure_readiness`` object; ``None`` means let the agent stop.
+
+    ``acceptance_uncovered`` (#1050) is ``None`` when the host gave no final message (or the
+    resolved obligations could not be read): the acceptance re-read is asked as before. Otherwise
+    it names the resolved obligations the final message does not address: the re-read names them,
+    and an empty tuple means every one was addressed, so the re-read is not asked.
 
     ``reasked_blockers`` holds the re-check keys this session was already asked (the historical
     name: blockers as ``<obligation id>:<kind>``, ``ack:<obligation id>``, ``premise:<n>``,
@@ -920,7 +1013,11 @@ def closure_gate_from_readiness(
             DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
         }
     )
-    accept_allowed = acceptance is not None and not accept_excluded
+    accept_allowed = (
+        acceptance is not None
+        and not accept_excluded
+        and (acceptance_uncovered is None or bool(acceptance_uncovered))
+    )
     prediction = predicted_receipt_variants(
         getattr(readiness, "predicted_receipt", None), state=state
     )
@@ -949,7 +1046,11 @@ def closure_gate_from_readiness(
             else "Yoetz closure gate (shown once):"
         )
         blocker = _blocker_text(rows) if rows else ""
-        accept_sentence = _ACCEPTANCE_TEXT if accept_allowed else ""
+        accept_sentence = (
+            _acceptance_sentence(acceptance_uncovered) + " " + _ACCEPTANCE_CONFIRMED_TEXT
+            if accept_allowed
+            else ""
+        )
         # ADR-035: the standing content-moved disclosure rides gate text that fires anyway.
         moved = _content_moved_note(readiness).strip()
         # Keep only whole sentences under the host bound, choosing by priority (blocker re-check,
@@ -1048,7 +1149,7 @@ def closure_gate_from_readiness(
         else ()
     )
     why_text = _awaiting_clause(readiness) if FINDING_REJECTION_AWAITING_RULING_GAP in items else ""
-    accept_text = _ACCEPTANCE_TEXT if accept_allowed else ""
+    accept_text = _acceptance_sentence(acceptance_uncovered) if accept_allowed else ""
     # `self_verified` is offered only when `respond` would accept it for some finding; an older
     # service sends no counts and keeps the offer.
     self_verify = eligible is None or eligible > 0
@@ -1216,25 +1317,82 @@ def closure_gate_from_readiness(
     )
 
 
-def _status_request(session_id: str, writer_id: str, actor_id: str) -> StatusRequest:
+def _status_request(
+    session_id: str, writer_id: str, actor_id: str, *, view: str = "compact"
+) -> StatusRequest:
     # Lazy: the protocol models load pydantic, which the ordinary hook path must not import.
     from yoetz.protocol.models import StatusRequest
 
-    return StatusRequest.model_validate(
-        {
-            "protocol_version": "0.1",
-            "schema_version": "1.0.0",
-            "request_id": new_id(IdKind.REQUEST),
-            "actor": {"actor_id": actor_id, "actor_type": "harness"},
-            "client": {"kind": "yoetz_cli", "version": __version__, "integration": "local_cli"},
-            "session_id": session_id,
-            "writer_id": writer_id,
-            "view": "compact",
-            "limit": "1",
-            "at_frontier": None,
-            "cursor": None,
-        }
-    )
+    request: dict[str, object] = {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "request_id": new_id(IdKind.REQUEST),
+        "actor": {"actor_id": actor_id, "actor_type": "harness"},
+        "client": {"kind": "yoetz_cli", "version": __version__, "integration": "local_cli"},
+        "session_id": session_id,
+        "writer_id": writer_id,
+        "view": view,
+        "limit": "1" if view == "compact" else _ACCEPTANCE_PAGE_LIMIT,
+        "at_frontier": None,
+        "cursor": None,
+    }
+    if view == "obligations":
+        request["filter"] = {"include_resolved": True, "status": "resolved"}
+    return StatusRequest.model_validate(request)
+
+
+# #1050: one page of resolved obligations (the acceptance key names at most this many reliably),
+# read only when the acceptance re-read would be asked and the host passed the final message.
+_ACCEPTANCE_PAGE_LIMIT: Final = "100"
+_ACCEPTANCE_READ_DEADLINE_MS: Final = 750
+
+
+def _text_value(value: object) -> str | None:
+    """A readable obligation text, or ``None`` for an omission marker or anything else."""
+
+    return value if type(value) is str and value else None
+
+
+def _resolved_acceptance_rows(
+    branch: object, key: str
+) -> tuple[tuple[str, str | None], ...] | None:
+    """``(obligation id, acceptance text)`` of the resolved set the acceptance key names.
+
+    ``None`` unless the page's obligations with closure basis ``resolved`` hash to exactly the
+    announced ``accept:<h8>`` key (the same digest readiness minted): a later frontier, a second
+    page or an older service then keeps today's re-read rather than guess which set it asks about.
+    """
+
+    page = getattr(branch, "page", None)
+    raw = getattr(page, "items", None)
+    if not isinstance(raw, (tuple, list)):
+        return None
+    rows: dict[str, str | None] = {}
+    for item in tuple(cast(tuple[object, ...], raw)):
+        obligation = _field(item, "obligation_id")
+        if type(obligation) is not str or _field(item, "closure_basis") != "resolved":
+            continue
+        criteria = _text_value(_field(item, "acceptance_criteria"))
+        rows[obligation] = (
+            criteria
+            if criteria is not None or _field(item, "acceptance_criteria") is not None
+            else _text_value(_field(item, "description"))
+        )
+    ordered = sorted(rows, key=str.encode)
+    if not ordered or not all(obligation.isascii() for obligation in ordered):
+        return None
+    digest = hashlib.sha256("\n".join(ordered).encode("ascii")).hexdigest()
+    if f"accept:{digest[:8]}" != key:
+        return None
+    return tuple((obligation, rows[obligation]) for obligation in ordered)
+
+
+def _final_message(value: object) -> str | None:
+    """The host's last assistant message, bounded; ``None`` when it gave none (#1050)."""
+
+    if type(value) is not str or not value.strip():
+        return None
+    return value[:_MAX_FINAL_MESSAGE_CHARS]
 
 
 async def read_closure_gate(
@@ -1246,12 +1404,21 @@ async def read_closure_gate(
     observation_pending: bool,
     reasked_blockers: frozenset[str] = frozenset(),
     active_stop: bool = False,
+    final_message: str | None = None,
+    on_acceptance_covered: Callable[[], object] | None = None,
 ) -> ClosureGate | None:
     """Read the mapped session's compact status and decide the gate.
 
     ``None`` means the status was read and closure needs no continuation. A status the service
     could not answer raises ``ClosureGateUnavailable`` so the caller records it as unavailable;
     either way the agent may stop.
+
+    ``final_message`` (#1050) is the agent's last message when the host passed one. When the gate
+    would ask the acceptance re-read, one bounded ``obligations`` page names the resolved set's
+    acceptance texts, and the re-read is asked only for the obligations the message does not
+    address (``uncovered_acceptance``); ``on_acceptance_covered`` is called when that left nothing
+    to ask. The message is read in this process only: never sent, stored or logged. Any failure of
+    that second read keeps the re-read as it was.
     """
 
     # Lazy: only a status read needs the control port and the protocol models (pydantic).
@@ -1275,14 +1442,57 @@ async def read_closure_gate(
         digest = getattr(head, "head_digest", None)
         if type(sequence) is not str or type(digest) is not str:
             raise ClosureGateUnavailable("status_unreadable")
-        return closure_gate_from_readiness(
-            getattr(branch, "closure_readiness", None),
+        readiness = getattr(branch, "closure_readiness", None)
+        gate = closure_gate_from_readiness(
+            readiness,
             frontier_sequence=sequence,
             frontier_digest=digest,
             observation_pending=observation_pending,
             reasked_blockers=reasked_blockers,
             active_stop=active_stop,
         )
+        message = _final_message(final_message)
+        if gate is None or ACCEPTANCE_RECHECK_ITEM not in gate.items or message is None:
+            return gate
+        acceptance = next(
+            (
+                recheck
+                for recheck in _announced_rechecks(readiness)
+                if recheck.kind == "acceptance" and not _asked(recheck, reasked_blockers)
+            ),
+            None,
+        )
+        if acceptance is None:
+            return gate
+        try:
+            page = await cast(Callable[..., Awaitable[object]], status)(
+                _status_request(session_id, writer_id, actor_id, view="obligations"),
+                deadline_ms=_ACCEPTANCE_READ_DEADLINE_MS,
+            )
+            page_branch = getattr(page, "root", page)
+            rows = (
+                None
+                if isinstance(page_branch, OperationFailureModel)
+                else _resolved_acceptance_rows(page_branch, acceptance.key)
+            )
+        except Exception:
+            rows = None
+        if rows is None:
+            return gate
+        uncovered = uncovered_acceptance(message, rows)
+        decided = closure_gate_from_readiness(
+            readiness,
+            frontier_sequence=sequence,
+            frontier_digest=digest,
+            observation_pending=observation_pending,
+            reasked_blockers=reasked_blockers,
+            active_stop=active_stop,
+            acceptance_uncovered=uncovered,
+        )
+        if not uncovered and on_acceptance_covered is not None:
+            with contextlib.suppress(Exception):
+                on_acceptance_covered()
+        return decided
     except ClosureGateUnavailable:
         raise
     except Exception as exc:

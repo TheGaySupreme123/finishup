@@ -279,12 +279,16 @@ confirmation step that re-check gives you, then stop. A Stop also asks you once 
 marked `acknowledged_not_done` that the review says the task itself requires
 (`finding_premise_disputed`): do that work unless it is genuinely impossible. If you cannot
 finish it, keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
-A Stop asks once to read each resolved obligation's `acceptance_criteria` against your final output:
-if the output does not meet them, republish that obligation `acknowledged_not_done` with the reason;
-if the criteria can only be checked outside this environment (a hidden verifier, a withheld
-artifact) and you did the work, keep it resolved and record a decision with the line
-`yoetz-verification-limit:<obligation id>`. An acknowledgement you publish in answer to that
-question is not challenged again.
+A Stop asks once to read each resolved obligation's `acceptance_criteria` against your final output.
+Where your host passes your final answer to the Stop hook, it asks only about the resolved
+obligations that answer neither names by id nor addresses (states most of the criterion's terms), and
+names them: say in your final answer how each resolved obligation's criterion is met. If the output
+does not meet them, republish that obligation `acknowledged_not_done` with the reason; if the
+criteria can only be checked outside this environment (a hidden verifier, a withheld artifact) and
+you did the work, keep it resolved and record a decision with the line
+`yoetz-verification-limit:<obligation id>`. If every criterion is met, say so in your final answer
+and stop: that confirmation needs no new record, check or receipt. An acknowledgement you publish in
+answer to that question is not challenged again.
 If a script ran the planned command for you (for example `python run_tests.py` calling the
 planned `pytest` command internally), link that run: publish an `action_recorded` with
 `action_kind` `command`, the planned item's exact `value` in `attempted_items`, and the observed
