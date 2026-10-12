@@ -328,9 +328,8 @@ reverse-chronological released versions.
 
 - In Codex, a shell `apply_patch <<EOF` no longer leaves a "pending attempt expired" limitation
   once the rollout shows the file change; a rollout line Codex is still writing is no longer
-  reported as a truncated payload (one Codex left unfinished still is, once a later reconcile finds
-  it unchanged); and Codex's record of a Stop-hook prompt is no longer an unsupported event
-  (#1041).
+  reported as a truncated payload; and Codex's record of a Stop-hook prompt is no longer an
+  unsupported event (#1041).
 
 - A shell command that writes into the workspace (`cat > f`, `sed -i`), one that writes only the
   agent's own notes, and a long build or simulator command now reach Yoetz's record. The local
