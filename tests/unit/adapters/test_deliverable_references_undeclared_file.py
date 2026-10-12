@@ -246,6 +246,44 @@ def test_tb4n4_vigenere_names_each_undeclared_model_beside_the_cracker(tmp_path:
     assert _pairs(repository, base, _projection(*delivered)) == ()
 
 
+def test_an_untracked_file_the_task_started_with_is_not_an_undeclared_dependency(
+    tmp_path: Path,
+) -> None:
+    """#1044 blocks closure, so a task-provided data file must not stop the agent (#1045 baseline).
+
+    The task-start base records the untracked files already present; one still unchanged is not
+    part of the change, so it is never a created-file candidate. A model the agent creates is.
+    """
+
+    repository = tmp_path / "app"
+    repository.mkdir(mode=0o700)
+    _git(repository, "init", "--quiet")
+    (repository / "README.md").write_text("Cracker\n", encoding="utf-8")
+    _git(repository, "add", "--", "README.md")
+    _git(
+        repository,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "baseline",
+    )
+    artifacts = repository / "artifacts"
+    artifacts.mkdir()
+    # Provided with the task, never committed: untracked when the task starts.
+    (artifacts / "english_words.npz").write_bytes(b"\x93NUMPY\x00\x01words")
+    base = GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
+    (artifacts / "cracker.py").write_text(_VIGENERE_CRACKER, encoding="utf-8")
+    (artifacts / "english_ngrams.npz").write_bytes(b"\x93NUMPY\x00\x01ngrams")
+
+    assert _pairs(repository, base, _projection(_item("artifacts/cracker.py"))) == (
+        ("artifacts/cracker.py", "artifacts/english_ngrams.npz"),
+    )
+
+
 @pytest.mark.parametrize(
     "literal",
     [

@@ -211,10 +211,13 @@ tb4n4 remediation PR), which is the acknowledgement for the storage change below
   double quote, at most 120 characters), the rendering the post-compaction recap already used. The
   MCP text summary, the hook diagnostics and the gate memory never carry a path.
 - **Residuals.** The read is still a literal-matching heuristic over a bounded prefix (a path built
-  from pieces at run time is not seen). Untracked files are candidates whether or not they predate
-  the task (no base untracked set is recorded), so a task-provided untracked data file a deliverable
-  loads now stops the agent until it is declared `role: input`: one publish, chosen over letting a
-  disclosure stand in for a missing delivery. A path that cannot be named is counted, not shown.
+  from pieces at run time is not seen). An untracked file the task started with is not a candidate
+  when the base is a task-start base carrying the #1045 snapshot: unchanged since, it is not part
+  of the change, and changed since, it is listed as a modification, not as created. Without that
+  snapshot (a `first_check` base or a base recorded before #1045), or past the snapshot's bound,
+  it is still a candidate, so a task-provided untracked data file a deliverable loads stops the agent
+  until it is declared `role: input`: one publish, chosen over letting a disclosure stand in for a
+  missing delivery. A path that cannot be named is counted, not shown.
 
 The R2 amendment's "Standing and non-blocking", "Only a count leaves the adapter" and "no path ...
 is returned, logged or stored" no longer hold; the rest of it does.

@@ -69,10 +69,10 @@ did not stop the agent:
    and `yoetz_owned`, and since ADR-045 `notes` and `workspace` (a shell command that writes the
    workspace). The wire enum is generated from the hook's own closed set (`WRITE_SCOPES`), so the
    wire admits every value the hook emits (#1039: it had refused `notes` and `workspace` at the
-   client, and those observations never reached the ledger). An edit tool reports `scratch` or `yoetz_owned` only when every path it names is
-   in that class; any workspace path, or a mix of scratch and Yoetz-owned paths, makes it an
-   ordinary edit;
-   `outside_workspace` wins over everything. A Codex session-stream `FileChange` item is classified
+   client, and those observations never reached the ledger). An edit tool reports `scratch` or
+   `yoetz_owned` only when every path it names is in that class; any workspace path, or a mix of
+   scratch and Yoetz-owned paths, makes it an ordinary edit; `outside_workspace` wins over
+   everything. A Codex session-stream `FileChange` item is classified
    from its own change paths; the stream knows no workspace root, so it names only `yoetz_owned`
    (never `scratch` or `outside_workspace`). A patch's `Delete File` paths are classified too, so a
    patch that deletes a workspace file is a workspace edit. The observed action description carries `(write scratch)` or
