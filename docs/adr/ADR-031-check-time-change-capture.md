@@ -310,9 +310,11 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    and a SHA-256 digest of its link-free `stat` fields (file type and permission bits, inode, size,
    modification and change time), at most 4096 names and 256 KiB of names; and the HEAD of each
    nested repository among them (an untracked directory Git lists as its own repository), opened
-   with every fence of decision 4, at most 8. No file is opened. Past a bound, or with a name the
-   object cannot hold, the snapshot is incomplete; a snapshot that cannot be taken at all leaves the
-   base exactly as before. The snapshot rides the same encrypted base object (`yoetz.task-change-base/1`,
+   with every fence of decision 4 (the borrowed-store and effective-config refusals included) before
+   its HEAD is resolved, at most 8; one a fence refuses records no HEAD, so no other repository's
+   commit can become its starting state. No file is opened. Past a bound, or with a name the object
+   cannot hold, the snapshot is incomplete; a snapshot that cannot be taken at all leaves the base
+   exactly as before. The snapshot rides the same encrypted base object (`yoetz.task-change-base/1`,
    optional `untracked`, `untracked_complete` and `nested` keys; a base without them keeps its
    bytes). A `first_check` pin never carries one: only the task's own start can say what predates
    it.

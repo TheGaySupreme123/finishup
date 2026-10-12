@@ -1486,6 +1486,34 @@ def test_gitlink_added_over_an_untracked_repository_starts_at_its_task_start_hea
     assert "-    return 'v1'" in text and "+    return 'COMMITTED_IN_TASK'" in text
 
 
+def test_nested_repository_borrowing_another_store_is_refused_at_task_start(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a ``commondir`` naming another repository is refused before its HEAD is
+    read, so that repository's commit never becomes the task's starting state."""
+
+    repository = _repository(tmp_path)
+    other = _nested_repository(tmp_path, "other")
+    _nested_commit(other, "OTHER_REPOSITORY = 1\n", "another repository's work")
+    other_head = _git(other, "rev-parse", "HEAD").strip()
+    nested = _nested_repository(repository)
+    assert _git(nested, "rev-parse", "HEAD").strip() != other_head
+    (nested / ".git" / "commondir").write_text(os.fspath(other / ".git") + "\n", "utf-8")
+    adapter = GitChangeCaptureAdapter()
+
+    base = adapter.read_task_base(os.fspath(repository))
+
+    assert base.origin == "task_start"
+    assert base.nested == ()
+    assert other_head not in encode_task_change_base(base).decode("utf-8")
+    # Check time refuses the same repository for the same reason.
+    text = _text(adapter.capture(os.fspath(repository), base))
+    assert (
+        "Nested repository api/: its own change is not shown (its Git configuration or layout is "
+        "not supported)." in text
+    )
+
+
 def test_task_input_files_the_statement_names_are_read_only_when_unchanged(
     tmp_path: Path,
 ) -> None:
