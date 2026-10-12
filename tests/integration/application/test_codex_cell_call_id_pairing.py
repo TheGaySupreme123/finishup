@@ -249,6 +249,50 @@ async def test_a_cell_that_also_ran_a_command_keeps_its_own_record(replay: _Repl
     assert counted_later_material(later, replay_ledger(records), all_records=records) != ()
 
 
+@pytest.mark.parametrize(
+    ("server", "own"), [(None, True), ("github", False)], ids=["server-less", "another-server"]
+)
+async def test_a_server_less_yoetz_item_keeps_its_cell_yoetz_own(
+    replay: _Replay, server: str | None, own: bool
+) -> None:
+    """An ``McpToolCall`` without a ``server`` is named by its tool alone (``status``).
+
+    The later-material rule reads that bare Yoetz name as Yoetz's own call, so the cell reads it
+    alike: its output adds no ``exec`` action. Another server's ``status`` is named
+    ``mcp__github__status`` and is not Yoetz's, so its cell keeps its own record. The nested
+    hooks land only after the whole cell was written, so the hook timing decides nothing.
+    """
+
+    boundary = await _checked(replay)
+    call_id, ctc, ctco = _ids(2)
+    hooked = f"mcp__{server or 'yoetz'}__status"
+    tool_input = {"request_id": "req_public_2"}
+    replay.append(
+        exec_cell(
+            call_id, f"await tools.{hooked}({{}});\n", "2026-10-09T08:45:00.000Z", item_id=ctc
+        ),
+        mcp_tool_call("exec-mcp-02", "status", "2026-10-09T08:45:00.100Z", server=server),
+        exec_cell_output(call_id, '{"ok":true}', "2026-10-09T08:45:00.200Z", item_id=ctco),
+    )
+    replay.hook("PreToolUse", tool_name=hooked, tool_use_id="call_nested02", tool_input=tool_input)
+    replay.hook(
+        "PostToolUse",
+        tool_name=hooked,
+        tool_use_id="call_nested02",
+        tool_input=tool_input,
+        tool_response={"content": [{"text": "ok", "type": "text"}], "isError": False},
+    )
+    replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
+    recorder = await sweep_all(replay)
+
+    stream = [e for e in recorder.delivered if e.source is ObservationSource.CODEX_SESSION_STREAM]
+    wrappers = [e for e in stream if e.structural_payload.get("tool_name") == "exec"]
+    assert len(wrappers) == (0 if own else 1)
+    records, later = _after_check(replay, boundary)
+    counted = counted_later_material(later, replay_ledger(records), all_records=records)
+    assert (counted == ()) is own
+
+
 async def test_a_direct_call_with_both_ids_is_one_action(replay: _Replay) -> None:
     """A direct ``function_call`` (``fc_``/``fco_`` beside ``call_id``) folds with its hook copy.
 

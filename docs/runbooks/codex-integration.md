@@ -2195,7 +2195,8 @@ reconcile completed before the output was read, so the hook fired while the cell
 counts for the previous one. This holds when `yoetz observe reconcile` reads the call before its
 nested hook, and for a long-idle session the bounded hook map forgot. A cell's output also stays
 local when every nested tool item the rollout wrote between the cell's call and its output was one
-of Yoetz's own MCP calls (`McpToolCall` with the Yoetz server, #1038): such a cell is Yoetz's own
+of Yoetz's own MCP calls (`McpToolCall` with the Yoetz server, or with no server and a Yoetz tool
+name, read as the later-material rule reads it; #1038): such a cell is Yoetz's own
 call, recorded by those calls, whatever the hook timing (the hooks landing after the whole cell
 was read, as tb4n4's hook latency showed, no longer leaves it a second `exec` action). A Yoetz
 item counts only while its cell is the session's only open cell; any other nested item, a rollout

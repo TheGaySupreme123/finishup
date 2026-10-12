@@ -98,25 +98,35 @@ def exec_cell_output(
 
 
 def mcp_tool_call(
-    item_id: str, tool: str, timestamp: str, *, server: str = "yoetz", status: str = "completed"
+    item_id: str,
+    tool: str,
+    timestamp: str,
+    *,
+    server: str | None = "yoetz",
+    status: str = "completed",
 ) -> dict[str, Any]:
-    """The nested ``McpToolCall`` item Codex 0.159.3 writes for a code-mode MCP call."""
+    """The nested ``McpToolCall`` item Codex 0.159.3 writes for a code-mode MCP call.
 
+    ``server=None`` omits the ``server`` field: the reader then names the item by its tool alone.
+    """
+
+    item: dict[str, Any] = {
+        "arguments": {},
+        "duration": {"nanos": 105_009_526, "secs": 0},
+        "id": item_id,
+        "readOnlyHint": False,
+        "result": {"content": [{"text": "public synthetic", "type": "text"}]},
+        "status": status,
+        "tool": tool,
+        "type": "McpToolCall",
+    }
+    if server is not None:
+        item["server"] = server
     return rollout_row(
         "event_msg",
         {
             "completed_at_ms": 1_790_704_690_742,
-            "item": {
-                "arguments": {},
-                "duration": {"nanos": 105_009_526, "secs": 0},
-                "id": item_id,
-                "readOnlyHint": False,
-                "result": {"content": [{"text": "public synthetic", "type": "text"}]},
-                "server": server,
-                "status": status,
-                "tool": tool,
-                "type": "McpToolCall",
-            },
+            "item": item,
             "started_at_ms": 1_790_704_667_516,
             "thread_id": HOST,
             "turn_id": "turn_1",
