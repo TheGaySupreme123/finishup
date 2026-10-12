@@ -12,8 +12,9 @@ reverse-chronological released versions.
   review. One call returns what is left to close and whose move each gap is (the agent's, or a gap
   in Yoetz's own observation), what the host's hooks observed since the last check, and whether each
   obligation's resolution evidence links to its declared deliverables or requested commands
-  (`evidence_off_declared_items` when it does not). Available through MCP `check` and `yoetz check`
-  on every host (#1048, ADR-047).
+  (`evidence_off_declared_items` when it does not); obligations whose evidence has no such link are
+  listed first, and the answer counts every obligation and every such case even when the list is
+  shortened. Available through MCP `check` and `yoetz check` on every host (#1048, ADR-047).
 
 - When the AI-powered reviewer answers `insufficient_packet` and names a recorded run's output, its
   exact command, or a captured edit Yoetz holds but had no room to send, the same check now sends
@@ -21,7 +22,9 @@ reverse-chronological released versions.
   request back to the agent. Each round is its own disclosure under the same privacy policy,
   limits and never-send rules and its own durable review job; requested content uses at most half
   of a packet's excerpt room; the review input manifest's `follow_up_round` and `missing_inputs`
-  show what was added on the check result, MCP and CLI text and every receipt format (#1047).
+  show what was added on the check result, MCP and CLI text and every receipt format. Only what a
+  sent packet actually carried counts as shown, so content composed but left out for room is still
+  supplied, and a request naming any part of a multi-part captured edit is answered (#1047).
 
 - A failure only on probes the agent wrote itself beyond the task's stated scope is now
   `agent_criterion_unmet`: the agent's own criterion, not a task requirement. Fix it, or narrow it
@@ -211,9 +214,10 @@ reverse-chronological released versions.
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,
   a data table) now stops closure instead of being only disclosed: the Stop hook continues the agent
   and names each such file, `status` lists them (`closure_readiness.undeclared_references`), and the
-  receipt names them and stays below clean until the content is embedded, rebuilt at run time, or
-  the file is declared as a delivered output. Disclosing the dependency no longer resolves it. An
-  untracked file the task started with is not counted (#1044).
+  receipt stays below clean until the content is embedded, rebuilt at run time, or the file is
+  declared as a delivered output. A `full_local` receipt names the files; an export or share receipt
+  counts them and names none. Disclosing the dependency no longer resolves it. An untracked file the
+  task started with is not counted (#1044).
 
 - At Stop, the acceptance re-read now asks only about resolved obligations whose acceptance
   criteria the final answer neither names nor addresses, and names them, on Codex and Claude Code
@@ -291,6 +295,10 @@ reverse-chronological released versions.
   budget without dropping any rule.
 
 ### Fixed
+
+- A parent's receipt no longer fails when a delegated child holds an AI-powered review finding
+  (`code_defect`, `task_requirement_unmet` or `agent_criterion_unmet`): the parent's
+  child-dependency manifest and JSON receipt carry the child's finding under its own kind (#1043).
 
 - `yoetz service run` now starts on Linux with glibc older than 2.32 (Ubuntu 20.04, Debian 11,
   RHEL 8 and images built on them, such as `condaforge/miniforge3`), where it could not set its
