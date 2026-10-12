@@ -724,3 +724,29 @@ planned command is a verification run whatever its class, so
 command that visibly writes into the workspace is an edit (`write_scope: workspace`). Every
 derived task fact carries a `FactLineage` (rule, subject, observing check and frontier, prior state,
 supporting events) shown on status, the check result, the Stop-gate text and the receipt.
+
+## Amendment (2026-10-12): the owner keeps the Stop-gate defaults (record only, #1031)
+
+The cloud review of the tb4n3 gate work (issue #1031, ADR-033 amendment of 2026-10-11) left three
+behaviors for the owner. The maintainer (TheGaySupreme123) decided on 2026-10-12 to keep all three as
+they are. No code, text or wire changed; this section only records the decisions so they are not
+re-opened as defects.
+
+1. **The per-turn cap of two continuations stays** (`MAX_GATE_BLOCKS_PER_TURN`). In a single-turn run
+   whose first two Stops were spent on other gates, the acceptance re-read is not asked: it has no
+   reserved third continuation. Raising the cap or reserving a slot is not part of this decision; the
+   extra turn the re-read costs on a run that resolves obligations was already accepted (decision 2
+   above).
+2. **An acknowledgement after an acceptance invite counts as answered, even several Stops later.** The
+   invite's frontier is the only memory (decision 3 above): an `acknowledgement` re-check whose
+   `since_frontier` is later than the earliest invite this session received is not asked. The rule is
+   bounded by the one-per-key asking.
+3. **A child's limitation keeps lineage rollups strict.** A child's findings reach the parent through
+   the frozen `ChildFindingSnapshot`, which carries no closure class, so a parent cannot tell a child's
+   unmet requirement from a child's disclosed limitation and keeps the strict reading (the child's
+   `acknowledged_not_done` and `rejection_accepted` rows stay actionable and unresolved in the rollup).
+   Rationale and the wire consequence are recorded in ADR-046 ("Not switched: lineage rollups stay
+   strict" and its amendment of 2026-10-12).
+
+Hosts: the gate is one code path for Codex, Claude Code and Cursor (decision 10 above); nothing here is
+host- or OS-specific.

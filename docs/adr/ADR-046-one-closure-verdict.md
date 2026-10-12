@@ -345,7 +345,7 @@ the per-host runbooks need no new entry. The Stop gate is the one host-specific 
 `awaiting_ruling_findings`) in each host's own gate and is decided in ADR-033's amendment and the
 three host runbooks.
 
-## Amendment 2026-10-12 (owner decisions, issue #1024)
+## Amendment 2026-10-12 (owner decisions, issues #1024, #1031)
 
 Recorded from the maintainer's decisions of 2026-10-12 (TheGaySupreme123):
 
@@ -362,6 +362,11 @@ Recorded from the maintainer's decisions of 2026-10-12 (TheGaySupreme123):
 2. **The check says "disclose" in its own word.** `disclose_limitations` on `finding_checklist.next`
    and `overall_next.action` when the only remaining agent work is undisclosed limitation requests;
    mixed with real work the value stays `work_open_findings` and the text names both.
+3. **Lineage rollups stay strict (owner decision, record only).** A child's limitation, disclosed or
+   unmet, is read by the parent through the frozen `ChildFindingSnapshot`, which carries no closure
+   class; the owner keeps the strict reading described under "Not switched: lineage rollups stay
+   strict" above. No behavior changed. The Stop-gate decisions of the same date are recorded in the
+   ADR-033 amendment.
 
 ## Verification
 
