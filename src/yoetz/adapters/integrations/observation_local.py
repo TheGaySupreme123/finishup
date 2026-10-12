@@ -1773,6 +1773,26 @@ def _open_pre_map_from_json(
     return result
 
 
+def _session_hook_call(state: _WorkspaceState, session_commitment: str, call_id: str) -> bool:
+    """Whether a Codex hook of this session reported ``call_id`` (#1041).
+
+    Its pre may still be open, or its hook rows retained in the local envelope ring; a call
+    the ring and the open-pre map both dropped reads as unreported.
+    """
+
+    if any(
+        entry.session_commitment == session_commitment and entry.correlation_id == call_id
+        for entry in (state.open_pre or {}).values()
+    ):
+        return True
+    return any(
+        envelope.source is ObservationSource.CODEX_HOOK
+        and envelope.session_commitment == session_commitment
+        and envelope.structural_payload.get("tool_call_id") == call_id
+        for envelope in state.envelopes or ()
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _CaptureBacklogSnapshot:
     """Bounded, task-scoped capture backlog feedback cached locally.
@@ -5226,9 +5246,12 @@ class LocalObservationStore:
 
         Codex intercepts a shell ``apply_patch <<EOF`` and fires only its
         ``PreToolUse``; the session stream's ``FileChange`` item is the observed
-        result of that patch. The attempt whose call id the item names is closed;
-        otherwise the session's oldest pre-only attempt is. Nothing else is closed:
-        an attempt no file change closes still expires with ``pending_attempt_expired``.
+        result of that patch. The attempt whose call id the item names is closed.
+        An item naming another call the session's hooks reported (a direct call's
+        own id, such as a native ``apply_patch``) is that call's change and closes
+        nothing; only an id no hook reported (code mode's ``exec-<uuid>``) closes
+        the session's oldest pre-only attempt. Nothing else is closed: an attempt
+        no file change closes still expires with ``pending_attempt_expired``.
         Returns whether an attempt was closed.
         """
 
@@ -5247,6 +5270,10 @@ class LocalObservationStore:
                 None,
             )
             if chosen is None:
+                if correlation_id is not None and _session_hook_call(
+                    state, session_commitment, correlation_id
+                ):
+                    return False
                 chosen = min(
                     candidates,
                     key=lambda item: (
