@@ -293,6 +293,9 @@ async def test_a_follow_up_round_is_its_own_durable_job_and_replays_without_disp
     assert base is not None and round_job is not None
     assert base.job_id != round_job.job_id
     assert (base.state, round_job.state) == ("succeeded", "succeeded")
+    # Structural progress describes the round the check records, read from its case object.
+    progress = await adapter.load_semantic_progress(writer, operation)
+    assert progress is not None and progress.job_id == round_job.job_id
 
     # Replay of the same request: the first review and the round recover, nothing is sent.
     assert second.operation_lease is not None

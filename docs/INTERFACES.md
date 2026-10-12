@@ -7771,6 +7771,10 @@ table `semantic_progress` (bundle schema 15, migration `0015`); ledger port meth
 `begin_semantic_progress(job_id, queued_at, deadline_at)` (insert once; replay is a no-op),
 `advance_semantic_progress(handle, phase, observed_at) -> bool` (only the active attempt of a
 leased job, only forward, never `terminal`), and `load_semantic_progress(writer_id, operation_id)`.
+A check with in-check follow-up rounds (#1047) owns one job per round: the load reads the live
+job, else the latest round's, the review the check records, by the `follow_up.round` its frozen
+`semantic-case/2` object names (none for the check's own review); attempt count and job id order
+only jobs of one round, never a later round behind an earlier one.
 The read-only runtime facade exposes the load. Provider and gateway code report phases through
 `yoetz.observability.semantic_context.report_semantic_progress(phase)`; the service binds the
 `semantic_progress_sink` context variable to exactly one claimed attempt, and a recording failure

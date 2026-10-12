@@ -892,6 +892,7 @@ async def _object_ref(
     semantic_case_primary_expires_at: str = "2026-07-19T12:04:00.000Z",
     semantic_case_expires_at: str = "2026-07-19T12:05:00.000Z",
     semantic_case_with_fallback: bool = False,
+    semantic_case_follow_up: tuple[str, int] | None = None,
 ) -> ObjectRef:
     objects = adapter._objects  # pyright: ignore[reportPrivateUsage]
     assert objects is not None
@@ -932,18 +933,20 @@ async def _object_ref(
                 "fallback_max_retries": 0,
                 "primary_predispatch_reason": None,
             }
-        payload = canonical_encode(
-            cast(
-                JsonValue,
-                {
-                    "schema": "yoetz.semantic-case/2",
-                    "case_id": "case_ledger_test",
-                    "case_digest": semantic_case_digest,
-                    "dependency_digest": "sha256:" + "1" * 64,
-                    "execution": execution,
-                },
-            )
-        )
+        body: dict[str, object] = {
+            "schema": "yoetz.semantic-case/2",
+            "case_id": "case_ledger_test",
+            "case_digest": semantic_case_digest,
+            "dependency_digest": "sha256:" + "1" * 64,
+            "execution": execution,
+        }
+        if semantic_case_follow_up is not None:
+            # An in-check follow-up round's case names the check's own review job (#1047).
+            body["follow_up"] = {
+                "base_case_digest": semantic_case_follow_up[0],
+                "round": semantic_case_follow_up[1],
+            }
+        payload = canonical_encode(cast(JsonValue, body))
     staged = await objects.stage(
         ObjectSource(data=payload, declared_size=len(payload)),
         ObjectMetadata(
@@ -3334,6 +3337,117 @@ async def test_semantic_progress_selected_attempt_terminates_as_succeeded() -> N
         assert progress.phase is SemanticProgressPhase.TERMINAL
         assert progress.terminal_outcome == "succeeded"
         assert progress.terminal_reason is SemanticReason.SEMANTIC_COMPLETED
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("base_retried", "round_fails", "round_id_sorts_first"),
+    (
+        # The base review needed a transient retry; the round failed on its first attempt.
+        (True, True, False),
+        # Equal attempt counts, and the round's random job id sorts before the base job's.
+        (False, False, True),
+    ),
+    ids=("base-retried-round-failed", "round-id-sorts-first"),
+)
+async def test_semantic_progress_after_a_follow_up_round_reports_the_latest_round(
+    base_retried: bool, round_fails: bool, round_id_sorts_first: bool
+) -> None:
+    """Issue #1047: once every job is terminal, progress is the latest round's, as recorded.
+
+    Neither attempt counts nor random job id order may put the check's own review ahead of the
+    follow-up round the check records.
+    """
+
+    command = ledger_command(request_suffix="f")
+    operation_id = "req_00000000-0000-4000-8000-0000000000ff"
+    queued_at = datetime(2026, 7, 19, 11, 59, tzinfo=UTC)
+    deadline_at = queued_at + timedelta(minutes=15)
+    base_digest = "sha256:" + "a" * 64
+    round_digest = "sha256:" + "b" * 64
+    observed: list[tuple[object, ...]] = []
+    for adapter in (memory_ledger(command), sqlite_ledger(command)):
+        ids = cast(_Ids, adapter._ids)  # pyright: ignore[reportPrivateUsage]
+        await adapter.append_batch(command)
+        lease = await _semantic_wait_lease(adapter, command, operation_id)
+        if round_id_sorts_first:
+            ids._next = 900  # pyright: ignore[reportPrivateUsage]
+        base_ref = await _object_ref(
+            adapter, command, ObjectKind.SEMANTIC_CASE, semantic_case_digest=base_digest
+        )
+        base = await adapter.enqueue_semantic_job(lease, base_digest, base_ref)
+        await adapter.begin_semantic_progress(base.job_id, queued_at, deadline_at)
+        handle = await adapter.claim_semantic_job(lease, base.job_id)
+        if base_retried:
+            await adapter.record_attempt_outcome(
+                handle, AttemptOutcome.EXPIRED, terminal_code=SemanticReason.TRANSPORT_UNAVAILABLE
+            )
+            handle = await adapter.claim_semantic_job(lease, base.job_id)
+        response_ref = await _object_ref(adapter, command, ObjectKind.SEMANTIC_RESPONSE)
+        await adapter.record_attempt_outcome(handle, AttemptOutcome.RESPONSE_DURABLE, response_ref)
+        await adapter.select_attempt(lease, handle, response_ref)
+
+        if round_id_sorts_first:
+            ids._next = 500  # pyright: ignore[reportPrivateUsage]
+        round_ref = await _object_ref(
+            adapter,
+            command,
+            ObjectKind.SEMANTIC_CASE,
+            semantic_case_digest=round_digest,
+            semantic_case_follow_up=(base_digest, 1),
+        )
+        round_job = await adapter.enqueue_semantic_job(lease, round_digest, round_ref)
+        assert (round_job.job_id < base.job_id) is round_id_sorts_first
+        round_queued_at = queued_at + timedelta(minutes=1)
+        await adapter.begin_semantic_progress(
+            round_job.job_id, round_queued_at, round_queued_at + timedelta(minutes=15)
+        )
+        live = await adapter.load_semantic_progress(command.writer_id, operation_id)
+        assert live is not None and live.job_id == round_job.job_id
+        round_handle = await adapter.claim_semantic_job(lease, round_job.job_id)
+        if round_fails:
+            await adapter.record_attempt_outcome(
+                round_handle, AttemptOutcome.FAILED, terminal_code=SemanticReason.PROVIDER_TIMEOUT
+            )
+        else:
+            round_response = await _object_ref(adapter, command, ObjectKind.SEMANTIC_RESPONSE)
+            await adapter.record_attempt_outcome(
+                round_handle, AttemptOutcome.RESPONSE_DURABLE, round_response
+            )
+            await adapter.select_attempt(lease, round_handle, round_response)
+
+        progress = await adapter.load_semantic_progress(command.writer_id, operation_id)
+        assert progress is not None
+        assert progress.job_id == round_job.job_id
+        assert progress.phase is SemanticProgressPhase.TERMINAL
+        assert progress.queued_at == round_queued_at
+        assert progress.attempt_ordinal == 0
+        assert (progress.terminal_outcome, progress.terminal_reason) == (
+            ("failed", SemanticReason.PROVIDER_TIMEOUT)
+            if round_fails
+            else ("succeeded", SemanticReason.SEMANTIC_COMPLETED)
+        )
+        await adapter.fail_check_if_current(
+            lease,
+            PublicOperationError(PublicErrorCode.INTERNAL_ERROR, "The check failed.", False),
+        )
+        assert await adapter.load_semantic_progress(command.writer_id, operation_id) == progress
+        if isinstance(adapter, SqliteLedger):
+            # A completed operation's jobs are read from the durable rows after restart.
+            restarted = _restarted_sqlite(adapter, command)
+            assert await restarted.load_semantic_progress(command.writer_id, operation_id) == (
+                progress
+            )
+        observed.append(
+            (
+                progress.attempt_ordinal,
+                progress.phase,
+                progress.queued_at,
+                progress.terminal_outcome,
+                progress.terminal_reason,
+            )
+        )
+    assert observed[0] == observed[1]
 
 
 async def _task_change_base_ref(

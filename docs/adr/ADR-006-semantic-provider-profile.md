@@ -1731,3 +1731,6 @@ packet only lacked room for.
   outbound-case 1.2.0 schemas. The shared manifest renderer shows the round and the added items in
   the CLI, the MCP check text, and the receipt's coverage note in JSON, markdown and text. The
   reviewer is told, in one instruction sentence, how to read a follow-up packet's manifest.
+  Structural progress (`status view=operation`, and the terminal interface that renders it)
+  follows the live round, else the latest round by the round its case object names, never by
+  attempt count or random job id.

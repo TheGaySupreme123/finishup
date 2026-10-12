@@ -218,6 +218,7 @@ from yoetz.protocol.coverage import (
 from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind
 from yoetz.protocol.models import (
+    MAX_REVIEW_FOLLOW_UP_ROUNDS,
     SEMANTIC_PROGRESS_PHASE_RANK,
     CheckPolicyExecutionModel,
     CheckScopeModel,
@@ -611,6 +612,42 @@ async def _semantic_execution_lease_bound(
     if expires_at > now + timedelta(seconds=_SEMANTIC_EXECUTION_MAX_SECONDS):
         raise ValueError("semantic_case_execution_deadline_invalid")
     return expires_at + timedelta(seconds=_SEMANTIC_EXECUTION_CLEANUP_GRACE_SECONDS)
+
+
+async def semantic_case_follow_up_round(
+    objects: ObjectStorePort,
+    ref: ObjectRef,
+    *,
+    case_digest: str,
+    task: str,
+) -> int:
+    """Return the in-check follow-up round (issue #1047) a job's frozen case object names.
+
+    ``0`` is the check's own review. The round is read from the authenticated ``semantic-case``
+    object the job row binds, so ordering an operation's jobs by round rests on neither a clock
+    nor random job ids.
+    """
+
+    if ref.metadata.kind is not ObjectKind.SEMANTIC_CASE or ref.metadata.task_id != task:
+        raise ValueError("semantic_case_object_binding_invalid")
+    raw = await _open_exact_object(objects, ref)
+    parsed = strict_json_parse(raw)
+    if canonical_encode(parsed) != raw:
+        raise ValueError("semantic_case_object_noncanonical")
+    source = _strict_mapping(parsed, reason="semantic_case_object_shape_invalid")
+    if source.get("case_digest") != case_digest:
+        raise ValueError("semantic_case_object_binding_invalid")
+    follow_up = source.get("follow_up")
+    if follow_up is None:
+        return 0
+    value = _strict_mapping(follow_up, reason="semantic_case_follow_up_invalid").get("round")
+    if (
+        source.get("schema") != "yoetz.semantic-case/2"
+        or type(value) is not int
+        or not 1 <= value <= MAX_REVIEW_FOLLOW_UP_ROUNDS
+    ):
+        raise ValueError("semantic_case_follow_up_invalid")
+    return value
 
 
 async def load_frozen_case_from_resume(
@@ -3866,16 +3903,29 @@ class MemoryLedgerAdapter:
             )
             if not matches:
                 return None
-            # The live job first: an in-check follow-up round (issue #1047) runs after the
-            # check's own review job is terminal.
-            job = max(
-                matches,
-                key=lambda item: (
-                    item.state in {"queued", "leased"},
-                    item.attempt_count,
-                    item.job_id,
-                ),
-            )
+            # Each in-check follow-up round (issue #1047) is a job of its own. The live job
+            # first: at most one is live, and it is the latest. Otherwise the latest round, the
+            # review the check records; attempt count and job id only order jobs of one round.
+            live = tuple(item for item in matches if item.state in {"queued", "leased"})
+            if live or len(matches) == 1:
+                job = max(live or matches, key=lambda item: (item.attempt_count, item.job_id))
+            else:
+                try:
+                    rounds = {
+                        item.job_id: await semantic_case_follow_up_round(
+                            self._objects,
+                            item.case_object_ref,
+                            case_digest=item.case_digest,
+                            task=self._task_id,
+                        )
+                        for item in matches
+                    }
+                except (KeyError, OSError, TypeError, ValueError) as exc:
+                    raise _error(PublicErrorCode.STORAGE_CORRUPT) from exc
+                job = max(
+                    matches,
+                    key=lambda item: (rounds[item.job_id], item.attempt_count, item.job_id),
+                )
             current = self._state.semantic_progress.get(job.job_id)
             if current is None:
                 return None
