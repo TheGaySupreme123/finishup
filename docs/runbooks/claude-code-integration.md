@@ -1354,17 +1354,32 @@ Codex; tested through the real ingress in
 
 ### Inspection check on Claude Code (#1048)
 
-`check` with `"mode": "inspect"` is a read: it records nothing, mints no finding, runs no review
-and needs no approval, so a lost answer is answered by asking again with a fresh `request_id`. One
-call returns what is left to close (the `status` readiness split, then every unresolved obligation
-and finding with what it lacks and whose move it is), the hook-observed actions since the last
-check, and whether each obligation's resolution evidence links to its declared deliverables or
-requested commands (`evidence_off_declared_items` when it does not). Use it instead of a series of
-`status` reads; no status read or `dry_run` is required before `publish_work`. The startup read is
-the operating card (`agent-instructions.md`); the larger pages are read on demand. ADR-047. Claude Code
-has no host-specific behavior: the MCP `check` tool and `yoetz check` carry the mode, and the
-same text is printed on both. The `Edit`/`Write` hooks record a write class, never a path, so
-observed edits are listed by class.
+`check` with `"mode": "inspect"` is a read inside Yoetz: it records nothing, mints no finding, runs
+no review and needs no Yoetz disclosure decision, so a lost answer is answered by asking again with
+a fresh `request_id`. One call returns what is left to close (the `status` readiness split, then
+every unresolved obligation and finding with what it lacks and whose move it is), the
+hook-observed actions since the last check, and whether each obligation's resolution evidence links
+to its declared deliverables or requested commands (`evidence_off_declared_items` when it does
+not). Use it instead of a series of `status` reads; no status read or `dry_run` is required before
+`publish_work`. The startup read is the operating card (`agent-instructions.md`); the larger pages
+are read on demand. ADR-047. The MCP `check` tool and `yoetz check` carry the mode, and the same
+text is printed on both. The `Edit`/`Write` hooks record a write class, never a path, so observed
+edits are listed by class.
+
+Host approval is per tool, not per mode. An inspection is a call of `mcp__yoetz__check` or
+`mcp__plugin_yoetz_yoetz__check`, so Claude Code applies the `check` rule
+([Auto mode and host admission](#auto-mode-and-host-admission)): admission in `permissions.allow`
+runs it without a prompt, admission with `--checkpoint` (`permissions.ask`) prompts on every
+`check`, inspection included, and without admission (always so on the strict route, which
+admission refuses with `route_not_policy`) the permission mode decides; auto mode's classifier sees
+the tool name and the request JSON, never the descriptor. Decision: supported behind the `check`
+rule. A held inspection leaves nothing pending in Yoetz and no review to protect, so the agent reads
+`status` instead and continues; the review-hold rules do not apply to it (guidance `review.md`).
+Capability gap, owner issue #1048: the `PermissionDenied` hook matches the `check` names and skips
+its advisory only for `mode: deterministic_only`, so a denied inspection records
+`host_auto_review_denied` or `host_permission_rule_denied`, shows the user the AI-powered review
+notice, and, with a confirmed grant and a classifier verdict, spends the session's one retry offer
+on a call that asked for no review.
 
 ### Bounded workflow recovery examples (#613)
 

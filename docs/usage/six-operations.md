@@ -67,7 +67,8 @@ obligations apply, record `no_obligations_reason` as exactly `no_material_change
 obligation refs. A revision restates the declaration, so omission clears an earlier reason.
 
 Reading `status` or previewing before a publish is optional: a publish that fails validation
-appends nothing and names every error, and one that succeeds returns the new frontier and the
+appends nothing and names what stopped it, not every error (for events, the first rejected event
+and its field), so fix that and send it again; one that succeeds returns the new frontier and the
 accepted ids. Before resolving an obligation, account for every requested item that has no attempt
 yet. When unsure about a batch, set `dry_run: true` to validate it and preview what would be
 accepted without appending. The preview is not evidential and is not citable as a check,
@@ -140,8 +141,10 @@ fails the check; without the option nothing changes.
 
 `"mode": "inspect"` asks Yoetz to look at its own record instead of checking it. It is a read like
 `status`: nothing is recorded, no finding is returned or created, no AI-powered review runs and
-nothing leaves your machine, so a lost answer is fixed by asking again. One call answers three
-questions:
+nothing leaves your machine, so a lost answer is fixed by asking again. Your agent host still sees
+a `check` call and approves it as it approves any check (host admission of `check` covers it); if
+the host holds or refuses an inspection, nothing is waiting in Yoetz and your agent reads `status`
+instead. One call answers three questions:
 
 - **What is left to close, and whose move it is.** The same readiness, predicted receipt
   conclusion and gap split `status` shows (your gaps beside the limits Yoetz itself carries), then

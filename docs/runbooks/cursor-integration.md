@@ -1479,18 +1479,31 @@ That is a known Cursor capability gap, shared with `edited_after_last_verificati
 
 ### Inspection check on Cursor (#1048)
 
-`check` with `"mode": "inspect"` is a read: it records nothing, mints no finding, runs no review
-and needs no approval, so a lost answer is answered by asking again with a fresh `request_id`. One
-call returns what is left to close (the `status` readiness split, then every unresolved obligation
-and finding with what it lacks and whose move it is), the hook-observed actions since the last
-check, and whether each obligation's resolution evidence links to its declared deliverables or
-requested commands (`evidence_off_declared_items` when it does not). Use it instead of a series of
-`status` reads; no status read or `dry_run` is required before `publish_work`. The startup read is
-the operating card (`agent-instructions.md`); the larger pages are read on demand. ADR-047. Cursor
-needs no host-specific step. Capability gap, same owner as the section above: on the ordinary
-profile `StrReplace`, `Delete` and other unclassified tools are listed as `other` actions, and the
-structural profile's post-only results carry no tool identity, so those runs are not listed at
-all; `action_count` counts only what the record holds.
+`check` with `"mode": "inspect"` is a read inside Yoetz: it records nothing, mints no finding, runs
+no review and needs no Yoetz disclosure decision, so a lost answer is answered by asking again with
+a fresh `request_id`. One call returns what is left to close (the `status` readiness split, then
+every unresolved obligation and finding with what it lacks and whose move it is), the
+hook-observed actions since the last check, and whether each obligation's resolution evidence links
+to its declared deliverables or requested commands (`evidence_off_declared_items` when it does
+not). Use it instead of a series of `status` reads; no status read or `dry_run` is required before
+`publish_work`. The startup read is the operating card (`agent-instructions.md`); the larger pages
+are read on demand. ADR-047. The mode needs no Cursor-specific step.
+
+Host approval is per tool, not per mode. An inspection is a call of `check`, so Cursor admits it
+exactly as it admits `check` ([Auto-review and host admission](#auto-review-and-host-admission)):
+with admission (`yoetz:check` in `mcpAllowlist`, `Mcp(yoetz:check)` or
+`Mcp(plugin-yoetz-yoetz:check)` in `.cursor/cli.json`) it is allowlisted like any `check`;
+without admission (always so on the strict route) the classifier may allow, redirect or ask, as it
+may for every non-allowlisted call, `status` included, and required startup mode may add native
+approval prompts. Cursor publishes no hook for that decision, so a held inspection is visible only
+in Cursor's approval control. Decision: supported behind the `check` gate. A held inspection leaves
+nothing pending in Yoetz and no review to protect, so the agent reads `status` instead and
+continues; the review-hold rules do not apply to it (guidance `review.md`).
+
+Capability gap, same owner as the previous section's (the Cursor ordinary-profile issue): on the
+ordinary profile `StrReplace`, `Delete` and other unclassified tools are listed as `other`
+actions, and the structural profile's post-only results carry no tool identity, so those runs are
+not listed at all; `action_count` counts only what the record holds.
 
 ### Bounded workflow recovery examples (#613)
 

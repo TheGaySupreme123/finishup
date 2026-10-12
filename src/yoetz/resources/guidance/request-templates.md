@@ -25,8 +25,9 @@ integer from 1 to 100 is read as its string).
 
 Use the real client identity for your integration. Never copy a template timestamp as if it were
 the event time; `occurred_at` is your assertion and should be the best real UTC millisecond time
-available. A preview is optional: a write that fails validation appends nothing and names every
-error. When unsure, send the completed `publish_work` request once with `dry_run: true`; after a
+available. A preview is optional: a write that fails validation appends nothing and names what
+stopped it, not every error (for drafts, the first rejected draft and its field), so fix that and
+resubmit. When unsure, send the completed `publish_work` request once with `dry_run: true`; after a
 successful preview, reuse the same `request_id` without `dry_run` (or with `dry_run: false`).
 
 Every set-valued list — `obligation_refs`, `obligation_ids`, `supporting_refs`, `limitation_refs`,
@@ -813,7 +814,9 @@ observations still being delivered, and `observations_awaited` reports whether t
 review, so a timeout is answered by asking again with a fresh `request_id`. It answers what is left
 to close and whose move each gap is, what the hooks observed since the last check, and whether each
 obligation's resolution evidence links to its declared deliverables or commands. Omit `scope`,
-`max_findings`, `policy_packs` and `final_review`; `await_observations: true` is accepted.
+`max_findings`, `policy_packs` and `final_review`; `await_observations: true` is accepted. The host
+still approves it as a `check` call; if the host holds or refuses it, nothing is pending in Yoetz,
+so read `status` instead.
 
 ```json
 {

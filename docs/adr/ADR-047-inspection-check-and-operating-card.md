@@ -32,11 +32,12 @@ Two habits cost most of an agent's Yoetz time without making the record better:
 
 1. **A status read and a dry run before every material publish.** `publication-policy.md`
    prescribed "read `status view=obligations` ... then `dry_run: true` ... then publish with the
-   same `request_id`". A write already validates the whole batch, appends nothing when any draft
-   is rejected, and returns the new frontier, the accepted ids and every validation error, so the
-   ritual doubled the calls and added a status read per write. When the agent did need the
-   picture, it took several status views (compact, obligations, results, findings) to assemble
-   it.
+   same `request_id`". A write is already all or nothing: it appends nothing when any draft is
+   rejected and names what stopped it, not every error (for drafts, the first rejected draft and
+   its field, so another bad draft surfaces only on the next attempt; a dry run stops at the same
+   place), and an accepted write returns the new frontier and the accepted ids, so the ritual
+   doubled the calls and added a status read per write. When the agent did need the picture, it
+   took several status views (compact, obligations, results, findings) to assemble it.
 2. **Five startup documents.** The initialize text and the host skills told the agent to read
    `publication-policy.md` before `publish_work` and `coverage-and-receipts.md` before `check`,
    with `workflow.md` and `request-templates.md` beside them: about 275 KB, read in pieces at a
@@ -138,8 +139,9 @@ within the existing 8 KiB mandatory-surface budget for every host (the card alon
 
 ## Consequences
 
-- An agent can replace a series of status reads with one call, and publishes without a preview
-  unless it is unsure. A lost inspection answer is answered by asking again.
+- An agent can replace a series of status reads with one call (a `check` call, which its host
+  approves as it approves any `check`), and publishes without a preview unless it is unsure. A
+  lost inspection answer is answered by asking again.
 - The startup surface no longer sends agents to about 275 KB of procedure pages.
 - Evidence that never touched what the obligation declared is visible before the receipt.
 - `command_run_not_observed` and `evidence_off_declared_items` are advisory facts on a read; they
@@ -149,8 +151,21 @@ within the existing 8 KiB mandatory-surface budget for every host (the card alon
 
 The same on Codex, Claude Code and Cursor on every supported platform: `mode: inspect` is a value of
 the existing MCP `check` tool and of the CLI request, needs no host hook, and its text channel is
-host-independent (Cursor's exact-JSON text copy carries the same body). Host runbooks record the
-decision.
+host-independent (Cursor's exact-JSON text copy carries the same body).
+
+Host approval is per tool, not per mode. The `check` descriptor is the same for every mode
+(`readOnlyHint: false`; `openWorldHint: true` on the policy route), so each host gates an
+inspection exactly as it gates any `check`: Codex asks for approval (or its guardian decides, or
+approval policy `never` refuses) on the policy route unless the project admits `check`; Claude
+Code follows the `check` allow or ask rule, or its permission mode without admission; Cursor's
+Auto-review admits it through the `check` allowlist entry or classifies it like any
+non-allowlisted call. An inspection needs no Yoetz disclosure decision, and a held one leaves
+nothing pending in Yoetz, so guidance tells the agent to read `status` instead rather than wait as
+for a held review. Where `check` cannot be admitted (on Codex, a policy route without a grant that
+permits external review) an inspection costs an approval that the `status` reads it replaces do
+not; a read-only advertisement would need a separate tool, which this ADR rejects, so the gap is
+recorded in the host runbooks with issue #1048 as its owner, beside Claude Code's `PermissionDenied`
+advisory, which does not yet tell an inspection from a reviewing check.
 
 ## Verification
 

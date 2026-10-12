@@ -80,3 +80,38 @@ def test_publication_policy_drops_the_status_and_dry_run_ritual() -> None:
         templates
     )
     assert '"mode": "inspect"' in templates
+
+
+def test_reference_pages_are_on_demand_and_a_rejection_is_not_every_error() -> None:
+    """Review of #1048: no page reinstates the reading list or overstates a rejection.
+
+    A rejected write names what stopped it (for drafts, the first rejected draft and field), not
+    every error, and the topic and workflow headers read on demand like the card says.
+    """
+
+    workflow = _collapsed(_REPO_ROOT / "guidance" / "workflow.md")
+    assert "before the first `publish_work`" not in workflow
+    assert "Read before the first `start`" not in workflow
+    for topic in ("publication.md", "review.md"):
+        assert "Read this topic before the first" not in _collapsed(
+            _REPO_ROOT / "guidance" / topic
+        ), topic
+    pages = [*sorted((_REPO_ROOT / "guidance").glob("*.md")), _REPO_ROOT / "CHANGELOG.md"]
+    pages.append(_REPO_ROOT / "docs" / "usage" / "six-operations.md")
+    for page in pages:
+        text = _collapsed(page)
+        assert "every validation error" not in text, page.name
+        assert "names every error" not in text, page.name
+
+
+def test_runbooks_record_that_each_host_gates_inspection_as_a_check() -> None:
+    """Review of #1048: hosts approve tools, not modes, so an inspection is gated like `check`."""
+
+    for host, name in (("codex", "Codex"), ("claude-code", "Claude Code"), ("cursor", "Cursor")):
+        text = _collapsed(_REPO_ROOT / "docs" / "runbooks" / f"{host}-integration.md")
+        section = text.partition(f"### Inspection check on {name} (#1048)")[2].partition("### ")[0]
+        assert section, host
+        assert "runs no review and needs no approval" not in section, host
+        assert "no host-specific behavior" not in section, host
+        assert "Host approval is per tool, not per mode." in section, host
+        assert "Decision: supported behind the `check`" in section, host

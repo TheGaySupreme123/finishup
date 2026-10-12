@@ -8767,9 +8767,12 @@ request digest and the detached-check identity; the member is never recorded in 
 freezes no case, appends no event, writes no operation record, mints no finding, dispatches no
 reviewer and egresses nothing, so the daemon classifies it as read-only (a failure is a retryable
 read failure answered by a fresh request, never a same-`request_id` replay) and never runs it
-detached. The request model refuses `final_review`, `max_findings`, `policy_packs` and `scope`
-beside it, each at its own field with reason `extra_forbidden` (kept out of the JSON Schema: a root
-conditional lowers the advertised check input to `unknown` on observed hosts);
+detached. The MCP `check` descriptor and its annotations are the same for every mode, so a host
+approves, holds or admits an inspection exactly as any `check` (ADR-047 host decisions; the host
+runbooks record each host). The request model refuses `final_review`, `max_findings`,
+`policy_packs` and `scope` beside it, each at its own field with reason `extra_forbidden` (kept
+out of the JSON Schema: a root conditional lowers the advertised check input to `unknown` on
+observed hosts);
 `await_observations` is accepted and reported as on any check. `expected_frontier` is not
 compared. The answer is the `inspection` branch of `check-result` 1.4.0 (`state: inspected`,
 discriminated beside `complete` and `awaiting_human`/`awaiting_input`; no verdict, findings,
