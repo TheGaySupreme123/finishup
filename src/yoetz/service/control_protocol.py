@@ -15,8 +15,10 @@ from typing import Final, Literal, Never, Protocol, cast
 from pydantic import BaseModel
 
 from yoetz.adapters.control.unix_socket import LocalControlTransportError
+from yoetz.adapters.repository_identity import RepositoryIdentityError
 from yoetz.domain.coordination import CoordinationErrorCode
 from yoetz.domain.values import JsonObject, freeze_json
+from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.control import (
     ControlCallRequest,
     ControlCancelRequest,
@@ -969,7 +971,27 @@ async def server_handshake(
     except BaseException as exc:
         if isinstance(exc, asyncio.CancelledError):
             raise
+        if not isinstance(exc, (ControlProtocolError, LocalControlTransportError)):
+            # A service-side fault (the repository-identity resolver raising, say) closes the
+            # connection like a rejected hello, so the client can only report
+            # `service_incompatible`. Without this record nothing anywhere named the real cause
+            # (#1040: every connection after vault unlock closed on an old Git, silently).
+            record_unexpected_exception_without_raising(
+                exc,
+                component="service.control",
+                operation="control_handshake",
+                phase="handshake",
+                reason_code=_handshake_refusal_token(exc),
+            )
         await _close_after_failure(stream, exc)
+
+
+def _handshake_refusal_token(exc: BaseException) -> str | None:
+    """The closed refusal token a handshake-time service fault carries, or None."""
+
+    if isinstance(exc, RepositoryIdentityError):
+        return exc.reason
+    return None
 
 
 def public_error_code_for_control_reason(reason: str) -> PublicErrorCode:

@@ -37,6 +37,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Literal
 
+from yoetz.adapters.git_rev_parse import absolute_rev_parse_path
 from yoetz.adapters.git_subject_state import (
     GitOutputTruncated,
     discover_workspace_root,
@@ -2037,16 +2038,19 @@ class GitChangeCaptureAdapter:
         try:
             _, located = GitChangeCaptureAdapter._git(
                 pinned,
-                ("rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir"),
+                # No ``--path-format=absolute``: Git before 2.31 echoes it as an extra output
+                # line (#1040). Each answer is made absolute against the root Git ran in.
+                ("rev-parse", "--show-toplevel", "--git-dir"),
                 deadline=deadline,
                 limit=8_192,
             )
+            located_paths = [
+                absolute_rev_parse_path(line, validated_root)
+                for line in located.rstrip(b"\n").split(b"\n")
+            ]
         except ValueError:
             raise ChangeCaptureUnavailable("unsafe_root") from None
-        if located.rstrip(b"\n").split(b"\n") != [
-            os.fsencode(validated_root),
-            os.fsencode(validated_root / ".git"),
-        ]:
+        if located_paths != [validated_root, validated_root / ".git"]:
             raise ChangeCaptureUnavailable("unsafe_root")
         return pinned
 

@@ -11,6 +11,7 @@ from typing import cast
 import pytest
 
 from yoetz.adapters.control.unix_socket import LocalControlTransportError
+from yoetz.adapters.repository_identity import RepositoryIdentityError
 from yoetz.domain.values import JsonObject
 from yoetz.ports.control import (
     ControlCallRequest,
@@ -32,6 +33,7 @@ from yoetz.protocol.schemas import (
     load_schema_catalog,
     validate_schema_instance,
 )
+from yoetz.service import control_protocol
 from yoetz.service.control_protocol import (
     CONTROL_PROTOCOL_VERSION,
     MAX_ACTIVE_REQUESTS_PER_SESSION,
@@ -570,6 +572,54 @@ def test_legacy_hello_remains_unbound_and_never_invokes_locator_resolver() -> No
         assert server_result.repository_privacy_context is None
 
     asyncio.run(exercise())
+
+
+def test_resolver_fault_closes_the_handshake_and_records_its_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1040: a repository-identity fault after unlock must not close the connection silently."""
+
+    recorded: list[tuple[str, dict[str, object]]] = []
+
+    def record(exc: BaseException, **fields: object) -> str:
+        recorded.append((type(exc).__name__, fields))
+        return "err_00000000-0000-4000-8000-000000000001"
+
+    monkeypatch.setattr(control_protocol, "record_unexpected_exception_without_raising", record)
+
+    async def exercise() -> None:
+        client, server, client_peer = _stream_pair()
+
+        async def fail(_locator: WorkspaceLocator) -> RepositoryPrivacyContext:
+            raise RepositoryIdentityError("repository_identity_unavailable")
+
+        hello = asyncio.create_task(
+            client_handshake(
+                client,
+                ControlClientKind.CLI,
+                "0.1.0",
+                workspace_locator=WorkspaceLocator("/private/raw-repository"),
+            )
+        )
+        with pytest.raises(ControlProtocolError):
+            await server_handshake(server, client_peer, _status(), repository_context_resolver=fail)
+        # The service closed without answering, which the client reads as `handshake_rejected`.
+        assert server.closed
+        hello.cancel()
+        await asyncio.gather(hello, return_exceptions=True)
+
+    asyncio.run(exercise())
+    assert recorded == [
+        (
+            "RepositoryIdentityError",
+            {
+                "component": "service.control",
+                "operation": "control_handshake",
+                "phase": "handshake",
+                "reason_code": "repository_identity_unavailable",
+            },
+        )
+    ]
 
 
 def test_partial_reads_do_not_consume_the_next_frame_and_eof_is_fatal() -> None:

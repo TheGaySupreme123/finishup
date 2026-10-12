@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Final
 
+from yoetz.adapters.git_rev_parse import absolute_rev_parse_path
 from yoetz.ports.control import RepositoryPrivacyContext, WorkspaceLocator
 from yoetz.ports.keys import REPOSITORY_PRIVACY_MAC_DOMAIN, MacKeyHandle
 
@@ -86,7 +87,8 @@ async def _bounded_git_common_directory(directory: Path) -> Path | None:
             "rev-parse",
             "--is-inside-work-tree",
             "--is-bare-repository",
-            "--path-format=absolute",
+            # No ``--path-format=absolute``: Git before 2.31 echoes it as an extra output line
+            # (#1040). The relative answer is resolved against ``directory`` below instead.
             "--git-common-dir",
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
@@ -127,8 +129,7 @@ async def _bounded_git_common_directory(directory: Path) -> Path | None:
             b"false",
         }:
             raise ValueError
-        common_text = os.fsdecode(common_raw)
-        common_directory = Path(common_text).resolve(strict=True)
+        common_directory = absolute_rev_parse_path(common_raw, directory).resolve(strict=True)
     except OSError, RuntimeError, UnicodeError, ValueError:
         raise RepositoryIdentityError("repository_identity_unavailable") from None
     if not common_directory.is_dir() or (inside_work_tree, bare_repository) == (b"false", b"false"):

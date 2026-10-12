@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, cast
 
+from yoetz.adapters.git_rev_parse import absolute_rev_parse_path
 from yoetz.domain.values import SubjectStateRef
 from yoetz.ports.subject_state import (
     MAX_SUBJECT_STATE_FILES,
@@ -350,7 +351,9 @@ def discover_workspace_root(path: Path, *, timeout_seconds: float = _GIT_TIMEOUT
         runner = _default_runner(timeout_seconds)
         _, top = runner.run(
             candidate,
-            ("rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir"),
+            # No ``--path-format=absolute``: Git before 2.31 echoes it as an extra output line
+            # (#1040). Each answer is made absolute against the directory Git ran in instead.
+            ("rev-parse", "--show-toplevel", "--git-dir"),
             stdout_limit=8_192,
         )
     except (_GitProcessFailure, _OutputLimit) as exc:
@@ -361,8 +364,11 @@ def discover_workspace_root(path: Path, *, timeout_seconds: float = _GIT_TIMEOUT
         _overwrite(top)
     if len(lines) != 2:
         raise ValueError("not_git")
-    root = Path(os.fsdecode(lines[0]))
-    git_dir = Path(os.fsdecode(lines[1]))
+    try:
+        root = absolute_rev_parse_path(lines[0], candidate)
+        git_dir = absolute_rev_parse_path(lines[1], candidate)
+    except ValueError as exc:
+        raise ValueError("not_git") from exc
     if not root.is_absolute() or git_dir != root / ".git" or not candidate.is_relative_to(root):
         raise ValueError("unsafe_root")
     return _lexically_safe_absolute(root)
@@ -941,11 +947,13 @@ def _verify_git_root(root: Path, runner: _GitRunner) -> None:
         raise _CaptureFailure(SubjectStateLimitation.NOT_GIT)
     _, top = runner.run(
         root,
-        ("rev-parse", "--path-format=absolute", "--show-toplevel"),
+        ("rev-parse", "--show-toplevel"),
         stdout_limit=4_096,
     )
     try:
-        top_path = Path(os.fsdecode(bytes(top).rstrip(b"\n")))
+        top_path = absolute_rev_parse_path(bytes(top).rstrip(b"\n"), root)
+    except ValueError as exc:
+        raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT) from exc
     finally:
         _overwrite(top)
     if not top_path.is_absolute() or top_path != root:
@@ -959,11 +967,13 @@ def _verify_git_root(root: Path, runner: _GitRunner) -> None:
         raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT)
     _, git_dir = runner.run(
         root,
-        ("rev-parse", "--path-format=absolute", "--git-dir"),
+        ("rev-parse", "--git-dir"),
         stdout_limit=4_096,
     )
     try:
-        git_path = Path(os.fsdecode(bytes(git_dir).rstrip(b"\n")))
+        git_path = absolute_rev_parse_path(bytes(git_dir).rstrip(b"\n"), root)
+    except ValueError as exc:
+        raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT) from exc
     finally:
         _overwrite(git_dir)
     expected_git_path = root / ".git"

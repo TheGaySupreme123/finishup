@@ -59,6 +59,26 @@ candidate wheel in that exact image (by digest) and starts, queries and stops th
 `tests/subprocess/test_service_startup_failure.py` repeats the start under the image's environment
 with the glibc 2.31 `chmod` behaviour on every platform.
 
+## Git before 2.31: every connection closed once the vault was ready
+
+The same images ship an old Git (2.25 on Ubuntu 20.04, 2.30 on Debian 11). With the `chmod` fix the
+service started and reported `locked`, the passphrase vault initialized, and then every command
+failed with `service_incompatible` naming the service's own pid and version (tb4n5). Once the vault
+is ready, the control handshake resolves the caller's repository identity with
+`git rev-parse --path-format=absolute --git-common-dir`. `--path-format` exists only since Git 2.31,
+and an older `rev-parse` does not reject it: it echoes any argument it does not recognise, so the
+answer gained a line and the identity resolver refused. The handshake closed without answering,
+which the client can only read as a rejected hello. Subject-state and check-time change capture
+used the same option and failed closed as `unsafe_root`/`not_git` on those Gits.
+
+Yoetz no longer passes `--path-format`; it makes each printed path absolute against the directory
+Git ran in and canonicalises it as `--path-format=absolute` does, so repository commitments are
+unchanged across Git versions. A service-side fault during the handshake is now recorded under
+`component` `service.control`, `operation` `control_handshake`, with its exception token, origin and
+closed `reason_code`, instead of closing the connection without a trace. The PR CI image smoke
+above still stops at the locked state outside a repository, so it does not exercise this path.
+`tests/unit/adapters/test_git_rev_parse.py` reproduces the old Git's output with the real Git.
+
 ## Reading a service startup failure
 
 Every startup failure is recorded once, with the stage that failed, the reviewed exception-class
