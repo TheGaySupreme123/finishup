@@ -1559,20 +1559,36 @@ def _packet_limits(
     or selection; a ``not_recorded`` omission (nothing more was ever recorded) never counts, and
     this check's own local findings are never packet content. Unknown when the sent packet was
     not read. ``privacy_withheld_refs`` are the refs an owner privacy rule withheld (a privacy
-    limit, classified structurally unavailable). ``change_clipped`` says the check-time change
-    was clipped for room or redacted.
+    limit, classified structurally unavailable). ``change_clipped`` says the check-time change's
+    own text was clipped for room or redacted (``_change_text_redacted``).
     """
 
     withheld = semantic_result.case_withheld_refs
     local = {str(item.finding_id) for item in deterministic}
+    gaps = set(semantic_result.case_content_gaps)
     return {
         "packet_limited_refs": (frozenset() if withheld is None else frozenset(withheld - local)),
         "privacy_withheld_refs": frozenset(semantic_result.case_privacy_withheld_refs - local),
-        "change_clipped": bool(
-            {CHECK_TIME_CHANGE_TRUNCATED_GAP, CHECK_TIME_CHANGE_REDACTED_GAP}
-            & set(semantic_result.case_content_gaps)
-        ),
+        "change_clipped": CHECK_TIME_CHANGE_TRUNCATED_GAP in gaps
+        or (CHECK_TIME_CHANGE_REDACTED_GAP in gaps and _change_text_redacted(semantic_result)),
     }
+
+
+def _change_text_redacted(semantic_result: FinalSemanticEvaluation) -> bool:
+    """Whether redaction altered the check-time change text the packet carried (#1045 review).
+
+    ``check_time_change_redacted`` also reports a task input file that was redacted or withheld,
+    which leaves every diff whole. A redacted diff section the packet carried holds a marker, so
+    the packet's shown-file record (a pure function of the stored change and the bytes carried,
+    the same on replay) lists it in part with its redactions; a section the packet did not carry
+    is already ``check_time_change_truncated``. A record that is missing, incomplete or names no
+    file at all cannot tell, and answers yes, as before.
+    """
+
+    files = semantic_result.check_change_files
+    if files is None or not files.complete or not (files.fully_shown or files.partially_shown):
+        return True
+    return any(item.redactions for item in files.partially_shown)
 
 
 async def _review_round_stopped_at(

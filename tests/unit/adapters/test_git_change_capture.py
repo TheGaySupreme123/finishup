@@ -1514,6 +1514,59 @@ def test_nested_repository_borrowing_another_store_is_refused_at_task_start(
     )
 
 
+def test_gitlink_inside_a_nested_repository_counts_as_not_shown(tmp_path: Path) -> None:
+    """Review of #1045: a repository nested inside a nested one is never read, so its changed
+    gitlink counts as not shown, as an untracked repository at that depth already does."""
+
+    repository = _repository(tmp_path)
+    api = _nested_repository(repository)
+    lib = _nested_repository(api, "lib")
+    _git(api, "add", "--", "lib")
+    _commit(api, "track lib as a gitlink")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    _nested_commit(lib, "INNER_CANARY = 1\n", "work inside the inner repository")
+
+    capture = adapter.capture(os.fspath(repository), base)
+
+    text = _text(capture)
+    assert "INNER_CANARY" not in text
+    assert "Nested repository api/: its own change is shown under that directory" in text
+    assert "+Subproject commit" in text  # the inner gitlink's commit-id lines still stand
+    assert (
+        "  M api/lib (+1 -1) not shown: a nested Git repository whose own change was not read"
+        in text
+    )
+    assert "Not shown: 1." in text
+    assert capture.omitted_files == 1 and capture.truncated
+
+
+def test_gitlink_replacing_a_tracked_file_starts_at_its_task_start_head(tmp_path: Path) -> None:
+    """Review of #1045: a gitlink staged where the base tree held a file has a blob id as its
+    source, which must not hide the snapshot's starting commit either."""
+
+    repository = _repository(tmp_path)
+    (repository / "api").write_text("a placeholder file\n", encoding="utf-8")
+    _git(repository, "add", "--", "api")
+    _commit(repository, "api starts as a file")
+    _git(repository, "rm", "--cached", "--quiet", "--", "api")
+    (repository / "api").unlink()
+    nested = _nested_repository(repository)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert [path for path, _ in base.nested] == ["api"]
+    _nested_commit(nested, "def handler():\n    return 'COMMITTED_IN_TASK'\n", "cut over")
+    _git(repository, "add", "--", "api")
+
+    text = _text(adapter.capture(os.fspath(repository), base))
+
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started." in text
+    )
+    assert "-    return 'v1'" in text and "+    return 'COMMITTED_IN_TASK'" in text
+
+
 def test_task_input_files_the_statement_names_are_read_only_when_unchanged(
     tmp_path: Path,
 ) -> None:

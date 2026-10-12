@@ -339,11 +339,11 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    files as files of the change; the outer one-line entry for an untracked repository gives way to
    them. A repository that cannot be read keeps its outer entry (that one-line entry, or a changed
    gitlink's commit-id lines) marked "not shown: a nested Git repository whose own change was not
-   read", counts as not shown (`check_time_change_truncated`), and the
-   header names why in one fixed sentence (`nested_limit`, the deadline, or the closed reason of
-   decision 8); no Git output is recorded. A repository nested inside a nested one is not read. The
-   structural metadata read (requested-output states, test-edit accounting) does not descend into
-   nested repositories.
+   read", counts as not shown (`check_time_change_truncated`), and the header names why in one fixed
+   sentence (`nested_limit`, the deadline, or the closed reason of decision 8); no Git output is
+   recorded. A repository nested inside a nested one is not read and counts as not shown the same
+   way: its untracked entry or changed gitlink is marked so. The structural metadata read
+   (requested-output states, test-edit accounting) does not descend into nested repositories.
 4. **Read-only task input files.** When the recipe carries the change, the task statement and the
    `repository` excerpt kind, the service names candidate inputs: the path-shaped words of the task
    statement in its order (a path with a slash, or a file name with a short extension holding a

@@ -1223,8 +1223,9 @@ def review_missing_for_assessment(
     target whose recorded file is an image or other binary format, by suffix or because the
     check-time change marks it binary (``binary_paths``, see ``check_change_binary_paths``)
     (``yoetz_limit_unsupported_data_type``); a target the packet named but could not carry whole
-    (``packet_limited_refs``), or a diff request while the check-time change was clipped for room
-    (``change_clipped``) (``yoetz_limit_packet_room``). The agent verifies such content itself;
+    (``packet_limited_refs``), or a diff request while the check-time change's own text was
+    clipped for room or redacted (``change_clipped``; a redacted task input file alone is not)
+    (``yoetz_limit_packet_room``). The agent verifies such content itself;
     the receipt discloses the limit. An unanswered repeat stays the agent's work with
     ``semantic_missing_non_convergent``; the review round itself stops after one retry
     (``kernel.review_round``).

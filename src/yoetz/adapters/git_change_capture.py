@@ -237,8 +237,9 @@ class _TrackedRead:
     identities: dict[bytes, _Identity | None]
     # Metadata capture uses a name-status query; content capture keeps the raw query.
     arguments: tuple[str, ...] = ()
-    # Changed gitlinks (submodules and embedded repositories Git tracks): path and base commit.
-    gitlinks: tuple[tuple[bytes, str], ...] = ()
+    # Changed gitlinks (submodules and embedded repositories Git tracks): path and the commit the
+    # base tree records for it, ``None`` when the base held no gitlink there.
+    gitlinks: tuple[tuple[bytes, str | None], ...] = ()
 
 
 @dataclass(slots=True)
@@ -778,15 +779,17 @@ class GitChangeCaptureAdapter:
     def _nested_head(self, pinned: _Workspace, relative: bytes, deadline: float) -> str | None:
         """HEAD of the nested repository at ``relative`` under the root, or ``None``.
 
-        The repository passes every fence its check-time read applies (``_nested_read``) before
-        Git resolves anything in it, so a store borrowed through ``commondir`` or alternates
-        never supplies the starting commit. ``None`` records nothing: the capture then starts
-        from its HEAD and says it may miss commits, or refuses it as it was refused here.
+        After the open fence, the repository passes the object-store and effective-config fences
+        its check-time read applies (``_nested_read``) before its HEAD is resolved, so a store
+        borrowed through ``commondir`` or alternates never supplies the starting commit. ``None``
+        records nothing: the capture then starts from its HEAD and says it may miss commits, or
+        refuses it as it was refused here.
         """
 
         try:
             nested = self._open_nested(pinned, relative, deadline)
-            # Metadata only, so a borrowed store is refused before Git reads its config.
+            # Metadata only: a borrowed store is refused before the effective-config listing
+            # follows its includes and before HEAD is resolved.
             self._refuse_unsafe_object_store(nested)
             self._refuse_unsafe_config(nested, deadline)
             return self._rev(nested, "HEAD^{commit}", deadline)
@@ -1351,9 +1354,9 @@ class GitChangeCaptureAdapter:
 
         candidates: dict[bytes, str | None] = {}
         for path, commit in tracked.gitlinks:
-            # A gitlink the base tree does not hold (added during the task) has Git's null id as
-            # its source: no recorded commit, so the task-start snapshot's HEAD applies.
-            candidates.setdefault(path, commit if commit.strip("0") else None)
+            # A gitlink the base tree does not hold (added during the task, or replacing a file)
+            # has no recorded commit, so the task-start snapshot's HEAD applies.
+            candidates.setdefault(path, commit if commit and commit.strip("0") else None)
         for section in untracked.sections:
             if section.path.endswith(b"/") and section.text is None:
                 candidates.setdefault(section.path[:-1], None)
@@ -1428,7 +1431,12 @@ class GitChangeCaptureAdapter:
                 if _expired(assembly):
                     break
                 continue
+            # A repository nested inside this one is never read (issue #1045): its changed
+            # gitlink keeps its commit-id lines and counts as not shown, as at the outer level.
+            inner_gitlinks = {gitlink for gitlink, _ in tracked.gitlinks}
             for section in tracked.sections:
+                if section.path in inner_gitlinks and section.omitted is None:
+                    section.omitted = "nested_repository"
                 section.path = prefix + section.path
             return _NestedRead(
                 path,
@@ -1956,8 +1964,10 @@ class GitChangeCaptureAdapter:
             raw,
             sections,
             identities,
+            # Only a gitlink the base tree already held names a starting commit: one added during
+            # the task (Git's null id) or replacing a file or link (a blob id) records none.
             gitlinks=tuple(
-                (entry.path, entry.src_oid)
+                (entry.path, entry.src_oid if entry.src_mode == "160000" else None)
                 for entry in entries
                 if entry.dst_mode == "160000" and entry.status != "D"
             ),
