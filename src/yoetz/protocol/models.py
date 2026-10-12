@@ -4068,12 +4068,17 @@ class CheckInspectionAlignmentObligationModel(_ClosedModel):
 
 
 class CheckInspectionAlignmentModel(_ClosedModel):
-    """Where each obligation's resolution evidence came from, beside what it declared."""
+    """Where each obligation's resolution evidence came from, beside what it declared.
+
+    ``obligations`` lists flagged rows first; both counts cover every row, listed or not.
+    """
 
     basis: Literal["recorded_links"]
     obligations: Annotated[
         tuple[CheckInspectionAlignmentObligationModel, ...], Field(max_length=64)
     ]
+    obligation_count: CanonicalUInt64Wire
+    off_declared_count: CanonicalUInt64Wire
 
 
 class CheckInspectionModel(_ClosedModel):
@@ -6964,7 +6969,9 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
             "write_scope",
         ),
     )
-    + ("/evidence_alignment/basis",)
+    + _prefix_leaf_patterns(
+        "/evidence_alignment", ("basis", "obligation_count", "off_declared_count")
+    )
     + _prefix_leaf_patterns(
         "/evidence_alignment/obligations/*",
         (
@@ -7913,9 +7920,9 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1609
+        len(result) != 1611
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
-        # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +36 (inspection),
+        # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result

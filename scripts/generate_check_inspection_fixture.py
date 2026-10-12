@@ -107,6 +107,8 @@ def inspection_body() -> dict[str, JsonValue]:
                     ],
                 }
             ],
+            "obligation_count": "1",
+            "off_declared_count": "1",
         },
     }
 
@@ -131,6 +133,8 @@ def _with(path: tuple[str | int, ...], value: JsonValue) -> dict[str, JsonValue]
 
 
 def _vectors() -> tuple[dict[str, JsonValue], ...]:
+    uncounted = inspection_body()
+    del cast(dict[str, JsonValue], uncounted["evidence_alignment"])["obligation_count"]
     # (vector_id, surface, payload, schema_admitted, admitted)
     cases: tuple[tuple[str, str, dict[str, JsonValue], bool, bool], ...] = (
         ("request_inspect", "check_request", {"mode": "inspect"}, True, True),
@@ -184,6 +188,14 @@ def _vectors() -> tuple[dict[str, JsonValue], ...]:
             "result_inspection_unknown_alignment",
             "check_result",
             _with(("evidence_alignment", "obligations", 0, "alignment"), "matches"),
+            False,
+            False,
+        ),
+        # A bounded alignment list without its count could read as complete (review of #1048).
+        (
+            "result_inspection_alignment_uncounted",
+            "check_result",
+            uncounted,
             False,
             False,
         ),

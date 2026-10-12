@@ -95,7 +95,10 @@ command commitments); no command text, path or prose leaves the service. Three s
   its configuration). **Coverage bound:** Yoetz records no command text, working directory,
   environment or service configuration, so this compares only those recorded links; a test run is
   not linked to a file it exercised unless the action that ran it names the file. It is
-  deterministic and conservative: no link is ever inferred from text or timing.
+  deterministic and conservative: no link is ever inferred from text or timing. A revised plan can
+  carry more obligations than the 64-row list, so flagged rows are listed first and the section
+  counts every row (`obligation_count`) and every flag (`off_declared_count`) before the bound: a
+  dropped row is counted and never hides a flag.
 
 The CLI (`yoetz check` with the JSON request) and the MCP `check` text channel print the same
 lines from the structural branch. The terminal interface does not offer `inspect`: it already

@@ -3961,9 +3961,11 @@ def _add_check_inspection(document: dict[str, JsonValue]) -> None:
         "additionalProperties": False,
         "properties": {
             "basis": {"const": "recorded_links"},
+            "obligation_count": ref("canonical_uint"),
             "obligations": array(ref("inspection_alignment_obligation"), 64),
+            "off_declared_count": ref("canonical_uint"),
         },
-        "required": ["basis", "obligations"],
+        "required": ["basis", "obligation_count", "obligations", "off_declared_count"],
         "type": "object",
     }
     definitions["inspection"] = {

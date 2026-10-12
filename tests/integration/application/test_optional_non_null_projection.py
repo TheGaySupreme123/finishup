@@ -2135,7 +2135,12 @@ def test_inspection_omits_every_unset_optional_field() -> None:
         "subject_frontier": {"sequence": "0", "head_digest": "genesis"},
         "remaining": rows[0][1],
         "observed_since_check": rows[2][1],
-        "evidence_alignment": {"basis": "recorded_links", "obligations": ()},
+        "evidence_alignment": {
+            "basis": "recorded_links",
+            "obligations": (),
+            "obligation_count": "0",
+            "off_declared_count": "0",
+        },
         "privacy_projection": _privacy_projection_payload(),
     }
     model = CheckInspectionModel.model_validate(body)

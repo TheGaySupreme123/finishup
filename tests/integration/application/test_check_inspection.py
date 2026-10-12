@@ -710,3 +710,113 @@ async def test_an_observed_run_is_compared_with_the_requested_command_by_keyed_i
             "named_item_indexes": named,
         }
     ]
+
+
+async def test_alignment_beyond_the_bound_is_counted_and_never_drops_a_flag() -> None:
+    """A revised plan can carry more than 64 obligations; every one citing evidence is counted.
+
+    Sixty-four obligations declare nothing and cite evidence; the sixty-fifth, carried in by a
+    plan revision and last by id, declares a deliverable its evidence never names. It is the only
+    flagged row, so it must be listed and counted, never the row the bound drops.
+    """
+
+    app, _policy = await build_projection_application(seed=9000)
+    started = await app.start(start_request(9000, title="Expanded plan"))
+    draft = _Drafts(9100)
+    plain = [protocol_id("obl_", 9300 + index) for index in range(64)]
+    carried = protocol_id("obl_", 9400)
+    action = protocol_id("act_", 9401)
+    result = protocol_id("res_", 9402)
+
+    def obligation(obligation_id: str, status: str, declared: bool) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "obligation_id": obligation_id,
+            "description": "One measured part of the work",
+            "evidence_expectation": "A recorded run",
+            "status": status,
+        }
+        if declared:
+            payload["requested_items"] = [
+                {"item_kind": "file", "value": "deploy/supervisord.conf", "role": "output"}
+            ]
+        if status == "resolved":
+            payload["resolution_evidence_refs"] = [result]
+        return payload
+
+    frontier = await _publish(
+        app,
+        started,
+        started.frontier,
+        [
+            draft(
+                "plan_published",
+                {"plan_version": 1, "summary": "Measure", "obligation_refs": plain},
+            ),
+            *(
+                draft("obligation_published", obligation(item, "open", False), "1.1.0")
+                for item in plain
+            ),
+        ],
+        9500,
+    )
+    frontier = await _publish(
+        app,
+        started,
+        frontier,
+        [
+            draft(
+                "plan_revised",
+                {
+                    "plan_version": 2,
+                    "supersedes_plan_version": 1,
+                    "reason": "The scope expanded.",
+                    "summary": "One more obligation applies.",
+                    "obligation_changes": [{"obligation_id": carried, "change": "carried"}],
+                },
+            ),
+            draft("obligation_published", obligation(carried, "open", True), "1.1.0"),
+            draft(
+                "action_recorded",
+                {
+                    "action_id": action,
+                    "action_kind": "command",
+                    "command": "python bench/latency.py --direct",
+                    "description": "Latency harness run",
+                },
+            ),
+            draft(
+                "result_recorded",
+                {"result_id": result, "action_id": action, "outcome": "success"},
+            ),
+        ],
+        9510,
+    )
+    frontier = await _publish(
+        app,
+        started,
+        frontier,
+        [
+            draft("obligation_published", obligation(item, "resolved", item == carried), "1.1.0")
+            for item in (*plain, carried)
+        ],
+        9520,
+    )
+    _internal, projected = await _inspect(app, started, frontier, 9600)
+    result_model = CheckResult.model_validate(projected)
+    assert type(result_model.root) is CheckInspectionModel
+
+    alignment = projected["evidence_alignment"]
+    rows = alignment["obligations"]
+    assert len(rows) == 64
+    flagged = [row for row in rows if row["alignment"] == "evidence_off_declared_items"]
+    assert [row["obligation_id"] for row in flagged] == [carried]
+    assert rows[0]["obligation_id"] == carried
+    assert alignment["obligation_count"] == "65"
+    assert alignment["off_declared_count"] == "1"
+
+    wire = public_model_to_wire(result_model)
+    cli = render_human_inspection(result_model.root)
+    mcp = render_safe_compact_summary(wire)
+    for text in (cli, mcp):
+        assert "65 obligation(s) cite resolution evidence, 64 listed" in text
+        assert "1 cite evidence with no recorded link" in text
