@@ -1670,3 +1670,51 @@ claiming completion was never judged for completeness. Decisions:
   response.
 - Out of scope, recorded for later: reviewer visibility (diff and test-output truncation, vendored
   trees) and reviewer-run commands.
+
+### In-check follow-up rounds (2026-10-12, issue #1047)
+
+**Decision (owner, 2026-10-12; privacy/egress gate acknowledged by the owner's request).** When a
+review concludes `insufficient_packet` and names content Yoetz itself holds, Yoetz answers the
+request inside the same `check` and asks again, at most `MAX_REVIEW_FOLLOW_UP_ROUNDS` (3) times.
+A request used to cost a full agent cycle (36 such rounds in tb4n4), often for recorded output the
+packet only lacked room for.
+
+- **What Yoetz answers.** Only `current_diff_for_path`, `verification_output` and
+  `command_identity` items (`FOLLOW_UP_KINDS`) the check fence kept and classified
+  `agent_suppliable` or `yoetz_limit_packet_room`, naming targets Yoetz holds rows for. Each target
+  resolves to the rows whose excerpts carry it: the target, the rows an `evt_` target recorded, and
+  for a run (an action or its result) the run's results, its action and the evidence they cite;
+  redacted rows never count (`plan_review_follow_up`). `task_statement`, `plan_or_claim_text`,
+  `prior_finding_context` and `other` are never answered by Yoetz; a structurally unavailable,
+  privacy-withheld, redacted or unsupported-type item is never re-sent.
+- **What the packet becomes.** The same case is rebuilt with those excerpts ranked first, item by
+  item in request order, while their bytes fit half of the approved `max_total_excerpt_bytes`
+  (`follow_up_byte_budget`), the per-check share every round of the check draws from; requests
+  accumulate across rounds so earlier additions keep their place. Every packet still fits the
+  approved per-packet count and bytes, the channel ceiling, and the same privacy admission,
+  minimization, redaction and withholding path; nothing here widens what the owner approved. The
+  initial packet is built exactly as before. Item 2 of the issue (a fixed menu of computations, or
+  an approved check run in a sandbox) is deferred.
+- **When a round runs.** Only while the reviewer still concludes `insufficient_packet`, names such
+  an item, and the rebuilt packet carries a requested excerpt no earlier packet of the check
+  carried. Otherwise nothing is dispatched and the check records the last review exactly as before:
+  the request goes back to the agent with its availability classes.
+- **Durability, replay and egress.** Each round is one more dispatch through the privacy
+  coordinator, so it has its own egress authorization and audit record. It runs as its own durable
+  job keyed by its case digest (`semantic_jobs` already admits one job per distinct case of an
+  operation; `load_semantic_job` takes the digest). Its case object names the check's own review
+  job (`follow_up.base_case_digest`) and freezes the base job's endpoint, retries and budget
+  profile with a deadline of its own; at most one job of an operation is live at a time. Every
+  input is the frozen case, the base job's check-time change and the durable responses, so replay
+  rebuilds each round's case byte for byte and recovers it without another provider call.
+- **Failure.** A round that fails, times out or is blocked ends the check exactly as a first
+  review in that state does today (its composed manifest is recorded); one that awaits a disclosure
+  decision suspends the check the same way, and replaying the request resumes that round.
+- **Record and surfaces.** The check records the last round's review. Its `review_input_manifest`
+  carries the optional `follow_up_round` (1–3) and, in a follow-up packet, `missing_inputs` lists
+  the reviewer's in-check request: `supplied` with the excerpt sources Yoetz added (only excerpts
+  that crossed the provider boundary count), else `pending`. The field is added in place to the
+  unreleased check-recorded 1.3.0/1.4.0, check-result 1.3.0/1.4.0, status-result 1.4.0 and
+  outbound-case 1.2.0 schemas. The shared manifest renderer shows the round and the added items in
+  the CLI, the MCP check text, and the receipt's coverage note in JSON, markdown and text. The
+  reviewer is told, in one instruction sentence, how to read a follow-up packet's manifest.

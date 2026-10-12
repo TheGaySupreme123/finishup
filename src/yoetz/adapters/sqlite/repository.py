@@ -2506,10 +2506,10 @@ class SqliteLedger:
         return result
 
     async def load_semantic_job(
-        self, writer_id: str, operation_id: str
+        self, writer_id: str, operation_id: str, case_digest: str | None = None
     ) -> SemanticJobRecord | None:
         await self._ensure_recovered()
-        return await self._oracle().load_semantic_job(writer_id, operation_id)
+        return await self._oracle().load_semantic_job(writer_id, operation_id, case_digest)
 
     async def list_semantic_attempts(self, job_id: str) -> tuple[SemanticAttemptRecord, ...]:
         await self._ensure_recovered()
@@ -2624,7 +2624,10 @@ class SqliteLedger:
                 "FROM semantic_jobs AS jobs JOIN semantic_progress AS progress "
                 "ON progress.job_id=jobs.job_id "
                 "WHERE jobs.writer_id=? AND jobs.operation_id=? "
-                "ORDER BY jobs.attempt_count DESC, jobs.job_id DESC LIMIT 1",
+                # The live job first: an in-check follow-up round (issue #1047) runs after the
+                # check's own review job is terminal.
+                "ORDER BY jobs.state IN ('queued','leased') DESC, "
+                "jobs.attempt_count DESC, jobs.job_id DESC LIMIT 1",
                 (writer_id, operation_id),
             ).fetchone()
         if row is None:

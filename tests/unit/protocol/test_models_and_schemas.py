@@ -312,7 +312,8 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "check",
         None,
-    ): 435,  # tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +36 inspection
+    ): 436,  # tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +36 inspection;
+    # #1047 +1 follow_up_round
     ("publish_work", None): 61,
     ("receipt", None): 301,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
     ("respond", None): 56,  # +2 tb4n3 W2-B: closure_after
@@ -328,7 +329,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("status", "compact"): 61,  # #1027: latest_check +4
     ("status", "evidence"): 19,
     ("status", "findings"): 129,  # W2-A +3: closure_class/basis/next_actions
-    ("status", "history"): 63,
+    ("status", "history"): 64,  # #1047 +1: review_input_manifest/follow_up_round
     ("status", "lineage"): 17,
     ("status", "obligations"): 42,  # #1027: in_current_plan +1; W2-A +2 closure_class/basis
     ("status", "operation"): 48,
@@ -1332,7 +1333,7 @@ def test_protocol_models_public_exports_are_closed() -> None:
         MAX_PROJECTION_POINTER_BYTES MAX_REASON_BYTES MAX_SEMANTIC_ITEM_BYTES
         MAX_SEMANTIC_CASE_BYTES MAX_REVIEW_TEXT_BYTES MAX_REVIEW_TIMELINE_ITEMS
         MAX_REVIEW_ASSESSMENTS MAX_REVIEW_CHANGE_OBSERVATIONS MAX_REVIEW_EXCERPTS
-        MAX_REVIEW_OMISSIONS MAX_REVIEW_OMISSION_TOTAL MAX_REVIEW_CHALLENGES
+        MAX_REVIEW_FOLLOW_UP_ROUNDS MAX_REVIEW_OMISSIONS MAX_REVIEW_OMISSION_TOTAL MAX_REVIEW_CHALLENGES
         MAX_TASK_STATEMENT_BYTES PROTOCOL_VERSION
         ActorAssertionModel
         ActorType CheckRequest CheckRequestModel CheckResult CheckResultModel CheckScopeModel
@@ -2543,9 +2544,9 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1580
+        len(derived_patterns) == 1582
     )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
-    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +36 inspection
+    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +36 inspection, #1047 +2
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2555,9 +2556,9 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     assert type(rules) is tuple
     assert (
-        len(rules) == 1607
+        len(rules) == 1609
     )  # #1027 +5, LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage, W2-B +2,
-    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +36 inspection
+    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +36 inspection, #1047 +2
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {
@@ -2566,8 +2567,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1580  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
-    # #1048 +36
+    assert len(registry_patterns) == 1582  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+    # #1048 +36, #1047 +2
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)

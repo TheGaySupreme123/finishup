@@ -2304,8 +2304,15 @@ class LedgerPort(Protocol):
     ) -> SelectedAttempt: ...
 
     async def load_semantic_job(
-        self, writer_id: str, operation_id: str
-    ) -> SemanticJobRecord | None: ...
+        self, writer_id: str, operation_id: str, case_digest: str | None = None
+    ) -> SemanticJobRecord | None:
+        """The operation's review job, or with ``case_digest`` exactly the job of that case.
+
+        A check owns one job per distinct case it sent: its own review and each in-check
+        follow-up round (issue #1047). Without ``case_digest`` the result is one of them.
+        """
+
+        ...
 
     async def list_semantic_attempts(self, job_id: str) -> tuple[SemanticAttemptRecord, ...]: ...
 

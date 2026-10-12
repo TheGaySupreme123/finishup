@@ -24,6 +24,7 @@ from yoetz.application.check import (
     run_deterministic_policies,
 )
 from yoetz.application.missing_for_assessment import (
+    ReviewFollowUp,
     check_change_binary_paths,
     check_change_text_paths,
     command_run_key,
@@ -222,6 +223,7 @@ __all__ = [
     "assemble_filtered_review_packet",
     "build_semantic_case",
     "carries_task_inputs",
+    "follow_up_byte_budget",
     "recorded_blockers",
     "acknowledged_obligation_rows",
     "BLOCKER_REVIEW_INSTRUCTION",
@@ -2889,6 +2891,7 @@ def _select_targeted_excerpts(
     binary_paths: frozenset[str] = frozenset(),
     text_paths: frozenset[str] = frozenset(),
     workspace_root: str | None = None,
+    follow_up: ReviewFollowUp | None = None,
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -2906,6 +2909,11 @@ def _select_targeted_excerpts(
 
     ``declared_output_refs`` (``declared_output_capture_refs``) rank with the current diff: they
     are the current state of a deliverable the check-time change cannot hold (tb4n2 R7).
+
+    ``follow_up`` (issue #1047) is the reviewer's own in-check request: the excerpts of its
+    requested rows rank ahead of every other recorded excerpt, item by item in request order and
+    newest first within an item, while their bytes fit ``follow_up_byte_budget``; the rest keep
+    their ordinary rank. Without it nothing changes.
     """
 
     repair_refs = repair_evidence_refs(projection, allowed)
@@ -3164,8 +3172,38 @@ def _select_targeted_excerpts(
         )[:MAX_BINARY_NOTICES]
     )
 
+    # Issue #1047: what the reviewer asked for in this check, in request order, within its share.
+    requested: dict[int, int] = {}
+    if follow_up is not None:
+        room = follow_up_byte_budget(selection)
+        for follow_up_item in follow_up.items:
+            for index in sorted(
+                (
+                    index
+                    for index, candidate in enumerate(candidates)
+                    if index not in requested
+                    and candidate.identity_refs & follow_up_item.source_refs
+                ),
+                key=recency,
+                reverse=True,
+            ):
+                size = sum(len(part.encode("utf-8")) for part in candidates[index].parts)
+                if size <= room:
+                    requested[index] = len(requested)
+                    room -= size
+
     def rank(index: int) -> tuple[int, int, int, int, bytes, bytes]:
         candidate = candidates[index]
+        if index in requested:
+            # Ahead of every other recorded excerpt, in the request's own order.
+            return (
+                _RANK_CURRENT_DIFF,
+                -1,
+                requested[index],
+                0,
+                candidate.source_ref.encode("ascii"),
+                candidate.item_base.encode("ascii"),
+            )
         linked = bool(candidate.identity_refs & linked_subjects)
         declared = [
             declared_position[ref] for ref in candidate.identity_refs if ref in declared_position
@@ -3836,6 +3874,7 @@ def build_semantic_case(
     check_time_change_unavailable: bool = False,
     check_time_change_unavailable_reason: str | None = None,
     final_review: bool = False,
+    follow_up: ReviewFollowUp | None = None,
 ) -> SemanticCase:
     """Build one pre-egress AI-powered review case from frozen authority only.
 
@@ -3859,6 +3898,11 @@ def build_semantic_case(
     ``content_unselected``. The gateway still enforces the owner's ceiling on every dispatch.
     ``workspace_root`` anchors absolute paths when the prior missing-item request's answers are
     matched (issue #907); it is compared in process and never enters the case.
+
+    ``follow_up`` (issue #1047) builds an in-check follow-up packet: the same case with the
+    excerpts the reviewer asked for ranked first within ``follow_up_byte_budget``, and an input
+    manifest whose ``follow_up_round`` and ``missing_inputs`` say what Yoetz added. Without it the
+    case is built exactly as before.
     """
 
     if prepared_byte_ceiling is not None and (
@@ -3891,6 +3935,7 @@ def build_semantic_case(
             check_time_change_unavailable=check_time_change_unavailable,
             check_time_change_unavailable_reason=check_time_change_unavailable_reason,
             final_review=final_review,
+            follow_up=follow_up,
         )
 
     def fits(candidate: SemanticCase) -> bool | None:
@@ -3950,9 +3995,12 @@ def _build_semantic_case_once(
     check_time_change_unavailable: bool = False,
     check_time_change_unavailable_reason: str | None = None,
     final_review: bool = False,
+    follow_up: ReviewFollowUp | None = None,
 ) -> SemanticCase:
     if type(frozen_case) is not DeterministicCase:
         raise TypeError("deterministic_case_invalid")
+    if follow_up is not None and type(follow_up) is not ReviewFollowUp:
+        raise TypeError("semantic_case_follow_up_invalid")
     review_phase = select_semantic_budget_profile(frozen_case.projection, final_review=final_review)
     if type(review_context_profile) is not ReviewContextProfile:
         raise TypeError("review_context_profile_invalid")
@@ -4910,6 +4958,7 @@ def _build_semantic_case_once(
                 None if check_time_change is None else check_time_change.capture
             ),
             workspace_root=workspace_root,
+            follow_up=follow_up,
         )
         items.extend(excerpts.items)
         targeted.extend(excerpts.targeted)
@@ -5287,6 +5336,7 @@ def _build_semantic_case_once(
         check_time_change_selected=check_change_selected,
         check_time_change_unavailable=check_time_change_unavailable,
         review_phase=review_phase,
+        follow_up=follow_up,
         truncated_item_ids=tuple(
             sorted(
                 (set(over_limit) | truncated_item_ids) & {item.item_id for item in items},
@@ -5648,6 +5698,11 @@ def review_input_manifest_to_json(manifest: ReviewInputManifest) -> dict[str, Js
     return {
         "caller_evidence": _review_input_section_to_json(manifest.caller_evidence),
         "current_diff": _review_input_section_to_json(manifest.current_diff),
+        **(
+            {}
+            if manifest.follow_up_round is None
+            else {"follow_up_round": manifest.follow_up_round}
+        ),
         "latest_verification": _review_input_section_to_json(manifest.latest_verification),
         "missing_inputs": [
             {
@@ -5772,6 +5827,7 @@ def review_input_manifest(
     check_time_change_unavailable: bool = False,
     truncated_item_ids: Sequence[str] = (),
     review_phase: SemanticBudgetProfile | None = None,
+    follow_up: ReviewFollowUp | None = None,
 ) -> ReviewInputManifest:
     """Build the bounded per-check input manifest from frozen case material.
 
@@ -5780,6 +5836,10 @@ def review_input_manifest(
     workspace. The statement's digest/length/revision are included even though its prose remains
     in the separately authorized task-statement item. ``omitted_item_total`` is every distinct
     omission before the listed rows were capped (never fewer than the rows listed).
+
+    A follow-up packet (issue #1047) names its ``follow_up_round``, and its ``missing_inputs``
+    list the reviewer's in-check request instead of an earlier check's: ``supplied`` with the
+    excerpt sources Yoetz added for the item beyond the check's first packet, else ``pending``.
     """
 
     typed_statement = recorded_statement
@@ -6021,7 +6081,22 @@ def review_input_manifest(
     )
 
     missing_rows: list[ReviewInputMissing] = []
-    if pending_missing is not None and hasattr(pending_missing, "items"):
+    if follow_up is not None:
+        carried = [item.source_ref for item in excerpt_items]
+        for follow_up_item in follow_up.items[:8]:
+            added = sorted(
+                (frozenset(carried) & follow_up_item.source_refs) - follow_up.shown_refs,
+                key=str.encode,
+            )[:4]
+            missing_rows.append(
+                ReviewInputMissing(
+                    kind=cast(MissingForAssessmentKind, follow_up_item.kind),
+                    target_refs=follow_up_item.target_refs,
+                    supplied_refs=tuple(added),
+                    status="supplied" if added else "pending",
+                )
+            )
+    elif pending_missing is not None and hasattr(pending_missing, "items"):
         pending_items = tuple(getattr(pending_missing, "items"))
         for index, item in enumerate(pending_items[:8]):
             supplied = tuple(supplied_missing[index]) if index < len(supplied_missing) else ()
@@ -6066,7 +6141,20 @@ def review_input_manifest(
         omitted_item_count=omitted_item_count,
         omitted_item_total=omitted_total,
         review_phase=review_phase,
+        follow_up_round=None if follow_up is None else follow_up.round,
     )
+
+
+def follow_up_byte_budget(selection: ReviewSelectionPolicy) -> int:
+    """The excerpt bytes an in-check follow-up may rank first (issue #1047).
+
+    Half the approved total excerpt bytes of one packet, over all of a check's follow-up rounds:
+    the reviewer's own request is answered first, and the rest of the packet keeps at least half
+    of its room for the selection it had. Items rank first in request order, so what an earlier
+    round added keeps its place; nothing here widens what the owner approved per packet.
+    """
+
+    return selection.max_total_excerpt_bytes // 2
 
 
 def _item_catalog_json(items: Sequence[SemanticCaseItem]) -> list[dict[str, JsonValue]]:
@@ -6500,6 +6588,9 @@ def _provider_bound_input_manifest(
     }
     if composed.get("review_phase") in {"routine", "final"}:
         projected["review_phase"] = composed["review_phase"]
+    if type(composed.get("follow_up_round")) is int:
+        # Issue #1047: the round is the packet's own fact; its rows are fenced below like any.
+        projected["follow_up_round"] = composed["follow_up_round"]
     section_names = (
         "specification",
         "current_diff",
@@ -6701,6 +6792,14 @@ def _provider_bound_input_manifest(
         for ref in cast(list[object], row["linked_subject_refs"])
         if type(ref) is str
     )
+    if "follow_up_round" in projected:
+        # Issue #1047: what Yoetz added is excerpt content; a ref the sent rows only link to was
+        # not added, so only the sources of carried excerpt rows count.
+        admitted_refs = {
+            cast(str, row["source_ref"])
+            for row in content_rows
+            if row.get("section") == "excerpt" and type(row.get("source_ref")) is str
+        }
     missing_rows: list[JsonValue] = []
     raw_missing = composed.get("missing_inputs")
     if type(raw_missing) is list:
@@ -6779,7 +6878,8 @@ def _decode_review_input_manifest(
     body = cast(Mapping[str, object], raw)
     if (
         any(type(key) is not str for key in body)
-        or frozenset(body) - {"review_phase", "omitted_item_total"} != _REVIEW_INPUT_MANIFEST_KEYS
+        or frozenset(body) - {"review_phase", "omitted_item_total", "follow_up_round"}
+        != _REVIEW_INPUT_MANIFEST_KEYS
         or body.get("review_phase", "routine") not in {"routine", "final"}
     ):
         return None
@@ -6905,6 +7005,7 @@ def _decode_review_input_manifest(
             omitted_item_count=omitted_item_count,
             omitted_item_total=omitted_item_total,
             review_phase=cast(Literal["routine", "final"] | None, body.get("review_phase")),
+            follow_up_round=cast(int | None, body.get("follow_up_round")),
         )
     except KeyError, TypeError, ValueError:
         return None

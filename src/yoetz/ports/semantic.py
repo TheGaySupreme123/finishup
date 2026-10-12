@@ -52,6 +52,7 @@ from yoetz.protocol.models import (
     MAX_REVIEW_CHALLENGES,
     MAX_REVIEW_CHANGE_OBSERVATIONS,
     MAX_REVIEW_EXCERPTS,
+    MAX_REVIEW_FOLLOW_UP_ROUNDS,
     MAX_REVIEW_OMISSION_TOTAL,
     MAX_REVIEW_OMISSIONS,
     MAX_REVIEW_TEXT_BYTES,
@@ -1138,11 +1139,20 @@ class ReviewInputManifest:
     # Every distinct omission before that cap (issue #976, tb4n1 D11); ``None`` on older
     # manifests, which reported only the capped count.
     omitted_item_total: int | None = None
+    # Issue #1047: the in-check follow-up round this packet is (1 to
+    # ``MAX_REVIEW_FOLLOW_UP_ROUNDS``); ``None`` for the check's own first packet. A follow-up
+    # manifest's ``missing_inputs`` lists the reviewer's request Yoetz answered from its records.
+    follow_up_round: int | None = None
 
     def __post_init__(self) -> None:
         if self.schema != "yoetz.review-input-manifest/1":
             raise _invalid_case()
         if self.review_phase not in {None, "routine", "final"}:
+            raise _invalid_case()
+        if self.follow_up_round is not None and (
+            type(self.follow_up_round) is not int
+            or not 1 <= self.follow_up_round <= MAX_REVIEW_FOLLOW_UP_ROUNDS
+        ):
             raise _invalid_case()
         if self.phase not in {"composed", "provider_bound"}:
             raise _invalid_case()

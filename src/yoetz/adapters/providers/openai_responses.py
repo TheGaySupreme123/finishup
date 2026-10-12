@@ -474,6 +474,13 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = (
         "supplied_since the material of that kind the agent recorded since for its target_refs "
         "(any such material when it names none); list it again only if "
         "you cite one of those refs and say why it is still insufficient."
+        # Issue #1047: an in-check follow-up says what Yoetz added for the reviewer's request.
+        " When review_packet.provider_input_manifest has follow_up_round, this packet answers "
+        "the missing_for_assessment you returned earlier in this same check: each of its "
+        "missing_inputs rows is one item you asked for, and supplied_refs name the recorded "
+        "excerpts Yoetz added to this packet for it (status pending: it could add none). Judge "
+        "with them; list such an item again only if you cite those refs and say why they are "
+        "still insufficient."
     )
     + (
         # Issue #908: how to read the task-statement and agent-plan sections, kept as its own

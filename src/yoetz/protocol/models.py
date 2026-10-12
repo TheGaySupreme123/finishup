@@ -82,6 +82,7 @@ __all__ = [
     "MAX_REVIEW_CHALLENGES",
     "MAX_REVIEW_CHANGE_OBSERVATIONS",
     "MAX_REVIEW_EXCERPTS",
+    "MAX_REVIEW_FOLLOW_UP_ROUNDS",
     "MAX_REVIEW_OMISSIONS",
     "MAX_REVIEW_OMISSION_TOTAL",
     "MAX_REVIEW_TEXT_BYTES",
@@ -246,6 +247,9 @@ MAX_PROVIDER_REVIEW_TEXT_CHARS: Final = MAX_REVIEW_TEXT_BYTES // 4
 # the packet; the short reason stays in the durable semantic response, never in structural records.
 MAX_MISSING_FOR_ASSESSMENT: Final = 8
 MAX_MISSING_TARGET_REFS: Final = 4
+# Issue #1047: inside one check Yoetz may answer the reviewer's own request from its records and
+# ask again at most this many times (the review input manifest's ``follow_up_round``).
+MAX_REVIEW_FOLLOW_UP_ROUNDS: Final = 3
 MAX_MISSING_REASON_BYTES: Final = 1_024
 MAX_PROVIDER_MISSING_REASON_CHARS: Final = MAX_MISSING_REASON_BYTES // 4
 MISSING_FOR_ASSESSMENT_KINDS: Final = frozenset(
@@ -3474,7 +3478,7 @@ class ReviewInputMissingModel(_ClosedModel):
 
 
 class ReviewInputManifestModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"review_phase", "omitted_item_total"})
+    optional_non_null_fields = frozenset({"review_phase", "omitted_item_total", "follow_up_round"})
 
     schema_: Literal["yoetz.review-input-manifest/1"] = Field(alias="schema")
     specification: ReviewInputSectionModel
@@ -3492,6 +3496,9 @@ class ReviewInputManifestModel(_ClosedModel):
     omitted_item_total: int | None = Field(default=None, ge=0, le=MAX_REVIEW_OMISSION_TOTAL)
     # Issue #976: the review phase the packet's question set named (closing review = final).
     review_phase: Literal["routine", "final"] | None = None
+    # Issue #1047, optional in place: this packet is the Nth in-check follow-up, sent after Yoetz
+    # added recorded excerpts the reviewer asked for; ``missing_inputs`` then lists that request.
+    follow_up_round: int | None = Field(default=None, ge=1, le=MAX_REVIEW_FOLLOW_UP_ROUNDS)
 
 
 class CheckAwaitingHumanModel(_ClosedModel):
@@ -6455,6 +6462,7 @@ _REVIEW_INPUT_MANIFEST_LEAVES: Final = (
     "current_diff/revision",
     "current_diff/source_refs/*",
     "current_diff/status",
+    "follow_up_round",
     "latest_verification/content_bytes",
     "latest_verification/content_digest",
     "latest_verification/item_ids/*",
@@ -7900,9 +7908,10 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1607
+        len(result) != 1609
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
-        # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +36 (inspection)
+        # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +36 (inspection),
+        # #1047 +2 (follow_up_round)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

@@ -57,16 +57,25 @@ from yoetz.kernel.projections import PendingMissingForAssessment, ProjectionStat
 from yoetz.kernel.task_facts import effective_obligations
 from yoetz.ports.change_capture import CheckChangeCapture
 from yoetz.ports.semantic import SemanticJudgment
-from yoetz.protocol.models import MISSING_FOR_ASSESSMENT_KINDS, DataCategory
+from yoetz.protocol.models import (
+    MAX_MISSING_FOR_ASSESSMENT,
+    MAX_REVIEW_FOLLOW_UP_ROUNDS,
+    MISSING_FOR_ASSESSMENT_KINDS,
+    DataCategory,
+)
 
 __all__ = [
+    "FOLLOW_UP_KINDS",
     "YOETZ_LIMIT_PACKET_ROOM",
     "YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE",
     "MissingItemsReview",
+    "ReviewFollowUp",
+    "ReviewFollowUpItem",
     "check_change_binary_paths",
     "check_change_text_paths",
     "command_run_key",
     "observed_image_evidence",
+    "plan_review_follow_up",
     "review_missing_for_assessment",
     "supplied_since",
     "unsupported_data_type",
@@ -304,6 +313,158 @@ class MissingItemsReview:
 
     items: tuple[MissingForAssessmentItem, ...]
     gaps: frozenset[str]
+
+
+# Issue #1047: the kinds whose content Yoetz itself can carry as recorded excerpts (the edit a
+# hook captured, a run's recorded output, its exact command). Every other kind (a task statement,
+# plan or claim text, finding context, ``other``) is never answered by Yoetz inside the check.
+FOLLOW_UP_KINDS: Final = frozenset(
+    {"command_identity", "current_diff_for_path", "verification_output"}
+)
+# Only content Yoetz holds and did not show: a target the agent could supply or one the packet
+# had no room for. A privacy-withheld, redacted or unsupported target is never re-sent.
+_FOLLOW_UP_AVAILABILITIES: Final = frozenset({AGENT_SUPPLIABLE, YOETZ_LIMIT_PACKET_ROOM})
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewFollowUpItem:
+    """One reviewer request Yoetz answers from its records (issue #1047).
+
+    ``source_refs`` are the recorded rows whose excerpts carry the targets' content: each
+    target, the rows an ``evt_`` target recorded, and for a run (an action or its result) the
+    run's results, its action and the evidence those results cite. Redacted rows never count.
+    """
+
+    kind: str
+    target_refs: tuple[str, ...]
+    source_refs: frozenset[str]
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str or self.kind not in FOLLOW_UP_KINDS:
+            raise ValueError("review_follow_up_invalid")
+        if (
+            type(self.target_refs) is not tuple
+            or not self.target_refs
+            or any(type(ref) is not str for ref in self.target_refs)
+        ):
+            raise ValueError("review_follow_up_invalid")
+        if type(self.source_refs) is not frozenset or not self.source_refs:
+            raise ValueError("review_follow_up_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewFollowUp:
+    """One in-check follow-up round: the reviewer asked, Yoetz adds what it holds (#1047).
+
+    ``items`` accumulate in request order across the check's rounds, so what an earlier round
+    added keeps its place in every later packet. ``shown_refs`` are the source refs of the
+    excerpts the check's own first packet carried; anything a follow-up packet carries beyond
+    them for an item is what Yoetz added. ``added_refs`` is what earlier rounds already added: a
+    round that would add nothing new is never sent. In process only; never recorded or logged.
+    """
+
+    round: int
+    items: tuple[ReviewFollowUpItem, ...]
+    shown_refs: frozenset[str]
+    added_refs: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        if type(self.round) is not int or not 1 <= self.round <= MAX_REVIEW_FOLLOW_UP_ROUNDS:
+            raise ValueError("review_follow_up_invalid")
+        if (
+            type(self.items) is not tuple
+            or not 1 <= len(self.items) <= MAX_MISSING_FOR_ASSESSMENT
+            or any(type(item) is not ReviewFollowUpItem for item in self.items)
+        ):
+            raise ValueError("review_follow_up_invalid")
+        if type(self.shown_refs) is not frozenset or type(self.added_refs) is not frozenset:
+            raise ValueError("review_follow_up_invalid")
+
+    @property
+    def source_refs(self) -> frozenset[str]:
+        return frozenset(ref for item in self.items for ref in item.source_refs)
+
+    def added_by(self, carried_excerpt_refs: Iterable[str]) -> frozenset[str]:
+        """The requested source refs a packet carrying these excerpts shows beyond the first."""
+
+        return (frozenset(carried_excerpt_refs) & self.source_refs) - self.shown_refs
+
+
+def plan_review_follow_up(
+    projection: ProjectionState,
+    allowed: frozenset[str],
+    requested: Iterable[MissingForAssessmentItem],
+    *,
+    previous: ReviewFollowUp | None,
+    shown_refs: frozenset[str] | None,
+) -> ReviewFollowUp | None:
+    """The next in-check follow-up round, or ``None`` when Yoetz has nothing it may add (#1047).
+
+    ``requested`` is the latest ``insufficient_packet`` request, already fenced and classified by
+    ``review_missing_for_assessment``. Only a ``FOLLOW_UP_KINDS`` item the agent could supply or
+    the packet had no room for, naming targets Yoetz holds rows for, is answered here; every
+    other item stays the agent's (or Yoetz's disclosed) business exactly as before. A round runs
+    only while the reviewer still names such an item, fewer than ``MAX_REVIEW_FOLLOW_UP_ROUNDS``
+    rounds ran, and some requested source is neither in the first packet nor added already.
+    ``shown_refs`` (the first packet's excerpt sources) is ``None`` when it is unknown: then
+    nothing can be called added, so no round runs.
+    """
+
+    if previous is not None and previous.round >= MAX_REVIEW_FOLLOW_UP_ROUNDS:
+        return None
+    shown = previous.shown_refs if previous is not None else shown_refs
+    if shown is None:
+        return None
+    items = list(() if previous is None else previous.items)
+    known = {(item.kind, item.target_refs) for item in items}
+    asked = False
+    for entry in requested:
+        if (
+            entry.kind not in FOLLOW_UP_KINDS
+            or entry.availability not in _FOLLOW_UP_AVAILABILITIES
+            or not entry.target_refs
+        ):
+            continue
+        sources = _recorded_sources(projection, entry.target_refs, allowed)
+        if not sources:
+            continue
+        asked = True
+        key = (entry.kind, entry.target_refs)
+        if key in known or len(items) >= MAX_MISSING_FOR_ASSESSMENT:
+            continue
+        known.add(key)
+        items.append(ReviewFollowUpItem(entry.kind, entry.target_refs, sources))
+    if not asked or not items:
+        return None
+    added: frozenset[str] = frozenset() if previous is None else previous.added_refs
+    follow_up = ReviewFollowUp(
+        1 if previous is None else previous.round + 1, tuple(items), shown, added
+    )
+    if not follow_up.source_refs - shown - added:
+        return None
+    return follow_up
+
+
+def _recorded_sources(
+    projection: ProjectionState, targets: Iterable[str], allowed: frozenset[str]
+) -> frozenset[str]:
+    """The recorded rows whose excerpts carry what ``targets`` name (see ``ReviewFollowUpItem``)."""
+
+    refs = set(targets)
+    for family in (projection.actions, projection.results, projection.evidence):
+        for key, row in family.items():
+            if str(row.source_event_id) in refs:
+                refs.add(str(key))
+    named = frozenset(refs)
+    for key, row in projection.results.items():
+        payload = row.payload
+        if payload is None or row.redacted:
+            continue
+        if str(key) in named or str(payload.action_id) in named:
+            refs.update(
+                (str(key), str(payload.action_id), *(str(ref) for ref in payload.evidence_refs))
+            )
+    return frozenset(refs & allowed) - _redacted_refs(projection)
 
 
 def unsuppliable_missing_kinds(

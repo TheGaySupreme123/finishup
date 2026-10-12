@@ -384,7 +384,10 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (StatusCompactItemModel, frozenset({"latest_check_test_edits", "latest_check"})),
     (StatusFindingsPageModel, frozenset({"attempt_budget"})),
     (StatusHistoryItemV14Model, frozenset({"review_input_manifest"})),
-    (ReviewInputManifestModel, frozenset({"review_phase", "omitted_item_total"})),
+    (
+        ReviewInputManifestModel,
+        frozenset({"review_phase", "omitted_item_total", "follow_up_round"}),
+    ),
     (
         StatusObligationItemModel,
         frozenset(
@@ -1135,6 +1138,14 @@ async def test_review_input_manifest_omits_unset_review_phase() -> None:
     assert model.omitted_item_total is None
     total = ReviewInputManifestModel.model_validate({**payload, "omitted_item_total": 173})
     assert total.model_dump(mode="json", by_alias=True)["omitted_item_total"] == 173
+    # Issue #1047: only an in-check follow-up packet names its round.
+    assert "follow_up_round" not in dumped
+    assert model.follow_up_round is None
+    follow_up = ReviewInputManifestModel.model_validate({**payload, "follow_up_round": 2})
+    assert follow_up.model_dump(mode="json", by_alias=True)["follow_up_round"] == 2
+    for invalid in (0, 4):
+        with pytest.raises(ValueError):
+            ReviewInputManifestModel.model_validate({**payload, "follow_up_round": invalid})
 
 
 @pytest.mark.parametrize(
@@ -1927,6 +1938,9 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "test_review_input_manifest_omits_unset_review_phase"
     )
     covered["ReviewInputManifestModel", "omitted_item_total"] = (
+        "test_review_input_manifest_omits_unset_review_phase"
+    )
+    covered["ReviewInputManifestModel", "follow_up_round"] = (
         "test_review_input_manifest_omits_unset_review_phase"
     )
     covered["StatusOperationPageModel", "semantic_withheld_items"] = (
