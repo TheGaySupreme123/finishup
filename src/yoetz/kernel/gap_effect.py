@@ -224,6 +224,19 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
         changed=False,
         codes=("semantic_missing_agent_suppliable",),
     ),
+    # tb4n4 (issue #1044): a delivered file that loads a file the change created and nothing
+    # declares fails where the grader receives only the declared files (interleaved-vigenere S).
+    # Before, a standing disclosure the agent could "resolve" by disclosing the dependency; now an
+    # agent action (embed, rebuild at run time, declare) removes it and nothing else does.
+    _Family(
+        rule="G0c",
+        family="agent_actionable",
+        readiness="A",
+        d_route="A",
+        review_route="A",
+        changed=True,
+        codes=("deliverable_references_undeclared_file",),
+    ),
     _Family(
         rule="G0b",
         family="completion_scope",
@@ -286,7 +299,6 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "content_unselected",
             "declared_output_content_moved",
             "declared_output_not_reviewable",
-            "deliverable_references_undeclared_file",
             "install_into_private_env",
             "install_into_yoetz_runtime",
             "obligation_blocked_outside_agent_control",

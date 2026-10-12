@@ -8,7 +8,8 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
   receipt-blocking finding the agent has not repaired, a rejected finding still awaiting the
   reviewer's ruling, and the task facts the agent can repair (a planned verification not
   observed, failing or stale; an edit to the work after the last verification run, ADR-042; a
-  requested output Git would not deliver; a deliverable that was emptied or removed);
+  requested output Git would not deliver; a deliverable that was emptied or removed; a delivered
+  file that loads a file the agent created and never declared, #1044);
 * once per ledger frontier and session: a second Stop at the same frontier passes, so an agent
   that cannot or will not act is never trapped;
 * the four re-checks (tb4n3 RC-8) are not riders on those tokens. Readiness announces them in
@@ -44,9 +45,12 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
   runs are not used to continue the agent, and the text says so only when that changed the
   decision.
 
-The delivered text holds only closed tokens, counts and service-minted ids. The memory is three
-small owner-only files in the observation state directory holding opaque session, frontier and
-obligation ids, closed re-check keys and a per-session turn counter.
+The delivered text holds only closed tokens, counts and service-minted ids, with one exception:
+the files a delivered file loads that nothing declares are named, each quoted and bounded
+(``quoted_path``), because the agent must embed, rebuild or declare exactly that file (#1044). The
+memory is three small owner-only files in the observation state directory holding opaque session,
+frontier and obligation ids, closed re-check keys and a per-session turn counter; no path is ever
+remembered.
 """
 
 from __future__ import annotations
@@ -68,6 +72,7 @@ from yoetz.domain.task_fact_tokens import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
+    DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     EDITED_AFTER_LAST_VERIFICATION_GAP,
     FINDING_REJECTION_AWAITING_RULING_GAP,
     PLANNED_VERIFICATION_FAILED_GAP,
@@ -75,6 +80,7 @@ from yoetz.domain.task_fact_tokens import (
     PLANNED_VERIFICATION_STALE_GAP,
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
     STOP_GATE_TOKENS,
+    undeclared_reference_variants,
 )
 from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from yoetz.protocol.ids import IdKind, new_id
@@ -216,6 +222,15 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
         " republishing the obligation does not clear this. Only if the task asked for this exact"
         " file to be empty regardless of outcome, record a decision with the line"
         " `yoetz-assumption:<obligation id>` that names the file path, then run `check`"
+    ),
+    # tb4n4 interleaved-vigenere S (#1044): the delivered cracker loaded model files the agent
+    # created and never declared; the grader received only the declared files. Disclosing the
+    # dependency is not a way out.
+    DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP: (
+        "a delivered file loads a file you created but did not declare, and a grader may receive"
+        " only the declared files: embed its content in the deliverable, rebuild it at run time,"
+        " or declare it as a delivered output (a requested `file` item with role `output`), then"
+        " run `check`; disclosing the dependency does not clear this"
     ),
 }
 # Repair-first guidance, one sentence per present item family (F1, #984). Acknowledgement is the
@@ -652,6 +667,40 @@ def _withdrawn_text(readiness: object, tokens: tuple[str, ...]) -> str:
     return sentence + (f" ({'; '.join(notes)}.)" if notes else "")
 
 
+def _undeclared_variants(readiness: object) -> tuple[str, ...]:
+    """Name the files ``deliverable_references_undeclared_file`` found (tb4n4, #1044).
+
+    From ``closure_readiness.undeclared_references``: the declared item that names them by id and
+    index, and each path quoted and bounded (``quoted_path``); a path a privacy policy withheld
+    reads ``(path withheld)``. ``()`` when readiness names none (an older service), so the item's
+    own clause still says what to do.
+    """
+
+    raw = getattr(readiness, "undeclared_references", None)
+    if not isinstance(raw, (tuple, list)):
+        return ()
+    rows: list[tuple[str, int | None, tuple[str | None, ...], int]] = []
+    for entry in tuple(cast(tuple[object, ...], raw))[:_MAX_RECHECKS]:
+        obligation = _field(entry, "obligation_id")
+        index = _decimal(_field(entry, "item_index"))
+        total = _decimal(_field(entry, "total"))
+        paths_raw = _field(entry, "paths")
+        if (
+            type(obligation) is not str
+            or not _SUBJECT_ID.fullmatch(obligation)
+            or not obligation.startswith("obl_")
+            or total is None
+            or not isinstance(paths_raw, (tuple, list))
+        ):
+            continue
+        paths = tuple(
+            item if type(item) is str else None
+            for item in tuple(cast(tuple[object, ...], paths_raw))[:8]
+        )
+        rows.append((obligation, index, paths, total))
+    return undeclared_reference_variants(rows)
+
+
 # Informational only (ADR-035): appended when the gate already fires for another reason and
 # readiness lists this standing disclosure. It is never a token, so it never fires the gate.
 _CONTENT_MOVED_NOTE: Final = (
@@ -730,6 +779,7 @@ def _fallback_parts(
     withdrawn_text: str,
     accept_text: str,
     lineage: tuple[str, ...] = (),
+    undeclared: tuple[str, ...] = (),
 ) -> list[tuple[str, Part]]:
     """The gate's sentences as named parts, in reading order, for the composed fallback.
 
@@ -762,6 +812,9 @@ def _fallback_parts(
         parts.append(("findings", Part(finding_texts, required=True, priority=7)))
     if withdrawn_text:
         parts.append(("withdrawn", Part((withdrawn_text,), required=True)))
+    if undeclared:
+        # tb4n4 (#1044): the undeclared files, by name; the short form names the first one.
+        parts.append(("undeclared", Part(undeclared, required=True)))
     if limitations:
         parts.append(("limitations", Part((limitations,), priority=5)))
     if accept_text:
@@ -857,7 +910,15 @@ def closure_gate_from_readiness(
     # is withdrawn (acknowledging never clears it), whether or not the gate names those items on
     # this Stop. It stays unasked and is asked at a later Stop.
     accept_excluded = bool(
-        present & {"obligations_open", FINDING_REJECTION_AWAITING_RULING_GAP, *_WITHDRAWN_TOKENS}
+        present
+        & {
+            "obligations_open",
+            FINDING_REJECTION_AWAITING_RULING_GAP,
+            *_WITHDRAWN_TOKENS,
+            # tb4n4 (#1044): a delivered file that loads an undeclared file is repaired by
+            # embedding, rebuilding or declaring it, never by acknowledging the obligation.
+            DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
+        }
     )
     accept_allowed = acceptance is not None and not accept_excluded
     prediction = predicted_receipt_variants(
@@ -981,6 +1042,11 @@ def closure_gate_from_readiness(
     moved_note = _content_moved_note(readiness).strip()
     withdrawn_items = tuple(token for token in _WITHDRAWN_TOKENS if token in items)
     withdrawn_text = _withdrawn_text(readiness, withdrawn_items) if withdrawn_items else ""
+    undeclared = (
+        _undeclared_variants(readiness)
+        if DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP in items
+        else ()
+    )
     why_text = _awaiting_clause(readiness) if FINDING_REJECTION_AWAITING_RULING_GAP in items else ""
     accept_text = _ACCEPTANCE_TEXT if accept_allowed else ""
     # `self_verified` is offered only when `respond` would accept it for some finding; an older
@@ -1019,6 +1085,8 @@ def closure_gate_from_readiness(
             parts.append(finding_texts[0])
         if withdrawn_text:
             parts.append(withdrawn_text)
+        if undeclared:
+            parts.append(undeclared[0])
         if limits and limitations:
             parts.append(limitations)
         if drain and accept_text:
@@ -1108,6 +1176,7 @@ def closure_gate_from_readiness(
             withdrawn_text=withdrawn_text,
             accept_text=accept_text,
             lineage=lineage_variants,
+            undeclared=undeclared,
         )
         composed = compose_parts([part for _, part in parts], _MAX_TEXT_CHARS, ascii_only=False)
         # The predicted conclusion yields before anything else: it is added only when the whole

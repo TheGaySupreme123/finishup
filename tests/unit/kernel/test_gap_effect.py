@@ -1,7 +1,8 @@
 """One table of what each gap code does to a receipt (tb4n3 RC-3, issue #1026, ADR-046).
 
-The 178 unchanged rows must keep today's behaviour under both routes; the 35 changed rows are
-named here, each with its rule, so a reviewer reads exactly which codes the round re-labels.
+The 177 unchanged rows must keep today's behaviour under both routes; the 36 changed rows are
+named here, each with its rule, so a reviewer reads exactly which codes the round re-labels
+(the 36th, ``deliverable_references_undeclared_file``, became agent work in tb4n4, #1044).
 """
 
 from __future__ import annotations
@@ -110,6 +111,8 @@ _CHANGED = frozenset(
         "optional_semantic_review_registration_drift",
         "semantic_relevance_review_not_run",
         "semantic_review_not_configured",
+        # tb4n4 (#1044): a disclosure that is now agent work (rule G0c).
+        "deliverable_references_undeclared_file",
     }
 )
 _CARRIED = frozenset(_GUARDED_AT_BASE)
@@ -126,7 +129,7 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
 def test_exactly_the_documented_rows_are_marked_changed() -> None:
     changed = {code for code, row in GAP_EFFECT_TABLE.items() if row.changed}
     assert changed == _CHANGED
-    assert len(changed) == 35
+    assert len(changed) == 36
 
 
 @pytest.mark.parametrize("route_requires_review", [False, True])

@@ -162,3 +162,56 @@ an obligation declaring the path that names the path. The lines "clears ... once
 republished open or acknowledged_not_done" and "An untracked file truncated ... is not seen" above
 no longer hold. The content-moved disclosure is unchanged and now also covers untracked
 deliverables.
+
+## Amendment (tb4n4, issue #1044): an undeclared dependency blocks closure and is named
+
+tb4n4 interleaved-vigenere S: the delivered `artifacts/cracker.py` loaded `english_ngrams.npz` and
+`english_words.npz` from beside itself, and only the cracker and its `requirements.txt` were
+declared. The R2 disclosure above fired correctly, but its text ended "Embed it, rebuild it at
+runtime, or disclose the dependency." The agent disclosed it and verified the cracker itself; the
+grader received only the two declared files, the program printed nothing, and the attempt scored 0.
+The deterministic arm passed with a self-contained file. Disclosing a file the grader never
+receives is not a delivery. Recorded from the maintainer's request of 2026-10-12 (fix #1044 in the
+tb4n4 remediation PR), which is the acknowledgement for the storage change below.
+
+- **Agent work, on every surface.** `deliverable_references_undeclared_file` leaves
+  `STANDING_TASK_FACT_GAPS` for `AGENT_ACTIONABLE_TASK_FACT_GAPS` and is a `STOP_GATE_TOKENS` entry.
+  In the one gap table (ADR-046) it is rule `G0c`: readiness `A`, actionable on both routes, so the
+  check is not clean, status reads `action_required` and lists it in `agent_actionable`, the
+  predicted receipt and the receipt read `insufficient_coverage` (`live_gap_bounds`), and the Stop
+  gate continues the agent. Gap classification version `"8"`. It is still never a finding.
+- **The ways out are repairs.** Embed the file's content in the deliverable, rebuild it at run time,
+  or declare the file as a requested item (a delivered output; a file the task itself provides is a
+  `role: input` item). The read is unchanged on this point: every declared `file` or `directory` of
+  any role excludes a candidate, and a deliverable that no longer names the file does not raise it.
+  A `yoetz-assumption` or `yoetz-verification-limit` decision, a final-answer disclosure or a
+  self-verification never clears it; the receipt sentence, the Stop-gate item and the guidance no
+  longer offer "disclose the dependency". As before, a confirmed blocker or an
+  `acknowledged_not_done` obligation is not read (it is already below clean).
+- **Named, once, where the agent and the reader look.** The adapter method is now
+  `find_undeclared_references(workspace, deliverables, candidates)`: it returns `(deliverable
+  index, candidate index)` pairs into the caller's own tuples (at most 64), so no path leaves it
+  that the caller did not hand it. The check records, on the referencing deliverable's
+  `DeliverableState` (`check_recorded` 1.4.0, unreleased, changed in place), the optional
+  `undeclared_references`: at most eight sorted root-relative paths of 1-256 characters (valid
+  UTF-8, no control character, no leading `/`, no empty, `.` or `..` segment), with
+  `undeclared_reference_count` when more were found than are named. This is the one path text a
+  check records, and a deliberate exception to "a keyed commitment, never text": a commitment cannot
+  tell the agent which file to declare. It lives in the encrypted event payload, never in a
+  structural table, log or error. Status `closure_readiness.undeclared_references` (status-result
+  1.4.0, unreleased, optional) carries the rows of the applicable check; each path is a
+  `repository_excerpt` content leaf of the privacy projection, so a policy can withhold it. The
+  receipt gap detail (JSON, markdown and text; cleared, like every gap detail, by the export and
+  share redaction profiles) and the Stop-gate text print one sentence,
+  `task_fact_tokens.undeclared_reference_variants`: "Undeclared files: <obligation> item <n> names
+  "<path>" and "<path>"." Each path goes through `bounded_text.quoted_path` (ASCII, one line, no
+  double quote, at most 120 characters), the rendering the post-compaction recap already used. The
+  MCP text summary, the hook diagnostics and the gate memory never carry a path.
+- **Residuals.** The read is still a literal-matching heuristic over a bounded prefix (a path built
+  from pieces at run time is not seen). Untracked files are candidates whether or not they predate
+  the task (no base untracked set is recorded), so a task-provided untracked data file a deliverable
+  loads now stops the agent until it is declared `role: input`: one publish, chosen over letting a
+  disclosure stand in for a missing delivery. A path that cannot be named is counted, not shown.
+
+The R2 amendment's "Standing and non-blocking", "Only a count leaves the adapter" and "no path ...
+is returned, logged or stored" no longer hold; the rest of it does.

@@ -251,9 +251,11 @@ decision with the line `yoetz-assumption:<obligation id>` that names the file pa
 Separately, if an obligation is genuinely not done, republish it `acknowledged_not_done` with the
 reason and leave it out of your completion claim: an acknowledged obligation is outside completion
 coverage, so omitting it is not a scope gap. A deliverable that
-names a file you created but did not declare is disclosed (`deliverable_references_undeclared_file`;
-it never stops you): a grader may receive only the declared files, so embed it, build it at run
-time, or declare it. A delivered file that lost most of its lines
+loads a file you created but did not declare (`deliverable_references_undeclared_file`) stops you
+too, and the Stop text and the receipt name the file: a grader may receive only the declared files,
+so embed its content in the deliverable, rebuild it at run time, or declare it as a delivered output
+(a requested `file` item with role `output`; a file the task itself provides is role `input`), then
+run `check`. Disclosing the dependency does not resolve it. A delivered file that lost most of its lines
 while files outside the delivered set changed or hold about as many lines is disclosed on the receipt
 (`declared_output_content_moved`; it never stops you): check the deliverable still works where
 the task delivers it. A declared output of a type the review never receives (a binary) is named

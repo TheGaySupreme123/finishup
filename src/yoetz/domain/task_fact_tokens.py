@@ -7,7 +7,10 @@ re-exports every name, so the old import location keeps working.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Final
+
+from yoetz.domain.bounded_text import quoted_path
 
 # The readiness token raised for an ``awaiting_ruling`` finding (agent-actionable: a recorded
 # action clears it). Frozen here so the Stop gate, status and the check agree on the literal.
@@ -43,6 +46,7 @@ __all__ = [
     "TASK_FACT_GAPS",
     "VERIFICATION_ONLY_AS_ROOT_GAP",
     "WRITE_OUTSIDE_WORKSPACE_GAP",
+    "undeclared_reference_variants",
 ]
 
 PLANNED_VERIFICATION_NOT_OBSERVED_GAP: Final = "planned_verification_not_observed"
@@ -81,8 +85,10 @@ DECLARED_OUTPUT_EMPTIED_GAP: Final = "declared_output_emptied"
 # an unlisted file with a binary suffix) and a review ran (ADR-045): the deliverable was present
 # but not reviewed. A standing disclosure, named on status and on the receipt; never agent work.
 DECLARED_OUTPUT_NOT_REVIEWABLE_GAP: Final = "declared_output_not_reviewable"
-# A declared deliverable that names an existing workspace file that is neither a declared output
-# nor a declared input (tb4n2 R2, ADR-035 amendment): a non-blocking disclosure only.
+# A declared deliverable that names a file the change created that is neither a declared output
+# nor a declared input (tb4n2 R2, ADR-035 amendment). Agent work and a Stop-gate token since
+# tb4n4 (issue #1044): a grader receives only the declared files, so the agent embeds the content,
+# rebuilds it at run time or declares the file; disclosing the dependency does not clear it.
 DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP: Final = "deliverable_references_undeclared_file"
 
 # Facts the agent removes by its own action: run the planned verification after the last edit
@@ -96,6 +102,7 @@ AGENT_ACTIONABLE_TASK_FACT_GAPS: Final = frozenset(
         REQUESTED_OUTPUT_GIT_IGNORED_GAP,
         DECLARED_OUTPUT_REMOVED_GAP,
         DECLARED_OUTPUT_EMPTIED_GAP,
+        DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
         # A claimed blocker: repair the obligation, or confirm the blocker in a later decision.
         OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
     }
@@ -121,7 +128,6 @@ STANDING_TASK_FACT_GAPS: Final = frozenset(
         REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP,
         DECLARED_OUTPUT_CONTENT_MOVED_GAP,
         DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
-        DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     }
 )
 TASK_FACT_GAPS: Final = AGENT_ACTIONABLE_TASK_FACT_GAPS | STANDING_TASK_FACT_GAPS
@@ -144,6 +150,56 @@ STOP_GATE_TOKENS: Final = (
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
+    # A delivered file names a file the change created that nothing declares (#1044).
+    DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     # A blocker claimed on an open obligation and not yet confirmed (#985).
     OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
 )
+
+# tb4n4 (#1044): how many referencing deliverables, and paths per deliverable, the sentence names.
+_MAX_NAMED_REFERENCE_DELIVERABLES: Final = 3
+_MAX_NAMED_REFERENCE_PATHS: Final = 4
+
+
+def _reference_names(paths: Sequence[str | None], total: int) -> str:
+    quoted = [quoted_path(path) for path in paths[:_MAX_NAMED_REFERENCE_PATHS]]
+    more = max(total, len(paths)) - len(quoted)
+    if not quoted:
+        return f"{more} file(s)"
+    if more > 0:
+        quoted.append(f"{more} more")
+    if len(quoted) == 1:
+        return quoted[0]
+    return ", ".join(quoted[:-1]) + " and " + quoted[-1]
+
+
+def undeclared_reference_variants(
+    rows: Sequence[tuple[str, int | None, Sequence[str | None], int]],
+) -> tuple[str, ...]:
+    """The sentence naming the files ``deliverable_references_undeclared_file`` found, longest first.
+
+    ``rows`` are ``(obligation id, item index, paths, total)`` per referencing deliverable, in the
+    order the check recorded them: the declared item that names the files, the paths it names
+    (``None`` for one a privacy policy withheld) and how many it names in all. Paths are quoted and
+    bounded (``quoted_path``); ids and counts are service-minted. The same sentence is printed by
+    the receipt and the Stop gate. ``()`` when no row names a file.
+    """
+
+    usable = [row for row in rows if row[3] > 0 or row[2]]
+    if not usable:
+        return ()
+
+    def subject(row: tuple[str, int | None, Sequence[str | None], int]) -> str:
+        return row[0] if row[1] is None else f"{row[0]} item {row[1]}"
+
+    shown = usable[:_MAX_NAMED_REFERENCE_DELIVERABLES]
+    hidden = len(usable) - len(shown)
+    full = "; ".join(f"{subject(row)} names {_reference_names(row[2], row[3])}" for row in shown)
+    if hidden > 0:
+        full += f"; and {hidden} more delivered file(s)"
+    first = usable[0]
+    short = f"{subject(first)} names {_reference_names(first[2][:1], max(first[3], len(first[2])))}"
+    if len(usable) > 1:
+        short += f"; and {len(usable) - 1} more delivered file(s)"
+    variants = (f"Undeclared files: {full}.", f"Undeclared files: {short}.")
+    return tuple(dict.fromkeys(variants))

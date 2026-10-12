@@ -25,7 +25,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import Final
 
-from yoetz.domain.bounded_text import Part, ascii_safe, compose_parts, list_variants
+from yoetz.domain.bounded_text import Part, ascii_safe, compose_parts, list_variants, quoted_path
 
 __all__ = [
     "RECAP_CONTEXT_LIMIT",
@@ -44,7 +44,6 @@ RECAP_LIMIT: Final = 2_400
 RECAP_CONTEXT_LIMIT: Final = 4_000
 
 _EXCERPT_CHARS: Final = 80
-_PATH_CHARS: Final = 120
 _WHITESPACE: Final = re.compile(r"\s+")
 _NEXT_ACTION: Final = {
     "action_required": (
@@ -494,9 +493,4 @@ def _deliverable_variants(facts: RecapFacts, sequence: str) -> tuple[str, ...]:
 def _quoted_path(value: str | None) -> str:
     """A requested path as one quoted single-line excerpt; a path is user text, not a token."""
 
-    if value is None:
-        return "(path withheld)"
-    flat = _flat_text(value)
-    if len(flat) > _PATH_CHARS:
-        flat = flat[: _PATH_CHARS - 3].rstrip() + "..."
-    return f'"{flat}"' if flat else "(empty path)"
+    return quoted_path(value)

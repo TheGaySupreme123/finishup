@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import os
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -836,7 +837,7 @@ _MAX_REFERENCE_DELIVERABLES: Final = 16
 _MAX_REFERENCE_CANDIDATES: Final = 1_024
 
 
-async def count_undeclared_references(
+async def undeclared_references(
     *,
     projection: ProjectionState,
     capture: CheckChangeMetadata | None,
@@ -845,39 +846,41 @@ async def count_undeclared_references(
     states: Mapping[tuple[ObligationId, int], RequestedOutputState],
     blocked: Iterable[ObligationId] | None,
     request_id: str,
-) -> int:
-    """How many declared deliverables name a file the change created but no item declares.
+) -> tuple[tuple[str, str], ...]:
+    """Which declared deliverables name which file the change created but no item declares.
 
-    tb4n2 R2 (ADR-035 amendment, ``deliverable_references_undeclared_file``). The candidates are
-    the files the check-time change created (untracked, or added with status ``A``) minus every
-    declared ``file``/``directory`` value of any role (a declared directory covers the files
-    beneath it); pre-existing tracked files are never candidates. The adapter's bounded local
-    read of each declared source deliverable returns a count only. Any failure is ``0``: the
-    disclosure is simply not raised.
+    tb4n2 R2 / tb4n4 (ADR-035 amendment, ``deliverable_references_undeclared_file``, #1044).
+    Returns ``(deliverable, referenced file)`` root-relative path pairs, sorted. The candidates
+    are the files the check-time change created (untracked, or added with status ``A``) minus
+    every declared ``file``/``directory`` value of any role (a declared directory covers the files
+    beneath it); pre-existing tracked files are never candidates. The adapter's bounded local read
+    of each declared source deliverable returns index pairs into the tuples it was given, so no
+    path leaves it that this function did not hand it. Any failure is ``()``: the fact is simply
+    not raised.
     """
 
     from yoetz.kernel.delivered_set import undeclared_reference_inputs
 
-    count = getattr(port, "count_undeclared_references", None)
+    find = getattr(port, "find_undeclared_references", None)
     probe = getattr(port, "probe_requested_paths", None)
-    if capture is None or source is None or not callable(count) or not callable(probe):
-        return 0
+    if capture is None or source is None or not callable(find) or not callable(probe):
+        return ()
     created = {
         entry.path for entry in capture.entries if entry.untracked or entry.status.startswith("A")
     }
     if not created:
-        return 0
+        return ()
     deliverables, declared = undeclared_reference_inputs(projection, states, blocked=blocked)
     deliverables = tuple(value for value in deliverables if _plain_path(value))
     if not deliverables:
-        return 0
+        return ()
     values = tuple(
         dict.fromkeys((*deliverables, *(value for value in declared if _plain_path(value))))
     )
     if len(values) > _MAX_REQUESTED_OUTPUT_PROBES:
-        # Codex review 3: an unprobed declaration could be reported as undeclared. A disclosure
-        # Yoetz cannot compute exactly is not raised.
-        return 0
+        # Codex review 3: an unprobed declaration could be reported as undeclared. A fact Yoetz
+        # cannot compute exactly is not raised.
+        return ()
     try:
         raw_probes = await asyncio.to_thread(
             cast(Callable[[str, tuple[str, ...]], object], probe), source.workspace, values
@@ -892,7 +895,7 @@ async def count_undeclared_references(
                 relatives[value] = result.relative
         if "." in relatives.values():
             # The root itself is declared: every created file is part of the delivery.
-            return 0
+            return ()
         covered = set(relatives.values())
 
         def is_declared(path: str) -> bool:
@@ -905,18 +908,30 @@ async def count_undeclared_references(
             sorted(path for path in created if _plain_relative(path) and not is_declared(path))
         )[:_MAX_REFERENCE_CANDIDATES]
         if not targets or not candidates:
-            return 0
+            return ()
         found: object = await asyncio.to_thread(
-            cast(Callable[[str, tuple[str, ...], tuple[str, ...]], object], count),
+            cast(Callable[[str, tuple[str, ...], tuple[str, ...]], object], find),
             source.workspace,
             targets,
             candidates,
         )
-        if type(found) is not int or found < 0:
-            raise TypeError("undeclared_reference_count_invalid")
-        return found
+        if type(found) is not tuple:
+            raise TypeError("undeclared_reference_pairs_invalid")
+        pairs: set[tuple[str, str]] = set()
+        for pair in cast(tuple[object, ...], found):
+            if (
+                type(pair) is not tuple
+                or len(cast(tuple[object, ...], pair)) != 2
+                or any(type(index) is not int for index in cast(tuple[object, ...], pair))
+            ):
+                raise TypeError("undeclared_reference_pairs_invalid")
+            target, candidate = cast(tuple[int, int], pair)
+            if not (0 <= target < len(targets) and 0 <= candidate < len(candidates)):
+                raise TypeError("undeclared_reference_pairs_invalid")
+            pairs.add((targets[target], candidates[candidate]))
+        return tuple(sorted(pairs, key=lambda item: (os.fsencode(item[0]), os.fsencode(item[1]))))
     except ChangeCaptureUnavailable:
-        return 0
+        return ()
     except Exception as exc:
         record_unexpected_exception_without_raising(
             exc,
@@ -924,7 +939,7 @@ async def count_undeclared_references(
             operation="undeclared_reference_read_failed",
             request_id=request_id,
         )
-        return 0
+        return ()
 
 
 def _plain_relative(path: str) -> bool:

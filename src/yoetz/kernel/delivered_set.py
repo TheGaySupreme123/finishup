@@ -106,6 +106,7 @@ __all__ = [
     "declared_output_removed",
     "removed_declared_items",
     "undeclared_reference_inputs",
+    "undeclared_reference_rows",
 ]
 
 _DECLARED_KINDS: Final = frozenset({"file", "directory"})
@@ -834,6 +835,33 @@ def deliverable_lineage(
             )
         )
     return tuple(output)
+
+
+def undeclared_reference_rows(
+    states: Iterable[DeliverableState],
+) -> tuple[tuple[str, int | None, tuple[str, ...], int], ...]:
+    """``(obligation id, item index, paths, total)`` of each recorded deliverable that names
+    files the change created and no item declares (tb4n4, #1044), in the check's own order.
+
+    A file that several items declare shares one keyed path, so its references are listed once,
+    under the first item that declares it. The input of ``undeclared_reference_variants``, the one
+    sentence the receipt and the Stop gate print, and of status ``undeclared_references``.
+    """
+
+    rows: list[tuple[str, int | None, tuple[str, ...], int]] = []
+    seen: set[str] = set()
+    for state in states:
+        if not state.undeclared_references and state.undeclared_reference_count is None:
+            continue
+        key = state.path_key or f"{state.obligation_id}:{state.item_index}"
+        if key in seen:
+            continue
+        seen.add(key)
+        total = state.undeclared_reference_count or len(state.undeclared_references)
+        rows.append(
+            (str(state.obligation_id), state.item_index, state.undeclared_references, total)
+        )
+    return tuple(rows)
 
 
 def emptied_declared_items(

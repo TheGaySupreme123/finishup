@@ -46,6 +46,7 @@ from yoetz.kernel.task_facts import (
     deliverable_path_identity,
     register_command_identity_key,
 )
+from yoetz.protocol.errors import ProtocolValueError
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
 
@@ -460,9 +461,10 @@ def test_undeclared_reference_inputs_pick_existing_declared_files() -> None:
         STANDING_TASK_FACT_GAPS,
     )
 
-    assert DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP in STANDING_TASK_FACT_GAPS
-    assert DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP not in STOP_GATE_TOKENS
-    assert DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP not in AGENT_ACTIONABLE_TASK_FACT_GAPS
+    # tb4n4 (#1044): agent work and a Stop-gate token, no longer a standing disclosure.
+    assert DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP not in STANDING_TASK_FACT_GAPS
+    assert DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP in STOP_GATE_TOKENS
+    assert DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP in AGENT_ACTIONABLE_TASK_FACT_GAPS
     ledger = ObservedLedger()
     ledger.append(
         EventSchema("obligation_published", "1.1.0"),
@@ -504,21 +506,35 @@ def test_undeclared_reference_inputs_pick_existing_declared_files() -> None:
     assert undeclared_reference_inputs(projection, outside)[0] == ()
 
 
-def test_check_adds_undeclared_reference_as_a_disclosure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_adds_undeclared_reference_and_names_it_on_the_deliverable_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n4 (#1044): the fact is raised and the referencing deliverable's recorded state names
+    the undeclared files (sorted, bounded), which is what the receipt and the Stop gate print."""
+
     from yoetz.application import check, check_change
+    from yoetz.kernel.delivered_set import undeclared_reference_rows
     from yoetz.kernel.task_facts import DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP
 
     projection = _projection(_file("/app/cracker.py"))
 
     async def states(**_kwargs: object) -> dict[tuple[ObligationId, int], RequestedOutputState]:
-        return {(_OBLIGATION, 0): RequestedOutputState("inside", exists=True)}
+        return {
+            (_OBLIGATION, 0): RequestedOutputState(
+                "inside", exists=True, size_bytes=120, lines=6, relative="cracker.py"
+            )
+        }
 
-    async def references(**_kwargs: object) -> int:
-        return 1
+    async def references(**_kwargs: object) -> tuple[tuple[str, str], ...]:
+        return (
+            ("cracker.py", "english_words.npz"),
+            ("cracker.py", "english_ngrams.npz"),
+            ("cracker.py", "bad\nname.npz"),
+        )
 
     monkeypatch.setattr(check_change, "requested_output_states", states)
-    monkeypatch.setattr(check_change, "count_undeclared_references", references)
-    _evaluator, gaps, absent, _states, _files = asyncio.run(
+    monkeypatch.setattr(check_change, "undeclared_references", references)
+    _evaluator, gaps, absent, recorded, _files = asyncio.run(
         check._requested_output_inputs(  # pyright: ignore[reportPrivateUsage]
             SimpleNamespace(projection=projection, coverage_by_ref={}, gaps=()),  # type: ignore[arg-type]
             None,
@@ -529,6 +545,28 @@ def test_check_adds_undeclared_reference_as_a_disclosure(monkeypatch: pytest.Mon
     )
     assert gaps == (DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,)
     assert absent is False
+    (state,) = recorded
+    # A path that cannot be named (a control character) is counted, never recorded.
+    assert state.undeclared_references == ("english_ngrams.npz", "english_words.npz")
+    assert state.undeclared_reference_count == 3
+    assert DeliverableState.from_wire(state.as_wire()) == state
+    assert undeclared_reference_rows(recorded) == (
+        (str(_OBLIGATION), 0, ("english_ngrams.npz", "english_words.npz"), 3),
+    )
+
+
+def test_a_recorded_undeclared_reference_is_a_plain_bounded_path() -> None:
+    for bad in ("/app/model.npz", "a//b", "../model.npz", "a/./b", "x" * 257, "tab\there"):
+        with pytest.raises(ProtocolValueError):
+            DeliverableState(_OBLIGATION, 0, undeclared_references=(bad,))
+    with pytest.raises(ProtocolValueError):  # canonical order
+        DeliverableState(_OBLIGATION, 0, undeclared_references=("b.npz", "a.npz"))
+    with pytest.raises(ProtocolValueError):  # a count only when it says more than the list
+        DeliverableState(
+            _OBLIGATION, 0, undeclared_references=("a.npz",), undeclared_reference_count=1
+        )
+    state = DeliverableState(_OBLIGATION, 0, undeclared_references=("models/a.npz", "z.npz"))
+    assert state.as_wire()["undeclared_references"] == ("models/a.npz", "z.npz")
 
 
 # --- declared_output_emptied (tb4n2 R2, issue #1022, ADR-035 amendment) -------------------------

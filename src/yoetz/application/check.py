@@ -24,12 +24,14 @@ from yoetz.application.review_concern import answer_bound, concern_material_afte
 from yoetz.domain.coordination import CoordinationError, CoordinationErrorCode
 from yoetz.domain.events import (
     MAX_SEMANTIC_INCLUDED_REFS,
+    MAX_UNDECLARED_REFERENCES,
     SEMANTIC_INCLUDED_REFS_NOT_RECORDED_GAP,
     ActionKind,
     CheckChangeShownFiles,
     ClaimKind,
     DeliverableState,
     LedgerRecord,
+    undeclared_reference_path_valid,
 )
 from yoetz.domain.findings import (
     DISPUTED_AFTER_REBUTTAL_VERDICT,
@@ -2736,8 +2738,8 @@ async def _requested_output_inputs(
 ) -> _OutputInputs:
 
     from yoetz.application.check_change import (
-        count_undeclared_references,
         requested_output_states,
+        undeclared_references,
     )
 
     states = await requested_output_states(
@@ -2774,20 +2776,19 @@ async def _requested_output_inputs(
     if content_moved_declared_items(case.projection, states, blocked=confirmed, history=history):
         # A non-blocking disclosure (ADR-035): never a Stop-gate token, never a finding.
         codes.add(DECLARED_OUTPUT_CONTENT_MOVED_GAP)
-    if (
-        await count_undeclared_references(
-            projection=case.projection,
-            capture=capture,
-            source=source,
-            port=port,
-            states=states,
-            blocked=confirmed,
-            request_id=request_id,
-        )
-        > 0
-    ):
-        # tb4n2 R2: a declared deliverable names a file the change created but never declared,
-        # so the delivery may not carry what it needs. Standing disclosure (ADR-035 amendment).
+    references = await undeclared_references(
+        projection=case.projection,
+        capture=capture,
+        source=source,
+        port=port,
+        states=states,
+        blocked=confirmed,
+        request_id=request_id,
+    )
+    if references:
+        # tb4n2 R2 / tb4n4 (#1044): a declared deliverable names a file the change created but
+        # never declared, so the delivery may not carry what it needs. Agent work and a Stop-gate
+        # token (ADR-035 amendment); the referencing deliverable's state names the files.
         codes.add(DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP)
     # E4 (#989): an absent output is reported only once work on its obligation began.
     absent = reportable_absent_outputs(case, frozenset(found))
@@ -2811,9 +2812,51 @@ async def _requested_output_inputs(
         partial(work_integrity_findings, absent_outputs=absent),
         gaps,
         bool(absent),
-        assessment.states,
+        _with_undeclared_references(assessment.states, files, references),
         files,
     )
+
+
+def _with_undeclared_references(
+    states: tuple[DeliverableState, ...],
+    files: tuple[tuple[ObligationId, int, str], ...],
+    references: tuple[tuple[str, str], ...],
+) -> tuple[DeliverableState, ...]:
+    """Each referencing deliverable's state, naming the undeclared files it names (#1044).
+
+    ``references`` are ``(deliverable, referenced file)`` root-relative pairs from the check-time
+    read; ``files`` maps each recorded state to its deliverable's root-relative path. At most
+    ``MAX_UNDECLARED_REFERENCES`` nameable paths are recorded per state, sorted; when more were
+    found (or one cannot be named) the state also records how many.
+    """
+
+    if not references:
+        return states
+    found: dict[str, set[str]] = {}
+    for deliverable, referenced in references:
+        found.setdefault(deliverable, set()).add(referenced)
+    relatives = {(obligation, index): relative for obligation, index, relative in files}
+    recorded: list[DeliverableState] = []
+    for state in states:
+        relative = relatives.get((state.obligation_id, state.item_index))
+        named = found.get(relative) if relative is not None else None
+        if not named:
+            recorded.append(state)
+            continue
+        shown = tuple(
+            sorted(
+                (path for path in named if undeclared_reference_path_valid(path)),
+                key=lambda path: path.encode("utf-8"),
+            )[:MAX_UNDECLARED_REFERENCES]
+        )
+        recorded.append(
+            replace(
+                state,
+                undeclared_references=shown,
+                undeclared_reference_count=len(named) if len(named) > len(shown) else None,
+            )
+        )
+    return tuple(recorded)
 
 
 def run_deterministic_policies(

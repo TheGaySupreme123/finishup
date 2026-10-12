@@ -144,6 +144,7 @@ from yoetz.protocol.models import (
     StatusRequest,
     StatusResultsPageModel,
     StatusSemanticProgressModel,
+    StatusUndeclaredReferenceModel,
     StatusVersionSliceModel,
     StatusVersionsPageModel,
 )
@@ -1584,6 +1585,19 @@ async def _closure_readiness(
         optional_fields["fact_lineage"] = tuple(
             FactLineageModel.model_validate(lineage_to_wire(item))
             for item in facts.fact_lineage[:64]
+        )
+    if facts.undeclared_references:
+        # tb4n4 (#1044): the files a delivered file names that no item declares, so the Stop
+        # gate can name them. Paths are repository-excerpt content under the privacy projection.
+        optional_fields["undeclared_references"] = tuple(
+            StatusUndeclaredReferenceModel(
+                obligation_id=obligation,
+                item_index=str(index),
+                paths=paths,
+                total=str(total),
+            )
+            for obligation, index, paths, total in facts.undeclared_references[:16]
+            if index is not None
         )
     optional_fields.update(
         _closure_verdict_fields(

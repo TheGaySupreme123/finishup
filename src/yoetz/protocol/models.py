@@ -4813,6 +4813,42 @@ class StatusAwaitingRulingFindingModel(_ClosedModel):
     since_frontier: CanonicalUInt64Wire
 
 
+UndeclaredReferencePathWire = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=256,
+        pattern=r"^[^\u0000-\u001f\u007f/][^\u0000-\u001f\u007f]*$",
+    ),
+]
+
+
+class StatusUndeclaredReferenceModel(_ClosedModel):
+    """A delivered file naming files the change created that no item declares (tb4n4, #1044).
+
+    The declared item that names them, the root-relative files it names (repository-excerpt
+    content: a privacy policy may withhold each one) and how many it names in all, from the
+    applicable check's recorded deliverable state. The Stop gate and the receipt name them.
+    """
+
+    obligation_id: ObligationIdWire
+    item_index: Annotated[str, Field(pattern=r"^(?:[0-9]|[1-5][0-9]|6[0-3])$")]
+    paths: tuple[UndeclaredReferencePathWire | OmittedContentModel, ...] = Field(max_length=8)
+    total: CanonicalPositiveUInt64Wire
+
+    @model_validator(mode="after")
+    def _validate_undeclared_reference(self) -> StatusUndeclaredReferenceModel:
+        if int(self.total) < len(self.paths):
+            raise ValueError("undeclared_reference_total_invalid")
+        for value in self.paths:
+            if (
+                isinstance(value, OmittedContentModel)
+                and value.category is not DataCategory.REPOSITORY_EXCERPT
+            ):
+                raise ValueError("undeclared_reference_omission_category_invalid")
+        return self
+
+
 class StatusClosureReadinessModel(_ClosedModel):
     """What currently bounds a completion conclusion, before a check or receipt is spent.
 
@@ -4857,7 +4893,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     # on the unreleased 1.4.0 wire so a result shaped by an earlier 0.3 build still validates; it
     # is then absent as a whole, never partially present and never null.
     state: Literal["action_required", "ready", "ready_with_limitations", "unknown"] | None = None
-    gap_classification_version: Literal["1", "2", "3", "4", "5", "6", "7"] | None = None
+    gap_classification_version: Literal["1", "2", "3", "4", "5", "6", "7", "8"] | None = None
     agent_actionable: tuple[ReadinessItemWire, ...] | None = None
     standing_limitations: tuple[CodeWire, ...] | None = None
     acknowledged_not_done: tuple[AcknowledgedItemIdWire, ...] | None = None
@@ -4893,11 +4929,18 @@ class StatusClosureReadinessModel(_ClosedModel):
     # observing check and frontier, prior state, observed runs). Optional on the unreleased 1.4.0
     # wire: an earlier 0.3 build omits it, and absence never means the facts have no source.
     fact_lineage: tuple[FactLineageModel, ...] | None = None
+    # tb4n4 (#1044): the delivered files that name files the change created and no item declares
+    # (``deliverable_references_undeclared_file``), with those files. Optional on the unreleased
+    # 1.4.0 wire: absent when the applicable check found none, and from an earlier 0.3 build.
+    undeclared_references: tuple[StatusUndeclaredReferenceModel, ...] | None = Field(
+        default=None, max_length=16
+    )
 
     optional_non_null_fields = frozenset(
         {
             "check_cause",
             "predicted_receipt",
+            "undeclared_references",
             "finding_counts",
             "obligation_counts",
             "rechecks",
@@ -6708,6 +6751,12 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "awaiting_ruling_findings/*/since_frontier",
             # ADR-045: closed tokens, counts and service-minted ids only.
             *(f"fact_lineage/*/{leaf}" for leaf in _FACT_LINEAGE_LEAVES),
+            # tb4n4 (#1044): service-minted ids and counts; each path is repository-excerpt
+            # content (``_STATUS_COMMON_CONTENT_RULES``) and a withheld one is the omission marker.
+            "undeclared_references/*/obligation_id",
+            "undeclared_references/*/item_index",
+            "undeclared_references/*/total",
+            *(f"undeclared_references/*/paths/*/{leaf}" for leaf in _OMITTED_CONTENT_LEAVES),
         ),
     )
     # Closed state tokens only (issue #982).
@@ -7337,6 +7386,13 @@ _STATUS_CONTENT_RULES: Final[tuple[tuple[str, str, DataCategory], ...]] = (
         DataCategory.REPOSITORY_EXCERPT,
     ),
 )
+# Content leaves every status view carries (the closure readiness is on each of them).
+_STATUS_COMMON_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
+    (
+        "/closure_readiness/undeclared_references/*/paths/*",
+        DataCategory.REPOSITORY_EXCERPT,
+    ),
+)
 _RECEIPT_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
     ("/document/gaps/*/detail", DataCategory.FINDING_SUMMARY),
     ("/document/findings/*/detail", DataCategory.FINDING_SUMMARY),
@@ -7452,6 +7508,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         rules.append(_leaf_rule("respond", pointer, category))
     for view, pointer, category in _STATUS_CONTENT_RULES:
         rules.append(_leaf_rule("status", pointer, category, status_view=view))
+    for pointer, category in _STATUS_COMMON_CONTENT_RULES:
+        rules.append(_leaf_rule("status", pointer, category))
     for pointer, category in _RECEIPT_CONTENT_RULES:
         rules.append(_leaf_rule("receipt", pointer, category))
 
@@ -7499,8 +7557,9 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1564
-    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2
+        len(result) != 1571
+    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
+        # tb4n4 #1044 +7 (closure_readiness.undeclared_references)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

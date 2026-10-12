@@ -32,7 +32,7 @@ import stat
 import subprocess
 import time
 import zlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Literal
@@ -298,6 +298,8 @@ _MAX_LINE_COUNT_TOTAL_BYTES: Final = 64 * 1024 * 1024
 _MAX_REFERENCE_DELIVERABLES: Final = 16
 _MAX_REFERENCE_FILE_BYTES: Final = 256 * 1024
 _MAX_REFERENCE_CANDIDATES: Final = 1_024
+# The (deliverable, referenced file) pairs one read returns (tb4n4, #1044).
+_MAX_REFERENCE_PAIRS: Final = 64
 # A basename shorter than this is too common (``a.py``, ``x``) to count as a reference by itself.
 _MIN_REFERENCE_BASENAME: Final = 5
 _SOURCE_SUFFIXES: Final = frozenset(
@@ -856,21 +858,21 @@ class GitChangeCaptureAdapter:
             base_lines = [in_base.get(path) for path in base_paths]
         return ChangeLineCounts(tuple(changed), tuple(base_lines), truncated)
 
-    def count_undeclared_references(
+    def find_undeclared_references(
         self, workspace: str, deliverables: tuple[str, ...], candidates: tuple[str, ...]
-    ) -> int:
-        """Count declared deliverables whose source names a created but undeclared file.
+    ) -> tuple[tuple[int, int], ...]:
+        """Which declared deliverables name which created but undeclared files.
 
-        tb4n2 R2 (ADR-035 amendment): a delivered ``cracker.py`` loaded model files the agent
-        created and never declared, so the graded deliverable failed. ``deliverables`` and
-        ``candidates`` are root-relative paths. Each deliverable with a source-code suffix (or no
-        suffix and a ``#!`` first line) is read from the start, at most
+        tb4n2 R2 / tb4n4 (ADR-035 amendment, issue #1044): a delivered ``cracker.py`` loaded model
+        files the agent created and never declared, so the graded deliverable failed.
+        ``deliverables`` and ``candidates`` are root-relative paths. Each deliverable with a
+        source-code suffix (or no suffix and a ``#!`` first line) is read from the start, at most
         ``_MAX_REFERENCE_FILE_BYTES``, one component at a time without following a link, never
-        when credential-named, multiply linked or binary. It counts when a one-line quoted string
-        literal equals a candidate path, ends with ``/`` and the candidate path, or equals a
-        candidate basename of at least ``_MIN_REFERENCE_BASENAME`` bytes. Only the count leaves
-        this method; no path or content is returned, logged or stored. A point-in-time read that
-        feeds a non-blocking disclosure only.
+        when credential-named, multiply linked or binary. A candidate is referenced when a one-line
+        quoted string literal equals its path, ends with ``/`` and its path, or equals its basename
+        of at least ``_MIN_REFERENCE_BASENAME`` bytes. Returns ``(deliverable index, candidate
+        index)`` pairs into the caller's own tuples, sorted, at most ``_MAX_REFERENCE_PAIRS``: no
+        path or content leaves this method, and nothing is logged.
         """
 
         if (
@@ -885,17 +887,19 @@ class GitChangeCaptureAdapter:
         ):
             raise ChangeCaptureUnavailable("unsupported_repository")
         if not deliverables or not candidates:
-            return 0
+            return ()
         deadline = time.monotonic() + self._deadline_seconds
         pinned = self._open(workspace, deadline)
-        paths = frozenset(os.fsencode(path) for path in candidates)
-        names = frozenset(
-            name
-            for path in paths
-            if len(name := path.rsplit(b"/", 1)[-1]) >= _MIN_REFERENCE_BASENAME
-        )
-        found = 0
-        for deliverable in deliverables:
+        paths: dict[bytes, list[int]] = {}
+        names: dict[bytes, list[int]] = {}
+        for index, candidate in enumerate(candidates):
+            path = os.fsencode(candidate)
+            paths.setdefault(path, []).append(index)
+            name = path.rsplit(b"/", 1)[-1]
+            if len(name) >= _MIN_REFERENCE_BASENAME:
+                names.setdefault(name, []).append(index)
+        found: set[tuple[int, int]] = set()
+        for position, deliverable in enumerate(deliverables):
             if _expired(deadline):
                 break
             path = os.fsencode(deliverable)
@@ -908,9 +912,8 @@ class GitChangeCaptureAdapter:
                 continue
             if not suffix and not content.startswith(b"#!"):
                 continue
-            if _references_any(content, paths, names):
-                found += 1
-        return found
+            found.update((position, index) for index in _referenced(content, paths, names))
+        return tuple(sorted(found))[:_MAX_REFERENCE_PAIRS]
 
     def capture_metadata(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeMetadata:
         """Return changed-path facts without reading file or blob content.
@@ -2124,19 +2127,21 @@ def _read_prefix_beneath(root_descriptor: int, path: bytes, limit: int) -> bytes
             os.close(descriptor)
 
 
-def _references_any(content: bytes, paths: frozenset[bytes], names: frozenset[bytes]) -> bool:
-    """Whether a one-line quoted literal in ``content`` names one of ``paths`` (see caller)."""
+def _referenced(
+    content: bytes, paths: Mapping[bytes, list[int]], names: Mapping[bytes, list[int]]
+) -> set[int]:
+    """The candidate indexes a one-line quoted literal in ``content`` names (see caller)."""
 
+    found: set[int] = set()
     for match in _STRING_LITERAL.finditer(content):
         literal = match.group(1) or match.group(2) or match.group(3) or b""
-        if literal in paths or literal in names:
-            return True
+        found.update(paths.get(literal, ()))
+        found.update(names.get(literal, ()))
         start = literal.find(b"/")
         while start != -1:
-            if literal[start + 1 :] in paths:
-                return True
+            found.update(paths.get(literal[start + 1 :], ()))
             start = literal.find(b"/", start + 1)
-    return False
+    return found
 
 
 def _identity(facts: os.stat_result) -> _Identity:

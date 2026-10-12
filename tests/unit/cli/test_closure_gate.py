@@ -800,3 +800,54 @@ def test_withdrawn_deliverable_is_voiced_on_the_active_stop_once(
     third = _stop(h, host, session, guarded=True)
     assert "closure gate" not in json.dumps(third)
     assert h.reasons()[-1] == "closure_gate_turn_end_after_continue"
+
+
+# --- tb4n4 (#1044): a delivered file that loads an undeclared file ---------------------------
+
+_UNDECLARED = "deliverable_references_undeclared_file"
+_OBL_REF = "obl_97700000-0000-4000-8000-000000000444"
+
+
+def _undeclared_readiness(*paths: object, total: str = "2", **extra: Any) -> Any:
+    readiness = _readiness(actionable=(_UNDECLARED,))
+    readiness.undeclared_references = (
+        SimpleNamespace(obligation_id=_OBL_REF, item_index="0", paths=paths, total=total),
+    )
+    for name, value in extra.items():
+        setattr(readiness, name, value)
+    return readiness
+
+
+def test_an_undeclared_dependency_gates_and_names_the_files_never_disclosure() -> None:
+    gate = _gate(
+        _undeclared_readiness("artifacts/english_ngrams.npz", 'odd "name".npz', total="3")
+    )
+    assert gate is not None
+    assert gate.items == (_UNDECLARED,)
+    assert (
+        f'Undeclared files: {_OBL_REF} item 0 names "artifacts/english_ngrams.npz",'
+        " \"odd 'name'.npz\" and 1 more." in gate.text
+    )
+    assert "embed its content in the deliverable, rebuild it at run time" in gate.text
+    assert "disclosing the dependency does not clear this" in gate.text
+    # No path is remembered: the gate memory holds no key for it.
+    assert gate.blocker_keys == ()
+
+
+def test_a_withheld_path_reads_withheld_and_an_older_service_still_gets_the_repair() -> None:
+    withheld = SimpleNamespace(omitted=True, category="repository_excerpt", reason="x")
+    gate = _gate(_undeclared_readiness(withheld, total="1"))
+    assert gate is not None
+    assert f"{_OBL_REF} item 0 names (path withheld)." in gate.text
+    older = _readiness(actionable=(_UNDECLARED,))
+    gate = _gate(older)
+    assert gate is not None and gate.items == (_UNDECLARED,)
+    assert "Undeclared files" not in gate.text
+    assert "declare it as a delivered output" in gate.text
+
+
+def test_the_acceptance_invitation_waits_beside_an_undeclared_dependency() -> None:
+    gate = _gate(_undeclared_readiness("a.npz", total="1", rechecks=(acceptance_recheck(),)))
+    assert gate is not None
+    assert "acceptance_criteria" not in gate.text
+    assert not any(key.startswith("accept:") for key in gate.blocker_keys)

@@ -6847,7 +6847,9 @@ project views keep their own documented coverage.
 status success; on the unreleased status-result 1.4.0 wire the six checklist fields are optional
 as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null). Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
-`gap_classification_version` (`"7"` since the table became a view of `kernel.gap_effect` and added the
+`gap_classification_version` (`"8"` since `deliverable_references_undeclared_file` became an
+agent-actionable task fact (#1044, ADR-035 amendment); `"7"` when the table became a view of
+`kernel.gap_effect` and added the
 readiness token `finding_rejection_awaiting_ruling` (ADR-046) and the standing task-fact
 disclosures `planned_verification_matched_by_prefix` and `declared_output_not_reviewable`
 (ADR-045); `"5"` added the standing code
@@ -6949,7 +6951,8 @@ ledger prefix and never stored. Names:
 - `yoetz.kernel.gap_effect`: `GAP_EFFECT_TABLE` (one row per recorded gap code and the readiness-only
   tokens), `GapContext`, `GapEffectKind` (`actionable|standing_bounding|disclosed|historical`),
   `gap_effect`, `judge_gaps`. `GAP_CLASSIFICATION` is a view of it; `GAP_CLASSIFICATION_VERSION`
-  is `"7"`.
+  is `"8"` (#1044: rule G0c makes `deliverable_references_undeclared_file` actionable on both
+  routes).
 - `yoetz.kernel.receipt_prediction.predict_receipt_conclusion(ClosureBasis)`: the receipt's
   conclusion rules R1-R10 and their reason codes. `receipt_builder.build_receipt` calls it, so the
   receipt label and every prediction are one function over one context.
@@ -9013,14 +9016,14 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   frozen case) or `None`. Agent-actionable (`AGENT_ACTIONABLE_TASK_FACT_GAPS`):
   `planned_verification_not_observed`, `planned_verification_failed`,
   `planned_verification_stale`, `edited_after_last_verification`, `requested_output_git_ignored`,
-  `declared_output_removed` (ADR-035), `declared_output_emptied` (ADR-035 amendment, ADR-041). Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
+  `declared_output_removed` (ADR-035), `declared_output_emptied` (ADR-035 amendment, ADR-041),
+  `deliverable_references_undeclared_file` (ADR-035 amendments, #1022, agent work since #1044). Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
   `planned_verification_unobservable`, `planned_verification_agent_linked`,
   `planned_verification_matched_by_prefix` (ADR-045: a prefix or flags match, counts as run),
   `declared_output_not_reviewable` (ADR-045), `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`, `verification_only_as_root`,
   `obligation_blocked_outside_agent_control`, `requested_output_ignored_by_repository`,
   `declared_output_content_moved` (ADR-035),
-  `deliverable_references_undeclared_file` (ADR-035 amendment, #1022),
   `requested_output_unchanged`,
   `requested_output_outside_workspace`, `requested_output_unverified`. Each code is classified
   once in `GAP_CLASSIFICATION`; standing ones are advisory for the check verdict, the receipt
@@ -9188,18 +9191,27 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `undeclared_reference_inputs(projection, states, blocked=) -> (deliverables, declared)` (tb4n2
   R2, #1022) returns the values of declared output `file` items that exist `inside` and were not
   deleted (obligations neither blocked nor `acknowledged_not_done`) and every `file`/`directory`
-  value of any role. `application.check_change.count_undeclared_references(...) -> int` probes
-  them, takes as candidates the files the check-time change created (untracked or `A`) that no
-  declared value names or covers (pre-existing tracked files never count), and calls the optional
-  adapter method `count_undeclared_references(workspace, deliverables, candidates) -> int`: for at
-  most 16 root-relative source deliverables (`.py .sh .bash .js .mjs .cjs .ts .rb .pl .r .R .jl .lua
-  .php`, or no suffix with a `#!` first line) it reads at most 256 KiB from the start, link-free,
-  never a credential-named, multiply linked or binary file, and counts those with a one-line quoted
-  literal (`'`, `"` or backtick) equal to a candidate path, ending with `/` plus it, or equal to a
-  candidate basename of at least 5 bytes. Only the count leaves the adapter; nothing is stored. A
-  count above zero adds the standing disclosure `deliverable_references_undeclared_file`
-  (`DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP`), never a Stop-gate token or finding; any failure
-  is `0`.
+  value of any role. `application.check_change.undeclared_references(...) -> tuple[(deliverable,
+  referenced file), ...]` (tb4n4, #1044; it replaced `count_undeclared_references`) probes them,
+  takes as candidates the files the check-time change created (untracked or `A`) that no declared
+  value names or covers (pre-existing tracked files never count), and calls the optional adapter
+  method `find_undeclared_references(workspace, deliverables, candidates) -> tuple[(deliverable
+  index, candidate index), ...]` (at most 64 pairs): for at most 16 root-relative source
+  deliverables (`.py .sh .bash .js .mjs .cjs .ts .rb .pl .r .R .jl .lua .php`, or no suffix with a
+  `#!` first line) it reads at most 256 KiB from the start, link-free, never a credential-named,
+  multiply linked or binary file, and pairs each with the candidates a one-line quoted literal
+  (`'`, `"` or backtick) equals, ends with `/` plus, or equals by a basename of at least 5 bytes.
+  Only positions in the caller's own tuples leave the adapter. Any pair adds the agent-actionable
+  task fact and Stop-gate token `deliverable_references_undeclared_file`
+  (`DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP`; gap rule G0c, actionable on both routes, never a
+  finding); any failure is `()`. The check records the referenced files on the referencing
+  deliverable's `DeliverableState` (`undeclared_references`, below), so the receipt and the Stop
+  gate name them; `delivered_set.undeclared_reference_rows(states)` and
+  `task_fact_tokens.undeclared_reference_variants(rows)` are the one reading and the one sentence
+  ("Undeclared files: <obligation> item <n> names \"<path>\" and ..."), each path through
+  `bounded_text.quoted_path` (ASCII, one line, no double quote, at most 120 characters; the
+  post-compaction recap uses the same helper). A disclosure decision never clears it; embedding
+  the content, rebuilding it at run time, or declaring the file as a requested item does.
 - **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the
   absent-output fact, and skips blocked obligations. Since ADR-042 an item is reported only once a
   completion claim names its obligation or a published producing action names that obligation (or
@@ -9226,8 +9238,16 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `deliverable_states` (at most 64 `DeliverableState`: `obligation_id`, `item_index`, `path_key`,
   `size_bytes`, `lines`, `base_lines`, `basis delivered|verified|present`, `change
   emptied|truncated|removed|unchanged`, `proof task_base|earlier_check`, `prior_size_bytes`,
-  `prior_lines`, `prior_event_id`, `prior_frontier`, `accepted_by`, `unreviewable`); absent when the
-  check read no declared output file. `domain/command_segments`: `canonical_words(argv)` (wrappers,
+  `prior_lines`, `prior_event_id`, `prior_frontier`, `accepted_by`, `unreviewable`, and since
+  #1044 `undeclared_references` (at most 8 sorted root-relative paths of files the change created
+  that this source deliverable names and no item declares: 1-256 characters, valid UTF-8, no control
+  character, no leading `/`, no empty, `.` or `..` segment; the only path text the check records)
+  with `undeclared_reference_count` when more were found than are named); absent when the check read
+  no declared output file. Status `closure_readiness.undeclared_references` (optional on the
+  unreleased status-result 1.4.0, at most 16 rows `{obligation_id, item_index, paths, total}`,
+  `closure_readiness.current_undeclared_references` over the applicable check) carries them; each
+  path is a `repository_excerpt` content leaf of every status view (a privacy policy can withhold
+  it as the omission marker), and the MCP text summary never prints one. `domain/command_segments`: `canonical_words(argv)` (wrappers,
   assignments, basename, `python3`/`pythonX.Y` to `python`, `python -m pytest` to `pytest`),
   `canonical_command_commitments(key, argv) -> (full, prefixes, flags)`,
   `canonical_commitment(key, kind, payload)` (`full|prefix|flag`, domain-separated from segment
@@ -9254,7 +9274,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   shows as text; `_TargetFiles.unsupported` decides by Git's NUL sniff first, then the suffix. The
   standing `declared_output_not_reviewable` (`DECLARED_OUTPUT_NOT_REVIEWABLE_GAP`) is raised when a
   review ran and a declared output file is a type the packet never carries.
-  `GAP_CLASSIFICATION_VERSION` is `"7"`.
+  `GAP_CLASSIFICATION_VERSION` was `"7"` for this change (`"8"` since #1044).
 - **Runner class.** `domain/observation_selection.command_runner_class` classifies
   `python -m <module>` by module (pytest/unittest/nose2/tox/nox/doctest `test`, mypy/pyright
   `typecheck`, ruff/flake8/pylint/pyflakes/pycodestyle `lint`, build/compileall `build`) and never
@@ -9296,7 +9316,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `planned_verification_not_observed`, `planned_verification_stale`,
   `edited_after_last_verification` (ADR-042; observation-dependent like the planned-verification
   tokens), `requested_output_git_ignored`, `declared_output_removed`, `declared_output_emptied`
-  (the last two are also voiced once per key on a Stop the host already continued, below).
+  (the last two are also voiced once per key on a Stop the host already continued, below), and
+  `deliverable_references_undeclared_file` (#1044: the text tells the agent to embed the file,
+  rebuild it at run time or declare it as a delivered output, says disclosing the dependency does
+  not clear it, and names the files from `closure_readiness.undeclared_references`: the one
+  exception to closed tokens, counts and ids in the gate text; a path is never remembered).
   `closure_gate_from_readiness(readiness, frontier_sequence=, frontier_digest=,
   observation_pending=, reasked_blockers=, active_stop=) -> ClosureGate(identity, text, items,
   blocker_keys) | None` asks the **re-checks `closure_readiness.rechecks` announces** (tb4n3 RC-8,
@@ -9312,8 +9336,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `accept:<h8>@<invite frontier>` and `emptied:<h8 of the declaring obligation items>`. An
   `acknowledgement` whose `since_frontier` is later than the earliest acceptance invite this session
   received answers that invite and is not asked (no invite-then-challenge). The acceptance sentence
-  is never composed beside open obligations, a rejected finding awaiting a ruling or a withdrawn
-  deliverable (it then stays unasked). `finding_counts` (`to_do`, `awaiting_ruling`,
+  is never composed beside open obligations, a rejected finding awaiting a ruling, a withdrawn
+  deliverable or an undeclared dependency (it then stays unasked). `finding_counts` (`to_do`, `awaiting_ruling`,
   `self_verify_eligible`) decides the finding count and whether `self_verified` is offered;
   `awaiting_ruling_findings` and `fact_lineage` give the ids and rules the text names, and
   `predicted_receipt` supplies the lowest-priority tail sentence (`predicted_receipt_variants`).
