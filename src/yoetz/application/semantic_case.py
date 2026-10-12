@@ -2826,10 +2826,11 @@ def _evidence_candidates(
                 )
             ),
         } & allowed
-        # Within the 16-ref bound the capture's own evidence (its lead and every part) comes
-        # before the events and claims that link it: the parts are what this excerpt's bytes
-        # hold (issue #1047). A list that fits is exactly every subject, in byte order.
-        members = sorted({ref, *group_refs} & subjects, key=str.encode)[:16]
+        # Within the 16-ref bound a captured group's own evidence (its lead and every part) is
+        # kept ahead of the events and claims that link it: the parts are what this excerpt's
+        # bytes hold (issue #1047). Any other excerpt keeps the first 16 in byte order, as
+        # before; a list that fits is exactly every subject, in byte order.
+        members = sorted(set(group_refs) & subjects, key=str.encode)[:16]
         others = sorted(subjects.difference(members), key=str.encode)
         linked = tuple(sorted([*members, *others[: 16 - len(members)]], key=str.encode))
         if not linked:

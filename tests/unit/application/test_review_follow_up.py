@@ -668,6 +668,21 @@ def test_every_part_of_a_group_is_linked_even_when_citing_claims_fill_the_bound(
     )
 
 
+def test_an_ordinary_excerpt_keeps_its_first_sixteen_links_in_byte_order() -> None:
+    """Only a captured group's parts take priority within the bound; nothing else changes.
+
+    A plain evidence excerpt's own ref is already its source, so it never displaces a claim that
+    links it: with 16 claims citing ``evd(30)`` the excerpt links exactly those 16 claims.
+    """
+
+    case, captured, scope = _captured_group_case(newer=1, claims=16)
+    semantic = _build(case, captured_content=captured, captured_content_scope=scope)
+    (plain,) = (item for item in semantic.items if item.item_id == f"excerpt-{evd(30)}")
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    every = {str(evd(30)), str(evt(30)), *(str(clm(number)) for number in range(1, 17))}
+    assert plain.linked_subject_refs == tuple(sorted(every & allowed, key=str.encode)[:16])
+
+
 def test_a_ref_a_sent_packet_withheld_under_a_privacy_rule_never_justifies_a_round() -> None:
     """Privacy withholds the same row from every packet of the check, so it is not sent again."""
 

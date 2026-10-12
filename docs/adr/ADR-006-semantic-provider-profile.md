@@ -1427,7 +1427,8 @@ Yoetz's own limit, marked as such for the agent, never a blocker; the agent veri
   `yoetz_limit_packet_room` (a target an omission row of the exact sent packet withheld for room,
   selection or policy, never `not_recorded` and never this check's own local finding, or a diff
   request while the check-time change's own text was clipped or redacted, read from the shown-file
-  record, so a redacted or withheld task input file alone does not count). `evt_` targets resolve
+  record: a redacted or withheld task input file alone does not count when that record is complete
+  and names a file, while a missing, incomplete or empty record still counts, conservatively). `evt_` targets resolve
   to the row their event recorded. The enum is extended in place on the unreleased `check_recorded`
   1.3.0/1.4.0 and `check-result` 1.3.0/1.4.0. An unanswered repeat stays `agent_suppliable` with
   `semantic_missing_non_convergent`: a run never recorded is still owed.
@@ -1702,9 +1703,10 @@ packet only lacked room for.
   manifest), never from the composed case: an excerpt composed but left out of the sent packet
   was not shown and can still be added, and one a round composed but did not send was not added.
   A captured multi-part group is one excerpt keyed by its lead evidence and carries every part, so
-  a request naming any part is answered by it; the excerpt's linked references (at most 16) list
-  the capture's own parts before the events and claims that link it, and a capture has at most 16
-  parts, so none is dropped. When what was sent is unknown, nothing counts as
+  a request naming any part is answered by it; when the excerpt's linked references reach their
+  16-ref bound, the capture's own parts are kept ahead of the events and claims that link it (the
+  kept references are still listed in byte order), and a capture has at most 16 parts, so none is
+  dropped. Any other excerpt keeps its first 16 links in byte order, as before. When what was sent is unknown, nothing counts as
   shown and no round runs; a row the sent packet withheld under a privacy rule never justifies a
   round, because the same rule withholds it again, and a withheld captured group counts with all
   its parts, though its omission row names only the lead. Otherwise nothing is dispatched and the
