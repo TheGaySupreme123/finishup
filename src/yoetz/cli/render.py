@@ -315,11 +315,15 @@ def _render_checklist(
 # disclosure to make, never repair work. Alone it is the ``disclose_limitations`` continuation;
 # beside real work it rides in ``work_open_findings`` and the text names how it is answered. The
 # agent's answer decides what it means: ``acknowledged`` says the requirement may be met but
-# cannot be verified here, ``acknowledged_not_done`` says it is not met.
+# cannot be verified here, ``acknowledged_not_done`` says it is not met. The agent's own criterion
+# (``agent_criterion_unmet``, issue #1043) reads the same closure basis but its probe fails here:
+# it is always work (fix it, or narrow it), never the disclosure-only continuation. The checklist
+# rows carry no kind, so the text names both answers.
 _LIMITATION_REQUEST_ALSO: Final = (
     " For a reviewer's request to state a limit, respond acknowledged with the reason if the "
     "requirement may be met but cannot be verified here (acknowledged_not_done only when you "
-    "know it is not met) instead of repairing it."
+    "know it is not met) instead of repairing it. An agent_criterion_unmet is your own "
+    "criterion: fix it, or narrow it with acknowledged and a reason."
 )
 
 
@@ -359,7 +363,9 @@ def _render_overall_next(
             action = (
                 "Repair or answer the named open findings (a limitation request among them needs "
                 "only a response: acknowledged with the reason if it may be met but cannot be "
-                "verified here, acknowledged_not_done only when you know it is not met)"
+                "verified here, acknowledged_not_done only when you know it is not met; an "
+                "agent_criterion_unmet is your own criterion: fix it, or narrow it with "
+                "acknowledged and a reason)"
             )
         else:
             action = "Repair or answer the named open findings"

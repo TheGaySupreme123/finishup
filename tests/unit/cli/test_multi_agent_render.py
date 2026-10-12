@@ -421,3 +421,21 @@ def test_a_limitation_request_beside_real_work_names_both_in_the_work_continuati
         _limit_result("work_open_findings", "work_open_findings", (("a", "open_unanswered"),))  # type: ignore[arg-type]
     )
     assert "state a limit" not in plain and "limitation request" not in plain
+
+
+def test_the_agents_own_criterion_is_worded_as_fix_or_narrow_never_no_repair() -> None:
+    """Review of #1043: an open ``agent_criterion_unmet`` reads ``limitation_requested`` but the
+    check continues with ``work_open_findings``; both texts say fix it or narrow it, never that no
+    repair is needed (the rows carry no kind, so the reviewer's request is named beside it)."""
+
+    rendered = render_human_check(
+        _limit_result(
+            "work_open_findings",
+            "work_open_findings",
+            (("a", "limitation_requested"),),
+        )  # type: ignore[arg-type]
+    )
+    assert rendered.count("fix it, or narrow it with acknowledged and a reason") == 2
+    assert "agent_criterion_unmet is your own criterion" in rendered
+    assert "no repair is needed" not in rendered.lower()
+    assert "Disclose the named limitation requests" not in rendered

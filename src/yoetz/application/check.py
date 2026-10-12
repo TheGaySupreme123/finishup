@@ -115,9 +115,11 @@ from yoetz.kernel.claims import (
     result_is_relevant_to_claim,
 )
 from yoetz.kernel.closure_class import (
+    FindingClosureClass,
     ObligationClosure,
     ObligationClosureClass,
     closure_counts,
+    counted_findings,
     finding_closures,
     obligation_closures,
 )
@@ -1353,6 +1355,22 @@ async def _current_project_advisory_notes(
     return tuple(notes)
 
 
+def _own_criterion(projection: ProjectionState | None, finding_id: FindingId) -> bool:
+    """Whether the finding is the agent's own criterion (``agent_criterion_unmet``, issue #1043).
+
+    It reads the ``limitation_requested`` basis like a reviewer's request to state a limit, but
+    its probe fails here: the continuation for it is work (fix it, or narrow it with a reasoned
+    ``acknowledged``), never "disclose, no repair is needed".
+    """
+
+    record = None if projection is None else projection.findings.get(finding_id)
+    return (
+        record is not None
+        and record.payload is not None
+        and record.payload.kind is FindingKind.AGENT_CRITERION_UNMET
+    )
+
+
 def build_finding_checklist(
     projection: ProjectionState,
     *,
@@ -1383,9 +1401,16 @@ def build_finding_checklist(
     # (a disclosed limitation, a rejection nobody can rule on) keeps an ``open`` to-do state but is
     # never work. A limitation request the agent has not answered is agent work of its own kind:
     # when it is the ONLY remaining work the continuation is ``disclose_limitations`` (owner
-    # decision 2026-10-12, #1024); mixed with real work it stays ``work_open_findings``.
+    # decision 2026-10-12, #1024); mixed with real work it stays ``work_open_findings``. The
+    # agent's own criterion reads the same basis but is work to fix or narrow (review of #1043).
     awaiting = counted.findings_awaiting_ruling
-    real_work = counted.findings_to_do - awaiting
+    own_criteria = sum(
+        closure.closure_class is FindingClosureClass.AGENT_WORK
+        and closure.basis == "limitation_requested"
+        and _own_criterion(projection, closure.finding_id)
+        for closure in counted_findings(closures.values()).values()
+    )
+    real_work = counted.findings_to_do - awaiting + own_criteria
     next_step: Literal[
         "decide_at_budget",
         "disclose_limitations",
@@ -1470,7 +1495,8 @@ def build_overall_next(
         )
     # A limitation request nobody answered yet is agent work that asks for a disclosure, not a
     # repair: alone it is ``disclose_limitations``; beside real work it rides in the same
-    # ``work_open_findings`` target list (the text names both).
+    # ``work_open_findings`` target list (the text names both). The agent's own criterion is
+    # real work under that basis: fix it, or narrow it (review of #1043).
     agent_items = tuple(
         item
         for item in checklist.items
@@ -1481,7 +1507,9 @@ def build_overall_next(
     if open_refs:
         counted = checklist.closure_counts
         only_requests = all(
-            item.closure_class == "agent_work" and item.closure_basis == "limitation_requested"
+            item.closure_class == "agent_work"
+            and item.closure_basis == "limitation_requested"
+            and not _own_criterion(projection, FindingId(item.finding_id))
             for item in agent_items
         ) and (counted is None or counted.to_do - counted.awaiting_ruling == 0)
         return CheckOverallNext(

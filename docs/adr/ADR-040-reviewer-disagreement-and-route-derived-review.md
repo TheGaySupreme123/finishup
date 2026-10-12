@@ -438,11 +438,16 @@ next actions `acknowledge` and `repair`; a reasoned `acknowledged` narrows it in
 `limitation_disclosed` (receipt at best `insufficient_coverage`, listed under "Verification limits");
 `acknowledged_not_done` is `limitation_acknowledged_not_done`; a later check that proves it absent
 resolves it. The finding explanation says "Your own criterion ... fix it, or narrow the criterion".
-One part of that lifecycle belongs to the reviewer's request to state a hidden evaluator's limit and
-never applies to the agent's own criterion (review of #1043): a `yoetz-verification-limit` decision
-neither discloses it nor marks its obligation `externally_evaluated` (`kernel.limitation`, G1). The
+Two parts of that lifecycle belong to the reviewer's request to state a hidden evaluator's limit and
+never apply to the agent's own criterion (review of #1043). A `yoetz-verification-limit` decision
+neither discloses it nor marks its obligation `externally_evaluated` (`kernel.limitation`, G1): the
 probe fails here, and only the agent's own answer to that finding narrows it, so an unrelated
-decision line recorded for a hidden grader can no longer settle it unanswered.
+decision line recorded for a hidden grader can no longer settle it unanswered. And the check never
+continues with `disclose_limitations` ("no repair is needed") for it: an open one is work, so
+`overall_next.action` and `finding_checklist.next` read `work_open_findings` (the checklist still
+says `decide_at_budget` at the round budget), and the text says fix it, or narrow it with
+`acknowledged` and a reason. The finding counters still count it under `to_disclose`; no token,
+basis or wire shape changed.
 
 Kernel routing (`agent_probe_only`), deterministic and conservative: a reviewer
 `task_requirement_unmet`, or a reviewer's own `agent_criterion_unmet` label, is recorded as

@@ -404,7 +404,10 @@ tolerated by both absence proofs; listed as a changed row because it never bound
 `semantic_review_deferred_before_first_edit` (G7, standing and bounding on both routes, like any
 missing review). The finding kind `agent_criterion_unmet` reads through the existing limitation
 bases (`limitation_requested`, `limitation_disclosed`, `limitation_acknowledged_not_done`); its
-`limitation_requested` row offers `acknowledge` and `repair`. Only the agent's own answer narrows it
-into `limitation_disclosed`: a `yoetz-verification-limit` decision neither discloses it nor marks
-its obligation `externally_evaluated` (review of #1043). No basis, effect or table row changed
+`limitation_requested` row offers `acknowledge` and `repair`. Unlike a reviewer's request to state a
+limit it is work for the check continuation: an open one makes `overall_next.action` and
+`finding_checklist.next` `work_open_findings`, never `disclose_limitations`, while the counters
+still count it under `to_disclose`. Only the agent's own answer narrows it into
+`limitation_disclosed`: a `yoetz-verification-limit` decision neither discloses it nor marks its
+obligation `externally_evaluated` (review of #1043). No basis, effect, token or table row changed
 meaning. Decisions and predicates: ADR-040 amendment of 2026-10-12.
