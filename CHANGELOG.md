@@ -38,8 +38,10 @@ reverse-chronological released versions.
   repository or a submodule-style checkout), counted from the commit it had when the task started;
   one that cannot be read safely is named in the change header with the reason. Its untracked
   files are treated like yours (those already there when the task started and unchanged are left
-  out); when Yoetz could not list them whole at the task's start, they are named but their content
-  is never sent, because any of them may predate the task. Up to four files the task statement
+  out); when Yoetz could not list them whole at the task's start (for example, a repository created
+  during the task, one with no commit yet, one past the eighth, one a safety check refused, or one
+  whose untracked files did not fit), they are named but their content is never sent, because any
+  of them may predate the task. Up to four files the task statement
   names (a specification, a
   rulebook, the source being ported) travel with the review as bounded task-input excerpts when
   they are in the repository, unchanged since the task started (a tracked file only when its

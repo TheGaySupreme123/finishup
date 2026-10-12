@@ -44,6 +44,7 @@ from yoetz.adapters.git_subject_state import (
     open_local_workspace,
     run_read_only_git,
 )
+from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.change_capture import (
     MAX_BASELINE_UNTRACKED_FILES,
     MAX_CHECK_CHANGE_TEXT_BYTES,
@@ -854,9 +855,16 @@ class GitChangeCaptureAdapter:
             return TaskChangeBase(
                 object_format, commit, "task_start", untracked, complete, nested, listings
             )
-        except ChangeCaptureUnavailable, ValueError:
+        except ChangeCaptureUnavailable:
             # The commit is the base; a snapshot that cannot be taken only leaves every untracked
             # file to be shown as new, exactly as before the snapshot existed.
+            return TaskChangeBase(object_format, commit)
+        except ValueError as exc:
+            # A snapshot the base object refuses is a defect, kept diagnosable; the task still
+            # gets its commit base.
+            record_unexpected_exception_without_raising(
+                exc, component="start", operation="task_change_base_snapshot_dropped"
+            )
             return TaskChangeBase(object_format, commit)
 
     def _start_snapshot(
@@ -907,8 +915,13 @@ class GitChangeCaptureAdapter:
                 complete = False
                 continue
             identity = _path_identity(pinned.descriptor, path)
-            if identity is None or identity == _BLOCKED:
-                # Gone already, or behind a link: it cannot be a file this task started with.
+            if identity is None:
+                # Gone already: it cannot be a file this task started with.
+                continue
+            if identity == _BLOCKED:
+                # Git never lists a path behind a link, so this is a failed or raced ``stat``: the
+                # file may still be there, so the snapshot no longer names every file.
+                complete = False
                 continue
             try:
                 item = UntrackedBaselineFile(
@@ -1049,9 +1062,13 @@ class GitChangeCaptureAdapter:
             ):
                 return None
             identity = _path_identity(nested.descriptor, path)
-            if identity is None or identity == _BLOCKED:
-                # Gone already, or behind a link: it cannot be a file this task started with.
+            if identity is None:
+                # Gone already: it cannot be a file this task started with.
                 continue
+            if identity == _BLOCKED:
+                # Git never lists a path behind a link, so this is a failed or raced ``stat`` of a
+                # file that may still be there: the listing cannot be complete.
+                return None
             files.append(
                 UntrackedBaselineFile(
                     path.decode("utf-8", errors="strict"), _baseline_state(identity)

@@ -717,19 +717,26 @@ def decode_task_change_base(data: bytes) -> TaskChangeBase:
         raise _invalid()
     if source["schema"] != _TASK_CHANGE_BASE_SCHEMA:
         raise _invalid()
+    # Only shapes the encoder writes are read: the snapshot's three keys together or not at all,
+    # ``nested_untracked`` only beside them and never empty or null.
+    snapshot = {"untracked", "untracked_complete", "nested"} & set(source)
+    if snapshot not in (set(), {"untracked", "untracked_complete", "nested"}) or (
+        "nested_untracked" in source and not snapshot
+    ):
+        raise _invalid()
     untracked_raw = source.get("untracked", [])
     nested_raw = source.get("nested", [])
-    listings_raw = source.get("nested_untracked")
+    listings_raw = source.get("nested_untracked", [])
     if (
         type(untracked_raw) is not list
         or type(nested_raw) is not list
-        or (listings_raw is not None and (type(listings_raw) is not list or not listings_raw))
+        or type(listings_raw) is not list
+        or ("nested_untracked" in source and not listings_raw)
     ):
-        # An empty ``nested_untracked`` is never written, so it is never read either.
         raise _invalid()
     untracked = _baseline_files(cast(list[object], untracked_raw))
     listings: list[NestedUntrackedBaseline] = []
-    for row in cast(list[object], listings_raw or []):
+    for row in cast(list[object], listings_raw):
         if type(row) is not list or len(cast(list[object], row)) != 3:
             raise _invalid()
         path, complete, files = cast(list[object], row)
@@ -742,7 +749,7 @@ def decode_task_change_base(data: bytes) -> TaskChangeBase:
             raise _invalid()
         path, commit = cast(list[object], row)
         nested.append((cast(str, path), cast(str, commit)))
-    return TaskChangeBase(
+    base = TaskChangeBase(
         cast(Literal["sha1", "sha256"], source["object_format"]),
         cast(str, source["commit"]),
         cast(TaskChangeBaseOrigin, source.get("origin", "task_start")),
@@ -751,6 +758,10 @@ def decode_task_change_base(data: bytes) -> TaskChangeBase:
         tuple(nested),
         tuple(listings),
     )
+    if snapshot and not (base.untracked or base.untracked_complete or base.nested):
+        # An empty snapshot is never written: its keys are left out.
+        raise _invalid()
+    return base
 
 
 def _baseline_files(raw: object) -> tuple[UntrackedBaselineFile, ...]:

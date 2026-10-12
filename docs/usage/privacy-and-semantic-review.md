@@ -294,12 +294,14 @@ digests for the untracked files inside each such repository, so they are left ou
 like the ones in yours. When that commit was not kept for a nested repository yours tracks (for
 example, a task started before this version), its change starts from the commit your repository
 records for it, and the header says that commits made in it before the task may then be included.
-When the untracked files inside a nested repository were not all kept (a task started before this
-version, or more untracked files than Yoetz keeps), they are listed by name only and their content
-is never sent, because any of them may have been there before the task; the header says so and
-counts them as not shown. When the task statement names files the work depends on, such as a
-specification, a
-rulebook or the source being ported (or the task declares them as inputs), up to four of them
+When the untracked files inside a nested repository were not all kept (for example: the task
+started before this version; the repository was created during the task, had no commit when it
+started, came after the eighth nested repository or failed a safety check; or its untracked files
+were too many for Yoetz to keep, had names it cannot store, could not be examined or could not be
+listed in time), they are listed by name only and their content is never sent, because any of them
+may have been there before the task; the header says so and counts them as not shown. When the
+task statement names files the work depends on, such as a specification, a rulebook or the source
+being ported (or the task declares them as inputs), up to four of them
 travel too, each up to 16 KiB, but only when the file is in your repository, has not changed since
 the task started, is not ignored by Git and is not named like a credential. A file Git tracks
 travels only when the task's starting commit was kept, Git compares it normally (a file marked
