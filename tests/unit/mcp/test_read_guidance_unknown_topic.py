@@ -23,10 +23,12 @@ def _error(result: object) -> dict[str, object]:
     "anchor",
     (
         # Shapes observed in real agent requests: guessed from tool names, with underscores, and
-        # derived from event-family names. None is in the closed catalog.
+        # derived from event-family names. None is in the closed catalog, and none names exactly
+        # one catalogued topic (``plan-revised``, also observed, now reads the one topic its words
+        # name: tb4n4, #1049, ``test_tb4n4_call_traps``).
         "publish-work",
         "publish_work-plan-revision",
-        "plan-revised",
+        "obligation-published",
     ),
 )
 async def test_unknown_anchor_lists_the_documents_registered_anchors(anchor: str) -> None:

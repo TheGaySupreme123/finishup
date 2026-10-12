@@ -52,6 +52,7 @@ from yoetz.protocol.readiness_text import (
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
+    obligation_resolve_recipe_variants,
     predicted_receipt_variants,
     readiness_directive,
     recheck_note,
@@ -873,6 +874,10 @@ def render_human_status(result: StatusSuccessModel) -> str:
                 lines.append(
                     f"{obligation.obligation_id}: {remaining} more command attempts; use JSON status for all items"
                 )
+        # tb4n4 (#1049): the same resolution recipe the MCP status text states, field included.
+        recipe = obligation_resolve_recipe_variants(result.page.items)
+        if recipe:
+            lines.append(recipe[0])
     gaps = tuple(result.gaps) + tuple(result.coverage.known_gaps)
     lines.append("Gaps: " + (", ".join(dict.fromkeys(gaps)) if gaps else "none"))
     lines.extend(_check_time_change_sentences(tuple(dict.fromkeys(gaps))))

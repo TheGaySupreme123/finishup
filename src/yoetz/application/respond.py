@@ -516,6 +516,16 @@ _BLOCKING_HINTS: Final[tuple[tuple[frozenset[str], str], ...]] = (
         "a declared deliverable that held content is empty, truncated or gone: restore it (status"
         " readiness says which and why), then check",
     ),
+    (
+        # tb4n4 kv (#1049): the agent looped on this code with only the generic coverage hint.
+        frozenset({"coverage:command_attempt_mismatch"}),
+        "a requested command item is linked to an observed run of another command: if a script"
+        " or client ran the requested command, publish an action_recorded of kind"
+        " command with that exact value in attempted_items and the run's action event id in"
+        " causal_parents (disclosed as your equivalence), otherwise run it as recorded, then"
+        " check; a command item is a shell command, so a message sent to the program under test"
+        " belongs in the obligation's description or acceptance_criteria",
+    ),
 )
 
 

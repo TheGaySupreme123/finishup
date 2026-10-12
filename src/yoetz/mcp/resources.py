@@ -30,6 +30,7 @@ __all__ = [
     "resource_for_uri",
     "read_resource_page",
     "read_resource",
+    "resolve_guidance_topic_uri",
 ]
 
 
@@ -663,6 +664,84 @@ def _topic_resource(uri: str) -> GuidanceResource:
         section_start=start,
         section_end=end,
     )
+
+
+# An explicit ``<a id="..."></a>`` target a guidance document writes beside a heading. Several name
+# the procedure more briefly than the heading (``attempt-accounting``), so an agent reading the
+# text requests them.
+_HTML_ANCHOR: Final = re.compile(r'<a id="([a-z0-9][a-z0-9-]{0,127})"></a>', re.ASCII)
+_MAX_GUESSED_TOPIC_URI_CHARS: Final = 512
+
+
+@lru_cache(maxsize=16)
+def _document_topic_anchors(document_uri: str) -> tuple[tuple[str, ...], Mapping[str, str]]:
+    """One document's catalogued topic anchors, and its explicit anchor ids mapped onto them.
+
+    An explicit anchor maps to the catalogued topic of the heading it sits under, computed with
+    the same slug and repeat-suffix rule ``_topic_resource`` reads, so both agree on the section.
+    """
+
+    prefix = document_uri + "#"
+    catalogued = tuple(uri[len(prefix) :] for uri in GUIDANCE_TOPIC_URIS if uri.startswith(prefix))
+    text = _RESOURCE_BY_URI[document_uri].source_bytes.decode("utf-8", errors="strict")
+    seen: dict[str, int] = {}
+    owners: list[tuple[int, str]] = []
+    for _level, title, start, _end in _guidance_headings(text):
+        slug = _guidance_anchor(title)
+        occurrence = seen.get(slug, 0) + 1
+        seen[slug] = occurrence
+        owners.append((start, slug if occurrence == 1 else f"{slug}-{occurrence}"))
+    aliases: dict[str, str] = {}
+    for match in _HTML_ANCHOR.finditer(text):
+        owner = None
+        for start, anchor in owners:
+            if start > match.start():
+                break
+            owner = anchor
+        if owner in catalogued and match.group(1) not in catalogued:
+            aliases.setdefault(match.group(1), owner)
+    return catalogued, MappingProxyType(aliases)
+
+
+def resolve_guidance_topic_uri(uri: object) -> str | None:
+    """The one catalogued topic a near-miss anchor names, or ``None`` (tb4n4, issue #1049).
+
+    Seven tb4n4 reads guessed an anchor and were refused. For one of the five guidance documents,
+    an anchor resolves, in this order and deterministically, when it is:
+
+    1. a catalogued anchor once spelled the shared slug way (``publish_work-decision`` and
+       ``Publish-Work-Decision`` are ``publish-work-decision``: case, ``_`` and punctuation fold);
+    2. an explicit ``<a id>`` target the document writes under a catalogued heading
+       (``attempt-accounting`` is ``requested-items-and-attempt-accounting``);
+    3. words that all appear in exactly one catalogued anchor of that document
+       (``decision`` is ``publish-work-decision``). Two or more candidates are ambiguous and never
+       resolve.
+
+    Anything else, a focused topic or an unknown document returns ``None``, and the caller keeps
+    its refusal with the registered alternatives. The URI is never interpreted as a path.
+    """
+
+    if type(uri) is not str or len(uri) > _MAX_GUESSED_TOPIC_URI_CHARS:
+        return None
+    document, separator, anchor = uri.partition("#")
+    if not separator or not anchor or document not in _RESOURCE_BY_URI:
+        return None
+    try:
+        catalogued, aliases = _document_topic_anchors(document)
+    except ValueError, OSError:
+        # An unreadable document resolves nothing; the caller keeps its ordinary refusal.
+        return None
+    slug = _guidance_anchor(anchor)
+    if not slug.isascii() or not slug:
+        return None
+    if slug in catalogued:
+        return f"{document}#{slug}"
+    alias = aliases.get(slug)
+    if alias is not None:
+        return f"{document}#{alias}"
+    words = frozenset(slug.split("-"))
+    matches = [candidate for candidate in catalogued if words <= frozenset(candidate.split("-"))]
+    return f"{document}#{matches[0]}" if len(matches) == 1 else None
 
 
 def _resource_for_uri(uri: object) -> GuidanceResource:

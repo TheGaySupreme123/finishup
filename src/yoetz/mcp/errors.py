@@ -344,18 +344,38 @@ _REFERENCE_LIST_CORRECTIONS: Final[Mapping[tuple[str, str], tuple[str, tuple[str
                 "(evd_) in supporting_refs",
                 ("limitation_refs", "supporting_refs"),
             ),
+            # tb4n4 (#1049): six more results cited res_ ids here; the payload list and its
+            # envelope mirror are evidence ids by contract, so the sentence names every place a
+            # result id does go.
             ("result_recorded", "evidence_refs"): (
                 "a result's evidence_refs names only evidence ids (evd_); cite result ids (res_) "
-                "from a claim's supporting_refs or limitation_refs instead",
-                ("evidence_refs",),
+                "from a claim's supporting_refs or limitation_refs, or an obligation's "
+                "resolution_evidence_refs, instead",
+                ("evidence_refs", "resolution_evidence_refs"),
             ),
             ("claim_recorded", "disputes_refs"): (
                 "disputes_refs names claim ids (clm_) or event ids (evt_); answer a finding "
                 "(fnd_) with the respond tool instead",
                 ("disputes_refs",),
             ),
+            # tb4n4 (#1049): eight resolutions left the list out or empty. The schema's own
+            # if/then names the field; this says what goes in it and that it is the only change.
+            ("obligation_published", "resolution_evidence_refs"): (
+                "resolution_evidence_refs belongs only to status resolved, where it names one or "
+                "more evidence (evd_) or result (res_) ids that show the work done, unique and in "
+                "ascending order; repeat every other field as status view obligations shows it",
+                ("resolution_evidence_refs", "status"),
+            ),
         }
     )
+)
+# Reference lists whose own absence or emptiness is the common mistake, so their sentence also
+# answers a rejection located at the list itself, not only at one of its members.
+_FIELD_LEVEL_REFERENCE_CORRECTIONS: Final = frozenset(
+    {("obligation_published", "resolution_evidence_refs")}
+)
+_FIELD_LEVEL_REFERENCE_REASONS: Final = frozenset(
+    {"invalid_type_or_value", "conditional_field_required"}
 )
 _EVENT_DRAFT_PAYLOAD_MEMBER_POINTER: Final = re.compile(
     r"/event_drafts/[0-9]{1,3}/payload/([a-z][a-z0-9_]{0,63})/[0-9]{1,3}", re.ASCII
@@ -1335,20 +1355,30 @@ def _corrective_hint_parts(tool: str | None, locations: Sequence[Mapping[str, st
 
 
 def _reference_list_hint_parts(locations: Sequence[Mapping[str, str]]) -> list[str]:
-    """Return the checked-in id-kind sentence for a rejected payload reference-list member."""
+    """Return the checked-in id-kind sentence for a rejected payload reference-list member.
+
+    A list in ``_FIELD_LEVEL_REFERENCE_CORRECTIONS`` is also answered at the list itself, where an
+    omitted or empty list is reported.
+    """
 
     parts: list[str] = []
     for location in locations:
-        if location.get("reason") != "invalid_type_or_value":
-            continue
+        reason = location.get("reason")
         pointer = location.get("field", "")
-        match = (
-            _EVENT_DRAFT_PAYLOAD_MEMBER_POINTER.fullmatch(pointer) if type(pointer) is str else None
-        )
         family = location.get("family")
-        if match is None or type(family) is not str:
+        if type(pointer) is not str or type(family) is not str:
             continue
-        entry = _REFERENCE_LIST_CORRECTIONS.get((family, match.group(1)))
+        key: tuple[str, str] | None = None
+        member = _EVENT_DRAFT_PAYLOAD_MEMBER_POINTER.fullmatch(pointer)
+        if member is not None and reason == "invalid_type_or_value":
+            key = (family, member.group(1))
+        elif (
+            _EVENT_DRAFT_PAYLOAD_FIELD_POINTER.fullmatch(pointer) is not None
+            and reason in _FIELD_LEVEL_REFERENCE_REASONS
+        ):
+            candidate = (family, pointer.rsplit("/", 1)[-1])
+            key = candidate if candidate in _FIELD_LEVEL_REFERENCE_CORRECTIONS else None
+        entry = _REFERENCE_LIST_CORRECTIONS.get(key) if key is not None else None
         if entry is None or entry[0] in parts:
             continue
         parts.append(entry[0])

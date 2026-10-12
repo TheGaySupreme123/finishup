@@ -831,6 +831,12 @@ def _canonical_positive_uint_wire(value: object) -> str:
 
 
 def _canonical_page_limit_wire(value: object) -> str:
+    # tb4n4 (#1049): four status calls sent ``limit`` as a JSON integer. A page size has one
+    # meaning in either spelling, so an integer from 1 to 100 is read as its canonical decimal
+    # string here, before the schema check, routing or any hash sees the request. ``bool`` is
+    # not admitted (``type(True) is bool``), and every other value keeps the refusal.
+    if type(value) is int and 1 <= value <= 100:
+        value = str(value)
     if type(value) is not str or value not in _CANONICAL_PAGE_LIMITS:
         raise ProtocolValueError("noncanonical_integer_string")
     return value
@@ -1659,6 +1665,53 @@ class StartRequestModel(PublicRequestModel):
         return self
 
 
+_IGNORED_DECISION_ID_KEY: Final = "decision_id"
+
+
+def _drop_ignored_decision_ids(drafts: object) -> object:
+    """Drop ``decision_id`` from every ``decision_recorded`` draft payload (tb4n4, #1049).
+
+    ``decision_recorded`` is the one ordinary family without an id of its own (a decision is
+    addressed by its ``event_id``), and ten tb4n4 attempts sent a ``decision_id`` by analogy with
+    ``action_id``, ``claim_id`` and the rest. The key has no meaning in any spelling, so it is
+    accepted and ignored: dropped here, before the schema check and before anything prepares,
+    commits or hashes the drafts. A retry with or without it is therefore the same request (one
+    request digest), and the recorded event never holds it. Every other unknown key, in this and
+    every other family, keeps its ``extra_forbidden`` refusal.
+    """
+
+    if not isinstance(drafts, list | tuple):
+        return drafts
+    sequence = cast(Sequence[object], drafts)
+    adapted: list[object] = []
+    changed = False
+    for draft in sequence:
+        replacement: object = draft
+        if isinstance(draft, Mapping):
+            source = cast(Mapping[object, object], draft)
+            schema: object = source.get("schema")
+            payload: object = source.get("payload")
+            if (
+                isinstance(schema, Mapping)
+                and cast(Mapping[object, object], schema).get("name") == "decision_recorded"
+                and isinstance(payload, Mapping)
+                and _IGNORED_DECISION_ID_KEY in cast(Mapping[object, object], payload)
+            ):
+                kept: dict[object, object] = {
+                    key: value
+                    for key, value in cast(Mapping[object, object], payload).items()
+                    if key != _IGNORED_DECISION_ID_KEY
+                }
+                rebuilt: dict[object, object] = dict(source)
+                rebuilt["payload"] = kept
+                replacement = rebuilt
+                changed = True
+        adapted.append(replacement)
+    if not changed:
+        return sequence
+    return adapted if isinstance(sequence, list) else tuple(adapted)
+
+
 class PublishWorkRequestModel(PublicRequestModel):
     optional_non_null_fields = frozenset({"dry_run"})
 
@@ -1668,6 +1721,18 @@ class PublishWorkRequestModel(PublicRequestModel):
     event_drafts: tuple[JsonValue, ...]
     # When true, validate the batch and return a non-evidential preview without appending.
     dry_run: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_decision_ids(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        source = cast(Mapping[object, object], value)
+        drafts = source.get("event_drafts")
+        adapted = _drop_ignored_decision_ids(drafts)
+        if adapted is drafts:
+            return cast(object, value)
+        return {**source, "event_drafts": adapted}
 
     @model_validator(mode="after")
     def _validate_publish_work_request(self) -> PublishWorkRequestModel:

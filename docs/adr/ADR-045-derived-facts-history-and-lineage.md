@@ -287,3 +287,21 @@ receipt, so a present-but-not-reviewed deliverable is named.
 - Not done here, owned elsewhere: the Stop gate's active-Stop suppression of ordinary tokens and the
   premise text (RC-8, wave 2), the hook-observed-edit check invalidation (`c4`, lane LO), and a real
   reducer reopen of a resolved obligation.
+
+## Amendment (tb4n4, issue #1049): an agent link is never a command mismatch
+
+Section 4 had status `command_attempts` compare every linked observed run with the planned command
+by `planned_match`. That included the PL6-3 agent link (ADR-033: a cooperative `command` action
+naming the exact requested value in `attempted_items` with the observed run in `causal_parents`),
+which the planned-verification fact reads as run and discloses as `planned_verification_agent_linked`
+and which the `planned_verification_not_observed` sentence tells the agent to publish. The same link
+then read `asserted_observed_mismatch`, so completion carried the agent-actionable
+`command_attempt_mismatch`, every `self_verified` answer was refused on it, and no publication
+cleared it (tb4n4 kv: the protocol command `VERSION` declared as a requested `command` item, linked
+to the client run that sent it, looped). A linked run that does not match is now `unknown` when any
+linked run is such an agent link, so the link yields the standing `command_attempt_uncorroborated`
+beside the `planned_verification_agent_linked` disclosure: the observed outcome still decides, the
+equivalence stays disclosed and the receipt is never clean on it. An assertion that is not a
+`command` action (an `edit` copying the value) or a resolution result alone still reads a mismatch.
+`kernel.command_attempts` is the one rule; status, closure preparation, check gaps and the receipt
+read it unchanged.

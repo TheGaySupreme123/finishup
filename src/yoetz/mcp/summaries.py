@@ -40,6 +40,7 @@ from yoetz.protocol.readiness_text import (
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
+    obligation_resolve_recipe_variants,
     predicted_receipt_variants,
     readiness_directive,
     recheck_note,
@@ -764,6 +765,15 @@ def _obligation_ids_from_status(source: Mapping[str, JsonValue], view: str) -> t
         for item in raw_items
         if isinstance(item, Mapping) and is_valid_id(IdKind.OBLIGATION, item.get("obligation_id"))
     )
+
+
+def _obligation_resolve_recipe(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """The shared resolution recipe when the obligations page holds an unresolved row."""
+
+    page = source.get("page")
+    if not isinstance(page, Mapping):
+        return ()
+    return obligation_resolve_recipe_variants(cast(Mapping[str, JsonValue], page).get("items"))
 
 
 def _finding_frontiers_from_status(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
@@ -1879,6 +1889,11 @@ def summary_for_status(envelope: object) -> str:
             )
         )
     parts.extend(_status_list_parts(render, source, view))
+    if view == "obligations":
+        # tb4n4 (#1049): the view a resolution is authored from names the field it needs.
+        recipe = render.variants("resolve_recipe", lambda: _obligation_resolve_recipe(source))
+        if recipe:
+            parts.append(_opt(*recipe, priority=_P_STATE))
     parts.append(_req(f"unanswered findings: {unanswered}; reported gaps: {gaps}."))
     parts.extend(_closure_section(render, source))
     page = source.get("page")

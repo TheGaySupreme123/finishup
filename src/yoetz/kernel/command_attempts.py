@@ -88,9 +88,18 @@ def command_attempts(
     hook's installation-keyed commitments, never text) is compared with the planned command by
     the shared matcher of ``task_facts`` (ADR-045): the same command, the same command up to
     wrappers, or a run that began with the planned arguments or carried its program and flags.
+
+    An agent link (PL6-3, ADR-033: a cooperative ``command`` action whose ``attempted_items``
+    holds the exact value and whose ``causal_parents`` names the observed run) is the agent's
+    declared equivalence, which ``task_facts`` already reads as run and discloses as
+    ``planned_verification_agent_linked``. A linked run that does not match the planned command
+    is therefore ``unknown`` (uncorroborated), never ``asserted_observed_mismatch``: the guidance
+    tells the agent to make exactly this link, and calling it a mismatch left an agent-actionable
+    gap no publication could clear (tb4n4 kv, issue #1049).
     """
 
     from yoetz.kernel.task_facts import (  # lazy: task_facts imports this module
+        cooperative_event_ids_from_records,
         observed_run_from_command,
         planned_match,
         requested_planned_command,
@@ -102,6 +111,7 @@ def command_attempts(
     by_event = {
         row.event_id: row for row in records if row.ledger.ingestion_sequence <= state.frontier
     }
+    cooperative = cooperative_event_ids_from_records(by_event.values())
     output: list[StatusCommandAttemptModel] = []
     for index, requested in enumerate(obligation.requested_items):
         if requested.item_kind.value != "command":
@@ -117,12 +127,19 @@ def command_attempts(
             )
         ]
         linked: set[EventId] = set()
+        agent_linked: set[EventId] = set()
         for assertion in assertions:
             event = by_event.get(assertion.source_event_id)
             if event is not None:
                 linked.update(event.causal_parents)
                 if is_observation_authored(event):
                     linked.add(event.event_id)
+                elif (
+                    event.event_id in cooperative
+                    and assertion.payload is not None
+                    and assertion.payload.action_kind is ActionKind.COMMAND
+                ):
+                    agent_linked.update(event.causal_parents)
         for ref in obligation.resolution_evidence_refs:
             if not ref.startswith("res_"):
                 continue
@@ -175,6 +192,11 @@ def command_attempts(
                 )
         # Without an assertion this is evidence discovery, not an asserted/observed disagreement.
         if not assertions and relation == "asserted_observed_mismatch":
+            relation = "unknown"
+        # The agent declared a linked run equivalent (PL6-3): disclosed, never a mismatch.
+        if relation == "asserted_observed_mismatch" and any(
+            row.event_id in agent_linked for row in observed
+        ):
             relation = "unknown"
         if len(assertions) > 64 or len(observed) > 64:
             relation = "unknown"
