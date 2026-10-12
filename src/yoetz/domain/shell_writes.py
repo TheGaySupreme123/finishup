@@ -33,7 +33,7 @@ from __future__ import annotations
 import os
 import posixpath
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Final, NamedTuple
 
@@ -948,6 +948,7 @@ def shell_write_scope(
     inside: Callable[[str], bool],
     owned_roots: tuple[str, ...] = (),
     relative_only: bool = False,
+    also_written: Iterable[str] = (),
 ) -> str | None:
     """The ``write_scope`` a shell command earns: ``outside_workspace``, ``workspace`` or ``None``.
 
@@ -963,11 +964,17 @@ def shell_write_scope(
     in it are named after something else, so a notes or receipt *file name* never exempts it.
     ``relative_only`` reads only relative paths: a caller that knows no workspace root (the Codex
     rollout stream) cannot tell an absolute path inside it from one outside, so it claims only
-    what a working directory makes certain.
+    what a working directory makes certain. ``also_written`` adds files the caller knows the
+    command writes although its tokens cannot show it (the files a shell ``apply_patch <<EOF``
+    heredoc names, #1046 review); they are classified by the same rules.
     """
 
+    targets = dict(_write_targets(command))
+    for extra in also_written:
+        if extra:
+            targets.setdefault(extra, False)
     classes: set[str] = set()
-    for path, directory in _write_targets(command).items():
+    for path, directory in targets.items():
         absolute = path.startswith("/")
         if relative_only and absolute:
             continue

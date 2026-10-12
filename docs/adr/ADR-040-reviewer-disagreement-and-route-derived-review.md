@@ -484,8 +484,9 @@ standing gap `semantic_review_deferred_before_first_edit` (G7, semantic-only for
 effect follows the route the check recorded, below) when all hold: the phase is routine; the mode,
 the `policy` route and the configured reviewer would dispatch a review (`semantic_required`
 included); the frozen prefix records no material edit (`material_edit_recorded`: a counting
-observed edit or shell write under ADR-042/045, or an agent-published `edit` action); and the
-check-time capture did not observe a workspace change. Nothing is composed or sent. The deferral
+observed edit or shell write under ADR-042/045, whether or not its result arrived, so a Codex shell
+`apply_patch <<EOF` counts by the files its patch names, or an agent-published `edit` action); and
+the check-time capture did not observe a workspace change. Nothing is composed or sent. The deferral
 comes before the review's own admission, so a pre-work check asks for no repository grant,
 disclosure decision or review input either, and a missing provider or a policy block
 (`not_configured`, `blocked_by_policy`) is reported by the first check after the edit. A resumed

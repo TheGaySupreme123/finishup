@@ -1096,6 +1096,15 @@ def _observed_state(
             # "not observed".
             tokens = observed_action_runtime_tokens(payload.description)
             command_tokens.update(tokens)
+            if observed_shell_write_counts(payload.description, exempt):
+                # ADR-045: a shell write counts whatever its outcome, so one whose result never
+                # arrives counts like a pending edit. A Codex shell ``apply_patch <<EOF`` is
+                # always one: Codex applies the patch itself and fires only the pre-event
+                # (#1041), so its write token is the ledger's only record of the edit (#1046).
+                latest_edit = max(latest_edit or 0, action.source_frontier)
+                latest_edit_event = action.source_event_id
+                edit_tokens.update(tokens & (SHELL_EDIT_TOKENS | NON_COUNTING_WRITE_TOKENS))
+                acting = True
             runs.append(
                 _ObservedRun(
                     action.source_frontier,

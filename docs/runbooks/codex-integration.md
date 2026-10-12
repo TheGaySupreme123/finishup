@@ -2254,7 +2254,12 @@ whose call id the item names; an item naming another call the session's hooks re
 mode a native `apply_patch` item carries its own call id) is that call's change and closes none;
 only an item whose id names no reported call (code mode's `exec-<uuid>`) closes the session's oldest
 pre-only attempt. One no file change closes before the ten-minute pending deadline or the session's
-end still records `pending_attempt_expired`. Before this, 44 of tb4n4's 60 deterministic attempts
+end still records `pending_attempt_expired`. Its pending action is the ledger's only record of the
+edit (the `FileChange` item stays local), so the hook gives it the write scope of the files its
+patch headers name (`*** Update File: ...`), classified as the native `apply_patch` tool's paths
+are: it counts as an edit for the latest-edit fact, supersedes an earlier check as an edit, and is
+the first material edit that re-arms a deferred review where the check-time capture is unavailable
+(a non-git workspace; #1046 review). Before this, 44 of tb4n4's 60 deterministic attempts
 carried that gap for this host behaviour alone. Limit: in code mode the item id (`exec-<uuid>`)
 does not name the hook's call, so a nested `tools.apply_patch` change in the same session can close
 a shell patch's attempt in its place; a reported call is known from its open pre or the local ring

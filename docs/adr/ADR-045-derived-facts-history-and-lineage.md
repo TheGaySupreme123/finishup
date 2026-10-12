@@ -177,7 +177,12 @@ changed files after X" shares it: the latest-edit fact (`task_facts`), later-mat
 classification (a shell write after a check is `edit_or_write`, so it supersedes the check and
 re-arms the closing review exactly like an edit tool, ADR-046), the claim-verification
 latest-edit rule (`work_integrity`) and the concern-fold materiality test (`review_concern`). A
-failed or outcomeless shell write supersedes as a failed edit does. A command with no write token
+failed or outcomeless shell write supersedes as a failed edit does, and the latest-edit fact counts
+a shell write whose result never arrived as it counts an edit tool call still pending (#1046
+review). A Codex shell `apply_patch <<EOF` is always one: Codex applies the patch itself and fires
+only the pre-event (#1041), so the hook names the files its patch headers name
+(`*** Update File: ...`), classified as the native `apply_patch` tool's paths are; the heredoc body
+is otherwise data. A command with no write token
 (unknown scope, or `none`) and Yoetz's own exploration runs stay as before. One classifier decides every path, in the
 hook as in the Codex stream: the hook has no separate outside-workspace precheck, so
 `cp source.json /opt/yoetz_receipt.json` is `yoetz_owned` (Yoetz's own material), not

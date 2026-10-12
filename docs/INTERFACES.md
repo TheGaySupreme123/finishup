@@ -4289,8 +4289,9 @@ logged as `semantic_agent_criteria`).
 **No review before the first material edit (issue #1046).** A check whose phase is routine, whose
 mode, route (`policy`) and capability would dispatch a review, and whose frozen prefix records no
 material edit (`kernel.task_facts.material_edit_recorded`: an observed edit or shell write that
-counts under ADR-042/045, or an agent-published `edit` action) while the check-time capture
-observed no workspace change, runs the local checks only: `semantic_status` `not_requested`,
+counts under ADR-042/045, whether or not its result arrived, so a Codex shell `apply_patch <<EOF`
+counts by the files its patch names, or an agent-published `edit` action) while the check-time
+capture observed no workspace change, runs the local checks only: `semantic_status` `not_requested`,
 `semantic_reason` `deterministic_mode`, and the standing gap
 `semantic_review_deferred_before_first_edit` (rule G7, a semantic-only gap for absence proofs).
 Nothing is composed or sent. `semantic_required` included: the deferral is not a failed review, so

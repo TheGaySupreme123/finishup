@@ -325,7 +325,9 @@ reverse-chronological released versions.
   calls, and a hooked direct call is recorded once (#1038).
 
 - In Codex, a shell `apply_patch <<EOF` no longer leaves a "pending attempt expired" limitation
-  once the rollout shows the file change; a rollout line Codex is still writing is no longer
+  once the rollout shows the file change, and it counts as an edit of the files its patch names
+  although Codex reports no result for it: it makes an earlier verification stale and lets the next
+  check review, where a non-git workspace gives no other sign of the change; a rollout line Codex is still writing is no longer
   reported as a truncated payload (one Codex left unfinished still is, once a later reconcile finds
   it unchanged); and Codex's record of a Stop-hook prompt is no longer an unsupported event
   (#1041).
