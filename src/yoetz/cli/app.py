@@ -48,6 +48,7 @@ from yoetz.cli.render import (
     render_human_awaiting_human,
     render_human_check,
     render_human_error,
+    render_human_inspection,
     render_human_receipt,
     render_human_status,
     render_local_recovery_lines,
@@ -65,6 +66,7 @@ from yoetz.protocol.ids import IdKind, new_id
 from yoetz.protocol.models import (
     MAX_TASK_STATEMENT_BYTES,
     CheckAwaitingHumanModel,
+    CheckInspectionModel,
     CheckRequest,
     CheckResult,
     CheckSuccessModel,
@@ -823,6 +825,8 @@ async def _call_workflow(
             typer.echo(render_human_check(branch))
         elif isinstance(branch, CheckAwaitingHumanModel):
             typer.echo(render_human_awaiting_human(branch))
+        elif isinstance(branch, CheckInspectionModel):
+            typer.echo(render_human_inspection(branch))
         elif isinstance(branch, StatusSuccessModel):
             typer.echo(render_human_status(branch))
         elif isinstance(branch, ReceiptSuccessModel):

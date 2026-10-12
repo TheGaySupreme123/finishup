@@ -97,14 +97,18 @@ def test_discovery_procedure_uses_published_ids_filters_and_structural_links(nam
 def test_codex_skill_routes_evidence_first_closure_to_the_workflow_topic() -> None:
     text = _collapsed(_REPO_ROOT / "skills" / "codex" / "yoetz" / "SKILL.md")
     assert "yoetz://guidance/workflow.md#start-and-resume" in text
-    assert "coverage before `check`" in text
+    # Issue #1048: the core is the operating card; other pages are read on demand.
+    assert "that core is the operating card" in text
+    assert "other pages only when a result names them" in text
 
 
 def test_agent_instructions_floor_names_the_filtered_discovery() -> None:
     text = _collapsed(_GUIDANCE / "agent-instructions.md")
     for phrase in (
-        "Before material evidence or a completion claim, read `status`; cite IDs you published",
-        "Find native captures with `view=evidence` filter `strength=immutable_snapshot`",
+        # Issue #1048: no mandatory status read before a write; discovery stays named.
+        "a prior `status` read or `dry_run` is optional",
+        "Cite IDs you published; find native captures with `view=evidence` filter "
+        "`strength=immutable_snapshot`",
         "reusing only IDs a structural link ties to the claim",
         "Omitted descriptions are a privacy setting, not missing evidence",
     ):

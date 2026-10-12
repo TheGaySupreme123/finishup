@@ -101,7 +101,8 @@ def test_agent_instructions_keep_the_safety_floor_within_budget() -> None:
         "Never publish hidden reasoning or chain-of-thought,",
         "full prompts, transcripts, conversation history, credentials, secrets, whole files/repositories,",
         "Select `semantic_required` when the user, effective policy, or named acceptance criterion",
-        "Before material evidence or a completion claim, read `status`; cite IDs you published",
+        # Issue #1048 (ADR-047): no mandatory status read before a write; citation stays bounded.
+        "Cite IDs you published; find native captures",
     ):
         assert phrase in text, phrase
 

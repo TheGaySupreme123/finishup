@@ -8625,6 +8625,52 @@ request digest and the detached-check identity; the member is never recorded in 
 (`fixtures/canonical/check-observations-awaited-1.4.0.case.json`). ADR-029 amendment of
 2026-10-07 owns the decision.
 
+**Inspection check (`mode: inspect`, #1048).** `check-request` 1.1.0's `mode` admits `inspect`
+(unreleased, in place). It is a read routed like `status` (payload read, no write capability): it
+freezes no case, appends no event, writes no operation record, mints no finding, dispatches no
+reviewer and egresses nothing, so the daemon classifies it as read-only (a failure is a retryable
+read failure answered by a fresh request, never a same-`request_id` replay) and never runs it
+detached. The request model refuses `final_review`, `max_findings`, `policy_packs` and `scope`
+beside it, each at its own field with reason `extra_forbidden` (kept out of the JSON Schema: a root
+conditional lowers the advertised check input to `unknown` on observed hosts);
+`await_observations` is accepted and reported as on any check. `expected_frontier` is not
+compared. The answer is the `inspection` branch of `check-result` 1.4.0 (`state: inspected`,
+discriminated beside `complete` and `awaiting_human`/`awaiting_input`; no verdict, findings,
+coverage, versions or `result_frontier`), every leaf structural:
+
+- `subject_frontier` — the frontier read.
+- `remaining` — `readiness`, `predicted_conclusion` (optional), `agent_actionable` and
+  `standing_limitations` exactly as `status` `closure_readiness` prints them at that frontier
+  (`application/status.current_closure_readiness`, ADR-046); `obligations` (at most 64; count in
+  `obligation_count`) — every effective obligation whose class is not `resolved`, as
+  `{obligation_id, closure_class, closure_basis, missing}`, agent work first; `missing` (at most 8)
+  names `{kind, owner, item_indexes?}` with `kind` `requested_item_not_attempted`,
+  `resolution_evidence_not_cited`, `command_attempt_mismatch`, `blocker_unconfirmed` (owner
+  `agent`) or `command_run_not_observed` (owner `yoetz`: an asserted command attempt with no
+  linked hook observation); `findings` (at most 64; `finding_count`) — every finding whose class is
+  not `resolved`, as `{finding_id, closure_class, closure_basis}`.
+- `observed_since_check` — `last_check_frontier` (absent before any check), `action_count`, and
+  the newest 64 hook-observed `action_recorded` rows after that frontier whose `later_material`
+  class is `edit_or_write`, `exploration`, `non_counting_write` or `other` (Yoetz's own calls and
+  host bookkeeping are not listed): `{event_id, ledger_sequence, action_kind, material_class,
+  tool_name?, write_scope?, outcome?, exit_status?, command_commitment?}`. Observed edits record a
+  write class, never a path.
+- `evidence_alignment` — `basis: recorded_links` and, for each effective obligation citing
+  `resolution_evidence_refs` (at most 64), its declared items (requested `command` items and
+  `file`/`directory` items whose role is not `input`, by index and kind), and per cited ref the
+  `origin` (`observed`, `asserted` or `unattributed`) of the action behind it (a result's action;
+  for evidence, the actions of results that cite it and an action named in its `causal_parents`),
+  that action's keyed `command_commitment`, the result `outcome`, and `named_item_indexes` — the
+  declared items its `attempted_items` name (ADR-045 path matching) or, for a requested command,
+  that its observed keyed run matches (the shared planned-command matcher; an asserted command
+  matches only byte for byte). `alignment` is `no_declared_items`, `evidence_names_declared_item`,
+  `evidence_off_declared_items` (some cited evidence traces to an action and none names a declared
+  item) or `evidence_unattributed`. Yoetz records no command text, working directory, environment
+  or service configuration; this compares only those recorded links.
+
+CLI and MCP print the same lines (`protocol/inspection_text`). Golden vectors: CAN-017
+(`fixtures/canonical/check-inspection-1.4.0.case.json`). ADR-047 owns the decision.
+
 A check whose effective mode is deterministic-only can say **no issue detected within
 deterministic coverage** when its complete candidate set, active obligations, requested items and
 relevant observed failures permit it. An omitted mode resolves through the configured verification

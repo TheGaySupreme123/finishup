@@ -366,7 +366,7 @@ replay once only for `absent`, use the stored `complete` outcome, and follow an 
 continuation before replaying a `pending` request. A read timeout gets a new read request ID with
 the same intent. Never manufacture a replacement event merely because a response was lost.
 
-Before a material publish over MCP, read `status view=obligations` and inspect the exact `unattempted_items` values before resolving an obligation. Then set `dry_run: true` to validate the batch and preview accepted event ids and coverage without appending. The dry-run result is not evidential and must not be cited as a check, publication, or coverage source. When the preview is acceptable, publish with the same `request_id` and `dry_run` omitted or false.
+A `status` read and a dry run before a publish are optional, not a ritual: the write validates the whole batch, appends nothing when any draft is rejected, and returns the new frontier, the accepted event ids and every validation error. Use `dry_run: true` when you are unsure a batch will be accepted (a claim correction, a plan revision, a large batch); the preview is not evidential and must not be cited as a check, publication, or coverage source, and the real publish reuses the same `request_id` with `dry_run` omitted or false. Before resolving an obligation that names requested items, account for each exact value that has no attempt yet. When you need the picture, call `check` with `mode: inspect` instead of several status reads: it records nothing and returns what is left with whose move each gap is (requested items not attempted are named by index), what the hooks observed since the last check, and whether each obligation's resolution evidence links to its declared deliverables or commands. `status view=obligations` shows the exact `unattempted_items` values.
 
 Worked examples for each ordinary publishable family — and a cross-linked
 action/result/evidence/claim batch — live in the `publish_work` tool input schema `examples` entry
@@ -483,8 +483,8 @@ For 100 files, group them into independently reviewable packages, record partial
 
 ### Check completion scope before append
 
-Preview a completion claim with `publish_work dry_run=true`. A
-`completion_claim_outside_plan` gap means its `obligation_refs` extend beyond the effective plan;
+To see these diagnostics before appending, preview a completion claim with `publish_work
+dry_run=true`. A `completion_claim_outside_plan` gap means its `obligation_refs` extend beyond the effective plan;
 `completion_plan_not_claimed` means declared plan refs remain outside that claim. These diagnostics
 also appear after append and in status/check/receipts; they never auto-include obligations.
 

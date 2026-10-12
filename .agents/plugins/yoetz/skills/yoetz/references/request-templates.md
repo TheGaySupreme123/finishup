@@ -25,9 +25,9 @@ integer from 1 to 100 is read as its string).
 
 Use the real client identity for your integration. Never copy a template timestamp as if it were
 the event time; `occurred_at` is your assertion and should be the best real UTC millisecond time
-available. Before a material publication, send the completed `publish_work` request once with
-`dry_run: true`; after a successful preview, reuse the same `request_id` without `dry_run` (or with
-`dry_run: false`).
+available. A preview is optional: a write that fails validation appends nothing and names every
+error. When unsure, send the completed `publish_work` request once with `dry_run: true`; after a
+successful preview, reuse the same `request_id` without `dry_run` (or with `dry_run: false`).
 
 Every set-valued list — `obligation_refs`, `obligation_ids`, `supporting_refs`, `limitation_refs`,
 `supersedes_claim_refs`, `causal_parents`, `evidence_refs`, `artifact_refs`, and the other
@@ -802,6 +802,28 @@ observations still being delivered, and `observations_awaited` reports whether t
   "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "final_review": true,
   "max_findings": "10",
+  "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
+  "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
+}
+```
+
+### `check`: inspect
+
+`"mode": "inspect"` reads instead of checking: it records nothing, mints no findings and runs no
+review, so a timeout is answered by asking again with a fresh `request_id`. It answers what is left
+to close and whose move each gap is, what the hooks observed since the last check, and whether each
+obligation's resolution evidence links to its declared deliverables or commands. Omit `scope`,
+`max_findings`, `policy_packs` and `final_review`; `await_observations: true` is accepted.
+
+```json
+{
+  "protocol_version": "0.1",
+  "schema_version": "1.0.0",
+  "request_id": "req_00000000-0000-4000-8000-000000000015",
+  "session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
+  "mode": "inspect",
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
 }

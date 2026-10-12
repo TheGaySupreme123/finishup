@@ -350,6 +350,14 @@ def _request_is_read_only(request: ControlCallRequest) -> bool:
 
     if request.method in _READ_ONLY_METHODS:
         return True
+    if (
+        request.method is ControlMethod.CHECK
+        and type(request.body) is CheckRequest
+        and request.body.mode == "inspect"
+    ):
+        # ADR-047: an inspection records nothing, so a failure is a read failure to repeat,
+        # never a same-request_id replay of an operation that does not exist.
+        return True
     if request.method is ControlMethod.PROJECT and isinstance(request.body, Mapping):
         return request.body.get("operation") == "status"
     return False
@@ -1184,7 +1192,7 @@ class ServiceDaemon:
             if (
                 request.method is ControlMethod.CHECK
                 and type(body) is CheckRequest
-                and body.mode != "deterministic_only"
+                and body.mode not in {"deterministic_only", "inspect"}
             ):
                 check_body = body
 

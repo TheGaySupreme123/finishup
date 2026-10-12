@@ -37,8 +37,10 @@ evidence is recorded in #767.
 ## Conditional agent guidance
 
 The skill keeps its activation boundary, core workflow, and safety floor in the entrypoint.
-Read workflow guidance before `start`, publication policy before `publish_work`, and coverage
-and receipts before `check`. Setup/consent, vault/credential operations, transcript import, and
+Before `start` read the core, `agent-instructions.md`: it is the operating card and is enough for
+ordinary work. Workflow, publication policy, and coverage and receipts are read only when a result,
+error or continuation names them, or when unsure; no status read or dry run is required before a
+write, and `check` with `mode: inspect` gives the picture in one read (ADR-047). Setup/consent, vault/credential operations, transcript import, and
 recommendation decisions route to the corresponding sections of request templates only when
 needed. Already-read guidance need not be fetched again while present in context.
 
@@ -1799,6 +1801,21 @@ deliverable or workspace `apply_patch` supersedes the check. A patch whose every
 `yoetz_receipt.*`, a Yoetz tree or scratch is `non_counting_write`. Tests:
 `tests/unit/application/test_tb4n3_later_material_host_shapes.py` drives real Codex hook payloads
 through the ingress and the materializer.
+
+
+### Inspection check on Codex (#1048)
+
+`check` with `"mode": "inspect"` is a read: it records nothing, mints no finding, runs no review
+and needs no approval, so a lost answer is answered by asking again with a fresh `request_id`. One
+call returns what is left to close (the `status` readiness split, then every unresolved obligation
+and finding with what it lacks and whose move it is), the hook-observed actions since the last
+check, and whether each obligation's resolution evidence links to its declared deliverables or
+requested commands (`evidence_off_declared_items` when it does not). Use it instead of a series of
+`status` reads; no status read or `dry_run` is required before `publish_work`. The startup read is
+the operating card (`agent-instructions.md`); the larger pages are read on demand. ADR-047. Codex has
+no host-specific behavior: the MCP `check` tool (including code mode, with the ordinary `check`
+cell deadline) and `yoetz check` carry the mode. `apply_patch` edits are listed by write class,
+never by path.
 
 ### Closure readiness and standing limitations (#913)
 
