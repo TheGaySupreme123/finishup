@@ -1327,7 +1327,9 @@ standing on a local-only or optional route and on the strict MCP route (which ne
 AI-powered review), and agent-actionable only when the verification policy requires AI-powered
 review, the serving route can dispatch it, and none has succeeded since the last material change.
 A check on a route that did not require AI-powered review records `semantic_route_required:
-false`; there the code no longer bounds the receipt conclusion (issue #986, same on every host).
+false`; there the code no longer bounds the receipt conclusion (issue #986, same on every host). A check that asked for `deterministic_only` on such a route records no
+`semantic_review_not_requested` at all, so no receipt, status or readiness view lists it (issue
+#1041, same on every host).
 The strict local-only MCP route is such a route even when the verification policy is `required`,
 unless the check asked for `semantic_required` (issue #1021, ADR-040, same on every host).
 At

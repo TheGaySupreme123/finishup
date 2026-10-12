@@ -163,7 +163,7 @@ it holds the conclusion below clean), `disclosed` (shown, never bounds) and `his
 | A | actionable on both routes |
 | B | bounding on both routes (today's default) |
 | D | disclosed on both routes; D* disclosed on the deterministic route and on a review route that succeeded and reported no insufficiency |
-| R | `semantic_review_not_requested`: disclosed when the check recorded that its route did not require review; actionable while required review is not current; otherwise bounding |
+| R | `semantic_review_not_requested`: disclosed when the check recorded that its route did not require review (a check that asked for `deterministic_only` on such a route records no such code, ADR-033 amendment of 2026-10-12); actionable while required review is not current; otherwise bounding |
 | X | `check_current_as_of_earlier_frontier`: bounding exactly when the standing of the check says a later record is unclassified (`kernel/check_standing`, `CheckStanding.bounds_conclusion`); the agent's own answers are a disclosure |
 | G | host-observation gaps (`captured_object_unavailable`, `host_outcome_unavailable`, `unpaired_event`, `compound_outcome_unavailable`): disclosed only while the applicable check carried the code and its command counters show no unknown or live-failed command; otherwise bounding |
 

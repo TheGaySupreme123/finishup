@@ -7,7 +7,8 @@ Select `semantic_required` when the user, effective policy, or named acceptance 
 independent AI-powered review. Omit `mode` for the configured default. Use
 `semantic_if_configured` only when review is known to be optional. Use `deterministic_only` only for
 explicit local/structural work, a semantic-disabled policy, or a deliberate no-egress choice, and
-disclose `semantic_review_not_requested`; never use it merely to shorten a follow-up.
+disclose `semantic_review_not_requested` where review is required; never use it merely to shorten a
+follow-up.
 
 Host authorization and a Yoetz disclosure decision are separate. A host auto-review refusal or hold
 before invocation is not a Yoetz result: Yoetz did not run. Preserve the exact proposed `check`

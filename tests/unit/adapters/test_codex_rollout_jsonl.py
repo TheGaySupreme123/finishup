@@ -481,10 +481,11 @@ def test_compatible_profile_is_the_union_and_not_a_certified_version() -> None:
     # The compatibility vocabulary is the union plus the families admitted as structurally
     # ignored from a real transcript (issue #754). Neither addition reaches an exact profile.
     assert set(COMPATIBLE_ROLLOUT_PROFILE.wrapper_types) == union_wrappers | {"token_usage_record"}
-    assert set(COMPATIBLE_ROLLOUT_PROFILE.item_types) == union_items
+    assert set(COMPATIBLE_ROLLOUT_PROFILE.item_types) == union_items | {"HookPrompt"}
     assert all(
         "token_usage_record" not in p.wrapper_types for p in SUPPORTED_ROLLOUT_PROFILES.values()
     )
+    assert all("HookPrompt" not in p.item_types for p in SUPPORTED_ROLLOUT_PROFILES.values())
     # Certification surfaces never grow because the compatibility profile exists.
     assert "compatible" not in SUPPORTED_ROLLOUT_PROFILES
     assert rollout_parser_proof("compatible") is None
@@ -750,3 +751,42 @@ def test_compatible_token_usage_telemetry_is_known_without_promoting_an_exact_ce
     assert all(
         "token_usage_record" not in p.wrapper_types for p in SUPPORTED_ROLLOUT_PROFILES.values()
     )
+
+
+def _hook_prompt(ordinal: int) -> dict[str, object]:
+    """The item a Codex 0.159.3 rollout writes when a Stop hook continues the turn (#1041)."""
+
+    return item_completed(
+        {
+            "fragments": [{"hook_run_id": "stop-1", "text": "CANARY_HOOK_PROMPT_TEXT"}],
+            "id": "item_hook_prompt_1",
+            "type": "HookPrompt",
+        },
+        ordinal=ordinal,
+    )
+
+
+def test_compatible_hook_prompt_is_bookkeeping_without_promoting_an_exact_cell() -> None:
+    """Yoetz's own Stop-gate prompt row maps on the compatibility profile only (#1041)."""
+
+    compatible = parse_codex_rollout_jsonl(
+        encode_lines(
+            session_meta(cli_version="0.159.3", history_mode="paginated", ordinal=1),
+            _hook_prompt(2),
+        ),
+        None,
+        require_admission=True,
+    )
+    assert compatible.profile is COMPATIBLE_ROLLOUT_PROFILE
+    assert compatible.statuses == (ImportLineStatus.MAPPED, ImportLineStatus.MAPPED)
+    assert [record.item_type for record in compatible.records] == [None, "HookPrompt"]
+    exact = parse_codex_rollout_jsonl(
+        encode_lines(
+            session_meta(cli_version="0.150.1", history_mode="paginated", ordinal=1),
+            _hook_prompt(2),
+        ),
+        None,
+        require_admission=True,
+    )
+    assert exact.statuses[1] is ImportLineStatus.UNKNOWN
+    assert exact.reason_codes[1] == "unknown_item_type"

@@ -4,7 +4,8 @@ The DeepSWE v2 shapes replayed here are real Codex ledger shapes: a cooperative 
 evidence and completion claim beside hook rows materialized by the production Codex mapping from
 ``PostToolUse`` envelopes. Those rows carry Codex's standing gaps (``host_outcome_unavailable``
 because the host stated no outcome, ``unpaired_event`` for a post without its pre, and
-``content_unselected``), and a local-only check adds ``semantic_review_not_requested``.
+``content_unselected``). A local-only check adds ``semantic_review_not_requested`` only where the
+route requires AI-powered review (#1041).
 
 * Example 2 (bandit B): finished work with only standing limitations reads
   ``ready_with_limitations`` on every surface while the check verdict and the receipt conclusion
@@ -72,7 +73,6 @@ _APPROVED = (
 _CODEX_STANDING = {
     "content_unselected",
     "host_outcome_unavailable",
-    "semantic_review_not_requested",
     "unpaired_event",
 }
 
@@ -777,17 +777,23 @@ async def test_a_local_only_check_on_a_route_without_required_review_reaches_a_c
     ledger_backend: Literal["memory", "sqlite"],
     semantic: Literal["disabled", "optional"],
 ) -> None:
-    """Issue #986 (owner decision E2, "record route; don't block")."""
+    """Issue #986 (owner decision E2, "record route; don't block"), #1041 (don't disclose).
+
+    The check asked for no review on a route that requires none: it records the route and no
+    missing-review gap, so no surface discloses one.
+    """
 
     session, checked = await _clean_local_session(ledger_backend, semantic=semantic)
     assert checked.semantic_route_required is False
     assert checked.verdict.value == "no_issue_detected", checked.coverage.known_gaps
-    assert "semantic_review_not_requested" in checked.coverage.known_gaps
+    assert "semantic_review_not_requested" not in checked.coverage.known_gaps
     status = await session.status()
     readiness = status.closure_readiness
     assert readiness.agent_actionable == ()
     assert readiness.standing_limitations is not None
-    assert "semantic_review_not_requested" in readiness.standing_limitations
+    assert "semantic_review_not_requested" not in readiness.standing_limitations
+    assert "semantic_review_not_requested" not in status.coverage.known_gaps
+    assert "semantic_review_not_requested" not in summary_for_status(status.as_json())
     receipt = await session.app.receipt(
         ReceiptRequest.model_validate(
             {
@@ -805,8 +811,8 @@ async def test_a_local_only_check_on_a_route_without_required_review_reaches_a_c
     assert str(receipt.conclusion) == "no_unresolved_deterministic_findings", (
         receipt.coverage.known_gaps
     )
-    # Still disclosed: the gap stays in the receipt's coverage.
-    assert "semantic_review_not_requested" in receipt.coverage.known_gaps
+    assert "semantic_review_not_requested" not in receipt.coverage.known_gaps
+    assert "semantic_review_not_requested" not in str(receipt.document)
 
 
 @pytest.mark.parametrize("ledger_backend", ("memory", "sqlite"))

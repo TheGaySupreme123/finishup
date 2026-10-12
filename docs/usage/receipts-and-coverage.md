@@ -70,14 +70,13 @@ Not honest:
 
 ## The trap: a clean local-only check
 
-A clean `deterministic_only` check is **not** an implementation review. When mode is
-`deterministic_only`, or AI-powered review status is `not_requested`, the coverage includes
-`semantic_review_not_requested`. A clean result means “no issue detected within deterministic
-coverage”; it does not remove that limitation from the receipt. Where AI-powered review is not
-required (it is optional or off, or the owner connected this host for local checks only), the check
-records `semantic_route_required: false` and the limitation is disclosed without keeping the
-receipt from a clean conclusion; where review is required, it still keeps the receipt at
-`insufficient_coverage`. If the only things recorded after your last check are your answers to
+A clean `deterministic_only` check is **not** an implementation review. A clean result means “no
+issue detected within deterministic coverage”, and a clean receipt says the same:
+`no_unresolved_deterministic_findings`. Where AI-powered review is required, a `deterministic_only`
+check records `semantic_review_not_requested` and that limitation keeps the receipt at
+`insufficient_coverage`. Where it is not required (it is optional or off, or the owner connected
+this host for local checks only), the check records `semantic_route_required: false` and no
+review gap: it ran the local checks it was asked for, so the receipt lists no missing review. If the only things recorded after your last check are your answers to
 that check's findings, the receipt notes that the check is current as of an earlier point but that
 note alone does not keep it from a clean conclusion. The receipt leads with its scope,
 review status and material limitations, followed by the finding count and frozen check totals.
@@ -89,8 +88,8 @@ select `semantic_required` for the final check and subsequent final rechecks. Re
 no-egress choice; disclose the limitation and keep any required review unmet.
 
 When you fall back to `deterministic_only` because an AI-powered review attempt was blocked or
-unavailable, that earlier gap is carried forward next to `semantic_review_not_requested`, so the
-receipt records that the environment refused rather than that the review was never asked for.
+unavailable, that earlier gap is carried forward to the local-only check, so the receipt records
+that the environment refused rather than that the review was never asked for.
 
 ## Prose the reviewer will not see whole
 

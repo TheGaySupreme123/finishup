@@ -1245,14 +1245,15 @@ def route_did_not_require_review(check: CheckRecordedPayload | None) -> bool:
     """True when ``check`` recorded a route that did not require AI-powered review (#986).
 
     Only an explicit ``semantic_route_required: false`` on a local-only check (``not_requested``)
-    qualifies; an absent field is the safe default and keeps the missing review blocking.
+    qualifies; an absent field is the safe default and keeps the missing review blocking. Since
+    #1041 such a check no longer records ``semantic_review_not_requested`` when it asked for no
+    review, so the gap itself is not part of the test.
     """
 
     return (
         check is not None
         and check.semantic_route_required is False
         and check.semantic_status is SemanticStatus.NOT_REQUESTED
-        and SEMANTIC_REVIEW_NOT_REQUESTED_GAP in check.coverage.known_gaps
     )
 
 

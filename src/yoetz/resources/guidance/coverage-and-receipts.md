@@ -245,7 +245,7 @@ continuing the authorized task; it is not clean AI-powered review coverage. Pend
 approval is different: follow the exact continuation below, not the terminal fallback rules.
 
 
-A clean local-only check is not an implementation review. When `mode=deterministic_only` (or AI-powered review status is `not_requested`), the coverage includes `semantic_review_not_requested`. It bounds the receipt only where the route requires AI-powered review; a check whose route did not records `semantic_route_required: false`, and the gap is then a disclosure. Omit `mode` to follow the configured default; use `semantic_if_configured` only for known-optional review, and disclose the limitation when local-only is deliberate.
+A clean local-only check is not an implementation review: its receipt concludes `no_unresolved_deterministic_findings` at best. Where the route requires AI-powered review, `mode=deterministic_only` records `semantic_review_not_requested`, which bounds the receipt. Where it does not, the check records `semantic_route_required: false` and no review gap: it ran what you asked for. Omit `mode` to follow the configured default; use `semantic_if_configured` only for known-optional review, and disclose the limitation when local-only is deliberate.
 
 A non-succeeding `semantic_status` is a coverage gap, not a failure to retry away.
 

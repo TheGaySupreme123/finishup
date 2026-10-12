@@ -9,7 +9,7 @@ from yoetz.domain.events import CheckRecordedPayload, LedgerRecord
 from yoetz.domain.findings import Finding, rank_key
 from yoetz.domain.receipts import (
     CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
-    semantic_coverage_gap_code,
+    recorded_semantic_outcome_gap_code,
 )
 from yoetz.kernel.check_standing import check_standing
 from yoetz.kernel.deterministic_checks import (
@@ -161,8 +161,10 @@ def _receipt_gap_codes(
         # recorded coverage. A legacy payload can carry a terminal AI-powered review status whose code is
         # absent from ``known_gaps``; omitting it here would admit a state at exactly the bound
         # that receipt construction then pushes one code over.
-        semantic_gap = semantic_coverage_gap_code(
-            check_record.payload.semantic_status, check_record.payload.semantic_reason
+        semantic_gap = recorded_semantic_outcome_gap_code(
+            check_record.payload.semantic_status,
+            check_record.payload.semantic_reason,
+            route_required=check_record.payload.semantic_route_required,
         )
         if semantic_gap is not None:
             codes.add(semantic_gap)
