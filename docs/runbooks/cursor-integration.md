@@ -2020,7 +2020,10 @@ byte-identical after #917 (pinned by a replay of real payloads), and generation-
 metadata evidence without `unpaired_event`. The opt-in ordinary profile
 (`cursor-ordinary-observation-v1`) is on the conservative paired contract, so a paired pre and post
 share one action and an orphan scope yields one informational notice rather than a recurring
-advisory. Cursor has no code-mode cell, so the stream wrapper rule does not apply.
+advisory. Cursor has no code-mode cell, so the stream wrapper rule does not apply; for the same
+reason the tb4n5 yielded- and tool-less-cell decisions (ADR-029 amendment of 2026-10-13) are
+Codex-only, and Cursor has no `clock.sleep` tool (the `clocksleep` no-activity spelling is Codex's
+hook name).
 
 ### Limitation requests, `reopened` and one dialogue per concern on Cursor (tb4n3 RC-1 and RC-7, #1024, #1030)
 

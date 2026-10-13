@@ -14,8 +14,9 @@ projection's action rows and the declared outputs, and names *why* (``LaterMater
 * ``EXPLORATION`` - an observed read-only run (the hook's closed ``exploration`` runner class, a
   native read tool) or a routine-read summary.
 * ``NO_TOOL_ACTIVITY`` - host stream bookkeeping that names no tool call: token counts, reasoning,
-  messages, a tool call's own announcement, completion signals; and a host poll tool (Codex
-  ``wait``) that only returns the output of work started earlier.
+  messages, a tool call's own announcement, completion signals; a host poll tool (Codex
+  ``wait``) that only returns the output of work started earlier; and a host sleep (Codex
+  ``clocksleep``) that only pauses the turn.
 * ``NON_COUNTING_WRITE`` - an observed edit whose every path was scratch or Yoetz-owned (ADR-042).
 * ``RESPONSE`` - a cooperative answer to a finding; advisory, as before (ADR-040 section 7).
 * ``EDIT_OR_WRITE`` - an observed deliverable, workspace or outside-workspace edit, or a shell
@@ -176,12 +177,18 @@ def supersession_exempt(projection: ProjectionState) -> frozenset[str]:
     return exempt | {"write yoetz_owned"}
 
 
-# Host tools that only poll something already running and record no work of their own: Codex's
-# ``wait`` returns the output of a code-mode cell started earlier (the work it ran has its own
-# rows). In the tb4n2/tb4n3 replay a poll output followed the last check in 18 of 27 semantic-arm
-# attempts; left unclassified it kept the bounding disclosure, and readiness would then ask for a
-# costly extra AI-powered review because the agent waited. A closed list, evidenced per tool.
-_HOST_POLL_TOOLS: Final = frozenset({"wait"})
+# Host tools that record no work of their own, by the closed rule that names why. Codex's ``wait``
+# only polls: it returns the output of a code-mode cell started earlier (the work it ran has its
+# own rows). In the tb4n2/tb4n3 replay a poll output followed the last check in 18 of 27
+# semantic-arm attempts; left unclassified it kept the bounding disclosure, and readiness would
+# then ask for a costly extra AI-powered review because the agent waited. Codex's ``clock.sleep``
+# (hook spelling ``clocksleep``, a built-in control tool) only pauses the turn: tb4n5 react S
+# slept while its check cell ran, and two sleeps (ledger records 442 and 689) bounded the check.
+# A closed list, evidenced per tool spelling.
+_HOST_NO_ACTIVITY_TOOLS: Final[Mapping[str, str]] = {
+    "wait": "host_poll_tool",
+    "clocksleep": "host_sleep_tool",
+}
 
 
 def _classify_action(
@@ -190,8 +197,9 @@ def _classify_action(
     tool = observed_action_tool(payload.description)
     if tool is not None and yoetz_tool_spelling(tool) is not None:
         return LaterMaterial(LaterMaterialClass.YOETZ_OWN_CALL, "yoetz_tool_call", tool)
-    if tool is not None and tool.casefold() in _HOST_POLL_TOOLS:
-        return LaterMaterial(LaterMaterialClass.NO_TOOL_ACTIVITY, "host_poll_tool", tool)
+    no_activity_rule = None if tool is None else _HOST_NO_ACTIVITY_TOOLS.get(tool.casefold())
+    if no_activity_rule is not None:
+        return LaterMaterial(LaterMaterialClass.NO_TOOL_ACTIVITY, no_activity_rule, tool)
     if payload.action_kind is ActionKind.EDIT:
         # Only an edit needs the declared outputs; every other record stays a string read.
         if observed_edit_counts(

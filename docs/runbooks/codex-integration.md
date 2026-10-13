@@ -1801,8 +1801,9 @@ names no tool when its tool has a Yoetz name, so it is never read as Yoetz's; an
 under it is kept. A nested `apply_patch`, an `exec_command` that is
 not in the hook's `exploration` runner class and an unpaired stream output with no tool identity
 stay `other` and keep the
-disclosure; a `wait` poll (it only returns the output of a cell started earlier) is
-`no_tool_activity`; a nested deliverable or workspace `apply_patch` supersedes the check. A patch
+disclosure; a `wait` poll (it only returns the output of a cell started earlier) and a
+`clock.sleep` (hook spelling `clocksleep`; it only pauses the turn) are `no_tool_activity`; a
+nested deliverable or workspace `apply_patch` supersedes the check. A patch
 whose every path is `yoetz_receipt.*`, a Yoetz tree or scratch is `non_counting_write`. Tests:
 `tests/unit/application/test_tb4n3_later_material_host_shapes.py` drives real Codex hook payloads
 through the ingress and the materializer.
@@ -1819,10 +1820,10 @@ unpaired result. A completed tool item
 (`event_msg`/`item_completed`) keeps its own `id` (`exec-<uuid>`, or the call id on a direct call):
 that is the id ADR-022 decision 15 compares with a hook call id, so the item-to-hook link is
 unchanged. On the recorded 0.159.3 slice (`tests/fixtures/codex/rollout-compaction-0.159.3.jsonl`)
-the 28 unpaired cell results are gone; the three cells that ran no nested tool at all still record
-their own `exec` action, as #917 decided, and stay `other`. Whether such itemless cells follow
-the check in the tb4n4 exports, and so still bound some receipts, is for the replay of those
-exports to show.
+the 28 unpaired cell results are gone. The three cells that ran no nested tool at all recorded
+their own `exec` action, as #917 decided, and stayed `other` until tb4n5 showed such a cell
+bounding a final check (medical S); since the tb4n5 amendment a cell with no observable tool call
+is no workspace activity (see [One action per tool call](#one-action-per-tool-call-and-the-standing-orphan-record-917)).
 
 ### Gaps Yoetz and the host made on every attempt (#1041)
 
@@ -2226,10 +2227,33 @@ item counts only while its cell is the session's only open cell; any other neste
 row the reader could not interpret, or a Yoetz item read while several cells are open removes the
 mark from every open cell, so no cell borrows another's Yoetz calls. Limit: after parallel cells,
 or in a session with a cell interrupted before its output (it stays open), later cells fall back to
-the hook rule alone. A cell whose tools fire
-no hook and leave no rollout item (only `tools.update_plan`, for example) delivers its output and is
-recorded, in any session. Since #1038 the output pairs with its call on `call_id`, which Codex
-0.159.3 needs (its rows also carry their own `ctc_`/`ctco_` ids).
+the hook rule alone. A cell that made no observable tool call stays local too (tb4n5, ADR-029
+amendment): in a session whose rollout has already written a completed tool item, a cell between
+whose call and output the rollout wrote no tool item (`CommandExecution`, `FileChange`,
+`McpToolCall`, or any other item family that is not a message, reasoning, compaction or hook
+prompt), and while which no tool hook of the session was ingested, did no workspace activity; such
+a cell (`text(load(...))`, `ALL_TOOLS.find(...)`, or only `tools.update_plan`) adds no `exec`
+action after a check. In a session whose rollout never wrote a tool item (an older Codex, or a
+session that has not called a tool yet) such a cell still delivers its output and is recorded.
+Since #1038 the output pairs with its call on `call_id`, which Codex 0.159.3 needs (its rows also
+carry their own `ctc_`/`ctco_` ids).
+
+A cell that outlives its yield window keeps its identity until it ends (tb4n5, #1038 follow-up).
+Codex writes `Script running with cell ID <id>` as the `exec` output, keeps the cell running, writes
+its nested calls after that output, and returns its further output on later `wait` calls (each
+naming the cell in its `cell_id` argument; the terminal one starts with `Script completed`,
+`Script failed` or `Script terminated`). Yoetz reads only those host-written headers (the output's
+first text item, which the cell's own output cannot forge) and the `wait` argument, never the cell's
+JavaScript. The yield output is held with the still-open cell, nested items read while it is the
+session's only open cell mark it as before, and the terminal `wait` output decides it by the same
+rules; only a cell that is not Yoetz's own, not tool-less and not hook-recorded then delivers its
+held yield output as its record. A yielded cell nobody waited on is decided at the turn's end
+(`task_complete` or `turn_aborted` in the rollout). The `wait` polls stay `no_tool_activity`, so a
+yielded check-only cell with any number of polls (or a `clock.sleep` while it runs, hook spelling
+`clocksleep`, also `no_tool_activity`) no longer makes its own check stale. In tb4n5's semantic arm
+20 such cells in 5 of 9 attempts did, and 3 final receipts kept `check_current_as_of_earlier_frontier`.
+Overlapping cells keep the no-borrowing rule above. Tests:
+`tests/integration/application/test_codex_yielded_cells.py`.
 Limits: a cell mixing hooked and unhooked tools stays local, so its unhooked tool is not recorded;
 a hooked cell whose call is read only after all its nested hooks, whose hooks' reconciles did not
 complete before its output was read, whose hooks fired before an upgrade from the earlier cell

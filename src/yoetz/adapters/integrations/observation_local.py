@@ -202,6 +202,8 @@ _OPEN_PRE_TTL_MS: Final = 600_000
 # one of these conditions.
 _MAX_UNPAIRED_SCOPES: Final = 256
 _MAX_CODEX_TOOL_HOOK_ENTRIES: Final = 256
+# ``wait`` calls remembered per yielded code-mode cell (#1038 follow-up): the newest are kept.
+_MAX_CODE_MODE_CELL_WAITS: Final = 16
 _MAX_PENDING_ROLLOUT_TOKEN: Final = 128
 # Undecided rollout tool items (#910). Past the soft bound the stream reconciler
 # delivers the oldest with ``unpaired_event``; the hard bound only guards the
@@ -1287,6 +1289,13 @@ class _CodeModeCell:
     other tool item, an uninterpretable row, or an unattributable Yoetz item was read.
     A Yoetz-only cell is Yoetz's own call, so its output also stays local. Cells
     stored before this field have neither and keep the rule above.
+
+    A cell that yields (tb4n5, #1038 follow-up) stays open under its explicit identity:
+    ``runtime_cell`` is the host's runtime cell id from the ``Script running with cell ID``
+    header, ``waits`` the ``wait`` calls that named it, and ``held_output`` the yield output,
+    kept local until the cell's terminal ``wait`` output (or its turn's end) decides the cell.
+    Only then is the held output delivered as the cell's record, or dropped when the cell was
+    Yoetz's own or tool-less.
     """
 
     hook_clock_at_start: int
@@ -1294,6 +1303,9 @@ class _CodeModeCell:
     touched: int
     session: str | None = None
     nested: Literal["yoetz", "other"] | None = None
+    runtime_cell: str | None = None
+    waits: tuple[str, ...] = ()
+    held_output: ObservationEnvelope | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1528,6 +1540,16 @@ def _evicted_open_calls_from_json(raw: object) -> dict[str, tuple[str, str, str,
     return dict(sorted(calls.items(), key=lambda item: item[1][3])[-_MAX_CODEX_TOOL_HOOK_ENTRIES:])
 
 
+def _code_mode_item_sessions_from_json(raw: object) -> dict[str, int]:
+    sessions: dict[str, int] = {}
+    if not isinstance(raw, Mapping):
+        return sessions
+    for session, touched in cast(Mapping[object, object], raw).items():
+        if _pending_rollout_item_token(session) and type(touched) is int and touched >= 0:
+            sessions[cast(str, session)] = min(touched, _MAX_SAFE_INTEGER)
+    return dict(sorted(sessions.items(), key=lambda item: item[1])[-_MAX_CODEX_TOOL_HOOK_ENTRIES:])
+
+
 def _code_mode_cells_from_json(raw: object) -> dict[str, _CodeModeCell]:
     cells: dict[str, _CodeModeCell] = {}
     if not isinstance(raw, Mapping):
@@ -1559,12 +1581,35 @@ def _code_mode_cells_from_json(raw: object) -> dict[str, _CodeModeCell]:
         # #1038: an unreadable session or nested mark reads as absent, which keeps the #917 rule.
         session = entry.get("session")
         nested = entry.get("nested")
+        runtime_cell = entry.get("runtime_cell")
+        raw_waits = entry.get("waits")
+        waits: tuple[str, ...] = ()
+        if isinstance(raw_waits, (tuple, list)):
+            waits = tuple(
+                cast(str, wait)
+                for wait in cast(tuple[object, ...] | list[object], raw_waits)
+                if _pending_rollout_item_token(wait)
+            )[-_MAX_CODE_MODE_CELL_WAITS:]
+        held_output: ObservationEnvelope | None = None
+        raw_held = entry.get("held_output")
+        if isinstance(raw_held, Mapping):
+            try:
+                held_output = observation_envelope_from_json(
+                    JsonObject(cast(Mapping[str, JsonValue], raw_held))
+                )
+            except ProtocolValueError, TypeError, ValueError:
+                held_output = None
         cells[key] = _CodeModeCell(
             start,
             local,
             touched,
             session=cast(str, session) if _pending_rollout_item_token(session) else None,
             nested=nested if nested in ("yoetz", "other") else None,
+            runtime_cell=(
+                cast(str, runtime_cell) if _pending_rollout_item_token(runtime_cell) else None
+            ),
+            waits=waits,
+            held_output=held_output,
         )
     return dict(
         sorted(cells.items(), key=lambda item: item[1].touched)[-_MAX_CODEX_TOOL_HOOK_ENTRIES:]
@@ -1975,6 +2020,10 @@ class _WorkspaceState:
     codex_tool_hooks: dict[str, _ToolHookSession] | None = None
     code_mode_cells: dict[str, _CodeModeCell] | None = None
     codex_tool_hook_clock: int = 0
+    # Host sessions whose rollout has written a completed tool item (tb4n5): only there does a
+    # code-mode cell with no nested tool item prove it made no tool call. Bounded like the maps
+    # above; a forgotten session only keeps its cells' records.
+    code_mode_item_sessions: dict[str, int] | None = None
     # Per rollout tool item read before any hook post it pairs with (#910): its
     # source identity -> its account, stamped on the clock above. A later hook
     # post or the turn's end decides it (see MAX_PENDING_ROLLOUT_ITEMS).
@@ -2135,6 +2184,8 @@ class _WorkspaceState:
             self.codex_tool_hooks = {}
         if self.code_mode_cells is None:
             self.code_mode_cells = {}
+        if self.code_mode_item_sessions is None:
+            self.code_mode_item_sessions = {}
         if self.pending_rollout_items is None:
             self.pending_rollout_items = {}
         if self.evicted_open_calls is None:
@@ -2828,6 +2879,7 @@ def _copy_state(state: _WorkspaceState) -> _WorkspaceState:
         codex_tool_hooks=dict(state.codex_tool_hooks or {}),
         code_mode_cells=dict(state.code_mode_cells or {}),
         codex_tool_hook_clock=state.codex_tool_hook_clock,
+        code_mode_item_sessions=dict(state.code_mode_item_sessions or {}),
         pending_rollout_items=dict(state.pending_rollout_items or {}),
         evicted_open_calls=dict(state.evicted_open_calls or {}),
         pairing_state_unknown=state.pairing_state_unknown,
@@ -6264,7 +6316,12 @@ class LocalObservationStore:
             return True
 
     def note_code_mode_nested_item(
-        self, workspace: str, session_commitment: str, *, yoetz_owned: bool
+        self,
+        workspace: str,
+        session_commitment: str,
+        *,
+        yoetz_owned: bool,
+        tool_item: bool = False,
     ) -> None:
         """Mark the open code-mode cells of a session with one nested rollout row (#1038).
 
@@ -6274,12 +6331,22 @@ class LocalObservationStore:
         or a Yoetz item read while more than one cell is open (parallel cells, or a
         cell interrupted before its output) makes every open cell of the session
         ``other``: a row that cannot be attributed only ever removes the mark, so no
-        cell borrows another cell's Yoetz calls.
+        cell borrows another cell's Yoetz calls. ``tool_item`` records that the
+        session's rollout writes completed tool items at all (tb4n5): only then does
+        a cell without one prove it made no tool call.
         """
 
         with self._lock:
             state = self._load(workspace)
             assert state.code_mode_cells is not None
+            assert state.code_mode_item_sessions is not None
+            changed = False
+            if tool_item and session_commitment not in state.code_mode_item_sessions:
+                state.code_mode_item_sessions[session_commitment] = state.codex_tool_hook_clock
+                while len(state.code_mode_item_sessions) > _MAX_CODEX_TOOL_HOOK_ENTRIES:
+                    oldest = min(state.code_mode_item_sessions.items(), key=lambda item: item[1])
+                    del state.code_mode_item_sessions[oldest[0]]
+                changed = True
             open_cells = [
                 (key, cell)
                 for key, cell in state.code_mode_cells.items()
@@ -6288,7 +6355,6 @@ class LocalObservationStore:
             mark: Literal["yoetz", "other"] = (
                 "yoetz" if yoetz_owned and len(open_cells) == 1 else "other"
             )
-            changed = False
             for key, cell in open_cells:
                 nested = "other" if cell.nested == "other" else mark
                 if nested != cell.nested:
@@ -6297,7 +6363,14 @@ class LocalObservationStore:
             if changed:
                 self._save(workspace, state)
 
-    def finish_code_mode_cell(self, workspace: str, session_commitment: str, call_id: str) -> bool:
+    def finish_code_mode_cell(
+        self,
+        workspace: str,
+        session_commitment: str,
+        call_id: str,
+        *,
+        tool_items_recorded: bool = False,
+    ) -> bool:
         """Return whether a code-mode cell's output stays local (#917, #1038).
 
         It stays local when a Codex tool hook of this session was ingested
@@ -6306,10 +6379,16 @@ class LocalObservationStore:
         the cell ran, so the nested hook rows are the cell's record. It also
         stays local when every nested tool item the rollout wrote inside the
         cell was one of Yoetz's own MCP calls (#1038): such a cell is Yoetz's
-        own call, recorded by those calls whatever the hook timing. Otherwise
-        the output is delivered and records the cell; a hook that may belong to
-        a later cell never removes this cell's record. An output whose call was
-        never noted is delivered.
+        own call, recorded by those calls whatever the hook timing. It stays
+        local, too, when the cell made no observable tool call (tb4n5, ADR-029
+        amendment): the rollout, whose profile records every completed tool
+        call as an item (``tool_items_recorded``) and which already wrote one
+        in this session, wrote no tool item inside it, and no tool hook of the
+        session was ingested since its call was read, so the cell did no
+        workspace activity. Otherwise the output is
+        delivered and records the cell; a hook that may belong to a later cell
+        never removes this cell's record. An output whose call was never noted
+        is delivered. A yielded cell is decided by ``decide_yielded_code_mode_cell``.
         """
 
         with self._lock:
@@ -6321,15 +6400,201 @@ class LocalObservationStore:
                 return False
             if current.output_local is not None:
                 return current.output_local
-            entry = (state.codex_tool_hooks or {}).get(session_commitment)
-            local = current.nested == "yoetz" or (
-                entry is not None and entry.settled > current.hook_clock_at_start
+            local = self._code_mode_cell_local(
+                state, session_commitment, current, tool_items_recorded=tool_items_recorded
             )
             self._remember_code_mode_cell(
                 state, key, dataclasses.replace(current, output_local=local)
             )
             self._save(workspace, state)
             return local
+
+    @staticmethod
+    def _code_mode_cell_local(
+        state: _WorkspaceState,
+        session_commitment: str,
+        cell: _CodeModeCell,
+        *,
+        tool_items_recorded: bool,
+    ) -> bool:
+        """The #917/#1038 cell rule plus the tool-less cell (see ``finish_code_mode_cell``)."""
+
+        entry = (state.codex_tool_hooks or {}).get(session_commitment)
+        if cell.nested == "yoetz":
+            return True
+        if entry is not None and entry.settled > cell.hook_clock_at_start:
+            return True
+        return (
+            tool_items_recorded
+            and session_commitment in (state.code_mode_item_sessions or {})
+            and cell.nested is None
+            and (entry is None or entry.touched <= cell.hook_clock_at_start)
+        )
+
+    def yield_code_mode_cell(
+        self,
+        workspace: str,
+        session_commitment: str,
+        call_id: str,
+        runtime_cell: str,
+        output: ObservationEnvelope,
+    ) -> bool:
+        """Keep a yielded code-mode cell open under its runtime id; return whether to hold (#1038).
+
+        Codex writes ``Script running with cell ID <id>`` as the ``exec`` output when a cell
+        outlives its yield window; the cell keeps running, its nested calls are written after
+        this output, and its terminal output arrives on a later ``wait``. Deciding the cell here
+        froze it before the nested calls could be read, so Yoetz's own ``check`` cell was
+        delivered as an unclassified ``exec`` after the check it ran (tb4n5). The output is held
+        with the cell instead and the cell stays open. A cell already decided holds its output
+        (its record, if any, was delivered when it was decided); an output whose call was never
+        noted is delivered, as before.
+        """
+
+        if not _pending_rollout_item_token(runtime_cell) or type(output) is not ObservationEnvelope:
+            raise ProtocolValueError("invalid_event_value_type")
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            key = _code_mode_cell_key(session_commitment, call_id)
+            current = state.code_mode_cells.get(key)
+            if current is None:
+                return False
+            if current.output_local is not None or current.runtime_cell is not None:
+                return True
+            self._remember_code_mode_cell(
+                state,
+                key,
+                dataclasses.replace(current, runtime_cell=runtime_cell, held_output=output),
+            )
+            self._save(workspace, state)
+            return True
+
+    def note_code_mode_wait(
+        self, workspace: str, session_commitment: str, wait_call_id: str, runtime_cell: str
+    ) -> None:
+        """Record that a ``wait`` call resumes the session's open yielded cell ``runtime_cell``.
+
+        The newest open cell with that runtime id is the one a ``wait`` can still reach: an older
+        one whose terminal output was never read is left to its turn's end.
+        """
+
+        if not _pending_rollout_item_token(wait_call_id) or not _pending_rollout_item_token(
+            runtime_cell
+        ):
+            return
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            candidates = [
+                (key, cell)
+                for key, cell in state.code_mode_cells.items()
+                if cell.session == session_commitment
+                and cell.runtime_cell == runtime_cell
+                and cell.output_local is None
+            ]
+            if not candidates:
+                return
+            key, cell = max(candidates, key=lambda item: item[1].touched)
+            if wait_call_id in cell.waits:
+                return
+            self._remember_code_mode_cell(
+                state,
+                key,
+                dataclasses.replace(
+                    cell, waits=(*cell.waits, wait_call_id)[-_MAX_CODE_MODE_CELL_WAITS:]
+                ),
+            )
+            self._save(workspace, state)
+
+    def decide_yielded_code_mode_cell(
+        self,
+        workspace: str,
+        session_commitment: str,
+        wait_call_id: str,
+        *,
+        tool_items_recorded: bool = False,
+    ) -> tuple[str, ObservationEnvelope] | None:
+        """Decide the yielded cell a terminal ``wait`` output finished (#1038 follow-up).
+
+        The cell is decided from what was read while it was open, exactly as an unyielded cell is
+        at its output (``finish_code_mode_cell``). Returns ``(call_id key, held output)`` when the
+        held output must now be delivered as the cell's record, else ``None``. The held output is
+        kept until ``settle_code_mode_cell_output`` confirms the delivery, so a pass that could not
+        deliver it delivers it on replay.
+        """
+
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            found = next(
+                (
+                    (key, cell)
+                    for key, cell in state.code_mode_cells.items()
+                    if cell.session == session_commitment and wait_call_id in cell.waits
+                ),
+                None,
+            )
+            if found is None:
+                return None
+            key, cell = found
+            if cell.output_local is None:
+                local = self._code_mode_cell_local(
+                    state, session_commitment, cell, tool_items_recorded=tool_items_recorded
+                )
+                cell = dataclasses.replace(
+                    cell, output_local=local, held_output=None if local else cell.held_output
+                )
+                self._remember_code_mode_cell(state, key, cell)
+                self._save(workspace, state)
+            if cell.output_local or cell.held_output is None:
+                return None
+            return key, cell.held_output
+
+    def close_yielded_code_mode_cells(
+        self, workspace: str, session_commitment: str, *, tool_items_recorded: bool = False
+    ) -> tuple[tuple[str, ObservationEnvelope], ...]:
+        """Decide every still-open yielded cell of a session at its turn's end (#1038 follow-up).
+
+        Codex keeps a yielded cell running past the turn; one nobody waited on would otherwise
+        hold its output forever. It is decided from what was read while it was open, and every
+        held output still owed is returned, oldest first, for delivery.
+        """
+
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            changed = False
+            owed: list[tuple[int, str, ObservationEnvelope]] = []
+            for key, cell in tuple(state.code_mode_cells.items()):
+                if cell.session != session_commitment or cell.runtime_cell is None:
+                    continue
+                if cell.output_local is None:
+                    local = self._code_mode_cell_local(
+                        state, session_commitment, cell, tool_items_recorded=tool_items_recorded
+                    )
+                    cell = dataclasses.replace(
+                        cell, output_local=local, held_output=None if local else cell.held_output
+                    )
+                    self._remember_code_mode_cell(state, key, cell)
+                    changed = True
+                if not cell.output_local and cell.held_output is not None:
+                    owed.append((cell.touched, key, cell.held_output))
+            if changed:
+                self._save(workspace, state)
+            return tuple((key, output) for _touched, key, output in sorted(owed))
+
+    def settle_code_mode_cell_output(self, workspace: str, cell_key: str) -> None:
+        """Forget a decided cell's held output once its delivery committed."""
+
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            cell = state.code_mode_cells.get(cell_key)
+            if cell is None or cell.held_output is None or cell.output_local is not False:
+                return
+            state.code_mode_cells[cell_key] = dataclasses.replace(cell, held_output=None)
+            self._save(workspace, state)
 
     def note_pending_rollout_item(
         self,
@@ -6516,7 +6781,12 @@ class LocalObservationStore:
         state.code_mode_cells.pop(key, None)
         state.code_mode_cells[key] = dataclasses.replace(cell, touched=state.codex_tool_hook_clock)
         while len(state.code_mode_cells) > _MAX_CODEX_TOOL_HOOK_ENTRIES:
-            oldest = min(state.code_mode_cells.items(), key=lambda item: item[1].touched)[0]
+            # A yielded cell's held output is its only record until it is decided: the bound
+            # forgets the least recently active cell that holds none first.
+            oldest = min(
+                state.code_mode_cells.items(),
+                key=lambda item: (item[1].held_output is not None, item[1].touched),
+            )[0]
             del state.code_mode_cells[oldest]
 
     @_read_mostly
@@ -12099,6 +12369,17 @@ class LocalObservationStore:
                             "touched": cell.touched,
                             **({} if cell.session is None else {"session": cell.session}),
                             **({} if cell.nested is None else {"nested": cell.nested}),
+                            **(
+                                {}
+                                if cell.runtime_cell is None
+                                else {"runtime_cell": cell.runtime_cell}
+                            ),
+                            **({} if not cell.waits else {"waits": list(cell.waits)}),
+                            **(
+                                {}
+                                if cell.held_output is None
+                                else {"held_output": observation_envelope_to_json(cell.held_output)}
+                            ),
                         }
                     )
                     for key, cell in sorted(
@@ -12108,6 +12389,12 @@ class LocalObservationStore:
             )
         if state.codex_tool_hook_clock:
             payload["codex_tool_hook_clock"] = state.codex_tool_hook_clock
+        if state.code_mode_item_sessions:
+            payload["code_mode_item_sessions"] = JsonObject(
+                dict(
+                    sorted(state.code_mode_item_sessions.items(), key=lambda item: item[0].encode())
+                )
+            )
         if state.evicted_open_calls:
             payload["evicted_open_calls"] = JsonObject(
                 {
@@ -13124,6 +13411,9 @@ class LocalObservationStore:
             codex_tool_hooks=_codex_tool_hooks_from_json(raw.get("codex_tool_hooks")),
             code_mode_cells=_code_mode_cells_from_json(raw.get("code_mode_cells")),
             codex_tool_hook_clock=_bounded_counter(raw.get("codex_tool_hook_clock")),
+            code_mode_item_sessions=_code_mode_item_sessions_from_json(
+                raw.get("code_mode_item_sessions")
+            ),
             pending_rollout_items=_pending_rollout_items_from_json(
                 raw.get("pending_rollout_items")
             ),

@@ -5,7 +5,10 @@ draft PR on 2026-09-10. Product direction is acknowledged; measured performance 
 the larger-profile rollout remain review decisions on that issue. Amended 2026-09-24 for #828
 (configurable capacity policy, custom counts, and the typed no-Yoetz-cap outcome) and 2026-09-25
 for #843 (a finite over-target drain bound that keeps accounting writable) and #836
-(stranded capture handoffs are reconciled as admission-independent maintenance).
+(stranded capture handoffs are reconciled as admission-independent maintenance); 2026-10-13 for
+the tb4n5 observation follow-ups of #1038 and #1041 (yielded and tool-less code-mode cells, expired
+and rejected attempts, local retention, held rollout rows before a check, drain counter and
+delivery lag).
 
 **Relates to:** ADR-009, ADR-010, ADR-014, ADR-016, ADR-022, and issues #687, #753, #828, and #843.
 
@@ -674,3 +677,45 @@ record that it had looked. The review packet cannot carry images, so the agent h
 
 Content selection, consent, and the content budget are unchanged; the image bytes themselves stay
 replaced by the media placeholder in any captured tool output.
+
+## Amendment — tb4n5 observation follow-ups (2026-10-13, #1038, #1041)
+
+The maintainer requested this scoped work for the tb4n5 observation lane on 2026-10-13 and decided
+two of its questions: a code-mode cell with no tool call and no file change counts as no workspace
+activity, and the 0.2 s hook drain budget stays while its counter is renamed and delivery lag is
+measured instead.
+
+### Yielded code-mode cells keep their identity until they end
+
+A Codex code-mode `exec` cell that outlives its yield window returns the host-written header
+`Script running with cell ID <id>` as its output, keeps running, writes its nested calls after that
+output, and returns its further output on later `wait` calls that name the cell in their `cell_id`
+argument; the terminal one begins `Script completed`, `Script failed` or `Script terminated`. The
+#917/#1038 rule decided a cell at its first output, so in tb4n5's semantic arm a cell whose only
+call was Yoetz's own `check` was delivered as an unclassified `exec` action after that check (20
+such cells in 5 of 9 attempts; 3 final receipts kept `check_current_as_of_earlier_frontier`).
+
+Decision: the session-stream reader reads exactly two host-written facts, never the cell's
+JavaScript: the status header (the first text item of an `exec` or `wait` output, which the cell's
+own output follows and cannot forge) and a `wait` call's `cell_id` argument. A yield output is held
+with its still-open cell (`runtime_cell`, the `wait` calls that named it, and the held output are
+durable in the local store). Nested items read while it is the session's only open cell mark it as
+before; overlapping cells keep the no-borrowing rule. The terminal `wait` output decides the cell
+by the same rule as an unyielded cell's output; a cell nobody waited on is decided at the turn's
+end (`task_complete` or `turn_aborted`). Only a cell that is neither Yoetz's own, nor tool-less, nor
+recorded by its nested hooks then delivers its held yield output as its record, stamped with the
+position of the row that decided it. The bounded cell map forgets a cell holding an output last.
+`wait` polls stay `no_tool_activity`, and Codex's `clock.sleep` (hook spelling `clocksleep`, a
+built-in control tool that only pauses the turn) joins the closed no-activity list
+(`host_sleep_tool`).
+
+### A cell with no observable tool call is no workspace activity
+
+Owner decision. A cell between whose call and output (or terminal `wait` output) the rollout wrote
+no tool item, and while which no tool hook of its session was ingested, made no observable tool
+call; its output stays local and it adds no `exec` action. "Tool item" is any completed item family
+other than a message, reasoning, compaction or hook prompt (an unknown family counts). The rule
+applies only where absence is evidence: the admitted rollout profile records completed tool calls
+as items, and the session's rollout has already written one. Elsewhere such a cell keeps its record
+as #917 decided. A tool that neither fires a hook nor writes an item (`update_plan`) is
+indistinguishable from none and reads the same; Yoetz still never parses the cell's source.
