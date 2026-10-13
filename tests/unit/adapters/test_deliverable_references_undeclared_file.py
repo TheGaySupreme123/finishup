@@ -144,7 +144,7 @@ def _pairs(
             port=adapter,
             request_id=_REQUEST,
         )
-        return await undeclared_references(
+        read = await undeclared_references(
             projection=projection,
             capture=capture,
             source=source,
@@ -153,6 +153,7 @@ def _pairs(
             blocked=None,
             request_id=_REQUEST,
         )
+        return read.pairs
 
     return asyncio.run(run())
 
@@ -479,7 +480,7 @@ def test_a_failing_read_is_not_raised(tmp_path: Path) -> None:
             port=adapter,
             request_id=_REQUEST,
         )
-        return await undeclared_references(
+        read = await undeclared_references(
             projection=projection,
             capture=capture,
             source=source,
@@ -488,6 +489,8 @@ def test_a_failing_read_is_not_raised(tmp_path: Path) -> None:
             blocked=None,
             request_id=_REQUEST,
         )
+        assert read.ambiguous == ()
+        return read.pairs
 
     assert asyncio.run(run()) == ()
 
@@ -556,9 +559,18 @@ def test_tb4n5_biped_writer_literals_raise_no_dependency_on_validation_copies(
     # The recorded shape: written by the solver, shared with the declared results, in another
     # directory. None of the 18 copies is a dependency.
     assert _pairs(repository, base, _projection(*_biped_delivery())) == ()
-    # Each reason alone is enough: without the declared results the literals are still only
-    # written, so the copies are still not dependencies.
+    # ``model.export`` is an unsupported wrapper, so its use is unknown, not a proven write; the
+    # copies stay out because the bare name ``walk.npz`` is ambiguous: a declared file shares it,
+    # and without the declared results nothing ties it to ``checks/case_*``.
     assert _pairs(repository, base, _projection(*_biped_delivery(results=False))) == ()
+    adapter = GitChangeCaptureAdapter()
+    copies = tuple(f"checks/case_{n}/{motion}" for n in range(6) for motion in _MOTIONS)
+    kinds = adapter.classify_undeclared_references(
+        os.fspath(repository), ("submission/solve.py",), copies, ("results/walk.npz",)
+    )
+    # Every copy is named only ambiguously: counted for the receipt, never a dependency.
+    assert {kind for _deliverable, _candidate, kind in kinds} == {"ambiguous"}
+    assert len(kinds) == len(copies)
 
 
 def test_a_basename_shared_with_a_declared_file_or_in_an_unrelated_directory_is_ambiguous(
@@ -603,16 +615,19 @@ def test_same_basename_in_two_directories_resolves_to_the_one_beside_the_deliver
 @pytest.mark.parametrize(
     "line",
     [
-        "save_model(model, 'weights.npz')",
-        "export_report(data, os.path.join(HERE, 'weights.npz'))",
         "frame.to_csv('weights.npz', index=False)",
+        "frame.to_parquet(path='weights.npz')",
         "np.savez(os.path.join(HERE, 'weights.npz'), **tables)",
         "np.savez_compressed(Path(HERE) / 'weights.npz', **tables)",
+        "np.save(file='weights.npz', arr=tables)",
         "Path('weights.npz').write_bytes(data)",
         "(HERE / 'weights.npz').write_bytes(data)",
         "json.dump(obj, open('weights.npz', 'w'))",
         "handle = open('weights.npz', mode='wb')",
+        "handle = open(os.path.join(HERE, 'weights.npz'), 'w')",
         "torch.save(state, 'weights.npz')",
+        "plt.savefig('weights.npz')",
+        "os.remove('weights.npz')",
     ],
 )
 def test_a_literal_the_deliverable_only_writes_is_not_a_dependency(
@@ -637,6 +652,15 @@ def test_a_literal_the_deliverable_only_writes_is_not_a_dependency(
         "with open('weights.npz', 'rb') as handle: MODEL = handle.read()",
         "with open('weights.npz') as handle: MODEL = handle.read()",
         "MODEL_PATH = HERE / 'weights.npz'",
+        # Checker reproduction (#4): the default mode reads; a directory literal is not a mode.
+        "with open(os.path.join('.', 'weights.npz')) as handle: MODEL = handle.read()",
+        "with open(os.path.join('.', 'weights.npz'), encoding='utf-8') as handle: MODEL = 1",
+        # ZipFile.write reads its source file into the archive.
+        "archive.write('weights.npz')",
+        # An unsupported wrapper is unknown, never a proven write.
+        "save_model(model, 'weights.npz')",
+        "export_report(data, os.path.join(HERE, 'weights.npz'))",
+        "model.save('weights.npz')",
     ],
 )
 def test_a_read_or_an_unclassified_use_is_still_a_dependency(tmp_path: Path, line: str) -> None:
@@ -649,6 +673,57 @@ def test_a_read_or_an_unclassified_use_is_still_a_dependency(tmp_path: Path, lin
     (repository / "weights.npz").write_bytes(b"\x93NUMPY\x00\x01weights")
     assert _pairs(repository, base, _projection(_item("serve.py"))) == (
         ("serve.py", "weights.npz"),
+    )
+
+
+def test_an_explicit_directory_read_beats_a_declared_namesake_and_a_beside_source_decoy(
+    tmp_path: Path,
+) -> None:
+    """Checker reproductions (#3): a path built from literals names its directory explicitly.
+
+    ``np.load(os.path.join('checks', 'case_0', 'walk.npz'))`` reads that copy even though the
+    declared ``results/walk.npz`` shares its name, and ``os.path.join('b', 'model.npz')`` from
+    ``a/serve.py`` reads ``b/model.npz``, never the ``a/model.npz`` beside the deliverable.
+    """
+
+    reader = (
+        "import os\nimport numpy as np\n"
+        "WALK = np.load(os.path.join('checks', 'case_0', 'walk.npz'))\n"
+    )
+    for directory in ("biped", "decoy"):
+        (tmp_path / directory).mkdir()
+    repository, base = _biped(tmp_path / "biped", reader)
+    assert _pairs(repository, base, _projection(*_biped_delivery())) == (
+        ("submission/solve.py", "checks/case_0/walk.npz"),
+    )
+    # The same through the ``/`` operator on ``Path``.
+    (repository / "submission" / "solve.py").write_text(
+        "from pathlib import Path\nimport numpy as np\n"
+        "WALK = np.load(Path('checks') / 'case_0' / 'walk.npz')\n",
+        encoding="utf-8",
+    )
+    assert _pairs(repository, base, _projection(*_biped_delivery())) == (
+        ("submission/solve.py", "checks/case_0/walk.npz"),
+    )
+
+    repository, base = _repository(tmp_path / "decoy", {"README.md": "Two models\n"})
+    for directory in ("a", "b"):
+        (repository / directory).mkdir()
+        (repository / directory / "model.npz").write_bytes(b"\x93NUMPY\x00\x01model")
+    (repository / "a" / "serve.py").write_text(
+        "import os\nimport numpy as np\nMODEL = np.load(os.path.join('b', 'model.npz'))\n",
+        encoding="utf-8",
+    )
+    assert _pairs(repository, base, _projection(_item("a/serve.py"))) == (
+        ("a/serve.py", "b/model.npz"),
+    )
+    # A directory literal is never mistaken for ``open``'s mode: the default mode reads.
+    (repository / "a" / "serve.py").write_text(
+        "import os\nwith open(os.path.join('b', 'model.npz')) as handle:\n    DATA = handle.read()\n",
+        encoding="utf-8",
+    )
+    assert _pairs(repository, base, _projection(_item("a/serve.py"))) == (
+        ("a/serve.py", "b/model.npz"),
     )
 
 
@@ -702,56 +777,3 @@ def test_shell_redirections_and_string_or_comment_parentheses(tmp_path: Path) ->
         "print('(')  # unbalanced ( in a comment\nnp.save('report.txt', data)\n", encoding="utf-8"
     )
     assert _pairs(repository, base, _projection(_item("tool.py"))) == ()
-
-
-def test_created_since_task_start_needs_the_task_start_snapshot(tmp_path: Path) -> None:
-    """tb4n5 (ADR-035 amendment): what Yoetz may show the task's own agent by name.
-
-    A file the change lists as created was created in the task's workspace after the task started
-    only against the task's ``task_start`` base whose untracked listing was complete; a file that
-    was untracked at task start (here staged later, so the change lists it as added) never is, and
-    without the snapshot nothing is.
-    """
-
-    from dataclasses import replace
-
-    from yoetz.application.check_change import created_since_task_start
-
-    repository = tmp_path / "app"
-    repository.mkdir(mode=0o700)
-    _git(repository, "init", "--quiet")
-    (repository / "README.md").write_text("Cracker\n", encoding="utf-8")
-    (repository / "provided.npz").write_bytes(b"provided before the task")
-    _git(repository, "add", "--", "README.md")
-    _git(
-        repository,
-        "-c",
-        "user.name=Yoetz Test",
-        "-c",
-        "user.email=yoetz@example.invalid",
-        "commit",
-        "--quiet",
-        "-m",
-        "baseline",
-    )
-    adapter = GitChangeCaptureAdapter()
-    base = adapter.read_task_base(os.fspath(repository))
-    assert base.origin == "task_start" and base.untracked_complete
-    (repository / "model.npz").write_bytes(b"created by the task")
-    _git(repository, "add", "--", "provided.npz")
-    capture = adapter.capture_metadata(os.fspath(repository), base)
-    created_paths = {
-        entry.path for entry in capture.entries if entry.untracked or entry.status.startswith("A")
-    }
-    assert {"model.npz", "provided.npz"} <= created_paths
-
-    created = created_since_task_start(capture, base)
-    assert created("model.npz") is True
-    assert created("provided.npz") is False
-    # No snapshot, an incomplete one, a first-check base or no capture: nothing is provable.
-    assert created_since_task_start(capture, None)("model.npz") is False
-    assert created_since_task_start(None, base)("model.npz") is False
-    incomplete = replace(base, untracked=(), untracked_complete=False)
-    assert created_since_task_start(capture, incomplete)("model.npz") is False
-    first_check = replace(capture, base="first_check")
-    assert created_since_task_start(first_check, base)("model.npz") is False

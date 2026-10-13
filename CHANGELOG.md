@@ -238,19 +238,21 @@ reverse-chronological released versions.
   declaration is named as wrong. A replacement completion claim may now name only the replacement
   obligations a plan revision recorded. A file the task asks for unconditionally stays required.
 
-- An undeclared file now stops closure only when a delivered file reads it: a file name the
-  delivered code only writes (`np.savez(...)`, `model.export(..., out / "walk.npz")`, a
-  `to_csv`, an `open(..., "w")`), or a bare file name that a declared file shares, or that the code
-  never ties to the file's directory, no longer counts. A read, an unclassified use, or a read
-  before a write still does (#1044 follow-up).
+- An undeclared file now stops closure only when a delivered file may read it. A file the code
+  provably only writes (`np.savez(...)`, a frame's `to_csv`, an `open(..., "w")`) no longer
+  counts; an unsupported wrapper, `ZipFile.write`, an `open` with no mode, or a read before a
+  write still does. A path the code builds from literals (`os.path.join('checks', 'case_0',
+  'walk.npz')`) names exactly that file. A bare file name that a declared file shares, or that
+  the code never ties to the file's directory, is not treated as a dependency; the receipt
+  discloses how many such files there were (`deliverable_references_ambiguous_name`), never which
+  (#1044 follow-up).
 
-- When a delivered file reads a file your task created and did not declare, `status` and the Stop
-  text now show you its name even when your privacy settings withhold repository excerpts from
-  your agent: Yoetz proves the file did not exist when the task started and shows the name only to
-  your own agent on this machine, never to the reviewer (`name_provenance: created_in_task`). A
-  file that was already there stays withheld, and the Stop text then says so and how to list the
-  files your change created yourself. The AI-powered review no longer receives these names in a
-  check's history at all. Declaring the directory that holds the files is enough.
+- When a delivered file may read a file you did not declare and your privacy settings withhold
+  its name, the Stop text now says so, says Yoetz shows you only a name you published yourself,
+  and tells you to list the files your change created with your own shell and declare them or
+  their directory. A name you published yourself in the same session is shown to you. The
+  AI-powered review no longer receives these names, or a digest of a check that held them, in a
+  check's history at all.
 
 - At Stop, the acceptance re-read now asks only about resolved obligations whose acceptance
   criteria the final answer neither names nor addresses, and names them, on Codex and Claude Code

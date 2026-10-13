@@ -357,13 +357,15 @@ Three more things the receipt discloses in their own sections, by id only:
   what the file held and at which check. A file created empty (an empty requirements list) never
   raises it; if the task really asked for that file to be empty whatever happens, record a
   `yoetz-assumption` decision that names the file and run `check`.
-- **Deliverables that load undeclared files.** When a delivered source file reads a file you
+- **Deliverables that load undeclared files.** When a delivered source file may read a file you
   created but did not declare (a model, a word list, a data table), a grader that receives only the
-  declared files gets a program that cannot run. A file the deliverable only writes, or a bare
-  file name that a declared file shares, does not count. `deliverable_references_undeclared_file`
-  asks you at Stop to fix it and names the files your task created; when your privacy settings
-  withhold a name (a file that was already there when the task started), it says so and asks you
-  to list the files your change created yourself. The receipt names them (a `default_local_export`
+  declared files gets a program that cannot run. A file the deliverable provably only writes does
+  not count. A bare file name that a declared file shares, or that nothing in the code ties to the
+  file's folder, is not treated as a dependency, and the receipt says how many such files there
+  were (`deliverable_references_ambiguous_name`), never which.
+  `deliverable_references_undeclared_file` asks you at Stop to fix it and names the files; when
+  your privacy settings withhold a name (Yoetz shows you only a name you published yourself), it
+  says so and asks you to list the files your change created yourself. The receipt names them (a `default_local_export`
   or `redacted_share` receipt counts them instead) and stays below clean until you fix it. Embed
   the content in the deliverable, rebuild it at run time, or declare the file, or the directory
   holding it, as a delivered output (a requested `file` or `directory` item with role `output`; a

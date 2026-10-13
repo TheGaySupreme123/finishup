@@ -612,3 +612,110 @@ def test_a_plan_supersession_carries_the_claim_scope_to_its_replacement() -> Non
     with pytest.raises(ClaimRevisionMismatch) as still_disjoint:
         replay(_extend(revised, (_CLAIM_V1_1_SCHEMA, unrelated)))
     assert still_disjoint.value.invariant == "scope_overlap_required"
+
+
+def _published(obligation: ObligationId) -> tuple[EventSchema, EventPayload]:
+    from yoetz.domain.events import ObligationPublishedPayload, ObligationStatus
+
+    return (
+        EventSchema("obligation_published", "1.0.0"),
+        ObligationPublishedPayload(
+            obligation_id=obligation,
+            description="Quarantine malformed ledgers.",
+            evidence_expectation="The regression suite.",
+            status=ObligationStatus.OPEN,
+        ),
+    )
+
+
+def _superseded(
+    version: int, old: ObligationId, new: ObligationId
+) -> tuple[EventSchema, EventPayload]:
+    from yoetz.domain.events import ObligationChange, ObligationChangeKind, PlanRevisedPayload
+
+    return (
+        EventSchema("plan_revised", "1.0.0"),
+        PlanRevisedPayload(
+            plan_version=version,
+            supersedes_plan_version=version - 1,
+            reason="Conditional runtime output re-modelled as a change item.",
+            summary="Correction",
+            obligation_changes=(
+                ObligationChange(
+                    old, ObligationChangeKind.SUPERSEDED, "Conditional output.", (new,)
+                ),
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize("outcome", [ResultOutcome.FAILURE, ResultOutcome.PARTIAL])
+@pytest.mark.parametrize("depth", [1, 2])
+def test_a_plan_supersession_never_drops_a_required_failure_disclosure(
+    outcome: ResultOutcome, depth: int
+) -> None:
+    """Checker reproduction (#2): a failure on O1, claimed with it in ``limitation_refs``; O1
+    superseded by O2 (or O2 by O3); the replacement claim scoped to the replacement must still
+    disclose the failure, and naming it there must be admissible. Relevance follows the
+    supersession ancestry, transitively, in both the required and the authorable calculation."""
+
+    from yoetz.domain.events import PlanPublishedPayload
+
+    chain = tuple(obligation_id(f"obl_00000000-0000-4000-8000-00000000010{n}") for n in range(3))
+    obligations = chain[: depth + 1]
+    newest = obligations[-1]
+    prefix = _chain(
+        _published(obligations[0]),
+        (EventSchema("plan_published", "1.0.0"), PlanPublishedPayload(1, "Plan", obligations[:1])),
+        (_ACTION_SCHEMA, _action(1, (obligations[0],))),
+        (_RESULT_SCHEMA, _result(1, outcome)),
+        (
+            _CLAIM_V1_1_SCHEMA,
+            replace(_completion(0, limitations=(_res(1),)), obligation_refs=(obligations[0],)),
+        ),
+    )
+    revised = _extend(
+        prefix,
+        *(_published(obligation) for obligation in obligations[1:]),
+        *(
+            _superseded(version, old, new)
+            for version, (old, new) in enumerate(zip(obligations, obligations[1:], strict=False), 2)
+        ),
+    )
+    silent = replace(
+        _completion(1, supersedes=(_clm(0),), statement="Re-modelled."),
+        obligation_refs=(newest,),
+    )
+    with pytest.raises(ClaimRevisionMismatch) as dropped:
+        replay(_extend(revised, (_CLAIM_V1_1_SCHEMA, silent)))
+    assert dropped.value.invariant == "limitation_refs_complete"
+    disclosed = replace(silent, limitation_refs=(_res(1),))
+    state = replay(_extend(revised, (_CLAIM_V1_1_SCHEMA, disclosed)))
+    assert effective_claim_ids(state) == frozenset({_clm(1)})
+    assert state.claims[_clm(1)].payload == disclosed
+
+
+def test_a_fresh_claim_over_a_replacement_still_replays_and_its_relevance_follows_ancestry() -> (
+    None
+):
+    """Replay compatibility: a fresh (non-replacing) claim over O2 that omits a failure recorded
+    on the superseded O1 was admitted before this change, so replay keeps admitting it. The
+    omission is not lost: check-time relevance (``kernel.claims.result_is_relevant_to_claim``,
+    which the work-integrity failed-work rule reads) follows the same supersession ancestry."""
+
+    from yoetz.domain.events import PlanPublishedPayload
+    from yoetz.kernel.claims import result_is_relevant_to_claim
+
+    old, new = (obligation_id(f"obl_00000000-0000-4000-8000-00000000020{n}") for n in range(2))
+    prefix = _chain(
+        _published(old),
+        (EventSchema("plan_published", "1.0.0"), PlanPublishedPayload(1, "Plan", (old,))),
+        (_ACTION_SCHEMA, _action(1, (old,))),
+        (_RESULT_SCHEMA, _result(1, ResultOutcome.FAILURE)),
+        _published(new),
+        _superseded(2, old, new),
+    )
+    fresh = replace(_completion(0), obligation_refs=(new,))
+    state = replay(_extend(prefix, (_CLAIM_V1_1_SCHEMA, fresh)))
+    assert state.claims[_clm(0)].payload == fresh
+    assert result_is_relevant_to_claim(state, state.claims[_clm(0)], _res(1)) is True

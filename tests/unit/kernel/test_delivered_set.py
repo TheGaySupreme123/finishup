@@ -550,50 +550,33 @@ def test_check_adds_undeclared_reference_and_names_it_on_the_deliverable_state(
     assert state.undeclared_references == ("english_ngrams.npz", "english_words.npz")
     assert state.undeclared_reference_count == 3
     assert DeliverableState.from_wire(state.as_wire()) == state
-    # No capture and no task base: Yoetz cannot prove the task created them (tb4n5).
-    assert state.undeclared_references_created_in_task is False
+    assert state.undeclared_reference_ambiguous is None
     assert undeclared_reference_rows(recorded) == (
-        (str(_OBLIGATION), 0, ("english_ngrams.npz", "english_words.npz"), 3, False),
+        (str(_OBLIGATION), 0, ("english_ngrams.npz", "english_words.npz"), 3),
     )
 
 
-def test_a_state_is_marked_created_in_task_only_when_every_reference_was() -> None:
-    """tb4n5 (ADR-035 amendment): the names return to the task's own agent only when the check
-    proved every file the deliverable names was created in the task's workspace since it started.
-    """
+def test_an_ambiguous_count_is_recorded_and_disclosed_never_a_name() -> None:
+    """tb4n5 (the #1044 follow-up, ADR-035 amendment): files a deliverable names only by an
+    ambiguous basename are counted on its state and disclosed with that count; never named."""
 
     from yoetz.application import check
-    from yoetz.kernel.delivered_set import undeclared_reference_rows
+    from yoetz.application.check_change import UndeclaredReferenceRead
+    from yoetz.kernel.delivered_set import ambiguous_reference_count
 
     states = (DeliverableState(_OBLIGATION, 0),)
-    files = ((_OBLIGATION, 0, "cracker.py"),)
-    references = (("cracker.py", "a.npz"), ("cracker.py", "b.npz"))
+    files = ((_OBLIGATION, 0, "solve.py"),)
     enrich = check._with_undeclared_references  # pyright: ignore[reportPrivateUsage]
 
-    (all_created,) = enrich(states, files, references, created=lambda _path: True)
-    assert all_created.undeclared_references_created_in_task is True
-    assert all_created.as_wire()["undeclared_references_created_in_task"] is True
-    assert DeliverableState.from_wire(all_created.as_wire()) == all_created
-    assert undeclared_reference_rows((all_created,))[0][4] is True
-
-    (one_old,) = enrich(states, files, references, created=lambda path: path == "a.npz")
-    assert one_old.undeclared_references_created_in_task is False
-    assert "undeclared_references_created_in_task" not in one_old.as_wire()
-    (default,) = enrich(states, files, references)
-    assert default.undeclared_references_created_in_task is False
-
-    with pytest.raises(ProtocolValueError):  # only beside the references it qualifies
-        DeliverableState(_OBLIGATION, 0, undeclared_references_created_in_task=True)
-    with pytest.raises(ProtocolValueError):  # the wire carries it only when true
-        DeliverableState.from_wire(
-            {
-                "basis": "present",
-                "item_index": 0,
-                "obligation_id": str(_OBLIGATION),
-                "undeclared_references": ["a.npz"],
-                "undeclared_references_created_in_task": False,
-            }
-        )
+    (state,) = enrich(states, files, (), ambiguous=(("solve.py", 18),))
+    assert state.undeclared_reference_ambiguous == 18
+    assert state.undeclared_references == ()
+    assert state.as_wire()["undeclared_reference_ambiguous"] == 18
+    assert DeliverableState.from_wire(state.as_wire()) == state
+    assert ambiguous_reference_count((state, state)) == 18  # one keyed path, counted once
+    assert UndeclaredReferenceRead().pairs == ()
+    with pytest.raises(ProtocolValueError):
+        DeliverableState(_OBLIGATION, 0, undeclared_reference_ambiguous=0)
 
 
 def test_a_recorded_undeclared_reference_is_a_plain_bounded_path() -> None:

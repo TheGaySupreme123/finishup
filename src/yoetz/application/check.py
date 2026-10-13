@@ -201,6 +201,7 @@ from yoetz.kernel.review_frame import agent_probe_only, yoetz_process_state_only
 from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
+    DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP,
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     agent_linked_run_events,
     confirmed_blocked_obligation_ids,
@@ -218,7 +219,6 @@ from yoetz.observability.logging import (
 from yoetz.ports.change_capture import (
     CheckChangeMetadata,
     CheckWorkspaceSource,
-    TaskChangeBase,
     current_check_workspace_source,
 )
 from yoetz.ports.clock import ClockPort
@@ -2898,20 +2898,9 @@ async def _read_declared_outputs(
     prefix's records (for the lineage the result carries).
     """
 
-    from yoetz.application.check_change import load_task_change_base
-
     records = await _frozen_prefix_records(runtime, request, frozen)
-    task_base = (
-        await load_task_change_base(runtime, request.request_id) if capture is not None else None
-    )
     outputs = await _requested_output_inputs(
-        frozen.case,
-        capture,
-        source,
-        port,
-        request.request_id,
-        deliverable_history(records),
-        task_base=task_base,
+        frozen.case, capture, source, port, request.request_id, deliverable_history(records)
     )
     return outputs.evaluator, outputs.gaps, outputs.absent, outputs.states, outputs.files, records
 
@@ -2970,12 +2959,10 @@ async def _requested_output_inputs(
     port: object | None,
     request_id: str,
     history: tuple[DeliverableSnapshot, ...] = (),
-    *,
-    task_base: TaskChangeBase | None = None,
 ) -> _OutputInputs:
 
     from yoetz.application.check_change import (
-        created_since_task_start,
+        UndeclaredReferenceRead,
         requested_output_states,
         undeclared_references,
     )
@@ -3014,7 +3001,7 @@ async def _requested_output_inputs(
     if content_moved_declared_items(case.projection, states, blocked=confirmed, history=history):
         # A non-blocking disclosure (ADR-035): never a Stop-gate token, never a finding.
         codes.add(DECLARED_OUTPUT_CONTENT_MOVED_GAP)
-    references = await undeclared_references(
+    read: object = await undeclared_references(
         projection=case.projection,
         capture=capture,
         source=source,
@@ -3023,6 +3010,18 @@ async def _requested_output_inputs(
         blocked=confirmed,
         request_id=request_id,
     )
+    # A reader that predates the ambiguous count returns the dependency pairs alone.
+    reading = (
+        read
+        if type(read) is UndeclaredReferenceRead
+        else UndeclaredReferenceRead(cast(tuple[tuple[str, str], ...], read))
+    )
+    references = reading.pairs
+    if reading.ambiguous:
+        # tb4n5 (the #1044 follow-up, ADR-035 amendment): a deliverable names created files only
+        # by an ambiguous basename, so they were not treated as dependencies. A standing
+        # disclosure with the count on the receipt; never a name, never a Stop-gate token.
+        codes.add(DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP)
     if references:
         # tb4n2 R2 / tb4n4 (#1044): a declared deliverable names a file the change created but
         # never declared, so the delivery may not carry what it needs. Agent work and a Stop-gate
@@ -3051,10 +3050,7 @@ async def _requested_output_inputs(
         gaps,
         bool(absent),
         _with_undeclared_references(
-            assessment.states,
-            files,
-            references,
-            created=created_since_task_start(capture, task_base),
+            assessment.states, files, references, ambiguous=reading.ambiguous
         ),
         files,
     )
@@ -3065,21 +3061,21 @@ def _with_undeclared_references(
     files: tuple[tuple[ObligationId, int, str], ...],
     references: tuple[tuple[str, str], ...],
     *,
-    created: Callable[[str], bool] = lambda _path: False,
+    ambiguous: tuple[tuple[str, int], ...] = (),
 ) -> tuple[DeliverableState, ...]:
     """Each referencing deliverable's state, naming the undeclared files it names (#1044).
 
     ``references`` are ``(deliverable, referenced file)`` root-relative pairs from the check-time
     read; ``files`` maps each recorded state to its deliverable's root-relative path. At most
     ``MAX_UNDECLARED_REFERENCES`` nameable paths are recorded per state, sorted; when more were
-    found (or one cannot be named) the state also records how many. ``created`` says whether a
-    path was created in the task's workspace after the task started
-    (``check_change.created_since_task_start``); a state whose every reference was is marked
-    ``undeclared_references_created_in_task`` (tb4n5, ADR-035 amendment).
+    found (or one cannot be named) the state also records how many. ``ambiguous`` counts, per
+    deliverable, the created files it names only by an ambiguous basename (tb4n5): recorded as
+    ``undeclared_reference_ambiguous``, never named.
     """
 
-    if not references:
+    if not references and not ambiguous:
         return states
+    unclear = dict(ambiguous)
     found: dict[str, set[str]] = {}
     for deliverable, referenced in references:
         found.setdefault(deliverable, set()).add(referenced)
@@ -3088,6 +3084,9 @@ def _with_undeclared_references(
     for state in states:
         relative = relatives.get((state.obligation_id, state.item_index))
         named = found.get(relative) if relative is not None else None
+        count = unclear.get(relative) if relative is not None else None
+        if count:
+            state = replace(state, undeclared_reference_ambiguous=count)
         if not named:
             recorded.append(state)
             continue
@@ -3102,7 +3101,6 @@ def _with_undeclared_references(
                 state,
                 undeclared_references=shown,
                 undeclared_reference_count=len(named) if len(named) > len(shown) else None,
-                undeclared_references_created_in_task=all(created(path) for path in named),
             )
         )
     return tuple(recorded)

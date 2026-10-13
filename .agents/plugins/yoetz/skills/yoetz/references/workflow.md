@@ -254,14 +254,16 @@ decision with the line `yoetz-assumption:<obligation id>` that names the file pa
 Separately, if an obligation is genuinely not done, republish it `acknowledged_not_done` with the
 reason and leave it out of your completion claim: an acknowledged obligation is outside completion
 coverage, so omitting it is not a scope gap. A deliverable that
-reads a file you created but did not declare (`deliverable_references_undeclared_file`: a quoted
-path or name the deliverable loads or opens for reading, not one it only writes, and not a bare
-file name a declared file shares) stops you too: a grader may receive only the declared files,
+may read a file you created but did not declare (`deliverable_references_undeclared_file`: a
+quoted path or name the deliverable reads or uses in a way Yoetz cannot classify, not one it
+provably only writes; a bare file name a declared file shares, or that nothing ties to the
+file's directory, is only counted on the receipt) stops you too: a grader may receive only the
+declared files,
 so embed its content in the deliverable, rebuild it at run time, or declare it, or the directory
 holding it, as a delivered output (a requested `file` or `directory` item with role `output`; a file
 the task itself provides is role `input`), then run `check`. Disclosing the dependency does not
 resolve it. The Stop text and `status` (`closure_readiness.undeclared_references`) name the file
-when your privacy policy allows it or your task created it after it started; otherwise they say
+when your privacy policy allows it or you published that exact name yourself; otherwise they say
 the names were withheld, and you list the files your change created with your own shell (`git
 status --porcelain --untracked-files=all`). A `full_local` receipt names the file; an export or
 share receipt only counts such files. A delivered file that lost most of its lines
@@ -760,8 +762,8 @@ When `missing_for_assessment` contains an `agent_suppliable` item, supplying or 
 item is the overall next action before requesting an ordinary receipt. The structured
 `overall_next` projection names that action and its bounded target refs (which may be empty for a
 global input); `finding_checklist.next` remains a finding-only continuation and does not override
-it. When open obligations or undisclosed live failures remain, or a delivered file reads a file
-the change created that no item declares, its action is `review_recorded_work` with bounded
+it. When open obligations or undisclosed live failures remain, or a delivered file may read a
+file the change created that no item declares, its action is `review_recorded_work` with bounded
 obligation/result/action ids. When only standing,
 `structurally_unavailable_on_this_host` or Yoetz-limit items remain, `overall_next` reports
 `ready_with_limitations` and the receipt endpoint remains available for acknowledging the

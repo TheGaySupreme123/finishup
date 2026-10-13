@@ -32,6 +32,7 @@ __all__ = [
     "required_limitation_ids_for_projection",
     "required_limitation_result_ids",
     "result_is_relevant_to_claim_scope",
+    "scope_with_supersession_ancestry",
 ]
 
 # A v1.1 completion claim must disclose every relevant typed non-success result. An `unknown`
@@ -42,6 +43,34 @@ TYPED_LIMITING_OUTCOMES: Final = frozenset({ResultOutcome.FAILURE, ResultOutcome
 DISCLOSABLE_LIMITING_OUTCOMES: Final = TYPED_LIMITING_OUTCOMES | {ResultOutcome.UNKNOWN}
 # Surfaces list at most this many ids, then the count of the rest.
 MAX_LISTED_REQUIRED_LIMITATION_IDS: Final = 64
+
+
+def scope_with_supersession_ancestry(
+    claim_scope: frozenset[ObligationId],
+    obligations: Mapping[ObligationId, object] | None,
+) -> frozenset[ObligationId]:
+    """``claim_scope`` plus every obligation a plan revision replaced by one in it, transitively.
+
+    tb4n5 (ADR-033 amendment): a plan correction that supersedes O1 by O2 carries a claim's scope
+    from O1 to O2, so a result recorded on O1 stays relevant to a claim over O2 (and over O3 when
+    O2 was superseded in turn). Read from the replay-derived ``superseded_by_obligation_ids``. A
+    whole-task (empty) scope stays empty: everything is already relevant to it.
+    """
+
+    if not claim_scope or not obligations:
+        return claim_scope
+    predecessors: dict[ObligationId, set[ObligationId]] = {}
+    for obligation, record in obligations.items():
+        for replacement in getattr(record, "superseded_by_obligation_ids", ()):
+            predecessors.setdefault(replacement, set()).add(obligation)
+    found = set(claim_scope)
+    pending = list(claim_scope)
+    while pending:
+        for predecessor in predecessors.get(pending.pop(), ()):
+            if predecessor not in found:
+                found.add(predecessor)
+                pending.append(predecessor)
+    return frozenset(found)
 
 
 def result_is_relevant_to_claim_scope(

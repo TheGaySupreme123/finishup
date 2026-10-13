@@ -3,7 +3,7 @@
 Before this module about a dozen places answered "does this gap still bound closure?" with their
 own rule: closure readiness (``GAP_CLASSIFICATION``), the clean-compatible lists, the receipt's
 ad-hoc advisory sets, the deterministic scope, the proof-tolerance sets. They disagreed. This table
-is the one answer. Each of the 211 gap codes the product can emit has exactly one row, and a row
+is the one answer. Each of the 212 gap codes the product can emit has exactly one row, and a row
 says two separate things:
 
 * ``readiness`` - who owes the next move, unchanged from the closed ADR-032 vocabulary: ``A``
@@ -384,6 +384,18 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "semantic_prior_verdicts_unsupported",
             "semantic_restatements_suppressed",
         ),
+    ),
+    # tb4n5 (the #1044 follow-up, ADR-035 amendment): created files a delivered file names only by
+    # an ambiguous file name, counted (never named) on the receipt. A new code, disclosed from the
+    # start: the bound the syntactic dependency read leaves open, never agent work.
+    _Family(
+        rule="G4b",
+        family="disclosure",
+        readiness="S",
+        d_route="D",
+        review_route="D",
+        changed=True,
+        codes=("deliverable_references_ambiguous_name",),
     ),
     # Issue #1042: reviewer challenges calling work "never attempted" during a routine review, or
     # about Yoetz's own capture or process state. A new code, disclosed from the start: it records what
@@ -766,6 +778,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "declared_output_emptied",
         "declared_output_not_reviewable",
         "declared_output_removed",
+        "deliverable_references_ambiguous_name",
         "deliverable_references_undeclared_file",
         "edited_after_last_verification",
         "evidence_content_digest_only",

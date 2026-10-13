@@ -19,6 +19,7 @@ appear, and keep an unconditional missing output blocking.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -350,3 +351,184 @@ async def test_an_unconditional_missing_output_still_blocks_after_the_correction
     readiness = compact.closure_readiness
     assert readiness.state == "action_required"
     assert int(readiness.receipt_blocking_finding_count or "0") >= 1
+
+
+# --- End to end with a real repository, the real workspace probe and a real final receipt -------
+# Checker review of the correction route: the tests above mock the probe and read the predicted
+# receipt. These run the production ``requested_output_states`` against a real Git work tree and
+# read the receipt itself, and prove that dropping an unconditional output from the replacement
+# (naming it neither as a file nor in the change item) does not launder the missing file.
+
+_REAL_A = protocol_id("obl_", 8501)
+_REAL_B = protocol_id("obl_", 8502)
+_REAL_A_FIXED = protocol_id("obl_", 8503)
+_REAL_B_FIXED = protocol_id("obl_", 8504)
+
+
+def _real_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, crm: bool) -> None:
+    import os
+    import subprocess
+
+    from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
+    from yoetz.ports.change_capture import CheckWorkspaceSource
+
+    env = {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": os.defpath,
+        "HOME": os.fspath(tmp_path),
+    }
+    repository = tmp_path / "app"
+    repository.mkdir(mode=0o700)
+    for arguments in (
+        ("init", "--quiet"),
+        ("commit", "--quiet", "--allow-empty", "-m", "baseline"),
+    ):
+        subprocess.run(
+            (
+                "git",
+                "-c",
+                "user.name=Yoetz Test",
+                "-c",
+                "user.email=yoetz@example.invalid",
+                *arguments,
+            ),
+            cwd=repository,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    for relative in ("output/submission.json", "src/lib/leadLedger.ts") + (
+        ("output/crm_leads.json",) if crm else ()
+    ):
+        target = repository / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}\n", encoding="utf-8")
+    source = CheckWorkspaceSource(os.fspath(repository), "hmac-sha256:" + "0" * 64)
+    real = check_change.requested_output_states
+
+    async def states(**kwargs: Any) -> Any:
+        return await real(
+            projection=kwargs["projection"],
+            capture=adapter.capture_metadata(os.fspath(repository), base),
+            source=source,
+            port=adapter,
+            request_id=kwargs["request_id"],
+        )
+
+    monkeypatch.setattr(check_change, "requested_output_states", states)
+
+
+async def _real_run(seed: int, *, drop_crm: bool) -> tuple[_Run, Any]:
+    run = await _begin(seed=seed)
+    plan = {
+        _REAL_A: [_file("output/crm_leads.json"), _file("output/incomplete_leads.json")],
+        _REAL_B: [_file("output/submission.json"), _file("output/rejected_ledgers.json")],
+    }
+    await run.publish(
+        *(_obligation(run, obligation, items) for obligation, items in plan.items()),
+        run.draft(
+            "plan_published",
+            {
+                "plan_version": 1,
+                "summary": "Lead submit pipeline",
+                "obligation_refs": list[JsonValue](sorted(plan, key=str.encode)),
+            },
+        ),
+    )
+    claim = await _work(run, seed + 1, plan)
+    first = await run.check()
+    corrected = {
+        _REAL_A_FIXED: [
+            *([] if drop_crm else [_file("output/crm_leads.json")]),
+            _change(_INCOMPLETE_CHANGE),
+            _file("src/lib/leadLedger.ts"),
+        ],
+        _REAL_B_FIXED: [
+            _file("output/submission.json"),
+            _change(_REJECTED_CHANGE),
+            _file("src/lib/leadLedger.ts"),
+        ],
+    }
+    await run.publish(
+        *(_obligation(run, obligation, items) for obligation, items in corrected.items()),
+        run.draft(
+            "plan_revised",
+            {
+                "plan_version": 2,
+                "supersedes_plan_version": 1,
+                "reason": "Conditional ledgers are runtime behavior, not files delivered now.",
+                "summary": "Model the conditional ledgers as change items",
+                "obligation_changes": [
+                    {
+                        "obligation_id": old,
+                        "change": "superseded",
+                        "reason": "Conditional runtime output.",
+                        "replacement_obligation_ids": [new],
+                    }
+                    for old, new in ((_REAL_A, _REAL_A_FIXED), (_REAL_B, _REAL_B_FIXED))
+                ],
+            },
+        ),
+    )
+    await _work(run, seed + 2, corrected, supersedes_claim=claim, action_kind="other")
+    await run.check()
+    return run, first
+
+
+async def _final_receipt_conclusion(run: _Run, seed: int) -> str:
+    import integration.application.test_respond_status_receipt as h
+    from yoetz.protocol.models import ReceiptRequest
+
+    receipt = await run.app.receipt(
+        ReceiptRequest.model_validate(
+            {
+                **h._receipt_wire(
+                    seed,
+                    task_id=run.started.task_id,
+                    session=run.started.session_id,
+                    writer=run.started.writer_id,
+                    frontier=run.frontier,
+                ),
+                "format": "json",
+            }
+        )
+    )
+    return str(receipt.conclusion)
+
+
+async def test_real_workspace_the_honest_correction_closes_with_the_ledgers_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _real_workspace(tmp_path, monkeypatch, crm=True)
+    run, first = await _real_run(8600, drop_crm=False)
+    assert {finding.subject_refs for finding in _absent_findings(first)} == {
+        (_REAL_A,),
+        (_REAL_B,),
+    }
+    findings = await run.status("findings")
+    rows = cast(Any, findings.page).items
+    assert all(row.resolved for row in rows if row.kind == "requested_item_never_attempted")
+    assert await _final_receipt_conclusion(run, 8650) != "unresolved_findings_remain"
+
+
+async def test_real_workspace_an_unconditional_output_dropped_by_the_correction_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The replacement names ``crm_leads.json`` neither as a file nor in its change item, and the
+    file is missing: the supersession does not release it, and the real receipt says so."""
+
+    _real_workspace(tmp_path, monkeypatch, crm=False)
+    run, _first = await _real_run(8700, drop_crm=True)
+    findings = await run.status("findings")
+    rows = cast(Any, findings.page).items
+    open_absent = [
+        row for row in rows if row.kind == "requested_item_never_attempted" and not row.resolved
+    ]
+    assert [tuple(row.subject_refs) for row in open_absent] == [(_REAL_A,)]
+    assert await _final_receipt_conclusion(run, 8750) == "unresolved_findings_remain"

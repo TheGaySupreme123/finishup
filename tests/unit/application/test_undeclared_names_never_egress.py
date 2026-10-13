@@ -56,7 +56,7 @@ def _check_row(*, with_names: bool) -> tuple[FrozenHistoryEvent, str]:
             state,
             undeclared_references=_NAMES,
             undeclared_reference_count=18,
-            undeclared_references_created_in_task=True,
+            undeclared_reference_ambiguous=3,
         )
     base = _case()
     check = CheckRecordedPayload(
@@ -123,7 +123,7 @@ def test_a_check_history_row_carries_the_count_never_the_names_or_their_digest()
     for name in _NAMES:
         for part in (name, name.rsplit("/", 1)[1], name.split("/", 1)[0]):
             assert part.encode() not in prepared, part
-    assert b"undeclared_references_created_in_task" in prepared
+    assert b"undeclared_reference_ambiguous" in prepared
     assert b"undeclared_reference_count" in prepared
     assert b"payload_reduced" in prepared
     assert b"undeclared_reference_names_withheld" in prepared
@@ -136,3 +136,39 @@ def test_a_check_row_without_names_keeps_its_exact_payload_and_digest() -> None:
     prepared = _prepared(row)
     assert digest.encode() in prepared
     assert b"payload_reduced" not in prepared
+
+
+def test_no_history_visibility_mode_exports_the_name_bearing_digest() -> None:
+    """Checker reproduction (#5): a metadata-only (timeline) row kept the ledger digest of the
+    name-bearing payload. Every mode now carries a reduced-content digest or none."""
+
+    from dataclasses import replace as replace_row
+
+    from yoetz.application.semantic_case import (
+        _history_json,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    row, digest = _check_row(with_names=True)
+    for include_content in (True, False):
+        text, _fit = _history_json(
+            row, include_content=include_content, include_exact_command_text=False
+        )
+        assert digest not in text, include_content
+        for name in _NAMES:
+            assert name not in text and name.rsplit("/", 1)[1] not in text
+        assert "undeclared_reference_names_withheld" in text
+    # Content not available (budget, unrecorded, redacted): whether it named files is unknown, so
+    # no digest of it is sent at all.
+    for visibility in ("not_selected", "not_recorded", "redacted_never_send"):
+        unavailable = replace_row(row, content_visibility=visibility, payload=None)
+        text, _fit = _history_json(
+            unavailable, include_content=True, include_exact_command_text=False
+        )
+        assert digest not in text and "payload_digest" not in text, visibility
+    # A check whose payload names nothing keeps its exact digest in every available mode.
+    plain, plain_digest = _check_row(with_names=False)
+    for include_content in (True, False):
+        text, _fit = _history_json(
+            plain, include_content=include_content, include_exact_command_text=False
+        )
+        assert plain_digest in text and "payload_reduced" not in text

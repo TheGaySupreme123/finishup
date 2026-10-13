@@ -106,6 +106,7 @@ __all__ = [
     "declared_output_removed",
     "removed_declared_items",
     "UndeclaredReferenceRow",
+    "ambiguous_reference_count",
     "undeclared_reference_inputs",
     "undeclared_reference_rows",
 ]
@@ -838,22 +839,38 @@ def deliverable_lineage(
     return tuple(output)
 
 
-type UndeclaredReferenceRow = tuple[str, int | None, tuple[str, ...], int, bool]
+type UndeclaredReferenceRow = tuple[str, int | None, tuple[str, ...], int]
+
+
+def ambiguous_reference_count(states: Iterable[DeliverableState]) -> int:
+    """How many created files the recorded deliverables name only ambiguously (tb4n5).
+
+    The sum of ``undeclared_reference_ambiguous`` over the check's deliverable states, each keyed
+    path counted once: the count ``deliverable_references_ambiguous_name`` discloses.
+    """
+
+    seen: set[str] = set()
+    total = 0
+    for state in states:
+        if state.undeclared_reference_ambiguous is None:
+            continue
+        key = state.path_key or f"{state.obligation_id}:{state.item_index}"
+        if key in seen:
+            continue
+        seen.add(key)
+        total += state.undeclared_reference_ambiguous
+    return total
 
 
 def undeclared_reference_rows(
     states: Iterable[DeliverableState],
 ) -> tuple[UndeclaredReferenceRow, ...]:
-    """``(obligation id, item index, paths, total, created in task)`` of each recorded
-    deliverable that names files the change created and no item declares (tb4n4, #1044), in the
-    check's own order.
+    """``(obligation id, item index, paths, total)`` of each recorded deliverable that names
+    files the change created and no item declares (tb4n4, #1044), in the check's own order.
 
     A file that several items declare shares one keyed path, so its references are listed once,
-    under the first item that declares it. The first four fields are the input of
-    ``undeclared_reference_variants``, the one sentence the receipt and the Stop gate print; all
-    five feed status ``undeclared_references``. ``created in task`` is the recorded
-    ``undeclared_references_created_in_task`` (tb4n5): every named file was created in the task's
-    workspace after the task started.
+    under the first item that declares it. The input of ``undeclared_reference_variants``, the one
+    sentence the receipt and the Stop gate print, and of status ``undeclared_references``.
     """
 
     rows: list[UndeclaredReferenceRow] = []
@@ -867,13 +884,7 @@ def undeclared_reference_rows(
         seen.add(key)
         total = state.undeclared_reference_count or len(state.undeclared_references)
         rows.append(
-            (
-                str(state.obligation_id),
-                state.item_index,
-                state.undeclared_references,
-                total,
-                state.undeclared_references_created_in_task,
-            )
+            (str(state.obligation_id), state.item_index, state.undeclared_references, total)
         )
     return tuple(rows)
 

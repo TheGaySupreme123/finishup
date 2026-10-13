@@ -860,23 +860,15 @@ def test_a_withheld_name_carries_the_listing_continuation_and_says_why() -> None
     to list the files with the agent's own shell, without widening any privacy setting."""
 
     withheld = SimpleNamespace(omitted=True, category="repository_excerpt", reason="x")
-    unproven = _gate(_undeclared_readiness(withheld, withheld, total="18"))
-    assert unproven is not None
-    assert f"{_OBL_REF} item 0 names (path withheld), (path withheld) and 16 more." in (
-        unproven.text
-    )
-    assert "Your privacy policy withheld these names (Yoetz could not prove your task" in (
-        unproven.text
-    )
-    assert "`git status --porcelain --untracked-files=all`" in unproven.text
-    assert "or their directory" in unproven.text
-    # A row the task created whose names were still withheld (a narrower data-class ceiling)
-    # does not claim the creation was unproven.
-    created = _undeclared_readiness(withheld, total="1")
-    created.undeclared_references[0].name_provenance = "created_in_task"
-    gate = _gate(created)
+    gate = _gate(_undeclared_readiness(withheld, withheld, total="18"))
     assert gate is not None
-    assert "Your privacy policy withheld these names: list the files" in gate.text
+    assert f"{_OBL_REF} item 0 names (path withheld), (path withheld) and 16 more." in gate.text
+    assert (
+        "Your privacy policy withheld these names (Yoetz returns only a name you published"
+        " yourself)" in gate.text
+    )
+    assert "`git status --porcelain --untracked-files=all`" in gate.text
+    assert "or their directory" in gate.text
     # Named paths need no continuation.
     named = _gate(_undeclared_readiness("checks/a.npz", total="1"))
     assert named is not None

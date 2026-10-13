@@ -9,7 +9,7 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
   reviewer's ruling, and the task facts the agent can repair (a planned verification not
   observed, failing or stale; an edit to the work after the last verification run, ADR-042; a
   requested output Git would not deliver; a deliverable that was emptied or removed; a delivered
-  file that reads a file the agent created and never declared, #1044);
+  file that may read a file the agent created and never declared, #1044);
 * once per ledger frontier and session: a second Stop at the same frontier passes, so an agent
   that cannot or will not act is never trapped;
 * the four re-checks (tb4n3 RC-8) are not riders on those tokens. Readiness announces them in
@@ -227,8 +227,9 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
     # created and never declared; the grader received only the declared files. Disclosing the
     # dependency is not a way out.
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP: (
-        "a delivered file reads a file you created but did not declare, and a grader may receive"
-        " only the declared files: embed its content in the deliverable, rebuild it at run time,"
+        "a delivered file references a file you created but did not declare in a way that may"
+        " read it, and a grader may receive only the declared files: embed its content in the"
+        " deliverable, rebuild it at run time,"
         " or declare it, or the directory holding it, as a delivered output (a requested `file`"
         " or `directory` item with role `output`), then run `check`; disclosing the dependency"
         " does not clear this"
@@ -775,7 +776,6 @@ def _undeclared_variants(readiness: object) -> tuple[str, ...]:
         return ()
     rows: list[tuple[str, int | None, tuple[str | None, ...], int]] = []
     withheld = False
-    unproven = False
     for entry in tuple(cast(tuple[object, ...], raw))[:_MAX_RECHECKS]:
         obligation = _field(entry, "obligation_id")
         index = _decimal(_field(entry, "item_index"))
@@ -796,17 +796,16 @@ def _undeclared_variants(readiness: object) -> tuple[str, ...]:
         rows.append((obligation, index, paths, total))
         if any(path is None for path in paths):
             withheld = True
-            unproven = unproven or _field(entry, "name_provenance") != "created_in_task"
     named = undeclared_reference_variants(rows)
     if not named or not withheld:
         return named
     # tb4n5 (ADR-035 amendment): a withheld name is not actionable on its own. Say why and how to
     # find the files without widening any privacy setting: the agent's own shell lists them.
-    why = " (Yoetz could not prove your task created them)" if unproven else ""
     full = (
-        f" Your privacy policy withheld these names{why}: list the files your change created with"
-        f" your own shell ({_CREATED_FILES_COMMAND}), then declare the ones the delivered file"
-        " reads, or their directory, or embed or rebuild them."
+        " Your privacy policy withheld these names (Yoetz returns only a name you published"
+        f" yourself): list the files your change created with your own shell"
+        f" ({_CREATED_FILES_COMMAND}), then declare the ones the delivered file may read, or their"
+        " directory, or embed or rebuild them."
     )
     short = f" Names withheld: list the files you created with {_CREATED_FILES_COMMAND}."
     return tuple(dict.fromkeys((named[0] + full, named[-1] + short)))

@@ -877,17 +877,34 @@ new protocol role.
    the replacements a `plan_revised` supersession recorded (the replay-derived
    `superseded_by_obligation_ids`, transitively) as overlap with the superseded claim's scope, so a
    claim that named only the corrected obligations can be replaced by one naming only their
-   replacements. A replacement the plan never recorded is still refused. This only admits appends
-   that were refused before; every recorded ledger replays unchanged.
-4. **What does not change.** A file the request asks for unconditionally stays required: the
-   replacement obligation that still declares it (or any other obligation that does) raises the
-   same `requested_output_absent`, so the correction cannot launder a missing deliverable.
+   replacements. A replacement the plan never recorded is still refused. The same ancestry carries
+   failure disclosure (checker review): the claim scope plus every obligation a supersession
+   replaced by one in it, transitively (`claim_limitations.scope_with_supersession_ancestry`), is
+   the scope for admissible `limitation_refs` (always: a relaxation), for
+   `limitation_refs_complete` on a replacement whose overlap with a target exists only through a
+   supersession (the case this change newly admits, so no recorded ledger holds one), and for the
+   work-integrity failed-work relevance read at check time. A failure recorded on the superseded
+   obligation must therefore still be disclosed by the replacement claim, and naming it there is
+   admissible; a fresh claim over the replacement that omits it still replays as before and is
+   reported by the check. Recorded ledgers replay unchanged.
+4. **What does not change, and what a correction cannot drop.** A file the request asks for
+   unconditionally stays required: the replacement obligation that still declares it (or any other
+   obligation that does) raises the same `requested_output_absent`. A requested `file` or
+   `directory` item (role `output` or none) of an obligation a `plan_revised` superseded with
+   replacements that no replacement names, transitively, as a `file`/`directory` item or by file
+   name in a `change` item, stays requested on the superseded obligation
+   (`task_facts.superseded_unnamed_outputs`): the check probes it and reports it absent exactly as
+   before, so dropping a missing deliverable from the correction does not launder it. A
+   supersession without replacements, and a waiver, are explicit plan decisions outside this rule.
    `declared_output_removed`, `declared_output_emptied` and the closure gate are unchanged; the gate
    still says "Do not reshape your work for Yoetz". No event schema, wire field or pack version
    changes.
 
 Tests: `tests/integration/closure/test_conditional_output_shape.py` (the react shape: two
 conditional ledgers absent on an accepted lead resolve after the correction with no file written;
-an unconditional missing output still blocks) and
+an unconditional missing output still blocks; with a real repository, the production workspace
+probe and the real final receipt, the honest correction closes and a correction that drops an
+unconditional missing output reads `unresolved_findings_remain`) and
 `tests/unit/kernel/test_claim_correction_replay.py` (the supersession carries claim scope only to
-recorded replacements).
+recorded replacements, and a failure or partial result on a superseded obligation, one or two
+supersessions back, must still be disclosed and may be).

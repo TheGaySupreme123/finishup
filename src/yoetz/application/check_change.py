@@ -31,7 +31,11 @@ from yoetz.domain.privacy import ReviewSelectionPolicy
 from yoetz.domain.receipts import CHECK_TIME_CHANGE_UNAVAILABLE_REASONS
 from yoetz.domain.values import ObligationId
 from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.task_facts import RequestedOutputState, effective_obligations
+from yoetz.kernel.task_facts import (
+    RequestedOutputState,
+    effective_obligations,
+    superseded_unnamed_outputs,
+)
 from yoetz.observability.logging import (
     record_bounded_event_without_raising,
     record_unexpected_exception_without_raising,
@@ -69,8 +73,7 @@ __all__ = [
     "capture_check_time_change",
     "check_change_shown_files",
     "check_time_change_selected",
-    "created_since_task_start",
-    "load_task_change_base",
+    "UndeclaredReferenceRead",
     "record_task_change_base",
     "recover_check_time_change",
 ]
@@ -703,6 +706,15 @@ async def requested_output_states(
                 items.append((obligation, index, item.value))
                 if item.item_kind is RequestedItemKind.DIRECTORY:
                     directories.add((obligation, index))
+    # tb4n5 (ADR-033 amendment): an output a plan correction dropped without naming it is still
+    # requested, so it is read like an effective obligation's.
+    for obligation, index in superseded_unnamed_outputs(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None or not _plain_path(payload.requested_items[index].value):
+            continue
+        items.append((obligation, index, payload.requested_items[index].value))
+        if payload.requested_items[index].item_kind is RequestedItemKind.DIRECTORY:
+            directories.add((obligation, index))
     if not items:
         return {}
     unverified = {
@@ -943,6 +955,19 @@ _MAX_REFERENCE_DELIVERABLES: Final = 16
 _MAX_REFERENCE_CANDIDATES: Final = 1_024
 
 
+@dataclass(frozen=True, slots=True)
+class UndeclaredReferenceRead:
+    """One check-time read of what declared deliverables name (#1044, tb4n5).
+
+    ``pairs`` are the ``(deliverable, referenced file)`` root-relative dependency pairs;
+    ``ambiguous`` how many created, undeclared files each deliverable names only by an ambiguous
+    basename (a declared file shares it, or nothing ties it to the file's directory), never which.
+    """
+
+    pairs: tuple[tuple[str, str], ...] = ()
+    ambiguous: tuple[tuple[str, int], ...] = ()
+
+
 async def undeclared_references(
     *,
     projection: ProjectionState,
@@ -952,41 +977,49 @@ async def undeclared_references(
     states: Mapping[tuple[ObligationId, int], RequestedOutputState],
     blocked: Iterable[ObligationId] | None,
     request_id: str,
-) -> tuple[tuple[str, str], ...]:
+) -> UndeclaredReferenceRead:
     """Which declared deliverables name which file the change created but no item declares.
 
     tb4n2 R2 / tb4n4 (ADR-035 amendment, ``deliverable_references_undeclared_file``, #1044).
-    Returns ``(deliverable, referenced file)`` root-relative path pairs, sorted. The candidates
-    are the files the check-time change created (untracked, or added with status ``A``) minus
-    every declared ``file``/``directory`` value of any role (a declared directory covers the files
-    beneath it); pre-existing tracked files are never candidates. The adapter's bounded local read
-    of each declared source deliverable returns index pairs into the tuples it was given, so no
-    path leaves it that this function did not hand it. Any failure is ``()``: the fact is simply
-    not raised.
+    Returns the ``(deliverable, referenced file)`` root-relative path pairs the adapter classified
+    as dependencies, sorted, and per deliverable how many created files it names only by an
+    ambiguous basename (tb4n5, never named). The candidates are the files the check-time change
+    created (untracked, or added with status ``A``) minus every declared ``file``/``directory``
+    value of any role (a declared directory covers the files beneath it); pre-existing tracked
+    files are never candidates. The adapter's bounded local read of each declared source
+    deliverable returns index pairs into the tuples it was given, so no path leaves it that this
+    function did not hand it. Any failure is empty: the fact is simply not raised.
     """
 
     from yoetz.kernel.delivered_set import undeclared_reference_inputs
 
+    empty = UndeclaredReferenceRead()
+    classify = getattr(port, "classify_undeclared_references", None)
     find = getattr(port, "find_undeclared_references", None)
     probe = getattr(port, "probe_requested_paths", None)
-    if capture is None or source is None or not callable(find) or not callable(probe):
-        return ()
+    if (
+        capture is None
+        or source is None
+        or not (callable(classify) or callable(find))
+        or not callable(probe)
+    ):
+        return empty
     created = {
         entry.path for entry in capture.entries if entry.untracked or entry.status.startswith("A")
     }
     if not created:
-        return ()
+        return empty
     deliverables, declared = undeclared_reference_inputs(projection, states, blocked=blocked)
     deliverables = tuple(value for value in deliverables if _plain_path(value))
     if not deliverables:
-        return ()
+        return empty
     values = tuple(
         dict.fromkeys((*deliverables, *(value for value in declared if _plain_path(value))))
     )
     if len(values) > _MAX_REQUESTED_OUTPUT_PROBES:
         # Codex review 3: an unprobed declaration could be reported as undeclared. A fact Yoetz
         # cannot compute exactly is not raised.
-        return ()
+        return empty
     try:
         raw_probes = await asyncio.to_thread(
             cast(Callable[[str, tuple[str, ...]], object], probe), source.workspace, values
@@ -1001,7 +1034,7 @@ async def undeclared_references(
                 relatives[value] = result.relative
         if "." in relatives.values():
             # The root itself is declared: every created file is part of the delivery.
-            return ()
+            return empty
         covered = set(relatives.values())
 
         def is_declared(path: str) -> bool:
@@ -1014,14 +1047,18 @@ async def undeclared_references(
             sorted(path for path in created if _plain_relative(path) and not is_declared(path))
         )[:_MAX_REFERENCE_CANDIDATES]
         if not targets or not candidates:
-            return ()
+            return empty
         # Every declared item, any role: a basename-only literal that a declared file shares
         # most plausibly names that file (tb4n5 biped, the #1044 follow-up).
         declared_paths = tuple(sorted(path for path in covered if _plain_relative(path)))[
             :_MAX_REFERENCE_CANDIDATES
         ]
+        reader = classify if callable(classify) else find
         found: object = await asyncio.to_thread(
-            cast(Callable[[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], object], find),
+            cast(
+                Callable[[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], object],
+                reader,
+            ),
             source.workspace,
             targets,
             candidates,
@@ -1030,20 +1067,30 @@ async def undeclared_references(
         if type(found) is not tuple:
             raise TypeError("undeclared_reference_pairs_invalid")
         pairs: set[tuple[str, str]] = set()
-        for pair in cast(tuple[object, ...], found):
-            if (
-                type(pair) is not tuple
-                or len(cast(tuple[object, ...], pair)) != 2
-                or any(type(index) is not int for index in cast(tuple[object, ...], pair))
-            ):
+        ambiguous: dict[str, int] = {}
+        for row in cast(tuple[object, ...], found):
+            if type(row) is not tuple or len(cast(tuple[object, ...], row)) not in {2, 3}:
                 raise TypeError("undeclared_reference_pairs_invalid")
-            target, candidate = cast(tuple[int, int], pair)
+            fields = cast(tuple[object, ...], row)
+            kind = fields[2] if len(fields) == 3 else "dependency"
+            if any(type(index) is not int for index in fields[:2]) or kind not in {
+                "dependency",
+                "ambiguous",
+            }:
+                raise TypeError("undeclared_reference_pairs_invalid")
+            target, candidate = cast(tuple[int, int], fields[:2])
             if not (0 <= target < len(targets) and 0 <= candidate < len(candidates)):
                 raise TypeError("undeclared_reference_pairs_invalid")
-            pairs.add((targets[target], candidates[candidate]))
-        return tuple(sorted(pairs, key=lambda item: (os.fsencode(item[0]), os.fsencode(item[1]))))
+            if kind == "dependency":
+                pairs.add((targets[target], candidates[candidate]))
+            else:
+                ambiguous[targets[target]] = ambiguous.get(targets[target], 0) + 1
+        return UndeclaredReferenceRead(
+            tuple(sorted(pairs, key=lambda item: (os.fsencode(item[0]), os.fsencode(item[1])))),
+            tuple(sorted(ambiguous.items(), key=lambda item: os.fsencode(item[0]))),
+        )
     except ChangeCaptureUnavailable:
-        return ()
+        return empty
     except Exception as exc:
         record_unexpected_exception_without_raising(
             exc,
@@ -1051,49 +1098,7 @@ async def undeclared_references(
             operation="undeclared_reference_read_failed",
             request_id=request_id,
         )
-        return ()
-
-
-async def load_task_change_base(runtime: TaskRuntime, request_id: str) -> TaskChangeBase | None:
-    """The task's recorded change base, or ``None`` when it has none or it is unreadable."""
-
-    return await _load_task_base(runtime, request_id)
-
-
-def created_since_task_start(
-    capture: CheckChangeMetadata | None, base: TaskChangeBase | None
-) -> Callable[[str], bool]:
-    """Which created files Yoetz can show the task's own agent by name (tb4n5, ADR-035 amendment).
-
-    A path the check-time change lists as created (untracked, or added) was created in this task's
-    workspace after the task started only when the capture diffed from the task's own
-    ``task_start`` base and that base recorded the working tree's untracked files completely
-    (#1045): a file that predated the task is then baseline, never created. The returned predicate
-    also refuses a path the base listed as untracked at task start, and any path inside a nested
-    repository whose task-start listing is missing or incomplete. Without such a base every path
-    is unproven: a ``first_check`` base, an unreadable one, or a capture that fell back to HEAD.
-    """
-
-    if (
-        capture is None
-        or capture.base != "task_start"
-        or base is None
-        or base.origin != "task_start"
-        or not base.untracked_complete
-    ):
-        return lambda _path: False
-    preexisting = {item.path for item in base.untracked}
-    listed: dict[str, bool] = {row.path: row.complete for row in base.nested_untracked}
-    for row in base.nested_untracked:
-        preexisting.update(f"{row.path}/{item.path}" for item in row.files)
-    unproven_roots = tuple(path for path, _commit in base.nested if not listed.get(path, False))
-
-    def created(path: str) -> bool:
-        if path in preexisting:
-            return False
-        return not any(path == root or path.startswith(root + "/") for root in unproven_roots)
-
-    return created
+        return empty
 
 
 def _plain_relative(path: str) -> bool:

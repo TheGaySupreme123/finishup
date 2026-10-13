@@ -413,7 +413,8 @@ def test_absent_requested_output_is_reported_even_when_an_action_names_it() -> N
     assert "revise its obligation" not in detail.lower()
     assert detail.index("Write each requested file") < detail.index("only under a condition")
     assert "Never write an empty or placeholder file" in detail
-    assert "A file the request asks for unconditionally stays required." in detail
+    assert "A file the request asks for unconditionally stays required:" in detail
+    assert "stays requested on the superseded obligation" in detail
 
 
 def test_pre_work_check_reports_no_absent_requested_output() -> None:

@@ -1806,22 +1806,31 @@ def _history_json(
     else:
         body["accepted_at"] = item.accepted_at
         body["occurred_at_consistency"] = item.occurred_at_consistency
+    reduced: dict[str, JsonValue] | None = None
+    if item.schema_name == "check_recorded":
+        # A check's payload may record undeclared-reference names (#1044): repository-excerpt
+        # content shown only to its own author and a ``full_local`` receipt (tb4n5, ADR-035
+        # amendment). This row never carries them, whether or not it carries content, and never
+        # the ledger digest of a payload that held them: that digest would confirm a guessed name.
+        if item.payload is None:
+            # Unavailable content: whether it named files is unknown, so no digest is sent.
+            body.pop("payload_digest")
+            body["payload_reduced"] = "undeclared_reference_names_withheld"
+        else:
+            reduced = _without_undeclared_reference_names(
+                cast(Mapping[str, JsonValue], item.payload)
+            )
+            if reduced is not None:
+                body["payload_digest"] = canonical_digest(cast(JsonValue, reduced))
+                body["payload_reduced"] = "undeclared_reference_names_withheld"
     if include_content and item.payload is not None:
-        payload = dict(cast(Mapping[str, JsonValue], item.payload))
+        payload = (
+            reduced if reduced is not None else dict(cast(Mapping[str, JsonValue], item.payload))
+        )
         if item.schema_name == "action_recorded" and not include_exact_command_text:
             payload.pop("command", None)
         if item.schema_name in _PLAN_FAMILIES:
             payload = _without_task_statement(payload)
-        if item.schema_name == "check_recorded":
-            reduced = _without_undeclared_reference_names(payload)
-            if reduced is not None:
-                # The names are repository-excerpt content shown only to the task's own agent and
-                # a ``full_local`` receipt (tb4n5, ADR-035 amendment); this structural history row
-                # never carries them, and its digest is of what it does carry, so the recorded
-                # digest cannot be used to confirm a guessed name.
-                payload = reduced
-                body["payload_digest"] = canonical_digest(cast(JsonValue, payload))
-                body["payload_reduced"] = "undeclared_reference_names_withheld"
         body["payload"] = cast(JsonValue, payload)
     return _bounded_json(body)
 

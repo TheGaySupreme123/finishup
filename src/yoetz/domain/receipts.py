@@ -546,11 +546,19 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " it for the reviewer."
         ),
         "deliverable_references_undeclared_file": (
-            "A declared delivered source file reads a file the change created that no requested"
-            " item declares; a grader may receive only the declared files, so the deliverable can"
-            " fail where the task delivers it. Embed the file's content in the deliverable,"
-            " rebuild it at run time, or declare it, or the directory holding it, as a delivered"
-            " output; disclosing the dependency does not resolve it."
+            "A declared delivered source file references a file the change created that no"
+            " requested item declares, in a way that may read it (a read, or a use Yoetz's"
+            " syntactic check could not classify); a grader may receive only the declared files,"
+            " so the deliverable can fail where the task delivers it. Embed the file's content in"
+            " the deliverable, rebuild it at run time, or declare it, or the directory holding it,"
+            " as a delivered output; disclosing the dependency does not resolve it."
+        ),
+        "deliverable_references_ambiguous_name": (
+            "A declared delivered source file names files the change created only by an ambiguous"
+            " file name (a declared file shares it, or nothing in the file ties it to their"
+            " directory), so Yoetz's syntactic check did not treat them as dependencies and did"
+            " not name them. Check that the deliverable does not read them where the task"
+            " delivers it."
         ),
         "install_into_yoetz_runtime": (
             "A package install resolved to Yoetz's own runtime interpreter, not the task's."

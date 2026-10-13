@@ -114,7 +114,6 @@ from yoetz.protocol.models import (
     StatusResultItemModel,
     StatusSemanticProgressModel,
     StatusStructuralSubjectStateModel,
-    StatusUndeclaredReferenceModel,
     StatusVersionSliceModel,
     public_model_to_wire,
 )
@@ -288,8 +287,6 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (PublishWorkDryRunModel, frozenset({"blocker_notices"})),
     (StatusBlockedObligationModel, frozenset({"confirmation", "confirmation_event_id"})),
     (StatusCheckCauseModel, frozenset({"tool"})),
-    # tb4n5: whether an undeclared-reference row's names are task-created; absent from older builds.
-    (StatusUndeclaredReferenceModel, frozenset({"name_provenance"})),
     (PublicErrorModel, frozenset({"safe_details"})),
     (
         ReadGuidanceSuccessModel,
@@ -948,22 +945,6 @@ def test_check_cause_omits_an_unset_tool() -> None:
     )
     dumped = parsed.model_dump(mode="json", exclude_unset=True)
     assert not StatusCheckCauseModel.optional_non_null_fields & dumped.keys()
-
-
-def test_an_undeclared_reference_row_omits_an_unset_name_provenance() -> None:
-    """tb4n5: a row from an earlier 0.3 build carries no ``name_provenance`` and never a null."""
-
-    row = {
-        "obligation_id": "obl_00000000-0000-4000-8000-000000000001",
-        "item_index": "0",
-        "paths": ["artifacts/model.npz"],
-        "total": "1",
-    }
-    parsed = StatusUndeclaredReferenceModel.model_validate(row)
-    dumped = parsed.model_dump(mode="json", exclude_unset=True)
-    assert not StatusUndeclaredReferenceModel.optional_non_null_fields & dumped.keys()
-    with pytest.raises(ValueError):
-        StatusUndeclaredReferenceModel.model_validate({**row, "name_provenance": None})
 
 
 async def test_respond_omits_unset_optional_response_fields() -> None:
@@ -1912,9 +1893,6 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
             "test_blocked_obligation_omits_an_unset_confirmation"
         )
     covered["StatusCheckCauseModel", "tool"] = "test_check_cause_omits_an_unset_tool"
-    covered["StatusUndeclaredReferenceModel", "name_provenance"] = (
-        "test_an_undeclared_reference_row_omits_an_unset_name_provenance"
-    )
     for field in ("remaining_ms", "terminal_outcome", "terminal_reason"):
         # The sampling case omits the terminal pair; the terminal case omits remaining_ms.
         covered["StatusSemanticProgressModel", field] = (

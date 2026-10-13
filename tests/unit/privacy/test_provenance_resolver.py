@@ -209,14 +209,14 @@ def test_context_rejects_duplicate_or_unbounded_row_authorship() -> None:
         SourceAuthorship(_WRITER, _SESSION, 0, PublicationChannel.COOPERATIVE_MCP, False)
 
 
-# --- tb4n5 (owner decision 2026-10-13, ADR-035 amendment): task-created file names ------------
+# --- tb4n5 (ADR-035 amendment): an undeclared-reference name returns only to its publisher -----
 
-_CREATED = "/closure_readiness/undeclared_references/0/paths/0"
-_UNPROVEN = "/closure_readiness/undeclared_references/1/paths/0"
+_LEAF = "/closure_readiness/undeclared_references/0/paths/0"
+_OTHER_LEAF = "/closure_readiness/undeclared_references/1/paths/0"
 
 
-def _created_context(*pointers: str) -> ProjectionProvenanceContext:
-    return ProjectionProvenanceContext(_SESSION, _WRITER, _FRONTIER, (), pointers)
+def _leaf_context(*rows: ProjectionItemAuthorship) -> ProjectionProvenanceContext:
+    return ProjectionProvenanceContext(_SESSION, _WRITER, _FRONTIER, (), rows)
 
 
 def _path_item(item_id: str, pointer: str, category: DataCategory) -> CandidateContextItem:
@@ -226,7 +226,6 @@ def _path_item(item_id: str, pointer: str, category: DataCategory) -> CandidateC
 def _projection_candidate(
     context: ProjectionProvenanceContext,
     *items: CandidateContextItem,
-    sink: LocalDisclosureSink = LocalDisclosureSink.AGENT_CONTEXT,
     purpose: str = "client_result_projection",
 ) -> CandidateContext:
     from yoetz.domain.privacy import ProjectionAuditContext
@@ -235,7 +234,7 @@ def _projection_candidate(
     return CandidateContext(
         request_id=_REQUEST,
         channel=None,
-        local_sink=sink,
+        local_sink=LocalDisclosureSink.AGENT_CONTEXT,
         purpose=purpose,
         scope=_scope(),
         subject_digest=_DIGEST,
@@ -259,22 +258,39 @@ def _projection_candidate(
     )
 
 
-def test_a_task_created_name_resolves_only_at_its_own_leaf_and_category() -> None:
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        (_source(), DisclosureProvenance.SELF_AUTHORED),
+        # Another writer, or the same writer's earlier session (an attach), did not author it.
+        (_source(writer=_OTHER_WRITER), DisclosureProvenance.OTHER_WRITER),
+        (_source(session=_OTHER_SESSION), DisclosureProvenance.OTHER_WRITER),
+        # A hook-observed or imported record is never the requester's own publication.
+        (_source(channel=PublicationChannel.HOOK_OBSERVED), DisclosureProvenance.OTHER_WRITER),
+        (_source(observation=True), DisclosureProvenance.OTHER_WRITER),
+        (_source(channel=PublicationChannel.CODEX_JSONL_IMPORT), DisclosureProvenance.IMPORTED),
+        # Published after the page's frontier: not yet the writer's.
+        (_source(sequence=_FRONTIER.sequence + 1), DisclosureProvenance.OTHER_WRITER),
+    ),
+)
+def test_an_undeclared_reference_name_resolves_by_its_publisher_only(
+    source: SourceAuthorship, expected: DisclosureProvenance
+) -> None:
     resolver = LedgerAuthorshipProvenanceResolver()
-    context = _created_context(_CREATED)
-    created = _path_item("created", _CREATED, DataCategory.REPOSITORY_EXCERPT)
-    unproven = _path_item("unproven", _UNPROVEN, DataCategory.REPOSITORY_EXCERPT)
-    # Another category at the same pointer never borrows the class.
-    wrong_category = _path_item("wrong", _CREATED, DataCategory.EVIDENCE_EXCERPT)
-    candidate = _projection_candidate(context, created, unproven, wrong_category)
+    context = _leaf_context(ProjectionItemAuthorship(_LEAF, (source,)))
+    name = _path_item("name", _LEAF, DataCategory.REPOSITORY_EXCERPT)
+    unattributed = _path_item("other", _OTHER_LEAF, DataCategory.REPOSITORY_EXCERPT)
+    # Another category at the same pointer never borrows the authorship.
+    wrong_category = _path_item("wrong", _LEAF, DataCategory.EVIDENCE_EXCERPT)
+    candidate = _projection_candidate(context, name, unattributed, wrong_category)
 
-    assert resolver.resolve(context, candidate, created) is DisclosureProvenance.TASK_CREATED_FILE
-    assert resolver.resolve(context, candidate, unproven) is None
+    assert resolver.resolve(context, candidate, name) is expected
+    assert resolver.resolve(context, candidate, unattributed) is None
     assert resolver.resolve(context, candidate, wrong_category) is None
-    assert resolver.resolve(_created_context(), candidate, created) is None
+    assert resolver.resolve(_leaf_context(), candidate, name) is None
 
 
-def test_the_created_pointers_admit_only_the_undeclared_reference_path_leaves() -> None:
+def test_leaf_authorship_admits_only_the_undeclared_reference_path_leaves() -> None:
     for pointer in (
         "/page/items/0/description",
         "/closure_readiness/undeclared_references/0/paths",
@@ -284,39 +300,32 @@ def test_the_created_pointers_admit_only_the_undeclared_reference_path_leaves() 
         "/document/gaps/0/detail",
     ):
         with pytest.raises(ValueError, match="invalid_privacy_value"):
-            _created_context(pointer)
+            _leaf_context(ProjectionItemAuthorship(pointer, (_source(),)))
+    row = ProjectionItemAuthorship(_LEAF, (_source(),))
     with pytest.raises(ValueError, match="invalid_privacy_value"):
-        _created_context(_CREATED, _CREATED)
-    assert _created_context(_CREATED, _UNPROVEN).created_file_pointers == (_CREATED, _UNPROVEN)
+        _leaf_context(row, row)
 
 
-def test_a_task_created_name_reaches_only_the_agent_context_projection_under_the_private_ceiling() -> (
-    None
-):
-    """The biped ceiling (no ``repository_excerpt`` grant) shows a task-created name to the agent,
-    keeps an unproven one omitted, and never widens a non-projection or another local sink."""
+def test_a_published_name_reaches_only_its_author_under_the_private_ceiling() -> None:
+    """The biped ceiling (no ``repository_excerpt`` grant): the requester's own published name
+    comes back; another writer's stays omitted; never-send and the data-class ceiling still win."""
 
     enforcer = build_local_privacy_enforcer()
-    context = _created_context(_CREATED)
-    created = _path_item("created", _CREATED, DataCategory.REPOSITORY_EXCERPT)
-    unproven = _path_item("unproven", _UNPROVEN, DataCategory.REPOSITORY_EXCERPT)
+    context = _leaf_context(
+        ProjectionItemAuthorship(_LEAF, (_source(),)),
+        ProjectionItemAuthorship(_OTHER_LEAF, (_source(writer=_OTHER_WRITER),)),
+    )
+    own = _path_item("own", _LEAF, DataCategory.REPOSITORY_EXCERPT)
+    other = _path_item("other", _OTHER_LEAF, DataCategory.REPOSITORY_EXCERPT)
     effective = _effective()
     assert DataCategory.REPOSITORY_EXCERPT not in effective.policy.agent_context_categories
 
-    classified = enforcer.classify(_projection_candidate(context, created, unproven), effective)
-    by_id = {item.candidate.item_id: item for item in classified.items}
-    assert by_id["created"].provenance is DisclosureProvenance.TASK_CREATED_FILE
+    classified = enforcer.classify(_projection_candidate(context, own, other), effective)
     decision = _decision(classified)
     assert decision.outcome is PrivacyOutcome.COMPLETED
-    assert decision.approved_item_ids == ("created",)
+    assert decision.approved_item_ids == ("own",)
     assert DataCategory.REPOSITORY_EXCERPT in decision.blocked_categories
 
-    # Not a projection (another local disclosure purpose): the class widens nothing.
-    other_purpose = enforcer.classify(
-        _projection_candidate(context, created, purpose="client-result-projection"), effective
-    )
-    assert _decision(other_purpose).approved_item_ids == ()
-    # The data-class ceiling still applies: a narrower one keeps the name withheld.
     narrowed = ClassifiedContext(
         classified.candidate,
         tuple(
@@ -324,12 +333,11 @@ def test_a_task_created_name_reaches_only_the_agent_context_projection_under_the
         ),
     )
     assert _decision(narrowed).approved_item_ids == ()
-    # A never-send match in the name is still withheld: the scan runs before provenance.
     secret = CandidateContextItem(
         "secret",
         DataCategory.REPOSITORY_EXCERPT,
         _scope(),
-        _CREATED,
+        _LEAF,
         b"api_key=sk-proj-abcdefghijklmnopqrstuvwxyz012345",
     )
     scanned = enforcer.classify(_projection_candidate(context, secret), effective)

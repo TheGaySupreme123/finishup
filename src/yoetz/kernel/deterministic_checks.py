@@ -689,7 +689,9 @@ def render_deterministic_finding_text(
             " value in attempted_items, resolve the new obligation with its evidence, replace the"
             " completion claim with one naming it, then check again. Never write an empty or"
             " placeholder file, and never change when the deliverable writes the file, to satisfy"
-            " the declaration. A file the request asks for unconditionally stays required."
+            " the declaration. A file the request asks for unconditionally stays required: a file"
+            " the replacement names neither as a `file` item nor in its `change` item stays"
+            " requested on the superseded obligation."
             " If the requested item is not the path the request asks for, correct the item."
             " Do not git-ignore, exclude, stash or delete a requested output to keep it out of"
             " review: Yoetz redacts what it sends.",

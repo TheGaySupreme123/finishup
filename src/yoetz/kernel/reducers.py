@@ -67,6 +67,7 @@ from yoetz.kernel.claim_limitations import (
     DISCLOSABLE_LIMITING_OUTCOMES,
     required_limitation_result_ids,
     result_is_relevant_to_claim_scope,
+    scope_with_supersession_ancestry,
 )
 from yoetz.kernel.finding_resolution import (
     apply_check_resolution,
@@ -780,6 +781,29 @@ def _claim_scope(
     return frozenset(payload.obligation_refs)
 
 
+def _overlaps_only_through_supersession(
+    payload: ClaimRecordedPayloadV1_1,
+    claims: Mapping[ClaimId, ClaimProjectionRecord],
+    obligations: Mapping[ObligationId, ObligationProjectionRecord] | None,
+) -> bool:
+    """Whether a replacement overlaps some target's scope only through a plan supersession."""
+
+    current = _claim_scope(payload)
+    for target in payload.supersedes_claim_refs:
+        prior = claims.get(target)
+        if prior is None or prior.payload is None:
+            continue
+        prior_scope = _claim_scope(prior.payload)
+        if (
+            prior_scope
+            and current
+            and prior_scope.isdisjoint(current)
+            and not _replacement_obligations(prior_scope, obligations).isdisjoint(current)
+        ):
+            return True
+    return False
+
+
 def _replacement_obligations(
     scope: frozenset[ObligationId],
     obligations: Mapping[ObligationId, ObligationProjectionRecord] | None,
@@ -811,9 +835,12 @@ def _result_is_relevant_to_claim(
     actions: Mapping[ActionId, ProjectionRecord[ActionRecordedPayload]],
     *,
     claim_frontier: int,
+    obligations: Mapping[ObligationId, ObligationProjectionRecord] | None = None,
 ) -> bool:
+    # tb4n5: a result on an obligation a plan correction superseded stays in scope of a claim over
+    # its replacement, so the correction never drops a failure disclosure.
     return result_is_relevant_to_claim_scope(
-        _claim_scope(payload),
+        scope_with_supersession_ancestry(_claim_scope(payload), obligations),
         result_record,
         actions,
         claim_frontier=claim_frontier,
@@ -842,6 +869,7 @@ def _limitation_scope_is_authorable(
     actions: Mapping[ActionId, ProjectionRecord[ActionRecordedPayload]],
     *,
     claim_frontier: int,
+    obligations: Mapping[ObligationId, ObligationProjectionRecord] | None = None,
 ) -> bool:
     """Accept exactly the limitations relevance already treats as in scope.
 
@@ -857,6 +885,7 @@ def _limitation_scope_is_authorable(
         result_record,
         actions,
         claim_frontier=claim_frontier,
+        obligations=obligations,
     )
 
 
@@ -913,11 +942,21 @@ def _apply_claim(
             )
         # Superseded observed failures (#909) and observed explorations are not required; the
         # rule is shared with the surfaces that list the required ids before a claim (F3).
+        # tb4n5 (checker review): a replacement whose scope overlaps a target only through a plan
+        # supersession must also disclose the failures relevant to the superseded obligations.
+        # Only that case, which no earlier build admitted, is refused here, so every recorded
+        # ledger replays unchanged; elsewhere the work-integrity failed-work finding reads the same
+        # ancestry at check time (``kernel.claims.result_is_relevant_to_claim``).
+        own_scope = _claim_scope(payload)
         required = required_limitation_result_ids(
             results,
             actions,
             observed_event_ids,
-            claim_scope=_claim_scope(payload),
+            claim_scope=(
+                scope_with_supersession_ancestry(own_scope, obligations)
+                if _overlaps_only_through_supersession(payload, claims, obligations)
+                else own_scope
+            ),
             claim_frontier=event.ledger.ingestion_sequence,
         )
         supplied = frozenset(payload.limitation_refs)
@@ -932,6 +971,7 @@ def _apply_claim(
                 record,
                 actions,
                 claim_frontier=event.ledger.ingestion_sequence,
+                obligations=obligations,
             )
         )
         if inadmissible:

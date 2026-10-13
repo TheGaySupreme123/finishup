@@ -6,14 +6,17 @@ and obligation_text, no ``repository_excerpt``) is exactly the shipped default. 
 path in ``closure_readiness.undeclared_references`` was withheld, the Stop gate printed "(path
 withheld)" and the agent spent about a dozen guidance reads guessing what to declare.
 
-Owner decision (2026-10-13): Yoetz may show the agent, locally, the names of files the agent's own
-task created (``task_created_file`` provenance), never egressed. "Created by the task" is the
-check-time change against the task-start base, whose complete untracked listing proves a file did
-not predate the task. These tests drive a real repository through the real adapter, the real
-check and status, the daemon's exact post-commit projection with the production-composed
-enforcer, the audit receipt and the Stop gate. A file that predated the task stays withheld and
-the gate says how to list created files with the agent's own shell; an owner who granted
-``repository_excerpt`` sees every name.
+Owner decision (2026-10-13): Yoetz may show the agent, locally, the names of files the agent
+itself created. The checker's review showed that "appeared during the task" is not that: a file
+staged before the task, an ignored file force-added later, or one another process wrote all
+appear in the change, and no structural record ties a shell-created file to its creator. So the
+exception fails closed: a name returns only to the writer who published that exact name itself,
+in this session, through a cooperative channel (the ordinary ``self_authored`` rule, keyed on the
+name's own leaf). Every other name keeps the category ceiling, and the Stop gate gives the typed
+continuation: the omission, the count, and the agent's own shell command that lists what its
+change created. These tests drive a real repository through the real adapter, the real check and
+status, the daemon's exact post-commit projection with the production-composed enforcer, the
+audit receipt and the Stop gate.
 """
 
 # pyright: reportPrivateUsage=false
@@ -22,7 +25,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -67,6 +70,7 @@ from yoetz.protocol.models import (
 pytestmark = pytest.mark.anyio
 
 _CODE = DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP
+_AMBIGUOUS = "deliverable_references_ambiguous_name"
 _OBLIGATION = protocol_id("obl_", 9101)
 _CRACKER = "artifacts/cracker.py"
 _MODELS = ("artifacts/english_ngrams.npz", "artifacts/english_words.npz")
@@ -111,11 +115,13 @@ def _git(repository: Path, *arguments: str) -> None:
     )
 
 
-def _workspace(tmp_path: Path, *, preexisting_model: bool = False) -> tuple[Path, TaskChangeBase]:
-    """A repository at task start, then the cracker and its models the task creates.
+def _workspace(tmp_path: Path, *, words: str = "created") -> tuple[Path, TaskChangeBase]:
+    """A repository at task start, then the cracker and its models.
 
-    With ``preexisting_model`` the words model was already in the working tree, untracked, when
-    the task started, and the task only staged it: it is in the change, but not created by it.
+    ``words`` says how the words model got into the change: ``created`` during the task (by a
+    shell or another process, Yoetz cannot tell), ``prestaged`` (staged as an addition before the
+    task started, so absent from both HEAD and the untracked listing), or ``ignored`` (ignored and
+    present at task start, force-added later).
     """
 
     repository = tmp_path / "app"
@@ -136,15 +142,32 @@ def _workspace(tmp_path: Path, *, preexisting_model: bool = False) -> tuple[Path
     )
     artifacts = repository / "artifacts"
     artifacts.mkdir()
-    if preexisting_model:
+    if words == "prestaged":
+        (artifacts / "english_words.npz").write_bytes(b"\x93NUMPY\x00\x01words")
+        _git(repository, "add", "--", "artifacts/english_words.npz")
+    elif words == "ignored":
+        (repository / ".gitignore").write_text("*.npz\n", encoding="utf-8")
+        _git(repository, "add", "--", ".gitignore")
+        _git(
+            repository,
+            "-c",
+            "user.name=Yoetz Test",
+            "-c",
+            "user.email=yoetz@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "ignore models",
+        )
         (artifacts / "english_words.npz").write_bytes(b"\x93NUMPY\x00\x01words")
     base = GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
     assert base.origin == "task_start" and base.untracked_complete
     (artifacts / "cracker.py").write_text(_LOADER, encoding="utf-8")
     (artifacts / "english_ngrams.npz").write_bytes(b"\x93NUMPY\x00\x01ngrams")
-    if preexisting_model:
-        _git(repository, "add", "--", "artifacts/english_words.npz")
-    else:
+    if words == "ignored":
+        _git(repository, "add", "-f", "--", "artifacts/english_ngrams.npz")
+        _git(repository, "add", "-f", "--", "artifacts/english_words.npz")
+    elif words == "created":
         (artifacts / "english_words.npz").write_bytes(b"\x93NUMPY\x00\x01words")
     return repository, base
 
@@ -154,16 +177,15 @@ def _bind_workspace(
 ) -> None:
     """Run the real workspace reads against *repository*: the application has no bound workspace.
 
-    The check's own probes (``requested_output_states``, ``undeclared_references``) and the
-    created-in-task proof (``created_since_task_start``) are the production functions, given the
-    real adapter, a real metadata capture and the real task-start base.
+    The check's own probes (``requested_output_states``, ``undeclared_references``) are the
+    production functions, given the real adapter, a real metadata capture and the real task-start
+    base.
     """
 
     adapter = GitChangeCaptureAdapter()
     source = CheckWorkspaceSource(os.fspath(repository), "hmac-sha256:" + "0" * 64)
     real_states = check_change.requested_output_states
     real_references = check_change.undeclared_references
-    real_created = check_change.created_since_task_start
 
     def capture() -> Any:
         return adapter.capture_metadata(os.fspath(repository), base)
@@ -191,11 +213,6 @@ def _bind_workspace(
     monkeypatch.setattr(check_change, "requested_output_states", states)
     monkeypatch.setattr(check_change, "undeclared_references", references)
 
-    def created(_capture: object, _base: object) -> Callable[[str], bool]:
-        return real_created(capture(), base)
-
-    monkeypatch.setattr(check_change, "created_since_task_start", created)
-
 
 def _draft(seed: int, name: str, payload: dict[str, JsonValue], version: str = "1.0.0") -> Any:
     return {
@@ -215,8 +232,13 @@ async def _run(
     delivered: tuple[str, ...] = (_CRACKER,),
     *,
     expect_gap: bool = True,
+    named: tuple[str, ...] = (),
 ) -> tuple[StartInternalResult, Any]:
-    """The cracker delivered and claimed with only the cracker declared, then one check."""
+    """The cracker delivered and claimed with only the cracker declared, then one check.
+
+    ``named`` are further values the agent's own action names in ``attempted_items`` (it says it
+    worked on those exact paths), without declaring them.
+    """
 
     started = await app.start(start_request(seed, title="Vigenere cracker", refs=True))
     assert type(started) is StartInternalResult
@@ -247,7 +269,7 @@ async def _run(
                 "action_kind": "other",
                 "description": "Wrote the cracker and its models",
                 "obligation_refs": [_OBLIGATION],
-                "attempted_items": list(delivered),
+                "attempted_items": list[JsonValue](sorted({*delivered, *named}, key=str.encode)),
             },
         ),
         _draft(
@@ -376,9 +398,34 @@ def _projection_subject(app: Application, projected: Mapping[str, JsonValue]) ->
     return row.subject
 
 
-async def test_biped_private_ceiling_names_the_files_the_task_created(
+_OMITTED = {
+    "category": "repository_excerpt",
+    "omitted": True,
+    "reason": "local_disclosure_not_authorized",
+}
+
+
+def _assert_withheld_with_continuation(projected: Mapping[str, JsonValue]) -> None:
+    (row,) = _rows(projected)
+    assert row["obligation_id"] == _OBLIGATION
+    assert row["total"] == "2"
+    assert row["paths"] == [_OMITTED, _OMITTED]
+    text = _gate_text(projected)
+    assert f"{_OBLIGATION} item 0 names (path withheld) and (path withheld)." in text
+    assert "Yoetz returns only a name you published yourself" in text
+    assert "`git status --porcelain --untracked-files=all`" in text
+    assert "or their directory" in text
+    for model in _MODELS:
+        assert model.rsplit("/", 1)[1] not in str(projected)
+        assert model.rsplit("/", 1)[1] not in text
+
+
+async def test_biped_private_ceiling_withholds_names_no_record_attributes_to_the_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Files that appeared during the task through a shell or another process: nothing in the
+    record ties them to the agent, so the names stay withheld with the typed continuation."""
+
     repository, base = _workspace(tmp_path)
     _bind_workspace(monkeypatch, repository, base)
     app, policy = await build_projection_application(seed=9100)
@@ -390,77 +437,65 @@ async def test_biped_private_ceiling_names_the_files_the_task_created(
         DataCategory.OBLIGATION_TEXT,
     }
     started, _checked = await _run(app, 9100)
-
     internal, projected = await _projected_status(app, started, 9150)
-    (row,) = _rows(projected)
-    assert row["obligation_id"] == _OBLIGATION
-    assert row["name_provenance"] == "created_in_task"
-    assert row["paths"] == list(_MODELS)
-    assert internal.created_file_pointers == (
-        "/closure_readiness/undeclared_references/0/paths/0",
-        "/closure_readiness/undeclared_references/0/paths/1",
-    )
-    # Recorded on the projection's own audit subject, as every provenance class is.
+    assert internal.leaf_authorship == ()
+    _assert_withheld_with_continuation(projected)
     subject = _projection_subject(app, projected)
-    assert DisclosureProvenance.TASK_CREATED_FILE in subject.provenance
-    # The Stop gate names them and needs no listing continuation.
-    text = _gate_text(projected)
-    assert '"artifacts/english_ngrams.npz" and "artifacts/english_words.npz"' in text
-    assert "git status" not in text
+    assert DisclosureProvenance.SELF_AUTHORED not in subject.provenance
 
 
-async def test_a_file_that_predated_the_task_stays_withheld_with_a_typed_continuation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("words", ["prestaged", "ignored"])
+async def test_a_pre_staged_or_force_added_ignored_file_is_never_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, words: str
 ) -> None:
-    repository, base = _workspace(tmp_path, preexisting_model=True)
+    """Checker reproductions (#1): a file staged before the task (absent from HEAD and from the
+    untracked listing) and an ignored file force-added later both appear as additions; neither
+    is the agent's creation, and neither name returns."""
+
+    repository, base = _workspace(tmp_path, words=words)
     _bind_workspace(monkeypatch, repository, base)
     app, _policy = await build_projection_application(seed=9200)
     started, _checked = await _run(app, 9200)
-
-    internal, projected = await _projected_status(app, started, 9250)
-    (row,) = _rows(projected)
-    # One of the two files was in the working tree before the task: the row is unproven, so
-    # neither name returns without the repository-excerpt grant.
-    assert row["name_provenance"] == "creation_unproven"
-    assert row["total"] == "2"
-    omitted = {
-        "category": "repository_excerpt",
-        "omitted": True,
-        "reason": "local_disclosure_not_authorized",
-    }
-    assert row["paths"] == [omitted, omitted]
-    assert internal.created_file_pointers == ()
-    subject = _projection_subject(app, projected)
-    assert DisclosureProvenance.TASK_CREATED_FILE not in subject.provenance
-    text = _gate_text(projected)
-    assert f"{_OBLIGATION} item 0 names (path withheld) and (path withheld)." in text
-    assert "Yoetz could not prove your task created them" in text
-    assert "`git status --porcelain --untracked-files=all`" in text
-    assert "or their directory" in text
-    for model in _MODELS:
-        assert model.rsplit("/", 1)[1] not in str(projected)
-        assert model.rsplit("/", 1)[1] not in text
+    _internal, projected = await _projected_status(app, started, 9250)
+    _assert_withheld_with_continuation(projected)
 
 
-async def test_without_a_task_start_base_no_name_is_task_created(
+async def test_a_name_returns_only_to_the_writer_and_session_that_published_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repository, _base = _workspace(tmp_path)
-    # A first-check base (no task-start snapshot) cannot prove what predates the task.
-    _bind_workspace(monkeypatch, repository, None)
+    """The agent named ``artifacts/english_ngrams.npz`` in its own action: that exact name comes
+    back to it (it wrote that text), the other stays withheld; a later session or another writer
+    of the same task does not get it."""
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
     app, _policy = await build_projection_application(seed=9300)
-    started, _checked = await _run(app, 9300)
-    _internal, projected = await _projected_status(app, started, 9350)
+    started, _checked = await _run(app, 9300, named=("/app/" + _MODELS[0],))
+
+    internal, projected = await _projected_status(app, started, 9350)
     (row,) = _rows(projected)
-    assert row["name_provenance"] == "creation_unproven"
-    paths = cast(Sequence[Mapping[str, JsonValue]], row["paths"])
-    assert paths and all(path["omitted"] is True for path in paths)
+    assert row["paths"] == [_MODELS[0], _OMITTED]
+    (leaf,) = internal.leaf_authorship
+    assert leaf.item_pointer == "/closure_readiness/undeclared_references/0/paths/0"
+    subject = _projection_subject(app, projected)
+    assert DisclosureProvenance.SELF_AUTHORED in subject.provenance
+    text = _gate_text(projected)
+    assert '"artifacts/english_ngrams.npz" and (path withheld)' in text
+    assert "`git status --porcelain --untracked-files=all`" in text
+
+    # Another session (an attach mints a new session and writer) holds no authorship of it.
+    attached = await app.start(start_request(9360, title="Vigenere cracker", refs=True))
+    assert type(attached) is StartInternalResult
+    assert attached.outcome == "attached"
+    assert attached.writer_id != started.writer_id
+    _internal, successor = await _projected_status(app, attached, 9370)
+    _assert_withheld_with_continuation(successor)
 
 
 async def test_an_owner_who_granted_repository_excerpts_sees_every_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repository, base = _workspace(tmp_path, preexisting_model=True)
+    repository, base = _workspace(tmp_path, words="prestaged")
     _bind_workspace(monkeypatch, repository, base)
 
     def granted(policy: PrivacyPolicy) -> PrivacyPolicy:
@@ -477,7 +512,6 @@ async def test_an_owner_who_granted_repository_excerpts_sees_every_name(
     started, _checked = await _run(app, 9400)
     _internal, projected = await _projected_status(app, started, 9450)
     (row,) = _rows(projected)
-    assert row["name_provenance"] == "creation_unproven"
     assert row["paths"] == list(_MODELS)
     assert "git status" not in _gate_text(projected)
 
@@ -524,12 +558,16 @@ async def test_biped_writer_and_validation_copies_raise_nothing_on_any_surface(
     app, _policy = await build_projection_application(seed=9500)
     delivered = ("submission/solve.py", *(f"results/{motion}" for motion in _MOTIONS))
     started, checked = await _run(app, 9500, delivered, expect_gap=False)
+    # The 18 copies named only by an ambiguous file name are disclosed, counted, never named.
+    assert _AMBIGUOUS in checked.coverage.known_gaps
     assert checked.overall_next is None or _OBLIGATION not in checked.overall_next.target_refs
 
     internal, projected = await _projected_status(app, started, 9550)
     readiness = internal.closure_readiness
     assert _CODE not in (readiness.agent_actionable or ())
     assert _CODE not in (readiness.standing_limitations or ())
+    assert _AMBIGUOUS in (readiness.standing_limitations or ())
+    assert _AMBIGUOUS not in (readiness.agent_actionable or ())
     assert readiness.undeclared_references is None
     assert "undeclared_references" not in cast(
         Mapping[str, JsonValue], projected["closure_readiness"]
@@ -556,4 +594,7 @@ async def test_biped_writer_and_validation_copies_raise_nothing_on_any_surface(
             }
         )
     )
-    assert _CODE not in str(receipt.as_json())
+    rendered = str(receipt.as_json())
+    assert _CODE not in rendered
+    assert "Files named ambiguously: 18." in rendered
+    assert "case_0" not in rendered

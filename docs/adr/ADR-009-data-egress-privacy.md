@@ -145,20 +145,19 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    and surfacing it in `privacy receipts get` needs a design-gated egress-receipt schema change,
    left as a follow-up.
 
-   **Revised 2026-10-13 — names of files the agent's task created (tb4n5, owner decision).** A
-   fifth provenance value, `task_created_file`, is local and leaf-scoped. It applies only to the
-   status leaf `/closure_readiness/undeclared_references/<n>/paths/<m>` (a file a delivered file
-   reads and no item declares, ADR-035) of a row whose recorded check proved every named file was
-   created in the task's own workspace after the task started: the check-time change listed it as
-   created against the task's `task_start` base whose untracked listing (and every nested
-   repository's) was complete, and the base did not list it as untracked at task start. Such a leaf
-   projects to `agent_context` as `repository_excerpt` without the category grant, at the policy's
-   data classes; never-send and `sensitive_confidential` stay absolute, every other leaf and
-   category keeps the ceiling, and no other sink or purpose (outbound review included) honours it.
-   The agent's own shell already lists these names, so returning them discloses nothing the host
-   does not hold, while a file that predated the task (or a task without a provable start
-   snapshot) stays withheld with a typed continuation. The value is recorded in the projection's
-   audit subject like the others. The review packet never carries the names at all (ADR-035).
+   **Revised 2026-10-13 — names of undeclared files a deliverable may read (tb4n5).** The owner
+   allowed showing the agent, locally, the names of files it itself created. No structural record
+   proves that (a file staged before the task, an ignored file force-added later, or one another
+   process wrote all appear as created; no observation records a shell-written path), so no new
+   provenance value is added and the exception fails closed: the status leaf
+   `/closure_readiness/undeclared_references/<n>/paths/<m>` carries the ledger authorship of the
+   accepted, unredacted publication that spelled that exact name (`attempted_items` or
+   `requested_items`), keyed on that leaf (`ProjectionProvenanceContext.leaf_authorship`, admitted
+   only for that leaf family and only as `repository_excerpt`), and the ordinary `self_authored`
+   rule decides: only the writer that published the name, in this session, through a cooperative
+   channel, gets it back. Every other name keeps the ceiling, with a typed continuation in the Stop
+   gate (ADR-035). The review packet never carries the names, nor the digest of a payload that held
+   them (ADR-035).
 
    **Revised 2026-07-24 — default agent-context disclosure of verification output.** Under the
    default LOCAL_ONLY bootstrap policy, `agent_context` may include Yoetz-authored verification

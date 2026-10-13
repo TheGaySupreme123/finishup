@@ -93,6 +93,9 @@ from yoetz.domain.task_fact_tokens import (
     DECLARED_OUTPUT_REMOVED_GAP as DECLARED_OUTPUT_REMOVED_GAP,
 )
 from yoetz.domain.task_fact_tokens import (
+    DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP as DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP,
+)
+from yoetz.domain.task_fact_tokens import (
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP as DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
 )
 from yoetz.domain.task_fact_tokens import (
@@ -193,6 +196,7 @@ __all__ = [
     "DECLARED_OUTPUT_EMPTIED_GAP",
     "DECLARED_OUTPUT_NOT_REVIEWABLE_GAP",
     "DECLARED_OUTPUT_REMOVED_GAP",
+    "DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP",
     "DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP",
     "EDITED_AFTER_LAST_VERIFICATION_GAP",
     "INSTALL_INTO_PRIVATE_ENV_GAP",
@@ -256,6 +260,7 @@ __all__ = [
     "requested_command_identity",
     "requested_planned_command",
     "requested_output_facts",
+    "superseded_unnamed_outputs",
     "task_fact_signals",
     "non_counting_edits_exempt",
     "passing_verification_observed",
@@ -721,6 +726,70 @@ def effective_obligations(projection: ProjectionState) -> tuple[ObligationId, ..
         and record.payload is not None
         and record.plan_change is not ObligationChangeKind.WAIVED
     )
+
+
+def _names_output(item: RequestedItem, value: str) -> bool:
+    """Whether a replacement's item names the requested output ``value`` (tb4n5)."""
+
+    if item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}:
+        spelled = item.value.removeprefix("./")
+        wanted = value.removeprefix("./")
+        return spelled == wanted or spelled.endswith("/" + wanted) or wanted.endswith("/" + spelled)
+    if item.item_kind is RequestedItemKind.CHANGE:
+        name = value.rstrip("/").rsplit("/", 1)[-1]
+        return bool(name) and name in item.value
+    return False
+
+
+def superseded_unnamed_outputs(
+    projection: ProjectionState,
+) -> tuple[tuple[ObligationId, int], ...]:
+    """Requested outputs a plan correction dropped without naming them (tb4n5, ADR-033).
+
+    An obligation a ``plan_revised`` superseded with replacements leaves the effective plan, and
+    with it its requested files. The documented correction of a conditional output re-declares
+    each file the replacements still deliver as a ``file`` item and names a conditional one in the
+    ``change`` item that states its condition. A requested ``file`` or ``directory`` item (role
+    ``output`` or none) that no replacement names, transitively, either way, is still requested:
+    the correction cannot launder a missing deliverable. Returns its ``(obligation, item index)``
+    pairs, which the check probes and reports exactly like an effective obligation's.
+    """
+
+    effective = frozenset(effective_obligations(projection))
+    dropped: list[tuple[ObligationId, int]] = []
+    for obligation, record in sorted(projection.obligations.items(), key=lambda row: row[0]):
+        if (
+            obligation in effective
+            or record.payload is None
+            or record.plan_change is not ObligationChangeKind.SUPERSEDED
+            or not record.superseded_by_obligation_ids
+        ):
+            continue
+        replacements: set[ObligationId] = set()
+        pending = list(record.superseded_by_obligation_ids)
+        while pending:
+            current = pending.pop()
+            if current in replacements:
+                continue
+            replacements.add(current)
+            following = projection.obligations.get(current)
+            if following is not None:
+                pending.extend(following.superseded_by_obligation_ids)
+        named_by = tuple(
+            item
+            for replacement in replacements
+            if (row := projection.obligations.get(replacement)) is not None
+            and row.payload is not None
+            for item in row.payload.requested_items
+        )
+        for index, item in enumerate(record.payload.requested_items):
+            if (
+                item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}
+                and item.role is not RequestedItemRole.INPUT
+                and not any(_names_output(other, item.value) for other in named_by)
+            ):
+                dropped.append((obligation, index))
+    return tuple(dropped)
 
 
 def acknowledged_obligation_ids(projection: ProjectionState) -> frozenset[ObligationId]:
