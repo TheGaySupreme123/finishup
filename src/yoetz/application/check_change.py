@@ -36,7 +36,7 @@ from yoetz.observability.logging import (
     record_bounded_event_without_raising,
     record_unexpected_exception_without_raising,
 )
-from yoetz.observability.privacy import redact_sensitive_content
+from yoetz.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER, redact_sensitive_content
 from yoetz.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     MAX_CHECK_CHANGE_TEXT_BYTES,
@@ -301,11 +301,21 @@ async def _pin_first_check_base(
 
 
 def _redacted_text(text: bytes) -> tuple[bytes, bool]:
-    """Redact until a pass finds nothing; ``redaction_incomplete`` past the pass bound."""
+    """Redact until a pass finds nothing; ``redaction_incomplete`` past the pass bound.
+
+    A concrete credential shape reads ``[REDACTED]``. A value that only looks like a credential
+    (``password=config.POSTGRES_PASSWORD``) reads ``[withheld-by-yoetz:possible-credential]``,
+    the self-describing marker egress uses (tb4n5 live-database-cutover): a bare ``[REDACTED]`` in
+    source read as an undefined name to the reviewer. The same spans are withheld either way;
+    only the marker differs, and redaction still runs at capture whatever the owner's
+    possible-credential opt-out says.
+    """
 
     redacted = False
     for _ in range(_MAX_REDACTION_PASSES):
-        replaced, detected = redact_sensitive_content(text)
+        replaced, detected = redact_sensitive_content(
+            text, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
+        )
         if not detected:
             break
         text, redacted = replaced, True

@@ -151,6 +151,28 @@ content-returning read needed its own decision. This is that decision, for exact
    part, and the check reports `semantic_review_context_withheld`, as for any other category the
    recipe selects and the channel withholds. How a never-send match affects the review is owned by
    #920.
+   Amendment (tb4n5 live-database-cutover): the capture-time redaction marks what it replaced by
+   confidence. A concrete credential shape (a known token format, a private-key header, a password
+   inside a URL), or a heuristic span that overlaps one, reads `[REDACTED]`; a value that only
+   looks like a credential (an assignment to a name such as `password` or `*_token`) reads
+   `[withheld-by-yoetz:possible-credential]`, the placeholder egress already uses (ADR-009,
+   issue #982). The same bytes are withheld either way; only the marker text differs, and
+   redaction still runs at capture whatever the owner's possible-credential opt-out says (owner
+   decision, 2026-10-13). Task input files the read carries get the same treatment. The bare
+   `[REDACTED]` had turned `password=config.POSTGRES_PASSWORD` into `password=[REDACTED]`, which a
+   reviewer read as an undefined name and raised as a `code_defect`. The reviewer's standing
+   instruction now names both markers as Yoetz's own substitutions for an unavailable original
+   value or expression, never evidence of a syntax error, an undefined name or missing
+   configuration, and the packet-limit glossary explains `check_time_change_redacted`. The
+   shown-file record (item 9) and reviewer-quote proof treat both markers alike: each is a
+   redaction, and a file holding either is never `fully_shown`. A change stored before this
+   amendment holds `[REDACTED]` only, so its shown-file record, view commitments and replay are
+   byte-identical. Known upgrade limitation: a new capture of a file whose look-alike value an
+   older build marked `[REDACTED]` has a different view (the marker's length differs), so an
+   AI-powered finding raised through a partial view of that file before the upgrade is not cleared
+   by that file's new partial view, as for any moved redaction; it clears once the file is shown
+   whole (the look-alike value gone) or through the ordinary finding responses. Only tasks carried
+   across the upgrade are affected.
 6. **A reserved share of the packet, first.** The change is admitted before every other excerpt, up
    to half of the recipe's excerpt count (at least one) and half of its excerpt bytes, rounded up to
    the change's first part. A part is never larger than the recipe's per-excerpt or total excerpt

@@ -99,7 +99,11 @@ What Yoetz records on your machine follows the same split. A concrete credential
 API-key or access-token format, a private-key header, or a password inside a URL) is replaced before
 anything is stored. Text that only looks like a credential is kept as captured in the encrypted
 local store, so local checks see your work as it is; it is replaced only when content would leave
-your machine.
+your machine. The one exception is the change Yoetz reads from your repository at check time for
+review (described below): it is redacted as it is read, so a concrete credential reads
+`[REDACTED]` and a value that only looks like one reads `[withheld-by-yoetz:possible-credential]`.
+The reviewer is told that both markers are values Yoetz withheld, never your code, so a line such
+as `password=[withheld-by-yoetz:possible-credential]` is not reported as a broken expression.
 
 ### Turning the possible-credential filter off
 

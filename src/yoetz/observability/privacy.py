@@ -924,12 +924,36 @@ def _replace_sensitive_spans(
     findings: tuple[ScanFinding, ...],
     *,
     marker: bytes = _PERSISTED_REDACTION_MARKER,
+    heuristic_marker: bytes | None = None,
 ) -> bytes:
+    """Replace each finding's span; a heuristic one with ``heuristic_marker`` when given.
+
+    A heuristic span that overlaps a high-confidence finding (``TOKEN = 'ghp_...'``: the
+    assignment and the token shape) holds a detected credential, so it keeps ``marker``.
+    """
+
+    if heuristic_marker is not None and heuristic_marker not in _EXEMPT_REPLACEMENT_MARKERS:
+        # Only an exact exempt marker converges: any other text could re-match as an assignment.
+        raise ValueError("redaction_marker_invalid")
+    high = tuple(
+        (finding.start_offset, finding.end_offset)
+        for finding in findings
+        if finding.confidence is not ScanConfidence.HEURISTIC
+    )
     pieces: list[bytes] = []
     cursor = 0
     for finding in findings:
         if finding.start_offset < cursor:
             continue
+        span_marker = (
+            heuristic_marker
+            if heuristic_marker is not None
+            and finding.confidence is ScanConfidence.HEURISTIC
+            and not any(
+                start < finding.end_offset and finding.start_offset < end for start, end in high
+            )
+            else marker
+        )
         pieces.append(data[cursor : finding.start_offset])
         raw = data[finding.start_offset : finding.end_offset]
         separator = _assignment_separator(raw)
@@ -953,10 +977,10 @@ def _replace_sensitive_spans(
                 opening_quote if opening_quote and value.endswith(opening_quote) else b""
             )
             pieces.append(
-                raw[: separator.end()] + string_prefix + opening_quote + marker + closing_quote
+                raw[: separator.end()] + string_prefix + opening_quote + span_marker + closing_quote
             )
         else:
-            pieces.append(marker)
+            pieces.append(span_marker)
         cursor = finding.end_offset
     pieces.append(data[cursor:])
     return b"".join(pieces)
@@ -1034,17 +1058,24 @@ def prepare_persisted_plaintext(
     return PersistenceScanResult(True, redacted, redacted != data, kinds)
 
 
-def redact_sensitive_content(data: bytes) -> tuple[bytes, bool]:
+def redact_sensitive_content(
+    data: bytes, *, heuristic_marker: bytes | None = None
+) -> tuple[bytes, bool]:
     """Replace every detected credential/key span without retaining the match.
 
     This includes heuristic-only assignment matches. It is for content that is about to be
-    disclosed; capture and at-rest paths use ``redact_high_confidence_content``.
+    disclosed; capture and at-rest paths use ``redact_high_confidence_content``. Every span reads
+    ``[REDACTED]`` unless ``heuristic_marker`` is given: then a heuristic-only span reads that
+    marker instead, which must be one of Yoetz's exact replacement markers
+    (``EGRESS_CREDENTIAL_PLACEHOLDER``) so a further pass never re-matches it. The check-time
+    change uses it so a reviewer is told the value may be a credential Yoetz withheld (tb4n5),
+    never left to read ``password=[REDACTED]`` as source code.
     """
 
     findings = scan_for_sensitive_content(data)
     if not findings:
         return data, False
-    return _replace_sensitive_spans(data, findings), True
+    return _replace_sensitive_spans(data, findings, heuristic_marker=heuristic_marker), True
 
 
 def redact_high_confidence_content(data: bytes) -> tuple[bytes, bool]:

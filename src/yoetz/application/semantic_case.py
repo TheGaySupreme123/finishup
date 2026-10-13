@@ -144,6 +144,7 @@ from yoetz.kernel.task_facts import (
     open_effective_obligations,
 )
 from yoetz.kernel.test_edit_visibility import check_change_header_entries
+from yoetz.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
 from yoetz.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     MAX_TASK_INPUT_FILES,
@@ -882,13 +883,33 @@ def _check_time_change_part_chunk_bytes(content: bytes) -> int:
 _CHECK_TIME_CHANGE_FILE_START: Final = re.compile(rb"^diff --git ", re.MULTILINE)
 _CHECK_TIME_CHANGE_BINARY: Final = re.compile(rb"^Binary files ", re.MULTILINE)
 _CHECK_TIME_CHANGE_DELETED: Final = re.compile(rb"^deleted file mode ", re.MULTILINE)
-_REDACTION_MARKER: Final = b"[REDACTED]"
+# The markers capture-time redaction leaves in the stored change: a concrete credential shape
+# reads ``[REDACTED]``, a value that only looks like one the self-describing placeholder (tb4n5).
+# Both are withheld spans; every count and view below treats them alike. A change stored before
+# the placeholder was used at capture holds ``[REDACTED]`` only, so its record is unchanged.
+_REDACTION_MARKERS: Final = (b"[REDACTED]", EGRESS_CREDENTIAL_PLACEHOLDER)
 _CHECK_TIME_CHANGE_HUNK: Final = re.compile(rb"^@@ [^\n]*", re.MULTILINE)
 _VIEW_DOMAIN: Final = b"yoetz/check-change-view/v1\x00"
 
 
+def _redaction_marker_offsets(text: bytes, start: int, visible_end: int, end: int) -> list[int]:
+    """Absolute offsets of every redaction marker of ``text[start:end]`` the view shows any of.
+
+    A marker the packet edge cut still counts: part of a redacted span was shown.
+    """
+
+    offsets: set[int] = set()
+    for marker in _REDACTION_MARKERS:
+        limit = min(end, visible_end + len(marker) - 1)
+        position = text.find(marker, start, limit)
+        while position >= 0:
+            offsets.add(position)
+            position = text.find(marker, position + 1, limit)
+    return sorted(offsets)
+
+
 def _check_time_change_view(
-    text: bytes, start: int, visible_end: int, marker_limit: int, section_admitted: bool
+    text: bytes, start: int, visible_end: int, markers: Sequence[int], section_admitted: bool
 ) -> bytes:
     """Length-prefixed structure of one file's shown view: where markers and hunks lie."""
 
@@ -897,13 +918,8 @@ def _check_time_change_view(
         (visible_end - start).to_bytes(4, "big"),
         b"\x01" if section_admitted else b"\x00",
     ]
-    markers: list[int] = []
-    position = text.find(_REDACTION_MARKER, start, marker_limit)
-    while position >= 0:
-        markers.append(position - start)
-        position = text.find(_REDACTION_MARKER, position + 1, marker_limit)
     parts.append(len(markers).to_bytes(4, "big"))
-    parts.extend(offset.to_bytes(4, "big") for offset in markers)
+    parts.extend((offset - start).to_bytes(4, "big") for offset in markers)
     hunks = [
         (match.start() - start, text[match.start() : min(match.end(), visible_end)])
         for match in _CHECK_TIME_CHANGE_HUNK.finditer(text, start, visible_end)
@@ -942,8 +958,9 @@ def check_time_change_shown_files(
     between two checks never matches itself. It was shown when any of its bytes lie in the
     leading ``shown_bytes`` the packet carried, and fully shown when the whole section did and it
     holds no redaction marker. Each also carries the section bytes that reached the packet
-    (markers included), the ``[REDACTED]`` markers among them, whether the whole section reached
-    it, and where the first shown marker starts (the shown length without one). Files the change lists
+    (markers included), the redaction markers among them (``[REDACTED]`` and the
+    possible-credential placeholder alike), whether the whole section reached it, and where the
+    first shown marker starts (the shown length without one). Files the change lists
     only in its header (not shown) are not returned.
 
     ``shown_bytes`` is the length of the change's leading bytes the packet carried
@@ -974,22 +991,18 @@ def check_time_change_shown_files(
         if _CHECK_TIME_CHANGE_DELETED.search(section) is not None:
             identity += b"\x00deleted"
         visible_end = min(end, shown_bytes)
-        # A marker the packet edge cut still counts: part of a redacted span was shown.
-        marker_limit = min(end, visible_end + len(_REDACTION_MARKER) - 1)
-        redactions = text.count(_REDACTION_MARKER, start, marker_limit)
-        first_marker = text.find(_REDACTION_MARKER, start, marker_limit)
+        markers = _redaction_marker_offsets(text, start, visible_end, end)
         section_admitted = end <= shown_bytes
         files.append(
             CheckTimeChangeShownFile(
                 identity=identity,
-                whole=section_admitted and _REDACTION_MARKER not in section,
+                whole=section_admitted
+                and not any(marker in section for marker in _REDACTION_MARKERS),
                 shown_bytes=visible_end - start,
-                redactions=redactions,
+                redactions=len(markers),
                 section_admitted=section_admitted,
-                clean_bytes=visible_end - start if first_marker < 0 else first_marker - start,
-                view=_check_time_change_view(
-                    text, start, visible_end, marker_limit, section_admitted
-                ),
+                clean_bytes=visible_end - start if not markers else markers[0] - start,
+                view=_check_time_change_view(text, start, visible_end, markers, section_admitted),
             )
         )
     return tuple(files)

@@ -9,6 +9,7 @@ import pytest
 
 from yoetz.adapters.privacy.local_enforcer import scan_exact_bytes
 from yoetz.application import check_change as check_change_module
+from yoetz.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
 from yoetz.ports.change_capture import (
     ChangeCaptureUnavailable,
     CheckChangeCapture,
@@ -45,8 +46,32 @@ def test_parser_source_with_more_matches_than_one_scan_reports_is_fully_redacted
 
     assert redacted.redacted
     assert scan_exact_bytes(redacted.text) == ()
-    assert redacted.text.count(b"[REDACTED]") == 600
+    # Heuristic-only values read as the self-describing placeholder, never a bare [REDACTED].
+    assert redacted.text.count(EGRESS_CREDENTIAL_PLACEHOLDER) == 600
+    assert b"[REDACTED]" not in redacted.text
     assert b"src/parser.ts" in redacted.text
+
+
+def test_a_value_that_only_looks_like_a_credential_reads_as_withheld_not_as_code() -> None:
+    """tb4n5 live-database-cutover: ``password=config.POSTGRES_PASSWORD`` reached the reviewer
+    as ``password=[REDACTED]``, which it read as an undefined name (a NameError finding)."""
+
+    line = (
+        b"+    return URL.create('postgresql+psycopg',username=config.POSTGRES_USER,"
+        b"password=config.POSTGRES_PASSWORD,host=config.POSTGRES_HOST)\n"
+    )
+    token = b"ghp_" + b"Q" * 36
+    text = b"diff --git a/api/db.py b/api/db.py\n" + line + b"+TOKEN = '" + token + b"'\n"
+
+    redacted = _redacted(_capture(text))
+
+    assert redacted.redacted
+    assert b"password=" + EGRESS_CREDENTIAL_PLACEHOLDER + b"," in redacted.text
+    assert b"config.POSTGRES_PASSWORD" not in redacted.text
+    # A concrete credential shape still reads [REDACTED]; both converge to a clean scan.
+    assert token not in redacted.text and b"TOKEN = '[REDACTED]'" in redacted.text
+    assert scan_exact_bytes(redacted.text) == ()
+    assert _redacted(redacted) is redacted
 
 
 def test_clean_change_is_returned_unchanged() -> None:
@@ -56,7 +81,7 @@ def test_clean_change_is_returned_unchanged() -> None:
 
 
 def test_change_that_cannot_be_fully_redacted_is_withheld(monkeypatch: pytest.MonkeyPatch) -> None:
-    def never_clean(data: bytes) -> tuple[bytes, bool]:
+    def never_clean(data: bytes, **_: object) -> tuple[bytes, bool]:
         return data + b".", True
 
     monkeypatch.setattr(check_change_module, "redact_sensitive_content", never_clean)
@@ -204,7 +229,8 @@ def test_task_input_files_are_redacted_one_by_one_and_dropped_when_they_cannot_b
     redacted = _redacted(capture)
 
     spec, rules = redacted.inputs
-    assert spec.redacted and b"a8F3kL9qZx7Pw2Rt" not in spec.text and b"[REDACTED]" in spec.text
+    assert spec.redacted and b"a8F3kL9qZx7Pw2Rt" not in spec.text
+    assert b'password = "' + EGRESS_CREDENTIAL_PLACEHOLDER + b'"' in spec.text
     assert rules == capture.inputs[1]
     # The change itself was clean and stays as it was, but review content was still altered, so
     # the capture discloses it (``check_time_change_redacted``; review of #1045).
@@ -221,10 +247,10 @@ def test_a_task_input_withheld_whole_is_disclosed_as_redacted(
 
     original = check_change_module.redact_sensitive_content
 
-    def never_clean_for_the_input(data: bytes) -> tuple[bytes, bool]:
+    def never_clean_for_the_input(data: bytes, **options: bytes | None) -> tuple[bytes, bool]:
         if b"WITHHELD_INPUT_MARKER" in data:
             return data + b".", True
-        return original(data)
+        return original(data, **options)
 
     monkeypatch.setattr(check_change_module, "redact_sensitive_content", never_clean_for_the_input)
     capture = CheckChangeCapture(
