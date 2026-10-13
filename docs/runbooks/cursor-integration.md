@@ -1018,7 +1018,7 @@ endpoint is bound, network egress is permitted, and an LLM inference channel is 
 provider is still structurally unusable, including when no factory id is available. `stop` still
 emits `{}` and leaves that delivery pending.
 
-Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Cursor: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Cursor: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012). The tb4n5 extension to rollout rows held for their hook post is Codex-only: Cursor has no rollout stream, so there is nothing held to release.
 
 Workspace binding does not trust plugin-hook CWD. It selects a single `workspace_roots` entry first,
 then `CURSOR_PROJECT_DIR`, then the explicit `--workspace` value. A multiroot workspace selects the

@@ -75,6 +75,7 @@ __all__ = [
     "CodexChildRolloutHeader",
     "CodexChildRolloutHeaderResult",
     "CodexSessionStreamLocator",
+    "HELD_ROLLOUT_CHECK_RELEASE_SECONDS",
     "PERIODIC_RECONCILE_SECONDS",
     "SessionStreamAdvance",
     "SessionStreamReader",
@@ -83,6 +84,7 @@ __all__ = [
     "read_codex_child_rollout_header",
     "reconcile_session_stream",
     "reconcile_session_stream_path",
+    "release_held_rollout_items_for_check",
     "rollout_filename_matches_token",
     "resolve_codex_home",
     "should_trigger_stream_reconcile",
@@ -2439,6 +2441,48 @@ def _profile_records_tool_items(profile: CodexCapabilityProfile | None) -> bool:
     """Whether a rollout profile records every completed host tool call as an item (0.150.1+)."""
 
     return profile is not None and "CommandExecution" in profile.item_types
+
+
+# A held rollout item read at least this long before a check's observation wait is released by
+# that wait (tb4n5): its hook post, if one is coming, would normally have landed by now.
+HELD_ROLLOUT_CHECK_RELEASE_SECONDS: Final = 10.0
+
+
+def release_held_rollout_items_for_check(
+    store: LocalObservationStore,
+    workspace_commitment: str,
+    include: Callable[[PendingRolloutItem], bool],
+    *,
+    now: float | None = None,
+    min_age_seconds: float = HELD_ROLLOUT_CHECK_RELEASE_SECONDS,
+) -> tuple[str, ...]:
+    """Deliver a check's held rollout items before it freezes; return those still held (tb4n5).
+
+    An undecided item (#910) waits for a hook post that may never come; in tb4n5 biped S one was
+    held 13 minutes and delivered 3 s after the check that awaited observations, so it made that
+    check stale. A check's observation wait now releases each of its task's items (``include``)
+    read at least ``min_age_seconds`` ago, exactly as the idle bound would: delivered once with
+    ``unpaired_event``, so its unproven attribution stays disclosed and no outcome is decided for
+    it. A younger item stays held; its source identity is returned so the wait counts it as the
+    bounded remainder instead of reporting ``complete``. A release that cannot commit leaves the
+    item held and counted.
+    """
+
+    try:
+        items = store.pending_rollout_items(workspace_commitment)
+    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+        return ()
+    current = time.time() if now is None else now
+    held: list[str] = []
+    for item in items:
+        if not include(item):
+            continue
+        read_at = item.envelope.receipt_time.as_datetime().timestamp()
+        if current - read_at < min_age_seconds or not _deliver_pending_rollout_item(
+            store, workspace_commitment, item, unpaired=True
+        ):
+            held.append(item.source_identity)
+    return tuple(held)
 
 
 def _code_mode_cell_held(

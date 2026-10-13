@@ -9885,6 +9885,36 @@ class LocalObservationStore:
             return False
 
     @_read_mostly
+    def held_rollout_workspaces(self) -> tuple[str, ...]:
+        """Workspaces holding undecided rollout tool items (#910), for the pre-check wait (tb4n5)."""
+
+        with self._reading():
+            return tuple(
+                sorted(
+                    (
+                        workspace
+                        for workspace, state in self._iter_workspaces()
+                        if state.pending_rollout_items
+                    ),
+                    key=str.encode,
+                )
+            )
+
+    @_read_mostly
+    def held_rollout_summary(self, workspace: str) -> JsonObject:
+        """How many rollout tool items wait for their hook post, and the oldest's read time (tb4n5).
+
+        Local-only, for ``observe status``: an item held here reaches the ledger only once a post,
+        the turn's end, idleness, the soft bound, or a check's observation wait releases it.
+        """
+
+        workspace = validate_commitment(workspace)
+        with self._reading():
+            items = tuple((self._load(workspace).pending_rollout_items or {}).values())
+            oldest = min((item.envelope.receipt_time.wire for item in items), default=None)
+            return JsonObject({"count": len(items), "oldest_read_at": oldest})
+
+    @_read_mostly
     def buffered_admission_host_sessions(self, workspace: str) -> tuple[str, ...]:
         """Return the host sessions with inputs still held in the admission buffer (#1012)."""
 

@@ -5195,7 +5195,8 @@ endings as `{"call", "ended_at", "generation", "reason", "tool"}` where `call` i
 16-hex digest of the pairing key and `tool` the structural tool name. `local_retention` is
 `{"envelope_ring": null | {"first_seen", "last_seen"}, "dedup_fence": ...}`: the local copies the
 bounded ring, state bound and dedup fence shed, which is never content loss and never
-`truncated_payload`. The Yoetz MCP bridge's rejection record (`record_rejected_yoetz_call`,
+`truncated_payload`. `held_rollout_items` is `{"count": n, "oldest_read_at": null | <time>}`: the
+Codex rollout tool items still held for their hook post (#910). The Yoetz MCP bridge's rejection record (`record_rejected_yoetz_call`,
 `observation/yoetz-rejected-calls.json`) holds only `sha256("yoetz/rejected-call/v1", tool
 basename, request_id)` and a millisecond time per entry, 256 newest; a hook pre-event of a Yoetz
 tool keeps the same commitment on its pending attempt (`_OpenPre.request_commitment`).
@@ -8788,7 +8789,13 @@ closed `observations_awaited` member of `check-result` 1.4.0 — `state` `comple
 request digest and the detached-check identity; the member is never recorded in the ledger or
 `check_recorded`. The wait never fails a check. Golden vectors: CAN-016
 (`fixtures/canonical/check-observations-awaited-1.4.0.case.json`). ADR-029 amendment of
-2026-10-07 owns the decision.
+2026-10-07 owns the decision. Since the tb4n5 amendment (2026-10-13) the snapshot also covers the
+task's Codex rollout rows held for their hook post: `release_held_rollout_items_for_check`
+(`adapters/integrations/codex_session_stream`) delivers each one read at least
+`HELD_ROLLOUT_CHECK_RELEASE_SECONDS` (10 s) earlier with `unpaired_event`, and a younger one counts
+as pending under the stable identity `stream-input:<source identity>` (the same identity a rollout
+row keeps in the outbox), so `pending_count` includes held rows still undelivered. The member's
+shape is unchanged.
 
 **Inspection check (`mode: inspect`, #1048).** `check-request` 1.1.0's `mode` admits `inspect`
 (unreleased, in place). It is a read routed like `status` (payload read, no write capability): it

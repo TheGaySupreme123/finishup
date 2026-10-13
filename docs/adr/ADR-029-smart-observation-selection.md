@@ -609,7 +609,8 @@ a mid-session `check` still froze whatever the ledger held.
   minus the Stop hook's own unmapped host session, which the service cannot name. The service
   wakes its observation sweeper and polls that real local state until none of the snapshot rows is
   still pending, re-waking the sweeper about once a second. Rows that arrive after the snapshot
-  are not waited for.
+  are not waited for. (Extended on 2026-10-13 to the task's rollout rows held for pairing; see
+  the tb4n5 amendment below.)
 - The wait is bounded by about 3 s and by a tenth of the request's deadline, whichever is
   smaller. It runs inside a detached semantic check's own operation, so an MCP call's bridge
   deadline (#886) still covers it.
@@ -763,3 +764,27 @@ Real clipping (a hook body or captured content over its cap, an oversize or unre
 line) keeps `truncated_payload` on the row it cut. An active `truncated_payload` flag a store
 recorded for retention before this change is no longer pinned by the retention reason and clears
 once the state bound has headroom, as #310 decided for the bound itself.
+
+### The pre-check observation wait covers held rollout rows
+
+The #1012 wait snapshotted hook outbox rows only. A rollout tool item that no hook post joins is
+held for pairing (#910) and released only by a later post, the turn's end, eight idle reconciles
+or the soft bound, and every new session activity resets its idle count. In tb4n5 biped S such a
+row (occurred 19:43:07) was accepted 12m55s later, 3 s after check 530 reported `complete`, and
+made that check stale. The service has no on-demand stream reconcile, so the wait cannot settle a
+held row from the rollout; it can only release it or report it.
+
+Decision (contract change to the #1012 amendment above): when `await_observations` is set, the
+snapshot also covers this task's held rollout rows (host sessions whose lifecycle mapping names the
+check's Yoetz session). Each one read at least 10 s before the wait is released by the wait itself,
+exactly as the idle bound releases it: delivered once with `unpaired_event`, stamped with the
+session's committed stream frontier, so it lands before the case freezes while its attribution
+stays unproven and no outcome is decided for it. A younger row stays held and counts as pending.
+A held row keeps one wait identity while held and once released into the outbox, so
+`observations_awaited.pending_count` counts the snapshot's hook rows and held rows still
+undelivered, and `bounded_timeout` is the disclosure of a held remainder the wait could not settle
+(it is never reported `complete`). No schema changes: the member's shape is unchanged and its
+count now includes held rows. A row that is genuinely a copy of a late post is delivered as a
+second, disclosed record rather than lost, as the idle bound already does. `observe status`
+reports the held account as `held_rollout_items` (`count`, `oldest_read_at`). The Stop gate's
+count is unchanged.

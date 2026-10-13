@@ -1373,6 +1373,7 @@ def observe_status(
     # stores shed, which are never content loss (tb4n5, #1041).
     attempt_endings = store.pending_attempt_endings(commitment)
     local_retention = store.local_retention(commitment)
+    held_rollout = store.held_rollout_summary(commitment)
     reclaim_guidance = (
         "reclaim with 'yoetz observe reclaim --workspace .'"
         if root == Path.cwd().resolve()
@@ -1434,6 +1435,7 @@ def observe_status(
                 "capture_handoff_retirements": handoff_retirements,
                 "pending_attempt_endings": attempt_endings,
                 "local_retention": local_retention,
+                "held_rollout_items": held_rollout,
                 "plugin_activation": plugin_activation,
             },
             json_output=True,
@@ -1493,6 +1495,11 @@ def observe_status(
         "capture_handoff_retirements": _capture_handoff_retirement_text(handoff_retirements),
         "pending_attempt_endings": _pending_attempt_endings_text(attempt_endings),
         "local_retention": _local_retention_text(local_retention),
+        "held_rollout_items": (
+            f"{held_rollout.get('count')} (oldest read at {held_rollout.get('oldest_read_at')})"
+            if held_rollout.get("count")
+            else "0"
+        ),
         "hook_coverage": str(status.source_coverage.get(ObservationSource.CODEX_HOOK, False)),
         "stream_coverage": str(
             status.source_coverage.get(ObservationSource.CODEX_SESSION_STREAM, False)
