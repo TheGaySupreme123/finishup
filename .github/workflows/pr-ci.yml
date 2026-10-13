@@ -455,28 +455,28 @@ jobs:
             -m "not fault and not soak and not live" -q --timeout=120
 
       # condaforge/miniforge3:24.9.2-0 is Ubuntu 20.04 (glibc 2.31, inside the certified glibc
-      # 2.28+ cell), where `yoetz service run` exited 70 at startup (#1040). Install the candidate
-      # with the documented uv command, start the service, read its status, and stop it.
-      - name: Service starts in a conda image on glibc 2.31
+      # 2.28+ cell; Git 2.25, the documented minimum). There `yoetz service run` exited 70 at
+      # startup, and once that was fixed every connection closed as soon as the vault was ready
+      # (#1040). Install the candidate with the documented uv command, then
+      # scripts/ci/service_image_smoke.sh records the system Git version, initializes a vault
+      # under an isolated root, and from inside a Git repository reads ready status, starts a task
+      # and runs a deterministic check whose change capture must succeed.
+      - name: Service runs in a conda image on glibc 2.31 and Git 2.25
         run: |
           set -euo pipefail
           docker run --rm \
             -v "${{ runner.temp }}/dist:/dist:ro" \
             -v "$(command -v uv):/usr/local/bin/uv:ro" \
+            -v "$PWD/scripts:/scripts:ro" \
             condaforge/miniforge3:24.9.2-0@sha256:937dc1e8ab9ffc5f388f0d2a1ce5d24ba5b15850771571d7442fac1af53f3fad \
             bash -euo pipefail -c '
+              if ! PATH=/bin:/usr/bin command -v git >/dev/null; then
+                apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null
+              fi
               uv tool install --managed-python --python 3.14.6 /dist/yoetz-*.whl >/dev/null
               export PATH="$HOME/.local/bin:$PATH"
-              yoetz service run 2>/tmp/service.log &
-              service=$!
-              for _ in $(seq 1 60); do
-                if yoetz service status --json >/tmp/status.json 2>/dev/null; then break; fi
-                if ! kill -0 "$service" 2>/dev/null; then cat /tmp/service.log; exit 1; fi
-                sleep 0.5
-              done
-              grep -q "\"state\":\"locked\"" /tmp/status.json
-              yoetz service stop --json >/dev/null
-              wait "$service"
+              EXPECT_GIT_SERIES=2.25 CEREMONY_PYTHON=/opt/conda/bin/python3 \
+                bash /scripts/ci/service_image_smoke.sh
             '
 
   # ---------------------------------------------------------------------------------------------

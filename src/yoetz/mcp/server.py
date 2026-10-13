@@ -145,6 +145,7 @@ from yoetz.service.client import (
     accepted_but_unresponsive,
     connect_service,
     connect_service_on_demand,
+    handshake_failure,
     holder_version_order,
     service_holder_identity,
 )
@@ -1835,6 +1836,45 @@ def _control_error_result(
                 host_profile=host_profile,
                 safe_details={"reason_code": "service_start_failed", "phase": startup.stage},
                 diagnostic_reason="service_start_failed",
+            )
+        handshake = handshake_failure(error)
+        if handshake is not None:
+            # A running service whose stamp names no other installation closed this bridge's
+            # hello without answering (#1040 follow-up). Calling it another installation sent
+            # agents to `yoetz service restart`, which cannot replace an identical holder.
+            details: dict[str, object] = {
+                "reason_code": "service_handshake_failed",
+                "phase": handshake,
+            }
+            if handshake == "handshake_git_version":
+                details["continuation"] = "system_git_upgrade_required"
+                message = (
+                    "The local Yoetz service closed the connection while setting it up, and the "
+                    "system Git it reads this workspace's repository with is older than 2.25, "
+                    "the oldest Git Yoetz supports. Ask the user to install Git 2.25 or later as "
+                    "the system Git; a newer Git elsewhere on PATH does not help. Then retry this "
+                    "operation with the same request_id. Do not run service lifecycle commands "
+                    "for this."
+                )
+            else:
+                message = (
+                    "The local Yoetz service closed the connection while setting it up and "
+                    "answered nothing, so nothing was recorded. Its stamp does not show another "
+                    "installation, so it was not replaced. It recorded "
+                    "why: give the user this correlation_id and ask them to run 'yoetz service "
+                    "diagnostics' on a local terminal. Do not run service lifecycle commands for "
+                    "this."
+                )
+            return _control_public_error_result(
+                error,
+                request_id,
+                operation,
+                code=PublicErrorCode.SERVICE_UNAVAILABLE,
+                message=message,
+                retryable=False,
+                host_profile=host_profile,
+                safe_details=details,
+                diagnostic_reason="service_handshake_failed",
             )
         if accepted_but_unresponsive(error):
             # A listener that accepted and then went silent is running. Prescribing

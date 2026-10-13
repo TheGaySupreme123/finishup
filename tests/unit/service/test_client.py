@@ -8,7 +8,7 @@ import os
 import stat
 import subprocess
 import time
-from collections.abc import Buffer, Generator
+from collections.abc import Buffer, Generator, Mapping
 from contextlib import contextmanager
 from inspect import signature
 from pathlib import Path
@@ -1338,20 +1338,214 @@ async def test_on_demand_reports_incompatibility_when_no_supersede_candidate_exi
     assert untouched.value.reason == "service_incompatible"
 
 
-def test_protocol_rejection_reasons_map_to_service_incompatible() -> None:
+def test_only_an_answered_manifest_mismatch_maps_to_service_incompatible() -> None:
     import yoetz.service.client as client_module
     from yoetz.service.control_protocol import ControlProtocolError
 
-    for reason in ("manifest_mismatch", "handshake_rejected"):
-        mapped = client_module._protocol_error(  # pyright: ignore[reportPrivateUsage]
-            ControlProtocolError(reason)
-        )
-        assert mapped.reason == "service_incompatible"
-        assert mapped.retryable is True
+    mapped = client_module._protocol_error(  # pyright: ignore[reportPrivateUsage]
+        ControlProtocolError("manifest_mismatch")
+    )
+    assert mapped.reason == "service_incompatible"
+    assert mapped.retryable is True
     mismatch = client_module._protocol_error(  # pyright: ignore[reportPrivateUsage]
         ControlProtocolError("protocol_mismatch")
     )
     assert mismatch.reason == "protocol_mismatch"
+
+
+def _holder(digest: str | None, version: str | None, *, legacy: bool = False) -> object:
+    from yoetz.service.lifecycle import SingletonHolder
+
+    return SingletonHolder(
+        pid=626,
+        instance_id="svc_test",
+        schema_manifest_digest=digest,
+        service_version=version,
+        identity_fields_absent=legacy,
+    )
+
+
+_FOREIGN_DIGEST = "sha256:" + "0" * 64
+
+
+@pytest.mark.parametrize(
+    ("stamp", "locator", "git_too_old", "expected"),
+    [
+        # #1040 (tb4n5 wdm): the holder is this installation (same pid, version and manifest).
+        ("same", True, False, ("service_unavailable", "handshake", False)),
+        ("same", True, True, ("service_unavailable", "handshake_git_version", False)),
+        # Without a workspace the service never runs Git during the handshake.
+        ("same", False, True, ("service_unavailable", "handshake", False)),
+        # An unreadable stamp demonstrates nothing either way.
+        ("none", True, False, ("service_unavailable", "handshake", False)),
+        # Partly unreadable identity (a key absent, or present but invalid, beside matching or
+        # unreadable fields) is missing information, never another installation.
+        ("digest_unreadable", True, False, ("service_unavailable", "handshake", False)),
+        ("version_absent", True, False, ("service_unavailable", "handshake", False)),
+        ("version_invalid", True, False, ("service_unavailable", "handshake", False)),
+        ("both_unreadable", True, False, ("service_unavailable", "handshake", False)),
+        # A present, validated field that differs is a demonstrated mismatch.
+        ("other_digest", True, True, ("service_incompatible", None, True)),
+        ("other_version", True, False, ("service_incompatible", None, True)),
+        ("other_version_digest_unreadable", True, False, ("service_incompatible", None, True)),
+        ("other_digest_version_invalid", True, False, ("service_incompatible", None, True)),
+        # No identity key at all: Yoetz 0.1.x, or an earlier modern writer whose manifest lookup
+        # failed. Absence is not evidence: never incompatible, never replaced automatically.
+        ("legacy_stamp", True, False, ("service_unavailable", "handshake", False)),
+    ],
+)
+def test_an_unanswered_hello_is_incompatible_only_when_the_stamp_names_another_installation(
+    monkeypatch: pytest.MonkeyPatch,
+    stamp: str,
+    locator: bool,
+    git_too_old: bool,
+    expected: tuple[str, str | None, bool],
+) -> None:
+    import yoetz.observability.logging as logging_module
+    import yoetz.service.client as client_module
+    from yoetz import __version__
+    from yoetz.protocol.schemas import schema_manifest_digest
+
+    own = schema_manifest_digest()
+    holders: dict[str, object | None] = {
+        "same": _holder(own, __version__),
+        "none": None,
+        # ``probe_singleton_holder_identity`` reads an invalid digest as None.
+        "digest_unreadable": _holder(None, __version__),
+        "version_absent": _holder(own, None),
+        "version_invalid": _holder(own, "not a version"),
+        "both_unreadable": _holder(None, None),
+        "other_digest": _holder(_FOREIGN_DIGEST, __version__),
+        "other_version": _holder(own, "0.0.1"),
+        "other_version_digest_unreadable": _holder(None, "0.0.1"),
+        "other_digest_version_invalid": _holder(_FOREIGN_DIGEST, "not a version"),
+        "legacy_stamp": _holder(None, None, legacy=True),
+    }
+    recorded: list[dict[str, object]] = []
+
+    def record(**fields: object) -> str:
+        recorded.append(fields)
+        return _CORRELATION_FOR_TEST
+
+    monkeypatch.setattr(client_module, "service_holder_identity", lambda: holders[stamp])
+    monkeypatch.setattr(client_module, "_system_git_below_minimum", lambda: git_too_old)
+    monkeypatch.setattr(logging_module, "record_public_error_without_raising", record)
+
+    error = client_module._unanswered_hello(  # pyright: ignore[reportPrivateUsage]
+        WorkspaceLocator("/private/repository") if locator else None
+    )
+
+    reason, phase, retryable = expected
+    assert (error.reason, error.phase, error.retryable) == (reason, phase, retryable)
+    assert client_module.handshake_failure(error) == phase
+    if reason == "service_incompatible":
+        assert recorded == []
+        assert error.correlation_id is None
+    else:
+        assert error.correlation_id == _CORRELATION_FOR_TEST
+        assert recorded == [
+            {
+                "component": "service.client",
+                "operation": "control_handshake",
+                "reason": "service_handshake_failed",
+                "reason_code": "git_version_unsupported" if git_too_old and locator else None,
+            }
+        ]
+
+
+@pytest.mark.anyio
+async def test_a_hello_closed_by_this_installations_holder_is_a_failed_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n5 wdm: same pid, version and manifest, so neither incompatible nor replaceable."""
+
+    import yoetz.observability.logging as logging_module
+    import yoetz.service.client as client_module
+    from yoetz import __version__
+    from yoetz.protocol.schemas import schema_manifest_digest
+    from yoetz.service.control_protocol import ControlProtocolError
+
+    stream = _FakeStream()
+    spawned = 0
+
+    async def connect() -> AuthenticatedUnixStream:
+        return cast(AuthenticatedUnixStream, stream)
+
+    async def rejected_handshake(*_args: object, **_kwargs: object) -> object:
+        raise ControlProtocolError("handshake_rejected")
+
+    async def must_not_supersede(*, deadline: float, replace_newer: bool = False) -> bool:
+        raise AssertionError("an identical holder is never signalled")
+
+    def spawn() -> None:
+        nonlocal spawned
+        spawned += 1
+
+    monkeypatch.setattr(client_module, "connect_control", connect)
+    monkeypatch.setattr(client_module, "client_handshake", rejected_handshake)
+    monkeypatch.setattr(
+        client_module,
+        "service_holder_identity",
+        lambda: _holder(schema_manifest_digest(), __version__),
+    )
+    monkeypatch.setattr(client_module, "_system_git_below_minimum", lambda: True)
+
+    def record(**_fields: object) -> str:
+        return _CORRELATION_FOR_TEST
+
+    monkeypatch.setattr(logging_module, "record_public_error_without_raising", record)
+    monkeypatch.setattr(client_module, "supersede_incompatible_service", must_not_supersede)
+    monkeypatch.setattr(client_module, "_spawn_service_process", spawn)
+
+    with pytest.raises(ControlError) as refused:
+        await connect_service_on_demand(
+            ControlClientKind.MCP_BRIDGE,
+            workspace_locator=WorkspaceLocator("/private/repository"),
+            timeout_seconds=1.0,
+        )
+
+    assert refused.value.reason == "service_unavailable"
+    assert refused.value.phase == "handshake_git_version"
+    assert refused.value.retryable is False
+    assert refused.value.correlation_id == _CORRELATION_FOR_TEST
+    assert stream.closed is True
+    assert spawned == 0
+
+
+@pytest.mark.anyio
+async def test_on_demand_reports_a_failed_handshake_without_spawning_or_superseding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A holder of this installation that closes the hello is reported, never replaced (#1040)."""
+
+    import yoetz.service.client as client_module
+
+    attempts = 0
+    failed = ControlError(
+        "service_unavailable",
+        retryable=False,
+        phase="handshake",
+        correlation_id=_CORRELATION_FOR_TEST,
+    )
+
+    async def scripted_connect(kind: ControlClientKind, **_kwargs: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        raise failed
+
+    async def must_not_supersede(*, deadline: float) -> bool:
+        raise AssertionError("a failed handshake is not an incompatible holder")
+
+    def must_not_spawn() -> None:
+        raise AssertionError("a running holder must not race a spawned successor")
+
+    monkeypatch.setattr(client_module, "_connect_service_attempt", scripted_connect)
+    monkeypatch.setattr(client_module, "supersede_incompatible_service", must_not_supersede)
+    monkeypatch.setattr(client_module, "_spawn_service_process", must_not_spawn)
+    with pytest.raises(ControlError) as refused:
+        await connect_service_on_demand(ControlClientKind.MCP_BRIDGE, timeout_seconds=5.0)
+    assert refused.value is failed
+    assert attempts == 1
 
 
 def test_transport_error_preserves_endpoint_unsafe() -> None:
@@ -1415,14 +1609,59 @@ async def test_supersede_signals_only_a_live_foreign_identity_holder(
     # to the liveness probe instead of lingering as a zombie that ``kill(pid, 0)`` still sees.
     reaper = threading.Thread(target=holder.wait, daemon=True)
     reaper.start()
+    own = schema_manifest_digest()
+
+    def stamp_raw(pid: int, identity: Mapping[str, object]) -> None:
+        lock.write_bytes(
+            canonical_encode({"instance_id": "svc_test", "pid": pid, **identity})  # type: ignore[arg-type]
+            + b"\n"
+        )
+        lock.chmod(0o600)
+
     try:
-        stamp(holder.pid, schema_manifest_digest(), __version__)
+        stamp(holder.pid, own, __version__)
         assert await client_module.supersede_incompatible_service(deadline=deadline) is False
         assert holder.poll() is None
         assert recorded == []
-        # A legacy stamp (no identity) from a live process is a supersede candidate.
+        # Partly unreadable identity proves no other installation: never signalled (#1040).
+        for identity in (
+            {"schema_manifest_digest": "not-a-digest", "service_version": __version__},
+            {"service_version": __version__},
+            {"schema_manifest_digest": own},
+            {"schema_manifest_digest": own, "service_version": "not a version"},
+            {"schema_manifest_digest": own, "service_version": 7},
+            {"schema_manifest_digest": None, "service_version": None},
+        ):
+            stamp_raw(holder.pid, identity)
+            assert await client_module.supersede_incompatible_service(deadline=deadline) is False
+            # Not even the explicit restart replaces a partly readable stamp.
+            assert (
+                await client_module.supersede_incompatible_service(
+                    deadline=deadline, replace_newer=True, replace_legacy=True
+                )
+                is False
+            )
+            assert holder.poll() is None
+        assert recorded == []
+        # A stamp with no identity keys at all (Yoetz 0.1.x, or an earlier modern writer whose
+        # manifest lookup failed) is never replaced automatically (#1040 follow-up) ...
         stamp(holder.pid, None, None)
-        assert await client_module.supersede_incompatible_service(deadline=deadline) is True
+        assert await client_module.supersede_incompatible_service(deadline=deadline) is False
+        assert (
+            await client_module.supersede_incompatible_service(
+                deadline=deadline, replace_newer=True
+            )
+            is False
+        )
+        assert holder.poll() is None
+        assert recorded == []
+        # ... only by the owner's explicit restart.
+        assert (
+            await client_module.supersede_incompatible_service(
+                deadline=deadline, replace_newer=True, replace_legacy=True
+            )
+            is True
+        )
         reaper.join(timeout=5)
         assert holder.returncode is not None and holder.returncode != 0
         assert recorded == ["service_supersede"]
@@ -1430,6 +1669,30 @@ async def test_supersede_signals_only_a_live_foreign_identity_holder(
         if holder.poll() is None:
             holder.kill()
             holder.wait(timeout=5)
+
+    # A present, validated digest that differs is a demonstrated mismatch, signalled even when
+    # the version field is unreadable.
+    foreign = subprocess.Popen(  # noqa: S603 - fixed interpreter
+        (sys.executable, "-c", "import time; time.sleep(30)"),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    foreign_reaper = threading.Thread(target=foreign.wait, daemon=True)
+    foreign_reaper.start()
+    try:
+        stamp_raw(
+            foreign.pid,
+            {"schema_manifest_digest": "sha256:" + "0" * 64, "service_version": "not a version"},
+        )
+        assert await client_module.supersede_incompatible_service(deadline=deadline) is True
+        foreign_reaper.join(timeout=5)
+        assert foreign.returncode is not None and foreign.returncode != 0
+        assert recorded == ["service_supersede", "service_supersede"]
+    finally:
+        if foreign.poll() is None:
+            foreign.kill()
+            foreign.wait(timeout=5)
 
 
 def test_holder_version_order_orders_packages_and_never_guesses(

@@ -127,7 +127,9 @@ _CARRIED = frozenset(_GUARDED_AT_BASE)
 
 def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group() -> None:
     assert set(GAP_EFFECT_TABLE) == set(GAP_CLASSIFICATION)
-    assert len(GAP_EFFECT_TABLE) == 218  # the 215 recorded codes + 3 readiness-only finding tokens
+    # The 216 recorded codes (#1040 follow-up added check_time_change_unavailable_git_version_
+    # unsupported beside its G7 siblings) + 3 readiness-only finding tokens.
+    assert len(GAP_EFFECT_TABLE) == 219
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)

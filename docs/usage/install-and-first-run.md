@@ -39,6 +39,16 @@ say so in the error: `uv` configured never to download Pythons (`python-download
 without 3.14. `pip install yoetz` or `pipx install yoetz` on an older Python cannot work; the
 package requires 3.14, and a pip that resolves it anyway is not installing Yoetz.
 
+**Git.** Yoetz reads your repository with the system Git, the first `git` in `/bin` or
+`/usr/bin`, never one that only your shell's `PATH` puts first (a conda or Homebrew Git, for
+example). That Git must be 2.25 or later, the Git of Ubuntu 20.04; the Xcode Command Line Tools
+and every current Linux distribution ship a newer one. With an older system Git, Yoetz names the
+cause instead of failing obscurely: commands run inside a repository report
+`service_handshake_failed` with the Git requirement, `yoetz state capture` reports
+`git_version_unsupported`, and a check discloses
+`check_time_change_unavailable_git_version_unsupported`. Upgrade the system Git, then retry;
+restarting the service does not help. A directory that is not a Git repository needs no Git.
+
 **Where it lands.** `uv tool install` places the `yoetz` command in `~/.local/bin`. If a new
 terminal cannot find it, run `uv tool update-shell` once and open another terminal. Install into a
 directory only you can write: a group-writable prefix (Homebrew's `/opt/homebrew`, or a shared

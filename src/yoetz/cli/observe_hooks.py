@@ -546,6 +546,12 @@ def _attachment_recovery_context(reason: str) -> str:
             "incompatible holder; the hook did not replace it. Call start and follow its exact "
             "service recovery continuation. "
         )
+    if reason == "service_handshake_failed":
+        return (
+            "Yoetz attachment pending: service_handshake_failed. The running local service "
+            "closed the connection while setting it up; the hook did not replace it. Call start "
+            "and follow its typed result, which names the cause or the diagnostics to read. "
+        )
     # A timed-out attachment may have sent start under the hook's own request identity, which
     # the agent never sees, so no timeout replay token applies: the agent's own start is the
     # recovery (issue #739).
@@ -3125,6 +3131,12 @@ async def _try_auto_start(
         # A validated local predecessor selects recovery before admission. An
         # ordinary create attempt would now succeed and strand predecessor work.
     except ControlError as error:
+        from yoetz.service.client import handshake_failure
+
+        if handshake_failure(error) is not None:
+            # A running service of this installation closed the hello (#1040 follow-up): not a
+            # service that still has to start, and not another installation to replace.
+            return AutoAttachOutcome(None, "service_handshake_failed")
         return AutoAttachOutcome(
             None, _AUTO_ATTACH_CONTROL_REASONS.get(error.reason, "service_unavailable")
         )

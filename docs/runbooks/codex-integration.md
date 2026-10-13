@@ -2346,7 +2346,7 @@ are listed by name only, and a change larger than the packet reports `check_time
 The whole capture has 20 seconds. It is `check_time_change_unavailable` for a linked Git worktree or
 a submodule checkout opened as the repository (its `.git` is a file), a group- or world-writable
 repository root, a repository whose effective Git config defines a filter or an include (for example
-a repository-local Git LFS or git-crypt setup), a partial clone, Git older than 2.26, a repository
+a repository-local Git LFS or git-crypt setup), a partial clone, a system Git older than 2.25, a repository
 whose object store is reached through a link or borrowed from another repository (`.git/commondir`
 or alternates), a repository whose Git settings point its working tree elsewhere (`core.worktree`),
 a repository directory replaced at the same path between Git commands, or a working tree that kept

@@ -373,6 +373,35 @@ def spawned_startup_failure_line(error: BaseException) -> str | None:
     return None if startup is None else _spawned_startup_failure_line(startup)
 
 
+def _handshake_failure_line(error: ControlError, phase: str) -> str:
+    """The ``control_failure`` line for a hello a running service closed (#1040 follow-up)."""
+
+    if phase == "handshake_git_version":
+        from yoetz.cli.render import render_recovery_directive_lines
+        from yoetz.protocol.recovery import directive_for
+
+        head = (
+            "service_unavailable: service_handshake_failed: the local service closed the "
+            "connection while setting it up; the system Git (the first 'git' in /bin or "
+            "/usr/bin), which it reads this repository with, is older than 2.25, the oldest Git "
+            "Yoetz supports. Install Git 2.25 or later there, then retry; restarting the service "
+            "does not change this"
+        )
+        directive = directive_for("system_git_upgrade_required")
+        lines = [_with_correlation(_with_holder_pid(head), error)]
+        if directive is not None:
+            lines.extend(render_recovery_directive_lines(directive))
+        return "\n".join(lines)
+    head = (
+        "service_unavailable: service_handshake_failed: the local service closed the "
+        "connection while setting it up and answered nothing. Its stamp does not show "
+        "another installation, so it was not replaced; run 'yoetz service diagnostics' to read "
+        "the reason it recorded. Only a holder stamped without any identity (an older Yoetz) "
+        "is replaced by an explicit 'yoetz service restart'"
+    )
+    return _with_correlation(_with_holder_pid(head), error)
+
+
 def control_failure(
     error: ControlError,
     *,
@@ -472,7 +501,7 @@ def control_failure(
                 payload["holder"] = holder
             stdout_writer(payload)
         return exit_code_for(code)
-    from yoetz.service.client import accepted_but_unresponsive
+    from yoetz.service.client import accepted_but_unresponsive, handshake_failure
 
     startup = _spawned_startup_failure(error)
     if startup is not None:
@@ -488,6 +517,26 @@ def control_failure(
                 "retryable": False,
                 "correlation_id": startup.correlation_id,
             }
+            stdout_writer(payload)
+        return exit_code_for(code)
+    handshake = handshake_failure(error)
+    if handshake is not None:
+        # A running service whose stamp names no other installation closed this command's hello
+        # (#1040 follow-up); ``service_incompatible`` and its restart remedy would be false here.
+        stderr_writer(_handshake_failure_line(error, handshake))
+        if json_output:
+            payload = {
+                "ok": False,
+                "public_code": code.value,
+                "reason": "service_handshake_failed",
+                "phase": handshake,
+                "retryable": False,
+            }
+            if error.correlation_id is not None:
+                payload["correlation_id"] = error.correlation_id
+            holder = _holder_identity_json()
+            if holder is not None:
+                payload["holder"] = holder
             stdout_writer(payload)
         return exit_code_for(code)
     if code is PublicErrorCode.SERVICE_UNAVAILABLE and accepted_but_unresponsive(error):

@@ -55,9 +55,59 @@ same failure applies by construction, not by test, to every glibc 2.28–2.31 sy
 certified cell (Ubuntu 20.04, Debian 11, RHEL/Rocky/Alma 8, and images built on them). Release
 verification runs on
 `ubuntu-24.04` (glibc 2.39), which is why the floor was never exercised. PR CI now installs the
-candidate wheel in that exact image (by digest) and starts, queries and stops the service, and
-`tests/subprocess/test_service_startup_failure.py` repeats the start under the image's environment
-with the glibc 2.31 `chmod` behaviour on every platform.
+candidate wheel in that exact image (by digest) and runs `scripts/ci/service_image_smoke.sh` there
+(next section), and `tests/subprocess/test_service_startup_failure.py` repeats the start under the
+image's environment with the glibc 2.31 `chmod` behaviour on every platform.
+
+## Git 2.25 is the minimum; older Gits are named, not obscure
+
+The same images ship an old Git (2.25 on Ubuntu 20.04, 2.30 on Debian 11). With the `chmod` fix the
+service started and reported `locked`, the passphrase vault initialized, and then every command
+failed with `service_incompatible` naming the service's own pid and version (tb4n5). Once the vault
+is ready, the control handshake resolves the caller's repository identity with
+`git rev-parse --path-format=absolute --git-common-dir`. `--path-format` exists only since Git 2.31,
+and an older `rev-parse` does not reject it: it echoes any argument it does not recognise, so the
+answer gained a line and the identity resolver refused. The handshake closed without answering, and
+the client called that silent close another installation. Check-time change capture also passed
+`diff --no-relative` (Git 2.28) and `config --show-scope` (Git 2.26), which Git 2.25 refuses, so
+every capture was `git_failed`.
+
+The documented minimum is now Git 2.25, and Yoetz always uses the system Git (the first `git` in
+`/bin:/usr/bin`, never one a conda environment puts first on `PATH`). ADR-031's #1040 amendment
+lists each replaced argument; in short, no Yoetz Git call needs anything newer, repository
+commitments are the ones `--path-format=absolute` produced, and the hardened runners read no global
+Git configuration on any Git (on Git before 2.32, which ignores `GIT_CONFIG_GLOBAL`, a
+`.gitconfig` committed to the repository used to become the global configuration, because `HOME`
+named the workspace). A system Git older than 2.25 is refused with `git_version_unsupported` and
+the continuation `system_git_upgrade_required`.
+
+A handshake the service fails is named on both sides. The service records it once (`component`
+`service.daemon`, `operation` `control_handshake`, `reason` `handshake_service_fault` with
+`reason_code` the closed refusal such as `git_version_unsupported`, or the unexpected exception's
+class token and origin with `phase` `handshake`); no path, Git output or stderr is recorded. The
+client reports `service_incompatible` only when a validated field of the singleton stamp names
+another installation. For this installation's own holder, and for a holder whose stamp identity is
+unreadable, partly readable or absent, it reports `service_handshake_failed`:
+
+| Surface | What it shows |
+|---|---|
+| CLI (`yoetz service status`, any repository-bound command) | `service_unavailable: service_handshake_failed: the local service closed the connection while setting it up …; correlation_id err_…` (holder pid included), exit 20; with an old system Git the line names Git 2.25 and the `system_git_upgrade_required` directive |
+| MCP | `SERVICE_UNAVAILABLE`, `retryable: false`, `safe_details.reason_code: service_handshake_failed`, `safe_details.phase: handshake` or `handshake_git_version` (then also `continuation: system_git_upgrade_required`) |
+| `yoetz service diagnostics` | the service's `handshake_service_fault` record with its `reason_code`, and the client's `service_handshake_failed` record |
+
+`yoetz service restart` does not help (it reports the same failure rather than signalling the
+holder); repair the cause the diagnostics name, typically the system Git. The one exception is a
+holder whose stamp carries no identity key at all (an older Yoetz, or a service whose stamp lost
+its identity when its schema manifest could not be read): nothing replaces it automatically, and
+an explicit `yoetz service restart` does. PR CI's image smoke
+(`scripts/ci/service_image_smoke.sh`) records `git --version` (and fails unless it is 2.25.x),
+initializes a passphrase vault under an isolated root, and from inside a Git repository reads ready
+status, starts a task and runs a deterministic check whose change capture must succeed (its test-edit
+baseline must be known). `tests/unit/adapters/test_git_old_versions.py` reproduces Git 2.25's
+behaviour with the real Git behind a shim. To run the smoke elsewhere, set `YOETZ` to a candidate
+launcher and `SMOKE_BASE` to a private 0700 directory outside `/tmp`; `SMOKE_GIT` only builds the
+repository and is the version `EXPECT_GIT_SERIES` checks, because Yoetz itself always uses the
+system Git.
 
 ## Reading a service startup failure
 

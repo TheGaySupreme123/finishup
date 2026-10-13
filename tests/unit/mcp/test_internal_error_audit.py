@@ -128,6 +128,8 @@ def test_every_typed_internal_stage_has_a_registered_reason_and_a_remedy_sentenc
         "start_state_inconsistent",
         # A spawned service that exited during startup (#1040).
         "service_start_failed",
+        # A running service whose stamp names no other installation closed a hello (#1040).
+        "service_handshake_failed",
     }
     assert stages <= PROTOCOL_REASON_CODES
     assert set(REASON_REMEDIES) == stages

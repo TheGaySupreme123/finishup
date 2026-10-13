@@ -89,6 +89,8 @@ _REASONS: Final = frozenset(
         *("admission_loss_" + item.value for item in AdmissionLossCause),
         "service_unavailable",
         "service_incompatible",
+        # A running service of this installation closed the hello (#1040 follow-up).
+        "service_handshake_failed",
         "vault_locked",
         "mapping_missing",
         "mapping_stale",

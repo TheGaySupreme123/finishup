@@ -355,6 +355,7 @@ semantic_provenance_json_shape_invalid
 semantic_redacted_values_invalid
 service_draining
 service_generation_changed
+service_handshake_failed
 service_incompatible
 service_stamp_required
 service_start_failed
@@ -546,7 +547,7 @@ def test_public_error_code_membership() -> None:
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
     source_values = cast(tuple[str, ...], getattr(errors_module, "_PROTOCOL_REASON_CODE_VALUES"))
     assert source_values == _EXPECTED_REASON_CODES
-    assert len(source_values) == 346
+    assert len(source_values) == 347
     assert source_values == tuple(sorted(source_values, key=str.encode))
     assert len(source_values) == len(set(source_values))
     assert PROTOCOL_REASON_CODES == frozenset(_EXPECTED_REASON_CODES)
