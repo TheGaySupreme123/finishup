@@ -4,6 +4,20 @@ Use the small `publication.md` topic through `read_guidance` for ordinary materi
 and claim decisions. This complete document remains authoritative for event families and field
 rules.
 
+Read only the section you need, as `yoetz://guidance/publication-policy.md#<anchor>`:
+
+| Situation | Anchor |
+| --- | --- |
+| what to publish, and how often | `#cadence` |
+| evidence fields, digests, or replacing evidence | `#discover-evidence-before-authoring-replacements` |
+| correcting a claim or linking a limitation | `#claim-correction-and-limitation-linkage` |
+| the order of repair, final check, and receipt | `#repair-then-finish` |
+| resolving an obligation | `#obligation-resolution` |
+| `requested_items` and `attempted_items` | `#requested-items-and-attempt-accounting` |
+| batch size, ordering, and retries | `#batching-sequencing-and-retry` |
+| sorted reference lists | `#set-valued-reference-lists` |
+| a conditional output or another worked flow | `#mini-flows` |
+
 ## Materiality checklist
 
 Publish a fact when it changes an independently reviewable work package, a requested outcome, an obligation, a decision, a material attempt, a result, evidence, a claim, a plan, or a finding response. Keep routine navigation, searches, formatting, generated-file writes, repeated status reads, tool chatter, and per-file bookkeeping out of the ledger.
@@ -283,7 +297,8 @@ preserves the original view, filter, frontier, and `limit`. Changing `limit` sta
 no cursor. A `respond` request carries `finding_id`, `finding_frontier`, `disposition`, and `reason`;
 a `receipt` request carries its own receipt fields. Never copy response fields into a receipt, and
 never invent a finding disposition when a host reports that the wrong operation template was used.
-The complete operation bodies remain in `yoetz://guidance/request-templates.md`.
+The complete operation bodies remain in `yoetz://guidance/request-templates.md`; read the one
+section its opening map names for your operation, such as `#respond` or `#receipt`.
 
 Newly minted caller IDs (`request_id`, event/object payload IDs, and claim IDs) use the required
 prefix plus a fresh lowercase UUID v4. Existing returned evidence, obligation, claim, and finding
@@ -349,7 +364,9 @@ longer holds may be reopened (`status: open`) or acknowledged as not done
 (`acknowledged_not_done` with its reason, on `1.1.0`), repeating every meaning field. The
 public error names the mismatched schema field names only — never their values. A worked open +
 resolution pair lives in the `publish_work` tool input schema `examples` entry. Complete request
-bodies remain available at `yoetz://guidance/request-templates.md` if a host drops schema examples.
+bodies remain available at
+`yoetz://guidance/request-templates.md#publish-work-plan-plus-obligation` if a host drops schema
+examples.
 
 ## Requested items and attempt accounting
 
@@ -386,7 +403,8 @@ A `status` read and a dry run before a publish are optional, not a ritual: the w
 
 Worked examples for each ordinary publishable family — and a cross-linked
 action/result/evidence/claim batch — live in the `publish_work` tool input schema `examples` entry
-and as complete fallback bodies at `yoetz://guidance/request-templates.md`. Example `occurred_at`
+and as complete fallback bodies in one section per family of
+`yoetz://guidance/request-templates.md` (for example `#publish-work-action`). Example `occurred_at`
 values are illustrative shape only; do not copy them into live drafts.
 
 ### Event draft skeleton

@@ -5,13 +5,31 @@ These are complete request bodies for the six Yoetz operations and ordinary
 metadata. The operation input schema remains the field-shape authority; these templates are an
 authoring fallback, not a second protocol.
 
-Use the small `startup.md`, `publication.md`, `consent.md`, or `page-delivery.md` topic when only
-one request family is needed. Keep this complete document for exact bodies and exceptional flows.
+Read one section, not this whole page: its first page holds no request body. Call
+`read_guidance` with `yoetz://guidance/request-templates.md#<anchor>`, taking the anchor from
+this map:
 
-For setup, settings changes, credentials, vault initialization/rotation, or transcript import,
-read [Setup and consent](#setup-and-consent) before preparing an action. For a SessionStart
-recommendation, read [Recommendations](#recommendations). Ordinary workflow calls with complete
-schema metadata do not require this document.
+| You are writing | Anchor |
+| --- | --- |
+| `start`, or a revised task statement | `#start` |
+| the first plan and its obligations; resolving an obligation or marking it not done | `#publish-work-plan-plus-obligation` |
+| a plan revision that adds, carries or supersedes obligations | `#publish-work-revised-plan` |
+| an action | `#publish-work-action` |
+| the result of an action | `#publish-work-result` |
+| evidence | `#publish-work-evidence` |
+| a claim, or a completion-claim repair | `#publish-work-claim` |
+| a decision | `#publish-work-decision` |
+| `status` | `#status` |
+| `check`, including the closing review and an inspection | `#check-whole-case` |
+| `respond` | `#respond` |
+| `receipt` | `#receipt` |
+| `work_closed` | `#work-closed` |
+| delegation or a child attach | `#start-delegate-child-attach-and-self-registration` |
+| setup, settings, credentials, vault, or transcript import | `#setup-and-consent` |
+| a SessionStart recommendation | `#recommendations` |
+
+Do not derive an anchor from a tool or event name. Ordinary workflow calls with complete schema
+metadata do not require this document.
 
 ## Replace the illustrative values first
 

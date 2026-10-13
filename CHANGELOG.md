@@ -219,6 +219,17 @@ reverse-chronological released versions.
 
 ### Changed
 
+- Agent guidance now routes reads to the one section an agent needs. The request templates,
+  workflow, coverage and publication pages each open with a map from situation to section anchor,
+  so a whole-page read (which returns only the first 4 KiB page of an 80 KiB document) leads
+  straight to the template or rule in question; in tb4n5 agents read the whole templates page 34
+  times before finding a section. The operating card names each focused topic by its trigger. The
+  publication topic adds a checklist to run before sending a batch, the review topic a table for
+  answering each kind of finding, and the receipt topic a numbered closing sequence with stop
+  conditions. The host skills state the `self_verified` precondition: a later check that still
+  cannot prove the repair. No tool, field or behavior changed, and the mandatory startup text
+  stays within its 8 KiB budget.
+
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,
   a data table) now stops closure instead of being only disclosed: the Stop hook continues the agent
   and names each such file, `status` lists them (`closure_readiness.undeclared_references`), the

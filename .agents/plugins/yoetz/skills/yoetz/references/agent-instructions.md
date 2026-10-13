@@ -12,17 +12,17 @@ Deliver each requested output at its path, best-effort and disclosed if an input
 
 Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI. Only if that result is also empty, use installed `references/<name>.md` or the topic's parent index.
 
-Focused topics: `startup.md`, `recovery.md`, `publication.md`, `review.md`, `receipt.md`, `delegation.md`, `consent.md`, `page-delivery.md`. Heading topics like `yoetz://guidance/workflow.md#start-and-resume` are a closed catalog: use only named anchors.
+Focused topics by trigger: failed write `recovery.md`; batch `publication.md`; finding `review.md`; closing `receipt.md`; resume `startup.md`; delegate `delegation.md`; setup `consent.md`; clipped page `page-delivery.md`. Long pages open with a map of `#anchor` topics; use only named anchors.
 
 # Start contract
 
-Discover the `start` schema; use a fresh `req_` UUIDv4; provide `mode`, `task_title`, `task_statement`, `requested_view`, `actor`, `client`, plus a held `session_id` or `workspace_ref` + `external_ref`.
+Author `start` from its schema: a fresh `req_` UUIDv4, the user's whole `task_statement`, a held `session_id` or `workspace_ref` + `external_ref`.
 
 `start` records intent; after bounded exploration, before the first material edit, publish one `plan_revised` refinement mapping every instruction requirement to a testable obligation whose `source_refs` cite the `start` event (`status view=history`) and whose `requested_items` name the files/commands.
 
 # Essential boundaries
 
-Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history, credentials, secrets, whole files/repositories, or broad unrelated source. Never move, split, shrink, delete, `git add -N` or git-ignore (incl. `.git/info/exclude`) a deliverable for review; Yoetz redacts; what it can't show, self-verify. On `retryable: false`, follow only the typed `continuation`; keep an unknown write's request id. If Yoetz is unavailable, say no record or receipt exists.
+Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history, credentials, secrets, whole files/repositories, or broad unrelated source. Never move, split, shrink, delete, `git add -N` or git-ignore (incl. `.git/info/exclude`) a deliverable for review: Yoetz redacts, and you verify what it cannot show. On `retryable: false`, follow only the typed `continuation`; keep an unknown write's request id. If Yoetz is unavailable, say no record or receipt exists.
 
 # Review and closure
 
@@ -36,7 +36,7 @@ Final prose and receipts are scope-first: lead with evidence/checks covered, wha
 
 # Review dialogue
 
-Before the receipt, run the closing `check` with `final_review: true`. Answer each open AI-powered finding with `respond` and a reason (`acknowledged` requires one); for `requested_next_step: answer_question`, answer in the reason.
+Before the receipt, run the closing `check` with `final_review: true`. Answer each open AI-powered finding with `respond` and a reason; `review.md` maps each case.
 
 # Multi-agent work
 
@@ -44,4 +44,4 @@ Before delegating, read the multi-agent sections of `yoetz://guidance/workflow.m
 
 # Read more
 
-This card is `yoetz://guidance/agent-instructions.md`; on demand only: resume/recovery/delegation/capacity `yoetz://guidance/workflow.md`; event shapes, corrections `yoetz://guidance/publication-policy.md`; check/receipt `yoetz://guidance/coverage-and-receipts.md`; schema/setup/consent/import `yoetz://guidance/request-templates.md`.
+This card is `yoetz://guidance/agent-instructions.md`; on demand only: resume/recovery/delegation/capacity `yoetz://guidance/workflow.md`; event shapes, corrections `yoetz://guidance/publication-policy.md`; check/receipt `yoetz://guidance/coverage-and-receipts.md`; request bodies, setup: one section of `yoetz://guidance/request-templates.md`.
