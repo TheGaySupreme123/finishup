@@ -572,8 +572,9 @@ fact `requested_output_absent`, once work on its obligation began; publishing an
 the file does not create it. Write the file at its path. The one exception is a file the request
 asks for only under a condition your final state does not meet, which you declared as a `file`
 item: correct the plan, not the deliverable. Publish a new obligation with the same acceptance
-criteria whose `change` item names the condition and the path and whose `file` items (`role:
-output`) name the source files that implement the behavior; supersede the old obligation with
+criteria where each conditional file has a `change` item of its own that spells its declared path
+and states its condition (`when`, `if` or `unless`), and whose `file` items (`role: output`) name
+the source files that implement the behavior; supersede the old obligation with
 `plan_revised` (`change: superseded`, a `reason`, and `replacement_obligation_ids` naming the new
 one; carry every other obligation); record the work with each new item value in
 `attempted_items`, resolve the new obligation with its evidence, and replace the completion claim
@@ -582,6 +583,8 @@ the claim's scope overlap). The next qualifying check proves the old finding abs
 it. Never write an empty or placeholder file, and never change when the deliverable writes the
 file, to satisfy the declaration; do not answer the finding `acknowledged_not_done` for work you
 did. A file the request asks for unconditionally stays required: the correction cannot remove it.
+A `change` item that names it beside another requested file, calls it unconditional or states no
+condition does not release it, and a `role: input` item is no promise to deliver it.
 
 Two completion findings exist because an agent can believe it finished when it has not, and the record can show that. Both are structural; neither reads prose. `task_requirement_unmet` (subject: the task-statement event, the newest event that carried `task_statement`) fires while the effective plan declares obligations and none cites that statement in `source_refs`, or while a completion claim stands on no plan or an explicit empty scope: decompose the request into new statement-sourced obligations with `plan_revised`, or, when the request asks for no material work and no file changed (shell writes count), record a `decision_recorded` line `yoetz-no-material-work:<statement event id>` with a rationale. `claim_without_admissible_evidence` with the observed-verification wording (subject: the completion claim) fires when hooks observed edits or verification runs and the claim, together with the resolution evidence of the obligations it names, cites no verification made after the latest observed edit — neither a hook-observed run nor your own `command` result or `test_result`/`command_output` evidence published after that edit (self-generated evidence is admissible): run the verification, then replace the claim citing that run (the observed `res_` id from `status view=results`, or your own result). A recheck without that change returns the same finding. If you cannot clear one, answer it with `respond` (`acknowledged_not_done` with the reason, or a dispute with evidence); the receipt still reports it unresolved.
 

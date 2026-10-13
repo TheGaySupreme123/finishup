@@ -27,6 +27,7 @@ import os
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -40,6 +41,7 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import protocol_id, start_request
+from integration.application import test_evidence_readback as readback
 from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
 from yoetz.adapters.memory.privacy import MemoryPrivacyAudit
 from yoetz.application import check_change
@@ -49,6 +51,14 @@ from yoetz.application.service import Application
 from yoetz.application.start import StartInternalResult
 from yoetz.application.status import StatusInternalResult
 from yoetz.cli.closure_gate import closure_gate_from_readiness
+from yoetz.domain.events import (
+    EventDraft,
+    EventSchema,
+    RedactionMethod,
+    RedactionReasonCategory,
+    RedactionRecordedPayload,
+    encode_payload,
+)
 from yoetz.domain.privacy import (
     AgentProjectionAuditSubject,
     DataCategory,
@@ -56,9 +66,11 @@ from yoetz.domain.privacy import (
     PrivacyPolicy,
 )
 from yoetz.domain.task_fact_tokens import DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP
+from yoetz.domain.values import actor_id, event_id, timestamp_from_datetime
 from yoetz.ports.change_capture import CheckWorkspaceSource, TaskChangeBase
 from yoetz.ports.control import ControlMethod
-from yoetz.protocol.canonical import JsonValue
+from yoetz.protocol.canonical import JsonValue, canonical_encode
+from yoetz.protocol.coverage import PublicationChannel
 from yoetz.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
@@ -490,6 +502,68 @@ async def test_a_name_returns_only_to_the_writer_and_session_that_published_it(
     assert attached.writer_id != started.writer_id
     _internal, successor = await _projected_status(app, attached, 9370)
     _assert_withheld_with_continuation(successor)
+
+
+@pytest.mark.parametrize("target", ["event", "object"])
+async def test_redacting_the_publication_revokes_the_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    """Checker reproduction (R2 #1): once the action that spelled the name is redacted, by its
+    event ID or by its payload object ID, the name no longer returns; the loaded envelope keeps
+    its original redaction state, so the status read must apply the effective redaction."""
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=9500)
+    started, _checked = await _run(app, 9500, named=(_MODELS[0],))
+    internal, projected = await _projected_status(app, started, 9550)
+    assert _rows(projected)[0]["paths"] == [_MODELS[0], _OMITTED]
+
+    ledger, _objects = readback._ledger(app, started.task_id)
+    records = [row async for row in ledger.load_events(started.session_id)]
+    (action,) = [row for row in records if str(row.event_id) == protocol_id("evt_", 9504)]
+    payload = RedactionRecordedPayload(
+        target_event_ids=(action.event_id,) if target == "event" else (),
+        target_object_ids=(action.payload_ref.object_id,) if target == "object" else (),
+        method=next(iter(RedactionMethod)),
+        reason_category=next(iter(RedactionReasonCategory)),
+        authority=actor_id("local-human"),
+        remaining_gap="redacted_name_publication",
+    )
+    draft = EventDraft(
+        event_id(protocol_id("evt_", 9601)),
+        EventSchema("redaction_recorded", "1.0.0"),
+        timestamp_from_datetime(datetime(2026, 10, 13, 12, tzinfo=UTC)),
+        (),
+        payload,
+        payload.target_object_ids,
+        (),
+    )
+    frontier = await readback._append(
+        app,
+        started,
+        seed=9600,
+        expected_frontier=internal.result_frontier.sequence,
+        writer=started.writer_id,
+        author=readback._agent_actor("redaction-test"),
+        channel=PublicationChannel.COOPERATIVE_MCP,
+        drafts=((draft, canonical_encode(encode_payload(payload))),),
+    )
+    checked = await app.check(
+        CheckRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", 9610)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": frontier_json(frontier),
+                "mode": "deterministic_only",
+            }
+        )
+    )
+    assert type(checked) is CheckCommitResult
+    internal, projected = await _projected_status(app, started, 9650)
+    assert internal.leaf_authorship == ()
+    _assert_withheld_with_continuation(projected)
 
 
 async def test_an_owner_who_granted_repository_excerpts_sees_every_name(

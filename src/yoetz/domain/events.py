@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -5941,6 +5941,27 @@ def is_observation_authored(record: LedgerRecord) -> bool:
     """Recognize only service-stamped observation coordinator records."""
 
     return is_observation_authorship(record.author, record.publication_channel)
+
+
+def redaction_targets(
+    records: Iterable[LedgerRecord],
+) -> tuple[frozenset[EventId], frozenset[ObjectId]]:
+    """The event and object targets of every ``redaction_recorded`` among ``records``.
+
+    An object target redacts the event whose payload object it names, exactly as replay resolves
+    it, so a caller reading original envelopes excludes a record when its event ID is in the
+    first set or its ``payload_ref.object_id`` is in the second. Loaded envelopes keep their
+    original ``redaction`` state after a later logical redaction; this is the effective view.
+    """
+
+    events: set[EventId] = set()
+    objects: set[ObjectId] = set()
+    for record in records:
+        if record.schema.name != "redaction_recorded":
+            continue
+        events.update(record.projection_locator.redaction_target_event_ids)
+        objects.update(record.projection_locator.redaction_target_object_ids)
+    return frozenset(events), frozenset(objects)
 
 
 def is_lineage_service_stamped(record: LedgerRecord) -> bool:

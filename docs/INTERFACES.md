@@ -3635,7 +3635,8 @@ and completes its `AgentProjectionAuditSubject` receipt.
 
 Undeclared-reference names (tb4n5, ADR-009 and ADR-035 amendments) use the same rule on exact
 leaves. Status reads, at a head read, the accepted unredacted `action_recorded` `attempted_items`
-and `obligation_published` `requested_items` values that spell each
+and `obligation_published` `requested_items` values (excluding every event a `redaction_recorded`
+targets by event ID or payload object ID, `events.redaction_targets`) that spell each
 `/closure_readiness/undeclared_references/<n>/paths/<m>` path (whole, or as the tail of an absolute
 spelling) and attaches that event's `SourceAuthorship` to the leaf, preferring the requesting
 writer's own (`StatusInternalResult.leaf_authorship`, never in `as_json`). The service passes it as
@@ -9511,7 +9512,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   resolves each one-line quoted literal (`'`, `"` or backtick) to the path the code builds from
   literals, and classifies the candidates it names (tb4n5, ADR-035 amendment): a composed path
   with a directory names by path only; a provable write (a supported API's destination argument,
-  a literal write mode) is neither kind; any other naming may read the file; a bare basename that
+  a literal write-only mode of that opener, never a container's append or read-write mode) is
+  neither kind; any other naming may read the file; a bare basename that
   a declared file shares, or that nothing ties to the candidate's directory, is `ambiguous`. Only
   positions in the caller's own tuples leave the adapter. Any ambiguous count adds the standing
   disclosure `deliverable_references_ambiguous_name` (gap rule G4b; the receipt states the count,

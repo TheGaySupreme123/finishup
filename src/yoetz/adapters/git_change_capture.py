@@ -3473,18 +3473,57 @@ _WRITE_APIS: Final[
         frozenset({b"path"}),
     ),
 )
-# Mode-taking openers: ``(receivers or None, names, path position, path keywords, mode position)``.
+# Mode-taking openers: ``(receivers (None: a bare call), names, path position, path keywords,
+# mode position, write modes)``. Write modes ``None`` are file semantics: a mode with ``w``, ``x``
+# or ``a`` and neither ``r`` nor ``+`` only writes. A container opener lists its exact write-only
+# modes: its append and read-write modes read existing members (``ZipFile(..., 'a')`` reads the
+# archive; ``h5py.File(..., 'a')`` opens it read/write), so they stay possible reads (checker R2
+# #4). A method named ``open`` on any other receiver (``tarfile.open``) is not proven builtin.
+_FILE_OPEN_RECEIVERS: Final = frozenset(
+    {None, b"io", b"codecs", b"builtins", b"gzip", b"bz2", b"lzma"}
+)
 _MODE_APIS: Final[
-    tuple[tuple[frozenset[bytes] | None, frozenset[bytes], int, frozenset[bytes], int], ...]
+    tuple[
+        tuple[
+            frozenset[bytes | None],
+            frozenset[bytes],
+            int,
+            frozenset[bytes],
+            int,
+            frozenset[bytes] | None,
+        ],
+        ...,
+    ]
 ] = (
-    (None, frozenset({b"open"}), 0, frozenset({b"file", b"filename", b"name"}), 1),
-    (None, frozenset({b"fopen"}), 0, frozenset(), 1),
-    (frozenset({b"zipfile"}), frozenset({b"zipfile"}), 0, frozenset({b"file"}), 1),
-    (frozenset({b"h5py"}), frozenset({b"file"}), 0, frozenset({b"name"}), 1),
+    (
+        _FILE_OPEN_RECEIVERS,
+        frozenset({b"open"}),
+        0,
+        frozenset({b"file", b"filename", b"name"}),
+        1,
+        None,
+    ),
+    (frozenset({None}), frozenset({b"fopen"}), 0, frozenset(), 1, None),
+    (
+        frozenset({b"zipfile"}),
+        frozenset({b"zipfile"}),
+        0,
+        frozenset({b"file"}),
+        1,
+        frozenset({b"w", b"x"}),
+    ),
+    (
+        frozenset({b"h5py"}),
+        frozenset({b"file"}),
+        0,
+        frozenset({b"name"}),
+        1,
+        frozenset({b"w", b"x", b"w-"}),
+    ),
 )
 # Methods on a built path: what they do to the path itself (``Path(...).write_text``).
 _PATH_WRITE_METHODS: Final = frozenset({b"write_text", b"write_bytes", b"unlink", b"touch"})
-_MODE_LITERAL: Final = re.compile(rb"^[rwxabtU+]{1,4}$")
+_MODE_LITERAL: Final = re.compile(rb"^[rwxabtU+-]{1,4}$")
 _CALL_TAIL: Final = re.compile(
     rb"(?:([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*\.[ \t]*)?([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*\Z"
 )
@@ -3643,11 +3682,18 @@ def _single_literal(content: bytes, start: int, end: int) -> bytes | None:
     return match.group(1) or match.group(2) or match.group(3) or b""
 
 
-def _mode_use(content: bytes, masked: bytes, opening: int, mode_position: int) -> _ReferenceUse:
-    """Write only when the opener's actual mode argument is a literal write mode.
+def _mode_use(
+    content: bytes,
+    masked: bytes,
+    opening: int,
+    mode_position: int,
+    write_modes: frozenset[bytes] | None = None,
+) -> _ReferenceUse:
+    """Write only when the opener's actual mode argument is a literal write-only mode.
 
     The mode is the argument at ``mode_position`` among the positional arguments, or ``mode=``.
-    No mode is the default read; a mode the classifier cannot read is ``unknown``.
+    No mode is the default read; a mode the classifier cannot read is ``unknown``. ``write_modes``
+    lists a container opener's exact write-only modes; ``None`` applies file semantics.
     """
 
     spans = _arguments(masked, opening, _matching_close(masked, opening))
@@ -3668,6 +3714,8 @@ def _mode_use(content: bytes, masked: bytes, opening: int, mode_position: int) -
     mode = _single_literal(content, *span)
     if mode is None or _MODE_LITERAL.fullmatch(mode) is None:
         return "unknown"
+    if write_modes is not None:
+        return "write" if mode in write_modes else "unknown"
     if b"r" in mode or b"+" in mode:
         return "unknown"
     return "write" if any(flag in mode for flag in (b"w", b"x", b"a")) else "unknown"
@@ -3685,11 +3733,11 @@ def _call_use(
 
     spans = _arguments(masked, opening, _matching_close(masked, opening))
     index, keyword = _argument_role(masked, spans, position)
-    for receivers, names, path_index, path_keywords, mode_index in _MODE_APIS:
-        if name in names and (receivers is None or receiver in receivers):
+    for receivers, names, path_index, path_keywords, mode_index, write_modes in _MODE_APIS:
+        if name in names and receiver in receivers:
             if index != path_index and keyword not in path_keywords:
                 return "unknown"
-            return _mode_use(content, masked, opening, mode_index)
+            return _mode_use(content, masked, opening, mode_index, write_modes)
     for receivers, names, destination, keywords in _WRITE_APIS:
         if name in names and (receivers is None or receiver in receivers):
             return "write" if index == destination or keyword in keywords else "unknown"
@@ -3876,11 +3924,18 @@ def _dependencies(
     basename does, when no declared item has that basename and the deliverable ties the literal to
     the candidate's directory at least as closely as to any other candidate of that name
     (``_directory_association``); otherwise it is ambiguous. A read before a write is a read.
+
+    Memory and work stay bounded by the distinct literals and the candidates, never by their
+    product with the occurrences (checker R2 #6): each candidate keeps one aggregate, ``True`` once
+    an unproven use names it by path and ``False`` while only by basename, a proven write records
+    nothing, and the matches of one literal and composed path are resolved and applied once.
     """
 
     shell = suffix in _SHELL_SUFFIXES or (not suffix and _SHELL_SHEBANG.match(content) is not None)
     masked = _masked(content, suffix)
-    uses: dict[int, list[tuple[bool, _ReferenceUse]]] = {}
+    # Per candidate named by an unproven use: whether any such use named it by explicit path.
+    possible_read: dict[int, bool] = {}
+    applied: set[tuple[bytes, bytes]] = set()
     classified = 0
     literals: set[bytes] = set()
     for match in _STRING_LITERAL.finditer(content):
@@ -3899,6 +3954,9 @@ def _dependencies(
             if shell
             else _composed_path(content, masked, match.start(), match.end(), literal)
         )
+        key = (literal, composed)
+        if key in applied:
+            continue  # an unproven use of the same naming was already recorded
         if b"/" in composed:
             by_path = _path_matches(composed, paths) | _tail_matches(composed, candidates)
             by_name: set[int] = set()
@@ -3912,21 +3970,21 @@ def _dependencies(
             use = _literal_use(content, masked, match.start(), match.end(), shell=shell)
         else:
             use = "unknown"
+        if use == "write":
+            continue
+        applied.add(key)
         for index in by_path:
-            uses.setdefault(index, []).append((True, use))
+            possible_read[index] = True
         for index in by_name:
-            uses.setdefault(index, []).append((False, use))
+            possible_read.setdefault(index, False)
     frozen = frozenset(literals)
     found: set[int] = set()
     ambiguous: set[int] = set()
     # Basename-only references by name, with the association strength of each candidate: among
     # candidates sharing a basename only the most closely tied ones are the reference.
     by_basename: dict[bytes, dict[int, int]] = {}
-    for index, rows in uses.items():
-        needed = [by_path for by_path, use in rows if use != "write"]
-        if not needed:
-            continue
-        if any(needed):
+    for index, explicit in possible_read.items():
+        if explicit:
             found.add(index)
             continue
         candidate = candidates[index]

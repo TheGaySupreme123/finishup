@@ -489,7 +489,10 @@ publish the corrected obligation, supersede the old one with `plan_revised` (`ch
 `reason`, `replacement_obligation_ids`), record the work with the new item values in
 `attempted_items`, resolve the new obligation, and replace the completion claim with one naming it.
 Never write an empty or placeholder file, or change when the deliverable writes the file, to
-satisfy the declaration. A file the request asks for unconditionally is never re-modelled this way.
+satisfy the declaration. Give each conditional file its own `change` item spelling its declared
+path and its condition (`when`, `if`, `unless`); a change item that names several requested files,
+calls one unconditional or states no condition releases none of them. A file the request asks for
+unconditionally is never re-modelled this way.
 
 ### Large generated inventory
 

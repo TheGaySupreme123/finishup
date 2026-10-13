@@ -236,12 +236,15 @@ reverse-chronological released versions.
   obligation, and replace the completion claim; the next check resolves the absence finding.
   Writing an empty or placeholder file, or changing when your code writes the file, to satisfy the
   declaration is named as wrong. A replacement completion claim may now name only the replacement
-  obligations a plan revision recorded. A file the task asks for unconditionally stays required.
+  obligations a plan revision recorded. A file the task asks for unconditionally stays required:
+  only a `change` item of its own that spells the file's declared path and states its condition
+  re-models it; a mention beside another file, a file re-declared as an input, or prose calling it
+  unconditional keeps it required.
 
 - An undeclared file now stops closure only when a delivered file may read it. A file the code
   provably only writes (`np.savez(...)`, a frame's `to_csv`, an `open(..., "w")`) no longer
-  counts; an unsupported wrapper, `ZipFile.write`, an `open` with no mode, or a read before a
-  write still does. A path the code builds from literals (`os.path.join('checks', 'case_0',
+  counts; an unsupported wrapper, `ZipFile.write`, an `open` with no mode, an archive opened for
+  append (`ZipFile(..., 'a')` reads its members), or a read before a write still does. A path the code builds from literals (`os.path.join('checks', 'case_0',
   'walk.npz')`) names exactly that file. A bare file name that a declared file shares, or that
   the code never ties to the file's directory, is not treated as a dependency; the receipt
   discloses how many such files there were (`deliverable_references_ambiguous_name`), never which

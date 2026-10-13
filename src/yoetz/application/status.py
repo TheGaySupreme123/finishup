@@ -36,6 +36,7 @@ from yoetz.domain.events import (
     ObligationPublishedPayload,
     RedactionState,
     is_observation_authored,
+    redaction_targets,
 )
 from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingOrigin
 from yoetz.domain.observation import AdviceSnapshot
@@ -1345,6 +1346,10 @@ async def _published_name_authorship(
         loaded = await load_closure_basis(runtime, frontier)
     except ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError:
         return ()
+    # A loaded envelope keeps its original redaction state after a later ``redaction_recorded``;
+    # a publication redacted by its event ID or its payload object ID no longer vouches for the
+    # name (checker R2 #1), exactly as the evidence self-authorship read excludes it.
+    redacted_events, redacted_objects = redaction_targets(loaded.records)
     published: list[tuple[str, SourceAuthorship]] = []
     for record in loaded.records:
         if (
@@ -1352,6 +1357,8 @@ async def _published_name_authorship(
             or record.payload is None
             or record.redaction is not RedactionState.PRESENT
             or record.ledger.ingestion_sequence > frontier.sequence
+            or record.event_id in redacted_events
+            or record.payload_ref.object_id in redacted_objects
         ):
             continue
         payload = record.payload

@@ -4,17 +4,25 @@ Since tb4n4 (#1044) the read returns which delivered file names which undeclared
 receipt and the Stop gate can name it; ``_references`` counts the pairs it found.
 """
 
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 import asyncio
 import os
 import subprocess
+import tracemalloc
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from builders.observed_runs import ObservedLedger
-from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
+from yoetz.adapters.git_change_capture import (
+    _MAX_CLASSIFIED_OCCURRENCES,
+    GitChangeCaptureAdapter,
+    _dependencies,
+)
 from yoetz.application.check_change import (
     requested_output_states,
     undeclared_references,
@@ -628,6 +636,9 @@ def test_same_basename_in_two_directories_resolves_to_the_one_beside_the_deliver
         "torch.save(state, 'weights.npz')",
         "plt.savefig('weights.npz')",
         "os.remove('weights.npz')",
+        # A container opener's write-only modes truncate or create.
+        "with zipfile.ZipFile('weights.npz', 'w') as archive: archive.writestr('a', b'')",
+        "store = h5py.File('weights.npz', mode='w')",
     ],
 )
 def test_a_literal_the_deliverable_only_writes_is_not_a_dependency(
@@ -661,6 +672,13 @@ def test_a_literal_the_deliverable_only_writes_is_not_a_dependency(
         "save_model(model, 'weights.npz')",
         "export_report(data, os.path.join(HERE, 'weights.npz'))",
         "model.save('weights.npz')",
+        # Checker reproduction (R2 #4): a container's append and read-write modes read it.
+        "with zipfile.ZipFile('weights.npz', 'a') as archive:\n    weights = archive.read('trained')",
+        "archive = zipfile.ZipFile('weights.npz', mode='a')",
+        "store = h5py.File('weights.npz', 'a')",
+        "store = h5py.File('weights.npz', 'r+')",
+        # A method named ``open`` on another receiver is not the builtin: its modes are unproven.
+        "bundle = tarfile.open('weights.npz', 'a')",
     ],
 )
 def test_a_read_or_an_unclassified_use_is_still_a_dependency(tmp_path: Path, line: str) -> None:
@@ -777,3 +795,65 @@ def test_shell_redirections_and_string_or_comment_parentheses(tmp_path: Path) ->
         "print('(')  # unbalanced ( in a comment\nnp.save('report.txt', data)\n", encoding="utf-8"
     )
     assert _pairs(repository, base, _projection(_item("tool.py"))) == ()
+
+
+def test_an_archive_opened_for_append_reads_its_existing_members(tmp_path: Path) -> None:
+    """Checker reproduction (R2 #4): ``ZipFile(..., 'a')`` reads the members already in the
+    archive, so the deliverable needs the file: it is a dependency, never a proven write."""
+
+    repository, base = _repository(tmp_path, {"README.md": "Archive\n"})
+    archive_path = repository / "weights.npz"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("trained", "learned parameters")
+    with zipfile.ZipFile(archive_path, "a") as archive:
+        assert archive.read("trained") == b"learned parameters"
+    (repository / "serve.py").write_text(
+        "import zipfile\n"
+        "with zipfile.ZipFile('weights.npz', 'a') as archive:\n"
+        "    weights = archive.read('trained')\n",
+        encoding="utf-8",
+    )
+    assert _pairs(repository, base, _projection(_item("serve.py"))) == (
+        ("serve.py", "weights.npz"),
+    )
+
+
+class _CountingNames(dict[bytes, list[int]]):
+    """A basename index that counts how often a naming's candidate list is materialized."""
+
+    lookups = 0
+
+    def get(self, key: bytes, default: object = None) -> object:  # type: ignore[override]
+        type(self).lookups += 1
+        return super().get(key, default)
+
+
+@pytest.mark.parametrize("line", ["x = 'weights.npz'\n", "np.save('weights.npz', x)\n"])
+def test_matcher_state_is_bounded_by_candidates_not_occurrences(line: str) -> None:
+    """Checker reproduction (R2 #6): a 256-KiB-bounded deliverable repeating one literal against
+    1,024 candidates sharing its basename stays small. Each candidate keeps one aggregate and a
+    naming's candidate list is applied once, not once per occurrence."""
+
+    source = (line * 16_384).encode()[: 256 * 1024]
+    candidates = tuple(f"copies/{index:04}/weights.npz".encode() for index in range(1_024))
+    paths: dict[bytes, list[int]] = {}
+    names = _CountingNames()
+    for index, candidate in enumerate(candidates):
+        paths.setdefault(candidate, []).append(index)
+        names.setdefault(candidate.rsplit(b"/", 1)[-1], []).append(index)
+    _CountingNames.lookups = 0
+    tracemalloc.start()
+    try:
+        found, ambiguous = _dependencies(
+            source, b"serve.py", candidates, paths, names, frozenset(), b".py"
+        )
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert found == set()
+    assert len(ambiguous) == 1_024
+    # Proven writes are classified up to the occurrence bound; after it, and for any unproven
+    # use, one application per naming.
+    assert _CountingNames.lookups <= _MAX_CLASSIFIED_OCCURRENCES + 1
+    # The per-occurrence state measured about 750 MiB; the aggregate stays under a few MiB.
+    assert peak < 8 * 1024 * 1024

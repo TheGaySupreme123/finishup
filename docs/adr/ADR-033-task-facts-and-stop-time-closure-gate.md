@@ -891,10 +891,17 @@ new protocol role.
    unconditionally stays required: the replacement obligation that still declares it (or any other
    obligation that does) raises the same `requested_output_absent`. A requested `file` or
    `directory` item (role `output` or none) of an obligation a `plan_revised` superseded with
-   replacements that no replacement names, transitively, as a `file`/`directory` item or by file
-   name in a `change` item, stays requested on the superseded obligation
-   (`task_facts.superseded_unnamed_outputs`): the check probes it and reports it absent exactly as
-   before, so dropping a missing deliverable from the correction does not launder it. A
+   replacements stays requested on the superseded obligation
+   (`task_facts.superseded_unnamed_outputs`) unless a replacement, transitively, re-declares it as
+   a `file`/`directory` item that is not `role: input`, or releases it in the documented
+   correction form: a `change` item that spells its declared path (the same path, a longer
+   absolute spelling, or for an absolute declaration its tail with a directory; a bare file name
+   in another directory does not count), names none of the superseded obligation's other requested
+   outputs, states a condition (`when`, `if`, `unless`) and never calls it unconditional. Anything
+   else is ambiguous and keeps it required (checker R2: a basename mentioned in incidental prose,
+   or an output re-declared as an input, released a missing unconditional file). The check probes
+   a kept output and reports it absent exactly as before, so dropping a missing deliverable from
+   the correction does not launder it. A
    supersession without replacements, and a waiver, are explicit plan decisions outside this rule.
    `declared_output_removed`, `declared_output_emptied` and the closure gate are unchanged; the gate
    still says "Do not reshape your work for Yoetz". No event schema, wire field or pack version
@@ -904,7 +911,8 @@ Tests: `tests/integration/closure/test_conditional_output_shape.py` (the react s
 conditional ledgers absent on an accepted lead resolve after the correction with no file written;
 an unconditional missing output still blocks; with a real repository, the production workspace
 probe and the real final receipt, the honest correction closes and a correction that drops an
-unconditional missing output reads `unresolved_findings_remain`) and
+unconditional missing output reads `unresolved_findings_remain`, as does one whose change item
+mentions it in incidental prose or that re-declares it as an input) and
 `tests/unit/kernel/test_claim_correction_replay.py` (the supersession carries claim scope only to
 recorded replacements, and a failure or partial result on a superseded obligation, one or two
 supersessions back, must still be disclosed and may be).

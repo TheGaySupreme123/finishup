@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -728,17 +729,56 @@ def effective_obligations(projection: ProjectionState) -> tuple[ObligationId, ..
     )
 
 
-def _names_output(item: RequestedItem, value: str) -> bool:
-    """Whether a replacement's item names the requested output ``value`` (tb4n5)."""
+_PATH_TOKEN_EDGES: Final = " \t\r\n`'\"()[]{}<>,;:"
+_CONDITION_WORD: Final = re.compile(r"\b(?:when|whenever|if|unless)\b", re.IGNORECASE)
+
+
+def _spells_path(spelled: str, value: str) -> bool:
+    """Whether ``spelled`` names the declared path ``value``: the same path, a longer (absolute)
+    spelling of it, or, for an absolute declaration, its tail with at least one directory. A
+    bare file name never names a declared path in another directory (checker R2 #3)."""
+
+    spelled = spelled.removeprefix("./").rstrip("/")
+    wanted = value.removeprefix("./").rstrip("/")
+    if not spelled or not wanted:
+        return False
+    return (
+        spelled == wanted
+        or spelled.endswith("/" + wanted)
+        or (wanted.startswith("/") and "/" in spelled and wanted.endswith("/" + spelled))
+    )
+
+
+def _change_paths(text: str) -> tuple[str, ...]:
+    """The whitespace-separated tokens of a ``change`` value, trimmed of quoting and punctuation."""
+
+    return tuple(
+        token
+        for raw in text.split()
+        if (token := raw.strip(_PATH_TOKEN_EDGES).rstrip(".").strip(_PATH_TOKEN_EDGES))
+    )
+
+
+def _preserves_output(item: RequestedItem, value: str, outputs: tuple[str, ...]) -> bool:
+    """Whether a replacement's item keeps or explicitly re-models the output ``value`` (tb4n5).
+
+    A ``file`` or ``directory`` item that is not ``role: input`` re-declares it (an input item
+    is no delivery promise). A ``change`` item releases it only in the documented correction
+    form: the item spells that declared path, names none of the superseded obligation's other
+    ``outputs``, states a condition (``when``, ``if``, ``unless``) and never calls it
+    unconditional. Anything else is ambiguous and keeps the output required (checker R2 #3).
+    """
 
     if item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}:
-        spelled = item.value.removeprefix("./")
-        wanted = value.removeprefix("./")
-        return spelled == wanted or spelled.endswith("/" + wanted) or wanted.endswith("/" + spelled)
-    if item.item_kind is RequestedItemKind.CHANGE:
-        name = value.rstrip("/").rsplit("/", 1)[-1]
-        return bool(name) and name in item.value
-    return False
+        return item.role is not RequestedItemRole.INPUT and _spells_path(item.value, value)
+    if item.item_kind is not RequestedItemKind.CHANGE:
+        return False
+    text = item.value
+    if "unconditional" in text.lower() or _CONDITION_WORD.search(text) is None:
+        return False
+    tokens = _change_paths(text)
+    named = [output for output in outputs if any(_spells_path(token, output) for token in tokens)]
+    return named == [value]
 
 
 def superseded_unnamed_outputs(
@@ -748,11 +788,13 @@ def superseded_unnamed_outputs(
 
     An obligation a ``plan_revised`` superseded with replacements leaves the effective plan, and
     with it its requested files. The documented correction of a conditional output re-declares
-    each file the replacements still deliver as a ``file`` item and names a conditional one in the
-    ``change`` item that states its condition. A requested ``file`` or ``directory`` item (role
-    ``output`` or none) that no replacement names, transitively, either way, is still requested:
-    the correction cannot launder a missing deliverable. Returns its ``(obligation, item index)``
-    pairs, which the check probes and reports exactly like an effective obligation's.
+    each file the replacements still deliver as a ``file`` item (not ``role: input``) and names a
+    conditional one, by its declared path, in a ``change`` item of its own that states its
+    condition (``_preserves_output``). A requested ``file`` or ``directory`` item (role ``output``
+    or none) that no replacement preserves, transitively, either way, is still requested: the
+    correction cannot launder a missing deliverable, and incidental or ambiguous prose keeps it
+    required. Returns its ``(obligation, item index)`` pairs, which the check probes and reports
+    exactly like an effective obligation's.
     """
 
     effective = frozenset(effective_obligations(projection))
@@ -782,11 +824,17 @@ def superseded_unnamed_outputs(
             and row.payload is not None
             for item in row.payload.requested_items
         )
+        outputs = tuple(
+            item.value
+            for item in record.payload.requested_items
+            if item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}
+            and item.role is not RequestedItemRole.INPUT
+        )
         for index, item in enumerate(record.payload.requested_items):
             if (
                 item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}
                 and item.role is not RequestedItemRole.INPUT
-                and not any(_names_output(other, item.value) for other in named_by)
+                and not any(_preserves_output(other, item.value, outputs) for other in named_by)
             ):
                 dropped.append((obligation, index))
     return tuple(dropped)

@@ -152,7 +152,8 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    provenance value is added and the exception fails closed: the status leaf
    `/closure_readiness/undeclared_references/<n>/paths/<m>` carries the ledger authorship of the
    accepted, unredacted publication that spelled that exact name (`attempted_items` or
-   `requested_items`), keyed on that leaf (`ProjectionProvenanceContext.leaf_authorship`, admitted
+   `requested_items`; a later `redaction_recorded` naming its event ID or its payload object ID
+   revokes it), keyed on that leaf (`ProjectionProvenanceContext.leaf_authorship`, admitted
    only for that leaf family and only as `repository_excerpt`), and the ordinary `self_authored`
    rule decides: only the writer that published the name, in this session, through a cooperative
    channel, gets it back. Every other name keeps the ceiling, with a typed continuation in the Stop

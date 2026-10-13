@@ -309,7 +309,7 @@ async def test_conditional_ledgers_absent_on_an_accepted_lead_close_after_a_plan
     for finding in absent:
         # The continuation names the honest exit and forbids the placeholder.
         assert "only under a condition your final state does not meet" in finding.detail
-        assert "`change` item names the condition" in finding.detail
+        assert "`change` item of its own that spells its declared" in finding.detail
         assert "Never write an empty or placeholder file" in finding.detail
 
     await _correct(run, 8200, claim)
@@ -424,7 +424,19 @@ def _real_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, crm: boo
     monkeypatch.setattr(check_change, "requested_output_states", states)
 
 
-async def _real_run(seed: int, *, drop_crm: bool) -> tuple[_Run, Any]:
+async def _real_run(
+    seed: int,
+    *,
+    drop_crm: bool,
+    incomplete_change: str = _INCOMPLETE_CHANGE,
+    crm_role: str | None = None,
+) -> tuple[_Run, Any]:
+    """The react shape on a real repository, then the correction.
+
+    ``incomplete_change`` is the replacement's ``change`` value for the incomplete-records ledger;
+    ``crm_role`` re-declares ``crm_leads.json`` on the replacement with that role instead.
+    """
+
     run = await _begin(seed=seed)
     plan = {
         _REAL_A: [_file("output/crm_leads.json"), _file("output/incomplete_leads.json")],
@@ -443,10 +455,16 @@ async def _real_run(seed: int, *, drop_crm: bool) -> tuple[_Run, Any]:
     )
     claim = await _work(run, seed + 1, plan)
     first = await run.check()
+    redeclared: list[dict[str, JsonValue]] = (
+        []
+        if crm_role is None
+        else [{"item_kind": "file", "value": "output/crm_leads.json", "role": crm_role}]
+    )
     corrected = {
         _REAL_A_FIXED: [
             *([] if drop_crm else [_file("output/crm_leads.json")]),
-            _change(_INCOMPLETE_CHANGE),
+            *redeclared,
+            _change(incomplete_change),
             _file("src/lib/leadLedger.ts"),
         ],
         _REAL_B_FIXED: [
@@ -532,3 +550,49 @@ async def test_real_workspace_an_unconditional_output_dropped_by_the_correction_
     ]
     assert [tuple(row.subject_refs) for row in open_absent] == [(_REAL_A,)]
     assert await _final_receipt_conclusion(run, 8750) == "unresolved_findings_remain"
+
+
+@pytest.mark.parametrize(
+    "incomplete_change",
+    [
+        # The checker's exact prose: bare names, and the missing file called unconditional.
+        "Write incomplete_leads.json conditionally; crm_leads.json is an unconditional required"
+        " output.",
+        # Full paths: the change item names the missing file beside the conditional one.
+        "Write /app/output/incomplete_leads.json when a contactable lead is incomplete;"
+        " /app/output/crm_leads.json is still written for every accepted lead",
+    ],
+)
+async def test_real_workspace_incidental_prose_does_not_release_a_missing_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, incomplete_change: str
+) -> None:
+    """Checker reproduction (R2 #3): a replacement ``change`` item that merely mentions the
+    missing unconditional file does not re-model it as conditional; only a change item of its
+    own that spells its declared path and states its condition does."""
+
+    _real_workspace(tmp_path, monkeypatch, crm=False)
+    run, _first = await _real_run(8800, drop_crm=True, incomplete_change=incomplete_change)
+    findings = await run.status("findings")
+    rows = cast(Any, findings.page).items
+    open_absent = [
+        row for row in rows if row.kind == "requested_item_never_attempted" and not row.resolved
+    ]
+    assert [tuple(row.subject_refs) for row in open_absent] == [(_REAL_A,)]
+    assert await _final_receipt_conclusion(run, 8850) == "unresolved_findings_remain"
+
+
+async def test_real_workspace_an_output_redeclared_as_an_input_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Checker regression (R2 #3): the replacement re-declares the missing ``crm_leads.json`` as
+    ``role: input``; an input is no delivery promise, so the output stays required."""
+
+    _real_workspace(tmp_path, monkeypatch, crm=False)
+    run, _first = await _real_run(8900, drop_crm=True, crm_role="input")
+    findings = await run.status("findings")
+    rows = cast(Any, findings.page).items
+    open_absent = [
+        row for row in rows if row.kind == "requested_item_never_attempted" and not row.resolved
+    ]
+    assert [tuple(row.subject_refs) for row in open_absent] == [(_REAL_A,)]
+    assert await _final_receipt_conclusion(run, 8950) == "unresolved_findings_remain"

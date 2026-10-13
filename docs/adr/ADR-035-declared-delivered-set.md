@@ -254,17 +254,24 @@ fix was checked and failed (`CHECK_FIX_DELIVERY`); this records the corrected ru
    for a supported API in the argument that is its destination (`np.save*`/`savetxt` argument 0 or
    `file=`; `torch.save` argument 1; a frame's `to_csv`/`to_json`/`to_parquet`/... argument 0 or
    `path_or_buf=`; `savefig`; `cv2`/`imageio` `imwrite`; `fs.writeFile*`/`appendFile*`;
-   `os.remove`/`os.unlink`/`shutil.rmtree`), for an opener (`open`, `fopen`, `zipfile.ZipFile`,
-   `h5py.File`) whose actual mode argument (positional index 1, or `mode=`) is a literal write
-   mode, for `write_text`/`write_bytes`/`unlink`/`touch` chained on a built path, and for a shell
-   `>`. Everything else is `unknown` and counts as a possible read: an unsupported wrapper
+   `os.remove`/`os.unlink`/`shutil.rmtree`), for an opener whose actual mode argument (positional
+   index 1, or `mode=`) is a literal write-only mode of that API (a bare, `io`, `codecs`, `gzip`,
+   `bz2`, `lzma` or `builtins` `open`, and `fopen`: `w`, `x` or `a` without `r` or `+`;
+   `zipfile.ZipFile`: `w` or `x`; `h5py.File`: `w`, `x` or `w-`), for
+   `write_text`/`write_bytes`/`unlink`/`touch` chained on a built path, and for a shell `>`.
+   Everything else is `unknown` and counts as a possible read: an unsupported wrapper
    (`model.export`, `save_model`), `ZipFile.write` (it reads its source), an `open` with no mode
-   (the default reads), an assignment to a name used later. A candidate is a dependency when at
+   (the default reads), a container's append or read-write mode (`ZipFile(..., 'a')` reads the
+   members already in the archive; checker R2), `open` on any other receiver (`tarfile.open`), an
+   assignment to a name used later. A candidate is a dependency when at
    least one naming may read it (a read before a write is a read) and a path names it; when only
    its basename does, when no declared item has that basename and the deliverable ties the
    literal to the candidate's directory at least as closely as to any other candidate of that
    name (beside it, the repository root, or a literal naming one of its directories). At most 256
-   literal occurrences per deliverable are classified; the rest count as unknown.
+   literal occurrences per deliverable are classified; the rest count as unknown. The matcher keeps
+   one aggregate per candidate (whether an unproven use named it, and whether by explicit path)
+   and applies each distinct literal and composed path once, so its memory is bounded by the
+   candidates and distinct literals, never by occurrences times candidates (checker R2).
 3. **Ambiguity is counted on the receipt.** A candidate named only by an ambiguous basename (a
    declared file shares it, nothing ties it to its directory, or another candidate of the name is
    tied more closely) is not a dependency and is never named. The check records how many on the
@@ -288,7 +295,8 @@ fix was checked and failed (`CHECK_FIX_DELIVERY`); this records the corrected ru
    for a shell-written file (hook-captured edit content holds edit paths, but it is consent-gated
    content the local check does not read; using it is a follow-up). So no new provenance class is
    introduced. Status attaches, to each `closure_readiness.undeclared_references` path leaf, the
-   ledger authorship of an accepted, unredacted `action_recorded` `attempted_items` or
+   ledger authorship of an accepted, unredacted (not targeted by a later `redaction_recorded`, by
+   event ID or payload object ID) `action_recorded` `attempted_items` or
    `obligation_published` `requested_items` value that spells that exact path (whole, or as the tail
    of an absolute spelling), preferring the requesting writer's own
    (`StatusInternalResult.leaf_authorship`, never in `as_json`, head reads only); the resolver
