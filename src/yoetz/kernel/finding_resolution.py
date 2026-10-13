@@ -1528,17 +1528,25 @@ def _finding_resolution_explanation(
             f"check {finding_record.rejection_accepted_by_check_event_id} withdrew it. The item "
             "is final and no longer blocks the receipt, which still lists it."
         )
-    if (
-        finding_record.disputed_after_rebuttal_by_check_event_id is not None
-        and disposition is ResponseDisposition.REJECTED
-        and not finding_is_resolved(state, finding_id)
+    if finding_record.disputed_after_rebuttal_by_check_event_id is not None and (
+        not finding_is_resolved(state, finding_id)
     ):
+        # tb4n3 RC-7 (#1030): a reasoned ``acknowledged`` is a standing position too, so the latch
+        # holds whatever the latest disposition is. tb4n5 (kv ``fnd_c96c2b9f``): read only for a
+        # ``rejected`` answer, an acknowledged item fell through to "repair it, then check" and
+        # ``self_verified``, which ``respond`` refuses on a final item.
+        standing = finding_record.standing_position
+        position = (
+            "rejected it"
+            if standing is None or standing.kind == ResponseDisposition.REJECTED.value
+            else "answered it"
+        )
         return (
-            "Disputed after rebuttal: the agent rejected this AI-powered finding with a reason "
-            f"and check {finding_record.disputed_after_rebuttal_by_check_event_id} kept it open "
-            "without citing anything recorded after that rejection. The item is final, is not "
-            "agent work and does not block; the receipt lists it as a standing disagreement and "
-            "cannot read clean."
+            f"Disputed after rebuttal: the agent {position} with a reason and check "
+            f"{finding_record.disputed_after_rebuttal_by_check_event_id} kept it open without "
+            "citing anything recorded after that answer. The item is final, is not agent work, "
+            "takes no further response and does not block; the receipt lists it as a standing "
+            "disagreement and cannot read clean."
         )
     superseded = _superseded_coordination_context(state, finding_record.payload)
     if finding_is_resolved(state, finding_id):

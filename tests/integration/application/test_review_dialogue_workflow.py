@@ -1585,3 +1585,180 @@ async def test_a_self_verified_refusal_names_the_recorded_blocking_reasons() -> 
     assert "yoetz-verification-limit:" in message
     assert "the check still sees the issue" in message
     assert "I checked it myself." not in message
+
+
+def _rule_first_finding_citing_the_repair_event(
+    verdict: str,
+) -> Callable[[FrozenCase], SemanticJudgment]:
+    """kv-live-surgery S check 343: the closing reviewer supports the repair, citing the result by
+    the event that recorded it (``evt_3318a99d`` for ``res_fc7a82cf``), as the packet offers it."""
+
+    def answer(frozen: FrozenCase) -> SemanticJudgment:
+        projection = frozen.case.projection
+        finding = next(
+            key
+            for key, row in projection.findings.items()
+            if row.payload is not None
+            and row.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+        )
+        newest = max(projection.results.values(), key=lambda row: row.source_frontier)
+        refs = (str(newest.source_event_id),)
+        return SemanticJudgment(
+            "no_material_discrepancy",
+            (),
+            (PriorFindingVerdict(str(finding), verdict, refs),),  # type: ignore[arg-type]
+        )
+
+    return answer
+
+
+async def test_kv_repair_acknowledged_then_ruled_fixed_by_its_event_ends_verified_resolved() -> (
+    None
+):
+    """tb4n5 follow-up of #1046, kv-live-surgery S ``fnd_c96c2b9f`` end to end.
+
+    The reviewer raised the finding; the agent published the repair result, then answered
+    ``acknowledged`` with a reason citing it (a standing position since #1030); the next review
+    ruled ``fixed`` citing the result's ``evt_`` id. Before: the ruling was judged unsupported
+    (only ``evd_``/``res_`` counted), converted into ``disputed_after_rebuttal`` because the repair
+    preceded the answer, and the terminal row still told the agent to repair or self-verify. Now
+    the real ruling admission resolves the event, the finding ends ``verified_resolved`` with no
+    ``semantic_prior_verdicts_unsupported``, the row carries no next action, and a further answer
+    is refused.
+    """
+
+    seed = 4700
+    reviewer = _Reviewer(
+        [_challenge_obligation, _rule_first_finding_citing_the_repair_event("fixed")]
+    )
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    repair, repaired = await _repair(session, at, seed + 20)
+    acknowledged = await session.app.respond(
+        RespondRequest.model_validate(
+            {
+                **_respond_wire(
+                    session,
+                    repaired,
+                    at,
+                    raised,
+                    seed + 30,
+                    "acknowledged",
+                    "Agreed; the active post-v2 throughput run is now recorded.",
+                ),
+                "evidence_refs": [repair],
+            }
+        )
+    )
+    second = await _check(session, frontier_json(acknowledged.result_frontier), seed + 40)
+
+    check_row = [row for row in _records(session.app) if row.schema.name == "check_recorded"][-1]
+    recorded = cast(CheckRecordedPayload, check_row.payload)
+    live = _live_projection(session.app)
+    repair_event = str(live.results[cast(Any, repair)].source_event_id)
+    assert [(item.verdict, item.cited_refs) for item in recorded.prior_finding_verdicts] == [
+        ("fixed", (repair_event,))
+    ]
+    assert "semantic_prior_verdicts_unsupported" not in second.coverage.known_gaps
+    record = live.findings[raised.finding_id]
+    assert record.disputed_after_rebuttal_by_check_event_id is None
+    assert record.resolved_by_check_event_id == check_row.event_id
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.VERIFIED_RESOLVED
+    explanation = finding_resolution_explanation(live, raised.finding_id, _records(session.app))
+    assert "ruled it fixed" in explanation
+    assert "repair it, then check" not in explanation
+
+    status = await session.app.status(
+        StatusRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", seed + 50)),
+                "session_id": session.session_id,
+                "writer_id": session.writer_id,
+                "view": "findings",
+                "limit": "100",
+                "filter": {"include_resolved": True},
+            }
+        )
+    )
+    assert isinstance(status.page, StatusFindingsPageModel)
+    row = next(item for item in status.page.items if item.finding_id == raised.finding_id)
+    assert row.resolved is True
+    assert row.todo_state == "verified_resolved"
+    assert row.next_actions == ("none",)
+    assert "self_verified" not in str(row.detail)
+
+    after = frontier_json(second.result_frontier)
+    with pytest.raises(PublicOperationError) as terminal:
+        await session.app.respond(
+            RespondRequest.model_validate(
+                _respond_wire(session, after, at, raised, seed + 60, "acknowledged", "Done.")
+            )
+        )
+    assert terminal.value.safe_details is not None
+    assert terminal.value.safe_details["reason_code"] == "finding_terminal"
+    # tb4n5: 4 of 7 refusals were this harmless repeat; the hint says nothing is owed.
+    assert "proved the issue absent, so it needs no answer" in terminal.value.message
+    assert "Do not retry" in terminal.value.message
+    assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
+        _live_projection(session.app)
+    )
+
+
+async def test_an_acknowledged_finding_held_open_without_newer_material_is_a_quiet_dispute() -> (
+    None
+):
+    """No-repeat protection holds (owner, 2026-10-13: an acknowledgement may count as a
+    rebuttal): a reviewer that keeps an acknowledged finding open citing nothing newer than the
+    answer latches ``disputed_after_rebuttal``. The terminal row says so and gives no impossible
+    instruction (tb4n5 kv: "repair it, then check" and ``self_verified`` on a final item)."""
+
+    seed = 4800
+    reviewer = _Reviewer([_challenge_obligation, _still_present_first_finding])
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    attempt, attempted = await _repair(session, at, seed + 15)
+    acknowledged = await session.app.respond(
+        RespondRequest.model_validate(
+            {
+                **_respond_wire(
+                    session,
+                    attempted,
+                    at,
+                    raised,
+                    seed + 20,
+                    "acknowledged",
+                    "Agreed; one more install attempt is recorded.",
+                ),
+                "evidence_refs": [attempt],
+            }
+        )
+    )
+    await _check(session, frontier_json(acknowledged.result_frontier), seed + 30)
+    live = _live_projection(session.app)
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+    explanation = finding_resolution_explanation(live, raised.finding_id, _records(session.app))
+    assert explanation.startswith("Disputed after rebuttal: the agent answered it with a reason")
+    assert "takes no further response" in explanation
+    assert "repair it, then check" not in explanation
+    assert "self_verified" not in explanation
+    status = await session.app.status(
+        StatusRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", seed + 40)),
+                "session_id": session.session_id,
+                "writer_id": session.writer_id,
+                "view": "findings",
+                "limit": "100",
+            }
+        )
+    )
+    assert isinstance(status.page, StatusFindingsPageModel)
+    row = next(item for item in status.page.items if item.finding_id == raised.finding_id)
+    assert row.todo_state == "disputed_after_rebuttal"
+    assert row.next_actions == ("none",)
+    assert "repair it, then check" not in str(row.detail)
+    assert "self_verified" not in str(row.detail)

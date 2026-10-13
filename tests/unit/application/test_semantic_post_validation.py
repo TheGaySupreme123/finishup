@@ -627,9 +627,10 @@ def test_rulings_without_cited_material_or_a_rejection_to_accept_are_unassessabl
     assert [(str(item.finding_id), item.verdict) for item in review.verdicts] == [
         (str(fnd(1)), "unassessable"),
         (str(fnd(2)), "unassessable"),
-        # Issue #1020: fnd(3) was rejected with a reason; an unassessable ruling citing nothing
-        # newer is the standing disagreement, not another open round.
-        (str(fnd(3)), "disputed_after_rebuttal"),
+        # fnd(3) was rejected with a reason. tb4n5 follow-up of #1046 (amending #1020): an honest
+        # unassessable says the reviewer could not judge it, never that it disagrees, so it stays
+        # an open round instead of a standing disagreement.
+        (str(fnd(3)), "unassessable"),
     ]
     # Two reduced, one outside the fence; an honest unassessable is not counted.
     assert review.verdicts_unsupported == 3
@@ -1717,7 +1718,7 @@ def _formal_crypto_review(
     )
 
 
-@pytest.mark.parametrize("ruling", ["still_present", "answered_not_fixed", "unassessable"])
+@pytest.mark.parametrize("ruling", ["still_present", "answered_not_fixed"])
 def test_formal_crypto_held_open_ruling_over_a_rebuttal_is_a_standing_disagreement(
     ruling: str,
 ) -> None:
@@ -1730,6 +1731,92 @@ def test_formal_crypto_held_open_ruling_over_a_rebuttal_is_a_standing_disagreeme
         (str(fnd(1)), "disputed_after_rebuttal")
     ]
     assert review.verdicts_unsupported == 0
+
+
+@pytest.mark.parametrize(
+    "position", [ResponseDisposition.REJECTED, ResponseDisposition.ACKNOWLEDGED]
+)
+def test_an_unassessable_or_unsupported_fixed_over_a_position_is_never_a_dispute(
+    position: ResponseDisposition,
+) -> None:
+    """tb4n5 follow-up of #1046 (kv ``fnd_c96c2b9f``): over a reasoned rejection or a reasoned
+    acknowledgement (a standing position since #1030), the reviewer's own ``unassessable`` and a
+    ``fixed`` that cites nothing newer than the finding are recorded ``unassessable``: an open
+    round the next review can rule on, never a standing disagreement the agent can no longer
+    answer. A held-open ``still_present`` over the same position is still the dispute."""
+
+    base = _formal_crypto_case()
+    answer = ResponseRecordedPayload(
+        finding_id=fnd(1),
+        finding_frontier=FRONTIER,
+        disposition=position,
+        reason="Repaired: the post-v2 throughput run is recorded.",
+    )
+    case = replace(
+        base,
+        projection=replace(base.projection, responses={fnd(1): record(answer, 8)}),
+    )
+    held = _formal_crypto_review(
+        SemanticJudgment(
+            "no_material_discrepancy", (), (_verdict(1, "still_present", str(clm(1))),)
+        ),
+        case,
+    )
+    assert [verdict for _ref, verdict, _cited in _rulings(held)] == ["disputed_after_rebuttal"]
+    for ruling in (
+        _verdict(1, "unassessable", str(clm(1)), str(res(1))),
+        _verdict(1, "fixed"),
+        _verdict(1, "fixed", str(res(1))),  # recorded before the finding: not a repair
+    ):
+        review = _formal_crypto_review(
+            SemanticJudgment("no_material_discrepancy", (), (ruling,)), case
+        )
+        assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+            (str(fnd(1)), "unassessable")
+        ], ruling
+
+
+@pytest.mark.parametrize(
+    "position", [ResponseDisposition.REJECTED, ResponseDisposition.ACKNOWLEDGED]
+)
+def test_a_fixed_ruling_citing_the_repair_results_event_is_supported(
+    position: ResponseDisposition,
+) -> None:
+    """tb4n5 follow-up of #1046 (kv ``fnd_c96c2b9f``): the reviewer cites the repair by the event
+    that recorded it (``evt_3318a99d`` for ``res_fc7a82cf``), as the packet offers it. That event
+    resolves to the result before the frontier test, so the ``fixed`` ruling is admitted with no
+    unsupported-ruling gap, even after the agent's reasoned answer cited the same repair."""
+
+    base = _formal_crypto_case()  # res(2), recorded at 12 by evt(12), is after the finding (5)
+    answer = ResponseRecordedPayload(
+        finding_id=fnd(1),
+        finding_frontier=FRONTIER,
+        disposition=position,
+        reason="Repaired: the post-v2 throughput run is recorded.",
+        evidence_refs=(res(2),),
+    )
+    case = replace(
+        base,
+        projection=replace(base.projection, responses={fnd(1): record(answer, 14)}),
+        allowed_ids=base.allowed_ids | {evt(14)},
+        coverage_by_ref={**base.coverage_by_ref, evt(14): BASE_COVERAGE},
+    )
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "no_material_discrepancy", (), (_verdict(1, "fixed", str(clm(1)), str(evt(12))),)
+        ),
+        case,
+    )
+    assert _rulings(review) == [(str(fnd(1)), "fixed", tuple(sorted((str(clm(1)), str(evt(12))))))]
+    assert review.verdicts_unsupported == 0
+    # The event of anything but evidence or a result never supports ``fixed``: the finding's own
+    # event, the answer's event, or an old result's event are unassessable, never a dispute.
+    for cited in (str(evt(5)), str(evt(14)), str(evt(3))):
+        weak = _formal_crypto_review(
+            SemanticJudgment("no_material_discrepancy", (), (_verdict(1, "fixed", cited),)), case
+        )
+        assert [verdict for _ref, verdict, _cited in _rulings(weak)] == ["unassessable"], cited
+        assert weak.verdicts_unsupported == 1
 
 
 def test_a_cite_free_still_present_over_a_rebuttal_is_disputed_not_unassessable() -> None:

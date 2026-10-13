@@ -58,7 +58,9 @@ nothing told the reviewer that the artifact it asks for must be obtainable.
 ### 1. `disputed_after_rebuttal` (code rule, issue #1020)
 
 A reviewer ruling that keeps an AI-powered finding open (`still_present`, `answered_not_fixed` or
-`unassessable`) is recorded by Yoetz as the ruling `disputed_after_rebuttal` when all of these hold:
+`unassessable`) is recorded by Yoetz as the ruling `disputed_after_rebuttal` when all of these hold
+(amended 2026-10-13, tb4n5: `unassessable`, and an unsupported `fixed` demoted to it, never are;
+see the amendment of 2026-10-13 below):
 
 - the finding was shown to the reviewer as a rulable prior finding;
 - the agent's latest readable response is `rejected` with a non-blank reason;
@@ -313,7 +315,10 @@ above is the narrowest the recorded facts allow.
 a rejection that stands; a `fixed` whose citations are trimmed but stay supported stays `fixed`; a
 `still_present` or `answered_not_fixed` that loses a citation is `unassessable`; an unsupported
 downgrade over a standing position that cites no concern material is recorded `disputed_after_rebuttal`;
-a ruling on a resolved item or a disclosed limitation is set aside.
+a ruling on a resolved item or a disclosed limitation is set aside. (Amended 2026-10-13, tb4n5: only
+an unsupported `still_present` or `answered_not_fixed` becomes the dispute; an unsupported `fixed`
+or `withdrawn`, and an `unassessable`, stay `unassessable`. A `fixed` may cite the repair by the
+event that recorded it.)
 
 **Reverse edges** (ADR-034 amendment): `acknowledged_not_done` and `self_verified` are not one-way
 doors; see there. The respond text for a refused answer names the state and the way out and no longer
@@ -539,7 +544,8 @@ receipt's limitations sentence say "AI-powered review deferred".
 `verification_only_as_root`, `install_into_private_env`, `install_into_yoetz_runtime` and the
 planned-verification observer heuristics (`agent_linked`, `matched_by_prefix`, `outcome_unknown`,
 `unobservable`). Admission already requires a `fixed` ruling to cite evidence or a result recorded
-after the finding. The facts stay on the receipt (gap table G4) and the resolved finding's
+after the finding (by its own id or, since the amendment of 2026-10-13, by the event that recorded
+it). The facts stay on the receipt (gap table G4) and the resolved finding's
 explanation names the ones its resolving check carried. Facts about the deliverable
 (`requested_output_*`, `declared_output_*`, `deliverable_references_undeclared_file`), every
 agent-actionable fact and a silent review keep blocking.
@@ -616,6 +622,41 @@ completion claim (`claim_without_admissible_evidence`, `completion_with_open_obl
 omitted limitation are still reviewed. This supersedes the "agent-published actions are kept" rule
 of section 2 above for these two kinds only. The reviewer instruction is unchanged; the gloss of
 both kinds still describes them.
+
+### 3. A cited repair resolves; only a held-open ruling is a dispute (#1046 follow-up)
+
+tb4n5 S ended with 8 of 11 AI findings `disputed_after_rebuttal` and none `verified_resolved`.
+kv-live-surgery S `fnd_c96c2b9f` is the concrete case: the agent published the repair result
+(`res_fc7a82cf`, event `evt_3318a99d`), acknowledged the finding with a reason citing it, and the
+next reviewer supported the repair citing `evt_3318a99d`; the row latched as a dispute, carried
+`semantic_prior_verdicts_unsupported`, and its detail still said "repair it, then check" or
+`self_verified`, both refused on a final item. The exports omit raw reviewer rulings, so the other
+seven are not all proven agreed repairs; the admission hole and the terminal text are.
+
+- `_ruling_supported("fixed")` resolves an `evt_` citation to the evidence or result that event
+  recorded before the after-the-finding test. The packet offers both by event id; tb4n5 reviewers
+  cited `res_` 0 times in 41 reviews. An event that recorded anything else never supports `fixed`.
+- Ruling admission records `disputed_after_rebuttal` only for a `still_present` or
+  `answered_not_fixed` ruling (supported or not) over a standing position with nothing newer. An
+  unsupported `fixed` (the reviewer says the issue is gone), an unsupported `withdrawn`, and the
+  reviewer's own `unassessable` (it could not judge) are recorded `unassessable`: an open round the
+  next review can rule on, bounded by the round budget, never a disagreement the agent can no
+  longer answer. Section 1 and the RC-7 ruling-admission rule are amended accordingly.
+- No-repeat protection is unchanged: an acknowledgement with a reason still counts as a rebuttal
+  (owner, 2026-10-13); a held-open ruling or a restatement of the concern over it that cites
+  nothing newer still latches the dispute; a restatement that contradicts a `fixed` ruling still
+  does too.
+- The resolution explanation of a `disputed_after_rebuttal` row no longer requires the latest
+  answer to be `rejected`: an acknowledged item reads "Disputed after rebuttal ... takes no further
+  response" instead of the unresolved repair instruction; its `next_actions` stay `none`.
+
+### 4. A repeated answer on a resolved finding gets a precise hint
+
+Four of the seven tb4n5 `finding_terminal` refusals were an `acknowledged` sent after a recheck had
+already proved a local `action_without_result` absent. `respond` still records nothing and still
+returns `finding_terminal` (no wire change), but the message for `verified_resolved` now says the
+issue was proved absent, nothing is owed and not to retry, and the one for
+`disputed_after_rebuttal` says what the state means.
 
 Not changed here: #1043 (`agent_criterion_unmet` routing for agent-published probes) stays as
 decided; the formal-crypto case is not shown to be beyond the task's scope.

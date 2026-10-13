@@ -8614,10 +8614,17 @@ and the status findings view carry `self_verified` as a count and a `todo_state`
 #### `disputed_after_rebuttal`: a standing reviewer disagreement (issue #1020, ADR-040)
 
 `disputed_after_rebuttal` is a recorded reviewer ruling and a final to-do state that Yoetz, not the
-reviewer or the agent, assigns. `_admit_prior_verdicts` records it in place of a `still_present`,
-`answered_not_fixed` or `unassessable` ruling on a shown AI-powered finding whose latest readable
+reviewer or the agent, assigns. `_admit_prior_verdicts` records it in place of a `still_present` or
+`answered_not_fixed` ruling on a shown AI-powered finding whose latest readable
 response is `rejected` with a non-blank reason, when the ruling cites no `evd_`/`res_`/`act_`/`evt_`
-material recorded after that response (findings, claims and obligations are not material). A
+material recorded after that response (findings, claims and obligations are not material). Since the
+tb4n5 amendment (ADR-040, 2026-10-13) an `unassessable` ruling, and an unsupported `fixed` or
+`withdrawn` demoted to it, stay `unassessable` (an open round), and a `fixed` ruling's `evt_`
+citation resolves to the evidence or result that event recorded before the after-the-finding test
+(`_ruling_material`); an acknowledgement with a reason still counts as the standing position (#1030).
+The resolution explanation of a latched row names it whatever the latest disposition, with no repair
+instruction; `respond` on it, or on a `verified_resolved` row, returns `finding_terminal` with a
+message that says nothing is owed. A
 challenge restating such a finding (by `restates`, the restatement key, or a reply naming it)
 records the same ruling. `apply_check_rulings` latches `disputed_after_rebuttal_by_check_event_id`
 on a readable rejection, counts no review round, and never lets a later check upgrade the row to

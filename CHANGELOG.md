@@ -265,6 +265,13 @@ reverse-chronological released versions.
   the whole record, and `semantic_process_state_filtered` discloses the dropped challenge. Failed or
   unrun verification and false completion claims are still reviewed (#1042 follow-up).
 
+- A reviewer ruling that a finding is fixed now counts when it cites the repair by the event that
+  recorded it, so a repaired and acknowledged finding the reviewer supports resolves instead of
+  ending as a standing disagreement. A ruling the reviewer could not assess, or a `fixed` that cites
+  nothing newer, stays an open round and is never recorded as a disagreement, and a disputed
+  finding no longer tells you to repair or self-verify it. Answering a finding a recheck already
+  resolved now says that nothing is owed (#1046 follow-up).
+
 - A local-only check you asked for (`deterministic_only`) on a route that does not require
   AI-powered review no longer lists `semantic_review_not_requested` on the receipt, in `status` or
   in closure readiness. Where review is required it is still listed and still bounds the receipt

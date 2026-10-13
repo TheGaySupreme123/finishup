@@ -33,6 +33,7 @@ from yoetz.domain.events import (
     ClaimKind,
     DeliverableState,
     LedgerRecord,
+    ResultRecordedPayload,
     undeclared_reference_path_valid,
 )
 from yoetz.domain.findings import (
@@ -192,7 +193,12 @@ from yoetz.kernel.policies.work_integrity import (
     reportable_absent_outputs,
     work_integrity_findings,
 )
-from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
+from yoetz.kernel.projections import (
+    PROJECTION_VERSION,
+    EvidenceProjectionRecord,
+    ProjectionRecord,
+    ProjectionState,
+)
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.receipt_prediction import predict_receipt_conclusion
@@ -3866,6 +3872,25 @@ def _claims_unchanged_over_hidden_source(
     )
 
 
+def _ruling_material(
+    projection: ProjectionState, ref: str
+) -> EvidenceProjectionRecord | ProjectionRecord[ResultRecordedPayload] | None:
+    """The evidence or result a ruling cites, by its own id or by the event that recorded it."""
+
+    if ref.startswith("evd_"):
+        return projection.evidence.get(evidence_id(ref))
+    if ref.startswith("res_"):
+        return projection.results.get(result_id(ref))
+    if ref.startswith("evt_"):
+        for evidence_row in projection.evidence.values():
+            if str(evidence_row.source_event_id) == ref:
+                return evidence_row
+        for result_row in projection.results.values():
+            if str(result_row.source_event_id) == ref:
+                return result_row
+    return None
+
+
 def _ruling_supported(
     kind: str,
     cited: tuple[str, ...],
@@ -3873,17 +3898,19 @@ def _ruling_supported(
     finding: FindingId,
     projection: ProjectionState,
 ) -> bool:
-    """Whether the refs a ruling kept can carry what that ruling claims."""
+    """Whether the refs a ruling kept can carry what that ruling claims.
+
+    A ``fixed`` ruling needs readable evidence or a result recorded after the finding. The packet
+    offers both by the event that recorded them as well as by their own id, and reviewers cite the
+    event (tb4n5: 0 ``res_`` citations in 41 reviews; kv ``fnd_c96c2b9f`` was ruled supported on
+    ``evt_3318a99d``, the repair result's event), so an ``evt_`` resolves to the evidence or result
+    it recorded before the frontier test. An ``evt_`` that recorded anything else (an action, a
+    claim, a response) never supports ``fixed``.
+    """
 
     if kind == "fixed":
         for ref in cited:
-            row = (
-                projection.evidence.get(evidence_id(ref))
-                if ref.startswith("evd_")
-                else projection.results.get(result_id(ref))
-                if ref.startswith("res_")
-                else None
-            )
+            row = _ruling_material(projection, ref)
             if (
                 row is not None
                 and row.payload is not None
@@ -3903,6 +3930,12 @@ def _ruling_supported(
 
 # The reviewer rulings that keep an answered finding open (issue #1020).
 _HELD_OPEN_RULINGS: Final = frozenset({"still_present", "answered_not_fixed", "unassessable"})
+# The rulings that say the concern remains, the only ones ruling admission records as a standing
+# disagreement over the agent's position (tb4n5 follow-up of #1046). ``unassessable`` keeps the
+# item open but disagrees with nothing: the reviewer could not judge it, so it stays an open round.
+# A restatement of the concern is a re-raise and keeps its own dispute rule
+# (``_record_restatement``).
+_DISAGREEING_RULINGS: Final = frozenset({"still_present", "answered_not_fixed"})
 
 
 def _finding_concern(case: DeterministicCase, key: FindingId) -> ConcernKey:
@@ -4049,7 +4082,11 @@ def _admit_prior_verdicts(
         supported = _ruling_supported(
             kind, cited, record.source_frontier, record.payload.finding_id, projection
         )
-        if shown and _disputed_after_rebuttal(case, record.payload.finding_id, kind, cited):
+        if (
+            shown
+            and kind in _DISAGREEING_RULINGS
+            and _disputed_after_rebuttal(case, record.payload.finding_id, kind, cited)
+        ):
             # Issue #1020 (ADR-040): the reviewer saw the agent's reasoned position and kept the
             # item open without citing anything newer. Recorded as a standing disagreement.
             unsupported += lost_cite
@@ -4058,13 +4095,18 @@ def _admit_prior_verdicts(
             unsupported += 1
             if (
                 shown
-                and kind != "withdrawn"
+                and kind in _DISAGREEING_RULINGS
                 and _disputed_after_rebuttal(case, record.payload.finding_id, "unassessable", cited)
             ):
-                # tb4n3 RC-7 (D-6): a ruling that cannot stand over a standing position and cites
-                # nothing newer is the standing disagreement, not an open review round.
+                # tb4n3 RC-7 (D-6): a ruling that keeps the item open, cannot stand over a standing
+                # position and cites nothing newer is the standing disagreement, not an open
+                # review round.
                 kind = DISPUTED_AFTER_REBUTTAL_VERDICT
             else:
+                # tb4n5 follow-up of #1046: an unsupported ``fixed`` (the reviewer says the issue
+                # is gone), a ``withdrawn`` with no rejection to accept, or an honest
+                # ``unassessable`` is never a reviewer disagreement; it is unassessable, an open
+                # round the next review can rule on (kv ``fnd_c96c2b9f`` latched as a dispute).
                 kind = "unassessable"
         elif lost_cite and kind == "fixed":
             # A trimmed citation is disclosed, but a ``fixed`` the remaining cites still support
