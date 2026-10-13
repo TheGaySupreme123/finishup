@@ -446,8 +446,12 @@ global configuration, and a filter driver defined there ran during structural ca
 file identity). A known version older than 2.25 is refused with the closed token
 `git_version_unsupported`: the repository-identity resolver refuses a directory Git would find a
 repository for (a `.git` at or above it, or a bare repository or other Git directory it lies in,
-recognised as Git does by `objects/` and `refs/` beside a valid `HEAD`), while a directory with
-none keeps its plain directory identity, as without Git; structural capture refuses to open the
+recognised by Git's own `is_git_directory`/`validate_headref` rules: a `HEAD` that is a link into
+`refs/`, or reads `ref:` and optional whitespace then `refs/`, or starts with a 40-digit object id
+in either case, beside searchable `objects` and `refs` in its common directory), while a directory
+with none keeps its plain directory identity, as without Git. `HEAD` is read without blocking and
+only when it is a regular file; one Git itself would block on (a FIFO, socket or device) beside
+`objects` and `refs` is refused rather than read. Structural capture refuses to open the
 workspace (`yoetz state capture` prints the remedy), and this capture reports
 `check_time_change_unavailable_git_version_unsupported` (one more recorded gap code, classified
 exactly as its G7 siblings, so the gap table holds 216 recorded codes plus 3 readiness-only rows

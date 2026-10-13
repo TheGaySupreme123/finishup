@@ -667,11 +667,14 @@ class ServiceLifecycle:
         # Version and schema-manifest identity let a client whose hello this service will
         # reject (an upgraded installation talking to a stale process) name what it found and
         # decide whether the holder is a supersede candidate, without a compatible channel.
+        # The version is always written, outside the best-effort digest lookup: a stamp with
+        # neither identity key reads as a pre-0.2 installation that may be replaced, and a
+        # current service must never write one, even when its manifest cannot be read (#1040).
+        body["service_version"] = __version__
         with contextlib.suppress(Exception):
             from yoetz.protocol.schemas import schema_manifest_digest
 
             body["schema_manifest_digest"] = schema_manifest_digest()
-            body["service_version"] = __version__
         with contextlib.suppress(OSError):
             os.ftruncate(descriptor, 0)
             os.lseek(descriptor, 0, os.SEEK_SET)
@@ -697,9 +700,10 @@ class SingletonHolder:
     ``schema_manifest_digest`` and ``service_version`` are None when the stamp lacks them or holds
     a value that does not validate; they are never inferred. ``identity_fields_absent`` tells the
     first case apart: neither key is in the stamp at all, which is how installations that predate
-    the identity fields (Yoetz 0.1.x stamped only ``pid`` and ``instance_id``) wrote it. A key
-    that is present but unreadable leaves it False, so missing information is never mistaken for
-    an older installation. ``instance_lifecycle`` and ``source_ref`` name the holder's instance
+    the identity fields (Yoetz 0.1.x stamped only ``pid`` and ``instance_id``) wrote it. A current
+    writer always writes ``service_version`` (``_stamp_singleton_holder``), so it never produces
+    that shape. A key that is present but unreadable leaves it False, so missing information is
+    never mistaken for an older installation. ``instance_lifecycle`` and ``source_ref`` name the holder's instance
     identity (issue #604) and are absent for the everyday (permanent) install and for holders
     stamped before that contract.
     """

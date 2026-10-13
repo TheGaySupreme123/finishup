@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import stat
 from pathlib import Path
 from typing import Final
 
@@ -74,28 +75,115 @@ def _git_environment() -> dict[str, str]:
     }
 
 
-_HEAD_PROBE_BYTES: Final = 256
-_HEX: Final = frozenset(b"0123456789abcdef")
+# Git reads at most this much of ``HEAD`` (``validate_headref``'s 256-byte buffer, less its NUL)
+# and of a ``commondir`` file this module accepts.
+_HEAD_PROBE_BYTES: Final = 255
+_COMMONDIR_PROBE_BYTES: Final = 4_096
+_HEX: Final = frozenset(b"0123456789abcdefABCDEF")
+# Git's own ``isspace`` (``GIT_SPACE``): space, tab, line feed and carriage return.
+_GIT_SPACE: Final = b" \t\n\r"
+_OPEN_FLAGS: Final = (
+    os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | os.O_CLOEXEC
+)
 
 
-def _is_git_directory(candidate: Path) -> bool:
-    """Whether ``candidate`` is itself a Git directory, as Git's own discovery decides.
+def _read_regular_file(path: Path, limit: int) -> bytes | None:
+    """Up to ``limit`` bytes of a regular file, or None for anything else; never blocks.
 
-    A bare repository (and a ``.git`` directory entered directly) has no ``.git`` child: Git
-    recognises it by ``objects/`` and ``refs/`` directories beside a ``HEAD`` that is a symbolic
-    ref (``ref: refs/...``) or an object id.
+    The open is non-blocking and refuses a link, and the type is checked on the opened
+    descriptor, so a FIFO, socket or device swapped in after any earlier ``lstat`` is never read.
     """
 
     try:
-        if not ((candidate / "objects").is_dir() and (candidate / "refs").is_dir()):
-            return False
-        with (candidate / "HEAD").open("rb") as handle:
-            head = handle.read(_HEAD_PROBE_BYTES).rstrip(b"\n")
+        descriptor = os.open(path, _OPEN_FLAGS)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return None
+        return os.read(descriptor, limit)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def _head_is_valid(head: Path) -> bool | None:
+    """Git's ``validate_headref``: True, False, or None for a HEAD it would block on.
+
+    A symbolic link is valid when its target starts with ``refs/`` (the branch need not exist).
+    A regular file is valid when it reads ``ref:``, optional Git whitespace, then ``refs/``; or
+    when its first 40 bytes are hexadecimal in either case (Git checks only the object id's
+    length, so a longer SHA-256 id passes too). A FIFO, socket or device is never opened for a
+    blocking read; Git itself would wait on it, so it is reported as undecidable (None).
+    """
+
+    try:
+        facts = os.lstat(head)
     except OSError:
         return False
-    if head.startswith(b"ref: refs/"):
+    if stat.S_ISLNK(facts.st_mode):
+        try:
+            target = os.fsencode(os.readlink(head))
+        except OSError:
+            return False
+        return target[:_HEAD_PROBE_BYTES].startswith(b"refs/")
+    if stat.S_ISDIR(facts.st_mode):
+        return False
+    if not stat.S_ISREG(facts.st_mode):
+        return None
+    data = _read_regular_file(head, _HEAD_PROBE_BYTES)
+    if data is None:
+        return False
+    # Git treats the buffer as a C string.
+    text = data.split(b"\x00", 1)[0]
+    if text.startswith(b"ref:") and text[4:].lstrip(_GIT_SPACE).startswith(b"refs/"):
         return True
-    return len(head) in {40, 64} and set(head) <= _HEX
+    return len(text) >= 40 and set(text[:40]) <= _HEX
+
+
+def _common_directory(candidate: Path) -> Path | None:
+    """The directory Git reads ``objects/`` and ``refs/`` from for ``candidate``, or None.
+
+    A linked worktree's Git directory names its repository's common directory in
+    ``commondir``; any other Git directory is its own. None means a ``commondir`` that is not a
+    readable regular file, which Git itself cannot use either.
+    """
+
+    pointer = candidate / "commondir"
+    try:
+        os.lstat(pointer)
+    except FileNotFoundError:
+        return candidate
+    except OSError:
+        return None
+    data = _read_regular_file(pointer, _COMMONDIR_PROBE_BYTES)
+    if data is None:
+        return None
+    text = data.rstrip(b"\r\n")
+    if not text or b"\x00" in text:
+        return None
+    named = Path(os.fsdecode(text))
+    return named if named.is_absolute() else candidate / named
+
+
+def _is_git_directory(candidate: Path) -> bool:
+    """Whether ``candidate`` is itself a Git directory, as Git's ``is_git_directory`` decides.
+
+    A bare repository (and a ``.git`` directory entered directly) has no ``.git`` child: Git
+    recognises it by a valid ``HEAD`` (``_head_is_valid``) and searchable ``objects`` and
+    ``refs`` in its common directory. A ``HEAD`` Git would block on counts as a Git directory
+    when those are present: such a locator cannot be resolved by Git either, so it is refused
+    rather than committed as a plain directory.
+    """
+
+    head = _head_is_valid(candidate / "HEAD")
+    if head is False:
+        return False
+    common = _common_directory(candidate)
+    if common is None:
+        return head is None
+    return os.access(common / "objects", os.X_OK) and os.access(common / "refs", os.X_OK)
 
 
 def _has_git_marker(directory: Path) -> bool:

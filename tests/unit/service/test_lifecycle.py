@@ -397,6 +397,72 @@ async def test_singleton_stamp_names_the_holder_installation_identity(tmp_path: 
 
 
 @pytest.mark.anyio
+async def test_a_current_stamp_is_never_legacy_shaped_even_without_its_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1040 review: a stamp with neither identity key reads as a replaceable pre-0.2 service.
+
+    When the manifest lookup failed, the writer once omitted both keys, and a client then called
+    this very service another installation and selected it for SIGTERM, even after the lookup
+    recovered. The version is now always written; the missing digest is unknown, not evidence.
+    """
+
+    import yoetz.observability.logging as logging_module
+    import yoetz.protocol.schemas as schemas_module
+    import yoetz.service.client as client_module
+    from yoetz import __version__
+    from yoetz.ports.control import WorkspaceLocator
+
+    path = tmp_path / "service.lock"
+    real_digest = schemas_module.schema_manifest_digest
+
+    def unreadable_manifest() -> str:
+        raise OSError("manifest_unreadable")
+
+    monkeypatch.setattr(schemas_module, "schema_manifest_digest", unreadable_manifest)
+    lifecycle = _lifecycle(_Clock(), singleton_lock_path=path)
+    await lifecycle.acquire_singleton()
+    signals: list[tuple[int, int]] = []
+    try:
+        # The lookup recovers; the stamp is not rewritten.
+        monkeypatch.setattr(schemas_module, "schema_manifest_digest", real_digest)
+        holder = probe_singleton_holder_identity(path)
+        assert holder is not None
+        assert holder.pid == os.getpid()
+        assert holder.service_version == __version__
+        assert holder.schema_manifest_digest is None
+        assert holder.identity_fields_absent is False
+
+        monkeypatch.setattr(client_module, "_singleton_lock_path", lambda: path)
+        real_kill = os.kill
+
+        def kill(pid: int, sig: int) -> None:
+            if sig == 0:
+                # The stamp reader's liveness probe; this process is the holder and is alive.
+                real_kill(pid, 0)
+                return
+            signals.append((pid, sig))
+
+        monkeypatch.setattr(os, "kill", kill)
+
+        def record(**_fields: object) -> str:
+            return "err_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+        monkeypatch.setattr(logging_module, "record_public_error_without_raising", record)
+        classify = client_module._stamp_identity  # pyright: ignore[reportPrivateUsage]
+        assert classify(holder) == "unknown"
+        unanswered = client_module._unanswered_hello  # pyright: ignore[reportPrivateUsage]
+        error = unanswered(WorkspaceLocator("/private/repository"))
+        assert (error.reason, error.retryable) == ("service_unavailable", False)
+        deadline = asyncio.get_running_loop().time() + 1.0
+        assert await client_module.supersede_incompatible_service(deadline=deadline) is False
+        assert signals == []
+    finally:
+        await lifecycle.transition(ServiceState.LOCKED)
+        await lifecycle.close()
+
+
+@pytest.mark.anyio
 async def test_singleton_stamp_carries_the_instance_lifecycle_and_source_ref(
     tmp_path: Path,
 ) -> None:

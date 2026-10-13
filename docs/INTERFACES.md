@@ -2912,8 +2912,10 @@ stamp (`_stamp_identity` in `yoetz.service.client`) and reports `service_incompa
 evidence: a present, validated field that differs from this installation's (a well-formed
 `schema_manifest_digest`, or a `service_version` that parses as a package version), or, as an
 explicit legacy-upgrade policy distinct from a demonstrated mismatch, a stamp with neither
-identity key at all (Yoetz 0.1.x stamped only `pid` and `instance_id`; from 0.2.1 both fields
-are written). A holder stamped with this installation's identity, one whose stamp cannot be
+identity key at all (Yoetz 0.1.x stamped only `pid` and `instance_id`; writers from 0.2.1 until
+the #1040 follow-up wrote both fields when the schema manifest could be read and neither when it
+could not; a current writer always writes `service_version` and adds the digest when it can read
+it, so a current service never writes the legacy shape). A holder stamped with this installation's identity, one whose stamp cannot be
 read, and one whose identity fields are only partly readable (a key absent or present but
 invalid, beside fields that match) yields the non-retryable
 `ControlError("service_unavailable", phase=...)` described under "A handshake the service
@@ -2934,9 +2936,13 @@ this installation. It never signals a process it cannot identify through the own
 holder whose stamped identity equals this installation's, a holder whose identity fields are only
 partly readable, a holder whose stamped `service_version`
 is newer than this installation's (only the explicit `yoetz service restart` may replace one), or
-anything on Windows; those cases and a holder that outlives the budget surface as
-`service_incompatible`. The bridge message names `yoetz service restart`, except for a newer holder,
-where it asks the user to reopen the session. The MCP bridge also retires a *compatible* holder
+anything on Windows. A holder already shown to be another installation (a validated field that
+differs, or the legacy stamp) whose replacement is refused for one of those reasons, or that
+outlives the budget, surfaces as `service_incompatible`; the bridge message then names
+`yoetz service restart`, except for a newer holder, where it asks the user to reopen the session.
+A same-identity or partly readable holder never reaches this path: its unanswered hello is the
+non-retryable `service_handshake_failed` ("A handshake the service failed", below), whose remedy
+is `yoetz service diagnostics`, never a restart. The MCP bridge also retires a *compatible* holder
 whose hello reports an older package version than the bridge's, through the same stamped
 bounded-shutdown path, so the first session opened after an in-place `yoetz upgrade --accept`
 switches to the new package. Until that transition, already-open processes use retained runtime

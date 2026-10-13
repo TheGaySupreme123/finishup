@@ -511,6 +511,105 @@ async def test_git_below_the_minimum_is_named_everywhere_git_is_needed(
             open_workspace()
 
 
+def _bare_with_head(
+    tmp_path: Path, name: str, head: str | None, *, link: str | None = None
+) -> Path:
+    bare = (tmp_path / name).resolve()
+    _git(tmp_path, "init", "--quiet", "--bare", os.fspath(bare))
+    (bare / "HEAD").unlink()
+    if link is not None:
+        (bare / "HEAD").symlink_to(link)
+    else:
+        assert head is not None
+        (bare / "HEAD").write_text(head, encoding="utf-8")
+    return bare
+
+
+@pytest.mark.anyio
+async def test_every_head_form_git_accepts_is_refused_below_the_minimum(
+    install_git: _InstallShim, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Git's ``validate_headref`` forms, not just the one ``git init`` writes (#1040 review)."""
+
+    bares = {
+        "symlinked_head_to_unborn_branch": _bare_with_head(
+            tmp_path, "link.git", None, link="refs/heads/unborn"
+        ),
+        "uppercase_detached_head": _bare_with_head(tmp_path, "upper.git", "ABCDEF0123" * 4 + "\n"),
+        "tab_after_ref": _bare_with_head(tmp_path, "tab.git", "ref:\trefs/heads/unborn\n"),
+        "no_space_after_ref": _bare_with_head(tmp_path, "tight.git", "ref:refs/heads/unborn"),
+    }
+    key = _MacKey()
+    # The premise: a supported Git finds each of them as a repository.
+    for name, bare in bares.items():
+        for located in (bare, bare / "refs" / "heads"):
+            context = await resolve_repository_privacy_context(
+                WorkspaceLocator(os.fspath(located)), key
+            )
+            assert context.identity_kind == "git_common_root", (name, located)
+    install_git("2.24.4")
+    for name, bare in bares.items():
+        for located in (bare, bare / "refs" / "heads"):
+            with pytest.raises(RepositoryIdentityError) as refused:
+                await resolve_repository_privacy_context(WorkspaceLocator(os.fspath(located)), key)
+            assert refused.value.reason == GIT_VERSION_UNSUPPORTED, (name, located)
+    # Forms Git rejects stay plain directories.
+    for name, head, link in (
+        ("not_a_ref", "ref: heads/main\n", None),
+        ("short_hex", "abcdef0123\n", None),
+        ("link_outside_refs", None, "heads/main"),
+    ):
+        lookalike = tmp_path / name
+        (lookalike / "objects").mkdir(parents=True)
+        (lookalike / "refs").mkdir()
+        if link is not None:
+            (lookalike / "HEAD").symlink_to(link)
+        else:
+            assert head is not None
+            (lookalike / "HEAD").write_text(head, encoding="utf-8")
+        context = await resolve_repository_privacy_context(
+            WorkspaceLocator(os.fspath(lookalike)), key
+        )
+        assert context.identity_kind == "directory", name
+    directory_head = tmp_path / "directory_head"
+    for child in ("objects", "refs", "HEAD"):
+        (directory_head / child).mkdir(parents=True)
+    context = await resolve_repository_privacy_context(
+        WorkspaceLocator(os.fspath(directory_head)), key
+    )
+    assert context.identity_kind == "directory"
+
+
+def test_a_special_file_head_never_blocks_the_detector(tmp_path: Path) -> None:
+    """A FIFO named HEAD is never opened for a blocking read (#1040 review)."""
+
+    import threading
+
+    from yoetz.adapters import repository_identity as identity_module
+
+    fifo_repository = tmp_path / "fifo"
+    (fifo_repository / "objects").mkdir(parents=True)
+    (fifo_repository / "refs").mkdir()
+    os.mkfifo(fifo_repository / "HEAD")
+    lone_fifo = tmp_path / "lone"
+    lone_fifo.mkdir()
+    os.mkfifo(lone_fifo / "HEAD")
+    results: dict[str, bool] = {}
+
+    def detect() -> None:
+        marker = identity_module._has_git_marker  # pyright: ignore[reportPrivateUsage]
+        results["fifo"] = marker(fifo_repository)
+        results["lone"] = marker(lone_fifo)
+
+    worker = threading.Thread(target=detect, daemon=True)
+    worker.start()
+    worker.join(timeout=5.0)
+    assert not worker.is_alive(), "the HEAD probe blocked on a FIFO"
+    # Beside objects and refs it cannot be resolved by Git either: refused, never a plain
+    # directory. Alone it is not a Git directory at all.
+    assert results == {"fifo": True, "lone": False}
+
+
 def test_git_below_the_minimum_reads_as_one_fixed_sentence_and_remedy() -> None:
     sentence = CHECK_TIME_CHANGE_UNAVAILABLE_REASONS[GIT_VERSION_UNSUPPORTED]
     assert "2.25" in sentence
