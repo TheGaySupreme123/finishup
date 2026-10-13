@@ -5185,6 +5185,21 @@ ticket listing for its task and drops only bindings whose tickets are absent. A 
 report the native-ticket schema as available and return fewer than the 512-row listing cap; an
 unavailable schema or capped listing preserves every pending binding and retries later.
 
+`yoetz observe status` also reports two more local-only accounts, outside the frozen
+control-result schema like `summary_refusals` (tb4n5, ADR-029 amendment of 2026-10-13).
+`pending_attempt_endings` is `{"counts": {<reason>: n}, "open": n, "recent": [...]}`: how
+pending hook attempts ended without their post, by the closed reason `ttl`, `session_end`,
+`generation` (each recorded `pending_attempt_expired`) or `rejected_by_yoetz` (Yoetz's MCP server
+answered the call with an error, which a host sends no post for; no gap), and the newest 16
+endings as `{"call", "ended_at", "generation", "reason", "tool"}` where `call` is an opaque
+16-hex digest of the pairing key and `tool` the structural tool name. `local_retention` is
+`{"envelope_ring": null | {"first_seen", "last_seen"}, "dedup_fence": ...}`: the local copies the
+bounded ring, state bound and dedup fence shed, which is never content loss and never
+`truncated_payload`. The Yoetz MCP bridge's rejection record (`record_rejected_yoetz_call`,
+`observation/yoetz-rejected-calls.json`) holds only `sha256("yoetz/rejected-call/v1", tool
+basename, request_id)` and a millisecond time per entry, 256 newest; a hook pre-event of a Yoetz
+tool keeps the same commitment on its pending attempt (`_OpenPre.request_commitment`).
+
 `LocalObservationStore.pending_selection_losses(workspace)` returns at most 64 retained,
 fully validated and routed lanes; `selection_loss_workspaces(task_id)` filters the returned
 maintenance work to one authenticated task after bounded durable workspace discovery.

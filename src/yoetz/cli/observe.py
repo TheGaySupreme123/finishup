@@ -1284,6 +1284,40 @@ def _capture_handoff_retirement_text(retirements: JsonObject) -> str:
     return f"{count} (recent: {details or 'none'})"
 
 
+def _pending_attempt_endings_text(endings: Mapping[str, JsonValue]) -> str:
+    """One line: counts per ending reason, then the newest few (reason, tool, generation)."""
+
+    counts = endings.get("counts")
+    recent = endings.get("recent")
+    count_text = (
+        ",".join(f"{reason}={count}" for reason, count in counts.items())
+        if isinstance(counts, Mapping) and counts
+        else "none"
+    )
+    entries = (
+        [entry for entry in recent if isinstance(entry, Mapping)]
+        if isinstance(recent, (tuple, list))
+        else []
+    )
+    recent_text = "; ".join(
+        f"{entry.get('reason')} {entry.get('tool') or 'unnamed'} "
+        f"generation {entry.get('generation')} at {entry.get('ended_at')}"
+        for entry in entries[-4:]
+    )
+    return f"{count_text} (open: {endings.get('open')}; recent: {recent_text or 'none'})"
+
+
+def _local_retention_text(retention: Mapping[str, JsonValue]) -> str:
+    """One line naming which bounded local copies were shed; it is not content loss."""
+
+    shed = [
+        f"{name} since {cast(Mapping[str, JsonValue], seen).get('first_seen')}"
+        for name, seen in retention.items()
+        if isinstance(seen, Mapping)
+    ]
+    return ("; ".join(shed) + " (local copies only; not content loss)") if shed else "none"
+
+
 @_bounded_operation("status")
 def observe_status(
     *,
@@ -1334,6 +1368,11 @@ def observe_status(
     # that stranded it, so a retained ticket that held capture pressure can be
     # traced to its transition (issue #836).
     handoff_retirements = store.capture_handoff_retirements(commitment)
+    # How pending attempts ended without their post, named by reason and tool so an export can
+    # tell a missing post from a call Yoetz itself rejected; and the local copies the bounded
+    # stores shed, which are never content loss (tb4n5, #1041).
+    attempt_endings = store.pending_attempt_endings(commitment)
+    local_retention = store.local_retention(commitment)
     reclaim_guidance = (
         "reclaim with 'yoetz observe reclaim --workspace .'"
         if root == Path.cwd().resolve()
@@ -1393,6 +1432,8 @@ def observe_status(
                 "hook_diagnostics": diagnostics,
                 "summary_refusals": summary_refusals,
                 "capture_handoff_retirements": handoff_retirements,
+                "pending_attempt_endings": attempt_endings,
+                "local_retention": local_retention,
                 "plugin_activation": plugin_activation,
             },
             json_output=True,
@@ -1450,6 +1491,8 @@ def observe_status(
             )
         ),
         "capture_handoff_retirements": _capture_handoff_retirement_text(handoff_retirements),
+        "pending_attempt_endings": _pending_attempt_endings_text(attempt_endings),
+        "local_retention": _local_retention_text(local_retention),
         "hook_coverage": str(status.source_coverage.get(ObservationSource.CODEX_HOOK, False)),
         "stream_coverage": str(
             status.source_coverage.get(ObservationSource.CODEX_SESSION_STREAM, False)

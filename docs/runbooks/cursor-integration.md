@@ -2023,7 +2023,11 @@ share one action and an orphan scope yields one informational notice rather than
 advisory. Cursor has no code-mode cell, so the stream wrapper rule does not apply; for the same
 reason the tb4n5 yielded- and tool-less-cell decisions (ADR-029 amendment of 2026-10-13) are
 Codex-only, and Cursor has no `clock.sleep` tool (the `clocksleep` no-activity spelling is Codex's
-hook name).
+hook name). The same amendment's rejected-call record is host-agnostic: on the paired ordinary
+profile, a pending `yoetz:*` (or `MCP:*` Yoetz-basename) attempt whose call Yoetz's MCP server
+answered with an error closes as `rejected_by_yoetz` after a 5 s grace; `observe status` names
+every ending under `pending_attempt_endings`, and local ring eviction is `local_retention`, never
+`truncated_payload`. Post-only profiles keep no pending attempt, so nothing changes there.
 
 ### Limitation requests, `reopened` and one dialogue per concern on Cursor (tb4n3 RC-1 and RC-7, #1024, #1030)
 

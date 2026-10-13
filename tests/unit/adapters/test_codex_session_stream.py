@@ -409,6 +409,40 @@ def test_reconcile_enqueues_recovered_envelopes_into_outbox(tmp_path: Path) -> N
     assert store.pending_outbox_count(workspace) == accepted
 
 
+def test_an_unfinished_tail_alone_records_no_loss_anywhere(tmp_path: Path) -> None:
+    """tb4n5: a line Codex is still writing is held, never a loss in the reconcile or the store."""
+
+    home = tmp_path / "codex-home"
+    sessions = home / "sessions"
+    sessions.mkdir(parents=True)
+    session_id = "stream-unfinished-tail"
+    target = sessions / f"rollout-{session_id}.jsonl"
+    complete = encode_lines(session_meta(), response_item({"type": "message", "role": "user"}))
+    tail = encode_lines(response_item({"type": "message", "role": "assistant"}), terminated=False)
+    target.write_bytes(complete + tail[:-9])
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    session = store.session_commitment(session_id)
+    store.bind_session(workspace, session)
+
+    result = reconcile_session_stream(
+        store,
+        workspace_commitment=workspace,
+        session_commitment=session,
+        codex_session_id=session_id,
+        locator=CodexSessionStreamLocator(home),
+    )
+
+    assert result["resolved"] is True
+    assert ObservationGapCode.TRUNCATED_PAYLOAD.value not in cast(tuple[str, ...], result["gaps"])
+    assert (
+        ObservationGapCode.TRUNCATED_PAYLOAD.value
+        not in store.status(ObservationStatusQuery(workspace)).gaps
+    )
+    assert store.local_retention(workspace) == {"dedup_fence": None, "envelope_ring": None}
+
+
 def test_reconcile_persists_unknown_event_before_advancing_cursor(tmp_path: Path) -> None:
     home = tmp_path / "codex-home"
     sessions = home / "sessions"

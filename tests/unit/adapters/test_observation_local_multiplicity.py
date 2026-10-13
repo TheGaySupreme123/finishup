@@ -77,7 +77,10 @@ def test_envelope_bound_preserves_one_quiet_lane(
     assert [item.source_identity for item in retained] == ["quiet:1", "busy:2", "busy:3"]
     assert store.session_gap_codes(workspace, quiet) == ()
     assert _LOCAL_ENVELOPE_RETENTION_GAP in store.session_gap_codes(workspace, busy)
-    assert ObservationGapCode.TRUNCATED_PAYLOAD.value in store.session_gap_codes(workspace, busy)
+    # Local retention, never content loss (tb4n5).
+    assert ObservationGapCode.TRUNCATED_PAYLOAD.value not in store.session_gap_codes(
+        workspace, busy
+    )
 
     reopened = LocalObservationStore(_state=tmp_path)
     assert [item.source_identity for item in reopened.list_envelopes(workspace)] == [
@@ -289,4 +292,7 @@ def test_state_byte_pressure_sheds_busy_detail_before_quiet_detail(
     assert retained[0].source_identity == "quiet:1"
     assert all(item.session_commitment == busy for item in retained[1:])
     assert store.session_gap_codes(workspace, quiet) == ()
-    assert ObservationGapCode.TRUNCATED_PAYLOAD.value in store.session_gap_codes(workspace, busy)
+    assert _LOCAL_ENVELOPE_RETENTION_GAP in store.session_gap_codes(workspace, busy)
+    assert ObservationGapCode.TRUNCATED_PAYLOAD.value not in store.session_gap_codes(
+        workspace, busy
+    )

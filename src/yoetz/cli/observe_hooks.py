@@ -47,6 +47,7 @@ from yoetz.adapters.integrations.observation_local import (
     self_observation_deliverable,
 )
 from yoetz.adapters.integrations.observation_task_pending import task_pending_outbox_count
+from yoetz.adapters.integrations.yoetz_call_rejections import rejected_call_commitment
 from yoetz.adapters.workspace_binding import canonical_workspace_locator, resolve_workspace_locator
 from yoetz.cli import hook_io
 from yoetz.cli.closure_gate import (
@@ -1883,6 +1884,22 @@ def _intercepted_shell_apply_patch(
         and "<<" in command
         and any(_SHELL_APPLY_PATCH.search(prefix) for prefix, _, _ in _shell_heredocs(command))
     )
+
+
+def _yoetz_request_commitment(event_name: str, payload: Mapping[str, JsonValue]) -> str | None:
+    """The commitment to a Yoetz call's tool and ``request_id`` on its pre-event (tb4n5, #1041).
+
+    Yoetz's MCP server records the same commitment when it answers the call with an error, which
+    a host sends no post for; the pending attempt then closes as rejected by Yoetz instead of
+    expiring. Only the commitment is kept: never the request id or any other argument.
+    """
+
+    if event_name != "PreToolUse":
+        return None
+    arguments = payload.get("tool_input")
+    if not isinstance(arguments, Mapping):
+        return None
+    return rejected_call_commitment(payload.get("tool_name"), arguments.get("request_id"))
 
 
 def _shell_edit_contents(
@@ -5456,6 +5473,7 @@ def handle_observe(
                 is_pre_event=_is_pre_event(resolved_event),
                 is_post_event=_is_post_event(resolved_event),
                 pre_only=_intercepted_shell_apply_patch(resolved_event, payload, source),
+                request_commitment=_yoetz_request_commitment(resolved_event, payload),
             )
             optional_routine = (
                 not read_protected

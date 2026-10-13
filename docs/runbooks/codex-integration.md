@@ -1837,6 +1837,21 @@ than the agent's work. Their dispositions:
   --json`), not in task coverage.
 - **Shell `apply_patch <<EOF`.** A pre-only attempt closed by the observed `FileChange`; see
   [Reviewable native edits](#reviewable-native-edits).
+- **Rejected Yoetz calls (tb4n5).** Codex fires no `PostToolUse` for a tool result that is not a
+  success, and an MCP result with `isError: true` is not one, so every Yoetz call the service
+  rejected left its `PreToolUse` pending until it expired as `pending_attempt_expired` (17 of 18
+  tb4n5 attempts; the shell heredoc above did not occur once). The Yoetz MCP bridge now records each
+  error answer it returns (a commitment to the tool and `request_id`, nothing else), and the
+  pending attempt of that call closes as `rejected_by_yoetz` without the gap once the next hook runs
+  at least 5 s later. Every other missing post still expires with the gap, and `yoetz observe
+  status --json` names each ending under `pending_attempt_endings` (reason `ttl`, `session_end`,
+  `generation` or `rejected_by_yoetz`, the tool name and the source generation) so an export can
+  tell the producer.
+- **Local retention.** The 256-row local envelope ring, the state bound and the dedup fence keep
+  local copies of accepted rows; every tb4n5 attempt crossed the ring, and its eviction was
+  reported as `truncated_payload`. Eviction now reports only `local_retention` in `observe status`
+  (not content loss, not a gap). Oversize or unreadable rollout lines and clipped hook content keep
+  `truncated_payload` on the rows they cut.
 - **`HookPrompt`.** A Stop hook that continues the turn (Yoetz's closure gate) makes Codex 0.159.3
   write an `event_msg.item_completed` item of type `HookPrompt`. The compatibility profile admits it
   as bookkeeping (it pairs with nothing and is read as `no_tool_activity` after a check), so it is
@@ -1850,8 +1865,11 @@ than the agent's work. Their dispositions:
   again on the next benchmark before any budget in `observe_hooks` is tuned.
 
 Per host: Claude Code and Cursor have no rollout stream, no code-mode cell and no intercepted
-`apply_patch`, so the first three are Codex-only; the `semantic_review_not_requested` rule is
-service-side and the same on every host.
+`apply_patch`, so the held tail, the shell patch and `HookPrompt` are Codex-only; the
+`semantic_review_not_requested` rule is service-side and the same on every host. The rejected-call
+record and local retention are host-agnostic: the bridge records an error answer whichever host
+called it, and every host spelling of a Yoetz tool commits alike, so a paired ordinary profile on
+Claude Code or Cursor closes the same way.
 
 ### Inspection check on Codex (#1048)
 

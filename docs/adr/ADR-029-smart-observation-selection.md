@@ -719,3 +719,47 @@ applies only where absence is evidence: the admitted rollout profile records com
 as items, and the session's rollout has already written one. Elsewhere such a cell keeps its record
 as #917 decided. A tool that neither fires a hook nor writes an item (`update_plan`) is
 indistinguishable from none and reads the same; Yoetz still never parses the cell's source.
+
+### A pending attempt that ends without its post names itself, and Yoetz's own rejection closes it
+
+`pending_attempt_expired` appeared in 17 of 18 tb4n5 attempts and no export could name the call:
+expiry kept only the aggregate gap. A host fires no `PostToolUse` for a tool result that is not a
+success (Codex runs post-tool hooks only when the output's `success_for_logging` holds, and an MCP
+result with `isError: true` is not one; read in `codex-rs/core/src/tools/registry.rs` and
+`tools/context.rs` on the 2026-08-29 `main` branch, not pinned to 0.159.3). In every tb4n5
+attempt the `PreToolUse`-minus-`PostToolUse` surplus was at least the number of Yoetz calls the
+service rejected, and the one attempt without rejections was the one attempt without the gap.
+
+Decision:
+
+- Each ending is recorded locally with only closed tokens: the reason (`ttl`, `session_end`,
+  `generation`, or `rejected_by_yoetz`), the call's structural tool name, its source generation,
+  the moment, and an opaque 16-hex digest of its pairing key; a count per reason and the newest
+  16 endings. `observe status` reports them as `pending_attempt_endings` (local-only, outside the
+  frozen control-result schema, like `summary_refusals`). The first three reasons still record
+  `pending_attempt_expired`.
+- The Yoetz MCP bridge records each error result it returns for a Yoetz tool whose arguments carry
+  a valid `request_id`: only `sha256(domain, tool basename, request_id)` and the moment, in a
+  bounded owner-only file beside the observation state (`observation/yoetz-rejected-calls.json`,
+  256 newest), and only where observation was already set up. A hook pre-event of a Yoetz tool
+  (any host spelling) keeps the same commitment on its pending attempt. A pending attempt whose
+  commitment matches a rejection recorded at or after its receipt, and at least 5 s ago (so a host
+  that does send a post for an error still pairs it), closes as `rejected_by_yoetz` without the
+  gap; one rejection closes at most one attempt, the oldest it matches. The record is
+  best-effort: a missed rejection leaves the ordinary expiry, which stays disclosed.
+- Any other missing post keeps expiring with the gap. The deadline is not lengthened and
+  expirations are not cleared wholesale.
+
+### Local retention is not content loss
+
+The envelope ring (`_MAX_ENVELOPES = 256`), the state-size bound, and the dedup fence keep local
+copies of accepted inputs as pairing context and replay protection. Every tb4n5 attempt observed
+376-2,262 inputs, so every attempt crossed the ring and recorded `truncated_payload`, whose public
+meaning is a payload cut to a bounded prefix. Shedding those copies now records only its own local
+reasons (`_local_envelope_retention`, `_local_dedup_evicted`), reported by `observe status` as
+`local_retention` with first and last sightings and never as a gap. A pairing the ring can no
+longer prove keeps `unpaired_event`, and `envelopes_truncated` still blocks retiring an old orphan.
+Real clipping (a hook body or captured content over its cap, an oversize or unreadable rollout
+line) keeps `truncated_payload` on the row it cut. An active `truncated_payload` flag a store
+recorded for retention before this change is no longer pinned by the retention reason and clears
+once the state bound has headroom, as #310 decided for the bound itself.
