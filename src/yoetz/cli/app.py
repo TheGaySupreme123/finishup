@@ -2027,6 +2027,7 @@ async def _service_restart(json_output: bool) -> int:
 
     from yoetz.service.client import (
         connect_service_on_demand,
+        handshake_failure,
         supersede_incompatible_service,
         wait_for_singleton_release,
     )
@@ -2041,7 +2042,9 @@ async def _service_restart(json_output: bool) -> int:
                 # An explicit human restart may also replace a newer holder (a rollback).
                 if not await supersede_incompatible_service(deadline=deadline, replace_newer=True):
                     return _control_failure(error, json_output=json_output)
-            elif error.reason != "service_unavailable":
+            elif error.reason != "service_unavailable" or handshake_failure(error) is not None:
+                # A running service of this installation that fails the handshake cannot be
+                # asked to stop over it, and is never signalled as another installation.
                 return _control_failure(error, json_output=json_output)
         else:
             try:
@@ -2464,10 +2467,13 @@ def state_capture(
         }
         _human_or_json(output, json_output=json_output)
     except ValueError as error:
+        from yoetz.adapters.git_version import GIT_VERSION_UNSUPPORTED
         from yoetz.ports.subject_state import SubjectStateLimitation
 
         reason = str(error)
-        if reason in {item.value for item in SubjectStateLimitation}:
+        if reason in {item.value for item in SubjectStateLimitation} or (
+            reason == GIT_VERSION_UNSUPPORTED
+        ):
             _stderr(_bounded_failure_line(reason))
             _finish(exit_code_for(PublicErrorCode.INVALID_REQUEST))
         _finish(_usage_failure())

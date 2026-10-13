@@ -45,6 +45,7 @@ from yoetz.adapters.git_subject_state import (
     open_local_workspace,
     run_read_only_git,
 )
+from yoetz.adapters.git_version import GIT_VERSION_UNSUPPORTED, git_version, git_version_supported
 from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.change_capture import (
     MAX_BASELINE_UNTRACKED_FILES,
@@ -105,10 +106,15 @@ _MAX_PACK_DIRECTORY_ENTRIES: Final = 4_096
 _BLOB_MODES: Final = frozenset({"100644", "100755", "120000"})
 # Transports are disabled outright: diffing a partial clone must fail, never fetch a blob.
 # Replace refs are ignored so every object is read under its own name, which is what is verified.
+# ``diff.relative=false`` overrides a repository's own ``diff.relative`` so every path stays
+# root-relative. ``--no-relative`` said the same, but only Git 2.28 and later know it and an older
+# Git refused every diff with it; there the setting does not exist and the key is inert.
 _CAPTURE_CONFIG: Final = (
     "--no-replace-objects",
     "-c",
     "core.quotePath=true",
+    "-c",
+    "diff.relative=false",
     "-c",
     "protocol.allow=never",
 )
@@ -117,7 +123,6 @@ _DIFF_OPTIONS: Final = (
     "--no-ext-diff",
     "--no-textconv",
     "--no-renames",
-    "--no-relative",
     "--submodule=short",
     "-O/dev/null",
     "--src-prefix=a/",
@@ -125,6 +130,8 @@ _DIFF_OPTIONS: Final = (
 )
 # ``--unified`` implies a patch, so it is added only where the patch itself is read.
 _PATCH_OPTIONS: Final = (*_DIFF_OPTIONS, "--unified=3")
+# ``git config --show-origin -z`` names a ``-c`` value's origin exactly so (Git 2.8 and later).
+_COMMAND_LINE_ORIGIN: Final = b"command line:"
 _DIFF_SECTION: Final = b"diff --git "
 # Files with these names hold local credentials far more often than code, and the pattern scanner
 # cannot recognise every provider's key format (``DB_PASS=...``, ``rk_live_...``). Tracked or
@@ -2001,8 +2008,12 @@ class GitChangeCaptureAdapter:
 
     @staticmethod
     def _open(workspace: str, deadline: float) -> _Workspace:
-        if shutil.which("git", path=os.defpath) is None:
+        executable = shutil.which("git", path=os.defpath)
+        if executable is None:
             raise ChangeCaptureUnavailable("git_unavailable")
+        if not git_version_supported(git_version(executable)):
+            # Named rather than left to fail as ``git_failed`` on the first option it lacks.
+            raise ChangeCaptureUnavailable(GIT_VERSION_UNSUPPORTED)
         try:
             root = discover_workspace_root(Path(workspace), timeout_seconds=_remaining(deadline))
             handle = open_local_workspace(root, timeout_seconds=_remaining(deadline))
@@ -2039,8 +2050,9 @@ class GitChangeCaptureAdapter:
             _, located = GitChangeCaptureAdapter._git(
                 pinned,
                 # No ``--path-format=absolute``: Git before 2.31 echoes it as an extra output
-                # line (#1040). Each answer is made absolute against the root Git ran in.
-                ("rev-parse", "--show-toplevel", "--git-dir"),
+                # line (#1040). Both queries print absolute paths on every supported Git; each
+                # answer is still canonicalised against the root Git ran in.
+                ("rev-parse", "--show-toplevel", "--absolute-git-dir"),
                 deadline=deadline,
                 limit=8_192,
             )
@@ -2105,9 +2117,15 @@ class GitChangeCaptureAdapter:
         raise ChangeCaptureUnavailable("unsupported_repository")
 
     def _rev(self, pinned: _Workspace, spec: str, deadline: float) -> str | None:
+        # Every spec is a fixed spelling (``HEAD^{commit}``) or starts with a hexadecimal object
+        # id, so none can be read as an option. ``--end-of-options`` would say so to Git, but
+        # ``rev-parse`` learned it only in Git 2.30 and an older one drops it unread; the guard
+        # below holds on every Git instead.
+        if type(spec) is not str or not spec or spec.startswith("-"):
+            raise ChangeCaptureUnavailable("git_failed")
         code, raw = self._git(
             pinned,
-            ("rev-parse", "--verify", "--quiet", "--end-of-options", spec),
+            ("rev-parse", "--verify", "--quiet", spec),
             deadline=deadline,
             limit=128,
             accepted=frozenset({0, 1, 128}),
@@ -2127,14 +2145,16 @@ class GitChangeCaptureAdapter:
         line that opens two sections (``[core][filter "x"]``) passes it, and ``git diff`` against
         the working tree then runs that driver's ``clean`` command. Git's own view of its
         effective config names every such key, whichever file or include it came from.
-        ``--show-scope`` needs Git 2.26; an older Git rejects it, and the capture is then
-        unavailable rather than taken without this check.
+        ``--show-origin`` (Git 2.8) tells the runner's own ``-c`` values (``command line:``)
+        apart from everything else; ``--show-scope`` said the same but needs Git 2.26. The
+        runner reads no system or global configuration on any Git, so every other entry is the
+        repository's own (``.git/config``, ``config.worktree`` or a file either includes).
         """
 
         try:
             _, listing = self._git(
                 pinned,
-                ("config", "--list", "--name-only", "--includes", "--show-scope", "-z"),
+                ("config", "--list", "--name-only", "--includes", "--show-origin", "-z"),
                 deadline=deadline,
                 limit=1_048_576,
             )
@@ -2144,7 +2164,7 @@ class GitChangeCaptureAdapter:
         if len(fields) % 2:
             raise ChangeCaptureUnavailable("git_failed")
         for index in range(0, len(fields), 2):
-            if fields[index] == b"command":
+            if fields[index] == _COMMAND_LINE_ORIGIN:
                 # The hardened runner's own ``-c`` overrides.
                 continue
             name = fields[index + 1].lower()
@@ -2865,7 +2885,9 @@ class GitChangeCaptureAdapter:
 
         code, raw = self._git(
             pinned,
-            ("config", "--get-all", "--show-scope", "-z", "core.excludesFile"),
+            # ``--show-origin`` (Git 2.8), not ``--show-scope`` (2.26); see
+            # ``_refuse_unsafe_config``.
+            ("config", "--get-all", "--show-origin", "-z", "core.excludesFile"),
             deadline=deadline,
             limit=65_536,
             accepted=frozenset({0, 1}),
@@ -2877,8 +2899,9 @@ class GitChangeCaptureAdapter:
             raise ChangeCaptureUnavailable("git_failed")
         value: bytes | None = None
         for index in range(0, len(fields), 2):
-            # Lowest precedence first; the runner's own ``command`` entry is last and skipped.
-            if fields[index] in {b"local", b"worktree"}:
+            # Lowest precedence first; the runner's own command-line entry is last and skipped.
+            # No system or global file is ever read, so every other entry is the repository's.
+            if fields[index] != _COMMAND_LINE_ORIGIN:
                 value = fields[index + 1]
         if not value:
             return None

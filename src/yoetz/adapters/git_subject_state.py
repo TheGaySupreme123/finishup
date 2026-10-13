@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Final, Literal, cast
 
 from yoetz.adapters.git_rev_parse import absolute_rev_parse_path
+from yoetz.adapters.git_version import require_supported_git
 from yoetz.domain.values import SubjectStateRef
 from yoetz.ports.subject_state import (
     MAX_SUBJECT_STATE_FILES,
@@ -65,7 +66,9 @@ _GIT_SAFE_PREFIX: Final = (
     "-c",
     "core.filemode=true",
     "-c",
-    "core.fsmonitor=false",
+    # Empty disables fsmonitor on every supported Git. ``false`` does only from Git 2.36; an
+    # older Git runs it as the fsmonitor hook command (``git_version``).
+    "core.fsmonitor=",
     "-c",
     "core.attributesFile=/dev/null",
     "-c",
@@ -208,17 +211,24 @@ class _GitRunner:
         keep_prefix_on_limit: bool = False,
     ) -> tuple[int, bytearray]:
         argv = (os.fspath(self.executable), *_GIT_SAFE_PREFIX, *arguments)
+        # ``GIT_CONFIG_GLOBAL`` exists only since Git 2.32. An older Git reads its global
+        # configuration from ``$HOME/.gitconfig`` and ``$XDG_CONFIG_HOME/git/config`` instead,
+        # so both point at ``os.devnull``: a ``HOME`` naming the workspace would have made a
+        # ``.gitconfig`` committed to the repository (a filter driver, say) Git's global
+        # configuration. A ``~`` in a repository's path settings expands under ``os.devnull``
+        # and names nothing.
         environment = {
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_OPTIONAL_LOCKS": "0",
             "GIT_PAGER": "cat",
             "GIT_TERMINAL_PROMPT": "0",
-            "HOME": os.fspath(root),
+            "HOME": os.devnull,
             "LANG": "C",
             "LC_ALL": "C",
             "PAGER": "cat",
             "PATH": os.defpath,
+            "XDG_CONFIG_HOME": os.devnull,
         }
         process: subprocess.Popen[bytes] | None = None
         try:
@@ -352,8 +362,9 @@ def discover_workspace_root(path: Path, *, timeout_seconds: float = _GIT_TIMEOUT
         _, top = runner.run(
             candidate,
             # No ``--path-format=absolute``: Git before 2.31 echoes it as an extra output line
-            # (#1040). Each answer is made absolute against the directory Git ran in instead.
-            ("rev-parse", "--show-toplevel", "--git-dir"),
+            # (#1040). Both queries print absolute paths on every supported Git; each answer is
+            # still canonicalised against the directory Git ran in (``git_rev_parse``).
+            ("rev-parse", "--show-toplevel", "--absolute-git-dir"),
             stdout_limit=8_192,
         )
     except (_GitProcessFailure, _OutputLimit) as exc:
@@ -877,6 +888,8 @@ def _default_runner(timeout_seconds: float = _GIT_TIMEOUT_SECONDS) -> _GitRunner
     executable = shutil.which("git", path=os.defpath)
     if executable is None:
         raise ValueError("git_executable_missing")
+    # ``ValueError("git_version_unsupported")`` below the documented minimum (``git_version``).
+    require_supported_git(executable)
     return _GitRunner(Path(executable), timeout_seconds)
 
 
@@ -967,7 +980,7 @@ def _verify_git_root(root: Path, runner: _GitRunner) -> None:
         raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT)
     _, git_dir = runner.run(
         root,
-        ("rev-parse", "--git-dir"),
+        ("rev-parse", "--absolute-git-dir"),
         stdout_limit=4_096,
     )
     try:

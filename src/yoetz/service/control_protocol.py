@@ -18,7 +18,6 @@ from yoetz.adapters.control.unix_socket import LocalControlTransportError
 from yoetz.adapters.repository_identity import RepositoryIdentityError
 from yoetz.domain.coordination import CoordinationErrorCode
 from yoetz.domain.values import JsonObject, freeze_json
-from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.control import (
     ControlCallRequest,
     ControlCancelRequest,
@@ -116,6 +115,8 @@ _ERROR_REASONS: Final = frozenset(
         "frame_read_timeout",
         "frame_too_large",
         "handshake_rejected",
+        # Server-only: the service failed its own side of a handshake (``HandshakeServiceFault``).
+        "handshake_service_fault",
         "manifest_mismatch",
         "method_forbidden",
         "peer_untrusted",
@@ -189,6 +190,26 @@ class ControlProtocolError(Exception):
             raise ValueError("control_protocol_reason_invalid")
         self.reason = reason
         super().__init__(reason)
+
+
+class HandshakeServiceFault(ControlProtocolError):
+    """The service failed its own side of a handshake; the peer sent nothing wrong (#1040).
+
+    Raised by ``server_handshake`` after it closed the connection, for the daemon to record. The
+    peer only sees the close, which it reads as ``handshake_rejected``; this is the one place that
+    knows why. ``refusal`` is the closed token of a typed refusal (a ``RepositoryIdentityError``
+    reason such as ``git_version_unsupported``), or None for an unexpected exception, which stays
+    reachable as ``__cause__`` so its record names the exception class and origin. Neither carries
+    a path, Git output or any other caller content.
+    """
+
+    __slots__ = ("refusal",)
+
+    refusal: str | None
+
+    def __init__(self, refusal: str | None = None) -> None:
+        super().__init__("handshake_service_fault")
+        self.refusal = refusal
 
 
 @dataclass(frozen=True, slots=True)
@@ -971,27 +992,20 @@ async def server_handshake(
     except BaseException as exc:
         if isinstance(exc, asyncio.CancelledError):
             raise
-        if not isinstance(exc, (ControlProtocolError, LocalControlTransportError)):
-            # A service-side fault (the repository-identity resolver raising, say) closes the
-            # connection like a rejected hello, so the client can only report
-            # `service_incompatible`. Without this record nothing anywhere named the real cause
-            # (#1040: every connection after vault unlock closed on an old Git, silently).
-            record_unexpected_exception_without_raising(
-                exc,
-                component="service.control",
-                operation="control_handshake",
-                phase="handshake",
-                reason_code=_handshake_refusal_token(exc),
+        if isinstance(exc, Exception) and not isinstance(
+            exc, (ControlProtocolError, LocalControlTransportError)
+        ):
+            # A service-side fault (the repository-identity resolver refusing, say) closes the
+            # connection like a rejected hello: the protocol has no frame for "I failed", and a
+            # session without its repository binding must not be admitted. The typed fault
+            # carries the closed reason to the daemon, which records it (#1040: every connection
+            # after vault unlock closed on an old Git, and nothing anywhere named why).
+            fault = HandshakeServiceFault(
+                exc.reason if isinstance(exc, RepositoryIdentityError) else None
             )
+            fault.__cause__ = exc
+            await _close_after_failure(stream, fault)
         await _close_after_failure(stream, exc)
-
-
-def _handshake_refusal_token(exc: BaseException) -> str | None:
-    """The closed refusal token a handshake-time service fault carries, or None."""
-
-    if isinstance(exc, RepositoryIdentityError):
-        return exc.reason
-    return None
 
 
 def public_error_code_for_control_reason(reason: str) -> PublicErrorCode:

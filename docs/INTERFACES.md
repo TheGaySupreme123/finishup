@@ -1415,7 +1415,7 @@ when that recipe selected the change:
 
 - `check_time_change_unavailable` — the check named a workspace but no part reached the packet: a
   workspace outside the task's repository, an unsupported Git state (linked worktree, unsafe root,
-  a filter or include in the effective config, partial clone, Git older than 2.26), a failed or
+  a filter or include in the effective config, partial clone, a system Git older than 2.25), a failed or
   timed-out capture, a change withheld whole by redaction, or no claim, obligation or plan to link
   it to. A check whose connection named no workspace has nothing to read and reports no
   check-time code;
@@ -2904,10 +2904,17 @@ service can decode the peer's hello as a known control-hello shape but the diges
 not match, it answers with a hello-result carrying **this** installation's digest and
 then closes without admitting a session. The client names an answered digest mismatch
 `manifest_mismatch` and a silent close (unknown hello shape, or a peer that still
-closes without answering) `handshake_rejected`; both map to the retryable
-`ControlError` reason `service_incompatible` (public code `SERVICE_UNAVAILABLE`).
-`yoetz service status --json` emits that reason plus the stamped holder identity and a
-`correlation_id` joinable with `yoetz service diagnostics --correlation-id`. Older
+closes without answering) `handshake_rejected`. An answered `manifest_mismatch` maps to the
+retryable `ControlError` reason `service_incompatible` (public code `SERVICE_UNAVAILABLE`). A
+silent close proves nothing by itself, because a service of this very installation also closes
+when its own side of the handshake fails (#1040 follow-up, below); the client reads the singleton
+stamp and reports `service_incompatible` only when the stamp names another identity (another
+schema-manifest digest or service version, or a stamp that predates those fields). A holder
+stamped with this installation's identity, or one whose stamp cannot be read, yields the
+non-retryable `ControlError("service_unavailable", phase=...)` described under "A handshake the
+service failed". `yoetz service status --json` emits `service_incompatible` plus the stamped
+holder identity and a `correlation_id` joinable with
+`yoetz service diagnostics --correlation-id`. Older
 pre-2.2.0 CLIs that lack `handshake_rejected` still decode the answered hello-result
 and fail on the digest themselves (`protocol_mismatch` in those binaries). The
 singleton lock stamp carries the holder's `pid`, `instance_id`, `service_version`, and
@@ -2938,7 +2945,9 @@ stamp is only a pre-spawn hint. Startup and the auto-attach `start` share the ex
 RPC budget; turn-boundary retries retain their one-second outer budget and reserve part of it for
 the start RPC after a shorter connector arm. A budget expiry leaves attachment incomplete and
 queued structural rows pending. SessionStart context distinguishes `service_unavailable`,
-`service_incompatible`, `auto_attach_conflict`, and an incomplete mapping without asserting
+`service_incompatible`, `service_handshake_failed` (a running service of this installation closed
+the hello; the hook diagnostic reason of the same name), `auto_attach_conflict`, and an incomplete
+mapping without asserting
 `mapping_missing`, and directs the agent to explicit `start` before
 material work, then its exact typed continuation. Hook exit zero is graceful degradation, not
 proof of service readiness or a mapped task. No transient content is reconstructed from queued
@@ -3048,6 +3057,34 @@ above applies. Setup's on-demand starts (`setup vault`, `setup llm --set`, the i
 wizard), its restart after a provider binding change and `observe drain` print that same CLI line
 on stderr before their own unchanged result and exit code; that restart stops at the first such
 failure instead of spawning again.
+
+**A handshake the service failed (#1040 follow-up, tb4n5).** Once the vault is ready, the service
+resolves the hello's `workspace_locator` to a repository identity during the handshake. When that
+fails (a `RepositoryIdentityError` such as `git_version_unsupported` or
+`repository_identity_unavailable`, or any unexpected exception) `server_handshake` closes the
+connection without answering, admits no session, and raises `HandshakeServiceFault` (control
+reason `handshake_service_fault`, server-only) carrying the closed refusal token or, for an
+unexpected exception, that exception as its cause. The daemon records it once: a typed refusal as
+public error `handshake_service_fault` with `reason_code` the token (component `service.daemon`,
+operation `control_handshake`); an unexpected exception through the unexpected-exception record
+with its class token, origin and `phase: handshake`. Neither record carries the locator, a path,
+Git output or stderr. The client sees only `handshake_rejected` and classifies it by the singleton
+stamp (above): for a holder of this installation, or of unreadable identity, it records
+`service_handshake_failed` (component `service.client`, operation `control_handshake`) and raises
+`ControlError("service_unavailable", retryable=False, phase=<phase>, correlation_id=<that
+record>)`, where `phase` is `handshake`, or `handshake_git_version` when the hello carried a
+workspace locator and the system Git (the first `git` on `os.defpath`, which the service uses) is
+older than 2.25 (`yoetz.protocol.errors.SERVICE_HANDSHAKE_PHASES`). On-demand startup reports it at
+once: it neither supersedes the holder nor spawns a successor, and its poll loop does not wait out
+the budget. The MCP bridge maps it to `SERVICE_UNAVAILABLE`, `retryable: false`,
+`safe_details.reason_code` `service_handshake_failed` and `safe_details.phase`, adding
+`safe_details.continuation` `system_git_upgrade_required` for `handshake_git_version`; its message
+never names another installation or `yoetz service restart`, and asks for `yoetz service
+diagnostics` (or a Git 2.25 or later system Git). The CLI prints `service_unavailable:
+service_handshake_failed: …` with the holder pid and correlation id (`--json`: `reason`
+`service_handshake_failed`, `phase`, `retryable: false`, `correlation_id`, `holder`), and
+`yoetz service restart` reports it instead of signalling the holder. It is an availability failure,
+so the latch below applies.
 
 **Availability latch (issue #469).** The bridge treats the control reasons `service_unavailable`,
 `service_incompatible`, `protocol_mismatch`, `endpoint_unsafe`, and `peer_untrusted` as facts
@@ -9144,17 +9181,26 @@ every redaction pass off the event loop. One 20-second deadline bounds a capture
 Assembly may use the first 75% (`_ASSEMBLY_SHARE`); the rest is kept for the closing stability
 check. Past the assembly share a file whose diff was not read is listed with `capture_limit` and
 untracked files are not listed; before the file list exists, or during the stability check, the
-capture is unavailable. Before any diff the adapter lists the effective config with `git config
---list --name-only --includes --show-scope -z` and refuses any non-`command` scope key `filter.*`,
-`include.*`, `includeIf.*`, `extensions.partialClone`, `remote.*.promisor` or
-`remote.*.partialCloneFilter` (`unsupported_repository`); a Git that rejects `--show-scope` fails as
-`git_failed`; an effective `core.worktree` is `unsupported_repository` too.
-`discover_workspace_root` runs `rev-parse --path-format=absolute --show-toplevel --git-dir` and
-raises `unsafe_root` unless the git dir is `<top>/.git` and the candidate lies inside `<top>`. Every
-capture Git call runs as `git --no-replace-objects -c core.quotePath=true -c protocol.allow=never
---git-dir=<root>/.git --work-tree=<root> ...` through `run_read_only_git` (whose environment is a
-fixed dict, so no `GIT_*` variable is inherited); `_open` requires that invocation's `rev-parse
---path-format=absolute --show-toplevel --git-dir` to print exactly `<root>` and `<root>/.git`.
+capture is unavailable. `_open` first reads the system Git's version (`yoetz.adapters.git_version`,
+cached per executable identity); a known version older than 2.25 is `git_version_unsupported`.
+Before any diff the adapter lists the effective config with `git config --list --name-only
+--includes --show-origin -z` and refuses any key not of origin `command line:` (the runner's own
+`-c` values) that is `filter.*`, `include.*`, `includeIf.*`, `extensions.partialClone`,
+`remote.*.promisor` or `remote.*.partialCloneFilter` (`unsupported_repository`); a Git that cannot
+list it fails closed before any diff; an effective `core.worktree` is `unsupported_repository`
+too. The repository-level `core.excludesFile` is the last non-command-line value of `git config
+--get-all --show-origin -z core.excludesFile`. `discover_workspace_root` runs `rev-parse
+--show-toplevel --absolute-git-dir` and raises `unsafe_root` unless the git dir is `<top>/.git` and
+the candidate lies inside `<top>`. Every capture Git call runs as `git --no-replace-objects -c
+core.quotePath=true -c diff.relative=false -c protocol.allow=never --git-dir=<root>/.git
+--work-tree=<root> ...` through `run_read_only_git` (whose environment is a fixed dict with `HOME`
+and `XDG_CONFIG_HOME` set to `os.devnull`, so no `GIT_*` variable is inherited and no global
+configuration is read even on a Git before 2.32, which ignores `GIT_CONFIG_GLOBAL`); `_open`
+requires that invocation's `rev-parse --show-toplevel --absolute-git-dir` to print exactly
+`<root>` and `<root>/.git` once canonicalised. `_rev` passes `rev-parse --verify --quiet <spec>`
+and refuses a spec that is empty or starts with `-` before Git runs (no `--end-of-options`, which
+`rev-parse` learned only in Git 2.30). No argument needs a Git newer than 2.25 (ADR-031, #1040
+amendment).
 Before and after each call the root pathname and its `.git` must still `lstat` to the device and
 inode recorded from the validated descriptor (`unsafe_root` otherwise).
 `_refuse_unsafe_object_store` requires `.git/objects`, `objects/info` and `objects/pack` to be real
@@ -9188,7 +9234,7 @@ working-copy, loose-object and untracked identity, the untracked listing, `HEAD^
 identity of `.git/index`; any difference retakes the whole capture, at most `_CAPTURE_ATTEMPTS` (3)
 times while the assembly share lasts. `discover_workspace_root` and `open_local_workspace` take an
 optional `timeout_seconds`. `ChangeCaptureUnavailable.reason` is one of `git_unavailable`,
-`not_git`, `unsafe_root`, `unsupported_repository`, `git_failed` (a Git call over its time bound
+`git_version_unsupported`, `not_git`, `unsafe_root`, `unsupported_repository`, `git_failed` (a Git call over its time bound
 included), `changed_during_capture` (the working tree moved during every attempt) or
 `redaction_incomplete` (credential-shaped spans still found after 64 redaction passes, so the change
 is withheld whole), recorded as a bounded `semantic_composition/check_time_change_unavailable` (or
@@ -9246,7 +9292,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   identity, content digest, base, flags, admitted part count and any unavailability reason; a case
   without a selected change keeps its historical digest input.
 - **Unavailability reasons.** `CheckChangeOutcome.reason` and the builder's reason are keys of
-  `yoetz.domain.receipts.CHECK_TIME_CHANGE_UNAVAILABLE_REASONS` (`git_unavailable`, `not_git`,
+  `yoetz.domain.receipts.CHECK_TIME_CHANGE_UNAVAILABLE_REASONS` (`git_unavailable`,
+  `git_version_unsupported`, `not_git`,
   `unsafe_root`, `unsupported_repository`, `git_failed`, `changed_during_capture`,
   `redaction_incomplete`, `repository_mismatch`, `capture_failed`, `no_linked_subject`,
   `no_packet_room`); every `ChangeCaptureUnavailable` reason is one of them.

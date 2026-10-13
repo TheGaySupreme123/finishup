@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Final
 
 from yoetz.adapters.git_rev_parse import absolute_rev_parse_path
+from yoetz.adapters.git_version import (
+    GIT_VERSION_UNSUPPORTED,
+    git_version_async,
+    git_version_supported,
+)
 from yoetz.ports.control import RepositoryPrivacyContext, WorkspaceLocator
 from yoetz.ports.keys import REPOSITORY_PRIVACY_MAC_DOMAIN, MacKeyHandle
 
@@ -21,6 +26,8 @@ _REASONS: Final = frozenset(
         "repository_locator_invalid",
         "repository_locator_unavailable",
         "repository_identity_unavailable",
+        # The system Git is older than the documented minimum (``git_version``).
+        GIT_VERSION_UNSUPPORTED,
     }
 )
 
@@ -52,14 +59,18 @@ def _resolved_directory(locator: WorkspaceLocator) -> Path:
 
 
 def _git_environment() -> dict[str, str]:
+    # ``GIT_CONFIG_GLOBAL`` exists only since Git 2.32; ``HOME`` and ``XDG_CONFIG_HOME`` keep an
+    # older Git from reading a global configuration either.
     return {
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_TERMINAL_PROMPT": "0",
+        "HOME": os.devnull,
         "LANG": "C",
         "LC_ALL": "C",
         "PATH": os.defpath,
+        "XDG_CONFIG_HOME": os.devnull,
     }
 
 
@@ -73,11 +84,20 @@ async def _bounded_git_common_directory(directory: Path) -> Path | None:
         if _has_git_marker(directory):
             raise RepositoryIdentityError("repository_identity_unavailable")
         return None
+    if not git_version_supported(await git_version_async(executable)):
+        # Below the minimum the identity is not vouched for (Git before 2.13, for one, printed
+        # ``--git-common-dir`` relative to the top level rather than to the directory it ran in,
+        # which would commit a different repository). A directory with no Git marker keeps its
+        # plain directory identity, exactly as on a machine without Git.
+        if _has_git_marker(directory):
+            raise RepositoryIdentityError(GIT_VERSION_UNSUPPORTED)
+        return None
     try:
         process = await asyncio.create_subprocess_exec(
             executable,
             "-c",
-            "core.fsmonitor=false",
+            # Empty disables fsmonitor on every Git; ``false`` is a hook command before 2.36.
+            "core.fsmonitor=",
             "-c",
             f"core.hooksPath={os.devnull}",
             "-c",
@@ -88,7 +108,8 @@ async def _bounded_git_common_directory(directory: Path) -> Path | None:
             "--is-inside-work-tree",
             "--is-bare-repository",
             # No ``--path-format=absolute``: Git before 2.31 echoes it as an extra output line
-            # (#1040). The relative answer is resolved against ``directory`` below instead.
+            # (#1040). ``--git-common-dir`` has no absolute spelling there; a relative answer is
+            # relative to ``directory`` (where ``-C`` started Git) and is resolved against it.
             "--git-common-dir",
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,

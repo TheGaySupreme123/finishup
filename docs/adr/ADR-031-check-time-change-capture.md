@@ -16,9 +16,13 @@ the task-base root in `src/yoetz/adapters/sqlite/repository.py` and
 `tests/unit/application/test_semantic_case_check_change.py`,
 `tests/unit/application/test_check_time_change_facade.py`,
 `tests/unit/application/test_semantic_case_packet_completeness.py`,
-`tests/integration/service/test_check_time_change.py` and the ledger conformance suite.
+`tests/integration/service/test_check_time_change.py` and the ledger conformance suite. The Git
+range (#1040 amendment) is `src/yoetz/adapters/git_version.py` and
+`src/yoetz/adapters/git_rev_parse.py`, held by `tests/unit/adapters/test_git_old_versions.py` and
+`scripts/ci/service_image_smoke.sh`.
 **Relates to:** ADR-006 (AI-powered review packet), ADR-008 (service trust boundary), ADR-009
-(egress), ADR-011 (structural subject-state capture), and issues #883, #904, #907, #920, #1045.
+(egress), ADR-011 (structural subject-state capture), and issues #883, #904, #907, #920, #1040,
+#1045.
 
 ## Context
 
@@ -68,13 +72,14 @@ content-returning read needed its own decision. This is that decision, for exact
    (`--no-replace-objects`) and partial clones are refused, so a capture never fetches. The ADR-011
    root and metadata fences apply (a real `.git` directory, no alternates). Because a diff against
    the working tree runs any `clean` filter the repository defines, the capture also asks Git for
-   its whole effective configuration (`git config --list --name-only --includes --show-scope`) and
+   its whole effective configuration (`git config --list --name-only --includes --show-origin`) and
    refuses any `filter.*`, `include.*`, `includeIf.*` or partial-clone key, from whichever file or
-   include it came. That needs Git 2.26 or later; an older Git cannot answer, and the capture is
-   unavailable rather than taken without the check. The effective-config check and the diffs are
-   separate Git calls, so a filter written into the repository config between them would run; only
-   a process of the same user can do that, and that user can already run code as itself, so this
-   window is low severity. The read has these fences:
+   include it came; only the runner's own command-line values are exempt. A Git that cannot answer
+   makes the capture unavailable rather than taken without the check. (This first used
+   `--show-scope`, which needs Git 2.26; see the #1040 amendment.) The effective-config check and
+   the diffs are separate Git calls, so a filter written into the repository config between them
+   would run; only a process of the same user can do that, and that user can already run code as
+   itself, so this window is low severity. The read has these fences:
    - **The validated root, and only it.** Discovery accepts a directory only when the repository
      Git finds for it has its `.git` directly beneath the top level it reports and the directory
      lies inside that top level, so a `core.worktree` that points one repository's metadata at
@@ -195,7 +200,8 @@ content-returning read needed its own decision. This is that decision, for exact
    `check_time_change_base_unavailable`, `check_time_change_truncated` (a file or part not shown)
    and `check_time_change_redacted` join the packet and check coverage. Beside
    `check_time_change_unavailable` the check records one closed reason code,
-   `check_time_change_unavailable_<reason>` (`git_unavailable`, `not_git`, `unsafe_root`,
+   `check_time_change_unavailable_<reason>` (`git_unavailable`, `git_version_unsupported`,
+   `not_git`, `unsafe_root`,
    `unsupported_repository`, `git_failed`, `changed_during_capture`, `redaction_incomplete`,
    `repository_mismatch`, `capture_failed`, `no_linked_subject`, `no_packet_room`), frozen with the
    job so recovery reproduces it. Receipts (JSON detail, markdown and text), `check` and `status`
@@ -278,7 +284,8 @@ The capture is unavailable, and says so, for linked Git worktrees and a submodul
 opened as the root (in both, `.git` is a file pointing elsewhere, which the ADR-011 open fence
 refuses as `unsafe_root`), group- or world-writable roots, repositories whose effective config
 defines a filter or an include (for example a repository-local Git LFS or git-crypt setup),
-partial clones, Git older than 2.26, an object store reached through a link or borrowed through
+partial clones, a system Git older than 2.25 (`git_version_unsupported`), an object store reached
+through a link or borrowed through
 `commondir` or alternates, a `core.worktree` redirection, a root replaced between Git calls, and a
 working tree or object store that kept changing through every attempt. Tracked files that are
 links or multiply linked are named but not shown. Hard-linked object files (a local `git clone`)
@@ -408,3 +415,52 @@ unchanged. The owner authorized the privacy/egress content-selection change on 2
    backfill after the change's own backfill. The input manifest lists each under `caller_evidence`
    (partial when cut), and the privacy gateway and never-send scan apply to it as to any
    repository excerpt.
+
+## Amendment (issue #1040 follow-up, tb4n5): Git 2.25 is the supported minimum
+
+**Owner decision (2026-10-13):** the documented minimum Git is 2.25, the Git of Ubuntu 20.04 and
+of images built on it (`condaforge/miniforge3:24.9.2-0`). It covers every Git Yoetz runs: the
+repository identity the control handshake resolves, ADR-011 structural capture and this capture.
+Yoetz always runs the system Git, the first `git` on `os.defpath` (`/bin:/usr/bin`); a newer Git
+elsewhere on `PATH` (a conda environment's, for one) is never used.
+
+**What changed.** tb4n5 showed that on Git 2.25 every connection closed once the vault was ready
+and, after that was fixed, that the capture still could not run. Each Git argument newer than the
+minimum is gone, replaced by one every supported Git answers the same way:
+
+| Was | Needs | Older Git did | Now |
+| --- | --- | --- | --- |
+| `rev-parse --path-format=absolute` | 2.31 | echoed the option as an extra output line | `--show-toplevel`, `--absolute-git-dir` (2.13); a relative `--git-common-dir` is resolved against the directory Git ran in, canonicalised as `--path-format=absolute` does, so commitments do not change |
+| `rev-parse --verify --end-of-options` | 2.30 | dropped the option unread (it then guarded nothing) | every revision is a fixed spelling or starts with an object id, and one starting with `-` is refused before Git runs |
+| `diff --no-relative` | 2.28 | refused every diff (exit 129) | `-c diff.relative=false`, inert where the setting does not exist |
+| `config --show-scope` | 2.26 | refused (exit 129) | `--show-origin` (2.8); only `command line:` entries are the runner's own |
+| `GIT_CONFIG_GLOBAL=/dev/null` alone | 2.32 | ignored it and read `$HOME/.gitconfig` | the hardened runners also set `HOME` and `XDG_CONFIG_HOME` to `os.devnull` |
+| `-c core.fsmonitor=false` | 2.36 | ran `false` as the fsmonitor hook | `-c core.fsmonitor=`, which disables it on every Git |
+
+The `GIT_CONFIG_GLOBAL` row was a fence gap, not only a failure: the ADR-011 runner set `HOME` to
+the workspace root, so on Git before 2.32 a `.gitconfig` committed to the repository was Git's
+global configuration, and a filter driver defined there ran during structural capture's
+`git diff`. No global configuration is read on any supported Git now.
+
+**Below the minimum.** Each adapter reads `git --version` once per Git executable (cached by its
+file identity). A known version older than 2.25 is refused with the closed token
+`git_version_unsupported`: the repository-identity resolver refuses a directory with a Git marker
+(a directory without one keeps its plain directory identity, as without Git), structural capture
+refuses to open the workspace (`yoetz state capture` prints the remedy), and this capture reports
+`check_time_change_unavailable_git_version_unsupported` (one more recorded gap code, classified
+exactly as its G7 siblings, so the gap table holds 216 recorded codes plus 3 readiness-only rows
+under the unreleased classification version `"8"`). An unreadable version is not refused;
+every later Git call still fails closed on output it does not expect. The continuation
+`system_git_upgrade_required` tells an agent to ask the owner to install Git 2.25 or later as the
+system Git. The handshake that resolves the identity closes without answering; the service records
+`handshake_service_fault` with the closed reason, and the client reports `service_handshake_failed`
+instead of `service_incompatible` (`docs/INTERFACES.md`, control handshake).
+
+**Verification.** `tests/unit/adapters/test_git_old_versions.py` reproduces the `rev-parse`,
+`diff`, `config` and `GIT_CONFIG_GLOBAL` behaviour of Git 2.25 with the real Git behind a shim,
+holds every adapter to none of the replaced arguments, shows a committed `.gitconfig` filter and a
+repository fsmonitor hook never run, and pins the commitment to the one `--path-format=absolute`
+produced.
+PR CI's conda-image smoke (`scripts/ci/service_image_smoke.sh`) runs the real Git 2.25 there:
+ready status, `start` and a deterministic check whose change capture must succeed, inside a Git
+repository.

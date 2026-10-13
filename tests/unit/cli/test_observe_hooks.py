@@ -5591,6 +5591,30 @@ def test_auto_start_transport_failures_map_to_closed_diagnostic_reasons(
     assert outcome.reason == reason
 
 
+@pytest.mark.parametrize("phase", ["handshake", "handshake_git_version"])
+def test_auto_start_names_a_handshake_its_own_service_failed(tmp_path: Path, phase: str) -> None:
+    """#1040 follow-up: not a service still to start, not another installation to replace."""
+
+    from yoetz.cli.hook_diagnostics import (
+        _REASONS,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.ports.control import ControlError
+
+    async def connect(_kind: object):
+        raise ControlError("service_unavailable", retryable=False, phase=phase)
+
+    outcome = _auto_start(
+        "cursor",
+        "cursor:handshake",
+        _state=tmp_path,
+        workspace_locator=str(tmp_path.resolve()),
+        connect=connect,
+    )
+    assert outcome.mapping is None
+    assert outcome.reason == "service_handshake_failed"
+    assert outcome.reason in _REASONS
+
+
 def test_auto_start_malformed_success_is_result_invalid_not_a_mapping(tmp_path: Path) -> None:
     class _Malformed(_InstantAckClient):
         async def start(self, request: object, *, deadline_ms: int | None = None) -> object:

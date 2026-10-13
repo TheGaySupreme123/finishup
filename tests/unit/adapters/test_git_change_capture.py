@@ -591,10 +591,10 @@ def test_deadline_inside_the_diff_lists_every_file_and_shows_none(
     assert "untracked words" not in text and "the untracked count above is a lower bound" in text
 
 
-def test_git_without_show_scope_fails_closed_before_any_diff(
+def test_an_unreadable_effective_config_fails_closed_before_any_diff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Git older than 2.26 rejects ``--show-scope``; the filter check is never skipped."""
+    """A Git that cannot list its effective config never gets to run a diff (filter check)."""
 
     repository = _repository(tmp_path)
     (repository / "selectors.ts").write_text("export const changed = 1;\n", encoding="utf-8")
@@ -603,8 +603,8 @@ def test_git_without_show_scope_fails_closed_before_any_diff(
 
     def run(handle: Any, arguments: tuple[str, ...], **kwargs: Any) -> tuple[int, bytes]:
         calls.append(arguments)
-        if "--show-scope" in arguments:
-            raise ValueError("git_failed")  # exit 129: unknown option
+        if "--list" in arguments and "--show-origin" in arguments:
+            raise ValueError("git_failed")  # exit 129: an option this Git does not know
         return real(handle, arguments, **kwargs)
 
     monkeypatch.setattr(capture_module, "run_read_only_git", run)

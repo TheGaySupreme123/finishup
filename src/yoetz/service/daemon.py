@@ -200,6 +200,7 @@ from yoetz.service.control_protocol import (
     ControlProtocolError,
     ControlSession,
     ControlStream,
+    HandshakeServiceFault,
     encode_control_frame,
     parse_control_request,
     read_control_frame,
@@ -548,6 +549,32 @@ def _structural_request_id(body: object) -> str | None:
         return validate_id(IdKind.REQUEST, value) if isinstance(value, str) else None
     except Exception:
         return None
+
+
+def _record_handshake_service_fault(fault: HandshakeServiceFault) -> str:
+    """Record, service-side, why this service failed its own side of a handshake (#1040).
+
+    The peer saw only a closed connection. A typed refusal (the repository-identity resolver's
+    closed reason, ``git_version_unsupported`` for one) is recorded as the public error
+    ``handshake_service_fault`` with that token as ``reason_code``; anything else is recorded as
+    the unexpected exception it was, with its class and origin. No path, Git output or stderr
+    reaches either record.
+    """
+
+    if fault.refusal is not None:
+        return record_public_error_without_raising(
+            component="service.daemon",
+            operation="control_handshake",
+            reason="handshake_service_fault",
+            reason_code=fault.refusal,
+        )
+    cause = fault.__cause__
+    return record_unexpected_exception_without_raising(
+        cause if cause is not None else fault,
+        component="service.daemon",
+        operation="control_handshake",
+        phase="handshake",
+    )
 
 
 class _Listener(Protocol):
@@ -1751,6 +1778,9 @@ class ServiceDaemon:
                         repository_context_resolver=self._resolve_repository_context,
                     )
             except TimeoutError:
+                return
+            except HandshakeServiceFault as fault:
+                _record_handshake_service_fault(fault)
                 return
             except ControlProtocolError as exc:
                 if exc.reason in {"manifest_mismatch", "protocol_mismatch"}:

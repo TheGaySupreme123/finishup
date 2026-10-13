@@ -376,6 +376,10 @@ CAPTURE_HANDOFF_RETIRED_GAP: Final = "capture_handoff_retired"
 CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "git_unavailable": "Git is not installed where the Yoetz service runs.",
+        "git_version_unsupported": (
+            "the Git where the Yoetz service runs is older than 2.25, the oldest Git Yoetz "
+            "supports."
+        ),
         "not_git": "the check's directory is not a Git repository.",
         "unsafe_root": (
             "the repository failed a safety check (a link, another owner, a working tree "
@@ -383,7 +387,7 @@ CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyTy
         ),
         "unsupported_repository": (
             "the repository uses a setup the capture does not read (a Git filter or include, a "
-            "partial clone, a borrowed object store, or Git older than 2.26)."
+            "partial clone or a borrowed object store)."
         ),
         "git_failed": "a Git command failed or ran out of time.",
         "changed_during_capture": (

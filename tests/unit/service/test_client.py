@@ -1338,20 +1338,190 @@ async def test_on_demand_reports_incompatibility_when_no_supersede_candidate_exi
     assert untouched.value.reason == "service_incompatible"
 
 
-def test_protocol_rejection_reasons_map_to_service_incompatible() -> None:
+def test_only_an_answered_manifest_mismatch_maps_to_service_incompatible() -> None:
     import yoetz.service.client as client_module
     from yoetz.service.control_protocol import ControlProtocolError
 
-    for reason in ("manifest_mismatch", "handshake_rejected"):
-        mapped = client_module._protocol_error(  # pyright: ignore[reportPrivateUsage]
-            ControlProtocolError(reason)
-        )
-        assert mapped.reason == "service_incompatible"
-        assert mapped.retryable is True
+    mapped = client_module._protocol_error(  # pyright: ignore[reportPrivateUsage]
+        ControlProtocolError("manifest_mismatch")
+    )
+    assert mapped.reason == "service_incompatible"
+    assert mapped.retryable is True
     mismatch = client_module._protocol_error(  # pyright: ignore[reportPrivateUsage]
         ControlProtocolError("protocol_mismatch")
     )
     assert mismatch.reason == "protocol_mismatch"
+
+
+def _holder(digest: str | None, version: str | None) -> object:
+    from yoetz.service.lifecycle import SingletonHolder
+
+    return SingletonHolder(
+        pid=626, instance_id="svc_test", schema_manifest_digest=digest, service_version=version
+    )
+
+
+@pytest.mark.parametrize(
+    ("stamp", "locator", "git_too_old", "expected"),
+    [
+        # #1040 (tb4n5 wdm): the holder is this installation (same pid, version and manifest).
+        ("same", True, False, ("service_unavailable", "handshake", False)),
+        ("same", True, True, ("service_unavailable", "handshake_git_version", False)),
+        # Without a workspace the service never runs Git during the handshake.
+        ("same", False, True, ("service_unavailable", "handshake", False)),
+        # An unreadable stamp demonstrates nothing either way.
+        ("none", True, False, ("service_unavailable", "handshake", False)),
+        # Only a stamp naming another identity is an incompatibility.
+        ("other_digest", True, True, ("service_incompatible", None, True)),
+        ("other_version", True, False, ("service_incompatible", None, True)),
+        ("predates_stamp_fields", True, False, ("service_incompatible", None, True)),
+    ],
+)
+def test_an_unanswered_hello_is_incompatible_only_when_the_stamp_names_another_installation(
+    monkeypatch: pytest.MonkeyPatch,
+    stamp: str,
+    locator: bool,
+    git_too_old: bool,
+    expected: tuple[str, str | None, bool],
+) -> None:
+    import yoetz.observability.logging as logging_module
+    import yoetz.service.client as client_module
+    from yoetz import __version__
+    from yoetz.protocol.schemas import schema_manifest_digest
+
+    own = schema_manifest_digest()
+    holders: dict[str, object | None] = {
+        "same": _holder(own, __version__),
+        "none": None,
+        "other_digest": _holder("sha256:" + "0" * 64, __version__),
+        "other_version": _holder(own, "0.0.1"),
+        "predates_stamp_fields": _holder(None, None),
+    }
+    recorded: list[dict[str, object]] = []
+
+    def record(**fields: object) -> str:
+        recorded.append(fields)
+        return _CORRELATION_FOR_TEST
+
+    monkeypatch.setattr(client_module, "service_holder_identity", lambda: holders[stamp])
+    monkeypatch.setattr(client_module, "_system_git_below_minimum", lambda: git_too_old)
+    monkeypatch.setattr(logging_module, "record_public_error_without_raising", record)
+
+    error = client_module._unanswered_hello(  # pyright: ignore[reportPrivateUsage]
+        WorkspaceLocator("/private/repository") if locator else None
+    )
+
+    reason, phase, retryable = expected
+    assert (error.reason, error.phase, error.retryable) == (reason, phase, retryable)
+    assert client_module.handshake_failure(error) == phase
+    if reason == "service_incompatible":
+        assert recorded == []
+        assert error.correlation_id is None
+    else:
+        assert error.correlation_id == _CORRELATION_FOR_TEST
+        assert recorded == [
+            {
+                "component": "service.client",
+                "operation": "control_handshake",
+                "reason": "service_handshake_failed",
+                "reason_code": "git_version_unsupported" if git_too_old and locator else None,
+            }
+        ]
+
+
+@pytest.mark.anyio
+async def test_a_hello_closed_by_this_installations_holder_is_a_failed_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n5 wdm: same pid, version and manifest, so neither incompatible nor replaceable."""
+
+    import yoetz.observability.logging as logging_module
+    import yoetz.service.client as client_module
+    from yoetz import __version__
+    from yoetz.protocol.schemas import schema_manifest_digest
+    from yoetz.service.control_protocol import ControlProtocolError
+
+    stream = _FakeStream()
+    spawned = 0
+
+    async def connect() -> AuthenticatedUnixStream:
+        return cast(AuthenticatedUnixStream, stream)
+
+    async def rejected_handshake(*_args: object, **_kwargs: object) -> object:
+        raise ControlProtocolError("handshake_rejected")
+
+    async def must_not_supersede(*, deadline: float, replace_newer: bool = False) -> bool:
+        raise AssertionError("an identical holder is never signalled")
+
+    def spawn() -> None:
+        nonlocal spawned
+        spawned += 1
+
+    monkeypatch.setattr(client_module, "connect_control", connect)
+    monkeypatch.setattr(client_module, "client_handshake", rejected_handshake)
+    monkeypatch.setattr(
+        client_module,
+        "service_holder_identity",
+        lambda: _holder(schema_manifest_digest(), __version__),
+    )
+    monkeypatch.setattr(client_module, "_system_git_below_minimum", lambda: True)
+
+    def record(**_fields: object) -> str:
+        return _CORRELATION_FOR_TEST
+
+    monkeypatch.setattr(logging_module, "record_public_error_without_raising", record)
+    monkeypatch.setattr(client_module, "supersede_incompatible_service", must_not_supersede)
+    monkeypatch.setattr(client_module, "_spawn_service_process", spawn)
+
+    with pytest.raises(ControlError) as refused:
+        await connect_service_on_demand(
+            ControlClientKind.MCP_BRIDGE,
+            workspace_locator=WorkspaceLocator("/private/repository"),
+            timeout_seconds=1.0,
+        )
+
+    assert refused.value.reason == "service_unavailable"
+    assert refused.value.phase == "handshake_git_version"
+    assert refused.value.retryable is False
+    assert refused.value.correlation_id == _CORRELATION_FOR_TEST
+    assert stream.closed is True
+    assert spawned == 0
+
+
+@pytest.mark.anyio
+async def test_on_demand_reports_a_failed_handshake_without_spawning_or_superseding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A holder of this installation that closes the hello is reported, never replaced (#1040)."""
+
+    import yoetz.service.client as client_module
+
+    attempts = 0
+    failed = ControlError(
+        "service_unavailable",
+        retryable=False,
+        phase="handshake",
+        correlation_id=_CORRELATION_FOR_TEST,
+    )
+
+    async def scripted_connect(kind: ControlClientKind, **_kwargs: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        raise failed
+
+    async def must_not_supersede(*, deadline: float) -> bool:
+        raise AssertionError("a failed handshake is not an incompatible holder")
+
+    def must_not_spawn() -> None:
+        raise AssertionError("a running holder must not race a spawned successor")
+
+    monkeypatch.setattr(client_module, "_connect_service_attempt", scripted_connect)
+    monkeypatch.setattr(client_module, "supersede_incompatible_service", must_not_supersede)
+    monkeypatch.setattr(client_module, "_spawn_service_process", must_not_spawn)
+    with pytest.raises(ControlError) as refused:
+        await connect_service_on_demand(ControlClientKind.MCP_BRIDGE, timeout_seconds=5.0)
+    assert refused.value is failed
+    assert attempts == 1
 
 
 def test_transport_error_preserves_endpoint_unsafe() -> None:
