@@ -40,6 +40,10 @@ from yoetz.adapters.integrations.observation_admission import (
     flush_admission,
     plan_admission,
 )
+from yoetz.adapters.integrations.yoetz_call_rejections import (
+    consume_rejected_yoetz_call,
+    read_rejected_yoetz_calls,
+)
 from yoetz.config.paths import PathSafetyError, ensure_owner_only_dir, state_dir
 from yoetz.domain.observation import (
     CAPTURE_HANDOFF_RECONCILE_AGE_MS,
@@ -202,6 +206,8 @@ _OPEN_PRE_TTL_MS: Final = 600_000
 # one of these conditions.
 _MAX_UNPAIRED_SCOPES: Final = 256
 _MAX_CODEX_TOOL_HOOK_ENTRIES: Final = 256
+# ``wait`` calls remembered per yielded code-mode cell (#1038 follow-up): the newest are kept.
+_MAX_CODE_MODE_CELL_WAITS: Final = 16
 _MAX_PENDING_ROLLOUT_TOKEN: Final = 128
 # Undecided rollout tool items (#910). Past the soft bound the stream reconciler
 # delivers the oldest with ``unpaired_event``; the hard bound only guards the
@@ -1164,6 +1170,9 @@ class ObservationOutboxRow:
     last_reason: str | None = None
     last_attempt_at: Timestamp | None = None
     consecutive_reason_attempts: int = 0
+    # When the row entered the outbox (local wall clock), the start of its delivery lag (tb4n5).
+    # Rows written before this field carry none and are not measured. Not part of the identity.
+    enqueued_at: Timestamp | None = None
 
     @property
     def row_identity(self) -> str:
@@ -1194,6 +1203,8 @@ class ObservationOutboxRow:
         ):
             raise ProtocolValueError("invalid_event_value_type")
         if self.last_attempt_at is not None and type(self.last_attempt_at) is not Timestamp:
+            raise ProtocolValueError("invalid_timestamp")
+        if self.enqueued_at is not None and type(self.enqueued_at) is not Timestamp:
             raise ProtocolValueError("invalid_timestamp")
         if (
             type(self.consecutive_reason_attempts) is not int
@@ -1287,6 +1298,13 @@ class _CodeModeCell:
     other tool item, an uninterpretable row, or an unattributable Yoetz item was read.
     A Yoetz-only cell is Yoetz's own call, so its output also stays local. Cells
     stored before this field have neither and keep the rule above.
+
+    A cell that yields (tb4n5, #1038 follow-up) stays open under its explicit identity:
+    ``runtime_cell`` is the host's runtime cell id from the ``Script running with cell ID``
+    header, ``waits`` the ``wait`` calls that named it, and ``held_output`` the yield output,
+    kept local until the cell's terminal ``wait`` output (or its turn's end) decides the cell.
+    Only then is the held output delivered as the cell's record, or dropped when the cell was
+    Yoetz's own or tool-less.
     """
 
     hook_clock_at_start: int
@@ -1294,6 +1312,9 @@ class _CodeModeCell:
     touched: int
     session: str | None = None
     nested: Literal["yoetz", "other"] | None = None
+    runtime_cell: str | None = None
+    waits: tuple[str, ...] = ()
+    held_output: ObservationEnvelope | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1528,6 +1549,16 @@ def _evicted_open_calls_from_json(raw: object) -> dict[str, tuple[str, str, str,
     return dict(sorted(calls.items(), key=lambda item: item[1][3])[-_MAX_CODEX_TOOL_HOOK_ENTRIES:])
 
 
+def _code_mode_item_sessions_from_json(raw: object) -> dict[str, int]:
+    sessions: dict[str, int] = {}
+    if not isinstance(raw, Mapping):
+        return sessions
+    for session, touched in cast(Mapping[object, object], raw).items():
+        if _pending_rollout_item_token(session) and type(touched) is int and touched >= 0:
+            sessions[cast(str, session)] = min(touched, _MAX_SAFE_INTEGER)
+    return dict(sorted(sessions.items(), key=lambda item: item[1])[-_MAX_CODEX_TOOL_HOOK_ENTRIES:])
+
+
 def _code_mode_cells_from_json(raw: object) -> dict[str, _CodeModeCell]:
     cells: dict[str, _CodeModeCell] = {}
     if not isinstance(raw, Mapping):
@@ -1559,12 +1590,35 @@ def _code_mode_cells_from_json(raw: object) -> dict[str, _CodeModeCell]:
         # #1038: an unreadable session or nested mark reads as absent, which keeps the #917 rule.
         session = entry.get("session")
         nested = entry.get("nested")
+        runtime_cell = entry.get("runtime_cell")
+        raw_waits = entry.get("waits")
+        waits: tuple[str, ...] = ()
+        if isinstance(raw_waits, (tuple, list)):
+            waits = tuple(
+                cast(str, wait)
+                for wait in cast(tuple[object, ...] | list[object], raw_waits)
+                if _pending_rollout_item_token(wait)
+            )[-_MAX_CODE_MODE_CELL_WAITS:]
+        held_output: ObservationEnvelope | None = None
+        raw_held = entry.get("held_output")
+        if isinstance(raw_held, Mapping):
+            try:
+                held_output = observation_envelope_from_json(
+                    JsonObject(cast(Mapping[str, JsonValue], raw_held))
+                )
+            except ProtocolValueError, TypeError, ValueError:
+                held_output = None
         cells[key] = _CodeModeCell(
             start,
             local,
             touched,
             session=cast(str, session) if _pending_rollout_item_token(session) else None,
             nested=nested if nested in ("yoetz", "other") else None,
+            runtime_cell=(
+                cast(str, runtime_cell) if _pending_rollout_item_token(runtime_cell) else None
+            ),
+            waits=waits,
+            held_output=held_output,
         )
     return dict(
         sorted(cells.items(), key=lambda item: item[1].touched)[-_MAX_CODEX_TOOL_HOOK_ENTRIES:]
@@ -1585,6 +1639,14 @@ class _OpenPre:
     shell ``apply_patch <<EOF`` that Codex intercepts. The session stream's
     observed file change closes it (``close_pre_only_attempt``); one nothing
     closes still expires with ``pending_attempt_expired``.
+
+    ``tool_name`` (tb4n5) is the call's structural tool name, kept so an
+    expired attempt names its producer in ``observe status``.
+    ``request_commitment`` is the commitment to a Yoetz call: its tool, the
+    request's Yoetz session and writer, and its ``request_id``
+    (``yoetz_call_rejections``). When Yoetz's MCP server answered that call
+    with an error, which a host sends no post for, the attempt closes as
+    rejected by Yoetz instead of expiring.
     """
 
     event_kind: str
@@ -1595,6 +1657,8 @@ class _OpenPre:
     receipt_time: Timestamp | None
     deadline: Timestamp | None
     pre_only: bool = False
+    tool_name: str | None = None
+    request_commitment: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -1644,6 +1708,28 @@ class _OpenPre:
             raise ProtocolValueError("invalid_timestamp")
 
 
+def _open_pre_tool_name(value: object) -> str | None:
+    """A structural tool name kept on a pending attempt: a bounded printable token, else none."""
+
+    if (
+        type(value) is str
+        and 1 <= len(value) <= 128
+        and value.isascii()
+        and all(0x21 <= ord(char) <= 0x7E for char in value)
+    ):
+        return value
+    return None
+
+
+def _request_commitment_token(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 71
+        and value.startswith("sha256:")
+        and all(char in "0123456789abcdef" for char in value[7:])
+    )
+
+
 def _open_pre_deadline(receipt_time: Timestamp | None) -> Timestamp | None:
     if receipt_time is None:
         return None
@@ -1666,6 +1752,12 @@ def _open_pre_to_json(value: _OpenPre) -> JsonObject:
             "receipt_time": None if value.receipt_time is None else value.receipt_time.wire,
             "deadline": None if value.deadline is None else value.deadline.wire,
             **({"pre_only": True} if value.pre_only else {}),
+            **({} if value.tool_name is None else {"tool_name": value.tool_name}),
+            **(
+                {}
+                if value.request_commitment is None
+                else {"request_commitment": value.request_commitment}
+            ),
         }
     )
 
@@ -1730,6 +1822,8 @@ def _open_pre_from_json(
     deadline = _safe_timestamp(row.get("deadline"))
     if receipt_time is not None and deadline is None:
         deadline = _open_pre_deadline(receipt_time)
+    tool_name = row.get("tool_name")
+    request_commitment = row.get("request_commitment")
     try:
         return _OpenPre(
             event_kind=event_kind,
@@ -1740,6 +1834,12 @@ def _open_pre_from_json(
             receipt_time=receipt_time,
             deadline=deadline,
             pre_only=row.get("pre_only") is True,
+            tool_name=_open_pre_tool_name(tool_name),
+            request_commitment=(
+                cast(str, request_commitment)
+                if _request_commitment_token(request_commitment)
+                else None
+            ),
         )
     except ProtocolValueError, TypeError, ValueError:
         return None
@@ -1771,6 +1871,188 @@ def _open_pre_map_from_json(
         if len(result) >= _MAX_OPEN_PRE:
             break
     return result
+
+
+# How a pending attempt ended without its post (tb4n5, #1041). The first three expire it with
+# ``pending_attempt_expired``; Yoetz's own rejection closes it without the gap.
+_ATTEMPT_ENDING_REASONS: Final = frozenset(
+    {"ttl", "session_end", "generation", "rejected_by_yoetz"}
+)
+_MAX_ATTEMPT_ENDINGS: Final = 16
+_REJECTION_CLOSE_GRACE_MS: Final = 5_000
+
+
+def _timestamp_ms(value: Timestamp) -> int:
+    return int(value.as_datetime().timestamp() * 1000)
+
+
+# Upper bounds (ms) of the delivery-lag buckets; one more bucket counts everything above the last.
+DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS: Final = (
+    100,
+    250,
+    500,
+    1_000,
+    2_000,
+    5_000,
+    10_000,
+    30_000,
+    60_000,
+    300_000,
+    900_000,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _DeliveryLag:
+    """How long accepted outbox rows waited between enqueue and acceptance (tb4n5).
+
+    The owner's measure of observation delivery (it replaced reading the drain counter as one):
+    a row enqueued by a hook or the stream reader and acknowledged after the service accepted
+    it. Rows enqueued before the field existed are not measured.
+    """
+
+    since: Timestamp
+    count: int = 0
+    sum_ms: int = 0
+    max_ms: int = 0
+    last_ms: int = 0
+    buckets: tuple[int, ...] = (0,) * (len(DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS) + 1)
+
+    def observe(self, lag_ms: int) -> _DeliveryLag:
+        index = next(
+            (
+                position
+                for position, bound in enumerate(DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS)
+                if lag_ms <= bound
+            ),
+            len(DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS),
+        )
+        buckets = list(self.buckets)
+        buckets[index] = min(_MAX_SAFE_INTEGER, buckets[index] + 1)
+        return dataclasses.replace(
+            self,
+            count=min(_MAX_SAFE_INTEGER, self.count + 1),
+            sum_ms=min(_MAX_SAFE_INTEGER, self.sum_ms + lag_ms),
+            max_ms=max(self.max_ms, lag_ms),
+            last_ms=lag_ms,
+            buckets=tuple(buckets),
+        )
+
+    def quantile_at_most(self, numerator: int, denominator: int) -> int | None:
+        """The upper bound of the bucket holding the given rank; ``None`` above the last bound."""
+
+        if self.count == 0:
+            return None
+        rank = max(1, -(-self.count * numerator // denominator))
+        seen = 0
+        for position, count in enumerate(self.buckets):
+            seen += count
+            if seen >= rank:
+                return (
+                    DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS[position]
+                    if position < len(DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS)
+                    else None
+                )
+        return None
+
+    def to_json(self) -> JsonObject:
+        return JsonObject(
+            {
+                "buckets": self.buckets,
+                "count": self.count,
+                "last_ms": self.last_ms,
+                "max_ms": self.max_ms,
+                "since": self.since.wire,
+                "sum_ms": self.sum_ms,
+            }
+        )
+
+
+def _delivery_lag_from_json(raw: object) -> _DeliveryLag | None:
+    if not isinstance(raw, Mapping):
+        return None
+    entry = cast(Mapping[str, object], raw)
+    since = _safe_timestamp(entry.get("since"))
+    buckets = entry.get("buckets")
+    counters = [entry.get(key) for key in ("count", "sum_ms", "max_ms", "last_ms")]
+    if (
+        since is None
+        or not isinstance(buckets, (tuple, list))
+        or len(cast(tuple[object, ...] | list[object], buckets))
+        != len(DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS) + 1
+        or not all(
+            type(value) is int and 0 <= value <= _MAX_SAFE_INTEGER
+            for value in (*cast(tuple[object, ...] | list[object], buckets), *counters)
+        )
+    ):
+        return None
+    count, sum_ms, max_ms, last_ms = cast(list[int], counters)
+    return _DeliveryLag(
+        since,
+        count,
+        sum_ms,
+        max_ms,
+        last_ms,
+        tuple(cast(tuple[int, ...] | list[int], buckets)),
+    )
+
+
+def _pending_attempt_ending_valid(raw: object) -> JsonObject | None:
+    if not isinstance(raw, Mapping):
+        return None
+    entry = cast(Mapping[str, object], raw)
+    reason = entry.get("reason")
+    tool = entry.get("tool")
+    generation = entry.get("generation")
+    ended_at = entry.get("ended_at")
+    call = entry.get("call")
+    if (
+        reason not in _ATTEMPT_ENDING_REASONS
+        or (tool is not None and _open_pre_tool_name(tool) is None)
+        or (generation is not None and (type(generation) is not int or generation < 0))
+        or _safe_timestamp(ended_at) is None
+        or not (type(call) is str and len(call) == 16 and call.isalnum())
+    ):
+        return None
+    return JsonObject(
+        {
+            "call": call,
+            "ended_at": cast(str, ended_at),
+            "generation": generation,
+            "reason": cast(str, reason),
+            "tool": cast(str | None, tool),
+        }
+    )
+
+
+def _pending_attempt_endings_from_json(raw: object) -> list[JsonObject]:
+    if not isinstance(raw, Mapping):
+        return []
+    recent = cast(Mapping[str, object], raw).get("recent")
+    if not isinstance(recent, (tuple, list)):
+        return []
+    endings = [
+        valid
+        for valid in (
+            _pending_attempt_ending_valid(item)
+            for item in cast(tuple[object, ...] | list[object], recent)
+        )
+        if valid is not None
+    ]
+    return endings[-_MAX_ATTEMPT_ENDINGS:]
+
+
+def _pending_attempt_ending_counts_from_json(raw: object) -> dict[str, int]:
+    if not isinstance(raw, Mapping):
+        return {}
+    counts = cast(Mapping[str, object], raw).get("counts")
+    if not isinstance(counts, Mapping):
+        return {}
+    return {
+        reason: min(count, _MAX_SAFE_INTEGER)
+        for reason, count in cast(Mapping[str, object], counts).items()
+        if reason in _ATTEMPT_ENDING_REASONS and type(count) is int and count >= 0
+    }
 
 
 def _session_hook_call(state: _WorkspaceState, session_commitment: str, call_id: str) -> bool:
@@ -1964,6 +2246,14 @@ class _WorkspaceState:
     frontier_motion_delivered: dict[str, _FrontierMotionDelivered] | None = None
     frontier_motion_recency: int = 0
     open_pre: dict[str, _OpenPre] | None = None
+    # How pending attempts ended without their post (tb4n5, #1041): a count per closed reason
+    # (``ttl``, ``session_end``, ``generation`` expire with ``pending_attempt_expired``;
+    # ``rejected_by_yoetz`` does not) and the newest few endings' structural identity.
+    pending_attempt_endings: list[JsonObject] | None = None
+    pending_attempt_ending_counts: dict[str, int] | None = None
+    # Delivery lag (tb4n5): enqueue -> accepted acknowledgement of each outbox row, in fixed
+    # millisecond buckets, with count, sum, max, last and the moment measurement began.
+    delivery_lag: _DeliveryLag | None = None
     unpaired_scopes: set[str] | None = None
     # One informational notice per new (source, session, generation) orphan
     # scope, keyed by that lane; kept after delivery so a scope is announced once.
@@ -1975,6 +2265,10 @@ class _WorkspaceState:
     codex_tool_hooks: dict[str, _ToolHookSession] | None = None
     code_mode_cells: dict[str, _CodeModeCell] | None = None
     codex_tool_hook_clock: int = 0
+    # Host sessions whose rollout has written a completed tool item (tb4n5): only there does a
+    # code-mode cell with no nested tool item prove it made no tool call. Bounded like the maps
+    # above; a forgotten session only keeps its cells' records.
+    code_mode_item_sessions: dict[str, int] | None = None
     # Per rollout tool item read before any hook post it pairs with (#910): its
     # source identity -> its account, stamped on the clock above. A later hook
     # post or the turn's end decides it (see MAX_PENDING_ROLLOUT_ITEMS).
@@ -2127,6 +2421,10 @@ class _WorkspaceState:
             self.unsupported_events = set()
         if self.open_pre is None:
             self.open_pre = {}
+        if self.pending_attempt_endings is None:
+            self.pending_attempt_endings = []
+        if self.pending_attempt_ending_counts is None:
+            self.pending_attempt_ending_counts = {}
         if self.unpaired_scopes is None:
             self.unpaired_scopes = set()
         if self.unpaired_notices is None:
@@ -2135,6 +2433,8 @@ class _WorkspaceState:
             self.codex_tool_hooks = {}
         if self.code_mode_cells is None:
             self.code_mode_cells = {}
+        if self.code_mode_item_sessions is None:
+            self.code_mode_item_sessions = {}
         if self.pending_rollout_items is None:
             self.pending_rollout_items = {}
         if self.evicted_open_calls is None:
@@ -2823,11 +3123,15 @@ def _copy_state(state: _WorkspaceState) -> _WorkspaceState:
         frontier_motion_notices=dict(state.frontier_motion_notices or {}),
         frontier_motion_delivered=dict(state.frontier_motion_delivered or {}),
         open_pre=dict(state.open_pre or {}),
+        pending_attempt_endings=list(state.pending_attempt_endings or ()),
+        pending_attempt_ending_counts=dict(state.pending_attempt_ending_counts or {}),
+        delivery_lag=state.delivery_lag,
         unpaired_scopes=set(state.unpaired_scopes or ()),
         unpaired_notices=dict(state.unpaired_notices or {}),
         codex_tool_hooks=dict(state.codex_tool_hooks or {}),
         code_mode_cells=dict(state.code_mode_cells or {}),
         codex_tool_hook_clock=state.codex_tool_hook_clock,
+        code_mode_item_sessions=dict(state.code_mode_item_sessions or {}),
         pending_rollout_items=dict(state.pending_rollout_items or {}),
         evicted_open_calls=dict(state.evicted_open_calls or {}),
         pairing_state_unknown=state.pairing_state_unknown,
@@ -3308,6 +3612,7 @@ def _outbox_row_to_spliced_json(row: ObservationOutboxRow) -> JsonValue:
             "last_reason": row.last_reason,
             "last_attempt_at": (None if row.last_attempt_at is None else row.last_attempt_at.wire),
             "consecutive_reason_attempts": row.consecutive_reason_attempts,
+            **({} if row.enqueued_at is None else {"enqueued_at": row.enqueued_at.wire}),
         },
     )
 
@@ -3327,6 +3632,7 @@ def _outbox_row_to_json(row: ObservationOutboxRow) -> JsonObject:  # pyright: ig
             "last_reason": row.last_reason,
             "last_attempt_at": (None if row.last_attempt_at is None else row.last_attempt_at.wire),
             "consecutive_reason_attempts": row.consecutive_reason_attempts,
+            **({} if row.enqueued_at is None else {"enqueued_at": row.enqueued_at.wire}),
         }
     )
 
@@ -5134,29 +5440,139 @@ class LocalObservationStore:
         ended = state.ended_sessions or set()
         ended_generations = state.ended_session_generations or {}
         generations = state.session_generations or {}
-        stale_keys: list[str] = []
+        stale: list[tuple[str, str]] = []
         for key, entry in state.open_pre.items():
-            stale = entry.deadline is None or entry.deadline <= now
+            reason: str | None = None
+            if entry.deadline is None or entry.deadline <= now:
+                reason = "ttl"
             if entry.session_commitment is not None:
                 ended_generation = ended_generations.get(entry.session_commitment)
-                stale = stale or (
-                    entry.session_commitment in ended
+                if (
+                    reason is None
+                    and entry.session_commitment in ended
                     and (ended_generation is None or entry.source_generation == ended_generation)
-                )
+                ):
+                    reason = "session_end"
                 current_generation = generations.get(entry.session_commitment)
-                stale = stale or (
-                    current_generation is not None
+                if (
+                    reason is None
+                    and current_generation is not None
                     and entry.source_generation is not None
                     and entry.source_generation < current_generation
-                )
-            if stale:
-                stale_keys.append(key)
-        if not stale_keys:
-            return False
-        for key in stale_keys:
-            del state.open_pre[key]
+                ):
+                    reason = "generation"
+            if reason is not None:
+                stale.append((key, reason))
+        # Yoetz answered these calls with an error, so the host sends no post: they ended, as
+        # rejected by Yoetz, and are never a pipeline loss (tb4n5, #1041). A known rejection wins
+        # over every expiry reason: an attempt about to expire no longer waits out the grace,
+        # since no post can pair with it any more.
+        closed = self._close_rejected_yoetz_attempts(
+            state, now, due=frozenset(key for key, _reason in stale)
+        )
+        expired = [(key, reason) for key, reason in stale if key in state.open_pre]
+        if not expired:
+            return closed
+        for key, reason in expired:
+            self._note_pending_attempt_ending(state, key, state.open_pre.pop(key), reason, now)
         self._note_gap_state(state, _PENDING_ATTEMPT_EXPIRED_GAP)
         return True
+
+    @staticmethod
+    def _note_pending_attempt_ending(
+        state: _WorkspaceState, key: str, entry: _OpenPre, reason: str, now: Timestamp
+    ) -> None:
+        """Keep the bounded structural identity of one attempt that ended without its post.
+
+        Only closed tokens cross: the reason, the structural tool name, the source generation, the
+        moment, and an opaque 16-hex digest of the pairing key. Never a call id or argument.
+        """
+
+        assert state.pending_attempt_endings is not None
+        assert state.pending_attempt_ending_counts is not None
+        state.pending_attempt_ending_counts[reason] = min(
+            _MAX_SAFE_INTEGER, state.pending_attempt_ending_counts.get(reason, 0) + 1
+        )
+        state.pending_attempt_endings.append(
+            JsonObject(
+                {
+                    "call": canonical_digest(
+                        JsonObject({"kind": "pending-attempt-ending", "key": key})
+                    ).removeprefix("sha256:")[:16],
+                    "ended_at": now.wire,
+                    "generation": entry.source_generation,
+                    "reason": reason,
+                    "tool": entry.tool_name,
+                }
+            )
+        )
+        del state.pending_attempt_endings[:-_MAX_ATTEMPT_ENDINGS]
+
+    def _close_rejected_yoetz_attempts(
+        self, state: _WorkspaceState, now: Timestamp, *, due: frozenset[str] = frozenset()
+    ) -> bool:
+        """Close each pending Yoetz attempt that Yoetz's MCP server answered with an error.
+
+        A rejection matches an attempt with the same call commitment (tool, the request's Yoetz
+        session and writer, and its ``request_id``) that was received no later than the
+        rejection. A host that does send a post for an error result sends it within moments, so
+        a rejection younger than the grace waits, except for an attempt in ``due``, which is about
+        to expire and can no longer pair with any post. Each rejection is consumed
+        installation-wide before it closes the oldest attempt it matches, so it closes at most
+        one attempt in any workspace. An unreadable or absent record, or one another workspace
+        consumed first, closes nothing, and the attempt keeps its ordinary expiry.
+        """
+
+        assert state.open_pre is not None
+        waiting = [
+            (key, entry)
+            for key, entry in state.open_pre.items()
+            if entry.request_commitment is not None and entry.receipt_time is not None
+        ]
+        if not waiting:
+            return False
+        settled_before = _timestamp_ms(now) - _REJECTION_CLOSE_GRACE_MS
+        claimants = {
+            key: canonical_digest(
+                JsonObject(
+                    {
+                        "kind": "rejected-call-claimant",
+                        "key": key,
+                        "receipt_time": cast(Timestamp, entry.receipt_time).wire,
+                    }
+                )
+            ).removeprefix("sha256:")[:32]
+            for key, entry in waiting
+        }
+        closed = False
+        for commitment, at_ms, claimant in read_rejected_yoetz_calls(self._root):
+            candidates = [
+                (key, entry)
+                for key, entry in waiting
+                if entry.request_commitment == commitment
+                and entry.receipt_time is not None
+                and _timestamp_ms(entry.receipt_time) <= at_ms
+                and key in state.open_pre
+                and (at_ms <= settled_before or key in due)
+                and claimant in (None, claimants[key])
+            ]
+            if not candidates:
+                continue
+            key, entry = min(
+                candidates,
+                key=lambda item: (
+                    # The attempt that already claimed this rejection keeps it.
+                    claimant != claimants[item[0]],
+                    cast(Timestamp, item[1].receipt_time).wire,
+                    item[0],
+                ),
+            )
+            if not consume_rejected_yoetz_call(self._root, commitment, at_ms, claimants[key]):
+                continue
+            del state.open_pre[key]
+            self._note_pending_attempt_ending(state, key, entry, "rejected_by_yoetz", now)
+            closed = True
+        return closed
 
     def note_open_pre(
         self,
@@ -5169,13 +5585,17 @@ class LocalObservationStore:
         source_generation: int | None = None,
         receipt_time: Timestamp | None = None,
         pre_only: bool = False,
+        tool_name: str | None = None,
+        request_commitment: str | None = None,
     ) -> bool:
         """Record an open Pre event awaiting its Post.
 
         New hook callers provide the complete source/session/generation scope.
         The unscoped form remains readable for pre-#607 local state and tests,
         but it is never used by the shared ingress. ``pre_only`` marks a call
-        whose host sends no post (#1041, ``_OpenPre.pre_only``).
+        whose host sends no post (#1041, ``_OpenPre.pre_only``). ``tool_name``
+        and ``request_commitment`` identify the call if it ends without its
+        post (tb4n5, ``_OpenPre``).
         """
 
         with self._lock:
@@ -5235,6 +5655,10 @@ class LocalObservationStore:
                 receipt_time=stamp,
                 deadline=_open_pre_deadline(stamp),
                 pre_only=pre_only and session_commitment is not None and source is not None,
+                tool_name=_open_pre_tool_name(tool_name),
+                request_commitment=(
+                    request_commitment if _request_commitment_token(request_commitment) else None
+                ),
             )
             self._save(workspace, state)
             return True
@@ -6264,7 +6688,12 @@ class LocalObservationStore:
             return True
 
     def note_code_mode_nested_item(
-        self, workspace: str, session_commitment: str, *, yoetz_owned: bool
+        self,
+        workspace: str,
+        session_commitment: str,
+        *,
+        yoetz_owned: bool,
+        tool_item: bool = False,
     ) -> None:
         """Mark the open code-mode cells of a session with one nested rollout row (#1038).
 
@@ -6274,12 +6703,22 @@ class LocalObservationStore:
         or a Yoetz item read while more than one cell is open (parallel cells, or a
         cell interrupted before its output) makes every open cell of the session
         ``other``: a row that cannot be attributed only ever removes the mark, so no
-        cell borrows another cell's Yoetz calls.
+        cell borrows another cell's Yoetz calls. ``tool_item`` records that the
+        session's rollout writes completed tool items at all (tb4n5): only then does
+        a cell without one prove it made no tool call.
         """
 
         with self._lock:
             state = self._load(workspace)
             assert state.code_mode_cells is not None
+            assert state.code_mode_item_sessions is not None
+            changed = False
+            if tool_item and session_commitment not in state.code_mode_item_sessions:
+                state.code_mode_item_sessions[session_commitment] = state.codex_tool_hook_clock
+                while len(state.code_mode_item_sessions) > _MAX_CODEX_TOOL_HOOK_ENTRIES:
+                    oldest = min(state.code_mode_item_sessions.items(), key=lambda item: item[1])
+                    del state.code_mode_item_sessions[oldest[0]]
+                changed = True
             open_cells = [
                 (key, cell)
                 for key, cell in state.code_mode_cells.items()
@@ -6288,7 +6727,6 @@ class LocalObservationStore:
             mark: Literal["yoetz", "other"] = (
                 "yoetz" if yoetz_owned and len(open_cells) == 1 else "other"
             )
-            changed = False
             for key, cell in open_cells:
                 nested = "other" if cell.nested == "other" else mark
                 if nested != cell.nested:
@@ -6297,7 +6735,14 @@ class LocalObservationStore:
             if changed:
                 self._save(workspace, state)
 
-    def finish_code_mode_cell(self, workspace: str, session_commitment: str, call_id: str) -> bool:
+    def finish_code_mode_cell(
+        self,
+        workspace: str,
+        session_commitment: str,
+        call_id: str,
+        *,
+        tool_items_recorded: bool = False,
+    ) -> bool:
         """Return whether a code-mode cell's output stays local (#917, #1038).
 
         It stays local when a Codex tool hook of this session was ingested
@@ -6306,10 +6751,16 @@ class LocalObservationStore:
         the cell ran, so the nested hook rows are the cell's record. It also
         stays local when every nested tool item the rollout wrote inside the
         cell was one of Yoetz's own MCP calls (#1038): such a cell is Yoetz's
-        own call, recorded by those calls whatever the hook timing. Otherwise
-        the output is delivered and records the cell; a hook that may belong to
-        a later cell never removes this cell's record. An output whose call was
-        never noted is delivered.
+        own call, recorded by those calls whatever the hook timing. It stays
+        local, too, when the cell made no observable tool call (tb4n5, ADR-029
+        amendment): the rollout, whose profile records every completed tool
+        call as an item (``tool_items_recorded``) and which already wrote one
+        in this session, wrote no tool item inside it, and no tool hook of the
+        session was ingested since its call was read, so the cell did no
+        workspace activity. Otherwise the output is
+        delivered and records the cell; a hook that may belong to a later cell
+        never removes this cell's record. An output whose call was never noted
+        is delivered. A yielded cell is decided by ``decide_yielded_code_mode_cell``.
         """
 
         with self._lock:
@@ -6321,15 +6772,201 @@ class LocalObservationStore:
                 return False
             if current.output_local is not None:
                 return current.output_local
-            entry = (state.codex_tool_hooks or {}).get(session_commitment)
-            local = current.nested == "yoetz" or (
-                entry is not None and entry.settled > current.hook_clock_at_start
+            local = self._code_mode_cell_local(
+                state, session_commitment, current, tool_items_recorded=tool_items_recorded
             )
             self._remember_code_mode_cell(
                 state, key, dataclasses.replace(current, output_local=local)
             )
             self._save(workspace, state)
             return local
+
+    @staticmethod
+    def _code_mode_cell_local(
+        state: _WorkspaceState,
+        session_commitment: str,
+        cell: _CodeModeCell,
+        *,
+        tool_items_recorded: bool,
+    ) -> bool:
+        """The #917/#1038 cell rule plus the tool-less cell (see ``finish_code_mode_cell``)."""
+
+        entry = (state.codex_tool_hooks or {}).get(session_commitment)
+        if cell.nested == "yoetz":
+            return True
+        if entry is not None and entry.settled > cell.hook_clock_at_start:
+            return True
+        return (
+            tool_items_recorded
+            and session_commitment in (state.code_mode_item_sessions or {})
+            and cell.nested is None
+            and (entry is None or entry.touched <= cell.hook_clock_at_start)
+        )
+
+    def yield_code_mode_cell(
+        self,
+        workspace: str,
+        session_commitment: str,
+        call_id: str,
+        runtime_cell: str,
+        output: ObservationEnvelope,
+    ) -> bool:
+        """Keep a yielded code-mode cell open under its runtime id; return whether to hold (#1038).
+
+        Codex writes ``Script running with cell ID <id>`` as the ``exec`` output when a cell
+        outlives its yield window; the cell keeps running, its nested calls are written after
+        this output, and its terminal output arrives on a later ``wait``. Deciding the cell here
+        froze it before the nested calls could be read, so Yoetz's own ``check`` cell was
+        delivered as an unclassified ``exec`` after the check it ran (tb4n5). The output is held
+        with the cell instead and the cell stays open. A cell already decided holds its output
+        (its record, if any, was delivered when it was decided); an output whose call was never
+        noted is delivered, as before.
+        """
+
+        if not _pending_rollout_item_token(runtime_cell) or type(output) is not ObservationEnvelope:
+            raise ProtocolValueError("invalid_event_value_type")
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            key = _code_mode_cell_key(session_commitment, call_id)
+            current = state.code_mode_cells.get(key)
+            if current is None:
+                return False
+            if current.output_local is not None or current.runtime_cell is not None:
+                return True
+            self._remember_code_mode_cell(
+                state,
+                key,
+                dataclasses.replace(current, runtime_cell=runtime_cell, held_output=output),
+            )
+            self._save(workspace, state)
+            return True
+
+    def note_code_mode_wait(
+        self, workspace: str, session_commitment: str, wait_call_id: str, runtime_cell: str
+    ) -> None:
+        """Record that a ``wait`` call resumes the session's open yielded cell ``runtime_cell``.
+
+        The newest open cell with that runtime id is the one a ``wait`` can still reach: an older
+        one whose terminal output was never read is left to its turn's end.
+        """
+
+        if not _pending_rollout_item_token(wait_call_id) or not _pending_rollout_item_token(
+            runtime_cell
+        ):
+            return
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            candidates = [
+                (key, cell)
+                for key, cell in state.code_mode_cells.items()
+                if cell.session == session_commitment
+                and cell.runtime_cell == runtime_cell
+                and cell.output_local is None
+            ]
+            if not candidates:
+                return
+            key, cell = max(candidates, key=lambda item: item[1].touched)
+            if wait_call_id in cell.waits:
+                return
+            self._remember_code_mode_cell(
+                state,
+                key,
+                dataclasses.replace(
+                    cell, waits=(*cell.waits, wait_call_id)[-_MAX_CODE_MODE_CELL_WAITS:]
+                ),
+            )
+            self._save(workspace, state)
+
+    def decide_yielded_code_mode_cell(
+        self,
+        workspace: str,
+        session_commitment: str,
+        wait_call_id: str,
+        *,
+        tool_items_recorded: bool = False,
+    ) -> tuple[str, ObservationEnvelope] | None:
+        """Decide the yielded cell a terminal ``wait`` output finished (#1038 follow-up).
+
+        The cell is decided from what was read while it was open, exactly as an unyielded cell is
+        at its output (``finish_code_mode_cell``). Returns ``(call_id key, held output)`` when the
+        held output must now be delivered as the cell's record, else ``None``. The held output is
+        kept until ``settle_code_mode_cell_output`` confirms the delivery, so a pass that could not
+        deliver it delivers it on replay.
+        """
+
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            found = next(
+                (
+                    (key, cell)
+                    for key, cell in state.code_mode_cells.items()
+                    if cell.session == session_commitment and wait_call_id in cell.waits
+                ),
+                None,
+            )
+            if found is None:
+                return None
+            key, cell = found
+            if cell.output_local is None:
+                local = self._code_mode_cell_local(
+                    state, session_commitment, cell, tool_items_recorded=tool_items_recorded
+                )
+                cell = dataclasses.replace(
+                    cell, output_local=local, held_output=None if local else cell.held_output
+                )
+                self._remember_code_mode_cell(state, key, cell)
+                self._save(workspace, state)
+            if cell.output_local or cell.held_output is None:
+                return None
+            return key, cell.held_output
+
+    def close_yielded_code_mode_cells(
+        self, workspace: str, session_commitment: str, *, tool_items_recorded: bool = False
+    ) -> tuple[tuple[str, ObservationEnvelope], ...]:
+        """Decide every still-open yielded cell of a session at its turn's end (#1038 follow-up).
+
+        Codex keeps a yielded cell running past the turn; one nobody waited on would otherwise
+        hold its output forever. It is decided from what was read while it was open, and every
+        held output still owed is returned, oldest first, for delivery.
+        """
+
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            changed = False
+            owed: list[tuple[int, str, ObservationEnvelope]] = []
+            for key, cell in tuple(state.code_mode_cells.items()):
+                if cell.session != session_commitment or cell.runtime_cell is None:
+                    continue
+                if cell.output_local is None:
+                    local = self._code_mode_cell_local(
+                        state, session_commitment, cell, tool_items_recorded=tool_items_recorded
+                    )
+                    cell = dataclasses.replace(
+                        cell, output_local=local, held_output=None if local else cell.held_output
+                    )
+                    self._remember_code_mode_cell(state, key, cell)
+                    changed = True
+                if not cell.output_local and cell.held_output is not None:
+                    owed.append((cell.touched, key, cell.held_output))
+            if changed:
+                self._save(workspace, state)
+            return tuple((key, output) for _touched, key, output in sorted(owed))
+
+    def settle_code_mode_cell_output(self, workspace: str, cell_key: str) -> None:
+        """Forget a decided cell's held output once its delivery committed."""
+
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            cell = state.code_mode_cells.get(cell_key)
+            if cell is None or cell.held_output is None or cell.output_local is not False:
+                return
+            state.code_mode_cells[cell_key] = dataclasses.replace(cell, held_output=None)
+            self._save(workspace, state)
 
     def note_pending_rollout_item(
         self,
@@ -6516,7 +7153,12 @@ class LocalObservationStore:
         state.code_mode_cells.pop(key, None)
         state.code_mode_cells[key] = dataclasses.replace(cell, touched=state.codex_tool_hook_clock)
         while len(state.code_mode_cells) > _MAX_CODEX_TOOL_HOOK_ENTRIES:
-            oldest = min(state.code_mode_cells.items(), key=lambda item: item[1].touched)[0]
+            # A yielded cell's held output is its only record until it is decided: the bound
+            # forgets the least recently active cell that holds none first.
+            oldest = min(
+                state.code_mode_cells.items(),
+                key=lambda item: (item[1].held_output is not None, item[1].touched),
+            )[0]
             del state.code_mode_cells[oldest]
 
     @_read_mostly
@@ -6922,7 +7564,11 @@ class LocalObservationStore:
             assert state.pending_outbox is not None
             if not reclaimed:
                 state.pending_outbox.append(
-                    ObservationOutboxRow(codex_session_id=codex_session_id, envelope=envelope)
+                    ObservationOutboxRow(
+                        codex_session_id=codex_session_id,
+                        envelope=envelope,
+                        enqueued_at=self._wall_timestamp(),
+                    )
                 )
                 # Resolve before projecting so the size-checked bytes are exactly
                 # the bytes _save would otherwise re-encode: one encode, not three.
@@ -7528,7 +8174,11 @@ class LocalObservationStore:
             if refusal is not None:
                 return refusal
             candidate.pending_outbox.append(
-                ObservationOutboxRow(codex_session_id=codex_session_id, envelope=envelope)
+                ObservationOutboxRow(
+                    codex_session_id=codex_session_id,
+                    envelope=envelope,
+                    enqueued_at=self._wall_timestamp(),
+                )
             )
         encoded_size = len(self._encode_state(workspace, candidate))
         if encoded_size > self._state_byte_limit(workspace, candidate, required=encoded_size):
@@ -7588,7 +8238,9 @@ class LocalObservationStore:
                     self._pending_row_matches(row, session, envelope)
                     for row in state.pending_outbox
                 ):
-                    state.pending_outbox.append(ObservationOutboxRow(session, envelope))
+                    state.pending_outbox.append(
+                        ObservationOutboxRow(session, envelope, enqueued_at=self._wall_timestamp())
+                    )
             self._resolve_gap_state(state, _LOCAL_OUTBOX_OVERFLOW_GAP)
             if newly_observed:
                 state.selection_admitted_count = min(
@@ -8627,6 +9279,59 @@ class LocalObservationStore:
             )
 
     @_read_mostly
+    def pending_attempt_endings(self, workspace: str) -> JsonObject:
+        """How pending attempts ended without their post (tb4n5, #1041), for ``observe status``.
+
+        ``counts`` per closed reason: ``ttl``, ``session_end`` and ``generation`` expired with
+        ``pending_attempt_expired``; ``rejected_by_yoetz`` closed without it because Yoetz's MCP
+        server answered the call with an error, which a host sends no post for. ``recent`` keeps
+        the newest endings' structural identity (reason, tool name, source generation, moment,
+        opaque call digest) so an export names the producer. ``open`` counts attempts still
+        waiting. Local-only, like ``summary_refusals``; never a call id or argument.
+        """
+
+        workspace = validate_commitment(workspace)
+        with self._reading():
+            state = self._load(workspace)
+            return JsonObject(
+                {
+                    "counts": JsonObject(
+                        dict(sorted((state.pending_attempt_ending_counts or {}).items()))
+                    ),
+                    "open": len(state.open_pre or {}),
+                    "recent": tuple(state.pending_attempt_endings or ()),
+                }
+            )
+
+    @_read_mostly
+    def local_retention(self, workspace: str) -> JsonObject:
+        """Local copies the bounded stores shed, which is never content loss (tb4n5).
+
+        The envelope ring (256 rows, and the state bound) keeps local copies of accepted rows as
+        pairing context, and the dedup fence remembers which inputs were already accepted.
+        Shedding either cut no delivered payload, so it is reported here under its own reason and
+        never as ``truncated_payload``; a pairing it can no longer prove keeps ``unpaired_event``.
+        """
+
+        workspace = validate_commitment(workspace)
+        with self._reading():
+            state = self._load(workspace)
+            reasons: dict[str, JsonValue] = {}
+            for code, name in (
+                (_LOCAL_ENVELOPE_RETENTION_GAP, "envelope_ring"),
+                (_LOCAL_DEDUP_EVICTED_GAP, "dedup_fence"),
+            ):
+                seen = (state.gaps or {}).get(code)
+                reasons[name] = (
+                    None
+                    if seen is None
+                    else JsonObject(
+                        {"first_seen": seen.first_seen.wire, "last_seen": seen.last_seen.wire}
+                    )
+                )
+            return JsonObject(reasons)
+
+    @_read_mostly
     def capture_reservation_bootstrap_ready(
         self, workspace: str, task_id: str | None = None
     ) -> bool:
@@ -9318,6 +10023,36 @@ class LocalObservationStore:
             return False
 
     @_read_mostly
+    def held_rollout_workspaces(self) -> tuple[str, ...]:
+        """Workspaces holding undecided rollout tool items (#910), for the pre-check wait (tb4n5)."""
+
+        with self._reading():
+            return tuple(
+                sorted(
+                    (
+                        workspace
+                        for workspace, state in self._iter_workspaces()
+                        if state.pending_rollout_items
+                    ),
+                    key=str.encode,
+                )
+            )
+
+    @_read_mostly
+    def held_rollout_summary(self, workspace: str) -> JsonObject:
+        """How many rollout tool items wait for their hook post, and the oldest's read time (tb4n5).
+
+        Local-only, for ``observe status``: an item held here reaches the ledger only once a post,
+        the turn's end, idleness, the soft bound, or a check's observation wait releases it.
+        """
+
+        workspace = validate_commitment(workspace)
+        with self._reading():
+            items = tuple((self._load(workspace).pending_rollout_items or {}).values())
+            oldest = min((item.envelope.receipt_time.wire for item in items), default=None)
+            return JsonObject({"count": len(items), "oldest_read_at": oldest})
+
+    @_read_mostly
     def buffered_admission_host_sessions(self, workspace: str) -> tuple[str, ...]:
         """Return the host sessions with inputs still held in the admission buffer (#1012)."""
 
@@ -9677,6 +10412,7 @@ class LocalObservationStore:
                             if reason is not None and reason == row.last_reason
                             else (1 if reason is not None else 0)
                         ),
+                        enqueued_at=row.enqueued_at,
                     )
                     state.pending_outbox[index] = updated
                     self._save(workspace, state)
@@ -9797,6 +10533,51 @@ class LocalObservationStore:
         finally:
             os.close(descriptor)
 
+    def _note_delivery_lag(self, state: _WorkspaceState, row: ObservationOutboxRow) -> None:
+        """Measure one accepted row's enqueue-to-acceptance lag; a legacy row is not measured."""
+
+        if row.enqueued_at is None:
+            return
+        now = self._wall_timestamp()
+        lag_ms = max(0, _timestamp_ms(now) - _timestamp_ms(row.enqueued_at))
+        current = state.delivery_lag or _DeliveryLag(now)
+        state.delivery_lag = current.observe(min(lag_ms, _MAX_SAFE_INTEGER))
+
+    @_read_mostly
+    def delivery_lag(self, workspace: str) -> JsonObject:
+        """Enqueue-to-acceptance lag of accepted outbox rows, for ``observe status`` (tb4n5).
+
+        The owner's delivery measure: how long a hook or stream row waited in the local outbox
+        before the service accepted it. Quantiles are the upper bound of the bucket that holds
+        the rank (``null`` above the last bound). Local-only, outside the frozen control schema.
+        """
+
+        workspace = validate_commitment(workspace)
+        with self._reading():
+            lag = self._load(workspace).delivery_lag
+            if lag is None:
+                return JsonObject(
+                    {
+                        "bucket_upper_bounds_ms": DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS,
+                        "count": 0,
+                        "measured": "enqueue_to_accept",
+                    }
+                )
+            return JsonObject(
+                {
+                    "bucket_counts": lag.buckets,
+                    "bucket_upper_bounds_ms": DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS,
+                    "count": lag.count,
+                    "last_ms": lag.last_ms,
+                    "max_ms": lag.max_ms,
+                    "mean_ms": lag.sum_ms // lag.count if lag.count else 0,
+                    "measured": "enqueue_to_accept",
+                    "p50_ms_at_most": lag.quantile_at_most(1, 2),
+                    "p95_ms_at_most": lag.quantile_at_most(95, 100),
+                    "since": lag.since.wire,
+                }
+            )
+
     def acknowledge_outbox(
         self, workspace: str, codex_session_id: str, source_identity: str
     ) -> bool:
@@ -9816,6 +10597,7 @@ class LocalObservationStore:
                         state.selection_delivered_count
                         + self._represented_input_count(row.envelope),
                     )
+                    self._note_delivery_lag(state, row)
                     self._resolve_delivered(state)
                     state.last_successful_drain_mono_ms = int(self._now_mono() * 1000)
                     state.monotonic_epoch = self._boot_epoch()
@@ -9837,6 +10619,7 @@ class LocalObservationStore:
                         state.selection_delivered_count
                         + self._represented_input_count(row.envelope),
                     )
+                    self._note_delivery_lag(state, row)
                     self._resolve_delivered(state)
                     state.last_successful_drain_mono_ms = int(self._now_mono() * 1000)
                     state.monotonic_epoch = self._boot_epoch()
@@ -10250,7 +11033,11 @@ class LocalObservationStore:
         ):
             return None
         candidate.pending_outbox.append(
-            ObservationOutboxRow(codex_session_id=codex_session_id, envelope=envelope)
+            ObservationOutboxRow(
+                codex_session_id=codex_session_id,
+                envelope=envelope,
+                enqueued_at=self._wall_timestamp(),
+            )
         )
         projected = self._encode_state(workspace, candidate)
         if len(projected) > self._state_byte_limit(workspace, candidate, required=len(projected)):
@@ -10449,13 +11236,11 @@ class LocalObservationStore:
                 state.dedup_order.remove(evicted_key)
                 state.dedup.discard(evicted_key)
                 evicted_session = state.dedup_lanes.pop(evicted_key, None)
+                # Local retention, not content loss (tb4n5, ADR-029 amendment): the forgotten
+                # replay fence cut no payload, so it is never ``truncated_payload``.
                 self._note_gap_state(state, _LOCAL_DEDUP_EVICTED_GAP)
-                self._note_gap_state(state, ObservationGapCode.TRUNCATED_PAYLOAD.value)
                 if evicted_session is not None:
                     self._note_session_gap_state(state, evicted_session, _LOCAL_DEDUP_EVICTED_GAP)
-                    self._note_session_gap_state(
-                        state, evicted_session, ObservationGapCode.TRUNCATED_PAYLOAD.value
-                    )
             state.cursors[cursor_key] = envelope.cursor
             if envelope.source is ObservationSource.CODEX_HOOK and envelope.event_kind in {
                 "PreToolUse",
@@ -10474,17 +11259,14 @@ class LocalObservationStore:
                 if evicted_index is not None:
                     evicted = state.envelopes.pop(evicted_index)
                     self._note_evicted_tool_call(state, evicted)
+                    # The ring holds local copies of rows already accepted (pairing context);
+                    # evicting one cuts no delivered payload. It is local retention, never
+                    # ``truncated_payload`` (tb4n5: every long session crossed 256 envelopes).
                     self._note_gap_state(state, _LOCAL_ENVELOPE_RETENTION_GAP)
-                    self._note_gap_state(state, ObservationGapCode.TRUNCATED_PAYLOAD.value)
                     self._note_session_gap_state(
                         state,
                         evicted.session_commitment,
                         _LOCAL_ENVELOPE_RETENTION_GAP,
-                    )
-                    self._note_session_gap_state(
-                        state,
-                        evicted.session_commitment,
-                        ObservationGapCode.TRUNCATED_PAYLOAD.value,
                     )
             state.last_receipt = envelope.receipt_time
             mono_ms = int(self._now_mono() * 1000)
@@ -10545,6 +11327,7 @@ class LocalObservationStore:
         is_pre_event: bool,
         is_post_event: bool,
         pre_only: bool = False,
+        request_commitment: str | None = None,
     ) -> tuple[ObservationIngestResult, ObservationEnvelope]:
         """Atomically admit one hook envelope and update its pairing state.
 
@@ -10552,6 +11335,9 @@ class LocalObservationStore:
         one. Hook ingress opens an outer batch so its outbox enqueue remains in
         the same local transaction; nested use keeps that transaction intact.
         ``pre_only`` marks a pre-event whose host never sends a post (#1041).
+        ``request_commitment`` commits to one Yoetz call (tool, Yoetz session,
+        writer and request; ``yoetz_call_rejections``) so Yoetz's own rejection
+        can close it.
         """
 
         if type(envelope) is not ObservationEnvelope:
@@ -10612,6 +11398,7 @@ class LocalObservationStore:
                 is_pre_event=expected_pre,
                 is_post_event=expected_post,
                 pre_only=pre_only is True and expected_pre,
+                request_commitment=request_commitment if expected_pre else None,
             )
 
     def _ingest_with_pairing(
@@ -10627,6 +11414,7 @@ class LocalObservationStore:
         is_pre_event: bool,
         is_post_event: bool,
         pre_only: bool = False,
+        request_commitment: str | None = None,
     ) -> tuple[ObservationIngestResult, ObservationEnvelope]:
         """Admit one hook envelope and update its pairing state atomically.
 
@@ -10763,6 +11551,8 @@ class LocalObservationStore:
                     source_generation=source_generation,
                     receipt_time=envelope.receipt_time,
                     pre_only=pre_only,
+                    tool_name=_open_pre_tool_name(envelope.structural_payload.get("tool_name")),
+                    request_commitment=request_commitment,
                 )
             elif paired and is_post_event and envelope.event_kind == "PostToolUse":
                 if correlation_id is None:
@@ -11395,7 +12185,7 @@ class LocalObservationStore:
             payload = self._trim_retained_prefix(
                 workspace_commitment, state, len(order), state_limit, drop_partials
             )
-        truncated = False
+        shed_envelopes = False
         assert state.envelopes is not None
         if state.envelopes and len(payload) > state_limit:
 
@@ -11408,17 +12198,18 @@ class LocalObservationStore:
                     evicted = candidate.envelopes.pop(evicted_index)
                     self._note_evicted_tool_call(candidate, evicted)
                     candidate.envelopes_truncated = True
-                    self._note_gap_state(candidate, ObservationGapCode.TRUNCATED_PAYLOAD.value)
+                    # Same local copies as the ring bound: retention, not content loss.
+                    self._note_gap_state(candidate, _LOCAL_ENVELOPE_RETENTION_GAP)
                     self._note_session_gap_state(
                         candidate,
                         evicted.session_commitment,
-                        ObservationGapCode.TRUNCATED_PAYLOAD.value,
+                        _LOCAL_ENVELOPE_RETENTION_GAP,
                     )
 
             payload = self._trim_retained_prefix(
                 workspace_commitment, state, len(state.envelopes), state_limit, drop_envelopes
             )
-            truncated = True
+            shed_envelopes = True
         assert state.pending_outbox is not None
         assert state.quarantine is not None
         assert state.gaps is not None
@@ -11442,7 +12233,7 @@ class LocalObservationStore:
             )
         truncation = state.gaps.get(ObservationGapCode.TRUNCATED_PAYLOAD.value)
         if (
-            not truncated
+            not shed_envelopes
             and truncation is not None
             and truncation.active
             and len(payload) + selected_limit // _STATE_HEADROOM_DIVISOR <= selected_limit
@@ -11454,29 +12245,16 @@ class LocalObservationStore:
             # retire the gap in the same pass that opened it. History stays in
             # gap_history; only the active flag, which reports live
             # degradation, is cleared (#310).
-            assert state.session_gaps is not None
-            bounded_count_loss = any(
-                state.gaps.get(code) is not None and state.gaps[code].active
-                for code in (_LOCAL_DEDUP_EVICTED_GAP, _LOCAL_ENVELOPE_RETENTION_GAP)
-            ) or any(
-                _LOCAL_DEDUP_EVICTED_GAP in gaps or _LOCAL_ENVELOPE_RETENTION_GAP in gaps
-                for gaps in state.session_gaps.values()
-            )
-            # A session-scoped retention gap is independent of a sibling's history. Once the
-            # workspace is healthy again, retire only the TRUNCATED marker for lanes that have no
-            # remaining local count loss; the lane-specific loss markers stay active while their
-            # bounded caches continue to be incomplete.
-            for session, gaps in tuple(state.session_gaps.items()):
-                if not (_LOCAL_DEDUP_EVICTED_GAP in gaps or _LOCAL_ENVELOPE_RETENTION_GAP in gaps):
-                    self._resolve_session_gap_state(
-                        state,
-                        ObservationGapCode.TRUNCATED_PAYLOAD.value,
-                        session,
-                    )
-            if not bounded_count_loss:
-                self._resolve_gap_state(state, ObservationGapCode.TRUNCATED_PAYLOAD.value)
-                self._resolve_gap_state(state, _LOCAL_DEDUP_EVICTED_GAP)
-                self._resolve_session_gap_state(state, _LOCAL_DEDUP_EVICTED_GAP)
+            #
+            # Local retention (the envelope ring, the dedup fence, this state
+            # bound) records only its own ``_local_*`` reasons since tb4n5, so a
+            # retention marker no longer pins the truncation flag: an active
+            # flag is a cut payload, whose delivered record keeps its own
+            # disclosure, or one a store written before that change recorded
+            # for retention. Neither is live degradation once the bound has
+            # headroom again.
+            self._resolve_gap_state(state, ObservationGapCode.TRUNCATED_PAYLOAD.value)
+            self._resolve_session_gap_state(state, ObservationGapCode.TRUNCATED_PAYLOAD.value)
             payload = self._encode_state(workspace_commitment, state)
         write_started = self._now_mono()
         _atomic_write(path, payload)
@@ -11979,6 +12757,23 @@ class LocalObservationStore:
             "open_pre": JsonObject(
                 {key: _open_pre_to_json(value) for key, value in sorted(state.open_pre.items())}
             ),
+            **(
+                {}
+                if not state.pending_attempt_endings and not state.pending_attempt_ending_counts
+                else {
+                    "pending_attempt_endings": JsonObject(
+                        {
+                            "counts": JsonObject(
+                                dict(sorted((state.pending_attempt_ending_counts or {}).items()))
+                            ),
+                            "recent": tuple(state.pending_attempt_endings or ()),
+                        }
+                    )
+                }
+            ),
+            **(
+                {} if state.delivery_lag is None else {"delivery_lag": state.delivery_lag.to_json()}
+            ),
             "stream_cursors": JsonObject(
                 {
                     key: observation_cursor_to_json(cursor)
@@ -12099,6 +12894,17 @@ class LocalObservationStore:
                             "touched": cell.touched,
                             **({} if cell.session is None else {"session": cell.session}),
                             **({} if cell.nested is None else {"nested": cell.nested}),
+                            **(
+                                {}
+                                if cell.runtime_cell is None
+                                else {"runtime_cell": cell.runtime_cell}
+                            ),
+                            **({} if not cell.waits else {"waits": list(cell.waits)}),
+                            **(
+                                {}
+                                if cell.held_output is None
+                                else {"held_output": observation_envelope_to_json(cell.held_output)}
+                            ),
                         }
                     )
                     for key, cell in sorted(
@@ -12108,6 +12914,12 @@ class LocalObservationStore:
             )
         if state.codex_tool_hook_clock:
             payload["codex_tool_hook_clock"] = state.codex_tool_hook_clock
+        if state.code_mode_item_sessions:
+            payload["code_mode_item_sessions"] = JsonObject(
+                dict(
+                    sorted(state.code_mode_item_sessions.items(), key=lambda item: item[0].encode())
+                )
+            )
         if state.evicted_open_calls:
             payload["evicted_open_calls"] = JsonObject(
                 {
@@ -12732,6 +13544,7 @@ class LocalObservationStore:
                 )
             except ProtocolValueError, TypeError, ValueError:
                 last_attempt_at = None
+            enqueued_at = _safe_timestamp(row.get("enqueued_at"))
             consecutive_raw = row.get("consecutive_reason_attempts")
             if (
                 type(consecutive_raw) is int
@@ -12757,6 +13570,7 @@ class LocalObservationStore:
                         last_reason=last_reason,
                         last_attempt_at=last_attempt_at,
                         consecutive_reason_attempts=consecutive_reason_attempts,
+                        enqueued_at=enqueued_at,
                     )
                 )
             except ProtocolValueError, TypeError, ValueError:
@@ -13119,11 +13933,21 @@ class LocalObservationStore:
             frontier_motion_delivered=frontier_motion_delivered,
             frontier_motion_recency=frontier_motion_recency,
             open_pre=open_pre,
+            pending_attempt_endings=_pending_attempt_endings_from_json(
+                raw.get("pending_attempt_endings")
+            ),
+            pending_attempt_ending_counts=_pending_attempt_ending_counts_from_json(
+                raw.get("pending_attempt_endings")
+            ),
+            delivery_lag=_delivery_lag_from_json(raw.get("delivery_lag")),
             unpaired_scopes=unpaired_scopes,
             unpaired_notices=_unpaired_notices_from_json(raw.get("unpaired_notices")),
             codex_tool_hooks=_codex_tool_hooks_from_json(raw.get("codex_tool_hooks")),
             code_mode_cells=_code_mode_cells_from_json(raw.get("code_mode_cells")),
             codex_tool_hook_clock=_bounded_counter(raw.get("codex_tool_hook_clock")),
+            code_mode_item_sessions=_code_mode_item_sessions_from_json(
+                raw.get("code_mode_item_sessions")
+            ),
             pending_rollout_items=_pending_rollout_items_from_json(
                 raw.get("pending_rollout_items")
             ),

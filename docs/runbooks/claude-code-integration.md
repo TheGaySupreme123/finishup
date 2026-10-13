@@ -728,7 +728,7 @@ provider-repair request. The service emits it only when verification is not disa
 endpoint is bound, network egress is permitted, and an LLM inference channel is enabled, and the
 provider is still structurally unusable, including when no factory id is available.
 
-Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Claude Code: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Claude Code: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012). The tb4n5 extension to rollout rows held for their hook post is Codex-only: Claude Code has no rollout stream, so there is nothing held to release.
 
 Observation-health advice follows the same boundary: `refresh_observation` for source lag, a stale
 cursor, a drain backlog, service unavailability, or a locked vault stays in operator status and
@@ -1884,7 +1884,21 @@ paired contract, so it receives the same fixes as Codex: an individually deliver
 its post share one action (described as observed via Claude Code hook), and a post with no open pre
 keeps the standing `unpaired_event` record and triggers one "Yoetz notice (no response needed)"
 per new orphan scope instead of a recurring stale-observation advisory. Claude Code has no
-code-mode cell, so the stream wrapper rule does not apply.
+code-mode cell, so the stream wrapper rule does not apply; for the same reason the tb4n5 yielded-
+and tool-less-cell decisions (ADR-029 amendment of 2026-10-13) are Codex-only, and Claude Code has
+no `clock.sleep` tool (the `clocksleep` no-activity spelling is Codex's hook name). The same
+amendment's rejected-call record is host-agnostic: on the paired ordinary profile, a pending
+`mcp__plugin_yoetz_yoetz__*` attempt whose call Yoetz's MCP server answered with an error closes as
+`rejected_by_yoetz` (after a 5 s grace in which a post, if Claude Code sends one, still pairs, or at
+once when the session ends or its generation advances). The Claude Code adapter commits to the call
+(tool, Yoetz session, writer and `request_id`) from the hook's `tool_input` before structural
+normalization drops it, and passes only that commitment on; a body too large to keep its
+`tool_input` keeps the ordinary expiry;
+`observe status` names every ending under `pending_attempt_endings`, and local ring eviction is
+`local_retention`, never `truncated_payload`. Post-only profiles keep no pending attempt, so
+nothing changes there. The hook drain diagnostic `drain_budget_exhausted` is renamed
+`drain_pass_delivered_nothing` and `observe status` reports the outbox `delivery_lag` (enqueue to
+acceptance) for Claude Code hooks exactly as for Codex (ADR-022 amendment of 2026-10-13).
 
 ### Limitation requests, `reopened` and one dialogue per concern on Claude Code (tb4n3 RC-1 and RC-7, #1024, #1030)
 

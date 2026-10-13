@@ -1018,7 +1018,7 @@ endpoint is bound, network egress is permitted, and an LLM inference channel is 
 provider is still structurally unusable, including when no factory id is available. `stop` still
 emits `{}` and leaves that delivery pending.
 
-Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Cursor: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Cursor: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012). The tb4n5 extension to rollout rows held for their hook post is Codex-only: Cursor has no rollout stream, so there is nothing held to release.
 
 Workspace binding does not trust plugin-hook CWD. It selects a single `workspace_roots` entry first,
 then `CURSOR_PROJECT_DIR`, then the explicit `--workspace` value. A multiroot workspace selects the
@@ -2020,7 +2020,21 @@ byte-identical after #917 (pinned by a replay of real payloads), and generation-
 metadata evidence without `unpaired_event`. The opt-in ordinary profile
 (`cursor-ordinary-observation-v1`) is on the conservative paired contract, so a paired pre and post
 share one action and an orphan scope yields one informational notice rather than a recurring
-advisory. Cursor has no code-mode cell, so the stream wrapper rule does not apply.
+advisory. Cursor has no code-mode cell, so the stream wrapper rule does not apply; for the same
+reason the tb4n5 yielded- and tool-less-cell decisions (ADR-029 amendment of 2026-10-13) are
+Codex-only, and Cursor has no `clock.sleep` tool (the `clocksleep` no-activity spelling is Codex's
+hook name). The same amendment's rejected-call record is host-agnostic: on the paired ordinary
+profile, a pending `yoetz:*` (or `MCP:*` Yoetz-basename) attempt whose call Yoetz's MCP server
+answered with an error closes as `rejected_by_yoetz` after a 5 s grace (at once when the session
+ends or its generation advances). The Cursor adapter commits to the call (tool, Yoetz session,
+writer and `request_id`) from the hook's `tool_input` before structural normalization drops it,
+and passes only that commitment on; a body too large to keep its `tool_input` keeps the ordinary
+expiry; `observe status` names
+every ending under `pending_attempt_endings`, and local ring eviction is `local_retention`, never
+`truncated_payload`. Post-only profiles keep no pending attempt, so nothing changes there. The hook
+drain diagnostic `drain_budget_exhausted` is renamed `drain_pass_delivered_nothing` and `observe
+status` reports the outbox `delivery_lag` (enqueue to acceptance) for Cursor hooks exactly as for
+Codex (ADR-022 amendment of 2026-10-13).
 
 ### Limitation requests, `reopened` and one dialogue per concern on Cursor (tb4n3 RC-1 and RC-7, #1024, #1030)
 

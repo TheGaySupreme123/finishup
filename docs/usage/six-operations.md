@@ -134,8 +134,10 @@ without polling `status`, add `"await_observations": true` to the check request 
 `yoetz check --await-observations`). Yoetz then waits up to about three seconds for this task's
 observations that are still being delivered before it checks, and the result's
 `observations_awaited` says whether they all arrived (`complete`), some were still on their way
-(`bounded_timeout`, with how many), or the wait could not see them (`unavailable`). The wait never
-fails the check; without the option nothing changes.
+(`bounded_timeout`, with how many), or the wait could not see them (`unavailable`). On Codex the
+wait also delivers session-log entries Yoetz was still holding to match with their hook reports,
+marked as unmatched, so they count before the check rather than after it. The wait never fails the
+check; without the option nothing changes.
 
 #### Inspecting what is left
 

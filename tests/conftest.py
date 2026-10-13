@@ -84,6 +84,29 @@ def _isolated_hook_pass_timing(  # pyright: ignore[reportUnusedFunction]
     monkeypatch.setattr(hook_timing_module, "state_dir", lambda: Path(root))
 
 
+@pytest.fixture(autouse=True)
+def _isolated_rejected_yoetz_calls(  # pyright: ignore[reportUnusedFunction]
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep the MCP bridge's rejected-call record out of the developer's real state directory.
+
+    The bridge records every error result it returns for a Yoetz tool under the platform
+    ``state_dir()`` (tb4n5, #1041). MCP tests drive error results without a state root of their
+    own, so without this redirect they would write into a live install's observation directory.
+    Tests that pass ``state_root`` are unaffected. The import is inside the fixture for the same
+    dependency-free collection reason as the diagnostic log above.
+    """
+
+    try:
+        import yoetz.adapters.integrations.yoetz_call_rejections as rejections_module
+    except ImportError:
+        return
+
+    root = tmp_path_factory.mktemp("rejected-yoetz-calls")
+    root.chmod(0o700)
+    monkeypatch.setattr(rejections_module, "state_dir", lambda: Path(root))
+
+
 @pytest.fixture(scope="session")
 def fixture_loader() -> FixtureLoader:
     """Expose the lazy read-only loader without touching Wave A resources at collection."""

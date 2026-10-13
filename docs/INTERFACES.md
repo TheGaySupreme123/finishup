@@ -5245,6 +5245,35 @@ ticket listing for its task and drops only bindings whose tickets are absent. A 
 report the native-ticket schema as available and return fewer than the 512-row listing cap; an
 unavailable schema or capped listing preserves every pending binding and retries later.
 
+`yoetz observe status` also reports two more local-only accounts, outside the frozen
+control-result schema like `summary_refusals` (tb4n5, ADR-029 amendment of 2026-10-13).
+`pending_attempt_endings` is `{"counts": {<reason>: n}, "open": n, "recent": [...]}`: how
+pending hook attempts ended without their post, by the closed reason `ttl`, `session_end`,
+`generation` (each recorded `pending_attempt_expired`) or `rejected_by_yoetz` (Yoetz's MCP server
+answered the call with an error, which a host sends no post for; no gap), and the newest 16
+endings as `{"call", "ended_at", "generation", "reason", "tool"}` where `call` is an opaque
+16-hex digest of the pairing key and `tool` the structural tool name. `local_retention` is
+`{"envelope_ring": null | {"first_seen", "last_seen"}, "dedup_fence": ...}`: the local copies the
+bounded ring, state bound and dedup fence shed, which is never content loss and never
+`truncated_payload`. `held_rollout_items` is `{"count": n, "oldest_read_at": null | <time>}`: the
+Codex rollout tool items still held for their hook post (#910). `delivery_lag` is the outbox
+delivery measure, enqueue to the acknowledgement after the service accepted the row:
+`{"measured": "enqueue_to_accept", "count", "bucket_upper_bounds_ms", "bucket_counts", "p50_ms_at_most",
+"p95_ms_at_most", "mean_ms", "max_ms", "last_ms", "since"}` (only `measured`, `count` and the bounds
+before the first sample; a quantile is `null` above the last bound). Each `ObservationOutboxRow`
+carries the optional `enqueued_at` it is measured from, outside its row identity. The hook
+diagnostic `drain_budget_exhausted` is renamed `drain_pass_delivered_nothing` (one drain pass
+delivered no row within its budget) and old rows are read back under the new name (ADR-022
+amendment of 2026-10-13). The Yoetz MCP bridge's rejection record (`record_rejected_yoetz_call`,
+`observation/yoetz-rejected-calls.json`, schema `yoetz.rejected-calls/2`) holds per entry only
+`sha256("yoetz/rejected-call/v2", tool basename, session_id, writer_id, request_id)` (an absent
+or invalid session or writer commits as `-`), a millisecond time, and the opaque claimant digest
+of the one pending attempt that consumed it, 256 newest. A hook pre-event of a Yoetz tool keeps
+the same commitment on its pending attempt (`_OpenPre.request_commitment`); the Claude Code and
+Cursor adapters compute it from the host payload and pass it to the shared ingress as
+`_request_commitment`. `consume_rejected_yoetz_call` claims an entry installation-wide under the
+record's lock and is idempotent for its claimant.
+
 `LocalObservationStore.pending_selection_losses(workspace)` returns at most 64 retained,
 fully validated and routed lanes; `selection_loss_workspaces(task_id)` filters the returned
 maintenance work to one authenticated task after bounded durable workspace discovery.
@@ -8833,7 +8862,13 @@ closed `observations_awaited` member of `check-result` 1.4.0 — `state` `comple
 request digest and the detached-check identity; the member is never recorded in the ledger or
 `check_recorded`. The wait never fails a check. Golden vectors: CAN-016
 (`fixtures/canonical/check-observations-awaited-1.4.0.case.json`). ADR-029 amendment of
-2026-10-07 owns the decision.
+2026-10-07 owns the decision. Since the tb4n5 amendment (2026-10-13) the snapshot also covers the
+task's Codex rollout rows held for their hook post: `release_held_rollout_items_for_check`
+(`adapters/integrations/codex_session_stream`) delivers each one read at least
+`HELD_ROLLOUT_CHECK_RELEASE_SECONDS` (10 s) earlier with `unpaired_event`, and a younger one counts
+as pending under the stable identity `stream-input:<source identity>` (the same identity a rollout
+row keeps in the outbox), so `pending_count` includes held rows still undelivered. The member's
+shape is unchanged.
 
 **Inspection check (`mode: inspect`, #1048).** `check-request` 1.1.0's `mode` admits `inspect`
 (unreleased, in place). It is a read routed like `status` (payload read, no write capability): it

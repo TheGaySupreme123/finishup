@@ -31,6 +31,7 @@ from yoetz.adapters.integrations.cursor_project_mcp import (
     CursorProjectMcpRegistrationSnapshot,
     inspect_project_mcp_registration,
 )
+from yoetz.adapters.integrations.yoetz_call_rejections import record_rejected_yoetz_call
 from yoetz.adapters.mcp_stdio import MAX_JSON_FRAME_BYTES, bounded_stdio_server
 from yoetz.adapters.workspace_binding import (
     MAX_WORKSPACE_LOCATOR_BYTES,
@@ -3576,6 +3577,7 @@ async def _handle_call_tool_request(
             name,
         )
         if binding_error is not None:
+            _record_rejected_call(name, arguments, binding_error)
             return types.ServerResult(binding_error)
     try:
         transport_request_id = request_ctx.get().request_id
@@ -3590,7 +3592,23 @@ async def _handle_call_tool_request(
         )
     else:
         result = await call_tool(name, arguments, runtime)
+    _record_rejected_call(name, arguments, result)
     return types.ServerResult(result)
+
+
+def _record_rejected_call(
+    name: str, arguments: Mapping[str, object], result: types.CallToolResult
+) -> None:
+    """Keep Yoetz's own record of an error answer so its pending hook attempt can close (#1041).
+
+    A host fires no ``PostToolUse`` for an error result, so the call's ``PreToolUse`` would
+    otherwise expire as a pipeline loss. Only a commitment to the call (tool, Yoetz session,
+    writer and ``request_id``) is written; the call is never delayed or failed by this record.
+    """
+
+    if result.isError is not True:
+        return
+    record_rejected_yoetz_call(name, arguments)
 
 
 async def list_resources(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> list[types.Resource]:

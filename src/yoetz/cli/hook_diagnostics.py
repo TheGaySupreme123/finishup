@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
+from types import MappingProxyType
 from typing import Final, cast
 
 from yoetz.cli.hook_timing import hook_pass_timing_summary
@@ -69,6 +70,12 @@ _EVENTS: Final = frozenset(
     }
 )
 _CONTROL_REASONS: Final = CONTROL_ERROR_REASONS
+_DRAIN_PASS_DELIVERED_NOTHING: Final = "drain_pass_delivered_nothing"
+# Reasons renamed after rows were written under the old name: read back under the new one so
+# one cause keeps one tally across an upgrade (tb4n5).
+_LEGACY_REASON_NAMES: Final = MappingProxyType(
+    {"drain_budget_exhausted": _DRAIN_PASS_DELIVERED_NOTHING}
+)
 _REASONS: Final = frozenset(
     {
         *(item.value for item in ObservationGapCode),
@@ -97,7 +104,9 @@ _REASONS: Final = frozenset(
         "observation_disabled",
         "paused",
         "timeout",
-        "drain_budget_exhausted",
+        # One hook drain pass delivered no row within its 0.2 s budget; the rows stay queued.
+        # Named `drain_budget_exhausted` before tb4n5 (read back under this name).
+        _DRAIN_PASS_DELIVERED_NOTHING,
         "drain_lease_contended",
         # Pre-tb4n2 rows conflated the service connect with native-content staging. New rows name
         # the stage: the connect timed out or failed, content staging raised, or (still
@@ -930,10 +939,11 @@ def _read_rows(
                     continue
                 if any(type(row.get(key)) is not str for key in ("event", "reason", "ts")):
                     continue
+                reason = cast(str, row["reason"])
                 rows.append(
                     {
                         "event": cast(str, row["event"]),
-                        "reason": cast(str, row["reason"]),
+                        "reason": _LEGACY_REASON_NAMES.get(reason, reason),
                         "ts": cast(str, row["ts"]),
                     }
                 )

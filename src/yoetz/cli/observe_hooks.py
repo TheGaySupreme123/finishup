@@ -47,6 +47,7 @@ from yoetz.adapters.integrations.observation_local import (
     self_observation_deliverable,
 )
 from yoetz.adapters.integrations.observation_task_pending import task_pending_outbox_count
+from yoetz.adapters.integrations.yoetz_call_rejections import rejected_call_commitment
 from yoetz.adapters.workspace_binding import canonical_workspace_locator, resolve_workspace_locator
 from yoetz.cli import hook_io
 from yoetz.cli.closure_gate import (
@@ -225,7 +226,10 @@ _MAX_CONTENT_CHUNK: Final = 256 * 1024
 # The drain budget is spent on service delivery only: its clock starts after the
 # service connection is open (the connect has its own preflight bound below), so
 # loading local state and a cold handshake no longer consume it. tb4n1 measured
-# `drain_budget_exhausted` on 94% of hooks when the connect shared this clock.
+# `drain_budget_exhausted` on 94% of hooks when the connect shared this clock. The owner kept
+# the 0.2 s budget after tb4n5 and renamed that diagnostic `drain_pass_delivered_nothing`: it
+# counts hook passes that delivered no row within the budget (the rows stay queued for the next
+# pass or the sweeper), not lateness. Lateness is the outbox delivery lag in `observe status`.
 _HOOK_DRAIN_BUDGET_SECONDS: Final = 0.20
 _HOOK_DRAIN_ROW_LIMIT: Final = 8
 # Stop is the turn boundary the closure gate decides at. The Stop pass drains the
@@ -1891,6 +1895,25 @@ def _intercepted_shell_apply_patch(
     )
 
 
+def _yoetz_request_commitment(event_name: str, payload: Mapping[str, JsonValue]) -> str | None:
+    """The commitment to one Yoetz call on its pre-event (tb4n5, #1041).
+
+    It covers the tool, the request's Yoetz ``session_id``/``writer_id`` and its ``request_id``,
+    read from the host's own ``tool_input``. Yoetz's MCP server records the same commitment when
+    it answers the call with an error, which a host sends no post for; the pending attempt then
+    closes as rejected by Yoetz instead of expiring. Only the commitment is kept: never an
+    identifier or any other argument. Every host adapter computes it from the payload the host
+    sent, before normalization drops ``tool_input`` (Claude Code and Cursor pass it in).
+    """
+
+    if event_name not in {"PreToolUse", "preToolUse"}:
+        return None
+    arguments = payload.get("tool_input")
+    if not isinstance(arguments, Mapping):
+        return None
+    return rejected_call_commitment(payload.get("tool_name"), arguments)
+
+
 def _shell_edit_contents(
     command: str,
     *,
@@ -2720,7 +2743,7 @@ async def _drain_outbox_leased(
     # closure gate's reserve) clamps both.
     preflight_remaining = _drain_connect_timeout(deadline, monotonic)
     if preflight_remaining <= 0:
-        record_hook_diagnostic("drain_budget_exhausted", event_name, _state=_state)
+        record_hook_diagnostic("drain_pass_delivered_nothing", event_name, _state=_state)
         if content_by_source_identity:
             store.note_coverage_gap(
                 workspace_commitment,
@@ -2894,7 +2917,9 @@ async def _drain_outbox_leased(
             remaining = budget_seconds - (monotonic() - started)
             if remaining <= 0:
                 if progressed == 0:
-                    record_hook_diagnostic("drain_budget_exhausted", event_name, _state=_state)
+                    record_hook_diagnostic(
+                        "drain_pass_delivered_nothing", event_name, _state=_state
+                    )
                 break
             chunks = (
                 ()
@@ -2935,7 +2960,9 @@ async def _drain_outbox_leased(
                         ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
                     )
                 if progressed == 0:
-                    record_hook_diagnostic("drain_budget_exhausted", event_name, _state=_state)
+                    record_hook_diagnostic(
+                        "drain_pass_delivered_nothing", event_name, _state=_state
+                    )
                 break
             decision = route_observation_ingest(result, row=row)
             # One batch per row, opened only after this row's RPC returned and
@@ -4694,6 +4721,7 @@ def handle_observe(
     _pass_timing: HookPassTiming | None = None,
     _derived_runner_class: RunnerClass | None = None,
     _stop_final_message: str | None = None,
+    _request_commitment: str | None = None,
 ) -> int:
     """Bounded observation ingress for Codex lifecycle hooks. Always exits 0.
 
@@ -5468,6 +5496,13 @@ def handle_observe(
                 is_pre_event=_is_pre_event(resolved_event),
                 is_post_event=_is_post_event(resolved_event),
                 pre_only=_intercepted_shell_apply_patch(resolved_event, payload, source),
+                # Claude Code and Cursor normalize ``tool_input`` away before this ingress, so
+                # their adapters commit to the call first and pass only the commitment (tb4n5).
+                request_commitment=(
+                    _request_commitment
+                    if _request_commitment is not None
+                    else _yoetz_request_commitment(resolved_event, payload)
+                ),
             )
             optional_routine = (
                 not read_protected
@@ -7329,6 +7364,9 @@ def _handle_claude_observe(
             _stop_final_message=(
                 _payload_text(payload, "last_assistant_message") if raw_event == "Stop" else None
             ),
+            # The structural envelope drops ``tool_input``; commit to a Yoetz call here so a
+            # pending attempt Yoetz rejected can still close as rejected (tb4n5).
+            _request_commitment=_yoetz_request_commitment(event_map[raw_event], payload),
         )
         if denied_output is not None:
             hook_io.stdout_json(denied_output, stdout)
@@ -7817,6 +7855,9 @@ def _handle_cursor_observe(
             _derived_runner_class=derived_runner_class,
             _ingress_gap=cursor_ingress_gap,
             _pass_timing=_pass_timing,
+            # The structural envelope drops ``tool_input``; commit to a Yoetz call here so a
+            # pending attempt Yoetz rejected can still close as rejected (tb4n5).
+            _request_commitment=_yoetz_request_commitment(event_map[raw_event], payload),
         )
     except BaseException:
         if _pass_timing is not None:

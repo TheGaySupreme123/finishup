@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
@@ -74,6 +75,7 @@ __all__ = [
     "CodexChildRolloutHeader",
     "CodexChildRolloutHeaderResult",
     "CodexSessionStreamLocator",
+    "HELD_ROLLOUT_CHECK_RELEASE_SECONDS",
     "PERIODIC_RECONCILE_SECONDS",
     "SessionStreamAdvance",
     "SessionStreamReader",
@@ -82,6 +84,7 @@ __all__ = [
     "read_codex_child_rollout_header",
     "reconcile_session_stream",
     "reconcile_session_stream_path",
+    "release_held_rollout_items_for_check",
     "rollout_filename_matches_token",
     "resolve_codex_home",
     "should_trigger_stream_reconcile",
@@ -1447,6 +1450,9 @@ class SessionStreamAdvance:
     # kept parallel to ``envelopes`` so a function-call's original arguments
     # can be classified before structural mapping discards them.
     classifications: tuple[ObservationClassification | None, ...] = ()
+    # Per-envelope code-mode facts (#1038 follow-up): the host's ``exec``/``wait`` status header
+    # and a ``wait`` call's target cell, read before structural mapping discards the output text.
+    cell_facts: tuple[CodeModeCellFact | None, ...] = ()
 
 
 def stream_admission(
@@ -1801,6 +1807,7 @@ class SessionStreamReader:
         consumed = 0
         envelopes: list[ObservationEnvelope] = []
         classifications: list[ObservationClassification | None] = []
+        cell_facts: list[CodeModeCellFact | None] = []
         reason_codes: set[str] = set()
         hold = b""
         for index, line in enumerate(parsed.lines):
@@ -1848,6 +1855,7 @@ class SessionStreamReader:
                         )
                     )
                     classifications.append(None)
+                    cell_facts.append(None)
                 continue
             event_position += 1
             abs_cursor = ObservationCursor(
@@ -1879,6 +1887,7 @@ class SessionStreamReader:
                 record, profile=self.profile
             )
             classifications.append(_stream_record_classification(record, structural))
+            cell_facts.append(_code_mode_cell_fact(record))
 
         if "unsupported_codex_profile" in parsed.stream_gaps and consumed > 0:
             # A refused chunk holds no tail: the durable refused state is exactly
@@ -1908,6 +1917,7 @@ class SessionStreamReader:
             rotated,
             tuple(sorted(reason_codes, key=str.encode)),
             tuple(classifications),
+            tuple(cell_facts),
         )
 
 
@@ -1935,6 +1945,99 @@ def should_trigger_stream_reconcile(
 # Codex code mode runs model-written JavaScript in one custom ``exec`` tool; the
 # nested ``tools.*`` calls inside a cell fire their own hooks (#917).
 _CODE_MODE_CELL_TOOLS: Final = frozenset({"exec"})
+# Codex's code-mode poll tool: ``wait`` resumes a yielded ``exec`` cell named by its
+# ``cell_id`` argument and returns the cell's further output (#1038 follow-up).
+_CODE_MODE_WAIT_TOOL: Final = "wait"
+# Codex prepends one host-written status header to every ``exec`` and ``wait`` output
+# (``format_script_status`` and ``prepend_script_status`` in ``codex-rs/core/src/tools/code_mode``):
+# ``Script running with cell ID <id>`` when the cell yielded, else ``Script completed``,
+# ``Script failed`` or ``Script terminated``; then ``Wall time <s> seconds`` and ``Output:``.
+# The header is the output's first text item (or the prefix of a plain-text output), so the cell's
+# own printed output, which follows it, can never forge it.
+_SCRIPT_STATUS_HEADER: Final = re.compile(
+    r"\AScript (?:running with cell ID (?P<cell>[A-Za-z0-9][A-Za-z0-9._:-]{0,63})"
+    r"|(?P<terminal>completed|failed|terminated))\nWall time [0-9]{1,12}(?:\.[0-9]{1,6})? seconds\n"
+    r"Output:\n",
+    re.ASCII,
+)
+_RUNTIME_CELL_ID: Final = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\Z", re.ASCII)
+# Rollout ``event_msg`` item families that never record a tool call. Any other item family read
+# while a code-mode cell is open is a nested tool call (or an unknown one) and keeps the cell from
+# reading as tool-less (ADR-029 amendment, tb4n5).
+_NON_TOOL_ITEM_FAMILIES: Final = frozenset(
+    {"AgentMessage", "ContextCompaction", "HookPrompt", "Reasoning", "UserMessage"}
+)
+# A turn's end, as the rollout records it: a yielded cell nobody waited on is decided here.
+_STREAM_TURN_END_ACTIONS: Final = frozenset({"task_complete", "turn_aborted"})
+
+
+@dataclass(frozen=True, slots=True)
+class CodeModeCellFact:
+    """One host-written code-mode fact read from a rollout row (#1038 follow-up).
+
+    ``script_status`` is an ``exec``/``wait`` output header: ``running`` with the host's runtime
+    ``cell_id`` when the cell yielded, or ``completed``/``failed``/``terminated``. ``wait_call`` is a
+    ``wait`` call naming the runtime ``cell_id`` it resumes. Ephemeral adapter facts, parallel to
+    the envelopes like the classifications: never copied into an envelope, outbox row or ledger.
+    """
+
+    kind: Literal["script_status", "wait_call"]
+    status: Literal["running", "completed", "failed", "terminated"] | None
+    cell_id: str | None
+
+
+def _output_status_text(body: JsonObject) -> str | None:
+    """The first text of a call output: a plain string, or the first content item's text."""
+
+    output = body.get("output")
+    if type(output) is str:
+        return output
+    if isinstance(output, (tuple, list)) and output:
+        first = cast(tuple[JsonValue, ...] | list[JsonValue], output)[0]
+        if isinstance(first, Mapping):
+            text = cast(Mapping[str, JsonValue], first).get("text")
+            if type(text) is str:
+                return text
+    return None
+
+
+def _code_mode_cell_fact(record: CodexParsedRecord) -> CodeModeCellFact | None:
+    """Read the host's code-mode status header or ``wait`` target from one rollout row."""
+
+    if record.item_type not in _STREAM_CALL_PAIR_ITEMS:
+        return None
+    body = _structural_body(record)
+    if body is None:
+        return None
+    if record.item_type in {"function_call_output", "custom_tool_call_output"}:
+        text = _output_status_text(body)
+        match = None if text is None else _SCRIPT_STATUS_HEADER.match(text[:256])
+        if match is None:
+            return None
+        cell = match.group("cell")
+        if cell is not None:
+            return CodeModeCellFact("script_status", "running", cell)
+        terminal = cast(Literal["completed", "failed", "terminated"], match.group("terminal"))
+        return CodeModeCellFact("script_status", terminal, None)
+    if record.item_type != "function_call" or body.get("name") != _CODE_MODE_WAIT_TOOL:
+        return None
+    if body.get("namespace") not in (None, ""):
+        return None
+    raw = body.get("arguments")
+    arguments: object = None
+    if type(raw) is str and len(raw) <= 4096:
+        try:
+            arguments = strict_json_parse(raw.encode("utf-8"))
+        except ProtocolValueError, TypeError, ValueError, UnicodeError:
+            arguments = None
+    elif isinstance(raw, Mapping):
+        arguments = raw
+    if not isinstance(arguments, Mapping):
+        return None
+    cell = cast(Mapping[str, JsonValue], arguments).get("cell_id")
+    if type(cell) is not str or _RUNTIME_CELL_ID.match(cell) is None:
+        return None
+    return CodeModeCellFact("wait_call", None, cell)
 
 
 def _code_mode_cell_wrapper(structural: Mapping[str, JsonValue]) -> bool:
@@ -2334,38 +2437,246 @@ def _release_decided_rollout_items(
     return True
 
 
+def _profile_records_tool_items(profile: CodexCapabilityProfile | None) -> bool:
+    """Whether a rollout profile records every completed host tool call as an item (0.150.1+)."""
+
+    return profile is not None and "CommandExecution" in profile.item_types
+
+
+# A held rollout item read at least this long before a check's observation wait is released by
+# that wait (tb4n5): its hook post, if one is coming, would normally have landed by now.
+HELD_ROLLOUT_CHECK_RELEASE_SECONDS: Final = 10.0
+
+
+def release_held_rollout_items_for_check(
+    store: LocalObservationStore,
+    workspace_commitment: str,
+    include: Callable[[PendingRolloutItem], bool],
+    *,
+    now: float | None = None,
+    min_age_seconds: float = HELD_ROLLOUT_CHECK_RELEASE_SECONDS,
+) -> tuple[str, ...]:
+    """Deliver a check's held rollout items before it freezes; return those still held (tb4n5).
+
+    An undecided item (#910) waits for a hook post that may never come; in tb4n5 biped S one was
+    held 13 minutes and delivered 3 s after the check that awaited observations, so it made that
+    check stale. A check's observation wait now releases each of its task's items (``include``)
+    read at least ``min_age_seconds`` ago, exactly as the idle bound would: delivered once with
+    ``unpaired_event``, so its unproven attribution stays disclosed and no outcome is decided for
+    it. A younger item stays held; its source identity is returned so the wait counts it as the
+    bounded remainder instead of reporting ``complete``. A release that cannot commit leaves the
+    item held and counted.
+    """
+
+    try:
+        items = store.pending_rollout_items(workspace_commitment)
+    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+        return ()
+    current = time.time() if now is None else now
+    held: list[str] = []
+    for item in items:
+        if not include(item):
+            continue
+        read_at = item.envelope.receipt_time.as_datetime().timestamp()
+        if current - read_at < min_age_seconds or not _deliver_pending_rollout_item(
+            store, workspace_commitment, item, unpaired=True
+        ):
+            held.append(item.source_identity)
+    return tuple(held)
+
+
 def _code_mode_cell_held(
     store: LocalObservationStore,
     workspace_commitment: str,
     session_commitment: str,
-    structural: Mapping[str, JsonValue],
+    envelope: ObservationEnvelope,
+    fact: CodeModeCellFact | None = None,
+    *,
+    tool_items_recorded: bool = False,
 ) -> bool:
     """Whether one code-mode ``exec`` cell row stays in the local store only (#917).
 
     The decision is per cell: its call is always held, and its output stays
     local only when a tool hook of the session was ingested after the call was
     read and settled by a complete earlier pass that did not see the output, so
-    a cell whose tools fire no hook keeps its record through its output. A store without the seams, an unreadable one, or a row without a
-    call id answers ``False`` so the row is delivered as before.
+    a cell whose tools fire no hook keeps its record through its output. A cell
+    that made no tool call, or only Yoetz's own, stays local too. A yield output
+    (``Script running with cell ID``) is held with its still-open cell, which its
+    terminal ``wait`` output decides (#1038 follow-up). A store without the seams,
+    an unreadable one, or a row without a call id answers ``False`` so the row is
+    delivered as before.
     """
 
+    structural = envelope.structural_payload
     if not _code_mode_cell_wrapper(structural):
         return False
     call_id = _token(structural.get("tool_call_id"))
     if call_id is None:
         return False
-    name = (
-        "begin_code_mode_cell"
-        if structural.get("action") == "custom_tool_call"
-        else "finish_code_mode_cell"
-    )
-    decide = getattr(store, name, None)
-    if not callable(decide):
-        return False
     try:
-        return decide(workspace_commitment, session_commitment, call_id) is True
+        if structural.get("action") == "custom_tool_call":
+            begin = getattr(store, "begin_code_mode_cell", None)
+            return (
+                callable(begin) and begin(workspace_commitment, session_commitment, call_id) is True
+            )
+        if fact is not None and fact.status == "running" and fact.cell_id is not None:
+            hold = getattr(store, "yield_code_mode_cell", None)
+            if callable(hold):
+                return (
+                    hold(workspace_commitment, session_commitment, call_id, fact.cell_id, envelope)
+                    is True
+                )
+        finish = getattr(store, "finish_code_mode_cell", None)
+        if not callable(finish):
+            return False
+        return (
+            finish(
+                workspace_commitment,
+                session_commitment,
+                call_id,
+                tool_items_recorded=tool_items_recorded,
+            )
+            is True
+        )
     except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
         return False
+
+
+def _note_code_mode_wait(
+    store: LocalObservationStore,
+    workspace_commitment: str,
+    session_commitment: str,
+    envelope: ObservationEnvelope,
+    fact: CodeModeCellFact | None,
+) -> bool:
+    """Link a ``wait`` call to the yielded cell it names; ``False`` only when it could not persist."""
+
+    structural = envelope.structural_payload
+    if (
+        fact is None
+        or fact.kind != "wait_call"
+        or fact.cell_id is None
+        or structural.get("action") != "function_call"
+        or structural.get("tool_name") != _CODE_MODE_WAIT_TOOL
+    ):
+        return True
+    wait_call = _token(structural.get("tool_call_id"))
+    note = getattr(store, "note_code_mode_wait", None)
+    if wait_call is None or not callable(note):
+        return True
+    try:
+        note(workspace_commitment, session_commitment, wait_call, fact.cell_id)
+    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+        return False
+    return True
+
+
+def _owed_code_mode_cell_outputs(
+    store: LocalObservationStore,
+    workspace_commitment: str,
+    session_commitment: str,
+    envelope: ObservationEnvelope,
+    fact: CodeModeCellFact | None,
+    *,
+    tool_items_recorded: bool,
+) -> tuple[tuple[str, ObservationEnvelope], ...] | None:
+    """Held yield outputs this row decides to deliver as their cells' records (#1038 follow-up).
+
+    A terminal ``wait`` output (``Script completed``/``failed``/``terminated``) decides the cell
+    its ``wait`` call named; a turn's end decides every yielded cell of the session nobody
+    waited on. Returns ``None`` only when the store could not decide.
+    """
+
+    structural = envelope.structural_payload
+    action = structural.get("action")
+    try:
+        if action in _STREAM_TURN_END_ACTIONS:
+            close = getattr(store, "close_yielded_code_mode_cells", None)
+            if not callable(close):
+                return ()
+            return cast(
+                tuple[tuple[str, ObservationEnvelope], ...],
+                close(
+                    workspace_commitment,
+                    session_commitment,
+                    tool_items_recorded=tool_items_recorded,
+                ),
+            )
+        if (
+            fact is None
+            or fact.kind != "script_status"
+            or fact.status in (None, "running")
+            or action != "function_call_output"
+            or structural.get("tool_name") != _CODE_MODE_WAIT_TOOL
+        ):
+            return ()
+        wait_call = _token(structural.get("tool_call_id"))
+        decide = getattr(store, "decide_yielded_code_mode_cell", None)
+        if wait_call is None or not callable(decide):
+            return ()
+        owed = decide(
+            workspace_commitment,
+            session_commitment,
+            wait_call,
+            tool_items_recorded=tool_items_recorded,
+        )
+    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+        return None
+    return () if owed is None else (cast(tuple[str, ObservationEnvelope], owed),)
+
+
+def _deliver_held_cell_output(
+    store: LocalObservationStore,
+    workspace_commitment: str,
+    codex_session_id: str,
+    cell_key: str,
+    held: ObservationEnvelope,
+    cursor: ObservationCursor,
+) -> bool:
+    """Deliver a decided yielded cell's held output as the cell's record (#1038 follow-up).
+
+    Rows after the yield already reached the task, whose per-source cursor refuses an older
+    position, so the output is stamped with the position of the row that decided the cell.
+    """
+
+    envelope = (
+        held if not held.cursor.is_stale_relative_to(cursor) else replace(held, cursor=cursor)
+    )
+    try:
+        with store.batched(workspace_commitment):
+            if not store.flush_selected_admission(
+                workspace_commitment,
+                summary_builder=build_routine_read_summary,
+                force=True,
+                material_boundary=True,
+            ):
+                return False
+            plan = _restore_stream_individual_deliveries(
+                store.prepare_selected_admission(
+                    workspace_commitment,
+                    codex_session_id,
+                    envelope,
+                    fence="",
+                    focused=False,
+                    routine_candidate=False,
+                    proven_routine_success=False,
+                    summary_builder=build_routine_read_summary,
+                )
+            )
+            if not store.commit_selected_admission(
+                workspace_commitment,
+                plan,
+                incoming=envelope,
+                newly_observed=True,
+                replayable=True,
+            ):
+                return False
+            settle = getattr(store, "settle_code_mode_cell_output", None)
+            if callable(settle):
+                settle(workspace_commitment, cell_key)
+    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+        return False
+    return True
 
 
 def _note_code_mode_nested_item(
@@ -2386,6 +2697,8 @@ def _note_code_mode_nested_item(
     a later output decision would miss.
     """
 
+    action = envelope.structural_payload.get("action")
+    tool_item = False
     if envelope.event_kind == "unsupported_event":
         yoetz_owned = False
     elif _hooked_tool_item(envelope):
@@ -2394,13 +2707,28 @@ def _note_code_mode_nested_item(
             structural.get("action") == "McpToolCall"
             and yoetz_tool_spelling(structural.get("tool_name")) is not None
         )
+        tool_item = True
+    elif (
+        type(action) is str
+        and action[:1].isupper()
+        and action not in _NON_TOOL_ITEM_FAMILIES
+        and envelope.source is ObservationSource.CODEX_SESSION_STREAM
+    ):
+        # Any other completed item family (a spawned agent, a web search, a family this reader
+        # does not name) is a tool call too: the cell is not Yoetz-only, nor tool-less (tb4n5).
+        yoetz_owned = False
     else:
         return True
     note = getattr(store, "note_code_mode_nested_item", None)
     if not callable(note):
         return True
     try:
-        note(workspace_commitment, session_commitment, yoetz_owned=yoetz_owned)
+        note(
+            workspace_commitment,
+            session_commitment,
+            yoetz_owned=yoetz_owned,
+            tool_item=tool_item,
+        )
     except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
         return False
     return True
@@ -2786,12 +3114,15 @@ def _reconcile_session_stream_path(
         delivery_blocked = True
 
     advance_classifications = advance.classifications
+    advance_cell_facts = advance.cell_facts
+    tool_items_recorded = _profile_records_tool_items(reader.profile)
     for index, unpaired_envelope in enumerate(advance.envelopes):
         if delivery_blocked:
             break
         base_classification = (
             advance_classifications[index] if index < len(advance_classifications) else None
         )
+        cell_fact = advance_cell_facts[index] if index < len(advance_cell_facts) else None
         candidate_call_tools = dict(call_tools)
         structural = cast(Mapping[str, JsonValue], unpaired_envelope.structural_payload)
         call_id = _token(structural.get("tool_call_id"))
@@ -2955,8 +3286,45 @@ def _reconcile_session_stream_path(
                     # The cursor must not pass an item whose later decision could not persist.
                     delivery_blocked = True
                     break
+        if not _note_code_mode_wait(
+            store, workspace_commitment, session_commitment, envelope, cell_fact
+        ):
+            delivery_blocked = True
+            break
+        # A terminal ``wait`` output or the turn's end decides a yielded cell; its held yield
+        # output is delivered as the cell's record ahead of this row (#1038 follow-up).
+        owed_outputs = _owed_code_mode_cell_outputs(
+            store,
+            workspace_commitment,
+            session_commitment,
+            envelope,
+            cell_fact,
+            tool_items_recorded=tool_items_recorded,
+        )
+        if owed_outputs is None:
+            delivery_blocked = True
+            break
+        if not all(
+            _deliver_held_cell_output(
+                store,
+                workspace_commitment,
+                codex_session_id,
+                cell_key,
+                held,
+                envelope.cursor,
+            )
+            for cell_key, held in owed_outputs
+        ):
+            overflow = True
+            delivery_blocked = True
+            break
         cell_wrapper = _code_mode_cell_held(
-            store, workspace_commitment, session_commitment, envelope.structural_payload
+            store,
+            workspace_commitment,
+            session_commitment,
+            envelope,
+            cell_fact,
+            tool_items_recorded=tool_items_recorded,
         ) or item_decision not in {None, _ITEM_CARRIER}
         deliverable = not cell_wrapper and self_observation_deliverable(
             _stream_phase(envelope.structural_payload), envelope.structural_payload

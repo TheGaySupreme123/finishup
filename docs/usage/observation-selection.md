@@ -250,6 +250,15 @@ reason, and the handoff's age. The service commits that account before releasing
 reservation; a failed or cancelled account leaves the handoff available for retry. A handoff whose
 record is still waiting keeps counting toward the unchanged pending-age limit.
 
+`yoetz observe status --json` also explains a few standing records. `pending_attempt_endings` says
+how tool calls whose result never arrived ended: expired at the ten-minute deadline (`ttl`), at the
+session's end, or with a newer session generation, each named by tool, or closed because Yoetz
+itself answered the call with an error (`rejected_by_yoetz`; hosts send no result report for an
+error answer, and this one is not a coverage gap). `local_retention` says when Yoetz dropped its own
+local copies of already-delivered records to stay within its bounds; nothing you or a check relies
+on was cut, so this is never reported as truncation. `delivery_lag` shows how long recorded
+activity waited between being queued on your machine and being accepted by the service.
+
 A single hook event is also bounded. Yoetz fully reads a host body of at most 1 MiB; very large
 content inside it is kept only up to the capture budget and marked truncated. Images, audio, and
 video inside a tool result are never kept: Yoetz replaces their bytes with a short placeholder,

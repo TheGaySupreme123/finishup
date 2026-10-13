@@ -5,7 +5,10 @@ draft PR on 2026-09-10. Product direction is acknowledged; measured performance 
 the larger-profile rollout remain review decisions on that issue. Amended 2026-09-24 for #828
 (configurable capacity policy, custom counts, and the typed no-Yoetz-cap outcome) and 2026-09-25
 for #843 (a finite over-target drain bound that keeps accounting writable) and #836
-(stranded capture handoffs are reconciled as admission-independent maintenance).
+(stranded capture handoffs are reconciled as admission-independent maintenance); 2026-10-13 for
+the tb4n5 observation follow-ups of #1038 and #1041 (yielded and tool-less code-mode cells, expired
+and rejected attempts, local retention, held rollout rows before a check, drain counter and
+delivery lag).
 
 **Relates to:** ADR-009, ADR-010, ADR-014, ADR-016, ADR-022, and issues #687, #753, #828, and #843.
 
@@ -606,7 +609,8 @@ a mid-session `check` still froze whatever the ledger held.
   minus the Stop hook's own unmapped host session, which the service cannot name. The service
   wakes its observation sweeper and polls that real local state until none of the snapshot rows is
   still pending, re-waking the sweeper about once a second. Rows that arrive after the snapshot
-  are not waited for.
+  are not waited for. (Extended on 2026-10-13 to the task's rollout rows held for pairing; see
+  the tb4n5 amendment below.)
 - The wait is bounded by about 3 s and by a tenth of the request's deadline, whichever is
   smaller. It runs inside a detached semantic check's own operation, so an MCP call's bridge
   deadline (#886) still covers it.
@@ -674,3 +678,143 @@ record that it had looked. The review packet cannot carry images, so the agent h
 
 Content selection, consent, and the content budget are unchanged; the image bytes themselves stay
 replaced by the media placeholder in any captured tool output.
+
+## Amendment — tb4n5 observation follow-ups (2026-10-13, #1038, #1041)
+
+The maintainer requested this scoped work for the tb4n5 observation lane on 2026-10-13 and decided
+two of its questions: a code-mode cell with no tool call and no file change counts as no workspace
+activity, and the 0.2 s hook drain budget stays while its counter is renamed and delivery lag is
+measured instead.
+
+### Yielded code-mode cells keep their identity until they end
+
+A Codex code-mode `exec` cell that outlives its yield window returns the host-written header
+`Script running with cell ID <id>` as its output, keeps running, writes its nested calls after that
+output, and returns its further output on later `wait` calls that name the cell in their `cell_id`
+argument; the terminal one begins `Script completed`, `Script failed` or `Script terminated`. The
+#917/#1038 rule decided a cell at its first output, so in tb4n5's semantic arm a cell whose only
+call was Yoetz's own `check` was delivered as an unclassified `exec` action after that check (20
+such cells in 5 of 9 attempts; 3 final receipts kept `check_current_as_of_earlier_frontier`).
+
+Decision: the session-stream reader reads exactly two host-written facts, never the cell's
+JavaScript: the status header (the first text item of an `exec` or `wait` output, which the cell's
+own output follows and cannot forge) and a `wait` call's `cell_id` argument. A yield output is held
+with its still-open cell (`runtime_cell`, the `wait` calls that named it, and the held output are
+durable in the local store). Nested items read while it is the session's only open cell mark it as
+before; overlapping cells keep the no-borrowing rule. The terminal `wait` output decides the cell
+by the same rule as an unyielded cell's output; a cell nobody waited on is decided at the turn's
+end (`task_complete` or `turn_aborted`). Only a cell that is neither Yoetz's own, nor tool-less, nor
+recorded by its nested hooks then delivers its held yield output as its record, stamped with the
+position of the row that decided it. The bounded cell map forgets a cell holding an output last.
+`wait` polls stay `no_tool_activity`, and Codex's `clock.sleep` (hook spelling `clocksleep`, a
+built-in control tool that only pauses the turn) joins the closed no-activity list
+(`host_sleep_tool`).
+
+### A cell with no observable tool call is no workspace activity
+
+Owner decision. A cell between whose call and output (or terminal `wait` output) the rollout wrote
+no tool item, and while which no tool hook of its session was ingested, made no observable tool
+call; its output stays local and it adds no `exec` action. "Tool item" is any completed item family
+other than a message, reasoning, compaction or hook prompt (an unknown family counts). The rule
+applies only where absence is evidence: the admitted rollout profile records completed tool calls
+as items, and the session's rollout has already written one. Elsewhere such a cell keeps its record
+as #917 decided. A tool that neither fires a hook nor writes an item (`update_plan`) is
+indistinguishable from none and reads the same; Yoetz still never parses the cell's source.
+
+### A pending attempt that ends without its post names itself, and Yoetz's own rejection closes it
+
+`pending_attempt_expired` appeared in 17 of 18 tb4n5 attempts and no export could name the call:
+expiry kept only the aggregate gap. A host fires no `PostToolUse` for a tool result that is not a
+success (Codex runs post-tool hooks only when the output's `success_for_logging` holds, and an MCP
+result with `isError: true` is not one; read in `codex-rs/core/src/tools/registry.rs` and
+`tools/context.rs` on the 2026-08-29 `main` branch, not pinned to 0.159.3). In every tb4n5
+attempt the `PreToolUse`-minus-`PostToolUse` surplus was at least the number of Yoetz calls the
+service rejected, and the one attempt without rejections was the one attempt without the gap.
+
+Decision:
+
+- Each ending is recorded locally with only closed tokens: the reason (`ttl`, `session_end`,
+  `generation`, or `rejected_by_yoetz`), the call's structural tool name, its source generation,
+  the moment, and an opaque 16-hex digest of its pairing key; a count per reason and the newest
+  16 endings. `observe status` reports them as `pending_attempt_endings` (local-only, outside the
+  frozen control-result schema, like `summary_refusals`). The first three reasons still record
+  `pending_attempt_expired`.
+- The Yoetz MCP bridge records each error result it returns for a Yoetz tool whose arguments carry
+  a valid `request_id`: only a commitment to the call and the moment, in a bounded owner-only file
+  beside the observation state (`observation/yoetz-rejected-calls.json`, 256 newest), and only
+  where observation was already set up. A call is its operation scope, not its `request_id`
+  alone (replay identity is task, writer and request): the commitment is
+  `sha256(domain, tool basename, Yoetz session_id, writer_id, request_id)`, an absent or invalid
+  session or writer committing as a fixed placeholder. A hook pre-event of a Yoetz tool keeps the
+  same commitment on its pending attempt; every host adapter computes it from the payload the host
+  sent (Codex directly; Claude Code and Cursor before their structural normalization drops
+  `tool_input`, passing only the commitment on), so it works on every paired profile. An
+  oversized hook body whose skim kept no `tool_input` commits to nothing and keeps the ordinary
+  expiry.
+- A pending attempt whose commitment matches a rejection recorded at or after its receipt closes
+  as `rejected_by_yoetz` without the gap. A rejection younger than 5 s waits (so a host that does
+  send a post for an error still pairs it), except for an attempt that is about to expire for any
+  reason (deadline, session end, newer generation): a known rejection wins over every expiry,
+  since no post can pair with that attempt any more. Each rejection is claimed installation-wide,
+  under the record's lock, by the one attempt it closes (an opaque digest of the attempt's pairing
+  key and receipt), so it never closes attempts in two workspaces; the claim is idempotent for its
+  attempt, so a store transaction rerun under the lock or retried after a rollback keeps it. The
+  record is best-effort: a missed or unreadable rejection leaves the ordinary expiry, which stays
+  disclosed.
+- Any other missing post keeps expiring with the gap. The deadline is not lengthened and
+  expirations are not cleared wholesale.
+
+### Local retention is not content loss
+
+The envelope ring (`_MAX_ENVELOPES = 256`), the state-size bound, and the dedup fence keep local
+copies of accepted inputs as pairing context and replay protection. Every tb4n5 attempt observed
+376-2,262 inputs, so every attempt crossed the ring and recorded `truncated_payload`, whose public
+meaning is a payload cut to a bounded prefix. Shedding those copies now records only its own local
+reasons (`_local_envelope_retention`, `_local_dedup_evicted`), reported by `observe status` as
+`local_retention` with first and last sightings and never as a gap. A pairing the ring can no
+longer prove keeps `unpaired_event`, and `envelopes_truncated` still blocks retiring an old orphan.
+Real clipping keeps `truncated_payload` where it was reported before: on the hook row whose
+captured content was cut to its cap, and in the reconcile result for an oversize or unreadable
+rollout line. An active `truncated_payload` flag a store
+recorded for retention before this change is no longer pinned by the retention reason and clears
+once the state bound has headroom, as #310 decided for the bound itself.
+
+### The pre-check observation wait covers held rollout rows
+
+The #1012 wait snapshotted hook outbox rows only. A rollout tool item that no hook post joins is
+held for pairing (#910) and released only by a later post, the turn's end, eight idle reconciles
+or the soft bound, and every new session activity resets its idle count. In tb4n5 biped S such a
+row (occurred 19:43:07) was accepted 12m55s later, 3 s after check 530 reported `complete`, and
+made that check stale. The service has no on-demand stream reconcile, so the wait cannot settle a
+held row from the rollout; it can only release it or report it.
+
+Decision (contract change to the #1012 amendment above): when `await_observations` is set, the
+snapshot also covers this task's held rollout rows (host sessions whose lifecycle mapping names the
+check's Yoetz session). Each one read at least 10 s before the wait is released by the wait itself,
+exactly as the idle bound releases it: delivered once with `unpaired_event`, stamped with the
+session's committed stream frontier, so it lands before the case freezes while its attribution
+stays unproven and no outcome is decided for it. A younger row stays held and counts as pending.
+A held row keeps one wait identity while held and once released into the outbox, so
+`observations_awaited.pending_count` counts the snapshot's hook rows and held rows still
+undelivered, and `bounded_timeout` is the disclosure of a held remainder the wait could not settle
+(it is never reported `complete`). No schema changes: the member's shape is unchanged and its
+count now includes held rows. A row that is genuinely a copy of a late post is delivered as a
+second, disclosed record rather than lost, as the idle bound already does. `observe status`
+reports the held account as `held_rollout_items` (`count`, `oldest_read_at`). The Stop gate's
+count is unchanged.
+
+### Drain counter and delivery lag
+
+Owner decision, recorded with the drain budget it qualifies (ADR-022 amendment of 2026-10-13): the
+0.2 s per-hook budget stays, `drain_budget_exhausted` is renamed `drain_pass_delivered_nothing`
+(one pass delivered no row within the budget; the rows stay queued), and the exported delivery
+measure is the outbox delivery lag, enqueue to acceptance, in `observe status` as `delivery_lag`.
+
+### Per host
+
+Yielded and tool-less cells, `clocksleep` and held rollout rows are Codex-only: Claude Code and
+Cursor have no code-mode cell, no rollout stream and no `clock.sleep`; each host runbook records
+the decision. The rejected-call record, attempt endings, local retention, the drain counter and
+delivery lag are host-agnostic and apply wherever a paired profile keeps pending attempts or a
+hook drains the shared outbox, on macOS, Linux and Windows through WSL 2 alike. Native-host
+benchmark evidence for these changes is pending on the next tb4 run.

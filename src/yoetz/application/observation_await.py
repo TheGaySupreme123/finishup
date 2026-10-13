@@ -5,6 +5,11 @@ are already in the local outbox reach the ledger before the case freezes. The wa
 those rows, wakes the observation sweeper, and polls real local outbox state until none of the
 snapshot rows is still pending or the bound expires. Rows that arrive after the snapshot are
 not waited for. The wait never fails the check: an unreadable outbox reports ``unavailable``.
+
+Since tb4n5 the snapshot also covers this task's rollout rows held for their hook post (#910):
+the probe releases each one read long enough ago, with ``unpaired_event``, so it reaches the
+ledger before the case freezes, and counts a younger one as pending, so a held row the wait
+could not settle is the reported ``bounded_timeout`` remainder rather than a silent ``complete``.
 """
 
 from __future__ import annotations
