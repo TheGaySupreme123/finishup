@@ -740,14 +740,27 @@ Decision:
   frozen control-result schema, like `summary_refusals`). The first three reasons still record
   `pending_attempt_expired`.
 - The Yoetz MCP bridge records each error result it returns for a Yoetz tool whose arguments carry
-  a valid `request_id`: only `sha256(domain, tool basename, request_id)` and the moment, in a
-  bounded owner-only file beside the observation state (`observation/yoetz-rejected-calls.json`,
-  256 newest), and only where observation was already set up. A hook pre-event of a Yoetz tool
-  (any host spelling) keeps the same commitment on its pending attempt. A pending attempt whose
-  commitment matches a rejection recorded at or after its receipt, and at least 5 s ago (so a host
-  that does send a post for an error still pairs it), closes as `rejected_by_yoetz` without the
-  gap; one rejection closes at most one attempt, the oldest it matches. The record is
-  best-effort: a missed rejection leaves the ordinary expiry, which stays disclosed.
+  a valid `request_id`: only a commitment to the call and the moment, in a bounded owner-only file
+  beside the observation state (`observation/yoetz-rejected-calls.json`, 256 newest), and only
+  where observation was already set up. A call is its operation scope, not its `request_id`
+  alone (replay identity is task, writer and request): the commitment is
+  `sha256(domain, tool basename, Yoetz session_id, writer_id, request_id)`, an absent or invalid
+  session or writer committing as a fixed placeholder. A hook pre-event of a Yoetz tool keeps the
+  same commitment on its pending attempt; every host adapter computes it from the payload the host
+  sent (Codex directly; Claude Code and Cursor before their structural normalization drops
+  `tool_input`, passing only the commitment on), so it works on every paired profile. An
+  oversized hook body whose skim kept no `tool_input` commits to nothing and keeps the ordinary
+  expiry.
+- A pending attempt whose commitment matches a rejection recorded at or after its receipt closes
+  as `rejected_by_yoetz` without the gap. A rejection younger than 5 s waits (so a host that does
+  send a post for an error still pairs it), except for an attempt that is about to expire for any
+  reason (deadline, session end, newer generation): a known rejection wins over every expiry,
+  since no post can pair with that attempt any more. Each rejection is claimed installation-wide,
+  under the record's lock, by the one attempt it closes (an opaque digest of the attempt's pairing
+  key and receipt), so it never closes attempts in two workspaces; the claim is idempotent for its
+  attempt, so a store transaction rerun under the lock or retried after a rollback keeps it. The
+  record is best-effort: a missed or unreadable rejection leaves the ordinary expiry, which stays
+  disclosed.
 - Any other missing post keeps expiring with the gap. The deadline is not lengthened and
   expirations are not cleared wholesale.
 

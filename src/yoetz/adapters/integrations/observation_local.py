@@ -40,7 +40,10 @@ from yoetz.adapters.integrations.observation_admission import (
     flush_admission,
     plan_admission,
 )
-from yoetz.adapters.integrations.yoetz_call_rejections import read_rejected_yoetz_calls
+from yoetz.adapters.integrations.yoetz_call_rejections import (
+    consume_rejected_yoetz_call,
+    read_rejected_yoetz_calls,
+)
 from yoetz.config.paths import PathSafetyError, ensure_owner_only_dir, state_dir
 from yoetz.domain.observation import (
     CAPTURE_HANDOFF_RECONCILE_AGE_MS,
@@ -1639,10 +1642,11 @@ class _OpenPre:
 
     ``tool_name`` (tb4n5) is the call's structural tool name, kept so an
     expired attempt names its producer in ``observe status``.
-    ``request_commitment`` is the commitment to a Yoetz call's tool and
-    ``request_id`` (``yoetz_call_rejections``): when Yoetz's MCP server
-    answered that call with an error, which a host sends no post for, the
-    attempt closes as rejected by Yoetz instead of expiring.
+    ``request_commitment`` is the commitment to a Yoetz call: its tool, the
+    request's Yoetz session and writer, and its ``request_id``
+    (``yoetz_call_rejections``). When Yoetz's MCP server answered that call
+    with an error, which a host sends no post for, the attempt closes as
+    rejected by Yoetz instead of expiring.
     """
 
     event_kind: str
@@ -1875,7 +1879,6 @@ _ATTEMPT_ENDING_REASONS: Final = frozenset(
     {"ttl", "session_end", "generation", "rejected_by_yoetz"}
 )
 _MAX_ATTEMPT_ENDINGS: Final = 16
-_MAX_CONSUMED_REJECTIONS: Final = 256
 _REJECTION_CLOSE_GRACE_MS: Final = 5_000
 
 
@@ -2050,17 +2053,6 @@ def _pending_attempt_ending_counts_from_json(raw: object) -> dict[str, int]:
         for reason, count in cast(Mapping[str, object], counts).items()
         if reason in _ATTEMPT_ENDING_REASONS and type(count) is int and count >= 0
     }
-
-
-def _consumed_rejections_from_json(raw: object) -> dict[str, int]:
-    if not isinstance(raw, Mapping):
-        return {}
-    consumed = {
-        key: at_ms
-        for key, at_ms in cast(Mapping[str, object], raw).items()
-        if type(key) is str and len(key) <= 96 and type(at_ms) is int and at_ms >= 0
-    }
-    return dict(sorted(consumed.items(), key=lambda item: item[1])[-_MAX_CONSUMED_REJECTIONS:])
 
 
 def _session_hook_call(state: _WorkspaceState, session_commitment: str, call_id: str) -> bool:
@@ -2259,9 +2251,6 @@ class _WorkspaceState:
     # ``rejected_by_yoetz`` does not) and the newest few endings' structural identity.
     pending_attempt_endings: list[JsonObject] | None = None
     pending_attempt_ending_counts: dict[str, int] | None = None
-    # Rejection records (``yoetz_call_rejections``) already used to close an attempt, so one
-    # rejection closes at most one attempt.
-    consumed_rejections: dict[str, int] | None = None
     # Delivery lag (tb4n5): enqueue -> accepted acknowledgement of each outbox row, in fixed
     # millisecond buckets, with count, sum, max, last and the moment measurement began.
     delivery_lag: _DeliveryLag | None = None
@@ -2436,8 +2425,6 @@ class _WorkspaceState:
             self.pending_attempt_endings = []
         if self.pending_attempt_ending_counts is None:
             self.pending_attempt_ending_counts = {}
-        if self.consumed_rejections is None:
-            self.consumed_rejections = {}
         if self.unpaired_scopes is None:
             self.unpaired_scopes = set()
         if self.unpaired_notices is None:
@@ -3138,7 +3125,6 @@ def _copy_state(state: _WorkspaceState) -> _WorkspaceState:
         open_pre=dict(state.open_pre or {}),
         pending_attempt_endings=list(state.pending_attempt_endings or ()),
         pending_attempt_ending_counts=dict(state.pending_attempt_ending_counts or {}),
-        consumed_rejections=dict(state.consumed_rejections or {}),
         delivery_lag=state.delivery_lag,
         unpaired_scopes=set(state.unpaired_scopes or ()),
         unpaired_notices=dict(state.unpaired_notices or {}),
@@ -5451,9 +5437,6 @@ class LocalObservationStore:
         assert state.open_pre is not None
         if not state.open_pre:
             return False
-        # Yoetz answered these calls with an error, so the host sends no post: they ended, as
-        # rejected by Yoetz, and are never a pipeline loss (tb4n5, #1041).
-        closed = self._close_rejected_yoetz_attempts(state, now)
         ended = state.ended_sessions or set()
         ended_generations = state.ended_session_generations or {}
         generations = state.session_generations or {}
@@ -5480,9 +5463,17 @@ class LocalObservationStore:
                     reason = "generation"
             if reason is not None:
                 stale.append((key, reason))
-        if not stale:
+        # Yoetz answered these calls with an error, so the host sends no post: they ended, as
+        # rejected by Yoetz, and are never a pipeline loss (tb4n5, #1041). A known rejection wins
+        # over every expiry reason: an attempt about to expire no longer waits out the grace,
+        # since no post can pair with it any more.
+        closed = self._close_rejected_yoetz_attempts(
+            state, now, due=frozenset(key for key, _reason in stale)
+        )
+        expired = [(key, reason) for key, reason in stale if key in state.open_pre]
+        if not expired:
             return closed
-        for key, reason in stale:
+        for key, reason in expired:
             self._note_pending_attempt_ending(state, key, state.open_pre.pop(key), reason, now)
         self._note_gap_state(state, _PENDING_ATTEMPT_EXPIRED_GAP)
         return True
@@ -5517,17 +5508,22 @@ class LocalObservationStore:
         )
         del state.pending_attempt_endings[:-_MAX_ATTEMPT_ENDINGS]
 
-    def _close_rejected_yoetz_attempts(self, state: _WorkspaceState, now: Timestamp) -> bool:
+    def _close_rejected_yoetz_attempts(
+        self, state: _WorkspaceState, now: Timestamp, *, due: frozenset[str] = frozenset()
+    ) -> bool:
         """Close each pending Yoetz attempt that Yoetz's MCP server answered with an error.
 
-        A rejection matches an attempt with the same tool-and-request commitment that was
-        received no later than the rejection; each rejection closes at most one attempt, the
-        oldest it matches. An unreadable or absent record closes nothing, so the attempt keeps
-        its ordinary expiry.
+        A rejection matches an attempt with the same call commitment (tool, the request's Yoetz
+        session and writer, and its ``request_id``) that was received no later than the
+        rejection. A host that does send a post for an error result sends it within moments, so
+        a rejection younger than the grace waits, except for an attempt in ``due``, which is about
+        to expire and can no longer pair with any post. Each rejection is consumed
+        installation-wide before it closes the oldest attempt it matches, so it closes at most
+        one attempt in any workspace. An unreadable or absent record, or one another workspace
+        consumed first, closes nothing, and the attempt keeps its ordinary expiry.
         """
 
         assert state.open_pre is not None
-        assert state.consumed_rejections is not None
         waiting = [
             (key, entry)
             for key, entry in state.open_pre.items()
@@ -5535,16 +5531,21 @@ class LocalObservationStore:
         ]
         if not waiting:
             return False
-        # A host that does send a post for an error result sends it within moments; the grace
-        # lets that post pair normally instead of arriving after its attempt was closed.
         settled_before = _timestamp_ms(now) - _REJECTION_CLOSE_GRACE_MS
-        rejections = [
-            (commitment, at_ms)
-            for commitment, at_ms in read_rejected_yoetz_calls(self._root)
-            if at_ms <= settled_before and f"{commitment}@{at_ms}" not in state.consumed_rejections
-        ]
+        claimants = {
+            key: canonical_digest(
+                JsonObject(
+                    {
+                        "kind": "rejected-call-claimant",
+                        "key": key,
+                        "receipt_time": cast(Timestamp, entry.receipt_time).wire,
+                    }
+                )
+            ).removeprefix("sha256:")[:32]
+            for key, entry in waiting
+        }
         closed = False
-        for commitment, at_ms in rejections:
+        for commitment, at_ms, claimant in read_rejected_yoetz_calls(self._root):
             candidates = [
                 (key, entry)
                 for key, entry in waiting
@@ -5552,20 +5553,25 @@ class LocalObservationStore:
                 and entry.receipt_time is not None
                 and _timestamp_ms(entry.receipt_time) <= at_ms
                 and key in state.open_pre
+                and (at_ms <= settled_before or key in due)
+                and claimant in (None, claimants[key])
             ]
             if not candidates:
                 continue
             key, entry = min(
                 candidates,
-                key=lambda item: (cast(Timestamp, item[1].receipt_time).wire, item[0]),
+                key=lambda item: (
+                    # The attempt that already claimed this rejection keeps it.
+                    claimant != claimants[item[0]],
+                    cast(Timestamp, item[1].receipt_time).wire,
+                    item[0],
+                ),
             )
+            if not consume_rejected_yoetz_call(self._root, commitment, at_ms, claimants[key]):
+                continue
             del state.open_pre[key]
-            state.consumed_rejections[f"{commitment}@{at_ms}"] = at_ms
             self._note_pending_attempt_ending(state, key, entry, "rejected_by_yoetz", now)
             closed = True
-        while len(state.consumed_rejections) > _MAX_CONSUMED_REJECTIONS:
-            oldest = min(state.consumed_rejections.items(), key=lambda item: item[1])[0]
-            del state.consumed_rejections[oldest]
         return closed
 
     def note_open_pre(
@@ -11329,8 +11335,9 @@ class LocalObservationStore:
         one. Hook ingress opens an outer batch so its outbox enqueue remains in
         the same local transaction; nested use keeps that transaction intact.
         ``pre_only`` marks a pre-event whose host never sends a post (#1041).
-        ``request_commitment`` commits to a Yoetz call's tool and request
-        (``yoetz_call_rejections``) so Yoetz's own rejection can close it.
+        ``request_commitment`` commits to one Yoetz call (tool, Yoetz session,
+        writer and request; ``yoetz_call_rejections``) so Yoetz's own rejection
+        can close it.
         """
 
         if type(envelope) is not ObservationEnvelope:
@@ -12765,15 +12772,6 @@ class LocalObservationStore:
                 }
             ),
             **(
-                {}
-                if not state.consumed_rejections
-                else {
-                    "consumed_rejections": JsonObject(
-                        dict(sorted(state.consumed_rejections.items()))
-                    )
-                }
-            ),
-            **(
                 {} if state.delivery_lag is None else {"delivery_lag": state.delivery_lag.to_json()}
             ),
             "stream_cursors": JsonObject(
@@ -13941,7 +13939,6 @@ class LocalObservationStore:
             pending_attempt_ending_counts=_pending_attempt_ending_counts_from_json(
                 raw.get("pending_attempt_endings")
             ),
-            consumed_rejections=_consumed_rejections_from_json(raw.get("consumed_rejections")),
             delivery_lag=_delivery_lag_from_json(raw.get("delivery_lag")),
             unpaired_scopes=unpaired_scopes,
             unpaired_notices=_unpaired_notices_from_json(raw.get("unpaired_notices")),

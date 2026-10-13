@@ -2025,7 +2025,11 @@ reason the tb4n5 yielded- and tool-less-cell decisions (ADR-029 amendment of 202
 Codex-only, and Cursor has no `clock.sleep` tool (the `clocksleep` no-activity spelling is Codex's
 hook name). The same amendment's rejected-call record is host-agnostic: on the paired ordinary
 profile, a pending `yoetz:*` (or `MCP:*` Yoetz-basename) attempt whose call Yoetz's MCP server
-answered with an error closes as `rejected_by_yoetz` after a 5 s grace; `observe status` names
+answered with an error closes as `rejected_by_yoetz` after a 5 s grace (at once when the session
+ends or its generation advances). The Cursor adapter commits to the call (tool, Yoetz session,
+writer and `request_id`) from the hook's `tool_input` before structural normalization drops it,
+and passes only that commitment on; a body too large to keep its `tool_input` keeps the ordinary
+expiry; `observe status` names
 every ending under `pending_attempt_endings`, and local ring eviction is `local_retention`, never
 `truncated_payload`. Post-only profiles keep no pending attempt, so nothing changes there. The hook
 drain diagnostic `drain_budget_exhausted` is renamed `drain_pass_delivered_nothing` and `observe

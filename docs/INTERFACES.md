@@ -5205,9 +5205,14 @@ carries the optional `enqueued_at` it is measured from, outside its row identity
 diagnostic `drain_budget_exhausted` is renamed `drain_pass_delivered_nothing` (one drain pass
 delivered no row within its budget) and old rows are read back under the new name (ADR-022
 amendment of 2026-10-13). The Yoetz MCP bridge's rejection record (`record_rejected_yoetz_call`,
-`observation/yoetz-rejected-calls.json`) holds only `sha256("yoetz/rejected-call/v1", tool
-basename, request_id)` and a millisecond time per entry, 256 newest; a hook pre-event of a Yoetz
-tool keeps the same commitment on its pending attempt (`_OpenPre.request_commitment`).
+`observation/yoetz-rejected-calls.json`, schema `yoetz.rejected-calls/2`) holds per entry only
+`sha256("yoetz/rejected-call/v2", tool basename, session_id, writer_id, request_id)` (an absent
+or invalid session or writer commits as `-`), a millisecond time, and the opaque claimant digest
+of the one pending attempt that consumed it, 256 newest. A hook pre-event of a Yoetz tool keeps
+the same commitment on its pending attempt (`_OpenPre.request_commitment`); the Claude Code and
+Cursor adapters compute it from the host payload and pass it to the shared ingress as
+`_request_commitment`. `consume_rejected_yoetz_call` claims an entry installation-wide under the
+record's lock and is idempotent for its claimant.
 
 `LocalObservationStore.pending_selection_losses(workspace)` returns at most 64 retained,
 fully validated and routed lanes; `selection_loss_workspaces(task_id)` filters the returned

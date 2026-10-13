@@ -3562,8 +3562,8 @@ def _record_rejected_call(
     """Keep Yoetz's own record of an error answer so its pending hook attempt can close (#1041).
 
     A host fires no ``PostToolUse`` for an error result, so the call's ``PreToolUse`` would
-    otherwise expire as a pipeline loss. Only a commitment to the tool and ``request_id`` is
-    written; the call is never delayed or failed by this record.
+    otherwise expire as a pipeline loss. Only a commitment to the call (tool, Yoetz session,
+    writer and ``request_id``) is written; the call is never delayed or failed by this record.
     """
 
     if result.isError is not True:

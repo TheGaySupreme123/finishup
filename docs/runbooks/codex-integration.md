@@ -1841,9 +1841,11 @@ than the agent's work. Their dispositions:
   success, and an MCP result with `isError: true` is not one, so every Yoetz call the service
   rejected left its `PreToolUse` pending until it expired as `pending_attempt_expired` (17 of 18
   tb4n5 attempts; the shell heredoc above did not occur once). The Yoetz MCP bridge now records each
-  error answer it returns (a commitment to the tool and `request_id`, nothing else), and the
-  pending attempt of that call closes as `rejected_by_yoetz` without the gap once the next hook runs
-  at least 5 s later. Every other missing post still expires with the gap, and `yoetz observe
+  error answer it returns (a commitment to the tool, the request's Yoetz session and writer, and
+  its `request_id`, nothing else), and the pending attempt of that call closes as
+  `rejected_by_yoetz` without the gap once the next hook runs at least 5 s later, or at once when
+  the session ends or its generation advances. Each rejection closes at most one attempt in any
+  workspace. Every other missing post still expires with the gap, and `yoetz observe
   status --json` names each ending under `pending_attempt_endings` (reason `ttl`, `session_end`,
   `generation` or `rejected_by_yoetz`, the tool name and the source generation) so an export can
   tell the producer.

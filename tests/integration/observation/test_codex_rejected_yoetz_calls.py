@@ -35,6 +35,11 @@ pytestmark = pytest.mark.anyio
 _EXPIRED = "pending_attempt_expired"
 _REQUEST = "req_0b6f2d4e-8a1c-4e3b-9f7a-5c2d1e0b9a87"
 _OTHER_REQUEST = "req_6e2a9c1b-3d4f-4b8a-a7e6-0f1c2d3e4b5a"
+# The call's operation scope, which the hook's ``tool_input`` and the bridge's arguments share.
+_SCOPE = {
+    "session_id": "ses_2b8f4c1d-9e3a-4f6b-8c7d-0a1b2c3d4e5f",
+    "writer_id": "wri_5c9d1e2f-3a4b-4c6d-9e8f-7a6b5c4d3e2f",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +54,7 @@ def _rejected(replay: _Replay, tool: str, request_id: str) -> None:
 
     assert record_rejected_yoetz_call(
         tool,
-        {"request_id": request_id},
+        {"request_id": request_id, **_SCOPE},
         state_root=replay.root,
         now_ms=int(time.time() * 1000) + 300,
     )
@@ -63,7 +68,7 @@ async def test_a_rejected_direct_yoetz_call_closes_without_the_expiry_gap(
         "PreToolUse",
         tool_name="mcp__yoetz__publish_work",
         tool_use_id="call_publish",
-        tool_input={"request_id": _REQUEST, "event_drafts": []},
+        tool_input={"request_id": _REQUEST, **_SCOPE, "event_drafts": []},
     )
     _rejected(replay, "publish_work", _REQUEST)
     # Codex sends no PostToolUse. The next hook, past the grace, reconciles the attempt.
@@ -92,7 +97,7 @@ async def test_a_rejected_nested_yoetz_call_in_a_cell_closes_too(replay: _Replay
         "PreToolUse",
         tool_name="mcp__yoetz__check",
         tool_use_id="call_nested",
-        tool_input={"request_id": _REQUEST},
+        tool_input={"request_id": _REQUEST, **_SCOPE},
     )
     _rejected(replay, "check", _REQUEST)
     replay.append(
@@ -123,7 +128,7 @@ async def test_a_missing_post_nobody_rejected_still_expires_with_its_identity(
         "PreToolUse",
         tool_name="mcp__yoetz__status",
         tool_use_id="call_status",
-        tool_input={"request_id": _REQUEST},
+        tool_input={"request_id": _REQUEST, **_SCOPE},
     )
     # A different request was rejected: it closes nothing here.
     _rejected(replay, "status", _OTHER_REQUEST)
