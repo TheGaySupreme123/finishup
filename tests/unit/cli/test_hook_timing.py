@@ -118,10 +118,38 @@ def test_percentiles_are_honest_bucket_bounds_over_every_sample(tmp_path: Path, 
         assert lower < exact <= cast(int, entry[key]) == upper
 
 
+def test_a_drain_pass_that_delivered_nothing_keeps_one_tally_across_its_rename(
+    tmp_path: Path,
+) -> None:
+    """tb4n5: ``drain_budget_exhausted`` is read back as ``drain_pass_delivered_nothing``.
+
+    The owner kept the 0.2 s hook drain budget and renamed the counter to say what it counts: one
+    hook pass that delivered no row within the budget. Rows written under the old name before an
+    upgrade join the new tally instead of splitting the history in two.
+    """
+
+    record_hook_diagnostic("drain_pass_delivered_nothing", "PostToolUse", _state=tmp_path)
+    diagnostics = tmp_path / "observation" / "hook-diagnostics.jsonl"
+    stamp = json.loads(diagnostics.read_text().splitlines()[0])["ts"]
+    with diagnostics.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps({"event": "PreToolUse", "reason": "drain_budget_exhausted", "ts": stamp})
+            + "\n"
+        )
+    # The old name is no longer written.
+    record_hook_diagnostic("drain_budget_exhausted", "Stop", _state=tmp_path)
+
+    summary = hook_diagnostic_summary(_state=tmp_path)
+    reasons = cast(Mapping[str, Mapping[str, object]], summary["reasons"])
+    assert reasons["drain_pass_delivered_nothing"]["count"] == 2
+    assert "drain_budget_exhausted" not in reasons
+    assert reasons["unknown_reason"]["count"] == 1
+
+
 def test_ten_thousand_in_budget_passes_do_not_evict_failure_reason_history(
     tmp_path: Path,
 ) -> None:
-    for reason in ("service_unavailable", "drain_budget_exhausted", "mapping_missing"):
+    for reason in ("service_unavailable", "drain_pass_delivered_nothing", "mapping_missing"):
         record_hook_diagnostic(reason, "PostToolUse", _state=tmp_path)
     diagnostics = tmp_path / "observation" / "hook-diagnostics.jsonl"
     before = diagnostics.read_bytes()
@@ -148,7 +176,7 @@ def test_ten_thousand_in_budget_passes_do_not_evict_failure_reason_history(
     summary = hook_diagnostic_summary(_state=tmp_path)
     reasons = cast(Mapping[str, Mapping[str, object]], summary["reasons"])
     assert {name: reasons[name]["count"] for name in reasons} == {
-        "drain_budget_exhausted": 1,
+        "drain_pass_delivered_nothing": 1,
         "mapping_missing": 1,
         "service_unavailable": 1,
     }

@@ -1307,6 +1307,23 @@ def _pending_attempt_endings_text(endings: Mapping[str, JsonValue]) -> str:
     return f"{count_text} (open: {endings.get('open')}; recent: {recent_text or 'none'})"
 
 
+def _delivery_lag_text(lag: Mapping[str, JsonValue]) -> str:
+    """One line: accepted rows measured, then p50/p95 bucket bounds and the maximum."""
+
+    count = lag.get("count")
+    if not count:
+        return "no accepted rows measured"
+
+    def bound(value: JsonValue) -> str:
+        return "over 900000" if value is None else str(value)
+
+    return (
+        f"{count} accepted rows since {lag.get('since')}: p50 <= {bound(lag.get('p50_ms_at_most'))} "
+        f"ms, p95 <= {bound(lag.get('p95_ms_at_most'))} ms, max {lag.get('max_ms')} ms "
+        "(enqueue to acceptance)"
+    )
+
+
 def _local_retention_text(retention: Mapping[str, JsonValue]) -> str:
     """One line naming which bounded local copies were shed; it is not content loss."""
 
@@ -1374,6 +1391,9 @@ def observe_status(
     attempt_endings = store.pending_attempt_endings(commitment)
     local_retention = store.local_retention(commitment)
     held_rollout = store.held_rollout_summary(commitment)
+    # The delivery measure: enqueue-to-acceptance lag of accepted outbox rows (tb4n5). The
+    # ``drain_pass_delivered_nothing`` hook diagnostic counts passes, not lateness.
+    delivery_lag = store.delivery_lag(commitment)
     reclaim_guidance = (
         "reclaim with 'yoetz observe reclaim --workspace .'"
         if root == Path.cwd().resolve()
@@ -1436,6 +1456,7 @@ def observe_status(
                 "pending_attempt_endings": attempt_endings,
                 "local_retention": local_retention,
                 "held_rollout_items": held_rollout,
+                "delivery_lag": delivery_lag,
                 "plugin_activation": plugin_activation,
             },
             json_output=True,
@@ -1500,6 +1521,7 @@ def observe_status(
             if held_rollout.get("count")
             else "0"
         ),
+        "delivery_lag": _delivery_lag_text(delivery_lag),
         "hook_coverage": str(status.source_coverage.get(ObservationSource.CODEX_HOOK, False)),
         "stream_coverage": str(
             status.source_coverage.get(ObservationSource.CODEX_SESSION_STREAM, False)

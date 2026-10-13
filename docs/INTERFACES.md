@@ -5196,7 +5196,15 @@ endings as `{"call", "ended_at", "generation", "reason", "tool"}` where `call` i
 `{"envelope_ring": null | {"first_seen", "last_seen"}, "dedup_fence": ...}`: the local copies the
 bounded ring, state bound and dedup fence shed, which is never content loss and never
 `truncated_payload`. `held_rollout_items` is `{"count": n, "oldest_read_at": null | <time>}`: the
-Codex rollout tool items still held for their hook post (#910). The Yoetz MCP bridge's rejection record (`record_rejected_yoetz_call`,
+Codex rollout tool items still held for their hook post (#910). `delivery_lag` is the outbox
+delivery measure, enqueue to the acknowledgement after the service accepted the row:
+`{"measured": "enqueue_to_accept", "count", "bucket_upper_bounds_ms", "bucket_counts", "p50_ms_at_most",
+"p95_ms_at_most", "mean_ms", "max_ms", "last_ms", "since"}` (only `measured`, `count` and the bounds
+before the first sample; a quantile is `null` above the last bound). Each `ObservationOutboxRow`
+carries the optional `enqueued_at` it is measured from, outside its row identity. The hook
+diagnostic `drain_budget_exhausted` is renamed `drain_pass_delivered_nothing` (one drain pass
+delivered no row within its budget) and old rows are read back under the new name (ADR-022
+amendment of 2026-10-13). The Yoetz MCP bridge's rejection record (`record_rejected_yoetz_call`,
 `observation/yoetz-rejected-calls.json`) holds only `sha256("yoetz/rejected-call/v1", tool
 basename, request_id)` and a millisecond time per entry, 256 newest; a hook pre-event of a Yoetz
 tool keeps the same commitment on its pending attempt (`_OpenPre.request_commitment`).

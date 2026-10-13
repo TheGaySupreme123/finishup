@@ -3154,7 +3154,7 @@ async def test_drain_budget_stops_without_advancing_unfinished_row(tmp_path: Pat
     )
     assert store.list_pending_outbox_rows(workspace)[0].attempts == 0
     diagnostics = (tmp_path / "observation/hook-diagnostics.jsonl").read_text()
-    assert '"reason":"drain_budget_exhausted"' in diagnostics
+    assert '"reason":"drain_pass_delivered_nothing"' in diagnostics
 
 
 @pytest.mark.anyio
@@ -3897,7 +3897,8 @@ async def test_drain_budget_starts_after_a_slow_connect(
     """tb4n1 B4: the connect has its own preflight bound; delivery gets its whole budget.
 
     Before, a 0.9 s connect consumed the shared clock, so 94% of hooks recorded
-    ``drain_budget_exhausted`` without delivering a single row.
+    ``drain_pass_delivered_nothing`` (``drain_budget_exhausted`` before tb4n5) without delivering
+    a single row.
     """
 
     store = LocalObservationStore(_state=tmp_path)
@@ -3924,7 +3925,7 @@ async def test_drain_budget_starts_after_a_slow_connect(
     assert store.pending_outbox_count(workspace) == 0
     diagnostics_path = tmp_path / "observation/hook-diagnostics.jsonl"
     if diagnostics_path.exists():
-        assert '"reason":"drain_budget_exhausted"' not in diagnostics_path.read_text()
+        assert '"reason":"drain_pass_delivered_nothing"' not in diagnostics_path.read_text()
 
 
 @pytest.mark.anyio
@@ -3960,7 +3961,7 @@ async def test_absolute_deadline_clamps_the_connect_and_the_delivery(
     assert connects == 0, "an expired deadline never opens a connection"
     assert store.pending_outbox_count(workspace) == 1
     diagnostic = (tmp_path / "observation/hook-diagnostics.jsonl").read_text()
-    assert '"reason":"drain_budget_exhausted"' in diagnostic
+    assert '"reason":"drain_pass_delivered_nothing"' in diagnostic
 
 
 @pytest.mark.anyio
@@ -4051,7 +4052,7 @@ async def test_drain_lease_prevents_concurrent_hooks_from_double_draining(
 async def test_budget_expiry_after_delivery_progress_is_a_silent_yield(tmp_path: Path) -> None:
     """A bounded slice that moved backlog and then yielded is working as designed (#351).
 
-    drain_budget_exhausted remains reserved for a pass that timed out before
+    drain_pass_delivered_nothing remains reserved for a pass that timed out before
     any progress; a capacity yield to the service sweeper is not a failure.
     """
 
@@ -4097,7 +4098,7 @@ async def test_budget_expiry_after_delivery_progress_is_a_silent_yield(tmp_path:
     assert store.pending_outbox_count(workspace) == 1, "two rows delivered before the yield"
     diagnostics = tmp_path / "observation/hook-diagnostics.jsonl"
     if diagnostics.exists():
-        assert '"reason":"drain_budget_exhausted"' not in diagnostics.read_text()
+        assert '"reason":"drain_pass_delivered_nothing"' not in diagnostics.read_text()
 
 
 @pytest.mark.anyio
@@ -6654,7 +6655,7 @@ async def test_preflight_and_delivery_budgets_ignore_local_hydration(
     assert store.pending_outbox_count(workspace) == 0
     diagnostics_path = tmp_path / "observation/hook-diagnostics.jsonl"
     diagnostic = diagnostics_path.read_text() if diagnostics_path.exists() else ""
-    assert '"reason":"drain_budget_exhausted"' not in diagnostic
+    assert '"reason":"drain_pass_delivered_nothing"' not in diagnostic
     assert "drain_preflight_failed" not in diagnostic
 
 

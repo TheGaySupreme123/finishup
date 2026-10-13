@@ -1850,8 +1850,8 @@ than the agent's work. Their dispositions:
 - **Local retention.** The 256-row local envelope ring, the state bound and the dedup fence keep
   local copies of accepted rows; every tb4n5 attempt crossed the ring, and its eviction was
   reported as `truncated_payload`. Eviction now reports only `local_retention` in `observe status`
-  (not content loss, not a gap). Oversize or unreadable rollout lines and clipped hook content keep
-  `truncated_payload` on the rows they cut.
+  (not content loss, not a gap). Clipped hook content keeps `truncated_payload` on the row it cut,
+  and an oversize or unreadable rollout line keeps it in the reconcile result.
 - **`HookPrompt`.** A Stop hook that continues the turn (Yoetz's closure gate) makes Codex 0.159.3
   write an `event_msg.item_completed` item of type `HookPrompt`. The compatibility profile admits it
   as bookkeeping (it pairs with nothing and is read as `no_tool_activity` after a check), so it is
@@ -1859,10 +1859,14 @@ than the agent's work. Their dispositions:
 - **`semantic_review_not_requested`.** Not recorded for a `deterministic_only` check on a route
   that does not require AI-powered review; see
   [Closure readiness and standing limitations](#closure-readiness-and-standing-limitations-913).
-- **Hook latency** (`drain_budget_exhausted`, `hook_followup_deferred`, `drain_connect_timeout`):
-  not lossy, and unchanged. Its material effect was rows landing after a check; with cells paired on
-  `call_id` and Yoetz-only cells kept local whatever the hook timing (#1038), it is to be measured
-  again on the next benchmark before any budget in `observe_hooks` is tuned.
+- **Hook latency** (`drain_pass_delivered_nothing`, named `drain_budget_exhausted` before tb4n5;
+  `hook_followup_deferred`; `drain_connect_timeout`): not lossy. Its material effect was rows
+  landing after a check; with cells paired on `call_id` and Yoetz-only cells kept local whatever the
+  hook timing (#1038), tb4n5 measured it again and found no regression. The owner kept the 0.2 s
+  budget (ADR-022 amendment of 2026-10-13): `drain_pass_delivered_nothing` counts hook passes that
+  delivered no row within it (the rows stay queued), and the measure of lateness is now the outbox
+  delivery lag, enqueue to acceptance, which `yoetz observe status --json` reports as
+  `delivery_lag` (`count`, `p50_ms_at_most`, `p95_ms_at_most`, `max_ms`, `since`).
 
 Per host: Claude Code and Cursor have no rollout stream, no code-mode cell and no intercepted
 `apply_patch`, so the held tail, the shell patch and `HookPrompt` are Codex-only; the

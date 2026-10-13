@@ -760,8 +760,9 @@ meaning is a payload cut to a bounded prefix. Shedding those copies now records 
 reasons (`_local_envelope_retention`, `_local_dedup_evicted`), reported by `observe status` as
 `local_retention` with first and last sightings and never as a gap. A pairing the ring can no
 longer prove keeps `unpaired_event`, and `envelopes_truncated` still blocks retiring an old orphan.
-Real clipping (a hook body or captured content over its cap, an oversize or unreadable rollout
-line) keeps `truncated_payload` on the row it cut. An active `truncated_payload` flag a store
+Real clipping keeps `truncated_payload` where it was reported before: on the hook row whose
+captured content was cut to its cap, and in the reconcile result for an oversize or unreadable
+rollout line. An active `truncated_payload` flag a store
 recorded for retention before this change is no longer pinned by the retention reason and clears
 once the state bound has headroom, as #310 decided for the bound itself.
 
@@ -788,3 +789,19 @@ count now includes held rows. A row that is genuinely a copy of a late post is d
 second, disclosed record rather than lost, as the idle bound already does. `observe status`
 reports the held account as `held_rollout_items` (`count`, `oldest_read_at`). The Stop gate's
 count is unchanged.
+
+### Drain counter and delivery lag
+
+Owner decision, recorded with the drain budget it qualifies (ADR-022 amendment of 2026-10-13): the
+0.2 s per-hook budget stays, `drain_budget_exhausted` is renamed `drain_pass_delivered_nothing`
+(one pass delivered no row within the budget; the rows stay queued), and the exported delivery
+measure is the outbox delivery lag, enqueue to acceptance, in `observe status` as `delivery_lag`.
+
+### Per host
+
+Yielded and tool-less cells, `clocksleep` and held rollout rows are Codex-only: Claude Code and
+Cursor have no code-mode cell, no rollout stream and no `clock.sleep`; each host runbook records
+the decision. The rejected-call record, attempt endings, local retention, the drain counter and
+delivery lag are host-agnostic and apply wherever a paired profile keeps pending attempts or a
+hook drains the shared outbox, on macOS, Linux and Windows through WSL 2 alike. Native-host
+benchmark evidence for these changes is pending on the next tb4 run.

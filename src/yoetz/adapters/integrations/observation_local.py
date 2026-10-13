@@ -1167,6 +1167,9 @@ class ObservationOutboxRow:
     last_reason: str | None = None
     last_attempt_at: Timestamp | None = None
     consecutive_reason_attempts: int = 0
+    # When the row entered the outbox (local wall clock), the start of its delivery lag (tb4n5).
+    # Rows written before this field carry none and are not measured. Not part of the identity.
+    enqueued_at: Timestamp | None = None
 
     @property
     def row_identity(self) -> str:
@@ -1197,6 +1200,8 @@ class ObservationOutboxRow:
         ):
             raise ProtocolValueError("invalid_event_value_type")
         if self.last_attempt_at is not None and type(self.last_attempt_at) is not Timestamp:
+            raise ProtocolValueError("invalid_timestamp")
+        if self.enqueued_at is not None and type(self.enqueued_at) is not Timestamp:
             raise ProtocolValueError("invalid_timestamp")
         if (
             type(self.consecutive_reason_attempts) is not int
@@ -1878,6 +1883,117 @@ def _timestamp_ms(value: Timestamp) -> int:
     return int(value.as_datetime().timestamp() * 1000)
 
 
+# Upper bounds (ms) of the delivery-lag buckets; one more bucket counts everything above the last.
+DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS: Final = (
+    100,
+    250,
+    500,
+    1_000,
+    2_000,
+    5_000,
+    10_000,
+    30_000,
+    60_000,
+    300_000,
+    900_000,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _DeliveryLag:
+    """How long accepted outbox rows waited between enqueue and acceptance (tb4n5).
+
+    The owner's measure of observation delivery (it replaced reading the drain counter as one):
+    a row enqueued by a hook or the stream reader and acknowledged after the service accepted
+    it. Rows enqueued before the field existed are not measured.
+    """
+
+    since: Timestamp
+    count: int = 0
+    sum_ms: int = 0
+    max_ms: int = 0
+    last_ms: int = 0
+    buckets: tuple[int, ...] = (0,) * (len(DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS) + 1)
+
+    def observe(self, lag_ms: int) -> _DeliveryLag:
+        index = next(
+            (
+                position
+                for position, bound in enumerate(DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS)
+                if lag_ms <= bound
+            ),
+            len(DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS),
+        )
+        buckets = list(self.buckets)
+        buckets[index] = min(_MAX_SAFE_INTEGER, buckets[index] + 1)
+        return dataclasses.replace(
+            self,
+            count=min(_MAX_SAFE_INTEGER, self.count + 1),
+            sum_ms=min(_MAX_SAFE_INTEGER, self.sum_ms + lag_ms),
+            max_ms=max(self.max_ms, lag_ms),
+            last_ms=lag_ms,
+            buckets=tuple(buckets),
+        )
+
+    def quantile_at_most(self, numerator: int, denominator: int) -> int | None:
+        """The upper bound of the bucket holding the given rank; ``None`` above the last bound."""
+
+        if self.count == 0:
+            return None
+        rank = max(1, -(-self.count * numerator // denominator))
+        seen = 0
+        for position, count in enumerate(self.buckets):
+            seen += count
+            if seen >= rank:
+                return (
+                    DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS[position]
+                    if position < len(DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS)
+                    else None
+                )
+        return None
+
+    def to_json(self) -> JsonObject:
+        return JsonObject(
+            {
+                "buckets": self.buckets,
+                "count": self.count,
+                "last_ms": self.last_ms,
+                "max_ms": self.max_ms,
+                "since": self.since.wire,
+                "sum_ms": self.sum_ms,
+            }
+        )
+
+
+def _delivery_lag_from_json(raw: object) -> _DeliveryLag | None:
+    if not isinstance(raw, Mapping):
+        return None
+    entry = cast(Mapping[str, object], raw)
+    since = _safe_timestamp(entry.get("since"))
+    buckets = entry.get("buckets")
+    counters = [entry.get(key) for key in ("count", "sum_ms", "max_ms", "last_ms")]
+    if (
+        since is None
+        or not isinstance(buckets, (tuple, list))
+        or len(cast(tuple[object, ...] | list[object], buckets))
+        != len(DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS) + 1
+        or not all(
+            type(value) is int and 0 <= value <= _MAX_SAFE_INTEGER
+            for value in (*cast(tuple[object, ...] | list[object], buckets), *counters)
+        )
+    ):
+        return None
+    count, sum_ms, max_ms, last_ms = cast(list[int], counters)
+    return _DeliveryLag(
+        since,
+        count,
+        sum_ms,
+        max_ms,
+        last_ms,
+        tuple(cast(tuple[int, ...] | list[int], buckets)),
+    )
+
+
 def _pending_attempt_ending_valid(raw: object) -> JsonObject | None:
     if not isinstance(raw, Mapping):
         return None
@@ -2146,6 +2262,9 @@ class _WorkspaceState:
     # Rejection records (``yoetz_call_rejections``) already used to close an attempt, so one
     # rejection closes at most one attempt.
     consumed_rejections: dict[str, int] | None = None
+    # Delivery lag (tb4n5): enqueue -> accepted acknowledgement of each outbox row, in fixed
+    # millisecond buckets, with count, sum, max, last and the moment measurement began.
+    delivery_lag: _DeliveryLag | None = None
     unpaired_scopes: set[str] | None = None
     # One informational notice per new (source, session, generation) orphan
     # scope, keyed by that lane; kept after delivery so a scope is announced once.
@@ -3020,6 +3139,7 @@ def _copy_state(state: _WorkspaceState) -> _WorkspaceState:
         pending_attempt_endings=list(state.pending_attempt_endings or ()),
         pending_attempt_ending_counts=dict(state.pending_attempt_ending_counts or {}),
         consumed_rejections=dict(state.consumed_rejections or {}),
+        delivery_lag=state.delivery_lag,
         unpaired_scopes=set(state.unpaired_scopes or ()),
         unpaired_notices=dict(state.unpaired_notices or {}),
         codex_tool_hooks=dict(state.codex_tool_hooks or {}),
@@ -3506,6 +3626,7 @@ def _outbox_row_to_spliced_json(row: ObservationOutboxRow) -> JsonValue:
             "last_reason": row.last_reason,
             "last_attempt_at": (None if row.last_attempt_at is None else row.last_attempt_at.wire),
             "consecutive_reason_attempts": row.consecutive_reason_attempts,
+            **({} if row.enqueued_at is None else {"enqueued_at": row.enqueued_at.wire}),
         },
     )
 
@@ -3525,6 +3646,7 @@ def _outbox_row_to_json(row: ObservationOutboxRow) -> JsonObject:  # pyright: ig
             "last_reason": row.last_reason,
             "last_attempt_at": (None if row.last_attempt_at is None else row.last_attempt_at.wire),
             "consecutive_reason_attempts": row.consecutive_reason_attempts,
+            **({} if row.enqueued_at is None else {"enqueued_at": row.enqueued_at.wire}),
         }
     )
 
@@ -7436,7 +7558,11 @@ class LocalObservationStore:
             assert state.pending_outbox is not None
             if not reclaimed:
                 state.pending_outbox.append(
-                    ObservationOutboxRow(codex_session_id=codex_session_id, envelope=envelope)
+                    ObservationOutboxRow(
+                        codex_session_id=codex_session_id,
+                        envelope=envelope,
+                        enqueued_at=self._wall_timestamp(),
+                    )
                 )
                 # Resolve before projecting so the size-checked bytes are exactly
                 # the bytes _save would otherwise re-encode: one encode, not three.
@@ -8042,7 +8168,11 @@ class LocalObservationStore:
             if refusal is not None:
                 return refusal
             candidate.pending_outbox.append(
-                ObservationOutboxRow(codex_session_id=codex_session_id, envelope=envelope)
+                ObservationOutboxRow(
+                    codex_session_id=codex_session_id,
+                    envelope=envelope,
+                    enqueued_at=self._wall_timestamp(),
+                )
             )
         encoded_size = len(self._encode_state(workspace, candidate))
         if encoded_size > self._state_byte_limit(workspace, candidate, required=encoded_size):
@@ -8102,7 +8232,9 @@ class LocalObservationStore:
                     self._pending_row_matches(row, session, envelope)
                     for row in state.pending_outbox
                 ):
-                    state.pending_outbox.append(ObservationOutboxRow(session, envelope))
+                    state.pending_outbox.append(
+                        ObservationOutboxRow(session, envelope, enqueued_at=self._wall_timestamp())
+                    )
             self._resolve_gap_state(state, _LOCAL_OUTBOX_OVERFLOW_GAP)
             if newly_observed:
                 state.selection_admitted_count = min(
@@ -10274,6 +10406,7 @@ class LocalObservationStore:
                             if reason is not None and reason == row.last_reason
                             else (1 if reason is not None else 0)
                         ),
+                        enqueued_at=row.enqueued_at,
                     )
                     state.pending_outbox[index] = updated
                     self._save(workspace, state)
@@ -10394,6 +10527,51 @@ class LocalObservationStore:
         finally:
             os.close(descriptor)
 
+    def _note_delivery_lag(self, state: _WorkspaceState, row: ObservationOutboxRow) -> None:
+        """Measure one accepted row's enqueue-to-acceptance lag; a legacy row is not measured."""
+
+        if row.enqueued_at is None:
+            return
+        now = self._wall_timestamp()
+        lag_ms = max(0, _timestamp_ms(now) - _timestamp_ms(row.enqueued_at))
+        current = state.delivery_lag or _DeliveryLag(now)
+        state.delivery_lag = current.observe(min(lag_ms, _MAX_SAFE_INTEGER))
+
+    @_read_mostly
+    def delivery_lag(self, workspace: str) -> JsonObject:
+        """Enqueue-to-acceptance lag of accepted outbox rows, for ``observe status`` (tb4n5).
+
+        The owner's delivery measure: how long a hook or stream row waited in the local outbox
+        before the service accepted it. Quantiles are the upper bound of the bucket that holds
+        the rank (``null`` above the last bound). Local-only, outside the frozen control schema.
+        """
+
+        workspace = validate_commitment(workspace)
+        with self._reading():
+            lag = self._load(workspace).delivery_lag
+            if lag is None:
+                return JsonObject(
+                    {
+                        "bucket_upper_bounds_ms": DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS,
+                        "count": 0,
+                        "measured": "enqueue_to_accept",
+                    }
+                )
+            return JsonObject(
+                {
+                    "bucket_counts": lag.buckets,
+                    "bucket_upper_bounds_ms": DELIVERY_LAG_BUCKET_UPPER_BOUNDS_MS,
+                    "count": lag.count,
+                    "last_ms": lag.last_ms,
+                    "max_ms": lag.max_ms,
+                    "mean_ms": lag.sum_ms // lag.count if lag.count else 0,
+                    "measured": "enqueue_to_accept",
+                    "p50_ms_at_most": lag.quantile_at_most(1, 2),
+                    "p95_ms_at_most": lag.quantile_at_most(95, 100),
+                    "since": lag.since.wire,
+                }
+            )
+
     def acknowledge_outbox(
         self, workspace: str, codex_session_id: str, source_identity: str
     ) -> bool:
@@ -10413,6 +10591,7 @@ class LocalObservationStore:
                         state.selection_delivered_count
                         + self._represented_input_count(row.envelope),
                     )
+                    self._note_delivery_lag(state, row)
                     self._resolve_delivered(state)
                     state.last_successful_drain_mono_ms = int(self._now_mono() * 1000)
                     state.monotonic_epoch = self._boot_epoch()
@@ -10434,6 +10613,7 @@ class LocalObservationStore:
                         state.selection_delivered_count
                         + self._represented_input_count(row.envelope),
                     )
+                    self._note_delivery_lag(state, row)
                     self._resolve_delivered(state)
                     state.last_successful_drain_mono_ms = int(self._now_mono() * 1000)
                     state.monotonic_epoch = self._boot_epoch()
@@ -10847,7 +11027,11 @@ class LocalObservationStore:
         ):
             return None
         candidate.pending_outbox.append(
-            ObservationOutboxRow(codex_session_id=codex_session_id, envelope=envelope)
+            ObservationOutboxRow(
+                codex_session_id=codex_session_id,
+                envelope=envelope,
+                enqueued_at=self._wall_timestamp(),
+            )
         )
         projected = self._encode_state(workspace, candidate)
         if len(projected) > self._state_byte_limit(workspace, candidate, required=len(projected)):
@@ -12589,6 +12773,9 @@ class LocalObservationStore:
                     )
                 }
             ),
+            **(
+                {} if state.delivery_lag is None else {"delivery_lag": state.delivery_lag.to_json()}
+            ),
             "stream_cursors": JsonObject(
                 {
                     key: observation_cursor_to_json(cursor)
@@ -13359,6 +13546,7 @@ class LocalObservationStore:
                 )
             except ProtocolValueError, TypeError, ValueError:
                 last_attempt_at = None
+            enqueued_at = _safe_timestamp(row.get("enqueued_at"))
             consecutive_raw = row.get("consecutive_reason_attempts")
             if (
                 type(consecutive_raw) is int
@@ -13384,6 +13572,7 @@ class LocalObservationStore:
                         last_reason=last_reason,
                         last_attempt_at=last_attempt_at,
                         consecutive_reason_attempts=consecutive_reason_attempts,
+                        enqueued_at=enqueued_at,
                     )
                 )
             except ProtocolValueError, TypeError, ValueError:
@@ -13753,6 +13942,7 @@ class LocalObservationStore:
                 raw.get("pending_attempt_endings")
             ),
             consumed_rejections=_consumed_rejections_from_json(raw.get("consumed_rejections")),
+            delivery_lag=_delivery_lag_from_json(raw.get("delivery_lag")),
             unpaired_scopes=unpaired_scopes,
             unpaired_notices=_unpaired_notices_from_json(raw.get("unpaired_notices")),
             codex_tool_hooks=_codex_tool_hooks_from_json(raw.get("codex_tool_hooks")),

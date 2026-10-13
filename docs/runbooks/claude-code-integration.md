@@ -1892,7 +1892,9 @@ amendment's rejected-call record is host-agnostic: on the paired ordinary profil
 `rejected_by_yoetz` (after a 5 s grace in which a post, if Claude Code sends one, still pairs);
 `observe status` names every ending under `pending_attempt_endings`, and local ring eviction is
 `local_retention`, never `truncated_payload`. Post-only profiles keep no pending attempt, so
-nothing changes there.
+nothing changes there. The hook drain diagnostic `drain_budget_exhausted` is renamed
+`drain_pass_delivered_nothing` and `observe status` reports the outbox `delivery_lag` (enqueue to
+acceptance) for Claude Code hooks exactly as for Codex (ADR-022 amendment of 2026-10-13).
 
 ### Limitation requests, `reopened` and one dialogue per concern on Claude Code (tb4n3 RC-1 and RC-7, #1024, #1030)
 

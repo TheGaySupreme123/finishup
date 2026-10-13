@@ -255,7 +255,8 @@ unsupported claims and unbounded duplicate findings.
     gap or a failure-shaped hook diagnostic, and the reason never projects into observation
     status, advice, coverage, or receipt inputs. Losing the nonblocking drain lease records
     nothing: the holder is a live hook or the service sweeper, and flock releases with a dead
-    process. Hook drain-budget expiry records `drain_budget_exhausted` only when the pass moved no
+    process. Hook drain-budget expiry records `drain_pass_delivered_nothing` (named
+    `drain_budget_exhausted` before 2026-10-13) only when the pass moved no
     backlog; a bounded slice that delivered or quarantined rows and then yielded to the sweeper is
     working as designed. Genuine `SERVICE_UNAVAILABLE`, vault, storage, and preflight failures
     keep their existing visibility (issues #346/#351).
@@ -890,7 +891,8 @@ owner decided: start the clock after connecting, spool durably, and finish the d
    reconciliation, the ingest RPCs and the local commit after each. An optional absolute pass
    deadline clamps both stages. The ordinary per-hook slice is 0.20 s and at most eight rows; a
    content-bearing pass keeps 1.0 s and sixteen rows. Decision 13's rule is unchanged:
-   `drain_budget_exhausted` is recorded only when a pass moved nothing.
+   `drain_budget_exhausted` (renamed `drain_pass_delivered_nothing` on 2026-10-13, see below) is
+   recorded only when a pass moved nothing.
 2. **Transient content is staged even when another owner holds the drain lease.** A hook that
    loses the nonblocking lease still opens its own connection and sends its content chunks as
    `capture_only`. The service commits the encrypted manifests and the retry ticket before it
@@ -925,3 +927,28 @@ owner decided: start the clock after connecting, spool durably, and finish the d
 Not changed: `check` does not wait for hook rows (a mid-session check can still be current as
 of an earlier frontier); local content cannot be spooled when the service is unreachable,
 because the hook holds no vault key.
+
+## Amendment (2026-10-13, tb4n5): keep the drain budget, rename its counter, measure delivery lag
+
+tb4n5 recounted the per-hook drain diagnostic on the same nine tasks: no regression once attempts
+and hook volume are normalized (the S arm fell from 17.3 to 12.4 per attempt; an earlier 26.7
+compared seven old tasks with nine new ones), and rows still landed within about 1-2 s. The one
+row that landed 13 minutes late was a rollout item held for pairing, not drain latency (ADR-029
+tb4n5 amendment). The owner decided:
+
+1. **The 0.20 s ordinary per-hook delivery slice stays** (content-bearing passes keep 1.0 s).
+2. **The counter is renamed to say what it counts.** `drain_budget_exhausted` is now
+   `drain_pass_delivered_nothing`: one hook drain pass that delivered no row within its budget
+   (or whose connect preflight left none). The rows stay queued for the next pass or the
+   sweeper; it is not lost delivery and not lateness. The hook diagnostics reader reports rows
+   written under the old name under the new one, so one cause keeps one tally across an upgrade.
+   The reason is local-only (`hook-diagnostics.jsonl`, `observe status` `hook_diagnostics`), in
+   no schema or fixture.
+3. **Delivery lag is the measure.** Every outbox row records when it was enqueued
+   (`enqueued_at`, local wall clock; kept across retry attempts, not part of the row identity);
+   its acknowledgement after the service accepted it adds one enqueue-to-acceptance sample to a
+   per-workspace histogram (fixed bounds 100 ms to 900 s plus an overflow bucket, with count, sum,
+   maximum, last sample and the moment measurement began). `observe status` reports it as
+   `delivery_lag` with `p50_ms_at_most`/`p95_ms_at_most` bucket bounds. Rows enqueued before the
+   field existed are not measured. A rollout row held for pairing is enqueued when it is released,
+   so its hold time shows as `held_rollout_items`, not as delivery lag.

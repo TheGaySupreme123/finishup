@@ -226,7 +226,10 @@ _MAX_CONTENT_CHUNK: Final = 256 * 1024
 # The drain budget is spent on service delivery only: its clock starts after the
 # service connection is open (the connect has its own preflight bound below), so
 # loading local state and a cold handshake no longer consume it. tb4n1 measured
-# `drain_budget_exhausted` on 94% of hooks when the connect shared this clock.
+# `drain_budget_exhausted` on 94% of hooks when the connect shared this clock. The owner kept
+# the 0.2 s budget after tb4n5 and renamed that diagnostic `drain_pass_delivered_nothing`: it
+# counts hook passes that delivered no row within the budget (the rows stay queued for the next
+# pass or the sweeper), not lateness. Lateness is the outbox delivery lag in `observe status`.
 _HOOK_DRAIN_BUDGET_SECONDS: Final = 0.20
 _HOOK_DRAIN_ROW_LIMIT: Final = 8
 # Stop is the turn boundary the closure gate decides at. The Stop pass drains the
@@ -2731,7 +2734,7 @@ async def _drain_outbox_leased(
     # closure gate's reserve) clamps both.
     preflight_remaining = _drain_connect_timeout(deadline, monotonic)
     if preflight_remaining <= 0:
-        record_hook_diagnostic("drain_budget_exhausted", event_name, _state=_state)
+        record_hook_diagnostic("drain_pass_delivered_nothing", event_name, _state=_state)
         if content_by_source_identity:
             store.note_coverage_gap(
                 workspace_commitment,
@@ -2905,7 +2908,9 @@ async def _drain_outbox_leased(
             remaining = budget_seconds - (monotonic() - started)
             if remaining <= 0:
                 if progressed == 0:
-                    record_hook_diagnostic("drain_budget_exhausted", event_name, _state=_state)
+                    record_hook_diagnostic(
+                        "drain_pass_delivered_nothing", event_name, _state=_state
+                    )
                 break
             chunks = (
                 ()
@@ -2946,7 +2951,9 @@ async def _drain_outbox_leased(
                         ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
                     )
                 if progressed == 0:
-                    record_hook_diagnostic("drain_budget_exhausted", event_name, _state=_state)
+                    record_hook_diagnostic(
+                        "drain_pass_delivered_nothing", event_name, _state=_state
+                    )
                 break
             decision = route_observation_ingest(result, row=row)
             # One batch per row, opened only after this row's RPC returned and
