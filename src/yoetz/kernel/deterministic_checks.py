@@ -177,7 +177,10 @@ REQUESTED_OUTPUT_ABSENT_SUMMARY: Final = (
     "A requested output file does not exist in the workspace at check time."
 )
 # A requested file the check-time workspace read found absent, and not a tracked file the change
-# deletes (#977). Its repair is the deliverable itself, never a revised obligation.
+# deletes (#977). Its repair is the deliverable itself, never a revised obligation, with one
+# exception (tb4n5 react-lead-form, ADR-033 amendment): a file the request asks for only under a
+# condition the final state does not meet is runtime behavior, not a file delivered now, so the
+# repair is a plan correction that models it as a ``change`` item, never a placeholder file.
 REQUESTED_OUTPUT_ABSENT_FACT: Final = "requested_output_absent"
 _CODE_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
 _POLICY_PATTERN: Final = re.compile(r"^[a-z][a-z0-9-]{0,127}$", re.ASCII)
@@ -675,6 +678,22 @@ def render_deterministic_finding_text(
             " If an input looks inconsistent, still write a best-effort artifact in the requested"
             " format and disclose the assumption; an input problem is not a reason to omit a"
             " requested output, and publishing an action that names the file does not create it."
+            " If the request asks for this file only under a condition your final state does not"
+            " meet (a quarantine log written only for a malformed input, a report written only"
+            " for a failing case), it is runtime behavior, not a file delivered now: correct the"
+            " plan, not the deliverable. Publish a new obligation with the same acceptance"
+            " criteria where this file has a `change` item of its own that spells its declared"
+            " path and states its condition (when, if or unless), and whose `file` items (role"
+            " `output`) name the source files that implement it; supersede this"
+            " obligation with plan_revised (change superseded, a reason, and"
+            " replacement_obligation_ids naming the new one); record the work with each new item"
+            " value in attempted_items, resolve the new obligation with its evidence, replace the"
+            " completion claim with one naming it, then check again. Never write an empty or"
+            " placeholder file, and never change when the deliverable writes the file, to satisfy"
+            " the declaration. A file the request asks for unconditionally stays required: a file"
+            " the replacement neither re-declares as a `file` item (not role `input`) nor names"
+            " alone, with its condition, in a `change` item stays requested on the superseded"
+            " obligation."
             " If the requested item is not the path the request asks for, correct the item."
             " Do not git-ignore, exclude, stash or delete a requested output to keep it out of"
             " review: Yoetz redacts what it sends.",

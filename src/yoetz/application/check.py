@@ -211,6 +211,7 @@ from yoetz.kernel.review_frame import (
 from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
+    DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP,
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     agent_linked_run_events,
     confirmed_blocked_obligation_ids,
@@ -2990,6 +2991,7 @@ async def _requested_output_inputs(
 ) -> _OutputInputs:
 
     from yoetz.application.check_change import (
+        UndeclaredReferenceRead,
         requested_output_states,
         undeclared_references,
     )
@@ -3028,7 +3030,7 @@ async def _requested_output_inputs(
     if content_moved_declared_items(case.projection, states, blocked=confirmed, history=history):
         # A non-blocking disclosure (ADR-035): never a Stop-gate token, never a finding.
         codes.add(DECLARED_OUTPUT_CONTENT_MOVED_GAP)
-    references = await undeclared_references(
+    read: object = await undeclared_references(
         projection=case.projection,
         capture=capture,
         source=source,
@@ -3037,6 +3039,18 @@ async def _requested_output_inputs(
         blocked=confirmed,
         request_id=request_id,
     )
+    # A reader that predates the ambiguous count returns the dependency pairs alone.
+    reading = (
+        read
+        if type(read) is UndeclaredReferenceRead
+        else UndeclaredReferenceRead(cast(tuple[tuple[str, str], ...], read))
+    )
+    references = reading.pairs
+    if reading.ambiguous:
+        # tb4n5 (the #1044 follow-up, ADR-035 amendment): a deliverable names created files only
+        # by an ambiguous basename, so they were not treated as dependencies. A standing
+        # disclosure with the count on the receipt; never a name, never a Stop-gate token.
+        codes.add(DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP)
     if references:
         # tb4n2 R2 / tb4n4 (#1044): a declared deliverable names a file the change created but
         # never declared, so the delivery may not carry what it needs. Agent work and a Stop-gate
@@ -3064,7 +3078,9 @@ async def _requested_output_inputs(
         partial(work_integrity_findings, absent_outputs=absent),
         gaps,
         bool(absent),
-        _with_undeclared_references(assessment.states, files, references),
+        _with_undeclared_references(
+            assessment.states, files, references, ambiguous=reading.ambiguous
+        ),
         files,
     )
 
@@ -3073,17 +3089,22 @@ def _with_undeclared_references(
     states: tuple[DeliverableState, ...],
     files: tuple[tuple[ObligationId, int, str], ...],
     references: tuple[tuple[str, str], ...],
+    *,
+    ambiguous: tuple[tuple[str, int], ...] = (),
 ) -> tuple[DeliverableState, ...]:
     """Each referencing deliverable's state, naming the undeclared files it names (#1044).
 
     ``references`` are ``(deliverable, referenced file)`` root-relative pairs from the check-time
     read; ``files`` maps each recorded state to its deliverable's root-relative path. At most
     ``MAX_UNDECLARED_REFERENCES`` nameable paths are recorded per state, sorted; when more were
-    found (or one cannot be named) the state also records how many.
+    found (or one cannot be named) the state also records how many. ``ambiguous`` counts, per
+    deliverable, the created files it names only by an ambiguous basename (tb4n5): recorded as
+    ``undeclared_reference_ambiguous``, never named.
     """
 
-    if not references:
+    if not references and not ambiguous:
         return states
+    unclear = dict(ambiguous)
     found: dict[str, set[str]] = {}
     for deliverable, referenced in references:
         found.setdefault(deliverable, set()).add(referenced)
@@ -3092,6 +3113,9 @@ def _with_undeclared_references(
     for state in states:
         relative = relatives.get((state.obligation_id, state.item_index))
         named = found.get(relative) if relative is not None else None
+        count = unclear.get(relative) if relative is not None else None
+        if count:
+            state = replace(state, undeclared_reference_ambiguous=count)
         if not named:
             recorded.append(state)
             continue

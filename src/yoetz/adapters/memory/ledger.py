@@ -58,6 +58,7 @@ from yoetz.domain.events import (
     public_error_for_claim_revision_mismatch,
     public_error_for_no_obligations_reason_mismatch,
     public_error_for_obligation_resolution_mismatch,
+    redaction_targets,
 )
 from yoetz.domain.findings import (
     FindingKind,
@@ -1490,14 +1491,8 @@ def _later_redaction_targets(
     it, so a row can be withdrawn by either identity. The suffix is empty for a head read.
     """
 
-    events: set[str] = set()
-    objects: set[str] = set()
-    for row in suffix:
-        if row.schema.name != "redaction_recorded":
-            continue
-        events.update(row.projection_locator.redaction_target_event_ids)
-        objects.update(row.projection_locator.redaction_target_object_ids)
-    return frozenset(events), frozenset(objects)
+    events, objects = redaction_targets(suffix)
+    return frozenset(map(str, events)), frozenset(map(str, objects))
 
 
 def _authored_by_requester(

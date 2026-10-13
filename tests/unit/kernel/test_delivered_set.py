@@ -550,9 +550,33 @@ def test_check_adds_undeclared_reference_and_names_it_on_the_deliverable_state(
     assert state.undeclared_references == ("english_ngrams.npz", "english_words.npz")
     assert state.undeclared_reference_count == 3
     assert DeliverableState.from_wire(state.as_wire()) == state
+    assert state.undeclared_reference_ambiguous is None
     assert undeclared_reference_rows(recorded) == (
         (str(_OBLIGATION), 0, ("english_ngrams.npz", "english_words.npz"), 3),
     )
+
+
+def test_an_ambiguous_count_is_recorded_and_disclosed_never_a_name() -> None:
+    """tb4n5 (the #1044 follow-up, ADR-035 amendment): files a deliverable names only by an
+    ambiguous basename are counted on its state and disclosed with that count; never named."""
+
+    from yoetz.application import check
+    from yoetz.application.check_change import UndeclaredReferenceRead
+    from yoetz.kernel.delivered_set import ambiguous_reference_count
+
+    states = (DeliverableState(_OBLIGATION, 0),)
+    files = ((_OBLIGATION, 0, "solve.py"),)
+    enrich = check._with_undeclared_references  # pyright: ignore[reportPrivateUsage]
+
+    (state,) = enrich(states, files, (), ambiguous=(("solve.py", 18),))
+    assert state.undeclared_reference_ambiguous == 18
+    assert state.undeclared_references == ()
+    assert state.as_wire()["undeclared_reference_ambiguous"] == 18
+    assert DeliverableState.from_wire(state.as_wire()) == state
+    assert ambiguous_reference_count((state, state)) == 18  # one keyed path, counted once
+    assert UndeclaredReferenceRead().pairs == ()
+    with pytest.raises(ProtocolValueError):
+        DeliverableState(_OBLIGATION, 0, undeclared_reference_ambiguous=0)
 
 
 def test_a_recorded_undeclared_reference_is_a_plain_bounded_path() -> None:

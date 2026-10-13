@@ -9,7 +9,7 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
   reviewer's ruling, and the task facts the agent can repair (a planned verification not
   observed, failing or stale; an edit to the work after the last verification run, ADR-042; a
   requested output Git would not deliver; a deliverable that was emptied or removed; a delivered
-  file that loads a file the agent created and never declared, #1044);
+  file that may read a file the agent created and never declared, #1044);
 * once per ledger frontier and session: a second Stop at the same frontier passes, so an agent
   that cannot or will not act is never trapped;
 * the four re-checks (tb4n3 RC-8) are not riders on those tokens. Readiness announces them in
@@ -232,10 +232,12 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
     # created and never declared; the grader received only the declared files. Disclosing the
     # dependency is not a way out.
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP: (
-        "a delivered file loads a file you created but did not declare, and a grader may receive"
-        " only the declared files: embed its content in the deliverable, rebuild it at run time,"
-        " or declare it as a delivered output (a requested `file` item with role `output`), then"
-        " run `check`; disclosing the dependency does not clear this"
+        "a delivered file references a file you created but did not declare in a way that may"
+        " read it, and a grader may receive only the declared files: embed its content in the"
+        " deliverable, rebuild it at run time,"
+        " or declare it, or the directory holding it, as a delivered output (a requested `file`"
+        " or `directory` item with role `output`), then run `check`; disclosing the dependency"
+        " does not clear this"
     ),
 }
 # Repair-first guidance, one sentence per present item family (F1, #984). Acknowledgement is the
@@ -780,19 +782,26 @@ def _withdrawn_text(readiness: object, tokens: tuple[str, ...]) -> str:
     return sentence + (f" ({'; '.join(notes)}.)" if notes else "")
 
 
+# tb4n5 (ADR-035 amendment): how an agent lists the files its change created, in its own shell,
+# when its privacy policy withholds their names from the agent context.
+_CREATED_FILES_COMMAND: Final = "`git status --porcelain --untracked-files=all`"
+
+
 def _undeclared_variants(readiness: object) -> tuple[str, ...]:
     """Name the files ``deliverable_references_undeclared_file`` found (tb4n4, #1044).
 
     From ``closure_readiness.undeclared_references``: the declared item that names them by id and
     index, and each path quoted and bounded (``quoted_path``); a path a privacy policy withheld
     reads ``(path withheld)``. ``()`` when readiness names none (an older service), so the item's
-    own clause still says what to do.
+    own clause still says what to do. When a name was withheld (tb4n5), each variant ends with
+    the continuation: why, and the agent's own shell command that lists the files it created.
     """
 
     raw = getattr(readiness, "undeclared_references", None)
     if not isinstance(raw, (tuple, list)):
         return ()
     rows: list[tuple[str, int | None, tuple[str | None, ...], int]] = []
+    withheld = False
     for entry in tuple(cast(tuple[object, ...], raw))[:_MAX_RECHECKS]:
         obligation = _field(entry, "obligation_id")
         index = _decimal(_field(entry, "item_index"))
@@ -811,7 +820,21 @@ def _undeclared_variants(readiness: object) -> tuple[str, ...]:
             for item in tuple(cast(tuple[object, ...], paths_raw))[:8]
         )
         rows.append((obligation, index, paths, total))
-    return undeclared_reference_variants(rows)
+        if any(path is None for path in paths):
+            withheld = True
+    named = undeclared_reference_variants(rows)
+    if not named or not withheld:
+        return named
+    # tb4n5 (ADR-035 amendment): a withheld name is not actionable on its own. Say why and how to
+    # find the files without widening any privacy setting: the agent's own shell lists them.
+    full = (
+        " Your privacy policy withheld these names (Yoetz returns only a name you published"
+        f" yourself): list the files your change created with your own shell"
+        f" ({_CREATED_FILES_COMMAND}), then declare the ones the delivered file may read, or their"
+        " directory, or embed or rebuild them."
+    )
+    short = f" Names withheld: list the files you created with {_CREATED_FILES_COMMAND}."
+    return tuple(dict.fromkeys((named[0] + full, named[-1] + short)))
 
 
 # Informational only (ADR-035): appended when the gate already fires for another reason and

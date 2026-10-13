@@ -5184,6 +5184,8 @@ class StatusUndeclaredReferenceModel(_ClosedModel):
     The declared item that names them, the root-relative files it names (repository-excerpt
     content: a privacy policy may withhold each one) and how many it names in all, from the
     applicable check's recorded deliverable state. The Stop gate and the receipt name them.
+    A name the requesting writer itself published in this session returns to it under the
+    ordinary ``self_authored`` rule (tb4n5); a withheld one is listed with the agent's own shell.
     """
 
     obligation_id: ObligationIdWire

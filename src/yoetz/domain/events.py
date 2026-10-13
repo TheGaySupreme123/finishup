@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -2955,12 +2955,22 @@ class DeliverableState:
     # were found than are named here (a longer list, or a path that cannot be named).
     undeclared_references: tuple[str, ...] = ()
     undeclared_reference_count: int | None = None
+    # tb4n5 (ADR-035 amendment): how many created, undeclared files this deliverable names only by
+    # an ambiguous file name (a declared file shares it, or nothing ties it to the file's
+    # directory), so the check did not treat them as dependencies. A count, never a name.
+    undeclared_reference_ambiguous: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "obligation_id", obligation_id(self.obligation_id))
         object.__setattr__(self, "item_index", _bounded_integer(self.item_index, 0, 63))
         if type(self.unreviewable) is not bool:
             raise ProtocolValueError("invalid_event_value_type")
+        if self.undeclared_reference_ambiguous is not None:
+            object.__setattr__(
+                self,
+                "undeclared_reference_ambiguous",
+                _bounded_integer(self.undeclared_reference_ambiguous, 1, _MAX_SAFE_INTEGER),
+            )
         object.__setattr__(
             self, "undeclared_references", _undeclared_references(self.undeclared_references)
         )
@@ -3012,6 +3022,7 @@ class DeliverableState:
             wire["undeclared_references"] = self.undeclared_references
         for name in (
             "undeclared_reference_count",
+            "undeclared_reference_ambiguous",
             "path_key",
             "size_bytes",
             "lines",
@@ -3050,6 +3061,7 @@ class DeliverableState:
                     "unreviewable",
                     "undeclared_references",
                     "undeclared_reference_count",
+                    "undeclared_reference_ambiguous",
                 }
             ),
         )
@@ -3106,6 +3118,7 @@ class DeliverableState:
                 tuple[str, ...], tuple(cast(list[object] | tuple[object, ...], references))
             ),
             undeclared_reference_count=integer("undeclared_reference_count"),
+            undeclared_reference_ambiguous=integer("undeclared_reference_ambiguous"),
         )
 
 
@@ -5928,6 +5941,27 @@ def is_observation_authored(record: LedgerRecord) -> bool:
     """Recognize only service-stamped observation coordinator records."""
 
     return is_observation_authorship(record.author, record.publication_channel)
+
+
+def redaction_targets(
+    records: Iterable[LedgerRecord],
+) -> tuple[frozenset[EventId], frozenset[ObjectId]]:
+    """The event and object targets of every ``redaction_recorded`` among ``records``.
+
+    An object target redacts the event whose payload object it names, exactly as replay resolves
+    it, so a caller reading original envelopes excludes a record when its event ID is in the
+    first set or its ``payload_ref.object_id`` is in the second. Loaded envelopes keep their
+    original ``redaction`` state after a later logical redaction; this is the effective view.
+    """
+
+    events: set[EventId] = set()
+    objects: set[ObjectId] = set()
+    for record in records:
+        if record.schema.name != "redaction_recorded":
+            continue
+        events.update(record.projection_locator.redaction_target_event_ids)
+        objects.update(record.projection_locator.redaction_target_object_ids)
+    return frozenset(events), frozenset(objects)
 
 
 def is_lineage_service_stamped(record: LedgerRecord) -> bool:

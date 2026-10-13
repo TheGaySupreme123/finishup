@@ -303,8 +303,13 @@ async def build_projection_application(
     *,
     seed: int = 1400,
     max_findings: int = 3,
+    policy_transform: Callable[[PrivacyPolicy], PrivacyPolicy] | None = None,
 ) -> tuple[Application, PrivacyPolicy]:
-    """A ready application whose disclosure boundary is the real coordinator and default policy."""
+    """A ready application whose disclosure boundary is the real coordinator and default policy.
+
+    ``policy_transform`` derives the seeded policy from the shipped default, for a test that needs
+    a different ceiling (an owner who granted ``repository_excerpt`` to the agent context).
+    """
 
     start_app, start_runtime, clock, catalog = start_composition()
     ids = start_runtime.ids
@@ -316,6 +321,8 @@ async def build_projection_application(
         policy_digest=PROJECTION_DIGEST,
         created_at=_NOW,
     )
+    if policy_transform is not None:
+        policy = policy_transform(policy)
     await policies.seed_if_absent(policy)
     audit = MemoryPrivacyAudit(
         privacy_state, cast(ObjectStorePort, MemoryObjects(ids)), StartTestLookup(), clock

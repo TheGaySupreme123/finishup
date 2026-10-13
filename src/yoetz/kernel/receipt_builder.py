@@ -77,6 +77,7 @@ from yoetz.domain.review_input_render import (
     render_review_input_manifest_coverage_note,
 )
 from yoetz.domain.task_fact_tokens import (
+    DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP,
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     undeclared_reference_variants,
 )
@@ -126,7 +127,11 @@ from yoetz.kernel.completion_scope import (
     SCOPE_REPAIR,
     completion_scope_differences,
 )
-from yoetz.kernel.delivered_set import deliverable_lineage, undeclared_reference_rows
+from yoetz.kernel.delivered_set import (
+    ambiguous_reference_count,
+    deliverable_lineage,
+    undeclared_reference_rows,
+)
 from yoetz.kernel.deterministic_checks import (
     CALLER_DIGEST_PROVENANCE_GAPS,
     CaseAvailabilityFacts,
@@ -823,6 +828,11 @@ def _check_change_gap_text(
             rows = tuple((obligation, index, (), total) for obligation, index, _, total in rows)
         named = undeclared_reference_variants(rows)
         return f"{sentence} {named[0]}" if named else sentence
+    if sentence is not None and code == DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP:
+        # tb4n5 (ADR-035 amendment): how many, never which; the bound the heuristic left open.
+        check = context.applicable_check
+        count = ambiguous_reference_count(check.deliverable_states) if check is not None else 0
+        return f"{sentence} Files named ambiguously: {count}." if count else sentence
     if sentence is not None and code != CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP:
         why = lineage_texts(_receipt_fact_lineage(context), code)
         if why:

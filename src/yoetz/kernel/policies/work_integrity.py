@@ -75,6 +75,7 @@ from yoetz.kernel.task_facts import (
     cooperative_event_ids_from_coverage,
     non_counting_edits_exempt,
     observed_planned_commands,
+    superseded_unnamed_outputs,
 )
 from yoetz.protocol.policy_packs import WORK_INTEGRITY_POLICY_ID, WORK_INTEGRITY_POLICY_VERSION
 
@@ -310,7 +311,13 @@ def _requested_item_findings(
     # The case's task-fact markers carry the confirmation rule (it needs the publish batches).
     blocked = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
     matched_commands: frozenset[str] | None = None
-    for obligation_ref in sorted(_active_requested_obligations(case), key=_ascii):
+    active = _active_requested_obligations(case)
+    # tb4n5 (ADR-033 amendment): a superseded obligation whose requested output no replacement
+    # names carries that absent output still (``superseded_unnamed_outputs``); it is reported on
+    # the obligation that requested it, for its absence only.
+    dropped = frozenset(superseded_unnamed_outputs(case.projection)) & absent_outputs
+    carriers = frozenset(obligation for obligation, _index in dropped) - active
+    for obligation_ref in sorted(active | carriers, key=_ascii):
         record = case.projection.obligations[obligation_ref]
         payload = record.payload
         if (
@@ -346,13 +353,17 @@ def _requested_item_findings(
         # tb4n2 E4 (P1-7): an item the obligation only reads (``role: input``) is never "not
         # attempted", and "never attempted" waits for work on *this* obligation (or a completion
         # claim naming it), never for any action anywhere in the task.
-        unattempted = reportable and any(
-            not _item_attempted(item, attempted, matched_commands)
-            for item in payload.requested_items
-            if getattr(item, "role", None) is not RequestedItemRole.INPUT
+        unattempted = (
+            reportable
+            and obligation_ref in active
+            and any(
+                not _item_attempted(item, attempted, matched_commands)
+                for item in payload.requested_items
+                if getattr(item, "role", None) is not RequestedItemRole.INPUT
+            )
         )
         absent = reportable and any(
-            (obligation_ref, index) in absent_outputs
+            (obligation_ref, index) in (absent_outputs if obligation_ref in active else dropped)
             for index in range(len(payload.requested_items))
         )
         if not unattempted and not absent:

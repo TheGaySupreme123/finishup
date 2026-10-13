@@ -1499,30 +1499,56 @@ class GitChangeCaptureAdapter:
         return ChangeLineCounts(tuple(changed), tuple(base_lines), truncated)
 
     def find_undeclared_references(
-        self, workspace: str, deliverables: tuple[str, ...], candidates: tuple[str, ...]
+        self,
+        workspace: str,
+        deliverables: tuple[str, ...],
+        candidates: tuple[str, ...],
+        declared: tuple[str, ...] = (),
     ) -> tuple[tuple[int, int], ...]:
-        """Which declared deliverables name which created but undeclared files.
+        """The dependency pairs of ``classify_undeclared_references`` (see it)."""
+
+        return tuple(
+            (position, index)
+            for position, index, kind in self.classify_undeclared_references(
+                workspace, deliverables, candidates, declared
+            )
+            if kind == "dependency"
+        )
+
+    def classify_undeclared_references(
+        self,
+        workspace: str,
+        deliverables: tuple[str, ...],
+        candidates: tuple[str, ...],
+        declared: tuple[str, ...] = (),
+    ) -> tuple[tuple[int, int, str], ...]:
+        """Which declared deliverables depend on, or only ambiguously name, which created files.
 
         tb4n2 R2 / tb4n4 (ADR-035 amendment, issue #1044): a delivered ``cracker.py`` loaded model
         files the agent created and never declared, so the graded deliverable failed.
-        ``deliverables`` and ``candidates`` are root-relative paths. Each deliverable with a
-        source-code suffix (or no suffix and a ``#!`` first line) is read from the start, at most
-        ``_MAX_REFERENCE_FILE_BYTES``, one component at a time without following a link, never
-        when credential-named, multiply linked or binary. A candidate is referenced when a one-line
-        quoted string literal equals its path, ends with ``/`` and its path, or equals its basename
-        of at least ``_MIN_REFERENCE_BASENAME`` bytes. Returns ``(deliverable index, candidate
-        index)`` pairs into the caller's own tuples, sorted, at most ``_MAX_REFERENCE_PAIRS``: no
-        path or content leaves this method, and nothing is logged.
+        ``deliverables``, ``candidates`` and ``declared`` (every declared item, any role) are
+        root-relative paths. Each deliverable with a source-code suffix (or no suffix and a ``#!``
+        first line) is read from the start, at most ``_MAX_REFERENCE_FILE_BYTES``, one component
+        at a time without following a link, never when credential-named, multiply linked or
+        binary. A candidate is named when a one-line quoted string literal equals its path, ends
+        with ``/`` and its path, or equals its basename of at least ``_MIN_REFERENCE_BASENAME``
+        bytes. ``_dependencies`` decides (tb4n5 biped): a naming that may read the file is a
+        ``dependency``; a file named only by an ambiguous basename is ``ambiguous``; a file the
+        deliverable provably only writes is neither. Returns ``(deliverable index, candidate
+        index, kind)`` into the caller's own tuples, sorted, at most ``_MAX_REFERENCE_PAIRS`` of
+        each kind: no path or content leaves this method, and nothing is logged.
         """
 
         if (
             type(deliverables) is not tuple
             or type(candidates) is not tuple
+            or type(declared) is not tuple
             or len(deliverables) > _MAX_REFERENCE_DELIVERABLES
             or len(candidates) > _MAX_REFERENCE_CANDIDATES
+            or len(declared) > _MAX_REFERENCE_CANDIDATES
             or any(
                 type(path) is not str or not _safe_relative(os.fsencode(path))
-                for path in (*deliverables, *candidates)
+                for path in (*deliverables, *candidates, *declared)
             )
         ):
             raise ChangeCaptureUnavailable("unsupported_repository")
@@ -1532,13 +1558,15 @@ class GitChangeCaptureAdapter:
         pinned = self._open(workspace, deadline)
         paths: dict[bytes, list[int]] = {}
         names: dict[bytes, list[int]] = {}
-        for index, candidate in enumerate(candidates):
-            path = os.fsencode(candidate)
+        encoded = tuple(os.fsencode(candidate) for candidate in candidates)
+        for index, path in enumerate(encoded):
             paths.setdefault(path, []).append(index)
             name = path.rsplit(b"/", 1)[-1]
             if len(name) >= _MIN_REFERENCE_BASENAME:
                 names.setdefault(name, []).append(index)
+        declared_names = frozenset(os.fsencode(path).rsplit(b"/", 1)[-1] for path in declared)
         found: set[tuple[int, int]] = set()
+        unclear: set[tuple[int, int]] = set()
         for position, deliverable in enumerate(deliverables):
             if _expired(deadline):
                 break
@@ -1552,8 +1580,19 @@ class GitChangeCaptureAdapter:
                 continue
             if not suffix and not content.startswith(b"#!"):
                 continue
-            found.update((position, index) for index in _referenced(content, paths, names))
-        return tuple(sorted(found))[:_MAX_REFERENCE_PAIRS]
+            dependencies, ambiguous = _dependencies(
+                content, path, encoded, paths, names, declared_names, suffix
+            )
+            found.update((position, index) for index in dependencies)
+            unclear.update((position, index) for index in ambiguous)
+        return tuple(
+            sorted(
+                (
+                    *((p, i, "dependency") for p, i in sorted(found)[:_MAX_REFERENCE_PAIRS]),
+                    *((p, i, "ambiguous") for p, i in sorted(unclear)[:_MAX_REFERENCE_PAIRS]),
+                )
+            )
+        )
 
     def capture_metadata(self, workspace: str, base: TaskChangeBase | None) -> CheckChangeMetadata:
         """Return changed-path facts without reading file or blob content.
@@ -3475,21 +3514,649 @@ def _read_prefix_beneath(root_descriptor: int, path: bytes, limit: int) -> bytes
             os.close(descriptor)
 
 
-def _referenced(
-    content: bytes, paths: Mapping[bytes, list[int]], names: Mapping[bytes, list[int]]
-) -> set[int]:
-    """The candidate indexes a one-line quoted literal in ``content`` names (see caller)."""
+def _path_matches(literal: bytes, paths: Mapping[bytes, list[int]]) -> set[int]:
+    """Candidates a literal names by path: equal to it, or a ``/`` suffix of it."""
 
-    found: set[int] = set()
+    found: set[int] = set(paths.get(literal, ()))
+    start = literal.find(b"/")
+    while start != -1:
+        found.update(paths.get(literal[start + 1 :], ()))
+        start = literal.find(b"/", start + 1)
+    return found
+
+
+# The #1044 follow-up (tb4n5 biped-contact-dynamics, ADR-035 amendment): a literal that names a
+# created file is classified by the call it sits in and the path it builds, so a deliverable that
+# provably only writes a file, or names a file only by an ambiguous basename, is not a dependency.
+# Only a write the classifier can prove (a supported API, the argument that is its destination, a
+# literal write mode) is a write; every other use is ``unknown`` and counts as a possible read.
+type _ReferenceUse = Literal["write", "unknown"]
+# How far the classification looks back for the call that holds a literal, and forward for that
+# call's closing parenthesis; how many enclosing path-building calls it climbs through; and how
+# many literal occurrences one deliverable classifies (the rest count as ``unknown``: a dependency).
+_REFERENCE_CONTEXT_BYTES: Final = 2_048
+_REFERENCE_CONTEXT_LEVELS: Final = 4
+_MAX_CLASSIFIED_OCCURRENCES: Final = 256
+# Calls that only build or wrap a path: the method chained on the result, or the call that
+# receives it, decides. A bare grouping parenthesis (``(HERE / "x.npz").write_bytes()``) is one.
+_PATH_BUILDERS: Final = frozenset(
+    {
+        b"join",
+        b"joinpath",
+        b"path",
+        b"purepath",
+        b"pureposixpath",
+        b"resolve",
+        b"abspath",
+        b"realpath",
+        b"normpath",
+        b"expanduser",
+        b"fspath",
+        b"str",
+        b"with_name",
+        b"with_suffix",
+    }
+)
+# Builders whose literal arguments compose a path, in order (``os.path.join``, ``Path``).
+_PATH_COMPOSERS: Final = frozenset({b"join", b"joinpath", b"path", b"purepath", b"pureposixpath"})
+# Proven writes: ``(receivers or None for any, names, destination position, destination keywords)``.
+# The destination argument is what the call writes or discards; any other argument is not.
+_WRITE_APIS: Final[
+    tuple[tuple[frozenset[bytes] | None, frozenset[bytes], int, frozenset[bytes]], ...]
+] = (
+    (
+        frozenset({b"np", b"numpy", b"jnp", b"cp", b"cupy"}),
+        frozenset({b"save", b"savez", b"savez_compressed", b"savetxt"}),
+        0,
+        frozenset({b"file", b"fname"}),
+    ),
+    (frozenset({b"torch"}), frozenset({b"save"}), 1, frozenset({b"f"})),
+    (
+        None,
+        frozenset(
+            {
+                b"to_csv",
+                b"to_json",
+                b"to_parquet",
+                b"to_pickle",
+                b"to_feather",
+                b"to_excel",
+                b"to_hdf",
+                b"to_netcdf",
+                b"to_stata",
+                b"to_xml",
+                b"to_html",
+                b"to_latex",
+                b"to_markdown",
+                b"to_orc",
+            }
+        ),
+        0,
+        frozenset({b"path", b"path_or_buf", b"path_or_buffer", b"excel_writer", b"fname"}),
+    ),
+    (None, frozenset({b"savefig"}), 0, frozenset({b"fname"})),
+    (frozenset({b"cv2", b"iio", b"imageio"}), frozenset({b"imwrite"}), 0, frozenset({b"uri"})),
+    (
+        frozenset({b"plt", b"io", b"skimage", b"iio", b"imageio"}),
+        frozenset({b"imsave"}),
+        0,
+        frozenset({b"fname", b"uri"}),
+    ),
+    (
+        frozenset({b"fs", b"fsp", b"promises"}),
+        frozenset(
+            {
+                b"writefile",
+                b"writefilesync",
+                b"appendfile",
+                b"appendfilesync",
+                b"createwritestream",
+                b"unlink",
+                b"unlinksync",
+                b"rm",
+                b"rmsync",
+            }
+        ),
+        0,
+        frozenset(),
+    ),
+    (
+        frozenset({b"os", b"shutil"}),
+        frozenset({b"remove", b"unlink", b"rmtree", b"rmdir"}),
+        0,
+        frozenset({b"path"}),
+    ),
+)
+# Mode-taking openers: ``(receivers (None: a bare call), names, path position, path keywords,
+# mode position, write modes)``. Write modes ``None`` are file semantics: a mode with ``w``, ``x``
+# or ``a`` and neither ``r`` nor ``+`` only writes. A container opener lists its exact write-only
+# modes: its append and read-write modes read existing members (``ZipFile(..., 'a')`` reads the
+# archive; ``h5py.File(..., 'a')`` opens it read/write), so they stay possible reads (checker R2
+# #4). A method named ``open`` on any other receiver (``tarfile.open``) is not proven builtin.
+_FILE_OPEN_RECEIVERS: Final = frozenset(
+    {None, b"io", b"codecs", b"builtins", b"gzip", b"bz2", b"lzma"}
+)
+_MODE_APIS: Final[
+    tuple[
+        tuple[
+            frozenset[bytes | None],
+            frozenset[bytes],
+            int,
+            frozenset[bytes],
+            int,
+            frozenset[bytes] | None,
+        ],
+        ...,
+    ]
+] = (
+    (
+        _FILE_OPEN_RECEIVERS,
+        frozenset({b"open"}),
+        0,
+        frozenset({b"file", b"filename", b"name"}),
+        1,
+        None,
+    ),
+    (frozenset({None}), frozenset({b"fopen"}), 0, frozenset(), 1, None),
+    (
+        frozenset({b"zipfile"}),
+        frozenset({b"zipfile"}),
+        0,
+        frozenset({b"file"}),
+        1,
+        frozenset({b"w", b"x"}),
+    ),
+    (
+        frozenset({b"h5py"}),
+        frozenset({b"file"}),
+        0,
+        frozenset({b"name"}),
+        1,
+        frozenset({b"w", b"x", b"w-"}),
+    ),
+)
+# Methods on a built path: what they do to the path itself (``Path(...).write_text``).
+_PATH_WRITE_METHODS: Final = frozenset({b"write_text", b"write_bytes", b"unlink", b"touch"})
+_MODE_LITERAL: Final = re.compile(rb"^[rwxabtU+-]{1,4}$")
+_CALL_TAIL: Final = re.compile(
+    rb"(?:([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*\.[ \t]*)?([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*\Z"
+)
+_KEYWORD_ARGUMENT: Final = re.compile(rb"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)")
+_CHAINED_METHOD: Final = re.compile(rb"\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
+# Words before a parenthesis that make it a grouping, not a call.
+_GROUPING_WORDS: Final = frozenset(
+    {
+        b"and",
+        b"assert",
+        b"await",
+        b"elif",
+        b"else",
+        b"for",
+        b"if",
+        b"in",
+        b"is",
+        b"not",
+        b"or",
+        b"return",
+        b"while",
+        b"with",
+        b"yield",
+    }
+)
+_PARENTHESES: Final = re.compile(rb"[()]")
+_BRACKETS: Final = re.compile(rb"[()\[\]{},]")
+_HASH_COMMENT_SUFFIXES: Final = frozenset(
+    {b".py", b".sh", b".bash", b".rb", b".pl", b".r", b".R", b".jl"}
+)
+_SLASH_COMMENT_SUFFIXES: Final = frozenset({b".js", b".mjs", b".cjs", b".ts", b".php"})
+_SHELL_SUFFIXES: Final = frozenset({b".sh", b".bash"})
+_SHELL_SHEBANG: Final = re.compile(rb"^#![^\n]*\b(?:ba|z|da|k)?sh\b")
+
+
+def _masked(content: bytes, suffix: bytes) -> bytes:
+    """``content`` with every one-line string literal's inside and every comment blanked.
+
+    Parentheses inside a string or a comment then never unbalance the call search. Quote
+    characters and line breaks stay where they are, so every offset still points at the same byte.
+    """
+
+    masked = bytearray(content)
+    for match in _STRING_LITERAL.finditer(content):
+        start, end = match.start() + 1, match.end() - 1
+        masked[start:end] = b" " * (end - start)
+    shebang = not suffix and content.startswith(b"#!")
+    marker = (
+        b"#"
+        if suffix in _HASH_COMMENT_SUFFIXES or shebang
+        else b"//"
+        if suffix in _SLASH_COMMENT_SUFFIXES
+        else None
+    )
+    if marker is not None:
+        position = 0
+        view = bytes(masked)
+        while (found := view.find(marker, position)) != -1:
+            end = view.find(b"\n", found)
+            end = len(view) if end == -1 else end
+            masked[found:end] = b" " * (end - found)
+            position = end
+    return bytes(masked)
+
+
+def _enclosing_open(masked: bytes, position: int) -> int | None:
+    """The ``(`` of the innermost unclosed parenthesis before ``position``, within the window."""
+
+    floor = max(0, position - _REFERENCE_CONTEXT_BYTES)
+    depth = 0
+    for match in reversed(tuple(_PARENTHESES.finditer(masked, floor, position))):
+        if match.group() == b")":
+            depth += 1
+        elif depth:
+            depth -= 1
+        else:
+            return match.start()
+    return None
+
+
+def _matching_close(masked: bytes, opening: int) -> int | None:
+    """The ``)`` that closes the ``(`` at ``opening``, within the window."""
+
+    ceiling = min(len(masked), opening + _REFERENCE_CONTEXT_BYTES)
+    depth = 0
+    for match in _PARENTHESES.finditer(masked, opening + 1, ceiling):
+        if match.group() == b"(":
+            depth += 1
+        elif depth:
+            depth -= 1
+        else:
+            return match.start()
+    return None
+
+
+def _callee(masked: bytes, opening: int) -> tuple[bytes | None, bytes | None]:
+    """``(receiver, name)`` of the call opening at ``(``, lower-cased; ``(None, None)`` for a
+    grouping parenthesis (``np.savez`` is ``(b"np", b"savez")``)."""
+
+    found = _CALL_TAIL.search(masked, max(0, opening - 256), opening)
+    if found is None:
+        return None, None
+    name = found.group(2).lower()
+    if name in _GROUPING_WORDS:
+        return None, None
+    receiver = found.group(1)
+    return (None if receiver is None else receiver.lower()), name
+
+
+def _arguments(masked: bytes, opening: int, closing: int | None) -> list[tuple[int, int]]:
+    """The top-level argument spans of the call opening at ``opening`` (masked offsets)."""
+
+    end = len(masked) if closing is None else closing
+    end = min(end, opening + _REFERENCE_CONTEXT_BYTES)
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    start = opening + 1
+    for match in _BRACKETS.finditer(masked, opening + 1, end):
+        token = match.group()
+        if token in b"([{":
+            depth += 1
+        elif token in b")]}":
+            depth -= 1
+        elif depth == 0:
+            spans.append((start, match.start()))
+            start = match.end()
+    spans.append((start, end))
+    return [span for span in spans if masked[span[0] : span[1]].strip()]
+
+
+def _argument_role(
+    masked: bytes, spans: list[tuple[int, int]], position: int
+) -> tuple[int | None, bytes | None]:
+    """``(positional index, keyword)`` of the argument holding ``position``; one is ``None``."""
+
+    positional = 0
+    for start, end in spans:
+        keyword = _KEYWORD_ARGUMENT.match(masked, start, end)
+        if start <= position < end:
+            return (None, keyword.group(1).lower()) if keyword else (positional, None)
+        if keyword is None:
+            positional += 1
+    return None, None
+
+
+def _single_literal(content: bytes, start: int, end: int) -> bytes | None:
+    """The one string literal an argument span consists of, or ``None``."""
+
+    text = content[start:end].strip()
+    keyword = _KEYWORD_ARGUMENT.match(text)
+    if keyword is not None:
+        text = text[keyword.end() :].strip()
+    match = _STRING_LITERAL.fullmatch(text)
+    if match is None:
+        return None
+    return match.group(1) or match.group(2) or match.group(3) or b""
+
+
+def _mode_use(
+    content: bytes,
+    masked: bytes,
+    opening: int,
+    mode_position: int,
+    write_modes: frozenset[bytes] | None = None,
+) -> _ReferenceUse:
+    """Write only when the opener's actual mode argument is a literal write-only mode.
+
+    The mode is the argument at ``mode_position`` among the positional arguments, or ``mode=``.
+    No mode is the default read; a mode the classifier cannot read is ``unknown``. ``write_modes``
+    lists a container opener's exact write-only modes; ``None`` applies file semantics.
+    """
+
+    spans = _arguments(masked, opening, _matching_close(masked, opening))
+    positional = [span for span in spans if _KEYWORD_ARGUMENT.match(masked, *span) is None]
+    keyword = [
+        span
+        for span in spans
+        if (match := _KEYWORD_ARGUMENT.match(masked, *span)) is not None
+        and match.group(1) == b"mode"
+    ]
+    span = (
+        keyword[0]
+        if keyword
+        else (positional[mode_position] if mode_position < len(positional) else None)
+    )
+    if span is None:
+        return "unknown"  # the default mode reads
+    mode = _single_literal(content, *span)
+    if mode is None or _MODE_LITERAL.fullmatch(mode) is None:
+        return "unknown"
+    if write_modes is not None:
+        return "write" if mode in write_modes else "unknown"
+    if b"r" in mode or b"+" in mode:
+        return "unknown"
+    return "write" if any(flag in mode for flag in (b"w", b"x", b"a")) else "unknown"
+
+
+def _call_use(
+    content: bytes,
+    masked: bytes,
+    opening: int,
+    receiver: bytes | None,
+    name: bytes,
+    position: int,
+) -> _ReferenceUse | None:
+    """What a supported API does to the argument holding ``position``; ``None`` when unsupported."""
+
+    spans = _arguments(masked, opening, _matching_close(masked, opening))
+    index, keyword = _argument_role(masked, spans, position)
+    for receivers, names, path_index, path_keywords, mode_index, write_modes in _MODE_APIS:
+        if name in names and receiver in receivers:
+            if index != path_index and keyword not in path_keywords:
+                return "unknown"
+            return _mode_use(content, masked, opening, mode_index, write_modes)
+    for receivers, names, destination, keywords in _WRITE_APIS:
+        if name in names and (receivers is None or receiver in receivers):
+            return "write" if index == destination or keyword in keywords else "unknown"
+    return None
+
+
+def _literal_use(
+    content: bytes, masked: bytes, start: int, end: int, *, shell: bool
+) -> _ReferenceUse:
+    """Whether the quoted literal at ``content[start:end]`` names a file the code provably writes.
+
+    The innermost call holding the literal decides when it is a supported API (``_WRITE_APIS``,
+    ``_MODE_APIS``) and the literal is in the argument the API writes, discards or opens with a
+    literal write mode. A call that only builds the path (``join``, ``Path``, a grouping
+    parenthesis) hands the decision to a method chained on it (``write_text``, ``open("w")``) or to
+    the call receiving it. Anything else, an unsupported wrapper, a read, an assignment to a name
+    used elsewhere, is ``unknown``: the caller treats it as a possible read. In a shell script a
+    ``>`` before the literal writes.
+    """
+
+    del end
+    if shell:
+        before = masked[max(0, start - 8) : start].rstrip(b" \t")
+        if before.endswith(b">") and not before.endswith(b"<>"):
+            return "write"
+        return "unknown"
+    position = start
+    for _level in range(_REFERENCE_CONTEXT_LEVELS):
+        opening = _enclosing_open(masked, position)
+        if opening is None:
+            return "unknown"
+        receiver, name = _callee(masked, opening)
+        if name is not None and name not in _PATH_BUILDERS:
+            use = _call_use(content, masked, opening, receiver, name, position)
+            return "unknown" if use is None else use
+        chained = _CHAINED_METHOD.match(masked, (_matching_close(masked, opening) or opening) + 1)
+        if chained is not None and _matching_close(masked, opening) is not None:
+            method = chained.group(1).lower()
+            if method in _PATH_WRITE_METHODS:
+                return "write"
+            if method == b"open":
+                return _mode_use(content, masked, chained.end() - 1, 0)
+            if method not in _PATH_BUILDERS:
+                return "unknown"
+        position = opening
+    return "unknown"
+
+
+def _composed_path(content: bytes, masked: bytes, start: int, end: int, literal: bytes) -> bytes:
+    """The relative path a literal ends when literals build it (the #1044 follow-up, review #3).
+
+    ``os.path.join('checks', 'case_0', 'walk.npz')`` and ``Path('checks') / 'case_0' / 'walk.npz'``
+    end ``checks/case_0/walk.npz``; a non-literal part (``HERE``, ``out``) ends the composition, so
+    ``os.path.join(HERE, 'models', 'x.npz')`` ends ``models/x.npz`` below an unknown prefix. Only
+    the last component is composed; ``.`` components are dropped. The literal alone otherwise.
+    """
+
+    parts: list[bytes] = [literal]
+    # The ``/`` operator: walk back over ``<literal> /`` or ``Path(<literal>) /``.
+    cursor = start
+    while True:
+        before = masked[max(0, cursor - 512) : cursor].rstrip()
+        if not before.endswith(b"/") or before.endswith(b"//"):
+            break
+        operand_end = max(0, cursor - 512) + len(before) - 1
+        operand = masked[max(0, operand_end - 512) : operand_end].rstrip()
+        operand_stop = max(0, operand_end - 512) + len(operand)
+        if operand.endswith((b"'", b'"')):
+            literal_match = None
+            for match in _STRING_LITERAL.finditer(
+                content, max(0, operand_stop - 1100), operand_stop
+            ):
+                if match.end() == operand_stop:
+                    literal_match = match
+            if literal_match is None:
+                break
+            parts.insert(
+                0, literal_match.group(1) or literal_match.group(2) or literal_match.group(3) or b""
+            )
+            cursor = literal_match.start()
+            continue
+        if operand.endswith(b")"):
+            closing = operand_stop - 1
+            opening = _enclosing_open(masked, closing)
+            if opening is None:
+                break
+            _receiver, name = _callee(masked, opening)
+            if name in _PATH_COMPOSERS:
+                spans = _arguments(masked, opening, closing)
+                literals = [_single_literal(content, *span) for span in spans]
+                if literals and all(item is not None for item in literals):
+                    parts[0:0] = [item for item in literals if item is not None]
+        break
+    # A composing call: earlier literal arguments of the same call.
+    if len(parts) == 1:
+        opening = _enclosing_open(masked, start)
+        if opening is not None:
+            _receiver, name = _callee(masked, opening)
+            if name in _PATH_COMPOSERS:
+                spans = _arguments(masked, opening, _matching_close(masked, opening))
+                before_parts: list[bytes] = []
+                for span_start, span_end in spans:
+                    if span_start <= start < span_end:
+                        if _single_literal(content, span_start, span_end) is not None:
+                            parts[0:0] = before_parts
+                        break
+                    value = _single_literal(content, span_start, span_end)
+                    before_parts = [] if value is None else [*before_parts, value]
+    composed = [piece for part in parts for piece in part.split(b"/") if piece not in {b"", b"."}]
+    return b"/".join(composed)
+
+
+_BESIDE_SOURCE: Final = 1 << 16
+
+
+def _directory_association(
+    deliverable: bytes, candidate: bytes, literals: frozenset[bytes]
+) -> int | None:
+    """How closely a deliverable ties a basename-only reference to the candidate's directory.
+
+    ``None`` when it does not. Otherwise a strength, highest first: the candidate sits beside the
+    deliverable; a literal names one of the candidate's directories (by root-relative path or a
+    ``/`` suffix of it, by its path relative to the deliverable's own directory, or the immediate
+    directory by name), the deeper that directory the stronger; the candidate sits at the
+    repository root, where a relative name resolves when the deliverable runs from there (0).
+    """
+
+    parent = candidate.rpartition(b"/")[0]
+    home = deliverable.rpartition(b"/")[0]
+    if parent == home:
+        return _BESIDE_SOURCE
+    if not parent:
+        return 0
+    wanted: dict[bytes, int] = {parent.rpartition(b"/")[2]: parent.count(b"/") + 1}
+    ancestor = parent
+    while ancestor:
+        wanted[ancestor] = max(wanted.get(ancestor, 0), ancestor.count(b"/") + 1)
+        ancestor = ancestor.rpartition(b"/")[0]
+    if home and parent.startswith(home + b"/"):
+        relative = parent[len(home) + 1 :]
+        while relative:
+            depth = home.count(b"/") + relative.count(b"/") + 2
+            wanted[relative] = max(wanted.get(relative, 0), depth)
+            relative = relative.rpartition(b"/")[0]
+    best: int | None = None
+    for literal in literals:
+        for item, depth in wanted.items():
+            if (literal == item or literal.endswith(b"/" + item)) and (
+                best is None or depth > best
+            ):
+                best = depth
+    return best
+
+
+def _tail_matches(tail: bytes, candidates: Sequence[bytes]) -> set[int]:
+    """Candidates a composed relative path names: equal to it, or ending with ``/`` and it."""
+
+    suffix = b"/" + tail
+    return {
+        index
+        for index, candidate in enumerate(candidates)
+        if candidate == tail or candidate.endswith(suffix)
+    }
+
+
+def _dependencies(
+    content: bytes,
+    deliverable: bytes,
+    candidates: Sequence[bytes],
+    paths: Mapping[bytes, list[int]],
+    names: Mapping[bytes, list[int]],
+    declared_names: frozenset[bytes],
+    suffix: bytes,
+) -> tuple[set[int], set[int]]:
+    """``(dependencies, ambiguous)``: the candidates a deliverable may read, and the ones it names
+    only ambiguously (the #1044 follow-up, ADR-035 amendment).
+
+    Each one-line quoted literal is first resolved to the path it builds (``_composed_path``). A
+    composed path with a directory names candidates by that explicit path only (equal, or a ``/``
+    suffix), never by basename: explicit directory evidence beats any inferred location. A bare
+    literal names candidates by path or suffix, or by basename. Each naming is classified by its
+    call (``_literal_use``): a candidate every naming literal provably writes is not a dependency.
+    One named at least once by an unproven use is a dependency when a path names it; when only its
+    basename does, when no declared item has that basename and the deliverable ties the literal to
+    the candidate's directory at least as closely as to any other candidate of that name
+    (``_directory_association``); otherwise it is ambiguous. A read before a write is a read.
+
+    Memory and work stay bounded by the distinct literals and the candidates, never by their
+    product with the occurrences (checker R2 #6): each candidate keeps one aggregate, ``True`` once
+    an unproven use names it by path and ``False`` while only by basename, a proven write records
+    nothing, and the matches of one literal and composed path are resolved and applied once.
+    """
+
+    shell = suffix in _SHELL_SUFFIXES or (not suffix and _SHELL_SHEBANG.match(content) is not None)
+    masked = _masked(content, suffix)
+    # Per candidate named by an unproven use: whether any such use named it by explicit path.
+    possible_read: dict[int, bool] = {}
+    applied: set[tuple[bytes, bytes]] = set()
+    classified = 0
+    literals: set[bytes] = set()
     for match in _STRING_LITERAL.finditer(content):
         literal = match.group(1) or match.group(2) or match.group(3) or b""
-        found.update(paths.get(literal, ()))
-        found.update(names.get(literal, ()))
-        start = literal.find(b"/")
-        while start != -1:
-            found.update(paths.get(literal[start + 1 :], ()))
-            start = literal.find(b"/", start + 1)
-    return found
+        normalized = literal.removeprefix(b"./").rstrip(b"/")
+        if normalized:
+            literals.add(normalized)
+        if not literal or (
+            not _path_matches(literal, paths)
+            and literal not in names
+            and literal.rsplit(b"/", 1)[-1] not in names
+        ):
+            continue
+        composed = (
+            literal
+            if shell
+            else _composed_path(content, masked, match.start(), match.end(), literal)
+        )
+        key = (literal, composed)
+        if key in applied:
+            continue  # an unproven use of the same naming was already recorded
+        if b"/" in composed:
+            by_path = _path_matches(composed, paths) | _tail_matches(composed, candidates)
+            by_name: set[int] = set()
+        else:
+            by_path = _path_matches(literal, paths)
+            by_name = set(names.get(composed or literal, ())) - by_path
+        if not by_path and not by_name:
+            continue
+        if classified < _MAX_CLASSIFIED_OCCURRENCES:
+            classified += 1
+            use = _literal_use(content, masked, match.start(), match.end(), shell=shell)
+        else:
+            use = "unknown"
+        if use == "write":
+            continue
+        applied.add(key)
+        for index in by_path:
+            possible_read[index] = True
+        for index in by_name:
+            possible_read.setdefault(index, False)
+    frozen = frozenset(literals)
+    found: set[int] = set()
+    ambiguous: set[int] = set()
+    # Basename-only references by name, with the association strength of each candidate: among
+    # candidates sharing a basename only the most closely tied ones are the reference.
+    by_basename: dict[bytes, dict[int, int]] = {}
+    for index, explicit in possible_read.items():
+        if explicit:
+            found.add(index)
+            continue
+        candidate = candidates[index]
+        name = candidate.rsplit(b"/", 1)[-1]
+        strength = (
+            None
+            if name in declared_names
+            else _directory_association(deliverable, candidate, frozen)
+        )
+        if strength is None:
+            ambiguous.add(index)
+        else:
+            by_basename.setdefault(name, {})[index] = strength
+    for tied in by_basename.values():
+        strongest = max(tied.values())
+        for index, strength in tied.items():
+            (found if strength == strongest else ambiguous).add(index)
+    return found, ambiguous - found
 
 
 def _identity(facts: os.stat_result) -> _Identity:

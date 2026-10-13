@@ -145,6 +145,21 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    and surfacing it in `privacy receipts get` needs a design-gated egress-receipt schema change,
    left as a follow-up.
 
+   **Revised 2026-10-13 — names of undeclared files a deliverable may read (tb4n5).** The owner
+   allowed showing the agent, locally, the names of files it itself created. No structural record
+   proves that (a file staged before the task, an ignored file force-added later, or one another
+   process wrote all appear as created; no observation records a shell-written path), so no new
+   provenance value is added and the exception fails closed: the status leaf
+   `/closure_readiness/undeclared_references/<n>/paths/<m>` carries the ledger authorship of the
+   accepted, unredacted publication that spelled that exact name (`attempted_items` or
+   `requested_items`; a later `redaction_recorded` naming its event ID or its payload object ID
+   revokes it), keyed on that leaf (`ProjectionProvenanceContext.leaf_authorship`, admitted
+   only for that leaf family and only as `repository_excerpt`), and the ordinary `self_authored`
+   rule decides: only the writer that published the name, in this session, through a cooperative
+   channel, gets it back. Every other name keeps the ceiling, with a typed continuation in the Stop
+   gate (ADR-035). The review packet never carries the names, nor the digest of a payload that held
+   them (ADR-035).
+
    **Revised 2026-07-24 — default agent-context disclosure of verification output.** Under the
    default LOCAL_ONLY bootstrap policy, `agent_context` may include Yoetz-authored verification
    projection content for the requesting agent's own task: `finding_summary` and

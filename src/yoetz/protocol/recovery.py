@@ -1150,7 +1150,8 @@ CLAIM_REVISION_CORRECTIONS: Final[Mapping[str, str]] = MappingProxyType(
         ),
         "replacement_must_not_dispute": "do not combine supersedes_claim_refs with disputes_refs",
         "scope_overlap_required": (
-            "overlap obligation scope with every nonempty superseded claim; an empty-scope target "
+            "overlap obligation scope with every nonempty superseded claim (a replacement a "
+            "plan_revised supersession recorded counts); an empty-scope target "
             "may be explicitly replaced with empty or populated obligation_refs"
         ),
         "supporting_refs_must_exclude_limitations": (

@@ -6,11 +6,11 @@ Read current guidance, not memory. Yoetz is not an enforcement system; a check i
 
 # Task first
 
-Deliver every requested output at its path, even if an input looks inconsistent: write a best-effort artifact and disclose the assumption.
+Deliver each requested output at its path, best-effort and disclosed if an input looks inconsistent; conditional files are `change` items, not placeholders.
 
 # Guidance catalog
 
-Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI and verify it. Only if that result is also empty, use installed `references/<name>.md` or the topic's parent index.
+Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI. Only if that result is also empty, use installed `references/<name>.md` or the topic's parent index.
 
 Focused topics: `startup.md`, `recovery.md`, `publication.md`, `review.md`, `receipt.md`, `delegation.md`, `consent.md`, `page-delivery.md`. Heading topics like `yoetz://guidance/workflow.md#start-and-resume` are a closed catalog: use only named anchors.
 

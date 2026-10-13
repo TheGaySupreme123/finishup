@@ -57,6 +57,15 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    existing task/session/writer routing fences remain authoritative; another task's claim is not
    a target in this ledger. No scope is inferred from support, prose, or another claim.
 
+   **Plan-recorded replacement (tb4n5, ADR-033 amendment).** A target obligation that a
+   `plan_revised` supersession replaced (the replay-derived `superseded_by_obligation_ids`,
+   followed transitively) carries its scope to those replacements: a replacement claim naming one
+   of them overlaps the target. This is how a conditional output declared as a `file` is corrected
+   without a placeholder. Only a recorded plan relation counts, never a claim's own word. The
+   same ancestry keeps failure disclosure: a partial or failed result on a superseded obligation
+   stays relevant to a claim over its replacement, both as required in `limitation_refs` and as
+   admissible there.
+
    New ordinary v1.1 completion publications must explicitly include `obligation_refs`. An
    intentional `[]` remains valid and coverage-incomplete; it cannot coexist with obligation IDs
    in `supporting_refs`. Such IDs must be consciously declared as scope or removed from support.

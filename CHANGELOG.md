@@ -228,6 +228,35 @@ reverse-chronological released versions.
   counts them and names none. Disclosing the dependency no longer resolves it. An untracked file the
   task started with is not counted (#1044).
 
+- A requested output the task writes only under a condition (an incomplete-records ledger, a
+  quarantine log for a malformed input) that you declared as a file and that is absent because the
+  condition did not occur now has one documented exit: correct the plan. The finding, the workflow,
+  publication and request-template guidance and the operating card say to model it as a `change`
+  item naming the condition, plus the source files that implement it, supersede the old
+  obligation, and replace the completion claim; the next check resolves the absence finding.
+  Writing an empty or placeholder file, or changing when your code writes the file, to satisfy the
+  declaration is named as wrong. A replacement completion claim may now name only the replacement
+  obligations a plan revision recorded. A file the task asks for unconditionally stays required:
+  only a `change` item of its own that spells the file's declared path and states its condition
+  re-models it; a mention beside another file, a file re-declared as an input, or prose calling it
+  unconditional keeps it required.
+
+- An undeclared file now stops closure only when a delivered file may read it. A file the code
+  provably only writes (`np.savez(...)`, a frame's `to_csv`, an `open(..., "w")`) no longer
+  counts; an unsupported wrapper, `ZipFile.write`, an `open` with no mode, an archive opened for
+  append (`ZipFile(..., 'a')` reads its members), or a read before a write still does. A path the code builds from literals (`os.path.join('checks', 'case_0',
+  'walk.npz')`) names exactly that file. A bare file name that a declared file shares, or that
+  the code never ties to the file's directory, is not treated as a dependency; the receipt
+  discloses how many such files there were (`deliverable_references_ambiguous_name`), never which
+  (#1044 follow-up).
+
+- When a delivered file may read a file you did not declare and your privacy settings withhold
+  its name, the Stop text now says so, says Yoetz shows you only a name you published yourself,
+  and tells you to list the files your change created with your own shell and declare them or
+  their directory. A name you published yourself in the same session is shown to you. The
+  AI-powered review no longer receives these names, or a digest of a check that held them, in a
+  check's history at all.
+
 - At Stop, the acceptance re-read now asks only about resolved obligations whose acceptance
   criteria the final answer neither names nor addresses, and names them, on Codex and Claude Code
   (which pass the final answer to the Stop hook); Cursor asks as before. A plain "criteria

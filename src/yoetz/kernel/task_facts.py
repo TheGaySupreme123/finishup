@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -91,6 +92,9 @@ from yoetz.domain.task_fact_tokens import (
 )
 from yoetz.domain.task_fact_tokens import (
     DECLARED_OUTPUT_REMOVED_GAP as DECLARED_OUTPUT_REMOVED_GAP,
+)
+from yoetz.domain.task_fact_tokens import (
+    DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP as DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP,
 )
 from yoetz.domain.task_fact_tokens import (
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP as DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
@@ -193,6 +197,7 @@ __all__ = [
     "DECLARED_OUTPUT_EMPTIED_GAP",
     "DECLARED_OUTPUT_NOT_REVIEWABLE_GAP",
     "DECLARED_OUTPUT_REMOVED_GAP",
+    "DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP",
     "DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP",
     "EDITED_AFTER_LAST_VERIFICATION_GAP",
     "INSTALL_INTO_PRIVATE_ENV_GAP",
@@ -256,6 +261,7 @@ __all__ = [
     "requested_command_identity",
     "requested_planned_command",
     "requested_output_facts",
+    "superseded_unnamed_outputs",
     "task_fact_signals",
     "non_counting_edits_exempt",
     "passing_verification_observed",
@@ -731,6 +737,117 @@ def effective_obligations(projection: ProjectionState) -> tuple[ObligationId, ..
         and record.payload is not None
         and record.plan_change is not ObligationChangeKind.WAIVED
     )
+
+
+_PATH_TOKEN_EDGES: Final = " \t\r\n`'\"()[]{}<>,;:"
+_CONDITION_WORD: Final = re.compile(r"\b(?:when|whenever|if|unless)\b", re.IGNORECASE)
+
+
+def _spells_path(spelled: str, value: str) -> bool:
+    """Whether ``spelled`` names the declared path ``value``: the same path, a longer (absolute)
+    spelling of it, or, for an absolute declaration, its tail with at least one directory. A
+    bare file name never names a declared path in another directory (checker R2 #3)."""
+
+    spelled = spelled.removeprefix("./").rstrip("/")
+    wanted = value.removeprefix("./").rstrip("/")
+    if not spelled or not wanted:
+        return False
+    return (
+        spelled == wanted
+        or spelled.endswith("/" + wanted)
+        or (wanted.startswith("/") and "/" in spelled and wanted.endswith("/" + spelled))
+    )
+
+
+def _change_paths(text: str) -> tuple[str, ...]:
+    """The whitespace-separated tokens of a ``change`` value, trimmed of quoting and punctuation."""
+
+    return tuple(
+        token
+        for raw in text.split()
+        if (token := raw.strip(_PATH_TOKEN_EDGES).rstrip(".").strip(_PATH_TOKEN_EDGES))
+    )
+
+
+def _preserves_output(item: RequestedItem, value: str, outputs: tuple[str, ...]) -> bool:
+    """Whether a replacement's item keeps or explicitly re-models the output ``value`` (tb4n5).
+
+    A ``file`` or ``directory`` item that is not ``role: input`` re-declares it (an input item
+    is no delivery promise). A ``change`` item releases it only in the documented correction
+    form: the item spells that declared path, names none of the superseded obligation's other
+    ``outputs``, states a condition (``when``, ``if``, ``unless``) and never calls it
+    unconditional. Anything else is ambiguous and keeps the output required (checker R2 #3).
+    """
+
+    if item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}:
+        return item.role is not RequestedItemRole.INPUT and _spells_path(item.value, value)
+    if item.item_kind is not RequestedItemKind.CHANGE:
+        return False
+    text = item.value
+    if "unconditional" in text.lower() or _CONDITION_WORD.search(text) is None:
+        return False
+    tokens = _change_paths(text)
+    named = [output for output in outputs if any(_spells_path(token, output) for token in tokens)]
+    return named == [value]
+
+
+def superseded_unnamed_outputs(
+    projection: ProjectionState,
+) -> tuple[tuple[ObligationId, int], ...]:
+    """Requested outputs a plan correction dropped without naming them (tb4n5, ADR-033).
+
+    An obligation a ``plan_revised`` superseded with replacements leaves the effective plan, and
+    with it its requested files. The documented correction of a conditional output re-declares
+    each file the replacements still deliver as a ``file`` item (not ``role: input``) and names a
+    conditional one, by its declared path, in a ``change`` item of its own that states its
+    condition (``_preserves_output``). A requested ``file`` or ``directory`` item (role ``output``
+    or none) that no replacement preserves, transitively, either way, is still requested: the
+    correction cannot launder a missing deliverable, and incidental or ambiguous prose keeps it
+    required. Returns its ``(obligation, item index)`` pairs, which the check probes and reports
+    exactly like an effective obligation's.
+    """
+
+    effective = frozenset(effective_obligations(projection))
+    dropped: list[tuple[ObligationId, int]] = []
+    for obligation, record in sorted(projection.obligations.items(), key=lambda row: row[0]):
+        if (
+            obligation in effective
+            or record.payload is None
+            or record.plan_change is not ObligationChangeKind.SUPERSEDED
+            or not record.superseded_by_obligation_ids
+        ):
+            continue
+        replacements: set[ObligationId] = set()
+        pending = list(record.superseded_by_obligation_ids)
+        while pending:
+            current = pending.pop()
+            if current in replacements:
+                continue
+            replacements.add(current)
+            following = projection.obligations.get(current)
+            if following is not None:
+                pending.extend(following.superseded_by_obligation_ids)
+        named_by = tuple(
+            item
+            for replacement in replacements
+            if (row := projection.obligations.get(replacement)) is not None
+            and row.payload is not None
+            for item in row.payload.requested_items
+        )
+        outputs = tuple(
+            item.value
+            for item in record.payload.requested_items
+            if item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}
+            and item.role is not RequestedItemRole.INPUT
+        )
+        for index, item in enumerate(record.payload.requested_items):
+            if (
+                item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}
+                and item.role is not RequestedItemRole.INPUT
+                and not any(_preserves_output(other, item.value, outputs) for other in named_by)
+            ):
+                dropped.append((obligation, index))
+    return tuple(dropped)
 
 
 def acknowledged_obligation_ids(projection: ProjectionState) -> frozenset[ObligationId]:

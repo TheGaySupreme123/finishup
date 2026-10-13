@@ -260,12 +260,19 @@ decision with the line `yoetz-assumption:<obligation id>` that names the file pa
 Separately, if an obligation is genuinely not done, republish it `acknowledged_not_done` with the
 reason and leave it out of your completion claim: an acknowledged obligation is outside completion
 coverage, so omitting it is not a scope gap. A deliverable that
-loads a file you created but did not declare (`deliverable_references_undeclared_file`) stops you
-too, and the Stop text and a `full_local` receipt name the file (an export or share receipt only
-counts such files): a grader may receive only the declared files,
-so embed its content in the deliverable, rebuild it at run time, or declare it as a delivered output
-(a requested `file` item with role `output`; a file the task itself provides is role `input`), then
-run `check`. Disclosing the dependency does not resolve it. A delivered file that lost most of its lines
+may read a file you created but did not declare (`deliverable_references_undeclared_file`: a
+quoted path or name the deliverable reads or uses in a way Yoetz cannot classify, not one it
+provably only writes; a bare file name a declared file shares, or that nothing ties to the
+file's directory, is only counted on the receipt) stops you too: a grader may receive only the
+declared files,
+so embed its content in the deliverable, rebuild it at run time, or declare it, or the directory
+holding it, as a delivered output (a requested `file` or `directory` item with role `output`; a file
+the task itself provides is role `input`), then run `check`. Disclosing the dependency does not
+resolve it. The Stop text and `status` (`closure_readiness.undeclared_references`) name the file
+when your privacy policy allows it or you published that exact name yourself; otherwise they say
+the names were withheld, and you list the files your change created with your own shell (`git
+status --porcelain --untracked-files=all`). A `full_local` receipt names the file; an export or
+share receipt only counts such files. A delivered file that lost most of its lines
 while files outside the delivered set changed or hold about as many lines is disclosed on the receipt
 (`declared_output_content_moved`; it never stops you): check the deliverable still works where
 the task delivers it. A declared output of a type the review never receives (a binary) is named
@@ -564,7 +571,26 @@ Same conversation resuming, or a fresh conversation continuing the same work →
 
 Candidate findings are what deterministic packs currently say about the record. They carry no verdict and cannot be cited as a check. An empty candidate list means only that no rule fired in that advisory read. Only a recorded check can support receipt-bounded completion wording.
 
-The cheapest finding is the one that never fires. Before the first `check`, look at what is left: `check` with `mode: inspect` names each requested item without an attempt by index and records nothing, and `status` with `view=obligations` shows every row's exact `requested_items` plus the `unattempted_items` subset under the existing obligation-text privacy category. Mark each requested file or `directory` the task must deliver `role: output` and each it only reads `role: input` (`obligation_published` `1.1.0`, required when an obligation carries a role, a `directory` item or `acknowledged_not_done`, and accepted for any obligation), so the check reports a missing or untouched output and never an input. Record each attempted value exactly on `action_recorded.attempted_items` (`attempted_items` belongs to that family alone — never a claim), and do not resolve the obligation while `unattempted_items` remains non-empty. Also confirm that completion scope is declared, every action you published has a result naming its `act_` id, every claim has linked evidence, and every declared obligation is resolved or deliberately left open with a stated reason. A typed empty-scope declaration still produces `completion_scope_declared_none` when a completion claim exists; it records the scope decision rather than proving it. This pre-flight costs one read; an actionable finding costs the receipt for the rest of the task.
+The cheapest finding is the one that never fires. Before the first `check`, look at what is left: `check` with `mode: inspect` names each requested item without an attempt by index and records nothing, and `status` with `view=obligations` shows every row's exact `requested_items` plus the `unattempted_items` subset under the existing obligation-text privacy category. Mark each requested file or `directory` the task must deliver `role: output` and each it only reads `role: input` (`obligation_published` `1.1.0`, required when an obligation carries a role, a `directory` item or `acknowledged_not_done`, and accepted for any obligation), so the check reports a missing or untouched output and never an input. A file the request asks for only under a condition (an incomplete-records ledger written only for an incomplete record, a quarantine log written only for a malformed input) is runtime behavior, not a file you deliver now: model it as a `change` item whose value names the condition and the path, and declare the source files that implement it as `role: output`, so the check never asks for the file when the condition does not occur. Record each attempted value exactly on `action_recorded.attempted_items` (`attempted_items` belongs to that family alone — never a claim), and do not resolve the obligation while `unattempted_items` remains non-empty. Also confirm that completion scope is declared, every action you published has a result naming its `act_` id, every claim has linked evidence, and every declared obligation is resolved or deliberately left open with a stated reason. A typed empty-scope declaration still produces `completion_scope_declared_none` when a completion claim exists; it records the scope decision rather than proving it. This pre-flight costs one read; an actionable finding costs the receipt for the rest of the task.
+
+A requested output that does not exist at check time is `requested_item_never_attempted` with the
+fact `requested_output_absent`, once work on its obligation began; publishing an action that names
+the file does not create it. Write the file at its path. The one exception is a file the request
+asks for only under a condition your final state does not meet, which you declared as a `file`
+item: correct the plan, not the deliverable. Publish a new obligation with the same acceptance
+criteria where each conditional file has a `change` item of its own that spells its declared path
+and states its condition (`when`, `if` or `unless`), and whose `file` items (`role: output`) name
+the source files that implement the behavior; supersede the old obligation with
+`plan_revised` (`change: superseded`, a `reason`, and `replacement_obligation_ids` naming the new
+one; carry every other obligation); record the work with each new item value in
+`attempted_items`, resolve the new obligation with its evidence, and replace the completion claim
+(`claim_recorded` `1.1.0` `supersedes_claim_refs`) with one naming it (the supersession counts as
+the claim's scope overlap). The next qualifying check proves the old finding absent and resolves
+it. Never write an empty or placeholder file, and never change when the deliverable writes the
+file, to satisfy the declaration; do not answer the finding `acknowledged_not_done` for work you
+did. A file the request asks for unconditionally stays required: the correction cannot remove it.
+A `change` item that names it beside another requested file, calls it unconditional or states no
+condition does not release it, and a `role: input` item is no promise to deliver it.
 
 Two completion findings exist because an agent can believe it finished when it has not, and the record can show that. Both are structural; neither reads prose. `task_requirement_unmet` (subject: the task-statement event, the newest event that carried `task_statement`) fires while the effective plan declares obligations and none cites that statement in `source_refs`, or while a completion claim stands on no plan or an explicit empty scope: decompose the request into new statement-sourced obligations with `plan_revised`, or, when the request asks for no material work and no file changed (shell writes count), record a `decision_recorded` line `yoetz-no-material-work:<statement event id>` with a rationale. `claim_without_admissible_evidence` with the observed-verification wording (subject: the completion claim) fires when hooks observed edits or verification runs and the claim, together with the resolution evidence of the obligations it names, cites no verification made after the latest observed edit — neither a hook-observed run nor your own `command` result or `test_result`/`command_output` evidence published after that edit (self-generated evidence is admissible): run the verification, then replace the claim citing that run (the observed `res_` id from `status view=results`, or your own result). A recheck without that change returns the same finding. If you cannot clear one, answer it with `respond` (`acknowledged_not_done` with the reason, or a dispute with evidence); the receipt still reports it unresolved.
 
@@ -747,8 +773,8 @@ When `missing_for_assessment` contains an `agent_suppliable` item, supplying or 
 item is the overall next action before requesting an ordinary receipt. The structured
 `overall_next` projection names that action and its bounded target refs (which may be empty for a
 global input); `finding_checklist.next` remains a finding-only continuation and does not override
-it. When open obligations or undisclosed live failures remain, or a delivered file loads a file
-the change created that no item declares, its action is `review_recorded_work` with bounded
+it. When open obligations or undisclosed live failures remain, or a delivered file may read a
+file the change created that no item declares, its action is `review_recorded_work` with bounded
 obligation/result/action ids. When only standing,
 `structurally_unavailable_on_this_host` or Yoetz-limit items remain, `overall_next` reports
 `ready_with_limitations` and the receipt endpoint remains available for acknowledging the

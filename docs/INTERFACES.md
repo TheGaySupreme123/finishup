@@ -3717,6 +3717,26 @@ only a category the host demonstrably already has. Provenance is recomputed at p
 against the frozen frontier and is never cached across frontiers, and each projection still reserves
 and completes its `AgentProjectionAuditSubject` receipt.
 
+Undeclared-reference names (tb4n5, ADR-009 and ADR-035 amendments) use the same rule on exact
+leaves. Status reads, at a head read, the accepted unredacted `action_recorded` `attempted_items`
+and `obligation_published` `requested_items` values (excluding every event a `redaction_recorded`
+targets by event ID or payload object ID, `events.redaction_targets`) that spell each
+`/closure_readiness/undeclared_references/<n>/paths/<m>` path (whole, or as the tail of an absolute
+spelling) and attaches that event's `SourceAuthorship` to the leaf, preferring the requesting
+writer's own (`StatusInternalResult.leaf_authorship`, never in `as_json`). The service passes it as
+`ProjectionProvenanceContext.leaf_authorship`, which admits only that leaf pattern; the resolver
+matches a `repository_excerpt` item at exactly that pointer and applies `authorship_provenance`. So
+a name returns only to the writer that published that exact text in this session through a
+cooperative channel. The owner's allowance to show the agent names of files it itself created
+(2026-10-13) is not implemented beyond this: the check-time change cannot tell a file the agent
+created from one staged before the task, an ignored file force-added later, or one another process
+wrote, and observation records no path for a shell-written file. A withheld name keeps the category
+ceiling, and the Stop gate names the obligation item, the count and the omission, says Yoetz
+returns only a name the agent published itself, and tells the agent to list its created files with
+its own shell. Receipts, the MCP text summary, hook diagnostics and the review packet are unchanged
+by it: only `full_local` receipts name the files, and the packet's history row of a check carries
+their count, never their names, nor the digest of a payload that held them.
+
 Production composes `LocalPrivacyEnforcer` with the ledger-authorship `TrustedProvenanceResolver`
 (`build_local_privacy_enforcer`). Its only input is `ProjectionProvenanceContext.item_authorship`:
 per projected row, the `SourceAuthorship` (writer, session, ingestion sequence, ledger-recorded
@@ -9498,6 +9518,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `write_outside_workspace`, `verification_only_as_root`,
   `obligation_blocked_outside_agent_control`, `requested_output_ignored_by_repository`,
   `declared_output_content_moved` (ADR-035),
+  `deliverable_references_ambiguous_name` (tb4n5, ADR-035: counted, never named; gap rule G4b),
   `requested_output_unchanged`,
   `requested_output_outside_workspace`, `requested_output_unverified`. Each code is classified
   once in `GAP_CLASSIFICATION`; standing ones are advisory for the check verdict, the receipt
@@ -9686,17 +9707,26 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `undeclared_reference_inputs(projection, states, blocked=) -> (deliverables, declared)` (tb4n2
   R2, #1022) returns the values of declared output `file` items that exist `inside` and were not
   deleted (obligations neither blocked nor `acknowledged_not_done`) and every `file`/`directory`
-  value of any role. `application.check_change.undeclared_references(...) -> tuple[(deliverable,
-  referenced file), ...]` (tb4n4, #1044; it replaced `count_undeclared_references`) probes them,
+  value of any role. `application.check_change.undeclared_references(...) ->
+  UndeclaredReferenceRead(pairs, ambiguous)` (tb4n4, #1044; it replaced
+  `count_undeclared_references`; tb4n5 added the per-deliverable `ambiguous` counts) probes them,
   takes as candidates the files the check-time change created (untracked or `A`) that no declared
   value names or covers (pre-existing tracked files never count), and calls the optional adapter
-  method `find_undeclared_references(workspace, deliverables, candidates) -> tuple[(deliverable
-  index, candidate index), ...]` (at most 64 pairs): for at most 16 root-relative source
-  deliverables (`.py .sh .bash .js .mjs .cjs .ts .rb .pl .r .R .jl .lua .php`, or no suffix with a
-  `#!` first line) it reads at most 256 KiB from the start, link-free, never a credential-named,
-  multiply linked or binary file, and pairs each with the candidates a one-line quoted literal
-  (`'`, `"` or backtick) equals, ends with `/` plus, or equals by a basename of at least 5 bytes.
-  Only positions in the caller's own tuples leave the adapter. Any pair adds the agent-actionable
+  method `classify_undeclared_references(workspace, deliverables, candidates, declared=()) ->
+  tuple[(deliverable index, candidate index, "dependency" | "ambiguous"), ...]` (at most 64 of
+  each; `find_undeclared_references` is its dependency view; `declared` is every declared value of
+  any role, root-relative): for at most 16 root-relative source deliverables (`.py .sh .bash .js
+  .mjs .cjs .ts .rb .pl .r .R .jl .lua .php`, or no suffix with a `#!` first line) it reads at most
+  256 KiB from the start, link-free, never a credential-named, multiply linked or binary file,
+  resolves each one-line quoted literal (`'`, `"` or backtick) to the path the code builds from
+  literals, and classifies the candidates it names (tb4n5, ADR-035 amendment): a composed path
+  with a directory names by path only; a provable write (a supported API's destination argument,
+  a literal write-only mode of that opener, never a container's append or read-write mode) is
+  neither kind; any other naming may read the file; a bare basename that
+  a declared file shares, or that nothing ties to the candidate's directory, is `ambiguous`. Only
+  positions in the caller's own tuples leave the adapter. Any ambiguous count adds the standing
+  disclosure `deliverable_references_ambiguous_name` (gap rule G4b; the receipt states the count,
+  never a name). Any pair adds the agent-actionable
   task fact and Stop-gate token `deliverable_references_undeclared_file`
   (`DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP`; gap rule G0c, actionable on both routes, never a
   finding); any failure is `()`. The check records the referenced files on the referencing
@@ -9751,12 +9781,15 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   #1044 `undeclared_references` (at most 8 sorted root-relative paths of files the change created
   that this source deliverable names and no item declares: 1-256 characters, valid UTF-8, no control
   character, no leading `/`, no empty, `.` or `..` segment; the only path text the check records)
-  with `undeclared_reference_count` when more were found than are named); absent when the check read
-  no declared output file. Status `closure_readiness.undeclared_references` (optional on the
-  unreleased status-result 1.4.0, at most 16 rows `{obligation_id, item_index, paths, total}`,
+  with `undeclared_reference_count` when more were found than are named, and since tb4n5
+  `undeclared_reference_ambiguous`, how many created files it names only ambiguously, never
+  which); absent when the check read no declared output file. Status
+  `closure_readiness.undeclared_references` (optional on the unreleased status-result 1.4.0, at
+  most 16 rows `{obligation_id, item_index, paths, total}`,
   `closure_readiness.current_undeclared_references` over the applicable check) carries them; each
   path is a `repository_excerpt` content leaf of every status view (a privacy policy can withhold
-  it as the omission marker), and the MCP text summary never prints one. `domain/command_segments`: `canonical_words(argv)` (wrappers,
+  it as the omission marker; a name the requesting writer itself published in this session
+  returns to it under `self_authored`, above), and the MCP text summary never prints one. `domain/command_segments`: `canonical_words(argv)` (wrappers,
   assignments, basename, `python3`/`pythonX.Y` to `python`, `python -m pytest` to `pytest`),
   `canonical_command_commitments(key, argv) -> (full, prefixes, flags)`,
   `canonical_commitment(key, kind, payload)` (`full|prefix|flag`, domain-separated from segment
@@ -9828,9 +9861,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   tokens), `requested_output_git_ignored`, `declared_output_removed`, `declared_output_emptied`
   (the last two are also voiced once per key on a Stop the host already continued, below), and
   `deliverable_references_undeclared_file` (#1044: the text tells the agent to embed the file,
-  rebuild it at run time or declare it as a delivered output, says disclosing the dependency does
-  not clear it, and names the files from `closure_readiness.undeclared_references`: the one
-  exception to closed tokens, counts and ids in the gate text; a path is never remembered).
+  rebuild it at run time or declare it, or the directory holding it, as a delivered output, says
+  disclosing the dependency does not clear it, and names the files from
+  `closure_readiness.undeclared_references`: the one exception to closed tokens, counts and ids in
+  the gate text; a path is never remembered. tb4n5: when a name was withheld it adds why and the
+  agent's own listing command, `git status --porcelain --untracked-files=all`).
   `closure_gate_from_readiness(readiness, frontier_sequence=, frontier_digest=,
   observation_pending=, reasked_blockers=, active_stop=, final_message=) ->
   ClosureGate(identity, text, items, blocker_keys) | None` asks the **re-checks

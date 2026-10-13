@@ -116,7 +116,9 @@ agent must not be able to stop silently with known work left.
    change (tb4n1: `/app/src` with four new files was reported unchanged and `/app` outside; #987).
    A file that does not exist, and is not a tracked file the change deletes, raises
    `requested_item_never_attempted` with the fact `requested_output_absent`, whatever was
-   published: naming a file in `attempted_items` does not create it. It is raised only once a
+   published: naming a file in `attempted_items` does not create it (a file the request asks for
+   only under a condition is runtime behavior, corrected in the plan, not the deliverable: see the
+   tb4n5 amendment on conditional outputs). It is raised only once a
    completion claim covers that obligation (it names it, or names no obligation), or acting has
    started and one of the agent's own `edit`, `command` or `other` actions is attributed to it
    (an action with no `obligation_refs` is global; hook-observed actions name no obligation and
@@ -198,7 +200,8 @@ agent must not be able to stop silently with known work left.
    `test`, `lint`, `typecheck` or `build`, or any published action. Investigation commands
    (exploration, version control, and the unclassified `other`/`compound` shells) are not acting. Its repair text no longer
    offers "or revise its obligation" as the default exit; an absent output's text asks for a
-   best-effort artifact and names the blocker form. These rule changes move the work-integrity pack
+   best-effort artifact and names the blocker form, and (tb4n5 amendment) names the one plan
+   correction for a conditional output. These rule changes move the work-integrity pack
    to `0.3.0`; earlier versions stay decodable and form one lineage.
 4. **Blockers are explicit and closed.** A readable, unsuperseded `decision_recorded` whose
    statement holds the exact line `yoetz-blocker:<kind>`, for a kind in `authority`, `consent`,
@@ -922,3 +925,78 @@ action identity, so 200 obligations sharing eight items, one of them behind 1,00
 (21,003 results), take about 0.07 s instead of about 9.3 s.
 `tests/unit/kernel/test_tb4n5_acceptance_risk_cost.py` holds it under one second and counts one
 index build per read.
+
+## Amendment (tb4n5, react-lead-form): a conditional output is corrected in the plan, never by a placeholder
+
+tb4n5/tb4n4 react-lead-form, 5 of 5 Yoetz attempts: the task asked for `incomplete_leads.json`
+only when a contactable lead is incomplete and for `rejected_ledgers.json` only when an existing
+ledger is malformed. Each agent declared both as unconditional `file` outputs; the final input was a
+complete, accepted lead, so neither existed and `requested_output_absent` (decision 2) blocked the
+receipt. The finding offered only "write each requested file", a reasoned `rejected` never rules on
+a deterministic finding, and `self_verified` was refused, so each agent invented an exit: a false
+`acknowledged_not_done` for work it had done (n4 D), an undocumented plan reclassification (n4 S
+twice, n5 S), or deliverable code that wrote empty ledgers on every accepted submit and tests
+rewritten from "absent" to "empty" (n5 D). Owner decision (2026-10-13): document the honest exit; no
+new protocol role.
+
+1. **What distinguishes them.** A `file` item with `role: output` is a promise to deliver that file
+   now. A file the request asks for only under a runtime condition is behavior of the deliverable,
+   not a delivered file: it is modelled as a `change` item whose value names the condition and the
+   path, beside `file` items (`role: output`) for the source files that implement it. The check
+   probes only `file` and `directory` items, so a `change` item is never reported absent.
+2. **The documented correction.** When a conditional output was declared as a `file` and the final
+   state does not meet the condition, the agent publishes a new obligation with the same acceptance
+   criteria modelled as in 1, supersedes the old one with `plan_revised` (`change: superseded`, a
+   reason, `replacement_obligation_ids`), records the work with each new item value in
+   `attempted_items`, resolves the new obligation with its evidence and replaces the completion
+   claim with one naming it. The old obligation leaves the effective plan, so the next qualifying
+   check does not return the issue and resolves the historical finding; nothing waives it
+   and no response resolves it. The `requested_output_absent` detail
+   (`render_deterministic_finding_text`), `workflow.md`, `publication-policy.md`,
+   `request-templates.md` and the operating card name this route, and every one forbids writing an
+   empty or placeholder file, or changing when the deliverable writes the file, to satisfy the
+   declaration. The decision-3 sentence "its repair is the deliverable itself, never a revised
+   obligation" keeps holding for every other absent output.
+3. **The claim follows the plan.** The claim-revision invariant `scope_overlap_required` now counts
+   the replacements a `plan_revised` supersession recorded (the replay-derived
+   `superseded_by_obligation_ids`, transitively) as overlap with the superseded claim's scope, so a
+   claim that named only the corrected obligations can be replaced by one naming only their
+   replacements. A replacement the plan never recorded is still refused. The same ancestry carries
+   failure disclosure (checker review): the claim scope plus every obligation a supersession
+   replaced by one in it, transitively (`claim_limitations.scope_with_supersession_ancestry`), is
+   the scope for admissible `limitation_refs` (always: a relaxation), for
+   `limitation_refs_complete` on a replacement whose overlap with a target exists only through a
+   supersession (the case this change newly admits, so no recorded ledger holds one), and for the
+   work-integrity failed-work relevance read at check time. A failure recorded on the superseded
+   obligation must therefore still be disclosed by the replacement claim, and naming it there is
+   admissible; a fresh claim over the replacement that omits it still replays as before and is
+   reported by the check. Recorded ledgers replay unchanged.
+4. **What does not change, and what a correction cannot drop.** A file the request asks for
+   unconditionally stays required: the replacement obligation that still declares it (or any other
+   obligation that does) raises the same `requested_output_absent`. A requested `file` or
+   `directory` item (role `output` or none) of an obligation a `plan_revised` superseded with
+   replacements stays requested on the superseded obligation
+   (`task_facts.superseded_unnamed_outputs`) unless a replacement, transitively, re-declares it as
+   a `file`/`directory` item that is not `role: input`, or releases it in the documented
+   correction form: a `change` item that spells its declared path (the same path, a longer
+   absolute spelling, or for an absolute declaration its tail with a directory; a bare file name
+   in another directory does not count), names none of the superseded obligation's other requested
+   outputs, states a condition (`when`, `if`, `unless`) and never calls it unconditional. Anything
+   else is ambiguous and keeps it required (checker R2: a basename mentioned in incidental prose,
+   or an output re-declared as an input, released a missing unconditional file). The check probes
+   a kept output and reports it absent exactly as before, so dropping a missing deliverable from
+   the correction does not launder it. A
+   supersession without replacements, and a waiver, are explicit plan decisions outside this rule.
+   `declared_output_removed`, `declared_output_emptied` and the closure gate are unchanged; the gate
+   still says "Do not reshape your work for Yoetz". No event schema, wire field or pack version
+   changes.
+
+Tests: `tests/integration/closure/test_conditional_output_shape.py` (the react shape: two
+conditional ledgers absent on an accepted lead resolve after the correction with no file written;
+an unconditional missing output still blocks; with a real repository, the production workspace
+probe and the real final receipt, the honest correction closes and a correction that drops an
+unconditional missing output reads `unresolved_findings_remain`, as does one whose change item
+mentions it in incidental prose or that re-declares it as an input) and
+`tests/unit/kernel/test_claim_correction_replay.py` (the supersession carries claim scope only to
+recorded replacements, and a failure or partial result on a superseded obligation, one or two
+supersessions back, must still be disclosed and may be).

@@ -2029,14 +2029,74 @@ def _history_json(
     else:
         body["accepted_at"] = item.accepted_at
         body["occurred_at_consistency"] = item.occurred_at_consistency
+    reduced: dict[str, JsonValue] | None = None
+    if item.schema_name == "check_recorded":
+        # A check's payload may record undeclared-reference names (#1044): repository-excerpt
+        # content shown only to its own author and a ``full_local`` receipt (tb4n5, ADR-035
+        # amendment). This row never carries them, whether or not it carries content, and never
+        # the ledger digest of a payload that held them: that digest would confirm a guessed name.
+        if item.payload is None:
+            # Unavailable content: whether it named files is unknown, so no digest is sent.
+            body.pop("payload_digest")
+            body["payload_reduced"] = "undeclared_reference_names_withheld"
+        else:
+            reduced = _without_undeclared_reference_names(
+                cast(Mapping[str, JsonValue], item.payload)
+            )
+            if reduced is not None:
+                body["payload_digest"] = canonical_digest(cast(JsonValue, reduced))
+                body["payload_reduced"] = "undeclared_reference_names_withheld"
     if include_content and item.payload is not None:
-        payload = dict(cast(Mapping[str, JsonValue], item.payload))
+        payload = (
+            reduced if reduced is not None else dict(cast(Mapping[str, JsonValue], item.payload))
+        )
         if item.schema_name == "action_recorded" and not include_exact_command_text:
             payload.pop("command", None)
         if item.schema_name in _PLAN_FAMILIES:
             payload = _without_task_statement(payload)
         body["payload"] = cast(JsonValue, payload)
     return _bounded_json(body)
+
+
+def _without_undeclared_reference_names(
+    payload: Mapping[str, JsonValue],
+) -> dict[str, JsonValue] | None:
+    """A ``check_recorded`` payload without the undeclared-reference paths, or ``None`` if none.
+
+    tb4n4 #1044 recorded the root-relative paths of files a delivered file names on the check's
+    ``deliverable_states``; they are the one path text a check records. The review packet carries
+    the history row as bounded structural metadata, so the names are removed and only their count
+    is kept (``undeclared_reference_count``).
+    """
+
+    # A frozen history payload holds read-only mappings and tuples, not dicts and lists.
+    states = payload.get("deliverable_states")
+    if (
+        not isinstance(states, Sequence)
+        or isinstance(states, (str, bytes))
+        or not any(
+            isinstance(state, Mapping) and "undeclared_references" in state for state in states
+        )
+    ):
+        return None
+    reduced_states: list[JsonValue] = []
+    for state in cast(Sequence[JsonValue], states):
+        if not isinstance(state, Mapping) or "undeclared_references" not in state:
+            reduced_states.append(state)
+            continue
+        fields = cast(Mapping[str, JsonValue], state)
+        names = fields["undeclared_references"]
+        named = (
+            len(cast(Sequence[JsonValue], names))
+            if isinstance(names, Sequence) and not isinstance(names, (str, bytes))
+            else 0
+        )
+        recorded = fields.get("undeclared_reference_count")
+        count = max(named, recorded if type(recorded) is int else 0)
+        reduced = {key: value for key, value in fields.items() if key != "undeclared_references"}
+        reduced["undeclared_reference_count"] = count
+        reduced_states.append(cast(JsonValue, reduced))
+    return {**payload, "deliverable_states": reduced_states}
 
 
 def _omit(
