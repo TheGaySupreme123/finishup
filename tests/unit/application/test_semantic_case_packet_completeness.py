@@ -446,6 +446,66 @@ def _git(repository: Path, *arguments: str) -> None:
 
 
 _LEAD_STORE_MARKER = "LEAD_STORE_RECONCILE_MARKER"
+_TRANSACTION_MARKER = "OUTPUT_TRANSACTION_ATOMIC_RENAME"
+_LATEST_RUN_MARKER = "LATEST_NPM_TEST_RUN: 3 files, 81 tests passed"
+
+
+def _react_case() -> DeterministicCase:
+    """The statement case plus the run's verification: ``npm test`` ran twice, the latest
+    passing, as the agent recorded it before its final check (tb4n5 react-lead-form)."""
+
+    base = _statement_case()
+    runs = {
+        1: ("1 failed", ResultOutcome.FAILURE, "npm test: 1 failed (EARLIER_RUN_MARKER)"),
+        2: ("81 passed", ResultOutcome.SUCCESS, _LATEST_RUN_MARKER),
+    }
+    actions = {
+        act(run): record(
+            ActionRecordedPayload(act(run), ActionKind.COMMAND, "Run tests", command="npm test"),
+            10 * run,
+        )
+        for run in runs
+    }
+    evidence = {
+        evd(run): evidence_record(
+            EvidenceRecordedPayload(
+                evd(run),
+                EvidenceKind.TEST_RESULT,
+                EvidenceImmutability.METADATA_ONLY,
+                timestamp_from_string("2026-10-13T00:00:00.000Z"),
+                description=output,
+            ),
+            10 * run + 2,
+        )
+        for run, (_summary, _outcome, output) in runs.items()
+    }
+    results = {
+        res(run): record(
+            ResultRecordedPayload(
+                res(run), act(run), outcome, 0, summary=summary, evidence_refs=(evd(run),)
+            ),
+            10 * run + 1,
+        )
+        for run, (summary, outcome, _output) in runs.items()
+    }
+    claim = record(
+        ClaimRecordedPayload(
+            clm(1), ClaimKind.COMPLETION, "Ledger done", (evd(2),), obligation_refs=(obl(1),)
+        ),
+        40,
+    )
+    case = make_case(
+        plans=base.projection.plans,
+        obligations=base.projection.obligations,
+        claims={clm(1): claim},
+        actions=actions,
+        results=results,
+        evidence=evidence,
+        extra_refs=(clm(1), obl(1), evt(50), *actions, *results, *evidence),
+    )
+    return replace(case, task_statement=base.task_statement)
+
+
 _BUNDLE = "dist/assets/index-Bxb0DgZR.js"
 
 
@@ -484,6 +544,20 @@ def _react_workspace(tmp_path: Path) -> Path:
     (repository / "src" / "lib" / "leadStore.ts").write_text(
         f"// {_LEAD_STORE_MARKER}: reconcile, quarantine, promote, atomic write\n"
         + "".join(f"export function step{row}() {{ return {row}; }}\n" for row in range(260)),
+        encoding="utf-8",
+    )
+    # The transactional write the ledger relies on: temp file, fsync, rename (tb4n5 L163).
+    (repository / "src" / "lib" / "outputTransaction.ts").write_text(
+        "import { promises as fs } from 'node:fs';\n"
+        f"// {_TRANSACTION_MARKER}\n"
+        "export async function writeAtomically(path: string, body: string) {\n"
+        "  const temp = `${path}.tmp`;\n"
+        "  const handle = await fs.open(temp, 'w');\n"
+        "  await handle.writeFile(body);\n"
+        "  await handle.sync();\n"
+        "  await handle.close();\n"
+        "  await fs.rename(temp, path);\n"
+        "}\n" + "".join(f"export const retry{row} = {row};\n" for row in range(140)),
         encoding="utf-8",
     )
     (repository / "tests").mkdir()
@@ -538,10 +612,15 @@ def test_the_central_implementation_reaches_the_packet_ahead_of_a_built_bundle(
     assert len(text) > selection.max_total_excerpt_bytes
     assert text.index(b"b/src/lib/leadStore.ts") < text.index(f"b/{_BUNDLE}".encode())
 
-    semantic = _build(_statement_case(), change=change, selection=selection)
+    semantic = _build(_react_case(), change=change, selection=selection)
 
     sent = _provider_text(semantic)
     assert _LEAD_STORE_MARKER in sent
+    # The transactional-write code and the latest verification reach the reviewer together.
+    assert _TRANSACTION_MARKER in sent and "await fs.rename(temp, path);" in sent
+    assert _LATEST_RUN_MARKER in sent
+    latest = next(item for item in semantic.items if item.item_id == f"excerpt-{evd(2)}")
+    assert latest.latest_for == "command"
     assert "b/src/components/LeadForm.tsx" in sent
     assert "b/tests/submitLead.test.ts" in sent
     lead = next(

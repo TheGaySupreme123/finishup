@@ -163,7 +163,13 @@ content-returning read needed its own decision. This is that decision, for exact
    reviewer read as an undefined name and raised as a `code_defect`. The reviewer's standing
    instruction now names both markers as Yoetz's own substitutions for an unavailable original
    value or expression, never evidence of a syntax error, an undefined name or missing
-   configuration, and the packet-limit glossary explains `check_time_change_redacted`. The
+   configuration, and the packet-limit glossary explains `check_time_change_redacted`. Beyond
+   the prompt, the check drops and counts (`redaction_marker_premise`, disclosed as
+   `semantic_challenges_rejected`) a challenge whose own supporting quote holds either marker and
+   whose summary or discrepancy names that marker beside a code-defect term (undefined, not
+   defined, NameError, syntax error, unresolved, missing value or configuration) in one clause.
+   The rule is deliberately narrow, like the hidden-source rule: a defect named elsewhere on a
+   line that holds a marker is kept and reviewed. The
    shown-file record (item 9) and reviewer-quote proof treat both markers alike: each is a
    redaction, and a file holding either is never `fully_shown`. A change stored before this
    amendment holds `[REDACTED]` only, so its shown-file record, view commitments and replay are
@@ -213,8 +219,12 @@ content-returning read needed its own decision. This is that decision, for exact
    `.svelte-kit`, `.vite`, `.turbo`, `.parcel-cache`), when its name is a lockfile
    (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `uv.lock`
    and the like) or ends in `.min.js`, `.min.css` or `.map`, or, once its section is rendered,
-   when that section is at least 8 KiB with lines averaging over 1000 bytes (minified). Names are
-   matched exactly and nothing is opened to decide. Such a file is never left out for being
+   when a `.js`, `.mjs`, `.cjs` or `.css` file's section is at least 8 KiB with lines averaging
+   over 1000 bytes (minified). Only those bundler suffixes are judged by line length: an
+   undeclared data file kept on long lines (hand-maintained JSON, CSV, long Markdown paragraphs)
+   may be a requested output or the work itself, so it keeps its place by size (decision of the
+   tb4n5 fix review; a negative fixture locks it). Names are matched exactly and nothing is
+   opened to decide. Such a file is never left out for being
    generated: it stays in the change, keeps its header line with the fixed note `generated, build
    or minified output, placed after the other files`, and is cut only by the bounds that cut any
    file, disclosed as `check_time_change_truncated`. A declared deliverable under `dist/` keeps
@@ -269,7 +279,14 @@ content-returning read needed its own decision. This is that decision, for exact
    is derived from exactly the parts the bounded envelope carried (the same count that decides which
    files were shown), and records no content, only the keyed digest. Only shown files count toward
    the 128-file bound; past it the record keeps the first 128 in change order and says it is
-   incomplete. Replay folds, onto the finding's projection row, the record of every completed review
+   incomplete. Amendment (tb4n5 fix review): a current-file section an in-check follow-up served
+   (ADR-006, `change-section-NNN`) is a shown file too. The record counts the change bytes the
+   sections whose catalog rows the bounded envelope kept carried, beside the leading run (none
+   when the channel withholds `repository_excerpt`); a file is recorded through the run of its
+   section, from its start, that the two together reached, with the same view commitment a
+   leading-run view of those bytes would have. A file shown other than as one run from its
+   section's start has no truthful view: it is left out and the record says it is incomplete, so
+   a finding raised by that review never tolerates a check-time limit. No wire field changes. Replay folds, onto the finding's projection row, the record of every completed review
    that raised or re-raised an AI-powered finding (R): whole files are united, a file any of them
    saw whole must be seen whole, a file they saw in part through one view keeps that view, and a
    file they saw in part through two different views must be seen whole. At most 64 contributing

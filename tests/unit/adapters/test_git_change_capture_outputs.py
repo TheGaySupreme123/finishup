@@ -408,3 +408,32 @@ def test_generated_path_rules_match_whole_components_and_exact_names() -> None:
         b"locks/package-lock.json.txt",
     ):
         assert not generated(path), path
+
+
+def test_hand_maintained_long_line_json_keeps_its_place_by_size(tmp_path: Path) -> None:
+    """Checker review (tb4n5): only bundler output is judged by line length. Undeclared JSON kept
+    on long lines (a fixture table, a requested output) is not ranked last as minified; a
+    script of the same shape is."""
+
+    repository = _repository(tmp_path)
+    (repository / "data").mkdir()
+    records = ",".join(f'{{"id": {row}, "name": "lead {row}"}}' for row in range(700))
+    (repository / "data" / "records.json").write_text("[" + records + "]\n", encoding="utf-8")
+    (repository / "public").mkdir()
+    (repository / "public" / "vendor.js").write_text(_bundle(26_000, lines=2), encoding="utf-8")
+    (repository / "src").mkdir()
+    (repository / "src" / "big.ts").write_text(_source("big", 30_000), encoding="utf-8")
+
+    capture = GitChangeCaptureAdapter().capture(os.fspath(repository), None)
+
+    body = _body(capture)
+    assert (
+        body.index("b/data/records.json")
+        < body.index("b/src/big.ts")
+        < body.index("b/public/vendor.js")
+    )
+    header = _text(capture).split("End of header.", 1)[0]
+    (json_line,) = [line for line in header.split("\n") if "data/records.json" in line]
+    assert "placed after the other files" not in json_line
+    (script_line,) = [line for line in header.split("\n") if "public/vendor.js" in line]
+    assert script_line.endswith("placed after the other files")

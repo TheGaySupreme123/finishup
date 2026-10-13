@@ -13,7 +13,7 @@ import os
 import platform
 import sys
 import threading
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
@@ -165,14 +165,18 @@ from yoetz.application.semantic_case import (
     CHECK_TIME_CHANGE_ITEM_PREFIX,
     MAX_CAPTURED_SEMANTIC_CONTENT_PARTS,
     MAX_CAPTURED_SEMANTIC_INPUT_BYTES,
+    CheckTimeChange,
     LineageSemanticCapacityExceeded,
     SemanticCaseCapacityExceeded,
     SemanticCaseTooLarge,
     SemanticPacketView,
+    bounded_catalog_item_ids,
     build_semantic_case,
     captured_edit_paths,
     carries_task_inputs,
     check_time_change_bytes_carried,
+    check_time_change_sections_carried,
+    current_section_parts,
     follow_up_new_parts,
     semantic_case_packet_view,
     semantic_case_to_candidate_context,
@@ -4576,6 +4580,44 @@ async def _reconcile_capture_handoffs(
     return complete
 
 
+def _follow_up_section_parts(
+    case: SemanticCase,
+    change: CheckTimeChange | None,
+    edit_paths: Mapping[str, frozenset[str]],
+    workspace_root: str | None,
+    withheld: Sequence[str],
+) -> Mapping[str, frozenset[str]]:
+    """What a current-diff follow-up could serve from the frozen change, per edit (tb4n5).
+
+    Empty unless this case carries the change and the channel releases repository excerpts.
+    In process only.
+    """
+
+    if (
+        change is None
+        or DataCategory.REPOSITORY_EXCERPT.value in withheld
+        or not any(item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX) for item in case.items)
+    ):
+        return {}
+    return current_section_parts(change.capture, edit_paths, workspace_root)
+
+
+def _admitted_follow_up_parts(
+    case: SemanticCase, follow_up: ReviewFollowUp, withheld: Sequence[str]
+) -> frozenset[str]:
+    """The requested new parts admission keeps (tb4n5): rows the bounded envelope's catalog
+    keeps, in categories the channel does not withhold, so a round whose new parts admission
+    would drop is never sent. A part egress then withholds under a privacy rule is disclosed on
+    the sent packet (the provider-bound manifest says ``pending``) and never asked for again."""
+
+    return follow_up_new_parts(
+        case,
+        follow_up,
+        withheld_categories=withheld,
+        carried_item_ids=bounded_catalog_item_ids(case),
+    )
+
+
 def _privacy_gated_semantic_evaluator(
     privacy: PrivacyCoordinator,
     clock: ClockPort,
@@ -5186,6 +5228,12 @@ def _privacy_gated_semantic_evaluator(
             packet_edit_paths = captured_edit_paths(
                 frozen.case, captured_content, captured_content_scope
             )
+            # tb4n5: what a current-diff follow-up could serve from the frozen change, per edit,
+            # only where this recipe carries the change and the channel releases repository
+            # excerpts. In process only.
+            packet_section_parts = _follow_up_section_parts(
+                semantic_case, check_change.change, packet_edit_paths, workspace_root, withheld
+            )
             # tb4n2 A11: files Git found binary in the check-time change, for classifying a
             # suffix-less binary a reviewer names as Yoetz's limit. In process only.
             packet_binary_paths = check_change_binary_paths(
@@ -5226,6 +5274,10 @@ def _privacy_gated_semantic_evaluator(
                         check_time_change_bytes_carried(
                             semantic_case, withheld_categories=withheld
                         ),
+                        # tb4n5: current-file sections a follow-up served are shown files too.
+                        check_time_change_sections_carried(
+                            semantic_case, withheld_categories=withheld
+                        ),
                     )
                 except Exception as exc:
                     record_unexpected_exception_without_raising(
@@ -5240,7 +5292,10 @@ def _privacy_gated_semantic_evaluator(
                 # Issue #1047: a round is sent only when its packet carries a requested excerpt
                 # part no earlier packet of this check carried (tb4n5: per part, so a later part
                 # of a partly shown source counts and a repeated one never does).
-                if not follow_up_new_parts(semantic_case, follow_up, withheld_categories=withheld):
+                # Counted over what admission keeps: the bounded envelope's catalog and what the
+                # channel releases to either destination, so a round whose new parts admission
+                # would drop is never sent.
+                if not _admitted_follow_up_parts(semantic_case, follow_up, withheld):
                     return None
                 if runtime is not None and job is not None:
                     assert recovered_case_digest is not None
@@ -5341,6 +5396,7 @@ def _privacy_gated_semantic_evaluator(
                     case_excerpt_parts=sent_excerpt_parts(
                         semantic_case, mapped.provider_input_manifest
                     ),
+                    case_current_section_parts=packet_section_parts,
                     case_privacy_withheld_refs=withheld_excerpt_content_refs(
                         semantic_case, mapped.case_privacy_withheld_refs
                     ),
@@ -5729,6 +5785,7 @@ def _privacy_gated_semantic_evaluator(
                     # Recovery reads the same provider-bound manifest from the durable response.
                     case_excerpt_refs=sent_excerpt_content_refs(semantic_case, provider_manifest),
                     case_excerpt_parts=sent_excerpt_parts(semantic_case, provider_manifest),
+                    case_current_section_parts=packet_section_parts,
                     provider_input_manifest=provider_manifest,
                     provider_input_manifest_failure=provider_manifest_failure,
                     provider_input_text_by_ref=provider_input_text_by_ref,

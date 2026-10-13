@@ -689,11 +689,14 @@ _LOCKFILE_NAMES: Final = frozenset(
         b"yarn.lock",
     }
 )
-# A rendered section at least this large whose lines average more than ``_MINIFIED_LINE_BYTES``
-# is minified or machine-written (the react bundle: 145,685 bytes in 46 lines). Hand-written
-# source averages tens of bytes per line, so ordinary code never reaches it.
+# A rendered script or stylesheet section at least this large whose lines average more than
+# ``_MINIFIED_LINE_BYTES`` is minified (the react bundle: 145,685 bytes in 46 lines). Hand-written
+# source averages tens of bytes per line, so ordinary code never reaches it. Only the suffixes a
+# bundler emits are judged by their lines: a data file kept on long lines (JSON, CSV, Markdown
+# paragraphs) is often hand-maintained or a requested output, so it keeps its place by size.
 _MINIFIED_MIN_BYTES: Final = 8_192
 _MINIFIED_LINE_BYTES: Final = 1_000
+_MINIFIABLE_SUFFIXES: Final = (b".js", b".mjs", b".cjs", b".css")
 # Ranks a file whose size is unknown after every file whose size is known, within its tier.
 _UNKNOWN_SIZE: Final = 1 << 62
 
@@ -712,10 +715,15 @@ def _generated_path(path: bytes) -> bool:
     )
 
 
-def _minified(text: bytes | None) -> bool:
-    """Whether a rendered section reads as minified: large, with very long lines on average."""
+def _minified(path: bytes, text: bytes | None) -> bool:
+    """Whether a rendered script or stylesheet section reads as minified: large, with very long
+    lines on average. Any other file type is never judged by its lines."""
 
-    if text is None or len(text) < _MINIFIED_MIN_BYTES:
+    if (
+        text is None
+        or len(text) < _MINIFIED_MIN_BYTES
+        or not path.rstrip(b"/").endswith(_MINIFIABLE_SUFFIXES)
+    ):
         return False
     return len(text) // (text.count(b"\n") + 1) > _MINIFIED_LINE_BYTES
 
@@ -724,7 +732,7 @@ def _deprioritized(section: _Section, priority: tuple[bytes, ...]) -> bool:
     """Whether a rendered section ranks last: generated or minified, and not a deliverable."""
 
     return _priority_tier(section.path, priority) is None and (
-        _generated_path(section.path) or _minified(section.text)
+        _generated_path(section.path) or _minified(section.path, section.text)
     )
 
 
@@ -740,7 +748,7 @@ def _section_rank(section: _Section, priority: tuple[bytes, ...]) -> tuple[int, 
     if tier is not None:
         return (0, tier, section.path)
     size = 0 if section.text is None else len(section.text)
-    if _generated_path(section.path) or _minified(section.text):
+    if _generated_path(section.path) or _minified(section.path, section.text):
         return (3, size, section.path)
     if section.text is not None and size <= _SMALL_SECTION_BYTES:
         return (1, 0, section.path)

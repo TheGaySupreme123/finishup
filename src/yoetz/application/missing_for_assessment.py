@@ -75,6 +75,7 @@ __all__ = [
     "check_change_binary_paths",
     "check_change_text_paths",
     "command_run_key",
+    "excerpt_span",
     "excerpt_span_covered",
     "excerpt_span_key",
     "excerpt_span_whole",
@@ -374,6 +375,12 @@ def excerpt_span_key(ref: str, start: int, end: int, total: int) -> str:
     return f"{ref}#{start}-{end}/{total}"
 
 
+def excerpt_span(key: str) -> tuple[str, int, int, int] | None:
+    """``(source, start, end, total)`` of one ``excerpt_span_key``; ``None`` if malformed."""
+
+    return _span(key)
+
+
 def _span(key: str) -> tuple[str, int, int, int] | None:
     match = _SPAN_KEY.match(key)
     if match is None:
@@ -481,6 +488,7 @@ def plan_review_follow_up(
     shown_refs: frozenset[str] | None,
     privacy_withheld_refs: frozenset[str] = frozenset(),
     shown_parts: frozenset[str] | None = None,
+    section_parts: Mapping[str, frozenset[str]] | None = None,
 ) -> ReviewFollowUp | None:
     """The next in-check follow-up round, or ``None`` when Yoetz has nothing it may add (#1047).
 
@@ -495,8 +503,12 @@ def plan_review_follow_up(
     is unknown: then nothing can be called added, so no round runs. ``shown_parts`` are the
     excerpt parts that packet carried (``None``: none known). ``privacy_withheld_refs`` are the
     refs the latest sent packet withheld under a privacy rule; they join ``added_refs``, since
-    sending them again would only spend a round. Whether a round's packet really adds a part is
-    decided once it is composed (``semantic_case.follow_up_new_parts``).
+    sending them again would only spend a round. ``section_parts`` maps each captured edit's
+    evidence ref to the check-time change sections of the paths it changed
+    (``semantic_case.current_section_parts``): a ``current_diff_for_path`` request for that edit
+    is still owed while some of those bytes no packet carried, even when the edit itself was
+    shown whole. Whether a round's packet really adds a part is decided once it is composed
+    (``semantic_case.follow_up_new_parts``).
     """
 
     if previous is not None and previous.round >= MAX_REVIEW_FOLLOW_UP_ROUNDS:
@@ -537,30 +549,32 @@ def plan_review_follow_up(
         ),
         added_parts=frozenset() if previous is None else previous.added_parts,
     )
-    if not follow_up.source_refs - shown - added and not _current_section_pending(follow_up):
+    if not follow_up.source_refs - shown - added and not _current_section_pending(
+        follow_up, section_parts or {}
+    ):
         return None
     return follow_up
 
 
-def _current_section_pending(follow_up: ReviewFollowUp) -> bool:
-    """Whether a ``current_diff_for_path`` item may still be answered from the change (tb4n5).
+def _current_section_pending(
+    follow_up: ReviewFollowUp, section_parts: Mapping[str, frozenset[str]]
+) -> bool:
+    """Whether a ``current_diff_for_path`` item's current file sections still have bytes no
+    packet of the check carried (tb4n5).
 
-    The current section of a path an edit changed comes from the check-time change, not from the
-    edit's own rows, so it can be owed even when the first packet showed the edit whole. It can
-    be owed only while some packet of the check carried part of the change but not all of it;
-    whether a composed round really adds a section is decided by ``follow_up_new_parts``.
+    The current section of a path an edit changed comes from the check-time change, not from
+    the edit's own rows, so it can be owed even when the first packet showed the edit whole.
+    Judged per requested path, never by whether any other bytes of the change remain unseen.
     """
 
-    if not any(
-        item.kind == "current_diff_for_path"
-        and any(ref.startswith("evd_") for ref in item.source_refs)
+    seen = follow_up.seen_parts
+    return any(
+        not excerpt_span_covered(key, seen)
         for item in follow_up.items
-    ):
-        return False
-    change = [
-        key for key in follow_up.seen_parts if key.startswith(CHECK_TIME_CHANGE_SOURCE_REF + "#")
-    ]
-    return bool(change) and not excerpt_span_whole(change[0], change)
+        if item.kind == "current_diff_for_path"
+        for ref in item.source_refs
+        for key in section_parts.get(ref, ())
+    )
 
 
 def _recorded_sources(

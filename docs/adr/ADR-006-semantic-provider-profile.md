@@ -1750,7 +1750,10 @@ in the check-time change, which follow-ups could not draw from.
   carried whole: every part the source has was sent. A source the first packet showed in part
   therefore still has parts to add. `ReviewFollowUp` carries `shown_parts` (the first packet's) and
   `added_parts` (parts later packets carried that no earlier one had). Intervals, not part numbers,
-  are compared, so a narrowed case that splits a source differently never counts old bytes as new.
+  are compared, and each interval is placed over the source's own authenticated length whatever
+  the selection, so a narrowed case that splits a source differently never counts old bytes as
+  new. A head-and-tail clip holds two intervals (its head and its tail), never the elided middle,
+  so clipping never makes a source read as shown whole.
 - **What ranks first.** Within the same share, a requested source's parts that the first packet
   carried keep their ordinary rank; parts an earlier round added rank first again (they keep their
   place); the next parts no packet carried follow while they fit. A source larger than the share
@@ -1766,15 +1769,29 @@ in the check-time change, which follow-ups could not draw from.
   first packet's change parts already carried is not served again. Any requested edit qualifies,
   not only one a newer capture superseded: the change is the state when the check ran, so it is
   never older than a capture. Reviewer-chosen line ranges are not supported (that needs a typed
-  request field). The shown-file record (ADR-031 item 9) still counts only the change's leading
-  run of parts, so a section served this way never claims a file was shown: a conservative
-  under-count.
-- **When a round runs.** A round is sent only when its composed packet carries a requested part
-  that no sent packet of the check carried (`follow_up_new_parts`), counting a served section for
-  the edit it answers even when the first packet showed that edit whole, and never counting an
-  item of a category the channel withholds. The planner also stops before rebuilding a case for a
-  request whose targets name no action, result or evidence row and record none (an obligation, the
-  event that carried the task statement): that request is the agent's to answer, as before. A
+  request field). A served section is a shown file (ADR-031 item 9): the shown-file record counts
+  the change bytes the sections in the bounded envelope carried beside its leading run, so a
+  finding raised on a served file needs a repair that shows that file too. A file whose shown
+  bytes are not one run from its section's start has no truthful view in that record: it is left
+  out and the record is marked incomplete, so that review's coverage is unknown and never
+  tolerates a check-time limit. (The first cut of this amendment counted only the leading run and
+  called the record complete, which let a repair that never showed the served file clear a
+  finding raised on it; the tb4n5 fix review caught it.)
+- **When a round runs.** A round is sent only when its packet carries a requested part that no
+  sent packet of the check carried (`follow_up_new_parts`), counting a served section for the edit
+  it answers even when the first packet showed that edit whole, and counting only items admission
+  keeps: rows the bounded envelope's catalog keeps, in categories the channel does not withhold.
+  The builder marks the excerpts that supply the request beyond the first packet
+  (`SemanticCase.follow_up_supplied_item_ids`, bound into a follow-up case's digest); the mark
+  travels on the packet row (`follow_up_supplied: true`), and the provider-bound manifest says
+  `supplied` only through a marked row admission kept, so an old part the first packet carried
+  never stands in for new parts admission dropped. A part egress then withholds under a privacy
+  rule is disclosed as `pending` on the sent packet and its source is never asked for again. The
+  planner asks for a current section only while the requested edit's own paths have bytes no
+  packet carried (`current_section_parts`), never because other bytes of the change remain. It
+  also stops before rebuilding a case for a request whose targets name no action, result or
+  evidence row and record none (an obligation, the event that carried the task statement): that
+  request is the agent's to answer, as before. A
   privacy-withheld source is still never re-sent. The three-round bound and the per-check share
   are unchanged, so a request whose remaining parts do not fit stays unanswered and is returned to
   the agent with its availability class. Each round's `semantic_review_follow_up` diagnostic also

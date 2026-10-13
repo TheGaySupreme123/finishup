@@ -58,6 +58,7 @@ _FIELD_ORDER: Final = (
     "semantic_candidates_accepted",
     "semantic_challenges_rejected",
     "semantic_rejected_hidden_source_claim",
+    "semantic_rejected_redaction_marker_premise",
     "semantic_rejected_ref_not_carried",
     "semantic_rejected_ref_outside_case",
     "semantic_rejected_routine_completeness",

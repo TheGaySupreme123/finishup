@@ -1472,7 +1472,9 @@ Two further check-path operations describe a review that did reach a provider:
 `semantic_review_accounting` is appended once per dispatched review carrying counts only —
 `semantic_conclusion`, `semantic_challenges_returned`, `semantic_candidates_accepted`,
 `semantic_challenges_rejected`, the per-reason split `semantic_rejected_<reason>`
-(`ref_not_carried`, `ref_outside_case`, `hidden_source_claim`, `subject_refs_over_limit`,
+(`ref_not_carried`, `ref_outside_case`, `hidden_source_claim`, `redaction_marker_premise` (tb4n5:
+a challenge whose own quote holds `[REDACTED]` or `[withheld-by-yoetz:possible-credential]` and whose
+summary or discrepancy names that marker beside a code-defect term), `subject_refs_over_limit`,
 `routine_completeness`, `yoetz_process_state`),
 `semantic_review_refs_reduced`, `semantic_review_snippets_rejected`,
 `semantic_restatements_suppressed`, `semantic_challenges_advisory` (routine correctness notes,
@@ -8339,7 +8341,16 @@ never digest material); `ReviewFollowUp.shown_parts` / `added_parts` carry them 
 round is sent only when `semantic_case.follow_up_new_parts` finds a requested part no sent packet
 carried, and a `current_diff_for_path` request naming a captured edit is also answered with the
 current `change-section-NNN` section of each path it changed, cut from the frozen check-time change
-(`kernel.test_edit_visibility.check_change_sections`). The evaluator seam takes the
+(`kernel.test_edit_visibility.check_change_sections`). Span keys use the source's own length, and a
+head-and-tail clip contributes two intervals. A follow-up case marks the excerpts that supply the
+request (`SemanticCase.follow_up_supplied_item_ids`, in its digest); the packet row carries
+`follow_up_supplied: true` and the provider-bound `missing_inputs` say `supplied` only through such
+a row admission kept. The dispatch gate counts only rows the bounded envelope's catalog keeps
+(`bounded_catalog_item_ids`). The planner's `section_parts` (`current_section_parts`, carried as the
+evaluation's in-process `case_current_section_parts`) asks for a current section only while that
+edit's paths have unsent bytes. Served sections join the ADR-031 shown-file record
+(`check_time_change_sections_carried`, `check_time_change_shown_record`); a file not shown as one run
+from its section's start makes the record incomplete. The evaluator seam takes the
 optional keyword `follow_up` (returning `None` when nothing was dispatched); the facade forwards it
 only to an evaluator that names it.
 

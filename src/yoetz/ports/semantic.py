@@ -1406,11 +1406,19 @@ class SemanticCase:
     # excerpt item's place in its source text as ``(item_id, span_key)``, so an in-check
     # follow-up can tell which parts of a partly shown source a sent packet carried.
     excerpt_parts: tuple[tuple[str, str], ...] = field(default=(), compare=False)
+    # tb4n5: in a follow-up case, the excerpts that supply the reviewer's request beyond the
+    # check's first packet. Bound into the case digest and marked in the envelope catalog, so
+    # the provider-bound manifest says ``supplied`` only through such an excerpt it carried.
+    follow_up_supplied_item_ids: frozenset[str] = field(default=frozenset(), compare=False)
 
     def __post_init__(self) -> None:
         if (
             type(self.omitted_reference_count) is not int
             or not 0 <= self.omitted_reference_count <= _MAX_SAFE_INTEGER
+        ):
+            raise _invalid_case()
+        if type(self.follow_up_supplied_item_ids) is not frozenset or any(
+            type(item_id) is not str for item_id in self.follow_up_supplied_item_ids
         ):
             raise _invalid_case()
         if (

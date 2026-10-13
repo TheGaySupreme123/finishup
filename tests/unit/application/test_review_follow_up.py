@@ -9,8 +9,9 @@ what was added. Without a follow-up nothing about the packet changes.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from typing import Any, cast
 
 import pytest
 
@@ -27,6 +28,7 @@ from builders.policy_cases import (
 from yoetz.application.missing_for_assessment import (
     ReviewFollowUp,
     ReviewFollowUpItem,
+    excerpt_span_whole,
     plan_review_follow_up,
     review_missing_for_assessment,
 )
@@ -38,6 +40,11 @@ from yoetz.application.semantic_case import (
     assemble_filtered_review_packet,
     bounded_case_envelope,
     build_semantic_case,
+    captured_edit_paths,
+    check_time_change_bytes_carried,
+    check_time_change_sections_carried,
+    check_time_change_shown_record,
+    current_section_parts,
     excerpt_content_refs,
     follow_up_byte_budget,
     follow_up_new_parts,
@@ -1073,12 +1080,30 @@ def _stale_edit_case(
     return case, (captured,), scope, _change(header + body)
 
 
+def _section_parts(
+    case: DeterministicCase,
+    captured: tuple[CapturedSemanticContent, ...],
+    scope: CapturedContentScope,
+    change: CheckTimeChange,
+) -> Mapping[str, frozenset[str]]:
+    """What a current-diff follow-up could serve, as the composition computes it."""
+
+    return current_section_parts(
+        change.capture, captured_edit_paths(case, captured, scope), workspace_root=None
+    )
+
+
 def test_a_stale_edit_request_is_answered_with_the_current_section_from_the_change() -> None:
     """tb4n5 react-lead-form: ``current_diff_for_path`` named the stale apply_patch that first
     added ``leadStore.ts``; only the frozen change held the current file."""
 
     case, captured, scope, change = _stale_edit_case()
     allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    section_parts = _section_parts(case, captured, scope, change)
+    text = change.capture.text
+    start = text.index(f"diff --git a/{_LEAD}".encode())
+    lead_key = f"check-time-change#{start}-{len(text)}/{len(text)}"
+    assert section_parts == {str(evd(1)): frozenset({lead_key})}
     first = _build(
         case, captured_content=captured, captured_content_scope=scope, check_time_change=change
     )
@@ -1097,6 +1122,7 @@ def test_a_stale_edit_request_is_answered_with_the_current_section_from_the_chan
         previous=None,
         shown_refs=shown,
         shown_parts=shown_parts,
+        section_parts=section_parts,
     )
 
     assert follow_up is not None
@@ -1116,40 +1142,49 @@ def test_a_stale_edit_request_is_answered_with_the_current_section_from_the_chan
     marker, body = section.content.split(b"\n", 1)
     assert marker.startswith(b"[Yoetz check-time change, the current state of a file a requested")
     # Cut from the frozen change: exactly that section's bytes, placed in the change text.
-    text = change.capture.text
-    start = text.index(f"diff --git a/{_LEAD}".encode())
     assert body == text[start:] and b"CURRENT_LEAD_STORE_MARKER" in body
-    assert follow_up_new_parts(again, follow_up) == {
-        f"check-time-change#{start}-{len(text)}/{len(text)}"
-    }
+    assert follow_up_new_parts(again, follow_up) == {lead_key}
     assert b"CURRENT_LEAD_STORE_MARKER" in _send(again)
     manifest = again.packet.input_manifest
     assert manifest is not None
     (row,) = manifest.missing_inputs
     assert (row.status, row.supplied_refs) == ("supplied", (str(evd(1)),))
+    sent_again = _provider_manifest(_send(again))
+    assert [entry["status"] for entry in cast(Any, sent_again["missing_inputs"])] == ["supplied"]
     # The change's own leading parts still come first.
     assert again.packet.targeted_excerpts[0].excerpt_item_id == "change-check-time-001"
 
-    # Served once: a later round keeps it in place but never counts it as new again.
-    round_one = sent_excerpt_parts(again, _provider_manifest(_send(again)))
+    # Served once: nothing more is owed for that path, so no later round is even planned.
+    round_one = sent_excerpt_parts(again, sent_again)
     assert round_one is not None
     after = replace(follow_up, added_parts=follow_up.unseen(round_one))
-    second = plan_review_follow_up(
-        case.projection, allowed, request, previous=after, shown_refs=None
+    assert (
+        plan_review_follow_up(
+            case.projection,
+            allowed,
+            request,
+            previous=after,
+            shown_refs=None,
+            section_parts=section_parts,
+        )
+        is None
     )
-    assert second is not None
+    # A round that had to be built anyway keeps the section in place and never counts it new.
     repeat = _build(
         case,
-        follow_up=second,
+        follow_up=replace(after, round=2),
         captured_content=captured,
         captured_content_scope=scope,
         check_time_change=change,
     )
     assert any(item.item_id == section.item_id for item in repeat.items)
-    assert follow_up_new_parts(repeat, second) == frozenset()
+    assert follow_up_new_parts(repeat, replace(after, round=2)) == frozenset()
 
 
-def test_a_current_section_the_first_packet_carried_is_not_served_again() -> None:
+def test_a_current_section_the_first_packet_carried_plans_no_round() -> None:
+    """Checker P3 (tb4n5 fix review): the planner asks per requested path, so a section the
+    first packet already carried never costs a rebuild just to find nothing new."""
+
     case, captured, scope, change = _stale_edit_case(lead_first=True)
     allowed = frozenset(str(ref) for ref in case.allowed_ids)
     first = _build(
@@ -1157,6 +1192,39 @@ def test_a_current_section_the_first_packet_carried_is_not_served_again() -> Non
     )
     first_sent = _provider_manifest(_send(first))
     assert b"CURRENT_LEAD_STORE_MARKER" in _send(first)
+    shown_parts = sent_excerpt_parts(first, first_sent)
+    assert shown_parts is not None
+    # Other bytes of the change are still unseen; the requested path's are not.
+    change_keys = [key for key in shown_parts if key.startswith("check-time-change#")]
+    assert change_keys and not excerpt_span_whole(change_keys[0], change_keys)
+
+    assert (
+        plan_review_follow_up(
+            case.projection,
+            allowed,
+            (_requested("current_diff_for_path", str(evd(1))),),
+            previous=None,
+            shown_refs=sent_excerpt_content_refs(first, first_sent),
+            shown_parts=shown_parts,
+            section_parts=_section_parts(case, captured, scope, change),
+        )
+        is None
+    )
+
+
+def test_a_served_current_section_is_part_of_the_raising_inventory() -> None:
+    """Checker P1 (tb4n5 fix review): the follow-up packet showed the current ``leadStore.ts``
+    through ``change-section-011``, but the shown-file record counted only the change's leading
+    bytes and called itself complete, so a repair that never showed that file could clear a
+    finding raised on it. The served section now joins the record; a repair lacking the file is
+    not covered."""
+
+    case, captured, scope, change = _stale_edit_case()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    first = _build(
+        case, captured_content=captured, captured_content_scope=scope, check_time_change=change
+    )
+    first_sent = _provider_manifest(_send(first))
     follow_up = plan_review_follow_up(
         case.projection,
         allowed,
@@ -1164,6 +1232,7 @@ def test_a_current_section_the_first_packet_carried_is_not_served_again() -> Non
         previous=None,
         shown_refs=sent_excerpt_content_refs(first, first_sent),
         shown_parts=sent_excerpt_parts(first, first_sent),
+        section_parts=_section_parts(case, captured, scope, change),
     )
     assert follow_up is not None
     again = _build(
@@ -1173,9 +1242,66 @@ def test_a_current_section_the_first_packet_carried_is_not_served_again() -> Non
         captured_content_scope=scope,
         check_time_change=change,
     )
+    text = change.capture.text
+    start = text.index(f"diff --git a/{_LEAD}".encode())
+    carried = check_time_change_bytes_carried(again)
+    assert carried < start  # the leading bytes stop before the file
+    served = check_time_change_sections_carried(again)
+    assert served == ((start, len(text)),)
+    # A channel that withholds repository excerpts carries no section at all.
+    assert (
+        check_time_change_sections_carried(
+            again, withheld_categories=(DataCategory.REPOSITORY_EXCERPT.value,)
+        )
+        == ()
+    )
 
-    assert not any(item.item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX) for item in again.items)
-    assert follow_up_new_parts(again, follow_up) == frozenset()
+    leading_only, _ = check_time_change_shown_record(change.capture, carried)
+    files, representable = check_time_change_shown_record(change.capture, carried, served)
+
+    lead_identity = f"diff --git a/{_LEAD} b/{_LEAD}".encode()
+    assert representable
+    assert lead_identity not in {file.identity for file in leading_only}
+    (lead,) = (file for file in files if file.identity == lead_identity)
+    assert lead.whole and lead.section_admitted and lead.shown_bytes == len(text) - start
+    assert [file for file in files if file.identity != lead_identity] == list(leading_only)
+    # A gap inside what a file showed has no truthful view: left out, record incomplete.
+    gapped = ((start + 200, len(text)),)
+    holes, ok = check_time_change_shown_record(change.capture, carried, gapped)
+    assert not ok and lead_identity not in {file.identity for file in holes}
+
+
+@pytest.mark.anyio
+async def test_a_repair_that_never_showed_the_served_file_does_not_cover_the_raising_review() -> (
+    None
+):
+    from yoetz.application.check_change import check_change_shown_files
+
+    class _Objects:
+        async def commitment_for(self, data: bytes, kind: object) -> str:
+            del kind
+            return "hmac-sha256:" + hashlib.sha256(data).hexdigest()
+
+    class _Runtime:
+        objects = _Objects()
+
+    _case, _captured, _scope, change = _stale_edit_case()
+    change = CheckTimeChange(change.object_ref, replace(change.capture, base_commit="a" * 40))
+    text = change.capture.text
+    start = text.index(f"diff --git a/{_LEAD}".encode())
+    carried = start - 10  # the leading bytes stop inside the file before leadStore.ts
+    runtime = cast(Any, _Runtime())
+
+    raised = await check_change_shown_files(runtime, change, carried, ((start, len(text)),))
+    repair = await check_change_shown_files(runtime, change, carried)
+    whole = await check_change_shown_files(runtime, change, len(text))
+    gapped = await check_change_shown_files(runtime, change, carried, ((start + 200, len(text)),))
+
+    assert raised.complete and repair.complete
+    assert not repair.covers(raised)  # the repair never showed leadStore.ts
+    assert whole.covers(raised)
+    # Unrepresentable: incomplete, so no repair can claim to cover what that review saw.
+    assert not gapped.complete and not whole.covers(gapped)
 
 
 def test_a_request_naming_only_rows_yoetz_does_not_hold_plans_no_round() -> None:
@@ -1238,3 +1364,166 @@ def test_parts_compare_by_byte_interval_so_a_different_split_never_counts_twice(
     assert follow_up.unseen([*sent, excerpt_span_key(ref, 8_192, 12_000, 12_000)]) == {
         excerpt_span_key(ref, 8_192, 12_000, 12_000)
     }
+
+
+# --- Checker P2: a part's identity is its bytes in the source, whatever the selection ---------
+
+
+def test_a_narrowed_selection_keeps_the_identity_of_a_byte_identical_part() -> None:
+    """The same 4 KiB first part keeps its key when a narrowed case allows fewer parts, so a
+    follow-up built under the narrower selection never counts the part already shown as new."""
+
+    case, captured, scope = _split_capture_case()
+    wide = _small_parts()
+    narrow = replace(wide, max_excerpts=2)
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    first = _build(case, selection=wide, captured_content=captured, captured_content_scope=scope)
+    narrowed = _build(
+        case, selection=narrow, captured_content=captured, captured_content_scope=scope
+    )
+    wide_parts = dict(first.excerpt_parts)
+    narrow_parts = dict(narrowed.excerpt_parts)
+    assert wide_parts[_part_id(1)] == narrow_parts[_part_id(1)]
+    total = int(wide_parts[_part_id(1)].rsplit("/", 1)[1])
+    assert total == len(captured[0].content)  # the capture's own length, not the selection's
+    sent = _send_except(first, frozenset({_part_id(2), _part_id(3), _part_id(4)}))
+    follow_up = plan_review_follow_up(
+        case.projection,
+        allowed,
+        (_requested("current_diff_for_path", str(evd(1))),),
+        previous=None,
+        shown_refs=sent_excerpt_content_refs(first, sent),
+        shown_parts=sent_excerpt_parts(first, sent),
+    )
+    assert follow_up is not None
+
+    again = _build(
+        case,
+        follow_up=follow_up,
+        selection=narrow,
+        captured_content=captured,
+        captured_content_scope=scope,
+    )
+
+    again_parts = dict(again.excerpt_parts)
+    new = follow_up_new_parts(again, follow_up)
+    assert wide_parts[_part_id(1)] not in new
+    assert again_parts[_part_id(2)] in new
+
+
+def test_a_head_and_tail_clip_holds_two_intervals_never_the_whole_source() -> None:
+    """An 8,000-byte output clipped to 1 KiB keeps its head and its tail; the elided middle is
+    never credited, so the source is not shown whole and stays answerable."""
+
+    from yoetz.application import semantic_case as semantic_case_module
+
+    output = "".join(f"line {row:05d} of the long run\n" for row in range(300))[:8_000]
+    case = make_case(
+        evidence={
+            evd(1): evidence_record(
+                EvidenceRecordedPayload(
+                    evd(1),
+                    EvidenceKind.TEST_RESULT,
+                    EvidenceImmutability.METADATA_ONLY,
+                    _WHEN,
+                    description=output,
+                ),
+                2,
+            )
+        },
+        claims={
+            clm(1): record(
+                ClaimRecordedPayload(clm(1), ClaimKind.COMPLETION, "The run passed", (evd(1),)),
+                3,
+            )
+        },
+        extra_refs=(clm(1),),
+    )
+    selection = replace(_selection(), max_excerpt_bytes=1_024)
+    semantic = _build(case, selection=selection)
+    keys = [key for item_id, key in semantic.excerpt_parts if item_id == f"excerpt-{evd(1)}"]
+    assert len(keys) == 2
+    head, tail = sorted(keys, key=lambda key: int(key.split("#")[1].split("-")[0]))
+    assert head.startswith(f"{evd(1)}#0-") and head.endswith("/8000")
+    assert tail.endswith("-8000/8000")
+    sent = _provider_manifest(_send(semantic))
+    shown = sent_excerpt_content_refs(semantic, sent)
+    assert shown is not None and str(evd(1)) not in shown
+    assert set(keys) <= (sent_excerpt_parts(semantic, sent) or frozenset())
+    # The helper's intervals are exactly the bytes the clip kept.
+    raw = output.encode()
+    kept_fn = getattr(semantic_case_module, "_head_tail_kept")
+    text, kept = kept_fn(raw, 1_024)
+    (low_h, high_h), (low_t, high_t) = kept
+    assert low_h == 0 and text.encode().startswith(raw[:high_h])
+    assert high_t == len(raw) and text.encode().endswith(raw[low_t:])
+    assert high_h < low_t
+
+
+def test_admission_that_drops_every_new_part_leaves_the_request_pending_and_sends_nothing() -> None:
+    """Checker P3 (tb4n5 fix review): the first packet sent part 1; the follow-up composed parts
+    2 to 4, and admission dropped all three but kept part 1. ``supplied`` was ref-based, so the
+    provider manifest still said supplied, and the gate counted the composed case. Both now count
+    only marked parts that admission kept."""
+
+    case, captured, scope = _split_capture_case()
+    selection = _small_parts()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    first = _build(
+        case, selection=selection, captured_content=captured, captured_content_scope=scope
+    )
+    sent = _send_except(first, frozenset({_part_id(2), _part_id(3), _part_id(4)}))
+    follow_up = plan_review_follow_up(
+        case.projection,
+        allowed,
+        (_requested("current_diff_for_path", str(evd(1))),),
+        previous=None,
+        shown_refs=sent_excerpt_content_refs(first, sent),
+        shown_parts=sent_excerpt_parts(first, sent),
+    )
+    assert follow_up is not None
+    again = _build(
+        case,
+        follow_up=follow_up,
+        selection=selection,
+        captured_content=captured,
+        captured_content_scope=scope,
+    )
+    new_ids = frozenset({_part_id(2), _part_id(3), _part_id(4)})
+    assert again.follow_up_supplied_item_ids == new_ids
+
+    # Admission keeps every row but the new parts: the old part 1 still travels.
+    envelope = strict_json_parse(bounded_case_envelope(again))
+    assert isinstance(envelope, dict)
+    catalog = envelope["item_catalog"]
+    assert isinstance(catalog, list)
+    envelope["item_catalog"] = [
+        row for row in catalog if not (isinstance(row, dict) and row.get("item_id") in new_ids)
+    ]
+    content = {item.item_id: item.content for item in again.items if item.item_id not in new_ids}
+    prepared = assemble_filtered_review_packet(
+        envelope, content_by_id=content, included_item_ids=frozenset(content)
+    )
+    result = review_packet_disclosure_result(prepared)
+    assert result.failure is None and result.disclosure is not None
+    provider = result.disclosure.provider_input_manifest
+    assert provider is not None
+    assert _part_id(1) in cast(Any, provider["current_diff"])["item_ids"]
+    ((row),) = cast(Any, provider["missing_inputs"])
+    assert (row["kind"], row["status"], tuple(row["supplied_refs"])) == (
+        "current_diff_for_path",
+        "pending",
+        (),
+    )
+    # Composed alone, the round would add parts; counted over what admission keeps, nothing.
+    assert follow_up_new_parts(again, follow_up)
+    kept = frozenset(item.item_id for item in again.items) - new_ids
+    assert follow_up_new_parts(again, follow_up, carried_item_ids=kept) == frozenset()
+    # With the new parts kept, the same packet says supplied and the reader agrees.
+    full = review_packet_disclosure_result(_send(again))
+    assert full.failure is None and full.disclosure is not None
+    assert full.disclosure.provider_input_manifest is not None
+    assert [
+        entry["status"]
+        for entry in cast(Any, full.disclosure.provider_input_manifest["missing_inputs"])
+    ] == ["supplied"]

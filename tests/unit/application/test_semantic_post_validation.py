@@ -2155,3 +2155,79 @@ def test_a_historical_obligation_publication_event_is_not_new_material() -> None
     assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
         (str(fnd(1)), "disputed_after_rebuttal")
     ]
+
+
+_CUTOVER_LINE = (
+    "+    return URL.create('postgresql+psycopg',username=config.POSTGRES_USER,"
+    "password=[withheld-by-yoetz:possible-credential],host='localhost')"
+)
+
+
+def _defect(summary: str, discrepancy: str, snippet: str) -> ReviewerChallenge:
+    return ReviewerChallenge(
+        FindingKind.CODE_DEFECT,
+        summary,
+        (str(clm(1)),),
+        discrepancy,
+        "The connection may fail at startup.",
+        "Main agent: repair the connection setup.",
+        "act",
+        "Only the shown diff was read.",
+        snippet,
+    )
+
+
+@pytest.mark.parametrize(
+    "discrepancy",
+    [
+        # tb4n5 live-database-cutover, as the reviewer wrote it (with the old marker).
+        "The shown api/db.py builds the PostgreSQL URL with password=[REDACTED] which raises "
+        "NameError unless REDACTED is defined",
+        "password=[withheld-by-yoetz:possible-credential] is not defined anywhere in the module",
+        "Invalid syntax: the withheld-by-yoetz placeholder is not a Python expression",
+    ],
+)
+def test_a_premise_resting_on_a_redaction_marker_never_becomes_a_finding(
+    discrepancy: str,
+) -> None:
+    """The marker stands for a value Yoetz withheld; a defect built on it is never the agent's,
+    while a real defect on the same line stays reviewable (checker review of tb4n5)."""
+
+    from yoetz.application.check import SEMANTIC_REJECTED_REDACTION_MARKER
+
+    case = make_case(extra_refs=(clm(1),))
+    sent = f"diff --git a/api/db.py b/api/db.py\n{_CUTOVER_LINE}\n"
+    marker_premise = _defect(
+        "PostgreSQL connection setup uses an unresolved password expression",
+        discrepancy,
+        _CUTOVER_LINE,
+    )
+    real = _defect(
+        "The database host is hard-coded",
+        "The URL hard-codes host='localhost' instead of config.POSTGRES_HOST, so the cutover "
+        "never reaches the new database",
+        _CUTOVER_LINE,
+    )
+    elsewhere = _defect(
+        "An undefined name in the migration",
+        "migrate() calls undefined helper copy_rows, which raises NameError at startup",
+        "+    copy_rows(source, target)",
+    )
+    review = validate_semantic_judgment(
+        case,
+        (),
+        SemanticJudgment("challenges_returned", (marker_premise, real, elsewhere)),
+        _provenance(),
+        expected_frontier=case.frontier,
+        citable_refs=frozenset({str(clm(1))}),
+        provider_input_text_by_ref={
+            str(clm(1)): (sent + "+    copy_rows(source, target)\n",),
+        },
+        review_phase="final",
+    )
+
+    assert [candidate.summary for candidate in review.candidates] == [
+        "The database host is hard-coded",
+        "An undefined name in the migration",
+    ]
+    assert review.rejected_by_reason == ((SEMANTIC_REJECTED_REDACTION_MARKER, 1),)

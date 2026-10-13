@@ -15,11 +15,11 @@ import asyncio
 import hmac
 import os
 import re
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, cast
 
-from yoetz.application.semantic_case import CheckTimeChange, check_time_change_shown_files
+from yoetz.application.semantic_case import CheckTimeChange, check_time_change_shown_record
 from yoetz.domain.events import (
     MAX_CHECK_CHANGE_SHOWN_FILES,
     CheckChangePartialFile,
@@ -136,6 +136,7 @@ async def check_change_shown_files(
     runtime: TaskRuntime,
     change: CheckTimeChange,
     shown_bytes: int,
+    served: Sequence[tuple[int, int]] = (),
 ) -> CheckChangeShownFiles:
     """Keyed commitments to the changed files one review packet carried (ADR-031).
 
@@ -146,10 +147,14 @@ async def check_change_shown_files(
     redaction markers reached the packet. Only shown files count
     toward the record's bound; past it the first files in change order are kept and the record
     says it is incomplete. A recovered job derives the same commitments from its stored object.
+    ``served`` are the change intervals the current-file sections an in-check follow-up served
+    carried (tb4n5): a file they show is recorded like one the leading bytes show, and a file
+    shown other than as one run from its section's start makes the record incomplete, so the
+    raising review's coverage is unknown rather than understated.
     """
 
-    files = check_time_change_shown_files(change.capture, shown_bytes)
-    complete = len(files) <= MAX_CHECK_CHANGE_SHOWN_FILES
+    files, representable = check_time_change_shown_record(change.capture, shown_bytes, served)
+    complete = representable and len(files) <= MAX_CHECK_CHANGE_SHOWN_FILES
     base = change.capture.base_commit.encode("ascii")
     fully: set[str] = set()
     partially: dict[str, CheckChangePartialFile] = {}
