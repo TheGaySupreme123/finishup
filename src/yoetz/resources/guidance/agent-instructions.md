@@ -12,13 +12,13 @@ Deliver every requested output at its path, even if an input looks inconsistent:
 
 Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI and verify it. Only if that result is also empty, use installed `references/<name>.md` or the topic's parent index.
 
-Focused topics: `startup.md`, `recovery.md`, `publication.md`, `review.md`, `receipt.md`, `delegation.md`, `consent.md`, `page-delivery.md`. Heading topics like `yoetz://guidance/workflow.md#start-and-resume` are a closed catalog: use only anchors guidance names.
+Focused topics: `startup.md`, `recovery.md`, `publication.md`, `review.md`, `receipt.md`, `delegation.md`, `consent.md`, `page-delivery.md`. Heading topics like `yoetz://guidance/workflow.md#start-and-resume` are a closed catalog: use only named anchors.
 
 # Start contract
 
-Discover the `start` schema, use a fresh `req_` UUIDv4, and provide `mode`, `task_title`, `task_statement`, `requested_view`, `actor`, `client`, plus a held `session_id` or `workspace_ref` + `external_ref`.
+Discover the `start` schema; use a fresh `req_` UUIDv4; provide `mode`, `task_title`, `task_statement`, `requested_view`, `actor`, `client`, plus a held `session_id` or `workspace_ref` + `external_ref`.
 
-`start` records intent; after bounded exploration, before the first material edit, publish one `plan_revised` refinement mapping every instruction requirement to a testable obligation whose `source_refs` cite the `start` event (`status view=history`) and whose `requested_items` name requested files/commands.
+`start` records intent; after bounded exploration, before the first material edit, publish one `plan_revised` refinement mapping every instruction requirement to a testable obligation whose `source_refs` cite the `start` event (`status view=history`) and whose `requested_items` name the files/commands.
 
 # Essential boundaries
 
@@ -36,7 +36,7 @@ Final prose and receipts are scope-first: lead with evidence/checks covered, wha
 
 # Review dialogue
 
-Before the receipt run the closing review: `check` with `final_review: true`. Answer each open AI-powered finding with `respond` and a reason (`acknowledged` requires one); for `requested_next_step: answer_question`, answer in the reason.
+Before the receipt, run the closing `check` with `final_review: true`. Answer each open AI-powered finding with `respond` and a reason (`acknowledged` requires one); for `requested_next_step: answer_question`, answer in the reason.
 
 # Multi-agent work
 
