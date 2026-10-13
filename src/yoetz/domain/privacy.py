@@ -299,6 +299,10 @@ class DisclosureProvenance(str, Enum):  # noqa: UP042 - durable enum
     ENGINE_DERIVED_FROM_SELF_AUTHORED = "engine_derived_from_self_authored"
     OTHER_WRITER = "other_writer"
     IMPORTED = "imported"
+    # tb4n5 (owner decision 2026-10-13, ADR-035 amendment): the name of a file the check proved
+    # was created in the task's own workspace after the task started. Local agent context only,
+    # and only for the one status leaf that names such files; never an egress basis.
+    TASK_CREATED_FILE = "task_created_file"
 
 
 class DataClass(str, Enum):  # noqa: UP042 - durable enum
@@ -1669,6 +1673,11 @@ _IMPORT_CHANNELS: Final = frozenset(
 )
 _MAX_ITEM_AUTHORSHIP: Final = 100
 _MAX_ITEM_SOURCES: Final = 64
+# At most 16 referencing deliverables of at most 8 named paths each (status-result 1.4.0).
+_MAX_CREATED_FILE_POINTERS: Final = 128
+_CREATED_FILE_POINTER: Final = re.compile(
+    r"/closure_readiness/undeclared_references/(?:0|[1-9][0-9]?)/paths/[0-7]", re.ASCII
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1765,6 +1774,10 @@ class ProjectionProvenanceContext:
     writer_id: str
     frontier: Frontier
     item_authorship: tuple[ProjectionItemAuthorship, ...] = ()
+    # tb4n5 (ADR-035 amendment): the status leaves naming files the check proved were created in
+    # the task's workspace after the task started (``task_created_file``). Service-derived from
+    # the page's own closure readiness, never from a caller, and only ever this one leaf family.
+    created_file_pointers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         validate_id(IdKind.SESSION, self.session_id)
@@ -1779,6 +1792,16 @@ class ProjectionProvenanceContext:
             raise _invalid()
         pointers = [item.item_pointer for item in self.item_authorship]
         if len(set(pointers)) != len(pointers):
+            raise _invalid()
+        if (
+            type(self.created_file_pointers) is not tuple
+            or len(self.created_file_pointers) > _MAX_CREATED_FILE_POINTERS
+            or any(
+                type(pointer) is not str or _CREATED_FILE_POINTER.fullmatch(pointer) is None
+                for pointer in self.created_file_pointers
+            )
+            or len(set(self.created_file_pointers)) != len(self.created_file_pointers)
+        ):
             raise _invalid()
 
 

@@ -3612,8 +3612,8 @@ The closed privacy enums are:
   `unrestricted_log`, `raw_stderr`, `complete_transcript`, `out_of_scope_file`.
 
 `DisclosureProvenance` is the closed authorship fact the `agent_context` ceiling is conditioned on:
-`self_authored`, `other_writer`, `imported`, or `engine_derived_from_self_authored`. It is computed
-server-side from the ledger, never asserted by a caller. An item is `self_authored` only when every
+`self_authored`, `other_writer`, `imported`, `engine_derived_from_self_authored`, or
+`task_created_file`. It is computed server-side from the ledger, never asserted by a caller. An item is `self_authored` only when every
 contributing accepted event was written by the requesting `writer_id` in this session at or before
 the frozen frontier. Kernel prose derived solely from such events — a local finding's
 `summary`/`detail` whose `subject_refs` are all `self_authored` — is
@@ -3632,6 +3632,27 @@ requires the explicit `agent_context_categories` grant. `sensitive_confidential`
 only a category the host demonstrably already has. Provenance is recomputed at projection time
 against the frozen frontier and is never cached across frontiers, and each projection still reserves
 and completes its `AgentProjectionAuditSubject` receipt.
+
+`task_created_file` (tb4n5, owner decision 2026-10-13, ADR-009 and ADR-035 amendments) is the one
+provenance not read from event authorship. It applies to exactly one leaf family, the status
+`/closure_readiness/undeclared_references/<n>/paths/<m>` (`repository_excerpt`), and only for a row
+whose `name_provenance` is `created_in_task`: the applicable check recorded
+`undeclared_references_created_in_task` on its `DeliverableState` because every file the row names
+was listed as created by the check-time change against the task's own `task_start` base, whose
+untracked listing (and each nested repository's) was complete, and none was untracked at task
+start. "Created by the agent" therefore means created in this task's workspace after the task
+started; Yoetz cannot tell the agent's processes from another process writing the same working
+tree during the task, and the agent's own shell lists the same names. The service derives the leaf
+pointers from the page's own readiness (`StatusInternalResult.created_file_pointers`) into
+`ProjectionProvenanceContext.created_file_pointers`, which admits only that leaf pattern; the
+resolver returns the value only for a `repository_excerpt` item at such a pointer, and the egress
+decision honours it only for an `agent_context` client projection. The data-class ceiling,
+never-send and `sensitive_confidential` stay absolute. A row the check could not prove
+(`creation_unproven`: a `first_check` base, an incomplete listing, a file that predated the task)
+keeps the category ceiling, and the Stop gate then names the obligation item, the count and the
+omission, and tells the agent to list its created files with its own shell. Receipts, the MCP text
+summary, hook diagnostics and the review packet are unchanged by it: only `full_local` receipts name
+the files, and the packet's history row of a check carries their count, never their names.
 
 Production composes `LocalPrivacyEnforcer` with the ledger-authorship `TrustedProvenanceResolver`
 (`build_local_privacy_enforcer`). Its only input is `ProjectionProvenanceContext.item_authorship`:
@@ -9481,13 +9502,16 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   referenced file), ...]` (tb4n4, #1044; it replaced `count_undeclared_references`) probes them,
   takes as candidates the files the check-time change created (untracked or `A`) that no declared
   value names or covers (pre-existing tracked files never count), and calls the optional adapter
-  method `find_undeclared_references(workspace, deliverables, candidates) -> tuple[(deliverable
-  index, candidate index), ...]` (at most 64 pairs): for at most 16 root-relative source
+  method `find_undeclared_references(workspace, deliverables, candidates, declared=()) ->
+  tuple[(deliverable index, candidate index), ...]` (at most 64 pairs; `declared` is every
+  declared value of any role, root-relative): for at most 16 root-relative source
   deliverables (`.py .sh .bash .js .mjs .cjs .ts .rb .pl .r .R .jl .lua .php`, or no suffix with a
   `#!` first line) it reads at most 256 KiB from the start, link-free, never a credential-named,
-  multiply linked or binary file, and pairs each with the candidates a one-line quoted literal
-  (`'`, `"` or backtick) equals, ends with `/` plus, or equals by a basename of at least 5 bytes.
-  Only positions in the caller's own tuples leave the adapter. Any pair adds the agent-actionable
+  multiply linked or binary file, finds the candidates a one-line quoted literal
+  (`'`, `"` or backtick) equals, ends with `/` plus, or equals by a basename of at least 5 bytes,
+  and pairs only the dependencies (tb4n5, ADR-035 amendment): each naming literal is classified by
+  the call holding it (write-only uses and ambiguous basenames are not dependencies; a read or an
+  unclassified use is). Only positions in the caller's own tuples leave the adapter. Any pair adds the agent-actionable
   task fact and Stop-gate token `deliverable_references_undeclared_file`
   (`DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP`; gap rule G0c, actionable on both routes, never a
   finding); any failure is `()`. The check records the referenced files on the referencing
@@ -9531,12 +9555,16 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   #1044 `undeclared_references` (at most 8 sorted root-relative paths of files the change created
   that this source deliverable names and no item declares: 1-256 characters, valid UTF-8, no control
   character, no leading `/`, no empty, `.` or `..` segment; the only path text the check records)
-  with `undeclared_reference_count` when more were found than are named); absent when the check read
-  no declared output file. Status `closure_readiness.undeclared_references` (optional on the
-  unreleased status-result 1.4.0, at most 16 rows `{obligation_id, item_index, paths, total}`,
+  with `undeclared_reference_count` when more were found than are named, and since tb4n5
+  `undeclared_references_created_in_task: true` when every named file was created in the task's
+  workspace after the task started, `check_change.created_since_task_start`); absent when the
+  check read no declared output file. Status `closure_readiness.undeclared_references` (optional
+  on the unreleased status-result 1.4.0, at most 16 rows `{obligation_id, item_index, paths, total,
+  name_provenance?}`, `name_provenance` `created_in_task | creation_unproven`,
   `closure_readiness.current_undeclared_references` over the applicable check) carries them; each
   path is a `repository_excerpt` content leaf of every status view (a privacy policy can withhold
-  it as the omission marker), and the MCP text summary never prints one. `domain/command_segments`: `canonical_words(argv)` (wrappers,
+  it as the omission marker, except a `created_in_task` row's names, which return to the task's own
+  agent as `task_created_file`, above), and the MCP text summary never prints one. `domain/command_segments`: `canonical_words(argv)` (wrappers,
   assignments, basename, `python3`/`pythonX.Y` to `python`, `python -m pytest` to `pytest`),
   `canonical_command_commitments(key, argv) -> (full, prefixes, flags)`,
   `canonical_commitment(key, kind, payload)` (`full|prefix|flag`, domain-separated from segment
@@ -9608,9 +9636,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   tokens), `requested_output_git_ignored`, `declared_output_removed`, `declared_output_emptied`
   (the last two are also voiced once per key on a Stop the host already continued, below), and
   `deliverable_references_undeclared_file` (#1044: the text tells the agent to embed the file,
-  rebuild it at run time or declare it as a delivered output, says disclosing the dependency does
-  not clear it, and names the files from `closure_readiness.undeclared_references`: the one
-  exception to closed tokens, counts and ids in the gate text; a path is never remembered).
+  rebuild it at run time or declare it, or the directory holding it, as a delivered output, says
+  disclosing the dependency does not clear it, and names the files from
+  `closure_readiness.undeclared_references`: the one exception to closed tokens, counts and ids in
+  the gate text; a path is never remembered. tb4n5: when a name was withheld it adds why and the
+  agent's own listing command, `git status --porcelain --untracked-files=all`).
   `closure_gate_from_readiness(readiness, frontier_sequence=, frontier_digest=,
   observation_pending=, reasked_blockers=, active_stop=, acceptance_uncovered=) ->
   ClosureGate(identity, text, items, blocker_keys) | None` asks the **re-checks

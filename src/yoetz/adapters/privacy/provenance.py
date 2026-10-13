@@ -12,6 +12,7 @@ from __future__ import annotations
 from yoetz.domain.privacy import (
     CandidateContext,
     CandidateContextItem,
+    DataCategory,
     DisclosureProvenance,
     ProjectionProvenanceContext,
     authorship_provenance,
@@ -23,9 +24,10 @@ __all__ = ["LedgerAuthorshipProvenanceResolver"]
 class LedgerAuthorshipProvenanceResolver:
     """Resolve provenance from service-read ledger authorship of the projected row.
 
-    The only input is ``ProjectionProvenanceContext.item_authorship``, which the service builds
-    from accepted event envelopes at the page's frozen frontier; no caller-supplied field is
-    consulted. A leaf that belongs to no attributed row stays ambiguous (``None``), which grants
+    The inputs are ``ProjectionProvenanceContext.item_authorship``, which the service builds
+    from accepted event envelopes at the page's frozen frontier, and its ``created_file_pointers``
+    (tb4n5), the status leaves naming files the check proved the task created; no caller-supplied
+    field is consulted. A leaf that belongs to no attributed row stays ambiguous (``None``), which grants
     no widening: other views, findings (including every AI-powered finding), receipts and any row
     the ledger could not attribute keep the ordinary category ceiling. The decision is made per
     leaf and per request, so nothing is cached across frontiers or writers.
@@ -43,6 +45,13 @@ class LedgerAuthorshipProvenanceResolver:
         pointer = item.origin_ref
         if not pointer.startswith("/"):
             return None
+        if (
+            item.category is DataCategory.REPOSITORY_EXCERPT
+            and pointer in context.created_file_pointers
+        ):
+            # tb4n5 (ADR-035 amendment): the name of a file the check proved the task created in
+            # its own workspace after it started. Only this exact status leaf, only this category.
+            return DisclosureProvenance.TASK_CREATED_FILE
         for row in context.item_authorship:
             if pointer.startswith(row.item_pointer + "/"):
                 return authorship_provenance(

@@ -272,6 +272,24 @@ class StatusInternalResult:
     # from the owner's privacy policy (issue #982); ``None`` when not composed.
     credential_heuristic: tuple[str, str] | None = None
 
+    @property
+    def created_file_pointers(self) -> tuple[str, ...]:
+        """The path leaves of ``closure_readiness.undeclared_references`` the agent's task created.
+
+        tb4n5 (ADR-035 amendment): a row whose ``name_provenance`` is ``created_in_task`` names
+        only files the check proved were created in the task's workspace after the task started.
+        Its path leaves feed the agent-context provenance decision (``task_created_file``) and,
+        like ``item_authorship``, are service-derived and never part of ``as_json``.
+        """
+
+        rows = self.closure_readiness.undeclared_references or ()
+        return tuple(
+            f"/closure_readiness/undeclared_references/{row_index}/paths/{path_index}"
+            for row_index, row in enumerate(rows)
+            if row.name_provenance == "created_in_task"
+            for path_index in range(len(row.paths))
+        )
+
     def as_json(self) -> dict[str, JsonValue]:
         # Unset optional non-null leaves (today: obligation ``acceptance_criteria``, structural
         # subject-state digests) must be entirely absent from the internal body, never present as
@@ -1596,8 +1614,11 @@ async def _closure_readiness(
                 item_index=str(index),
                 paths=paths,
                 total=str(total),
+                # tb4n5: created in the task's workspace since it started, so the names may
+                # return to the task's own agent (``task_created_file``, never egressed).
+                name_provenance="created_in_task" if created else "creation_unproven",
             )
-            for obligation, index, paths, total in facts.undeclared_references[:16]
+            for obligation, index, paths, total, created in facts.undeclared_references[:16]
             if index is not None
         )
     optional_fields.update(

@@ -122,7 +122,8 @@ received only the declared files, so the deliverable failed. Yoetz now discloses
   `STANDING_TASK_FACT_GAPS` disclosure: never a finding, never a `STOP_GATE_TOKENS` entry, never
   receipt-blocking. Declaring the referenced file as an output or input clears it. It is a
   heuristic: a reference built at run time from pieces, or beyond the read bound, is not seen, and
-  a matching literal that is not actually loaded still raises it.
+  a matching literal that is not actually loaded still raises it (narrowed by the tb4n5
+  amendment below: a literal only written, or an ambiguous basename, no longer does).
 
 ## Amendment (tb4n2 R2, issue #1022): declared_output_emptied
 
@@ -223,3 +224,76 @@ tb4n4 remediation PR), which is the acknowledgement for the storage change below
 
 The R2 amendment's "Standing and non-blocking", "Only a count leaves the adapter" and "no path ...
 is returned, logged or stored" no longer hold; the rest of it does.
+
+## Amendment (tb4n5, the #1044 follow-up): a dependency is a read, and the agent sees what its task created
+
+tb4n5 biped-contact-dynamics D (reward 1): the delivered `submission/solve.py` only *wrote*
+`walk.npz`, `run.npz` and `jump.npz` (`model.export(..., out/'walk.npz')`, whose sink is
+`np.savez_compressed`); the declared outputs `results/*.npz` carry the same names, and the agent's
+validator left 18 copies under `checks/case_*/`. All 18 matched by basename, the now-blocking fact
+stopped closure, and under the shipped privacy default (the run's `local_only` policy, structural
+review, an `agent_context` ceiling without `repository_excerpt`) every name was withheld: the Stop
+gate printed "(path withheld)", and the agent spent about a dozen guidance reads before declaring
+all 18 validation copies as delivered outputs. The match rule had no notion of reading
+versus writing, and the guidance promised a name the agent never saw.
+
+1. **A dependency is a read, by syntax and path.** `find_undeclared_references` now takes the
+   declared values (any role) and classifies every literal that names a candidate by the call
+   holding it, within a 2 KiB window and through at most four enclosing path-building calls
+   (`join`, `Path`, `with_name`, a grouping parenthesis, ...), on a copy of the deliverable whose
+   one-line string literals and comments are blanked: `open` (and `fopen`, `File`, `ZipFile`, ...)
+   by its mode (`r`, `+` with `a`, or none read; `w`, `x`, `a` write); a writer (`save*`,
+   `write*`, `export*`, `dump*`, `to_*`, `store*`, `persist*`, `imwrite`, `tofile`, ...) writes
+   and a `remove`, `unlink` or `rmtree` discards (neither is a dependency);
+   a reader (`load*`, `read*`, `open_*`, `parse*`, `require`, `import`, `imread`, `fromfile`,
+   ...) reads; a method chained on a built path (`Path(...).write_text`) decides for it; in a
+   shell script `>` writes and `<` reads. Anything else (an assignment to a name used later) is
+   unclassified and counts as a read. A candidate is a dependency when at least one naming
+   literal reads it or is unclassified (a read before a write is a read) and, when only its
+   basename names it, no declared item has that basename and the deliverable ties the literal to
+   the candidate's directory: beside the deliverable, at the repository root, or a literal naming
+   one of its directories (root-relative, relative to the deliverable, or the immediate
+   directory's name), the closest tie winning among candidates of one name. Write-only names and
+   ambiguous basenames are suspects: not reported, never a gap, never a Stop item. At most 256
+   literal occurrences per deliverable are classified; the rest count as unclassified.
+2. **Coverage bound (replaces the R2 "a matching literal that is not actually loaded still raises
+   it").** The read is still a bounded syntactic heuristic, not a data-flow analysis. It misses a
+   dependency whose only naming literal sits in a call it classifies as a write but that also
+   reads (a writer wrapper that loads first), a bare basename read through a directory held only
+   in a variable or computed at run time, and anything a path built from pieces hides; it still
+   raises a candidate that an unclassified use names without loading it. Both failures are silence
+   or a disclosed fact about a created file, never a hidden one: the fact stays agent work when it
+   fires, and declaring the file or the directory holding it (a declared directory covers every
+   file beneath it) clears it.
+3. **The agent sees what its task created (owner decision 2026-10-13).** The check records
+   `undeclared_references_created_in_task` on the referencing `DeliverableState` (`check_recorded`
+   1.4.0, unreleased, changed in place) when every file it names was listed as created by the
+   check-time change against the task's own `task_start` base whose untracked listing (and every
+   nested repository's) was complete, and none was untracked at task start
+   (`check_change.created_since_task_start`). Status adds `name_provenance` (`created_in_task |
+   creation_unproven`, status-result 1.4.0 in place) per row, and the service hands the path leaves
+   of a `created_in_task` row to the projection as `task_created_file` provenance (ADR-009,
+   INTERFACES `DisclosureProvenance`): those names reach the task's own agent context without the
+   `repository_excerpt` grant. A `creation_unproven` row keeps the ceiling; the Stop gate then says
+   the names were withheld, why, and how to list the created files with the agent's own shell
+   (`git status --porcelain --untracked-files=all`), then to declare the ones the deliverable reads
+   or their directory, or embed or rebuild them. The "Named, once" rule above is otherwise
+   unchanged: only a `full_local` receipt names a path, export receipts count, the MCP summary,
+   hook diagnostics and gate memory never carry one.
+4. **Never egressed.** The review packet carries a check's history row as bounded structural
+   metadata; it now drops `undeclared_references` from each deliverable state (keeping the count),
+   and the row's digest is of what it carries, so the ledger digest cannot confirm a guessed name.
+   Before this, a review profile whose sections carried history payloads sent the names. No
+   outbound channel or local sink other than the agent-context projection honours
+   `task_created_file`.
+
+Guidance (`workflow.md`, `coverage-and-receipts.md`), the receipt sentence, the gate item and the
+host runbooks now say "reads" and "names the file when your privacy policy allows, or your task
+created it", and the continuations name the directory declaration. Tests:
+`tests/unit/adapters/test_deliverable_references_undeclared_file.py` (biped shape, write-only
+wrappers, reads, read-before-write, same basename in two directories, a runtime rebuild keeping its
+output literals, shell redirections),
+`tests/integration/closure/test_undeclared_dependency_privacy.py` (the exact biped ceiling through
+the real projection, a pre-existing file, no task-start base, an authorized naming ceiling),
+`tests/unit/privacy/test_provenance_resolver.py` and
+`tests/unit/application/test_undeclared_names_never_egress.py`.

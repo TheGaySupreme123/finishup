@@ -218,6 +218,7 @@ from yoetz.observability.logging import (
 from yoetz.ports.change_capture import (
     CheckChangeMetadata,
     CheckWorkspaceSource,
+    TaskChangeBase,
     current_check_workspace_source,
 )
 from yoetz.ports.clock import ClockPort
@@ -2897,9 +2898,20 @@ async def _read_declared_outputs(
     prefix's records (for the lineage the result carries).
     """
 
+    from yoetz.application.check_change import load_task_change_base
+
     records = await _frozen_prefix_records(runtime, request, frozen)
+    task_base = (
+        await load_task_change_base(runtime, request.request_id) if capture is not None else None
+    )
     outputs = await _requested_output_inputs(
-        frozen.case, capture, source, port, request.request_id, deliverable_history(records)
+        frozen.case,
+        capture,
+        source,
+        port,
+        request.request_id,
+        deliverable_history(records),
+        task_base=task_base,
     )
     return outputs.evaluator, outputs.gaps, outputs.absent, outputs.states, outputs.files, records
 
@@ -2958,9 +2970,12 @@ async def _requested_output_inputs(
     port: object | None,
     request_id: str,
     history: tuple[DeliverableSnapshot, ...] = (),
+    *,
+    task_base: TaskChangeBase | None = None,
 ) -> _OutputInputs:
 
     from yoetz.application.check_change import (
+        created_since_task_start,
         requested_output_states,
         undeclared_references,
     )
@@ -3035,7 +3050,12 @@ async def _requested_output_inputs(
         partial(work_integrity_findings, absent_outputs=absent),
         gaps,
         bool(absent),
-        _with_undeclared_references(assessment.states, files, references),
+        _with_undeclared_references(
+            assessment.states,
+            files,
+            references,
+            created=created_since_task_start(capture, task_base),
+        ),
         files,
     )
 
@@ -3044,13 +3064,18 @@ def _with_undeclared_references(
     states: tuple[DeliverableState, ...],
     files: tuple[tuple[ObligationId, int, str], ...],
     references: tuple[tuple[str, str], ...],
+    *,
+    created: Callable[[str], bool] = lambda _path: False,
 ) -> tuple[DeliverableState, ...]:
     """Each referencing deliverable's state, naming the undeclared files it names (#1044).
 
     ``references`` are ``(deliverable, referenced file)`` root-relative pairs from the check-time
     read; ``files`` maps each recorded state to its deliverable's root-relative path. At most
     ``MAX_UNDECLARED_REFERENCES`` nameable paths are recorded per state, sorted; when more were
-    found (or one cannot be named) the state also records how many.
+    found (or one cannot be named) the state also records how many. ``created`` says whether a
+    path was created in the task's workspace after the task started
+    (``check_change.created_since_task_start``); a state whose every reference was is marked
+    ``undeclared_references_created_in_task`` (tb4n5, ADR-035 amendment).
     """
 
     if not references:
@@ -3077,6 +3102,7 @@ def _with_undeclared_references(
                 state,
                 undeclared_references=shown,
                 undeclared_reference_count=len(named) if len(named) > len(shown) else None,
+                undeclared_references_created_in_task=all(created(path) for path in named),
             )
         )
     return tuple(recorded)

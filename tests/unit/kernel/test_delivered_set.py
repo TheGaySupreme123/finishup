@@ -550,9 +550,50 @@ def test_check_adds_undeclared_reference_and_names_it_on_the_deliverable_state(
     assert state.undeclared_references == ("english_ngrams.npz", "english_words.npz")
     assert state.undeclared_reference_count == 3
     assert DeliverableState.from_wire(state.as_wire()) == state
+    # No capture and no task base: Yoetz cannot prove the task created them (tb4n5).
+    assert state.undeclared_references_created_in_task is False
     assert undeclared_reference_rows(recorded) == (
-        (str(_OBLIGATION), 0, ("english_ngrams.npz", "english_words.npz"), 3),
+        (str(_OBLIGATION), 0, ("english_ngrams.npz", "english_words.npz"), 3, False),
     )
+
+
+def test_a_state_is_marked_created_in_task_only_when_every_reference_was() -> None:
+    """tb4n5 (ADR-035 amendment): the names return to the task's own agent only when the check
+    proved every file the deliverable names was created in the task's workspace since it started.
+    """
+
+    from yoetz.application import check
+    from yoetz.kernel.delivered_set import undeclared_reference_rows
+
+    states = (DeliverableState(_OBLIGATION, 0),)
+    files = ((_OBLIGATION, 0, "cracker.py"),)
+    references = (("cracker.py", "a.npz"), ("cracker.py", "b.npz"))
+    enrich = check._with_undeclared_references  # pyright: ignore[reportPrivateUsage]
+
+    (all_created,) = enrich(states, files, references, created=lambda _path: True)
+    assert all_created.undeclared_references_created_in_task is True
+    assert all_created.as_wire()["undeclared_references_created_in_task"] is True
+    assert DeliverableState.from_wire(all_created.as_wire()) == all_created
+    assert undeclared_reference_rows((all_created,))[0][4] is True
+
+    (one_old,) = enrich(states, files, references, created=lambda path: path == "a.npz")
+    assert one_old.undeclared_references_created_in_task is False
+    assert "undeclared_references_created_in_task" not in one_old.as_wire()
+    (default,) = enrich(states, files, references)
+    assert default.undeclared_references_created_in_task is False
+
+    with pytest.raises(ProtocolValueError):  # only beside the references it qualifies
+        DeliverableState(_OBLIGATION, 0, undeclared_references_created_in_task=True)
+    with pytest.raises(ProtocolValueError):  # the wire carries it only when true
+        DeliverableState.from_wire(
+            {
+                "basis": "present",
+                "item_index": 0,
+                "obligation_id": str(_OBLIGATION),
+                "undeclared_references": ["a.npz"],
+                "undeclared_references_created_in_task": False,
+            }
+        )
 
 
 def test_a_recorded_undeclared_reference_is_a_plain_bounded_path() -> None:

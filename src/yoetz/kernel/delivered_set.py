@@ -105,6 +105,7 @@ __all__ = [
     "emptied_declared_items",
     "declared_output_removed",
     "removed_declared_items",
+    "UndeclaredReferenceRow",
     "undeclared_reference_inputs",
     "undeclared_reference_rows",
 ]
@@ -837,18 +838,25 @@ def deliverable_lineage(
     return tuple(output)
 
 
+type UndeclaredReferenceRow = tuple[str, int | None, tuple[str, ...], int, bool]
+
+
 def undeclared_reference_rows(
     states: Iterable[DeliverableState],
-) -> tuple[tuple[str, int | None, tuple[str, ...], int], ...]:
-    """``(obligation id, item index, paths, total)`` of each recorded deliverable that names
-    files the change created and no item declares (tb4n4, #1044), in the check's own order.
+) -> tuple[UndeclaredReferenceRow, ...]:
+    """``(obligation id, item index, paths, total, created in task)`` of each recorded
+    deliverable that names files the change created and no item declares (tb4n4, #1044), in the
+    check's own order.
 
     A file that several items declare shares one keyed path, so its references are listed once,
-    under the first item that declares it. The input of ``undeclared_reference_variants``, the one
-    sentence the receipt and the Stop gate print, and of status ``undeclared_references``.
+    under the first item that declares it. The first four fields are the input of
+    ``undeclared_reference_variants``, the one sentence the receipt and the Stop gate print; all
+    five feed status ``undeclared_references``. ``created in task`` is the recorded
+    ``undeclared_references_created_in_task`` (tb4n5): every named file was created in the task's
+    workspace after the task started.
     """
 
-    rows: list[tuple[str, int | None, tuple[str, ...], int]] = []
+    rows: list[UndeclaredReferenceRow] = []
     seen: set[str] = set()
     for state in states:
         if not state.undeclared_references and state.undeclared_reference_count is None:
@@ -859,7 +867,13 @@ def undeclared_reference_rows(
         seen.add(key)
         total = state.undeclared_reference_count or len(state.undeclared_references)
         rows.append(
-            (str(state.obligation_id), state.item_index, state.undeclared_references, total)
+            (
+                str(state.obligation_id),
+                state.item_index,
+                state.undeclared_references,
+                total,
+                state.undeclared_references_created_in_task,
+            )
         )
     return tuple(rows)
 

@@ -3448,7 +3448,9 @@ def _add_deliverable_states(
     never its path. ``undeclared_references`` (tb4n4, #1044, added in place on the unreleased
     1.4.0) is the one path text: the root-relative files the change created that this source
     deliverable names and no item declares, so the receipt and the Stop gate can name them.
-    Absent on a check that read no declared output file, so those checks keep their bytes.
+    ``undeclared_references_created_in_task`` (tb4n5, ADR-035 amendment, also in place) marks
+    references the change created after the task started, whose names return to the task's own
+    agent. Absent on a check that read no declared output file, so those checks keep their bytes.
     """
 
     count: dict[str, JsonValue] = {"maximum": 9007199254740991, "minimum": 0, "type": "integer"}
@@ -3498,6 +3500,7 @@ def _add_deliverable_states(
                 "type": "array",
                 "uniqueItems": True,
             },
+            "undeclared_references_created_in_task": {"const": True},
             "unreviewable": {"const": True},
         },
         "required": ["basis", "item_index", "obligation_id"],
@@ -5032,6 +5035,12 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
             "properties": {
                 "item_index": {
                     "pattern": "^(?:[0-9]|[1-5][0-9]|6[0-3])$",
+                    "type": "string",
+                },
+                # tb4n5 (ADR-035 amendment): whether the names return to the task's own agent
+                # under task-created provenance. Optional, added in place on 1.4.0.
+                "name_provenance": {
+                    "enum": ["created_in_task", "creation_unproven"],
                     "type": "string",
                 },
                 "obligation_id": {"$ref": "#/$defs/obligation_id"},

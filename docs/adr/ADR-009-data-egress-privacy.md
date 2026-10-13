@@ -145,6 +145,21 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    and surfacing it in `privacy receipts get` needs a design-gated egress-receipt schema change,
    left as a follow-up.
 
+   **Revised 2026-10-13 — names of files the agent's task created (tb4n5, owner decision).** A
+   fifth provenance value, `task_created_file`, is local and leaf-scoped. It applies only to the
+   status leaf `/closure_readiness/undeclared_references/<n>/paths/<m>` (a file a delivered file
+   reads and no item declares, ADR-035) of a row whose recorded check proved every named file was
+   created in the task's own workspace after the task started: the check-time change listed it as
+   created against the task's `task_start` base whose untracked listing (and every nested
+   repository's) was complete, and the base did not list it as untracked at task start. Such a leaf
+   projects to `agent_context` as `repository_excerpt` without the category grant, at the policy's
+   data classes; never-send and `sensitive_confidential` stay absolute, every other leaf and
+   category keeps the ceiling, and no other sink or purpose (outbound review included) honours it.
+   The agent's own shell already lists these names, so returning them discloses nothing the host
+   does not hold, while a file that predated the task (or a task without a provable start
+   snapshot) stays withheld with a typed continuation. The value is recorded in the projection's
+   audit subject like the others. The review packet never carries the names at all (ADR-035).
+
    **Revised 2026-07-24 — default agent-context disclosure of verification output.** Under the
    default LOCAL_ONLY bootstrap policy, `agent_context` may include Yoetz-authored verification
    projection content for the requesting agent's own task: `finding_summary` and

@@ -207,3 +207,131 @@ def test_context_rejects_duplicate_or_unbounded_row_authorship() -> None:
         ProjectionItemAuthorship("/page/items/0", ())
     with pytest.raises(ValueError, match="invalid_privacy_value"):
         SourceAuthorship(_WRITER, _SESSION, 0, PublicationChannel.COOPERATIVE_MCP, False)
+
+
+# --- tb4n5 (owner decision 2026-10-13, ADR-035 amendment): task-created file names ------------
+
+_CREATED = "/closure_readiness/undeclared_references/0/paths/0"
+_UNPROVEN = "/closure_readiness/undeclared_references/1/paths/0"
+
+
+def _created_context(*pointers: str) -> ProjectionProvenanceContext:
+    return ProjectionProvenanceContext(_SESSION, _WRITER, _FRONTIER, (), pointers)
+
+
+def _path_item(item_id: str, pointer: str, category: DataCategory) -> CandidateContextItem:
+    return CandidateContextItem(item_id, category, _scope(), pointer, b'"checks/case_0/walk.npz"')
+
+
+def _projection_candidate(
+    context: ProjectionProvenanceContext,
+    *items: CandidateContextItem,
+    sink: LocalDisclosureSink = LocalDisclosureSink.AGENT_CONTEXT,
+    purpose: str = "client_result_projection",
+) -> CandidateContext:
+    from yoetz.domain.privacy import ProjectionAuditContext
+
+    projection = purpose == "client_result_projection"
+    return CandidateContext(
+        request_id=_REQUEST,
+        channel=None,
+        local_sink=sink,
+        purpose=purpose,
+        scope=_scope(),
+        subject_digest=_DIGEST,
+        provider_binding=None,
+        items=items,
+        provenance_context=context,
+        projection_audit_context=(
+            ProjectionAuditContext(
+                "rpc_20000000-0000-4000-8000-000000000005",
+                "status",
+                "svc_20000000-0000-4000-8000-000000000006",
+                1,
+                None,
+                _DIGEST,
+                b"{}",
+                b"{}",
+            )
+            if projection
+            else None
+        ),
+    )
+
+
+def test_a_task_created_name_resolves_only_at_its_own_leaf_and_category() -> None:
+    resolver = LedgerAuthorshipProvenanceResolver()
+    context = _created_context(_CREATED)
+    created = _path_item("created", _CREATED, DataCategory.REPOSITORY_EXCERPT)
+    unproven = _path_item("unproven", _UNPROVEN, DataCategory.REPOSITORY_EXCERPT)
+    # Another category at the same pointer never borrows the class.
+    wrong_category = _path_item("wrong", _CREATED, DataCategory.EVIDENCE_EXCERPT)
+    candidate = _projection_candidate(context, created, unproven, wrong_category)
+
+    assert resolver.resolve(context, candidate, created) is DisclosureProvenance.TASK_CREATED_FILE
+    assert resolver.resolve(context, candidate, unproven) is None
+    assert resolver.resolve(context, candidate, wrong_category) is None
+    assert resolver.resolve(_created_context(), candidate, created) is None
+
+
+def test_the_created_pointers_admit_only_the_undeclared_reference_path_leaves() -> None:
+    for pointer in (
+        "/page/items/0/description",
+        "/closure_readiness/undeclared_references/0/paths",
+        "/closure_readiness/undeclared_references/0/paths/8",
+        "/closure_readiness/undeclared_references/100/paths/0",
+        "/closure_readiness/undeclared_references/0/total",
+        "/document/gaps/0/detail",
+    ):
+        with pytest.raises(ValueError, match="invalid_privacy_value"):
+            _created_context(pointer)
+    with pytest.raises(ValueError, match="invalid_privacy_value"):
+        _created_context(_CREATED, _CREATED)
+    assert _created_context(_CREATED, _UNPROVEN).created_file_pointers == (_CREATED, _UNPROVEN)
+
+
+def test_a_task_created_name_reaches_only_the_agent_context_projection_under_the_private_ceiling() -> (
+    None
+):
+    """The biped ceiling (no ``repository_excerpt`` grant) shows a task-created name to the agent,
+    keeps an unproven one omitted, and never widens a non-projection or another local sink."""
+
+    enforcer = build_local_privacy_enforcer()
+    context = _created_context(_CREATED)
+    created = _path_item("created", _CREATED, DataCategory.REPOSITORY_EXCERPT)
+    unproven = _path_item("unproven", _UNPROVEN, DataCategory.REPOSITORY_EXCERPT)
+    effective = _effective()
+    assert DataCategory.REPOSITORY_EXCERPT not in effective.policy.agent_context_categories
+
+    classified = enforcer.classify(_projection_candidate(context, created, unproven), effective)
+    by_id = {item.candidate.item_id: item for item in classified.items}
+    assert by_id["created"].provenance is DisclosureProvenance.TASK_CREATED_FILE
+    decision = _decision(classified)
+    assert decision.outcome is PrivacyOutcome.COMPLETED
+    assert decision.approved_item_ids == ("created",)
+    assert DataCategory.REPOSITORY_EXCERPT in decision.blocked_categories
+
+    # Not a projection (another local disclosure purpose): the class widens nothing.
+    other_purpose = enforcer.classify(
+        _projection_candidate(context, created, purpose="client-result-projection"), effective
+    )
+    assert _decision(other_purpose).approved_item_ids == ()
+    # The data-class ceiling still applies: a narrower one keeps the name withheld.
+    narrowed = ClassifiedContext(
+        classified.candidate,
+        tuple(
+            replace(item, data_class=DataClass.SENSITIVE_CONFIDENTIAL) for item in classified.items
+        ),
+    )
+    assert _decision(narrowed).approved_item_ids == ()
+    # A never-send match in the name is still withheld: the scan runs before provenance.
+    secret = CandidateContextItem(
+        "secret",
+        DataCategory.REPOSITORY_EXCERPT,
+        _scope(),
+        _CREATED,
+        b"api_key=sk-proj-abcdefghijklmnopqrstuvwxyz012345",
+    )
+    scanned = enforcer.classify(_projection_candidate(context, secret), effective)
+    assert scanned.items[0].provenance is None
+    assert _decision(scanned).approved_item_ids == ()

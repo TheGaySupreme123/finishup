@@ -5132,12 +5132,22 @@ class StatusUndeclaredReferenceModel(_ClosedModel):
     The declared item that names them, the root-relative files it names (repository-excerpt
     content: a privacy policy may withhold each one) and how many it names in all, from the
     applicable check's recorded deliverable state. The Stop gate and the receipt name them.
+
+    ``name_provenance`` (tb4n5, ADR-035 amendment) says whether the check proved every named file
+    was created in the task's workspace after the task started (``created_in_task``): those names
+    return to the task's own agent under ``task_created_file`` provenance even when the privacy
+    policy does not grant ``repository_excerpt``. ``creation_unproven`` names stay under the
+    ordinary ceiling; when withheld, list the files your change created with your own shell.
     """
 
     obligation_id: ObligationIdWire
     item_index: Annotated[str, Field(pattern=r"^(?:[0-9]|[1-5][0-9]|6[0-3])$")]
     paths: tuple[UndeclaredReferencePathWire | OmittedContentModel, ...] = Field(max_length=8)
     total: CanonicalPositiveUInt64Wire
+    # Optional on the unreleased 1.4.0 wire: absent from an earlier 0.3 build.
+    name_provenance: Literal["created_in_task", "creation_unproven"] | None = None
+
+    optional_non_null_fields = frozenset({"name_provenance"})
 
     @model_validator(mode="after")
     def _validate_undeclared_reference(self) -> StatusUndeclaredReferenceModel:
@@ -7119,6 +7129,8 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "undeclared_references/*/obligation_id",
             "undeclared_references/*/item_index",
             "undeclared_references/*/total",
+            # tb4n5: a closed token saying whether the names return under task-created provenance.
+            "undeclared_references/*/name_provenance",
             *(f"undeclared_references/*/paths/*/{leaf}" for leaf in _OMITTED_CONTENT_LEAVES),
         ),
     )
@@ -7920,10 +7932,10 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1611
+        len(result) != 1612
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
-        # #1047 +2 (follow_up_round)
+        # #1047 +2 (follow_up_round), tb4n5 +1 (undeclared_references name_provenance)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

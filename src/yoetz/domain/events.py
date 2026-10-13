@@ -2955,11 +2955,23 @@ class DeliverableState:
     # were found than are named here (a longer list, or a path that cannot be named).
     undeclared_references: tuple[str, ...] = ()
     undeclared_reference_count: int | None = None
+    # tb4n5 (ADR-035 amendment): every file this state's references name was created in the
+    # task's workspace after the task started (a ``task_start`` change base with a complete
+    # untracked listing proved it did not predate the task), so the names may return to the
+    # task's own agent without the repository-excerpt grant (``task_created_file`` provenance).
+    undeclared_references_created_in_task: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "obligation_id", obligation_id(self.obligation_id))
         object.__setattr__(self, "item_index", _bounded_integer(self.item_index, 0, 63))
         if type(self.unreviewable) is not bool:
+            raise ProtocolValueError("invalid_event_value_type")
+        if type(self.undeclared_references_created_in_task) is not bool or (
+            self.undeclared_references_created_in_task
+            and not self.undeclared_references
+            and self.undeclared_reference_count is None
+        ):
+            # Present only beside the references it qualifies.
             raise ProtocolValueError("invalid_event_value_type")
         object.__setattr__(
             self, "undeclared_references", _undeclared_references(self.undeclared_references)
@@ -3010,6 +3022,8 @@ class DeliverableState:
             wire["unreviewable"] = True
         if self.undeclared_references:
             wire["undeclared_references"] = self.undeclared_references
+        if self.undeclared_references_created_in_task:
+            wire["undeclared_references_created_in_task"] = True
         for name in (
             "undeclared_reference_count",
             "path_key",
@@ -3050,6 +3064,7 @@ class DeliverableState:
                     "unreviewable",
                     "undeclared_references",
                     "undeclared_reference_count",
+                    "undeclared_references_created_in_task",
                 }
             ),
         )
@@ -3074,11 +3089,15 @@ class DeliverableState:
         basis = _field(source, "basis")
         obligation = _field(source, "obligation_id")
         unreviewable = source.get("unreviewable", False)
+        created_in_task = source.get("undeclared_references_created_in_task", False)
         if (
             type(item_index) is not int
             or type(basis) is not str
             or type(obligation) is not str
             or type(unreviewable) is not bool
+            or type(created_in_task) is not bool
+            # The wire carries the flag only when it is true (``const: true``).
+            or ("undeclared_references_created_in_task" in source and not created_in_task)
         ):
             raise ProtocolValueError("invalid_event_value_type")
         prior_event = text("prior_event_id")
@@ -3106,6 +3125,7 @@ class DeliverableState:
                 tuple[str, ...], tuple(cast(list[object] | tuple[object, ...], references))
             ),
             undeclared_reference_count=integer("undeclared_reference_count"),
+            undeclared_references_created_in_task=created_in_task,
         )
 
 

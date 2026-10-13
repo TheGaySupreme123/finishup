@@ -851,7 +851,36 @@ def test_a_withheld_path_reads_withheld_and_an_older_service_still_gets_the_repa
     gate = _gate(older)
     assert gate is not None and gate.items == (_UNDECLARED,)
     assert "Undeclared files" not in gate.text
-    assert "declare it as a delivered output" in gate.text
+    assert "declare it, or the directory holding it, as a delivered output" in gate.text
+
+
+def test_a_withheld_name_carries_the_listing_continuation_and_says_why() -> None:
+    """tb4n5 biped D: 8 of 8 shown names were withheld and the gate said only "(path withheld)",
+    so the agent spent about a dozen guidance reads guessing. A withheld name now says why and how
+    to list the files with the agent's own shell, without widening any privacy setting."""
+
+    withheld = SimpleNamespace(omitted=True, category="repository_excerpt", reason="x")
+    unproven = _gate(_undeclared_readiness(withheld, withheld, total="18"))
+    assert unproven is not None
+    assert f"{_OBL_REF} item 0 names (path withheld), (path withheld) and 16 more." in (
+        unproven.text
+    )
+    assert "Your privacy policy withheld these names (Yoetz could not prove your task" in (
+        unproven.text
+    )
+    assert "`git status --porcelain --untracked-files=all`" in unproven.text
+    assert "or their directory" in unproven.text
+    # A row the task created whose names were still withheld (a narrower data-class ceiling)
+    # does not claim the creation was unproven.
+    created = _undeclared_readiness(withheld, total="1")
+    created.undeclared_references[0].name_provenance = "created_in_task"
+    gate = _gate(created)
+    assert gate is not None
+    assert "Your privacy policy withheld these names: list the files" in gate.text
+    # Named paths need no continuation.
+    named = _gate(_undeclared_readiness("checks/a.npz", total="1"))
+    assert named is not None
+    assert "git status" not in named.text
 
 
 def test_the_acceptance_invitation_waits_beside_an_undeclared_dependency() -> None:

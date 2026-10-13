@@ -69,6 +69,8 @@ __all__ = [
     "capture_check_time_change",
     "check_change_shown_files",
     "check_time_change_selected",
+    "created_since_task_start",
+    "load_task_change_base",
     "record_task_change_base",
     "recover_check_time_change",
 ]
@@ -1050,6 +1052,48 @@ async def undeclared_references(
             request_id=request_id,
         )
         return ()
+
+
+async def load_task_change_base(runtime: TaskRuntime, request_id: str) -> TaskChangeBase | None:
+    """The task's recorded change base, or ``None`` when it has none or it is unreadable."""
+
+    return await _load_task_base(runtime, request_id)
+
+
+def created_since_task_start(
+    capture: CheckChangeMetadata | None, base: TaskChangeBase | None
+) -> Callable[[str], bool]:
+    """Which created files Yoetz can show the task's own agent by name (tb4n5, ADR-035 amendment).
+
+    A path the check-time change lists as created (untracked, or added) was created in this task's
+    workspace after the task started only when the capture diffed from the task's own
+    ``task_start`` base and that base recorded the working tree's untracked files completely
+    (#1045): a file that predated the task is then baseline, never created. The returned predicate
+    also refuses a path the base listed as untracked at task start, and any path inside a nested
+    repository whose task-start listing is missing or incomplete. Without such a base every path
+    is unproven: a ``first_check`` base, an unreadable one, or a capture that fell back to HEAD.
+    """
+
+    if (
+        capture is None
+        or capture.base != "task_start"
+        or base is None
+        or base.origin != "task_start"
+        or not base.untracked_complete
+    ):
+        return lambda _path: False
+    preexisting = {item.path for item in base.untracked}
+    listed: dict[str, bool] = {row.path: row.complete for row in base.nested_untracked}
+    for row in base.nested_untracked:
+        preexisting.update(f"{row.path}/{item.path}" for item in row.files)
+    unproven_roots = tuple(path for path, _commit in base.nested if not listed.get(path, False))
+
+    def created(path: str) -> bool:
+        if path in preexisting:
+            return False
+        return not any(path == root or path.startswith(root + "/") for root in unproven_roots)
+
+    return created
 
 
 def _plain_relative(path: str) -> bool:

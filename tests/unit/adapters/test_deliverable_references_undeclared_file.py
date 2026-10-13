@@ -702,3 +702,56 @@ def test_shell_redirections_and_string_or_comment_parentheses(tmp_path: Path) ->
         "print('(')  # unbalanced ( in a comment\nnp.save('report.txt', data)\n", encoding="utf-8"
     )
     assert _pairs(repository, base, _projection(_item("tool.py"))) == ()
+
+
+def test_created_since_task_start_needs_the_task_start_snapshot(tmp_path: Path) -> None:
+    """tb4n5 (ADR-035 amendment): what Yoetz may show the task's own agent by name.
+
+    A file the change lists as created was created in the task's workspace after the task started
+    only against the task's ``task_start`` base whose untracked listing was complete; a file that
+    was untracked at task start (here staged later, so the change lists it as added) never is, and
+    without the snapshot nothing is.
+    """
+
+    from dataclasses import replace
+
+    from yoetz.application.check_change import created_since_task_start
+
+    repository = tmp_path / "app"
+    repository.mkdir(mode=0o700)
+    _git(repository, "init", "--quiet")
+    (repository / "README.md").write_text("Cracker\n", encoding="utf-8")
+    (repository / "provided.npz").write_bytes(b"provided before the task")
+    _git(repository, "add", "--", "README.md")
+    _git(
+        repository,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "baseline",
+    )
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert base.origin == "task_start" and base.untracked_complete
+    (repository / "model.npz").write_bytes(b"created by the task")
+    _git(repository, "add", "--", "provided.npz")
+    capture = adapter.capture_metadata(os.fspath(repository), base)
+    created_paths = {
+        entry.path for entry in capture.entries if entry.untracked or entry.status.startswith("A")
+    }
+    assert {"model.npz", "provided.npz"} <= created_paths
+
+    created = created_since_task_start(capture, base)
+    assert created("model.npz") is True
+    assert created("provided.npz") is False
+    # No snapshot, an incomplete one, a first-check base or no capture: nothing is provable.
+    assert created_since_task_start(capture, None)("model.npz") is False
+    assert created_since_task_start(None, base)("model.npz") is False
+    incomplete = replace(base, untracked=(), untracked_complete=False)
+    assert created_since_task_start(capture, incomplete)("model.npz") is False
+    first_check = replace(capture, base="first_check")
+    assert created_since_task_start(first_check, base)("model.npz") is False

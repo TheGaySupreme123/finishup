@@ -56,7 +56,11 @@ from yoetz.kernel.closure_class import (
     finding_closures,
     obligation_closures,
 )
-from yoetz.kernel.delivered_set import deliverable_lineage, undeclared_reference_rows
+from yoetz.kernel.delivered_set import (
+    UndeclaredReferenceRow,
+    deliverable_lineage,
+    undeclared_reference_rows,
+)
 from yoetz.kernel.fact_lineage import MAX_FACT_LINEAGE_ITEMS, FactLineage
 from yoetz.kernel.finding_resolution import finding_is_resolved
 from yoetz.kernel.finding_todo import (
@@ -367,8 +371,9 @@ class ClosureReadinessFacts:
     # ADR-045: where each derived task fact came from, so the agent sees why a code fired.
     fact_lineage: tuple[FactLineage, ...] = ()
     # tb4n4 (#1044): the undeclared files the applicable check found delivered files naming,
-    # ``(obligation id, item index, paths, total)`` (``delivered_set.undeclared_reference_rows``).
-    undeclared_references: tuple[tuple[str, int | None, tuple[str, ...], int], ...] = ()
+    # ``(obligation id, item index, paths, total, created in task)``
+    # (``delivered_set.undeclared_reference_rows``).
+    undeclared_references: tuple[UndeclaredReferenceRow, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -843,7 +848,7 @@ def current_undeclared_references(
     state: ProjectionState,
     records: tuple[LedgerRecord, ...],
     applicability: CheckApplicability,
-) -> tuple[tuple[str, int | None, tuple[str, ...], int], ...]:
+) -> tuple[UndeclaredReferenceRow, ...]:
     """The undeclared files the applicable check found delivered files naming (tb4n4, #1044).
 
     Read from the newest check's recorded deliverable states, and only while that check still

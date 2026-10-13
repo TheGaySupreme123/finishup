@@ -3021,6 +3021,8 @@ class Application:
                 cast(str, source["writer_id"]),
                 _frontier_for_projection(source),
                 result.item_authorship if type(result) is StatusInternalResult else (),
+                # tb4n5: status leaves naming files the task created (``task_created_file``).
+                result.created_file_pointers if type(result) is StatusInternalResult else (),
             )
         # One encoding serves both the subject digest and the audit context (issue #916);
         # ``canonical_digest`` is the SHA-256 of exactly these bytes.

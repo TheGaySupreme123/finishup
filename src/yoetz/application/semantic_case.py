@@ -1812,8 +1812,59 @@ def _history_json(
             payload.pop("command", None)
         if item.schema_name in _PLAN_FAMILIES:
             payload = _without_task_statement(payload)
+        if item.schema_name == "check_recorded":
+            reduced = _without_undeclared_reference_names(payload)
+            if reduced is not None:
+                # The names are repository-excerpt content shown only to the task's own agent and
+                # a ``full_local`` receipt (tb4n5, ADR-035 amendment); this structural history row
+                # never carries them, and its digest is of what it does carry, so the recorded
+                # digest cannot be used to confirm a guessed name.
+                payload = reduced
+                body["payload_digest"] = canonical_digest(cast(JsonValue, payload))
+                body["payload_reduced"] = "undeclared_reference_names_withheld"
         body["payload"] = cast(JsonValue, payload)
     return _bounded_json(body)
+
+
+def _without_undeclared_reference_names(
+    payload: Mapping[str, JsonValue],
+) -> dict[str, JsonValue] | None:
+    """A ``check_recorded`` payload without the undeclared-reference paths, or ``None`` if none.
+
+    tb4n4 #1044 recorded the root-relative paths of files a delivered file names on the check's
+    ``deliverable_states``; they are the one path text a check records. The review packet carries
+    the history row as bounded structural metadata, so the names are removed and only their count
+    is kept (``undeclared_reference_count``).
+    """
+
+    # A frozen history payload holds read-only mappings and tuples, not dicts and lists.
+    states = payload.get("deliverable_states")
+    if (
+        not isinstance(states, Sequence)
+        or isinstance(states, (str, bytes))
+        or not any(
+            isinstance(state, Mapping) and "undeclared_references" in state for state in states
+        )
+    ):
+        return None
+    reduced_states: list[JsonValue] = []
+    for state in cast(Sequence[JsonValue], states):
+        if not isinstance(state, Mapping) or "undeclared_references" not in state:
+            reduced_states.append(state)
+            continue
+        fields = cast(Mapping[str, JsonValue], state)
+        names = fields["undeclared_references"]
+        named = (
+            len(cast(Sequence[JsonValue], names))
+            if isinstance(names, Sequence) and not isinstance(names, (str, bytes))
+            else 0
+        )
+        recorded = fields.get("undeclared_reference_count")
+        count = max(named, recorded if type(recorded) is int else 0)
+        reduced = {key: value for key, value in fields.items() if key != "undeclared_references"}
+        reduced["undeclared_reference_count"] = count
+        reduced_states.append(cast(JsonValue, reduced))
+    return {**payload, "deliverable_states": reduced_states}
 
 
 def _omit(

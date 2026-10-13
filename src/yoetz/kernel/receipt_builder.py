@@ -818,7 +818,12 @@ def _check_change_gap_text(
         # tb4n4 (#1044): name the undeclared files from the applicable check's recorded
         # deliverable states, with the same sentence the Stop gate prints.
         check = context.applicable_check
-        rows = undeclared_reference_rows(check.deliverable_states) if check is not None else ()
+        rows = tuple(
+            (obligation, index, paths, total)
+            for obligation, index, paths, total, _created in (
+                undeclared_reference_rows(check.deliverable_states) if check is not None else ()
+            )
+        )
         if not name_paths:
             rows = tuple((obligation, index, (), total) for obligation, index, _, total in rows)
         named = undeclared_reference_variants(rows)

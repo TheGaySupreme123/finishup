@@ -2543,6 +2543,15 @@ class PrivacyCoordinator:
                         DisclosureProvenance.ENGINE_DERIVED_FROM_SELF_AUTHORED,
                     }
                 )
+                # tb4n5 (owner decision 2026-10-13, ADR-035 amendment): the name of a file the
+                # task created in its own workspace returns to that task's agent, locally only and
+                # only as a repository excerpt; the data-class ceiling and never-send still apply.
+                or (
+                    sink is LocalDisclosureSink.AGENT_CONTEXT
+                    and is_projection
+                    and item.provenance is DisclosureProvenance.TASK_CREATED_FILE
+                    and item.candidate.category is DataCategory.REPOSITORY_EXCERPT
+                )
             )
             and item.data_class in ceiling.data_classes
             and not (
