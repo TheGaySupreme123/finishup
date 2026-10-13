@@ -792,7 +792,12 @@ blocked the whole packet with `never_send_detected`. Decisions:
   placeholder `[withheld-by-yoetz:possible-credential]` (`EGRESS_CREDENTIAL_PLACEHOLDER`); the rest
   of the line, item and file is still sent, and the scanner exempts the placeholder like
   `[REDACTED]` (issue #982, owner decision B2, 2026-10-07). The check reports the review-scoped gap
-  `semantic_review_value_redacted`.
+  `semantic_review_value_redacted`. The check-time change and its task inputs (ADR-031), which
+  are redacted when the service reads them rather than at egress, use the same placeholder for a
+  heuristic span and `[REDACTED]` for a concrete credential (tb4n5); the reviewer instruction
+  explains both markers as withheld values, never the agent's code. That capture-time replacement
+  is not an egress replacement: it adds no `semantic_redacted_values` entry and is disclosed as
+  `check_time_change_redacted`.
 - When a low-confidence heuristic still survives into the prepared semantic-review bytes, local
   minimization first re-applies that in-place replacement to the item's packet (JSON-string)
   encoding, and withholds an item only when that cannot make it scan clean. It re-assembles the

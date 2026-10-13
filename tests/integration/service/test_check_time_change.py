@@ -281,7 +281,8 @@ async def test_shell_rewrites_and_commits_reach_the_packet_and_survive_replay(
     _git(repository, "commit", "--quiet", "-am", "keep numeric and string keys apart")
     _python_rewrite(repository, "dependencies.get", "dependencyMap.get")
     (repository / "atomic-selectors.test.ts").write_text(
-        f"const fixtureToken = '{_SECRET}';\nexpect(trackKey(1)).not.toBe(trackKey('1'));\n",
+        f"const fixtureToken = '{_SECRET}';\nexpect(trackKey(1)).not.toBe(trackKey('1'));\n"
+        "const password = config.POSTGRES_PASSWORD;\n",
         encoding="utf-8",
     )
     (repository / "local.env").write_text("IGNORED_CANARY=1\n", encoding="utf-8")
@@ -307,8 +308,12 @@ async def test_shell_rewrites_and_commits_reach_the_packet_and_survive_replay(
     assert "dependencyMap.get" in text  # uncommitted rewrite
     assert "expect(trackKey(1)).not.toBe(trackKey('1'));" in text  # untracked file
     assert "IGNORED_CANARY" not in text and "local.env" not in text
-    # Capture-time redaction ran with the same detector as the egress never-send scan.
-    assert _SECRET not in text and "[REDACTED]" in text
+    # Capture-time redaction ran with the same detector as the egress never-send scan. A concrete
+    # credential shape reads [REDACTED]; a value that only looks like one reads as the
+    # self-describing placeholder, so the reviewer never takes the marker for code (tb4n5).
+    assert _SECRET not in text and "const fixtureToken = '[REDACTED]';" in text
+    assert "config.POSTGRES_PASSWORD" not in text
+    assert "const password = [withheld-by-yoetz:possible-credential];" in text
     assert all(scan_exact_bytes(item.plaintext) == () for item in candidate.items)
     assert CHECK_TIME_CHANGE_REDACTED_GAP in waiting.case_content_gaps
     assert CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP not in waiting.case_content_gaps
@@ -692,7 +697,14 @@ async def test_nested_repository_task_input_and_deliverables_reach_the_recorded_
 
     adapter = memory_adapter(append_command())
     frozen, runtime = await _kea_case(adapter, repository)
-    (nested / "server.py").write_text("DATABASE = 'NESTED_CUTOVER_MARKER'\n", encoding="utf-8")
+    # tb4n5 live-database-cutover: the nested API built its URL from config, and the reviewer
+    # read a bare [REDACTED] there as an undefined name.
+    (nested / "server.py").write_text(
+        "DATABASE = 'NESTED_CUTOVER_MARKER'\n"
+        "ENGINE = URL.create('postgresql+psycopg',username=config.POSTGRES_USER,"
+        "password=config.POSTGRES_PASSWORD,host=config.POSTGRES_HOST)\n",
+        encoding="utf-8",
+    )
 
     obligation = obligation_record(
         ObligationPublishedPayload(
@@ -746,6 +758,12 @@ async def test_nested_repository_task_input_and_deliverables_reach_the_recorded_
     # The nested repository's own diff, under its directory, from its task-start commit.
     assert "Nested repository api/: its own change is shown under that directory" in change
     assert "+DATABASE = 'NESTED_CUTOVER_MARKER'" in change
+    assert (
+        "username=config.POSTGRES_USER,password=[withheld-by-yoetz:possible-credential],"
+        "host=config.POSTGRES_HOST)" in change
+    )
+    assert "[REDACTED]" not in change and "config.POSTGRES_PASSWORD" not in change
+    assert CHECK_TIME_CHANGE_REDACTED_GAP in waiting.case_content_gaps
     # The untracked file that predates the task is baseline, not an addition.
     assert "PREEXISTING_MARKER" not in change and "index.json" not in change
     items = {item.item_id: item for item in candidate.items}
@@ -880,7 +898,9 @@ async def test_a_redacted_task_input_is_disclosed_even_when_the_change_is_clean(
         waiting = await _evaluator(privacy, runtime)(frozen, (), runtime)
 
     candidate = privacy.candidates[0]
-    assert "[REDACTED]" not in _change_text(candidate)  # the change itself needed nothing
+    change_text = _change_text(candidate)
+    # The change itself needed nothing.
+    assert "[REDACTED]" not in change_text and "[withheld-by-yoetz:" not in change_text
     task_input = next(item for item in candidate.items if item.item_id == "task-input-01")
     assert b"RULES_INPUT_MARKER" in task_input.plaintext
     assert _SECRET.encode() not in task_input.plaintext and b"[REDACTED]" in task_input.plaintext

@@ -156,6 +156,33 @@ content-returning read needed its own decision. This is that decision, for exact
    part, and the check reports `semantic_review_context_withheld`, as for any other category the
    recipe selects and the channel withholds. How a never-send match affects the review is owned by
    #920.
+   Amendment (tb4n5 live-database-cutover): the capture-time redaction marks what it replaced by
+   confidence. A concrete credential shape (a known token format, a private-key header, a password
+   inside a URL), or a heuristic span that overlaps one, reads `[REDACTED]`; a value that only
+   looks like a credential (an assignment to a name such as `password` or `*_token`) reads
+   `[withheld-by-yoetz:possible-credential]`, the placeholder egress already uses (ADR-009,
+   issue #982). The same bytes are withheld either way; only the marker text differs, and
+   redaction still runs at capture whatever the owner's possible-credential opt-out says (owner
+   decision, 2026-10-13). Task input files the read carries get the same treatment. The bare
+   `[REDACTED]` had turned `password=config.POSTGRES_PASSWORD` into `password=[REDACTED]`, which a
+   reviewer read as an undefined name and raised as a `code_defect`. The reviewer's standing
+   instruction now names both markers as Yoetz's own substitutions for an unavailable original
+   value or expression, never evidence of a syntax error, an undefined name or missing
+   configuration, and the packet-limit glossary explains `check_time_change_redacted`. No
+   check-side filter reads the reviewer's words for a marker premise: one keyed on wording near
+   the marker also dropped real defects in the surrounding readable code ("beside the redacted
+   password, DB_PORT is undefined"), so it was withdrawn in the tb4n5 fix review. A finding that
+   still rests on a marker is answered by the agent as a Yoetz limit (agent guidance), and the
+   existing hidden-source rule still applies. The
+   shown-file record (item 9) and reviewer-quote proof treat both markers alike: each is a
+   redaction, and a file holding either is never `fully_shown`. A change stored before this
+   amendment holds `[REDACTED]` only, so its shown-file record, view commitments and replay are
+   byte-identical. Known upgrade limitation: a new capture of a file whose look-alike value an
+   older build marked `[REDACTED]` has a different view (the marker's length differs), so an
+   AI-powered finding raised through a partial view of that file before the upgrade is not cleared
+   by that file's new partial view, as for any moved redaction; it clears once the file is shown
+   whole (the look-alike value gone) or through the ordinary finding responses. Only tasks carried
+   across the upgrade are affected.
 6. **A reserved share of the packet, first.** The change is admitted before every other excerpt, up
    to half of the recipe's excerpt count (at least one) and half of its excerpt bytes, rounded up to
    the change's first part. A part is never larger than the recipe's per-excerpt or total excerpt
@@ -179,14 +206,33 @@ content-returning read needed its own decision. This is that decision, for exact
    Inside the change, files are ordered by what the task delivers, not by path (tb4n2 R7, issue
    #1016): files at or under a requested `role: output` item come first (then requested files with
    no role, an `obligation_published` 1.0.0 deliverable), then files whose rendered section is at
-   most 4 KiB, then the rest, each group in path order. The same order decides which untracked
+   most 4 KiB in path order, then the rest by size (smallest first, path order breaking ties), then
+   generated, build or minified output by size. The same order decides which untracked
    files the untracked-file limit reads (sized by a metadata-only stat of up to 4096 paths) and
    which tracked files the object-verification budget covers first. Before a tracked file's diff
    is read (the per-file fallback when the whole diff is too large), "small" means at most 64
-   changed lines by Git's numstat, since its byte size is not yet known. A cut change or a
-   narrowed packet therefore keeps the deliverables and drops scratch first. Declared outputs
-   outrank role-less requested files. The declared paths only order the change; they never widen
-   what is read.
+   changed lines by Git's numstat, and size means that line count, since its byte size is not yet
+   known. A cut change or a narrowed packet therefore keeps the deliverables and drops scratch
+   first. Declared outputs outrank role-less requested files. The declared paths only order the
+   change; they never widen what is read.
+   Amendment (tb4n5 react-lead-form, issue #1045 follow-up): a 145 KB minified `dist/` bundle
+   from `npm run build` sorted path-first ahead of `src/lib/leadStore.ts`, so no packet carried
+   the central implementation. A file that is not a declared deliverable now ranks after every
+   other file when a path component is a known build-output or cache directory (`dist`, `build`,
+   `out`, `target`, `coverage`, `node_modules`, `__pycache__`, `.next`, `.nuxt`, `.output`,
+   `.svelte-kit`, `.vite`, `.turbo`, `.parcel-cache`), when its name is a lockfile
+   (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `uv.lock`
+   and the like) or ends in `.min.js`, `.min.css` or `.map`, or, once its section is rendered,
+   when a `.js`, `.mjs`, `.cjs` or `.css` file's section is at least 8 KiB with lines averaging
+   over 1000 bytes (minified). Only those bundler suffixes are judged by line length: an
+   undeclared data file kept on long lines (hand-maintained JSON, CSV, long Markdown paragraphs)
+   may be a requested output or the work itself, so it keeps its place by size (decision of the
+   tb4n5 fix review; a negative fixture locks it). Names are matched exactly and nothing is
+   opened to decide. Such a file is never left out for being
+   generated: it stays in the change, keeps its header line with the fixed note `generated, build
+   or minified output, placed after the other files`, and is cut only by the bounds that cut any
+   file, disclosed as `check_time_change_truncated`. A declared deliverable under `dist/` keeps
+   its first place.
 7. **Frozen with the job.** The object's pointer, or the fact that it was unavailable, is frozen
    into the job's semantic-case object. A recovered or resumed job reloads exactly that object and
    never re-reads a working tree that has since moved, so the case digest is unchanged. The object
@@ -238,7 +284,14 @@ content-returning read needed its own decision. This is that decision, for exact
    is derived from exactly the parts the bounded envelope carried (the same count that decides which
    files were shown), and records no content, only the keyed digest. Only shown files count toward
    the 128-file bound; past it the record keeps the first 128 in change order and says it is
-   incomplete. Replay folds, onto the finding's projection row, the record of every completed review
+   incomplete. Amendment (tb4n5 fix review): a current-file section an in-check follow-up served
+   (ADR-006, `change-section-NNN`) is a shown file too. The record counts the change bytes the
+   sections whose catalog rows the bounded envelope kept carried, beside the leading run (none
+   when the channel withholds `repository_excerpt`); a file is recorded through the run of its
+   section, from its start, that the two together reached, with the same view commitment a
+   leading-run view of those bytes would have. A file shown other than as one run from its
+   section's start has no truthful view: it is left out and the record says it is incomplete, so
+   a finding raised by that review never tolerates a check-time limit. No wire field changes. Replay folds, onto the finding's projection row, the record of every completed review
    that raised or re-raised an AI-powered finding (R): whole files are united, a file any of them
    saw whole must be seen whole, a file they saw in part through one view keeps that view, and a
    file they saw in part through two different views must be seen whole. At most 64 contributing

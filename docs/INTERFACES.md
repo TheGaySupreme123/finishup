@@ -1501,8 +1501,10 @@ Two further check-path operations describe a review that did reach a provider:
 #1042), `semantic_agent_criteria` (#1043), `semantic_prior_rulings_set_aside`,
 `semantic_rulings_disputed_after_rebuttal`, `semantic_findings_selected`,
 `semantic_findings_suppressed`. A third operation, `semantic_review_follow_up`, is appended once
-per in-check follow-up round (#1047) with `semantic_follow_up_round`, `semantic_follow_up_items` and
-`semantic_follow_up_refs_added`. Every one of these is a closed field of both the stderr sink and
+per in-check follow-up round (#1047) with `semantic_follow_up_round`, `semantic_follow_up_items`,
+`semantic_follow_up_refs_added` (sources the round's packet showed whole for the first time) and
+`semantic_follow_up_parts_added` (excerpt parts it carried that no earlier packet of the check
+carried, tb4n5). Every one of these is a closed field of both the stderr sink and
 the durable diagnostic ring: the counters are integers and `semantic_conclusion` is a closed token
 (`observability/logging._FIELD_ORDER`, `observability/privacy._INTEGER_FIELDS` /
 `_TOKEN_FIELDS`, `observability/diagnostics._FIELD_ORDER`); a name either sink does not know is
@@ -8454,7 +8456,24 @@ exact sent packet's excerpts held, read from its provider-bound manifest, a capt
 `evd_` parts included, which its linked references keep ahead of linking events and claims within
 their 16-ref bound; `None` when unknown) lets the check tell what was shown and what a round
 added; refs a sent packet withheld under a privacy rule join `ReviewFollowUp.added_refs`, a
-withheld captured group's parts with its lead (`withheld_excerpt_content_refs`). The evaluator seam takes the
+withheld captured group's parts with its lead (`withheld_excerpt_content_refs`). Amendment (tb4n5,
+ADR-006): `case_excerpt_refs` names only sources a sent packet carried whole, and the in-process
+`case_excerpt_parts` (`sent_excerpt_parts`) names each part it carried as a byte interval of its
+source (`missing_for_assessment.excerpt_span_key`, from `SemanticCase.excerpt_parts`, local and
+never digest material); `ReviewFollowUp.shown_parts` / `added_parts` carry them across rounds, a
+round is sent only when `semantic_case.follow_up_new_parts` finds a requested part no sent packet
+carried, and a `current_diff_for_path` request naming a captured edit is also answered with the
+current `change-section-NNN` section of each path it changed, cut from the frozen check-time change
+(`kernel.test_edit_visibility.check_change_sections`). Span keys use the source's own length, and a
+head-and-tail clip contributes two intervals. A follow-up case marks the excerpts that supply the
+request (`SemanticCase.follow_up_supplied_item_ids`, in its digest); the packet row carries
+`follow_up_supplied: true` and the provider-bound `missing_inputs` say `supplied` only through such
+a row admission kept. The dispatch gate counts only rows the bounded envelope's catalog keeps
+(`bounded_catalog_item_ids`). The planner's `section_parts` (`current_section_parts`, carried as the
+evaluation's in-process `case_current_section_parts`) asks for a current section only while that
+edit's paths have unsent bytes. Served sections join the ADR-031 shown-file record
+(`check_time_change_sections_carried`, `check_time_change_shown_record`); a file not shown as one run
+from its section's start makes the record incomplete. The evaluator seam takes the
 optional keyword `follow_up` (returning `None` when nothing was dispatched); the facade forwards it
 only to an evaluator that names it.
 

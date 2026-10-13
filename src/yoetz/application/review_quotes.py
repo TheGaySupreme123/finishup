@@ -14,8 +14,10 @@ The tolerant match below closes those gaps without loosening what a quote proves
   changed, and no character may be skipped or elided.
 * A row whose content is a JSON document is also searched through its decoded string values, which
   is the text the reviewer read inside the encoding.
-* A redaction placeholder in the quote matches only Yoetz's own ``[REDACTED]`` marker at the same
-  position in the sent text. A quote that is nothing but a placeholder proves nothing.
+* A redaction placeholder in the quote matches only one of Yoetz's own markers at the same
+  position in the sent text: ``[REDACTED]`` or the possible-credential placeholder
+  ``[withheld-by-yoetz:possible-credential]`` (tb4n5: the check-time change carries both). A quote
+  that is nothing but a placeholder proves nothing.
 
 The admitted snippet is the exact span the quote matched, never the reviewer's spelling of it:
 verbatim sent text, or, for a JSON row, verbatim text of one of its decoded strings (the text the
@@ -30,16 +32,24 @@ import unicodedata
 from collections.abc import Iterable, Iterator
 from typing import Final, cast
 
+from yoetz.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
 from yoetz.protocol.canonical import strict_json_parse
 from yoetz.protocol.models import MAX_REVIEW_TEXT_BYTES
 
-__all__ = ["REDACTION_MARKER", "prove_quote"]
+__all__ = ["CREDENTIAL_PLACEHOLDER", "REDACTION_MARKER", "prove_quote"]
 
 REDACTION_MARKER: Final = "[REDACTED]"
+CREDENTIAL_PLACEHOLDER: Final = EGRESS_CREDENTIAL_PLACEHOLDER.decode("ascii")
 # Placeholder spellings a reviewer uses for a withheld span. Only these are folded to Yoetz's
-# marker; each still has to line up with a real marker in the sent text.
+# markers; each still has to line up with a real marker in the sent text.
 _PLACEHOLDER: Final = re.compile(
-    r"\[\s*redacted[^\]\n]{0,32}\]|<\s*redacted\s*>|\(\s*redacted\s*\)", re.IGNORECASE
+    r"\[\s*redacted[^\]\n]{0,32}\]|<\s*redacted\s*>|\(\s*redacted\s*\)"
+    r"|\[\s*withheld[^\]\n]{0,48}\]",
+    re.IGNORECASE,
+)
+# Either of Yoetz's own markers, at the placeholder's position in the sent text.
+_MARKER_PATTERN: Final = (
+    "(?:" + re.escape(REDACTION_MARKER) + "|" + re.escape(CREDENTIAL_PLACEHOLDER) + ")"
 )
 _FOLD: Final = {
     "‘": "'",
@@ -177,7 +187,7 @@ def _pattern(quote: str) -> re.Pattern[str] | None:
         if position < len(texts) - 1:
             if text or position > 0:
                 pieces.append(" ?")  # between this text (or the previous marker) and the marker
-            pieces.append(re.escape(REDACTION_MARKER))
+            pieces.append(_MARKER_PATTERN)
     return re.compile("".join(pieces))
 
 

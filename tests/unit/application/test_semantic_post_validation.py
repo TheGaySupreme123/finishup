@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import replace
+from typing import Literal
 
 import pytest
 
@@ -2155,3 +2156,66 @@ def test_a_historical_obligation_publication_event_is_not_new_material() -> None
     assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
         (str(fnd(1)), "disputed_after_rebuttal")
     ]
+
+
+_CUTOVER_LINE = (
+    "+    return URL.create('postgresql+psycopg',password=[REDACTED],"
+    "host=config.POSTGRES_HOST,port=DB_PORT)"
+)
+
+
+def _defect(summary: str, discrepancy: str, snippet: str) -> ReviewerChallenge:
+    return ReviewerChallenge(
+        FindingKind.CODE_DEFECT,
+        summary,
+        (str(clm(1)),),
+        discrepancy,
+        "The connection may fail at startup.",
+        "Main agent: repair the connection setup.",
+        "act",
+        "Only the shown diff was read.",
+        snippet,
+    )
+
+
+@pytest.mark.parametrize(
+    "discrepancy",
+    [
+        "DB_PORT is undefined and raises NameError at startup",
+        # Round-2 review of tb4n5: wording about the redaction beside a real defect in the
+        # surrounding readable code must never decide whether that defect survives.
+        "Beside the redacted password, DB_PORT is undefined and raises NameError at startup",
+        "Redacted password aside, DB_PORT is undefined and raises NameError at startup",
+        "The password is redacted; DB_PORT is undefined and raises NameError at startup",
+        "Not the [withheld-by-yoetz:possible-credential] value: DB_PORT is not defined anywhere",
+    ],
+)
+@pytest.mark.parametrize("phase", ["final", "routine"])
+def test_a_defect_beside_a_redaction_marker_stays_reviewable(
+    discrepancy: str, phase: Literal["final", "routine"]
+) -> None:
+    """tb4n5: no check-side filter reads the reviewer's words for a redaction-marker premise; a
+    concern about readable code on a line that holds a marker keeps its normal frame (a finding
+    in the final review, an advisory note in a routine one) whatever words surround it. The
+    reviewer instruction and the agent guidance carry the marker rule instead."""
+
+    case = make_case(extra_refs=(clm(1),))
+    sent = f"diff --git a/api/db.py b/api/db.py\n{_CUTOVER_LINE}\n"
+    challenge = _defect("Undefined database port", discrepancy, _CUTOVER_LINE)
+
+    review = validate_semantic_judgment(
+        case,
+        (),
+        SemanticJudgment("challenges_returned", (challenge,)),
+        _provenance(),
+        expected_frontier=case.frontier,
+        citable_refs=frozenset({str(clm(1))}),
+        provider_input_text_by_ref={str(clm(1)): (sent,)},
+        review_phase=phase,
+    )
+
+    assert review.rejected_by_reason == ()
+    if phase == "final":
+        assert [candidate.summary for candidate in review.candidates] == ["Undefined database port"]
+    else:
+        assert review.candidates == () and review.advisory_notes == 1
