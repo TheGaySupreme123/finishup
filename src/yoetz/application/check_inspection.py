@@ -54,7 +54,12 @@ from yoetz.kernel.command_attempts import (
     command_attempts,
     value_in_attempted,
 )
-from yoetz.kernel.evidence_alignment import alignment_of, declared_items, evidence_sources
+from yoetz.kernel.evidence_alignment import (
+    alignment_of,
+    declared_items,
+    evidence_sources,
+    results_by_evidence,
+)
 from yoetz.kernel.later_material import (
     LaterMaterialClass,
     classify_later_material,
@@ -369,6 +374,7 @@ def inspection_alignment(
 
     observed_events = observed_event_ids_from_records(records)
     records_by_event = {record.event_id: record for record in records}
+    evidence_actions = results_by_evidence(projection)
     rows: list[dict[str, JsonValue]] = []
     obligations = sorted(effective_obligations(projection), key=lambda value: str(value).encode())
     for obligation in obligations:
@@ -376,7 +382,9 @@ def inspection_alignment(
         if payload is None or not payload.resolution_evidence_refs:
             continue
         declared = declared_items(payload)
-        cited = evidence_sources(projection, records_by_event, observed_events, payload)
+        cited = evidence_sources(
+            projection, records_by_event, observed_events, payload, evidence_actions
+        )
         sources: list[JsonValue] = []
         for item in cited:
             commitment: str | None = None

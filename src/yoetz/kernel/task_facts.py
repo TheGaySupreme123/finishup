@@ -281,6 +281,9 @@ _ACTING_RUNNERS: Final = _VERIFICATION_RUNNERS
 
 _KEY_LOCK: Final = threading.Lock()
 _COMMAND_IDENTITY_KEY: list[bytes | None] = [None]
+# Bumped on every registration, so a memo of keyed command facts (tb4n5: the acceptance-risk and
+# command-mismatch per-read memos) never outlives the key its rows were derived with.
+_COMMAND_IDENTITY_KEY_GENERATION: list[int] = [0]
 
 
 def register_command_identity_key(key_material: bytes | None) -> None:
@@ -297,10 +300,17 @@ def register_command_identity_key(key_material: bytes | None) -> None:
         raise ValueError("command_identity_key_invalid")
     with _KEY_LOCK:
         _COMMAND_IDENTITY_KEY[0] = key_material
+        _COMMAND_IDENTITY_KEY_GENERATION[0] += 1
 
 
 def command_identity_key_registered() -> bool:
     return _COMMAND_IDENTITY_KEY[0] is not None
+
+
+def command_identity_key_generation() -> int:
+    """How many times the installation key was (re)registered in this process."""
+
+    return _COMMAND_IDENTITY_KEY_GENERATION[0]
 
 
 _PATH_IDENTITY_DOMAIN: Final = b"yoetz/deliverable-path/v1\x00"

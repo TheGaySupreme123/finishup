@@ -90,12 +90,14 @@ Lifecycle records are not material: `work_closed` (and the other work-state and 
 
 ## Repair then finish
 
-For a material repair, use one bounded status → repair → check → read → receipt sequence:
+For a material repair, use one bounded repair → check → read → receipt sequence:
 
-1. Read current `status` and retain its frontier. Before authoring replacement evidence or a
-   completion claim, cite the evidence IDs you published and find native captures with a filtered
-   `view=evidence` read at that frontier. Keep the cursor-bound filter and original `limit`; reuse
-   only permitted native IDs a structural link ties to the claim.
+1. Keep the frontier you hold (the `result_frontier` of your last accepted write) for the next
+   write; read `status` for one only when you hold none or after `frontier_changed`. Before
+   authoring replacement evidence or a completion claim, cite the evidence IDs you published, and
+   find native captures with a filtered `view=evidence` read only when you need them. Keep the
+   cursor-bound filter and original `limit`; reuse only permitted native IDs a structural link ties
+   to the claim.
 2. Publish the real repair results, corrected claim/evidence, and any required plan revision. Do not
    fabricate success or infer scope from the user's prompt. A feedback obligation is complete only
    when it is included in an effective plan revision or exact next-version restatement.

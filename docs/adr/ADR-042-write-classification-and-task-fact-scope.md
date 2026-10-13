@@ -195,3 +195,13 @@ run event, and the three ingredients of the PL6-3 link (`action_kind` command, `
 holding the exact value, `causal_parents` naming the run), or citing the result of an observed run
 of exactly that command; never the command text. Verification:
 `tests/unit/kernel/test_tb4n5_command_mismatch_scope.py` replays the react S shape.
+
+Check follow-up (2026-10-13, Codex check D1/D2): the scope fails closed on every unreadable link.
+A claim or obligation subject that is missing or redacted, the action an event subject records
+when that action is unreadable, or an event the projection cannot place keeps the mismatch;
+only a subject whose every link was read and found unrelated drops it. The same unreadable-subject
+rule now also keeps an obligation-scoped task fact (decision 6), which previously treated a
+redacted claim as naming nothing. A finding on the linked observed run's result event (not only
+its action event) bears on the mismatch: a result subject resolves through its recorded action.
+`command_mismatches` is memoized for the last (projection, prefix, command-identity key
+generation), so a key change in the process recomputes it.

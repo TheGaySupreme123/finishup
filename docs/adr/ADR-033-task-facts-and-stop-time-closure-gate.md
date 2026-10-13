@@ -908,3 +908,14 @@ the flagged set, a clean-only ledger announces none); `tests/unit/cli/test_closu
 (realistic tb4n5 summaries, attestation parsing, partial and stale attestations, a `:not_met`
 answer, the tb4n2 false-completion message, an incomplete list, an older service, absent host
 message per host, no second status read).
+
+Check follow-up (2026-10-13, Codex check D3): `acceptance_risk` runs on every status read, inside
+the Stop gate's 4,000 ms status deadline. The first version resolved every cited evidence id
+against the whole result inventory per obligation (200 resolved obligations, eight evidence refs
+each, 20,003 results: about 4.5 s, 9.1 s on a loaded host). The inventories are now indexed once
+per read (`evidence_alignment.results_by_evidence`, one pass over actions for attempted items, the
+command-attempt fallback only for an obligation that requests a command), and an identical call
+(same projection, prefix, resolved set and command-identity key generation) is answered from a
+one-entry memo; the same shape now takes about 0.02 s. No risk decision changed.
+`tests/unit/kernel/test_tb4n5_acceptance_risk_cost.py` holds it under one second and counts one
+index build per read.

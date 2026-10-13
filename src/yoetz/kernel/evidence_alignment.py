@@ -40,6 +40,7 @@ __all__ = [
     "alignment_of",
     "declared_items",
     "evidence_sources",
+    "results_by_evidence",
     "source_actions",
 ]
 
@@ -104,12 +105,34 @@ def _named_indexes(
     return named
 
 
+def results_by_evidence(projection: ProjectionState) -> Mapping[str, tuple[ActionId, ...]]:
+    """``evidence id -> the actions of the results citing it``, in result-id order.
+
+    Built once per read: resolving every cited evidence id against the whole result inventory
+    made a status read quadratic in long tasks (tb4n5 check D3).
+    """
+
+    index: dict[str, list[ActionId]] = {}
+    for result_id in sorted(projection.results, key=lambda value: str(value).encode()):
+        result = projection.results[result_id]
+        if result.payload is None:
+            continue
+        for ref in result.payload.evidence_refs:
+            index.setdefault(str(ref), []).append(result.payload.action_id)
+    return {key: tuple(value) for key, value in index.items()}
+
+
 def source_actions(
     projection: ProjectionState,
     records_by_event: Mapping[EventId, LedgerRecord],
     ref: str,
+    evidence_actions: Mapping[str, tuple[ActionId, ...]] | None = None,
 ) -> tuple[tuple[ActionRecordedPayload, EventId], ...]:
-    """The actions a cited result or evidence item came from, by recorded link."""
+    """The actions a cited result or evidence item came from, by recorded link.
+
+    ``evidence_actions`` is ``results_by_evidence(projection)`` when the caller resolves many
+    references against one projection; without it the inventory is scanned for this one.
+    """
 
     actions: list[tuple[ActionRecordedPayload, EventId]] = []
 
@@ -125,10 +148,10 @@ def source_actions(
         if result is not None and result.payload is not None:
             add(result.payload.action_id)
         return tuple(actions)
-    for result_id in sorted(projection.results, key=lambda value: str(value).encode()):
-        result = projection.results[result_id]
-        if result.payload is not None and ref in result.payload.evidence_refs:
-            add(result.payload.action_id)
+    if evidence_actions is None:
+        evidence_actions = results_by_evidence(projection)
+    for action_id in evidence_actions.get(ref, ()):
+        add(action_id)
     evidence = projection.evidence.get(EvidenceId(ref))
     if evidence is not None:
         source = records_by_event.get(evidence.source_event_id)
@@ -148,13 +171,16 @@ def evidence_sources(
     records_by_event: Mapping[EventId, LedgerRecord],
     observed_events: frozenset[EventId],
     payload: ObligationPublishedPayload,
+    evidence_actions: Mapping[str, tuple[ActionId, ...]] | None = None,
 ) -> tuple[EvidenceSource, ...]:
     """Each cited resolution reference (at most 64), its origin and the declared items it names."""
 
     declared = declared_items(payload)
+    if evidence_actions is None:
+        evidence_actions = results_by_evidence(projection)
     sources: list[EvidenceSource] = []
     for ref in tuple(payload.resolution_evidence_refs)[:MAX_ALIGNMENT_ROWS]:
-        actions = source_actions(projection, records_by_event, str(ref))
+        actions = source_actions(projection, records_by_event, str(ref), evidence_actions)
         named: set[int] = set()
         origin: SourceOrigin = "unattributed"
         for action, source_event in actions:

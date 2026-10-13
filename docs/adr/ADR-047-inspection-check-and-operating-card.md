@@ -244,3 +244,10 @@ read, and keeps a cooperative write in between a conflict; `tests/unit/mcp/test_
 holds the start and publish texts; `tests/unit/mcp/test_guidance_family_inventory.py`,
 `tests/unit/mcp/test_tb4n4_call_traps.py` and `tests/unit/mcp/test_tb4n5_digest_subject_hint.py`
 hold the counts, aliases and subject hint (the five recorded tb4n5 subject shapes).
+
+Check follow-up (2026-10-13, Codex check D4/D5): the two "Repair then finish" recipes
+(`publication-policy.md`, `coverage-and-receipts.md`) began with "Read current `status` and retain
+its frontier"; they now keep the held frontier and read `status` (or a filtered evidence view) only
+when IDs are needed, no frontier is held, or `frontier_changed` occurred. The focused review topic
+now answers each open AI-powered finding only; a `verified_resolved` or final finding takes no
+response. The consistency scan covers both spellings and the review topic.

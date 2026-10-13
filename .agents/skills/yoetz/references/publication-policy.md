@@ -207,9 +207,11 @@ their existing contradiction and decision-history meanings.
 Use this bounded sequence for a material repair or closure. It applies to the six existing
 operations and does not add a composer or a new protocol field:
 
-1. Read current `status` and retain its returned frontier. Before replacing evidence or a claim,
-   cite the evidence IDs you published and find native captures with a filtered
-   `status view=evidence` read, preserving its filter and original `limit` with every cursor.
+1. Keep the frontier you hold (the `result_frontier` of your last accepted write) for the next
+   write; read `status` for one only when you hold none or after `frontier_changed`. Before
+   replacing evidence or a claim, cite the evidence IDs you published, and find native captures
+   with a filtered `status view=evidence` read only when you need them, preserving its filter and
+   original `limit` with every cursor.
    Reuse only native IDs a structural link ties to the claim; a missing MCP capture call, one
    digest-only item, or one clipped item does not establish that all native evidence is
    unavailable.

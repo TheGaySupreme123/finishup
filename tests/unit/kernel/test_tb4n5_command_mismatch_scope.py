@@ -23,11 +23,13 @@ from dataclasses import replace
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from builders.policy_cases import finding_record, fnd
+from builders.policy_cases import claim_record, clm, finding_record, fnd
 from yoetz.application.respond import self_verification_refusal_message
 from yoetz.domain.events import (
     ActionKind,
     ActionRecordedPayload,
+    ClaimKind,
+    ClaimRecordedPayloadV1_1,
     EventSchema,
     ObligationPublishedPayload,
     ObligationStatus,
@@ -45,13 +47,14 @@ from yoetz.domain.findings import (
 from yoetz.domain.values import EventId, Frontier, ObligationId, ResultId, action_id, obligation_id
 from yoetz.kernel import self_verification
 from yoetz.kernel.finding_resolution import ResolutionAttempt
-from yoetz.kernel.projections import ProjectionState
+from yoetz.kernel.projections import ClaimProjectionRecord, ProjectionState
 from yoetz.kernel.reducers import replay
 from yoetz.kernel.task_fact_scope import (
     command_mismatch_bears_on_finding,
     command_mismatches,
     command_mismatches_for_finding,
     scoped_resolution_reasons,
+    task_fact_bears_on_finding,
 )
 from yoetz.kernel.task_facts import register_command_identity_key
 from yoetz.protocol.coverage import (
@@ -271,3 +274,131 @@ def test_react_s_is_self_verifiable_and_formal_s_is_refused_naming_the_item(
     # The command text is the agent's and is never named.
     assert "npm" not in message
     assert len(message.encode("utf-8")) <= 4096
+
+
+# --- tb4n5 check D1/D2: an unknown relation keeps the mismatch (fail closed) -----------------
+
+_REASONS = ("command_relation_independence_unproven", _MISMATCH, "coverage:truncated_payload")
+
+
+def _refused(state: ProjectionState, records: object, monkeypatch: pytest.MonkeyPatch) -> bool:
+    monkeypatch.setattr(
+        self_verification,
+        "finding_resolution_attempt",
+        lambda *_args: _attempt(_REASONS),  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType]
+    )
+    return (
+        self_verification.self_verification_refusal(state, fnd(1), records)  # type: ignore[arg-type]
+        == self_verification.FINDING_NOT_PROOF_LIMITED
+    )
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "obl_00000000-0000-4000-8000-00000000ffff",  # an obligation the ledger does not hold
+        str(clm(77)),  # a claim the ledger does not hold
+        "evt_00000000-0000-4000-8000-00000000ffff",  # an event the projection cannot place
+    ],
+)
+def test_a_missing_subject_keeps_the_mismatch(
+    subject: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger, _events = _react_s()
+    state = _with_finding(replay(ledger.prefix), FindingKind.CODE_DEFECT, subject)
+    rows = command_mismatches(state, ledger.prefix)
+    assert command_mismatch_bears_on_finding(state, fnd(1), rows)
+    assert command_mismatches_for_finding(state, fnd(1), rows) == rows
+    assert _refused(state, ledger.prefix, monkeypatch)
+
+
+def test_a_redacted_claim_that_named_the_obligation_keeps_the_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger, _events = _react_s()
+    state = replay(ledger.prefix)
+    claim = ClaimRecordedPayloadV1_1(
+        claim_id=clm(1),
+        claim_kind=ClaimKind.COMPLETION,
+        statement="The suite and build pass.",
+        supporting_refs=(),
+        obligation_refs=(_COMMANDS,),
+        limitation_refs=(),
+        supersedes_claim_refs=(),
+    )
+    readable = replace(state, claims={clm(1): claim_record(claim, state.frontier)})
+    readable = _with_finding(readable, FindingKind.CODE_DEFECT, str(clm(1)))
+    rows = command_mismatches(readable, ledger.prefix)
+    assert command_mismatch_bears_on_finding(readable, fnd(1), rows)
+    original = readable.claims[clm(1)]
+    redacted = ClaimProjectionRecord(
+        payload=None,
+        payload_digest=original.payload_digest,
+        redacted=True,
+        source_event_id=original.source_event_id,
+        source_frontier=original.source_frontier,
+    )
+    hidden = replace(readable, claims={clm(1): redacted})
+    assert command_mismatch_bears_on_finding(hidden, fnd(1), rows)
+    assert _refused(hidden, ledger.prefix, monkeypatch)
+
+
+def _causal_link() -> tuple[ObservedLedger, dict[str, EventId]]:
+    """A review action asserting the command items with the mismatching run as causal parent."""
+
+    ledger, events = _react_s()
+    ledger.append(
+        _ACTION,
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000b09"),
+            ActionKind.REVIEW,
+            "Linked the submit run",
+            attempted_items=("npm test", "npm run build"),
+        ),
+        observed=False,
+        causal_parents=(events["observed_run"],),
+    )
+    ledger.append(_OBLIGATION, _commands(ObligationStatus.OPEN), observed=False)  # type: ignore[arg-type]
+    return ledger, events
+
+
+def test_a_finding_on_the_linked_runs_result_event_stays_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger, events = _causal_link()
+    state = replay(ledger.prefix)
+    ids = [record.event_id for record in ledger.records]
+    # The observation path appends the run's result right after its action.
+    result_event = ids[ids.index(events["observed_run"]) + 1]
+    assert ledger.records[ids.index(result_event)].schema.name == "result_recorded"
+    rows = command_mismatches(state, ledger.prefix)
+    assert rows, "the causal link still mismatches the requested items"
+    for subject in (str(events["observed_run"]), str(result_event)):
+        finding_state = _with_finding(state, FindingKind.CODE_DEFECT, subject)
+        assert command_mismatch_bears_on_finding(finding_state, fnd(1), rows), subject
+        assert _refused(finding_state, ledger.prefix, monkeypatch), subject
+
+
+def test_an_obligation_scoped_task_fact_also_fails_closed_on_a_redacted_claim() -> None:
+    """The same unreadable-subject rule guards the task-fact scope (ADR-042 decision 6)."""
+
+    ledger, _events = _react_s()
+    state = replay(ledger.prefix)
+    redacted = ClaimProjectionRecord(
+        payload=None,
+        payload_digest="sha256:" + "a" * 64,
+        redacted=True,
+        source_event_id=state.obligations[_FORM].source_event_id,
+        source_frontier=state.frontier,
+    )
+    hidden = _with_finding(
+        replace(state, claims={clm(1): redacted}), FindingKind.CODE_DEFECT, str(clm(1))
+    )
+    markers = (("planned_verification_stale", _COMMANDS),)
+    assert task_fact_bears_on_finding(
+        "planned_verification_stale", state=hidden, finding_id=fnd(1), markers=markers
+    )
+    readable_other = _with_finding(state, FindingKind.CODE_DEFECT, str(_FORM))
+    assert not task_fact_bears_on_finding(
+        "planned_verification_stale", state=readable_other, finding_id=fnd(1), markers=markers
+    )

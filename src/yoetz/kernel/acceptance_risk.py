@@ -27,7 +27,8 @@ reason token.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Final
 
 from yoetz.domain.events import (
@@ -40,16 +41,21 @@ from yoetz.domain.events import (
     RequestedItemRole,
     is_observation_authored,
 )
-from yoetz.domain.values import EventId, EvidenceId, ObligationId, ResultId
-from yoetz.kernel.command_attempts import (
-    attempted_items_for_obligation,
-    command_attempts,
-    value_in_attempted,
+from yoetz.domain.values import ActionId, EventId, EvidenceId, ObligationId, ResultId
+from yoetz.kernel.command_attempts import command_attempts, value_in_attempted
+from yoetz.kernel.evidence_alignment import (
+    alignment_of,
+    declared_items,
+    evidence_sources,
+    results_by_evidence,
 )
-from yoetz.kernel.evidence_alignment import alignment_of, declared_items, evidence_sources
 from yoetz.kernel.observed_failures import observed_event_ids_from_records
 from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.task_facts import cooperative_event_ids_from_records, observed_planned_commands
+from yoetz.kernel.task_facts import (
+    command_identity_key_generation,
+    cooperative_event_ids_from_records,
+    observed_planned_commands,
+)
 
 __all__ = [
     "ACCEPTANCE_RISK_REASONS",
@@ -94,7 +100,7 @@ def _item_attempted(
 
 def _corroborated(
     projection: ProjectionState,
-    records_by_event: dict[EventId, LedgerRecord],
+    records_by_event: Mapping[EventId, LedgerRecord],
     observed_events: frozenset[EventId],
     ref: str,
     source_events: Iterable[EventId],
@@ -117,25 +123,87 @@ def _corroborated(
     return binding is not None and binding.provenance in _CORROBORATING_PROVENANCE
 
 
+@dataclass(frozen=True, slots=True)
+class _ReadIndex:
+    """What every resolved obligation's classification reads, built once per read (check D3).
+
+    A status read classifies every resolved obligation; per-obligation scans of the action,
+    result and record inventories made that quadratic in a long task.
+    """
+
+    records_by_event: Mapping[EventId, LedgerRecord]
+    observed_events: frozenset[EventId]
+    matched_commands: frozenset[str]
+    evidence_actions: Mapping[str, tuple[ActionId, ...]]
+    global_attempted: frozenset[str]
+    attempted_by_obligation: Mapping[ObligationId, frozenset[str]]
+
+
+def _read_index(projection: ProjectionState, records: tuple[LedgerRecord, ...]) -> _ReadIndex:
+    observed_events = observed_event_ids_from_records(records)
+    command_values = {
+        item.value
+        for record in projection.obligations.values()
+        if record.payload is not None
+        for item in record.payload.requested_items
+        if item.item_kind is RequestedItemKind.COMMAND
+    }
+    matched_commands: frozenset[str] = (
+        observed_planned_commands(
+            projection,
+            observed_events,
+            cooperative_event_ids_from_records(records),
+            command_values,
+        )
+        if command_values
+        else frozenset()
+    )
+    # ``attempted_items_for_obligation``'s rule, in one pass: an action naming no obligation
+    # covers every obligation; one that names obligations covers exactly those.
+    global_attempted: set[str] = set()
+    by_obligation: dict[ObligationId, set[str]] = {}
+    for action in projection.actions.values():
+        payload = action.payload
+        if payload is None or not payload.attempted_items:
+            continue
+        if not payload.obligation_refs:
+            global_attempted.update(payload.attempted_items)
+            continue
+        for obligation in payload.obligation_refs:
+            by_obligation.setdefault(obligation, set()).update(payload.attempted_items)
+    return _ReadIndex(
+        {record.event_id: record for record in records},
+        observed_events,
+        matched_commands,
+        results_by_evidence(projection),
+        frozenset(global_attempted),
+        {key: frozenset(value) for key, value in by_obligation.items()},
+    )
+
+
 def _reasons(
     projection: ProjectionState,
     records: tuple[LedgerRecord, ...],
-    records_by_event: dict[EventId, LedgerRecord],
-    observed_events: frozenset[EventId],
-    matched_commands: frozenset[str],
+    index: _ReadIndex,
     obligation: ObligationId,
     payload: ObligationPublishedPayload,
 ) -> tuple[str, ...]:
     reasons: list[str] = []
-    attempted = attempted_items_for_obligation(projection, obligation)
+    attempted = index.global_attempted | index.attempted_by_obligation.get(obligation, frozenset())
     if any(
-        not _item_attempted(item, attempted, matched_commands)
+        not _item_attempted(item, attempted, index.matched_commands)
         for item in payload.requested_items
         if item.role is not RequestedItemRole.INPUT
     ):
         reasons.append(ITEM_NEVER_ATTEMPTED)
     declared = declared_items(payload)
-    sources = evidence_sources(projection, records_by_event, observed_events, payload)
+    sources = evidence_sources(
+        projection,
+        index.records_by_event,
+        index.observed_events,
+        payload,
+        index.evidence_actions,
+    )
     if declared and alignment_of(declared, sources) in {
         "evidence_off_declared_items",
         "evidence_unattributed",
@@ -144,19 +212,37 @@ def _reasons(
     corroborated = any(
         _corroborated(
             projection,
-            records_by_event,
-            observed_events,
+            index.records_by_event,
+            index.observed_events,
             source.ref,
             (event for _action, event in source.actions),
         )
         for source in sources
-    ) or any(
-        attempt.relation == "matching_observed_attempt"
-        for attempt in command_attempts(projection, records, obligation)
+    ) or (
+        # Only an obligation that requests a command can have a matching observed attempt.
+        any(item.item_kind is RequestedItemKind.COMMAND for item in payload.requested_items)
+        and any(
+            attempt.relation == "matching_observed_attempt"
+            for attempt in command_attempts(projection, records, obligation)
+        )
     )
     if not corroborated:
         reasons.append(EVIDENCE_SELF_ASSERTED_ONLY)
     return tuple(reasons)
+
+
+# One entry: the last read's inputs and answer. Status may derive readiness more than once for one
+# projection and prefix (compact plus an enrichment); both are immutable, and holding them keeps
+# their identities from being reused while the entry stands.
+_MEMO: list[
+    tuple[
+        ProjectionState,
+        tuple[LedgerRecord, ...],
+        tuple[ObligationId, ...],
+        int,
+        tuple[tuple[ObligationId, tuple[str, ...]], ...],
+    ]
+] = []
 
 
 def acceptance_risk(
@@ -167,40 +253,34 @@ def acceptance_risk(
     """``(obligation, reasons)`` for each *resolved* obligation the ledger flags, in id order.
 
     ``resolved`` is the closure verdict's resolved set (basis ``resolved``); an obligation whose
-    payload is unreadable is flagged with every reason (fail closed: the re-read is asked).
+    payload is unreadable is flagged with every reason (fail closed: the re-read is asked). The
+    inventories are indexed once per call, and an identical call is answered from memory.
     """
 
-    observed_events = observed_event_ids_from_records(records)
-    records_by_event = {record.event_id: record for record in records}
-    command_values = {
-        item.value
-        for record in projection.obligations.values()
-        if record.payload is not None
-        for item in record.payload.requested_items
-        if item.item_kind is RequestedItemKind.COMMAND
-    }
-    matched_commands = observed_planned_commands(
-        projection,
-        observed_events,
-        cooperative_event_ids_from_records(records),
-        command_values,
-    )
+    ordered = tuple(sorted(set(resolved), key=lambda value: str(value).encode()))
+    generation = command_identity_key_generation()
+    if _MEMO:
+        memo_projection, memo_records, memo_resolved, memo_generation, memo_answer = _MEMO[0]
+        if (
+            memo_projection is projection
+            and memo_records is records
+            and memo_resolved == ordered
+            and memo_generation == generation
+        ):
+            return memo_answer
     flagged: list[tuple[ObligationId, tuple[str, ...]]] = []
-    for obligation in sorted(set(resolved), key=lambda value: str(value).encode()):
+    index: _ReadIndex | None = None
+    for obligation in ordered:
         record = projection.obligations.get(obligation)
         payload = None if record is None else record.payload
         if payload is None:
             flagged.append((obligation, ACCEPTANCE_RISK_REASONS))
             continue
-        reasons = _reasons(
-            projection,
-            records,
-            records_by_event,
-            observed_events,
-            matched_commands,
-            obligation,
-            payload,
-        )
+        if index is None:
+            index = _read_index(projection, records)
+        reasons = _reasons(projection, records, index, obligation, payload)
         if reasons:
             flagged.append((obligation, reasons))
-    return tuple(flagged)
+    answer = tuple(flagged)
+    _MEMO[:] = [(projection, records, ordered, generation, answer)]
+    return answer

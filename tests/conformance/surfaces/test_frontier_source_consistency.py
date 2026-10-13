@@ -29,6 +29,10 @@ _STATUS_AS_FRONTIER_SOURCE: Final = (
     re.compile(r"read (?:it|the frontier|the current frontier) from `?status", re.IGNORECASE),
     re.compile(r"frontier must come from[^.]*`?status", re.IGNORECASE),
     re.compile(r"frontier[^.]{0,40}\bfrom `?status`?(?! view)", re.IGNORECASE),
+    # tb4n5 check D4: the reversed spelling, "read status and retain its frontier", in the two
+    # repair recipes, and a recipe that starts every repair with a status read.
+    re.compile(r"read (?:current )?`?status`?[^.]{0,20}\bretain its (?:returned )?frontier", re.I),
+    re.compile(r"\bstatus\s*(?:→|->)\s*repair\b", re.IGNORECASE),
 )
 
 
@@ -138,3 +142,32 @@ def test_the_rule_is_stated_where_agents_author_writes() -> None:
         templates
     )
     assert "Never send `expected_frontier: null` on a state-sensitive batch." in templates
+
+
+def test_the_repair_recipes_start_from_the_held_frontier() -> None:
+    """tb4n5 check D4: both "Repair then finish" recipes began with a status read for the frontier."""
+
+    pages = dict(_shipped_pages())
+    for name in ("guidance/publication-policy.md", "guidance/coverage-and-receipts.md"):
+        recipe = pages[name].partition("## Repair then finish")[2].partition("## ")[0]
+        assert recipe, name
+        assert "Keep the frontier you hold (the `result_frontier` of your last accepted write)" in (
+            recipe
+        ), name
+        assert "read `status` for one only when you hold none or after `frontier_changed`" in (
+            recipe
+        ), name
+
+
+def test_no_surface_tells_agents_to_answer_every_ai_powered_finding() -> None:
+    """tb4n5 check D5: a resolved or final finding takes no response (``finding_terminal``)."""
+
+    offenders: list[str] = []
+    pattern = re.compile(r"answer every (?:ai-powered |reviewer )?finding", re.IGNORECASE)
+    for source, text in (*_shipped_pages(), *_tool_texts()):
+        if pattern.search(text) is not None:
+            offenders.append(source)
+    assert offenders == []
+    review = dict(_shipped_pages())["guidance/review.md"]
+    assert "Answer each open AI-powered finding with `respond`" in review
+    assert 'answer is final (`next_actions: ["none"]`) takes no response' in review

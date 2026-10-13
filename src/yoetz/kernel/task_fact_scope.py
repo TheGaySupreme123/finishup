@@ -36,12 +36,21 @@ from typing import Final
 
 from yoetz.domain.events import ClaimKind, LedgerRecord
 from yoetz.domain.findings import FindingKind
-from yoetz.domain.values import ClaimId, EventId, FindingId, ObligationId
+from yoetz.domain.values import (
+    ActionId,
+    ClaimId,
+    EventId,
+    EvidenceId,
+    FindingId,
+    ObligationId,
+    ResultId,
+)
 from yoetz.kernel.command_attempts import command_attempts
-from yoetz.kernel.projections import ProjectionState
+from yoetz.kernel.projections import ProjectionRecord, ProjectionState
 from yoetz.kernel.task_facts import (
     EDITED_AFTER_LAST_VERIFICATION_GAP,
     TASK_FACT_GAPS,
+    command_identity_key_generation,
     effective_obligations,
     task_fact_signals,
 )
@@ -102,7 +111,7 @@ class CommandMismatch:
 # against the same immutable projection and record tuple, so the rows are derived once per read;
 # holding the objects keeps their identities from being reused while the entry stands.
 _MISMATCH_MEMO: list[
-    tuple[ProjectionState, tuple[LedgerRecord, ...], tuple[CommandMismatch, ...]]
+    tuple[ProjectionState, tuple[LedgerRecord, ...], int, tuple[CommandMismatch, ...]]
 ] = []
 
 
@@ -111,12 +120,13 @@ def command_mismatches(
 ) -> tuple[CommandMismatch, ...]:
     """Every effective obligation's mismatched requested command items, in obligation order."""
 
+    generation = command_identity_key_generation()
     if _MISMATCH_MEMO:
-        memo_state, memo_records, memo_rows = _MISMATCH_MEMO[0]
-        if memo_state is state and memo_records is records:
+        memo_state, memo_records, memo_generation, memo_rows = _MISMATCH_MEMO[0]
+        if memo_state is state and memo_records is records and memo_generation == generation:
             return memo_rows
     rows = _command_mismatch_rows(state, records)
-    _MISMATCH_MEMO[:] = [(state, records, rows)]
+    _MISMATCH_MEMO[:] = [(state, records, generation, rows)]
     return rows
 
 
@@ -141,57 +151,121 @@ def _command_mismatch_rows(
     return tuple(rows)
 
 
+def _readable[T](record: ProjectionRecord[T] | None) -> T | None:
+    """The payload of a projection row that exists and is readable, else ``None``."""
+
+    if record is None or record.payload is None or record.redacted:
+        return None
+    return record.payload
+
+
 def _mismatch_related(
     state: ProjectionState, finding_id: FindingId, row: CommandMismatch
 ) -> bool | None:
     """Whether one mismatch row is about the finding; ``None`` when a subject cannot be placed.
 
-    Related: the finding is about the mismatched obligation (``finding_obligation_scope``), or a
-    subject is an action that asserted the item, a linked observed run event, or a result or
+    Related: a subject is the mismatched obligation, a claim naming it (a completion claim naming
+    none covers every effective obligation), an action that asserted the item or names the
+    obligation, the linked observed run (its action or result, by event or id), or a result or
     evidence the obligation cites for its resolution (or the action behind such a result).
+
+    Fail closed (tb4n5 check D1/D2): a subject that is missing, redacted or unreadable, an event
+    this projection cannot place, or a subject of another kind is unknown, so the mismatch stays
+    (``None``). Only a subject every link of which was read and found unrelated is ``False``.
     """
 
-    record = state.findings.get(finding_id)
-    if record is None or record.payload is None:
+    finding = _readable(state.findings.get(finding_id))
+    if finding is None:
         return None
-    if row.obligation_id in finding_obligation_scope(state, finding_id):
-        return True
-    obligation = state.obligations.get(row.obligation_id)
+    target = row.obligation_id
+    obligation = _readable(state.obligations.get(target))
     cited: frozenset[str] = (
-        frozenset(str(ref) for ref in obligation.payload.resolution_evidence_refs)
-        if obligation is not None and obligation.payload is not None
-        else frozenset()
+        frozenset()
+        if obligation is None
+        else frozenset(map(str, obligation.resolution_evidence_refs))
     )
-    linked_actions = frozenset(row.asserted_action_ids) | {
-        str(result.payload.action_id)
-        for key, result in state.results.items()
-        if result.payload is not None and str(key) in cited
-    }
-    by_event: dict[str, str] = {}
-    for key, item in state.actions.items():
-        by_event[str(item.source_event_id)] = str(key)
-    for key, item in (*state.results.items(), *state.evidence.items()):
-        by_event.setdefault(str(item.source_event_id), str(key))
-    for ref in record.payload.subject_refs:
+    observed_events = frozenset(row.observed_event_ids)
+    linked_actions = set(row.asserted_action_ids)
+    for key, result in state.results.items():
+        payload = _readable(result)
+        if payload is not None and str(key) in cited:
+            linked_actions.add(str(payload.action_id))
+    by_event: dict[str, tuple[str, str]] = {}
+    for kind, table in (
+        ("act", state.actions),
+        ("res", state.results),
+        ("evd", state.evidence),
+        ("obl", state.obligations),
+        ("clm", state.claims),
+    ):
+        for key, item in table.items():
+            by_event.setdefault(str(item.source_event_id), (kind, str(key)))
+
+    def action_related(action_key: str) -> bool | None:
+        action_record = state.actions.get(ActionId(action_key))
+        payload = _readable(action_record)
+        if action_record is None or payload is None:
+            return None
+        return (
+            action_key in linked_actions
+            or str(action_record.source_event_id) in observed_events
+            or target in payload.obligation_refs
+        )
+
+    def related(kind: str, key: str) -> bool | None:
+        if kind == "obl":
+            if _readable(state.obligations.get(ObligationId(key))) is None:
+                return None
+            return key == str(target)
+        if kind == "clm":
+            claim = _readable(state.claims.get(ClaimId(key)))
+            if claim is None:
+                return None
+            if claim.obligation_refs:
+                return target in claim.obligation_refs
+            return claim.claim_kind is ClaimKind.COMPLETION and target in set(
+                effective_obligations(state)
+            )
+        if kind == "act":
+            return action_related(key)
+        if kind == "res":
+            result = _readable(state.results.get(ResultId(key)))
+            if result is None:
+                return None
+            if key in cited:
+                return True
+            return action_related(str(result.action_id))
+        if kind == "evd":
+            if _readable(state.evidence.get(EvidenceId(key))) is None:
+                return None
+            if key in cited:
+                return True
+            for result in state.results.values():
+                payload = _readable(result)
+                if payload is not None and key in map(str, payload.evidence_refs):
+                    verdict = action_related(str(payload.action_id))
+                    if verdict is None or verdict:
+                        return verdict
+            return False
+        return None
+
+    for ref in finding.subject_refs:
         text = str(ref)
         if not text.startswith(_SCOPED_SUBJECT_PREFIXES):
             return None
         if text.startswith("evt_"):
-            if text in row.observed_event_ids:
+            if text in observed_events:
                 return True
             placed = by_event.get(text)
             if placed is None:
-                if any(
-                    str(item.source_event_id) == text
-                    for table in (state.obligations, state.claims)
-                    for item in table.values()
-                ):
-                    continue
                 # An event this projection cannot place: keep the mismatch (fail closed).
                 return None
-            text = placed
-        if text in cited or text in linked_actions:
-            return True
+            kind, key = placed
+        else:
+            kind, key = text[:3], text
+        verdict = related(kind, key)
+        if verdict is None or verdict:
+            return verdict
     return False
 
 
@@ -291,7 +365,33 @@ def task_fact_bears_on_finding(
         # A task-wide fact (an install, a write outside the workspace, verification only as
         # root): a standing disclosure, kept wherever it appears.
         return True
+    if _scope_unreadable(state, finding_id):
+        # tb4n5 check D1: a claim or obligation subject (or the action an event subject records)
+        # that is missing or redacted cannot show which obligations the finding is about.
+        return True
     return bool(named & finding_obligation_scope(state, finding_id))
+
+
+def _scope_unreadable(state: ProjectionState, finding_id: FindingId) -> bool:
+    """Whether a subject ``finding_obligation_scope`` reads is missing or unreadable."""
+
+    finding = _readable(state.findings.get(finding_id))
+    if finding is None:
+        return True
+    action_events = {str(item.source_event_id): item for item in state.actions.values()}
+    for ref in finding.subject_refs:
+        text = str(ref)
+        if text.startswith("obl_"):
+            if _readable(state.obligations.get(ObligationId(text))) is None:
+                return True
+        elif text.startswith("clm_"):
+            if _readable(state.claims.get(ClaimId(text))) is None:
+                return True
+        elif text.startswith("evt_"):
+            action = action_events.get(text)
+            if action is not None and _readable(action) is None:
+                return True
+    return False
 
 
 def scoped_resolution_reasons(
